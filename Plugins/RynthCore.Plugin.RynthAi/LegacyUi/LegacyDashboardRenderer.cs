@@ -9,6 +9,7 @@ using ImGuiNET;
 using RynthCore.PluginSdk;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.Meta;
+using RynthCore.Plugin.RynthAi.ProfileImport;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -32,6 +33,9 @@ internal sealed class LegacyDashboardRenderer
     private readonly RynthCoreHost _host;
     private readonly LegacyUiSettings _settings = new();
     public LegacyUiSettings Settings => _settings;
+
+    /// <summary>Invoked after VirindiTank file import so the plugin can drop cached loot profiles (same effect as re-selecting loot).</summary>
+    public Action? AfterVirindiTankImport { get; set; }
     private readonly LegacyAdvancedSettingsUi _advancedSettingsUi;
     private readonly LegacyNavigationUi _navigationUi;
     private readonly LegacyLuaUi _luaUi;
@@ -60,6 +64,9 @@ internal sealed class LegacyDashboardRenderer
 
     // ── Per-character settings persistence ───────────────────────────────────
     private string _charFolder = string.Empty;
+    private string _profileFolder = string.Empty;
+    private string _profileFolderInput = string.Empty;
+    private bool _showProfileFolderSelector;
     private string _settingsFilePath = string.Empty;
     private string _lastSavedJson = string.Empty;
     private int _saveCheckCounter;
@@ -89,6 +96,7 @@ internal sealed class LegacyDashboardRenderer
     private FileSystemWatcher? _monsterWatcher;
     private volatile bool _monsterFileChanged;
     private System.Diagnostics.Process? _monsterEditorProcess;
+    private System.Diagnostics.Process? _lootEditorProcess;
 
     public LegacyDashboardRenderer(RynthCoreHost host)
     {
@@ -117,7 +125,11 @@ internal sealed class LegacyDashboardRenderer
     /// </summary>
     public string CharFolder => _charFolder;
 
-    public void SetWorldFilter(WorldObjectCache cache) => _weaponsUi.SetWorldFilter(cache);
+    public void SetWorldFilter(WorldObjectCache cache)
+    {
+        _weaponsUi.SetWorldFilter(cache);
+        _monstersUi.SetWorldFilter(cache);
+    }
 
     public void SetMissileCraftingManager(MissileCraftingManager mgr) => _advancedSettingsUi.SetMissileCraftingManager(mgr);
 
@@ -132,6 +144,8 @@ internal sealed class LegacyDashboardRenderer
 
         string safeChar = SanitizeFileName(charName);
         _charFolder = Path.Combine(_settingsRoot, safeChar);
+        _profileFolder = _charFolder;
+        _profileFolderInput = _profileFolder;
 
         // Migrate legacy settings.json → Default.json if needed
         string legacyPath = Path.Combine(_charFolder, "settings.json");
@@ -236,11 +250,11 @@ internal sealed class LegacyDashboardRenderer
 
     public string SaveAsProfile(string name)
     {
-        if (string.IsNullOrEmpty(_charFolder)) return "Not logged in.";
+        if (string.IsNullOrEmpty(_profileFolder)) return "Not logged in.";
         try
         {
             CaptureTransientUiState();
-            Directory.CreateDirectory(_charFolder);
+            Directory.CreateDirectory(_profileFolder);
             string json = JsonSerializer.Serialize(_settings, RynthAiJsonContext.Default.LegacyUiSettings);
             string path = GetProfileFilePath(name);
             File.WriteAllText(path, json);
@@ -256,7 +270,7 @@ internal sealed class LegacyDashboardRenderer
 
     public string LoadProfile(string name)
     {
-        if (string.IsNullOrEmpty(_charFolder)) return "Not logged in.";
+        if (string.IsNullOrEmpty(_profileFolder)) return "Not logged in.";
         string path = GetProfileFilePath(name);
         if (!File.Exists(path))
             return SaveAsProfile(name);
@@ -431,23 +445,77 @@ internal sealed class LegacyDashboardRenderer
             return;
         }
 
-        // Editor lives at: <RynthAi root>\MonsterEditor\RynthCore.MonsterEditor.exe
-        string rynthAiRoot = Path.GetDirectoryName(Path.GetDirectoryName(_settingsRoot)!)!;
-        string editorExe   = Path.Combine(rynthAiRoot, "MonsterEditor", "RynthCore.MonsterEditor.exe");
-
-        if (!File.Exists(editorExe))
+        string rynthAiRoot = SuiteToolPaths.GetRynthAiRootFromSettingsRoot(_settingsRoot);
+        string? editorExe  = SuiteToolPaths.FindPublishedTool(rynthAiRoot, "MonsterEditor", "RynthCore.MonsterEditor.exe");
+        if (string.IsNullOrEmpty(editorExe))
         {
-            _host.WriteToChat($"[RynthAi] Monster Editor not found: {editorExe}", 4);
+            _host.WriteToChat(
+                "[RynthAi] Monster Editor not found. Install RynthBundle so RynthCore.MonsterEditor.exe is under the same install as RynthCore (Tools\\MonsterEditor), or use legacy RynthAi\\Tools paths.",
+                4);
             return;
         }
 
+        string monstersPath = MonstersFilePath;
+        if (string.IsNullOrEmpty(monstersPath))
+        {
+            _host.WriteToChat("[RynthAi] Monster profile path unavailable.", 4);
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(monstersPath)!);
+        }
+        catch { /* editor may still open */ }
+
+        // Arg1 = per-character settings folder (weapon ids). Arg2 = MonsterProfiles\<char>.json (same file the plugin uses).
         var psi = new System.Diagnostics.ProcessStartInfo
         {
             FileName        = editorExe,
-            Arguments       = $"\"{_charFolder}\"",
+            Arguments       = $"\"{_charFolder}\" \"{monstersPath}\"",
+            WorkingDirectory = Path.GetDirectoryName(editorExe) ?? string.Empty,
             UseShellExecute = true,
         };
         _monsterEditorProcess = System.Diagnostics.Process.Start(psi);
+    }
+
+    /// <summary>Launches the standalone Loot profile editor with the configured loot profiles folder.</summary>
+    private void LaunchLootEditor()
+    {
+        if (_lootEditorProcess != null && !_lootEditorProcess.HasExited)
+        {
+            _lootEditorProcess.CloseMainWindow();
+            _lootEditorProcess = null;
+            return;
+        }
+
+        string rynthAiRoot = SuiteToolPaths.GetRynthAiRootFromSettingsRoot(_settingsRoot);
+        string? editorExe = SuiteToolPaths.FindPublishedTool(rynthAiRoot, "LootEditor", "RynthCore.LootEditor.exe");
+        if (string.IsNullOrEmpty(editorExe))
+        {
+            _host.WriteToChat(
+                "[RynthAi] Loot Editor not found. Install RynthBundle so RynthCore.LootEditor.exe is under the same install as RynthCore (Tools\\LootEditor), or use legacy RynthAi\\ paths.",
+                4);
+            return;
+        }
+
+        try { Directory.CreateDirectory(_lootFolder); }
+        catch { /* best-effort */ }
+
+        // Arg1 = profiles folder; Arg2 = active native .json (same as RynthAi /reload-loot) so Save targets the right file.
+        string lootArgs = $"\"{_lootFolder}\"";
+        if (!string.IsNullOrWhiteSpace(_settings.CurrentLootPath)
+            && _settings.CurrentLootPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            lootArgs = $"\"{_lootFolder}\" \"{_settings.CurrentLootPath}\"";
+
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName         = editorExe,
+            Arguments        = lootArgs,
+            WorkingDirectory = Path.GetDirectoryName(editorExe) ?? string.Empty,
+            UseShellExecute  = true,
+        };
+        _lootEditorProcess = System.Diagnostics.Process.Start(psi);
     }
 
     private void CaptureTransientUiState()
@@ -476,14 +544,14 @@ internal sealed class LegacyDashboardRenderer
 
     private string GetProfileFilePath(string profileName)
     {
-        if (string.IsNullOrEmpty(_charFolder)) return string.Empty;
-        return Path.Combine(_charFolder, profileName + ".json");
+        if (string.IsNullOrEmpty(_profileFolder)) return string.Empty;
+        return Path.Combine(_profileFolder, profileName + ".json");
     }
 
     private string GetActiveProfileMarkerPath()
     {
-        if (string.IsNullOrEmpty(_charFolder)) return string.Empty;
-        return Path.Combine(_charFolder, "active_profile.txt");
+        if (string.IsNullOrEmpty(_profileFolder)) return string.Empty;
+        return Path.Combine(_profileFolder, "active_profile.txt");
     }
 
     private string ReadActiveProfile()
@@ -507,7 +575,7 @@ internal sealed class LegacyDashboardRenderer
         if (string.IsNullOrEmpty(markerPath)) return;
         try
         {
-            Directory.CreateDirectory(_charFolder);
+            Directory.CreateDirectory(_profileFolder);
             File.WriteAllText(markerPath, profileName);
         }
         catch { }
@@ -691,6 +759,8 @@ internal sealed class LegacyDashboardRenderer
         dst.MonsterRules             = tmp.MonsterRules;
         dst.ItemRules                = tmp.ItemRules;
         dst.ConsumableRules          = tmp.ConsumableRules;
+        dst.AmmoRules                = tmp.AmmoRules;
+        dst.MissileAmmoInventoryRulesOnly = tmp.MissileAmmoInventoryRulesOnly;
         dst.BuffRules                = tmp.BuffRules;
         dst.MetaRules                = tmp.MetaRules;
         dst.LuaScript                = tmp.LuaScript;
@@ -815,6 +885,7 @@ internal sealed class LegacyDashboardRenderer
         try
         {
             RenderDashboard();
+            RenderProfileFolderSelectorWindow();
 
             _metaUi.Render();
             TickMonsterReload();
@@ -986,7 +1057,11 @@ internal sealed class LegacyDashboardRenderer
 
         ImGui.TextColored(ColTextMute, "Profile:");
         ImGui.SameLine(60);
-        ImGui.SetNextItemWidth(-1);
+        float profileRowStartX = ImGui.GetCursorPosX();
+        float profileButtonWidth = 56f;
+        float profileSpacing = 6f;
+        float profileComboWidth = Math.Max(140f, ImGui.GetContentRegionAvail().X - (profileButtonWidth + profileSpacing));
+        ImGui.SetNextItemWidth(profileComboWidth);
         if (ImGui.BeginCombo("##ProfCombo", TruncateName(_settings.SelectedProfile, 16)))
         {
             string? pendingSwitch = null;
@@ -996,6 +1071,14 @@ internal sealed class LegacyDashboardRenderer
             ImGui.EndCombo();
             if (pendingSwitch != null) SwitchProfile(pendingSwitch);
         }
+        ImGui.SameLine(profileRowStartX + profileComboWidth + profileSpacing);
+        if (ImGui.Button("Folder##ProfileFolder", new Vector2(profileButtonWidth, 0)))
+        {
+            _profileFolderInput = string.IsNullOrWhiteSpace(_profileFolder) ? _charFolder : _profileFolder;
+            _showProfileFolderSelector = true;
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Select profile folder for loading/saving profiles.");
 
         ImGui.TextColored(ColTextMute, "Nav:");
         ImGui.SameLine(60);
@@ -1022,6 +1105,18 @@ internal sealed class LegacyDashboardRenderer
                 }
             ImGui.EndCombo();
         }
+
+        if (ImGui.Button("Import VirindiTank profiles##VtImport", new Vector2(-1, 22)))
+            ImportVirindiTankProfiles();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Copies .utl loot profiles from common VirindiTank folders into LootProfiles and activates the last copied file.\n" +
+                "Merges monsters: Rynth monsters.json, plus text .usd MyMonsters (SQLite .usd: use Monster Editor). Same merge as external Monster Editor import.");
+
+        if (ImGui.Button("Open Loot Editor##LootEd", new Vector2(-1, 22)))
+            LaunchLootEditor();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Opens RynthCore.LootEditor.exe with your LootProfiles folder (same search paths as Monster Editor).");
 
         ImGui.TextColored(ColTextMute, "Meta:");
         ImGui.SameLine(60);
@@ -1183,12 +1278,108 @@ internal sealed class LegacyDashboardRenderer
         ImGui.EndTable();
     }
 
+    /// <summary>
+    /// Profile-folder picker used by the Profile row. This controls where
+    /// load/save profile JSON files are resolved.
+    /// </summary>
+    private void RenderProfileFolderSelectorWindow()
+    {
+        if (!_showProfileFolderSelector)
+            return;
+
+        ImGui.SetNextWindowSize(new Vector2(620, 420), ImGuiCond.FirstUseEver);
+        bool open = _showProfileFolderSelector;
+        if (!ImGui.Begin("Profile Folder Selector##ProfileFolderSelector", ref open))
+        {
+            ImGui.End();
+            _showProfileFolderSelector = open;
+            return;
+        }
+
+        ImGui.TextWrapped("Choose the folder that contains profile .json files to load/save.");
+        ImGui.TextDisabled($"Character default: {_charFolder}");
+        ImGui.TextDisabled($"Active profile folder: {(_profileFolder.Length == 0 ? "(none)" : _profileFolder)}");
+        ImGui.Separator();
+
+        ImGui.Text("Folder path:");
+        ImGui.InputText("##ProfileFolderPath", ref _profileFolderInput, 1024);
+
+        if (ImGui.Button("Use This Folder##UseProfileFolder"))
+        {
+            string candidate = (_profileFolderInput ?? string.Empty).Trim().Trim('"');
+            if (Directory.Exists(candidate))
+            {
+                SetProfileFolder(candidate);
+                _showProfileFolderSelector = false;
+            }
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Use Character Default##UseCharDefault"))
+        {
+            SetProfileFolder(_charFolder);
+            _showProfileFolderSelector = false;
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel##CancelProfileFolder"))
+        {
+            _showProfileFolderSelector = false;
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Text("Known profile folders under SettingsProfiles:");
+        if (ImGui.BeginChild("##KnownProfileFolders", new Vector2(0, 220), ImGuiChildFlags.Borders))
+        {
+            if (Directory.Exists(_settingsRoot))
+            {
+                foreach (string dir in Directory.GetDirectories(_settingsRoot))
+                {
+                    string label = Path.GetFileName(dir);
+                    bool selected = string.Equals(_profileFolder, dir, StringComparison.OrdinalIgnoreCase);
+                    if (ImGui.Selectable($"{label}##{dir}", selected))
+                    {
+                        _profileFolderInput = dir;
+                    }
+                }
+            }
+        }
+        ImGui.EndChild();
+
+        ImGui.End();
+        _showProfileFolderSelector = open && _showProfileFolderSelector;
+    }
+
     private static void RenderPlaceholderWindow(string title, ref bool open, string message)
     {
         ImGui.SetNextWindowSize(new Vector2(420, 260), ImGuiCond.FirstUseEver);
         if (!ImGui.Begin(title, ref open)) { ImGui.End(); return; }
         ImGui.TextWrapped(message);
         ImGui.End();
+    }
+
+    /// <summary>Pulls VirindiTank .utl loot files and optional Rynth monster JSON from standard install paths.</summary>
+    private void ImportVirindiTankProfiles()
+    {
+        try
+        {
+            var result = VirindiTankProfileImporter.Import(_lootFolder, _settings, mergeMonsterRules: true);
+            foreach (string line in result.LogLines)
+                _host.WriteToChat($"[RynthAi] {line}", 1);
+
+            _settings.EnsureDefaultRule();
+            SaveMonstersFile();
+            LoadMonstersFromFile();
+            // Activate the newest copied loot file so VT rules load for the current character (mirrors picking a profile in the combo).
+            if (result.CopiedLootDestPaths.Count > 0)
+                _settings.CurrentLootPath = result.CopiedLootDestPaths[^1];
+            SaveSettings();
+            RefreshAllLists();
+            AfterVirindiTankImport?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            _host.WriteToChat($"[RynthAi] VirindiTank import failed: {ex.Message}", 4);
+        }
     }
 
     private void RefreshAllLists()
@@ -1199,15 +1390,35 @@ internal sealed class LegacyDashboardRenderer
         RefreshMetaFiles();
     }
 
+    private void SetProfileFolder(string folderPath)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath))
+            return;
+
+        string candidate = folderPath.Trim().Trim('"');
+        if (!Directory.Exists(candidate))
+            return;
+
+        _profileFolder = candidate;
+        _profileFolderInput = candidate;
+        RefreshProfilesList();
+
+        // Keep current selection if available; otherwise fall back to Default.
+        if (!_profiles.Contains(_settings.SelectedProfile, StringComparer.OrdinalIgnoreCase))
+            _settings.SelectedProfile = "Default";
+
+        _settingsFilePath = GetProfileFilePath(_settings.SelectedProfile);
+    }
+
     private void RefreshProfilesList()
     {
         _profiles.Clear();
         _profiles.Add("Default");
         try
         {
-            if (!string.IsNullOrEmpty(_charFolder) && Directory.Exists(_charFolder))
+            if (!string.IsNullOrEmpty(_profileFolder) && Directory.Exists(_profileFolder))
             {
-                foreach (string file in Directory.GetFiles(_charFolder, "*.json"))
+                foreach (string file in Directory.GetFiles(_profileFolder, "*.json"))
                 {
                     string name = Path.GetFileNameWithoutExtension(file);
                     if (name.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;

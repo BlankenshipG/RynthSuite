@@ -137,6 +137,8 @@ public sealed class LegacyUiSettings
 
     public int MeleeAttackPower = -1;
     public int MissileAttackPower = -1;
+    /// <summary>When true, only ammo stacks listed under Items → Missile ammunition are considered for auto-equip (besides per-monster override).</summary>
+    public bool MissileAmmoInventoryRulesOnly;
     public bool UseNativeAttack = true;
     public bool UseRecklessness;
     public int MeleeAttackHeight = 1;
@@ -164,6 +166,8 @@ public sealed class LegacyUiSettings
     public List<MonsterRule> MonsterRules { get; set; } = new();
     public List<ItemRule> ItemRules { get; set; } = new();
     public List<ConsumableRule> ConsumableRules { get; set; } = new();
+    /// <summary>Optional missile ammo stacks (arrows / quarrels / darts) with launcher category for manual prioritization.</summary>
+    public List<AmmoRule> AmmoRules { get; set; } = new();
     public List<BuffRule> BuffRules { get; set; } = new();
     public List<MetaRule> MetaRules { get; set; } = new();
 
@@ -213,7 +217,7 @@ public sealed class LegacyUiSettings
     [JsonIgnore]
     public readonly string[] AdvancedTabs =
     {
-        "Display", "Misc", "Recharge", "Melee Combat", "Spell Combat",
+        "Display", "Misc", "Recharge", "Melee Combat", "Missile Combat", "Spell Combat",
         "Ranges", "Navigation", "Buffing", "Crafting", "Looting"
     };
 
@@ -269,7 +273,17 @@ public sealed class MonsterRule
     public bool UseBolt { get; set; } = true;
     public string ExVuln { get; set; } = "None";
     public int OffhandId { get; set; }
+    /// <summary>When non-zero, prefer equipping this loose ammo stack for missile combat while this rule matches (must match launcher: bow/crossbow/atlatl).</summary>
+    public int PreferredAmmoItemId { get; set; }
     public string PetDamage { get; set; } = "PAuto";
+}
+
+public sealed class AmmoRule
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Bow, Crossbow, Atlatl, or Auto (match any launcher).</summary>
+    public string Category { get; set; } = "Auto";
 }
 
 public sealed class BuffRule

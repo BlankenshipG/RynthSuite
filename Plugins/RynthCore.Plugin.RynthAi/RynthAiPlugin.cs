@@ -15,7 +15,7 @@ namespace RynthCore.Plugin.RynthAi;
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.0-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.9-legacy-ui");
 
     private LegacyDashboardRenderer? _dashboard;
     private NavigationEngine? _navigationEngine;
@@ -62,6 +62,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         EnsureImGuiResolver();
         ComponentDatabase.SetLog(msg => Log(msg));
         _dashboard = new LegacyDashboardRenderer(Host);
+        _dashboard.AfterVirindiTankImport = InvalidateLootProfileCaches;
         _objectCache = new WorldObjectCache(Host); // must exist before CreateObject events fire during login
         _initialized = true;
         _loginComplete = false;
@@ -95,7 +96,20 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _initialized = false;
         _loginComplete = false;
         _windowVisible = false;
+        if (_dashboard != null)
+            _dashboard.AfterVirindiTankImport = null;
         _dashboard = null;
+    }
+
+    /// <summary>Clears cached loot so the next loot tick/command reloads from <see cref="LegacyUiSettings.CurrentLootPath"/>.</summary>
+    private void InvalidateLootProfileCaches()
+    {
+        _loadedLootProfile = null;
+        _loadedLootProfilePath = string.Empty;
+        _loadedLootProfileTime = DateTime.MinValue;
+        _nativeLootProfile = null;
+        _nativeLootProfilePath = string.Empty;
+        _nativeLootProfileTime = DateTime.MinValue;
     }
 
     public override void OnLoginComplete()

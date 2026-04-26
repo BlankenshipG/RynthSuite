@@ -658,6 +658,7 @@ public class CombatManager : IDisposable
 
     private DateTime _lastEquipTime = DateTime.MinValue;
     private DateTime _lastStanceTime = DateTime.MinValue;
+    private DateTime _lastMissileAmmoEquipAttempt = DateTime.MinValue;
 
     // Returns true when the correct weapon is wielded and combat mode matches — safe to attack.
     // Returns false when a weapon swap or stance change is in progress — caller should skip this tick.
@@ -704,9 +705,13 @@ public class CombatManager : IDisposable
 
         if (alreadyWielded)
         {
-            // Don't enter missile mode without ammo — AC rejects it and cycles stance
-            if (desiredMode == CombatMode.Missile && !HasWieldedAmmo())
-                return false;
+            if (desiredMode == CombatMode.Missile)
+            {
+                if (!TryEnsureMissileAmmoForCombat(rule))
+                    return false;
+                if (!HasWieldedAmmo())
+                    return false;
+            }
 
             if (CurrentCombatMode != desiredMode &&
                 (DateTime.Now - lastStanceAttempt).TotalMilliseconds > 1000)
@@ -899,17 +904,57 @@ public class CombatManager : IDisposable
 
     private bool HasWieldedAmmo()
     {
-        int playerId = unchecked((int)_playerId);
-        foreach (var item in _worldFilter.GetDirectInventory())
+        var inv = _worldFilter.GetDirectInventory(false).ToList();
+        return MissileAmmoHelper.HasWieldedAmmoMatchingKind(inv, _playerId, out _);
+    }
+
+    /// <summary>
+    /// Equips loose ammo compatible with the wielded missile launcher (bow/crossbow/atlatl),
+    /// honoring per-monster <see cref="MonsterRule.PreferredAmmoItemId"/> and optional ammo rules list.
+    /// </summary>
+    /// <returns>False when an equip was issued or we must wait (throttled); true when nothing to do or already correct.</returns>
+    private bool TryEnsureMissileAmmoForCombat(MonsterRule? rule)
+    {
+        var inv = _worldFilter.GetDirectInventory(true).ToList();
+        if (!MissileAmmoHelper.TryGetWieldedMissileKind(inv, _playerId, out var kind))
+            return true;
+
+        if (MissileAmmoHelper.HasWieldedAmmoMatchingKind(inv, _playerId, out var mk) && mk == kind)
+            return true;
+
+        if ((DateTime.Now - _lastMissileAmmoEquipAttempt).TotalMilliseconds < 1200)
+            return false;
+
+        WorldObject? pick = null;
+        if (rule != null && rule.PreferredAmmoItemId != 0)
         {
-            if (item.WieldedLocation <= 0) continue;
-            if (playerId != 0 && item.Wielder != 0 && item.Wielder != playerId) continue;
-            string n = item.Name;
-            if (string.IsNullOrEmpty(n)) continue;
-            if (n.Contains("Bundle") || n.Contains("Wrapped")) continue;
-            if (n.Contains("Arrow") || n.Contains("Quarrel") || n.Contains("Bolt") || n.Contains("Dart"))
-                return true;
+            var o = _worldFilter[rule.PreferredAmmoItemId];
+            if (o != null && MissileAmmoHelper.IsLooseAmmoForKind(o, kind))
+                pick = o;
         }
+
+        if (pick == null && _settings.MissileAmmoInventoryRulesOnly)
+        {
+            foreach (var ar in _settings.AmmoRules)
+            {
+                if (!MissileAmmoHelper.AmmoRuleMatchesKind(ar.Category, kind)) continue;
+                var o = _worldFilter[ar.Id];
+                if (o != null && MissileAmmoHelper.IsLooseAmmoForKind(o, kind))
+                {
+                    pick = o;
+                    break;
+                }
+            }
+        }
+        else if (pick == null)
+            pick = MissileAmmoHelper.FindBestLooseAmmo(inv, kind);
+
+        if (pick == null)
+            return false;
+
+        _lastMissileAmmoEquipAttempt = DateTime.Now;
+        try { _host.UseObject((uint)pick.Id); }
+        catch { return false; }
         return false;
     }
 

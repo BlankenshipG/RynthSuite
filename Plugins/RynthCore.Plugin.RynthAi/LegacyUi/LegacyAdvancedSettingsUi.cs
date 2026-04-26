@@ -176,29 +176,9 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.SetNextItemWidth(120);
                 ImGui.Combo("Melee Attack Height", ref _settings.MeleeAttackHeight, AttackHeights, AttackHeights.Length);
 
-                ImGui.Spacing();
-                bool missileAuto = _settings.MissileAttackPower < 0;
-                if (ImGui.Checkbox("Missile Auto Power", ref missileAuto))
-                    _settings.MissileAttackPower = missileAuto ? -1 : 100;
-                ImGui.Indent();
-                ImGui.SetNextItemWidth(150);
-                if (missileAuto)
-                {
-                    int displayVal = 100;
-                    ImGui.BeginDisabled();
-                    ImGui.SliderInt("Missile Power %", ref displayVal, 0, 100);
-                    ImGui.EndDisabled();
-                }
-                else
-                {
-                    ImGui.SliderInt("Missile Power %", ref _settings.MissileAttackPower, 0, 100);
-                }
-                ImGui.Unindent();
-
-                ImGui.SetNextItemWidth(120);
-                ImGui.Combo("Missile Attack Height", ref _settings.MissileAttackHeight, AttackHeights, AttackHeights.Length);
-
                 ImGui.Separator();
+                ImGui.Spacing();
+                ImGui.TextWrapped("Missile power, height, and ammo are under Advanced → Missile Combat.");
                 ImGui.Spacing();
                 ImGui.Checkbox("Use Native Attack", ref _settings.UseNativeAttack);
                 if (ImGui.IsItemHovered())
@@ -208,6 +188,84 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Summon Pets", ref _settings.SummonPets);
                 ImGui.SetNextItemWidth(120);
                 ImGui.InputInt("Pet Min Monsters", ref _settings.PetMinMonsters);
+                break;
+
+            case "Missile Combat":
+                ImGui.Text("Attack");
+                ImGui.Separator();
+                bool missileAuto = _settings.MissileAttackPower < 0;
+                if (ImGui.Checkbox("Missile auto power", ref missileAuto))
+                    _settings.MissileAttackPower = missileAuto ? -1 : 100;
+                ImGui.Indent();
+                ImGui.SetNextItemWidth(150);
+                if (missileAuto)
+                {
+                    int displayVal = 100;
+                    ImGui.BeginDisabled();
+                    ImGui.SliderInt("Missile power %", ref displayVal, 0, 100);
+                    ImGui.EndDisabled();
+                }
+                else
+                {
+                    ImGui.SliderInt("Missile power %", ref _settings.MissileAttackPower, 0, 100);
+                }
+                ImGui.Unindent();
+                ImGui.SetNextItemWidth(120);
+                ImGui.Combo("Missile attack height", ref _settings.MissileAttackHeight, AttackHeights, AttackHeights.Length);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Aim height for MissileAttack when using native combat.");
+
+                ImGui.Separator();
+                ImGui.Spacing();
+                ImGui.Text("Ammunition");
+                ImGui.Separator();
+                ImGui.Checkbox("Inventory rules only (no auto-scan for loose ammo)", ref _settings.MissileAmmoInventoryRulesOnly);
+                if (ImGui.IsItemHovered())
+                {
+                    ImGui.SetTooltip(
+                        "Off (default): scan the whole pack for loose arrows, quarrels, or darts that match the wielded launcher.\n" +
+                        "On: only use stacks listed in Items → Missile ammunition, plus per-monster Preferred ammo.\n\n" +
+                        "If this is on with an empty list, no ammo is equipped — the bot will not find ammunition.");
+                }
+                {
+                    int n = _settings.AmmoRules?.Count ?? 0;
+                    ImGui.TextUnformatted(n == 0
+                        ? "Ammo stacks in rules: 0 (none whitelisted for rules-only mode)"
+                        : $"Ammo stacks in rules: {n} (in Items → Missile ammunition)");
+                    if (_settings.MissileAmmoInventoryRulesOnly && n == 0)
+                    {
+                        ImGui.TextColored(new Vector4(1.0f, 0.45f, 0.35f, 1.0f),
+                            "No ammunition will be auto-selected. Turn the option off, or add stacks in the Items panel.");
+                    }
+                }
+
+                ImGui.Separator();
+                ImGui.Spacing();
+                ImGui.TextWrapped(
+                    "To add ammo: open the main dashboard Items panel, scroll to Missile ammunition, select loose ammo, Add selected as ammo.");
+
+                ImGui.Separator();
+                ImGui.Spacing();
+                ImGui.Text("Missile crafting (low / empty slot)");
+                ImGui.Separator();
+                ImGui.Checkbox("Enable missile crafting", ref _settings.EnableMissileCrafting);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("When armed with a bow, crossbow, or atlatl, combine bundles and equip ammo when the slot is empty (macro running).");
+                if (_settings.EnableMissileCrafting)
+                {
+                    if (_missileCraftingManager != null)
+                    {
+                        string stateLabel = _missileCraftingManager.State.ToString();
+                        Vector4 stateColor = _missileCraftingManager.IsCrafting
+                            ? new Vector4(0.9f, 0.7f, 0.2f, 1.0f)
+                            : new Vector4(0.5f, 0.5f, 0.5f, 1.0f);
+                        ImGui.Text("State:");
+                        ImGui.SameLine();
+                        ImGui.TextColored(stateColor, stateLabel);
+                        if (!string.IsNullOrEmpty(_missileCraftingManager.StatusMessage))
+                            ImGui.TextWrapped(_missileCraftingManager.StatusMessage);
+                    }
+                }
                 break;
 
             case "Spell Combat":
@@ -444,34 +502,19 @@ internal sealed class LegacyAdvancedSettingsUi
                 break;
 
             case "Crafting":
-                ImGui.Text("Missile Ammo Crafting");
+                ImGui.TextWrapped(
+                    "Missile ammo automation (crafting, equip, and the “inventory rules only” option) lives under the Missile Combat tab.");
                 ImGui.Separator();
-                ImGui.Spacing();
-                ImGui.Checkbox("Enable Missile Crafting", ref _settings.EnableMissileCrafting);
-                if (ImGui.IsItemHovered())
+                if (ImGui.Button("Open Missile Combat tab"))
                 {
-                    ImGui.SetTooltip("Auto-manage missile ammo when the ammo slot is empty or low.");
-                }
-
-                if (!_settings.EnableMissileCrafting)
-                {
-                    ImGui.TextDisabled("(Disabled)");
-                    break;
-                }
-
-                ImGui.Spacing();
-                if (_missileCraftingManager != null)
-                {
-                    string stateLabel = _missileCraftingManager.State.ToString();
-                    Vector4 stateColor = _missileCraftingManager.IsCrafting
-                        ? new Vector4(0.9f, 0.7f, 0.2f, 1.0f)
-                        : new Vector4(0.5f, 0.5f, 0.5f, 1.0f);
-                    ImGui.Text("State:");
-                    ImGui.SameLine();
-                    ImGui.TextColored(stateColor, stateLabel);
-
-                    if (!string.IsNullOrEmpty(_missileCraftingManager.StatusMessage))
-                        ImGui.TextWrapped(_missileCraftingManager.StatusMessage);
+                    for (int i = 0; i < _settings.AdvancedTabs.Length; i++)
+                    {
+                        if (_settings.AdvancedTabs[i] == "Missile Combat")
+                        {
+                            _settings.SelectedAdvancedTab = i;
+                            break;
+                        }
+                    }
                 }
                 break;
 

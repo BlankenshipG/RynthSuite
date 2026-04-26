@@ -1,0 +1,82 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      TFMs: THIS PROJECT IS net10.0-windows ONLY (RynthCore NativeAOT plugin, win-x86).
+      Do NOT add net48 here — classic Utility Belt / UB-ILT (Decal) builds net48 in UB/ and ub-IT/
+      (UtilityBelt.csproj multi-TFM). ub-Rythai is a separate deliverable: .NET 10 vs .NET Framework 4.8.
+    -->
+    <Version>3.1.9</Version>
+    <AssemblyVersion>3.1.9.0</AssemblyVersion>
+    <FileVersion>3.1.9.0</FileVersion>
+    <InformationalVersion>3.1.9</InformationalVersion>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <OutputType>Library</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+    <StripSymbols>false</StripSymbols>
+    <RootNamespace>RynthCore.Plugin.UbRythai</RootNamespace>
+    <AssemblyName>RynthCore.Plugin.UbRythai</AssemblyName>
+    <Platforms>x86</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <TrimmerRootAssembly Include="ImGui.NET" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
+    <ProjectReference Include="..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+  </ItemGroup>
+
+  <Target Name="CopyPublishedPluginToEngineOutputs" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <ItemGroup>
+      <_EnginePluginDir Include="$(MSBuildThisFileDirectory)..\..\RynthCore\src\RynthCore.Engine\bin\$(Configuration)\net10.0-windows\win-x86\Plugins\" />
+      <_EnginePluginDir Include="$(MSBuildThisFileDirectory)..\..\RynthCore\src\RynthCore.Engine\bin\$(PlatformTarget)\$(Configuration)\net10.0-windows\win-x86\Plugins\" />
+      <_EnginePluginPublishDir Include="$(MSBuildThisFileDirectory)..\..\RynthCore\src\RynthCore.Engine\bin\$(Configuration)\net10.0-windows\win-x86\publish\Plugins\" />
+      <_EnginePluginPublishDir Include="$(MSBuildThisFileDirectory)..\..\RynthCore\src\RynthCore.Engine\bin\$(PlatformTarget)\$(Configuration)\net10.0-windows\win-x86\publish\Plugins\" />
+    </ItemGroup>
+
+    <MakeDir Directories="@(_EnginePluginDir)" />
+    <MakeDir Directories="@(_EnginePluginPublishDir)" />
+    <Copy
+      SourceFiles="$(PublishDir)$(AssemblyName).dll"
+      DestinationFolder="%(_EnginePluginDir.Identity)"
+      SkipUnchangedFiles="true"
+      Condition="Exists('$(PublishDir)$(AssemblyName).dll')" />
+    <Copy
+      SourceFiles="$(PublishDir)$(AssemblyName).pdb"
+      DestinationFolder="%(_EnginePluginDir.Identity)"
+      SkipUnchangedFiles="true"
+      Condition="Exists('$(PublishDir)$(AssemblyName).pdb')" />
+    <Copy
+      SourceFiles="$(PublishDir)$(AssemblyName).dll"
+      DestinationFolder="%(_EnginePluginPublishDir.Identity)"
+      SkipUnchangedFiles="true"
+      Condition="Exists('$(PublishDir)$(AssemblyName).dll')" />
+    <Copy
+      SourceFiles="$(PublishDir)$(AssemblyName).pdb"
+      DestinationFolder="%(_EnginePluginPublishDir.Identity)"
+      SkipUnchangedFiles="true"
+      Condition="Exists('$(PublishDir)$(AssemblyName).pdb')" />
+  </Target>
+
+  <Target Name="RemoveBundledImGuiNativeFromBuild" AfterTargets="Build">
+    <Delete Files="$(OutputPath)cimgui.dll" Condition="Exists('$(OutputPath)cimgui.dll')" />
+  </Target>
+
+  <Target Name="RemoveBundledImGuiNativeFromPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <Delete Files="$(PublishDir)cimgui.dll" Condition="Exists('$(PublishDir)cimgui.dll')" />
+  </Target>
+
+</Project>

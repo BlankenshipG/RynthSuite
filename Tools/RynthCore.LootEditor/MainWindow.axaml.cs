@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 
 namespace RynthCore.LootEditor;
@@ -13,6 +14,16 @@ public partial class MainWindow : Window
         InitializeComponent();
         _vm = new MainViewModel(this);
         DataContext = _vm;
+
+        // Global save — File menu "Save" has no system gesture on all platforms; match Monster editor.
+        KeyDown += (_, e) =>
+        {
+            if (e.KeyModifiers == KeyModifiers.Control && e.Key == Key.S)
+            {
+                _vm.FileSave.Execute(null);
+                e.Handled = true;
+            }
+        };
 
         Closing += async (_, e) =>
         {
