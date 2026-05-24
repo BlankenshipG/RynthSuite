@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using ImGuiNET;
+using RynthCore.Plugin.RynthAi.Combat;
+using RynthCore.Plugin.RynthAi;
 using RynthCore.PluginSdk;
 using RynthCore.Plugin.RynthAi.CreatureData;
 
@@ -15,6 +17,7 @@ internal sealed class LegacyMonstersUi
     private readonly Action _onMonstersChanged;
     private readonly Action _onLaunchExternalEditor;
     private readonly Func<(uint Id, string Name)?> _getCurrentTarget;
+    private WorldObjectCache? _worldFilter;
 
     /// <summary>Set by the dashboard so we can show captured stats per monster row.</summary>
     public Func<string, CreatureProfile?>? CreatureLookup { get; set; }
@@ -36,8 +39,12 @@ internal sealed class LegacyMonstersUi
 
     private static readonly uint OnColor  = ImGui.ColorConvertFloat4ToU32(new Vector4(0.2f, 1.0f, 0.2f, 1.0f));
     private static readonly uint OffColor = ImGui.ColorConvertFloat4ToU32(new Vector4(0.3f, 0.3f, 0.3f, 1.0f));
-    private static readonly uint ExprOnColor = ImGui.ColorConvertFloat4ToU32(new Vector4(0.2f, 0.85f, 0.4f, 1.0f));
     private static readonly uint CatHeaderBg = ImGui.ColorConvertFloat4ToU32(new Vector4(0.10f, 0.18f, 0.26f, 1.0f));
+
+    // Flat, dark frames for combo/int cells (less “pill / neon” noise than the default).
+    private static readonly Vector4 FrameBgUi       = new(0.11f, 0.11f, 0.15f, 1.0f);
+    private static readonly Vector4 FrameBgUiHover  = new(0.16f, 0.16f, 0.22f, 1.0f);
+    private static readonly Vector4 FrameBgUiActive = new(0.18f, 0.18f, 0.26f, 1.0f);
 
     public LegacyMonstersUi(
         LegacyUiSettings settings,
@@ -53,27 +60,56 @@ internal sealed class LegacyMonstersUi
         _getCurrentTarget = getCurrentTarget;
     }
 
+    public void SetWorldFilter(WorldObjectCache cache) => _worldFilter = cache;
+
     public void Render()
     {
         if (!DashWindows.ShowMonsters) return;
 
-        ImGui.SetNextWindowSize(new Vector2(860, 480), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(1200, 580), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSizeConstraints(new Vector2(960, 400), new Vector2(2000, 2000));
         if (!ImGui.Begin("Monsters##RynthAiMonsters", ref DashWindows.ShowMonsters))
         {
             ImGui.End();
             return;
         }
 
-        if (ImGui.Button("External Editor", new Vector2(130, 24)))
+        if (ImGui.Button("External Editor", new Vector2(130, 26)))
             _onLaunchExternalEditor();
         ImGui.SameLine();
-        ImGui.TextDisabled("(opens standalone Avalonia editor)");
+        if (ImGui.SmallButton("?##mcolHelpOpen"))
+            ImGui.OpenPopup("mcolhelp");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("What the toggle columns and buttons mean (full names).");
+        ImGui.SameLine();
+        ImGui.TextDisabled("(opens standalone Avalonia editor — full editor window)");
 
+        if (ImGui.BeginPopup("mcolhelp", ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            ImGui.Text("Toggle columns (left to right) — click the dot; green = on.");
+            ImGui.Separator();
+            ImGui.Text("Curses / debuff:");
+            ImGui.BulletText("Fst — Fester; Brd — Broadside; Grv — Gravity (Vulner. Other).");
+            ImGui.BulletText("Imp — Imperil; Yld — Yield; Vul — Vulnerability (element).");
+            ImGui.Spacing();
+            ImGui.Text("Attack (War/Void):");
+            ImGui.BulletText("Arc — Arc (also used as melee/missile attack).");
+            ImGui.BulletText("Blt — Bolt  (if none of Arc / Blt / Rng / Stk, no attack).");
+            ImGui.BulletText("Rng — Ring; Stk — Streak.");
+            ImGui.Separator();
+            ImGui.BulletText("Expr (E) — vTank-style match expression; optional; overrides name-only if set.");
+            ImGui.BulletText("Del — remove row (the Default row cannot be deleted).");
+            ImGui.EndPopup();
+        }
+
+        ImGui.TextDisabled("Curses: Fst Brd Grv Imp Yld Vul  ·  Attacks: Arc Blt Rng Stk  ·  Drag column edges to resize.");
+        ImGui.Spacing();
         ImGui.Separator();
 
         DrawTable();
 
         ImGui.Separator();
+        ImGui.TextDisabled("Add a row (name must be unique; category groups rows in the list).");
         DrawAddRow();
 
         ImGui.End();
@@ -81,33 +117,50 @@ internal sealed class LegacyMonstersUi
 
     private void DrawTable()
     {
-        // 19 columns: 10 toggles + Name + P + DmgType + ExVuln + Weapon + Offhand + PetDmg + [E] + Del
-        if (!ImGui.BeginTable(
-                "MonstersGrid", 19,
-                ImGuiTableFlags.NoSavedSettings | ImGuiTableFlags.Borders |
-                ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY,
-                new Vector2(0, 330)))
-            return;
+        // 20 columns: 10 toggles + Name + P + DmgType + ExVuln + Weapon + Missile ammo + Offhand + PetDmg + [E] + Del
+        ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new Vector2(6, 4));
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(5, 3));
+        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(6, 4));
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 3.0f);
+        ImGui.PushStyleColor(ImGuiCol.FrameBg, FrameBgUi);
+        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, FrameBgUiHover);
+        ImGui.PushStyleColor(ImGuiCol.FrameBgActive, FrameBgUiActive);
 
-        ImGui.TableSetupColumn("F",        ImGuiTableColumnFlags.WidthFixed, 15);
-        ImGui.TableSetupColumn("B",        ImGuiTableColumnFlags.WidthFixed, 15);
-        ImGui.TableSetupColumn("G",        ImGuiTableColumnFlags.WidthFixed, 15);
-        ImGui.TableSetupColumn("I",        ImGuiTableColumnFlags.WidthFixed, 15);
-        ImGui.TableSetupColumn("Y",        ImGuiTableColumnFlags.WidthFixed, 15);
-        ImGui.TableSetupColumn("V",        ImGuiTableColumnFlags.WidthFixed, 15);
-        ImGui.TableSetupColumn("A",        ImGuiTableColumnFlags.WidthFixed, 15);
-        ImGui.TableSetupColumn("Bl",       ImGuiTableColumnFlags.WidthFixed, 15);
-        ImGui.TableSetupColumn("R",        ImGuiTableColumnFlags.WidthFixed, 15);
-        ImGui.TableSetupColumn("S",        ImGuiTableColumnFlags.WidthFixed, 15);
-        ImGui.TableSetupColumn("Name",     ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("P",        ImGuiTableColumnFlags.WidthFixed, 30);
-        ImGui.TableSetupColumn("Dmg type", ImGuiTableColumnFlags.WidthFixed, 80);
-        ImGui.TableSetupColumn("Ex Vuln",  ImGuiTableColumnFlags.WidthFixed, 80);
-        ImGui.TableSetupColumn("Weapon",   ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("Offhand",  ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("PetDmg",   ImGuiTableColumnFlags.WidthFixed, 70);
-        ImGui.TableSetupColumn("[E]",      ImGuiTableColumnFlags.WidthFixed, 26);
-        ImGui.TableSetupColumn("Del",      ImGuiTableColumnFlags.WidthFixed, 26);
+        if (!ImGui.BeginTable(
+                "MonstersGrid", 20,
+                ImGuiTableFlags.NoSavedSettings | ImGuiTableFlags.BordersV | ImGuiTableFlags.BordersOuterH |
+                ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.Resizable,
+                new Vector2(0, 0f)))
+        {
+            ImGui.PopStyleColor(3);
+            ImGui.PopStyleVar(4);
+            return;
+        }
+
+        // Wider, 3-letter headers; stretch weights give Name/Weapon/Offhand room to breathe.
+        // ImGui requires WidthFixed/WidthStretch when init_width_or_weight is set; NoResize alone triggers IM_ASSERT (imgui_tables.cpp).
+        const ImGuiTableColumnFlags narrow = ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.NoResize;
+        const float t = 24;
+        ImGui.TableSetupColumn("Fst",      narrow, t);
+        ImGui.TableSetupColumn("Brd",      narrow, t);
+        ImGui.TableSetupColumn("Grv",      narrow, t);
+        ImGui.TableSetupColumn("Imp",      narrow, t);
+        ImGui.TableSetupColumn("Yld",      narrow, t);
+        ImGui.TableSetupColumn("Vul",      narrow, t);
+        ImGui.TableSetupColumn("Arc",      narrow, t);
+        ImGui.TableSetupColumn("Blt",      narrow, t);
+        ImGui.TableSetupColumn("Rng",      narrow, t);
+        ImGui.TableSetupColumn("Stk",      narrow, t);
+        ImGui.TableSetupColumn("Name",     ImGuiTableColumnFlags.WidthStretch, 1.2f);
+        ImGui.TableSetupColumn("Prio",     ImGuiTableColumnFlags.WidthFixed, 40f);
+        ImGui.TableSetupColumn("Damage",   ImGuiTableColumnFlags.WidthFixed, 92f);
+        ImGui.TableSetupColumn("ExVuln",   ImGuiTableColumnFlags.WidthFixed, 88f);
+        ImGui.TableSetupColumn("Weapon",   ImGuiTableColumnFlags.WidthStretch, 1.0f);
+        ImGui.TableSetupColumn("Ammo",     ImGuiTableColumnFlags.WidthFixed, 152f);
+        ImGui.TableSetupColumn("Offhand",  ImGuiTableColumnFlags.WidthStretch, 0.9f);
+        ImGui.TableSetupColumn("Pet",      ImGuiTableColumnFlags.WidthFixed, 78f);
+        ImGui.TableSetupColumn("Expr",     ImGuiTableColumnFlags.WidthFixed, 34f);
+        ImGui.TableSetupColumn("Del",      narrow, 32f);
         ImGui.TableHeadersRow();
 
         int deleteIndex = -1;
@@ -234,7 +287,7 @@ internal sealed class LegacyMonstersUi
 
             ImGui.TableNextColumn();
             ImGui.SetNextItemWidth(-1);
-            if (ImGui.BeginCombo($"##Dmg{i}", rule.DamageType, ImGuiComboFlags.NoArrowButton))
+            if (ImGui.BeginCombo($"##Dmg{i}", rule.DamageType, ImGuiComboFlags.None))
             {
                 if (ImGui.Selectable("Auto", rule.DamageType == "Auto")) { rule.DamageType = "Auto"; _onMonstersChanged(); }
                 foreach (var el in Elements)
@@ -244,7 +297,7 @@ internal sealed class LegacyMonstersUi
 
             ImGui.TableNextColumn();
             ImGui.SetNextItemWidth(-1);
-            if (ImGui.BeginCombo($"##Vuln{i}", rule.ExVuln, ImGuiComboFlags.NoArrowButton))
+            if (ImGui.BeginCombo($"##Vuln{i}", rule.ExVuln, ImGuiComboFlags.None))
             {
                 if (ImGui.Selectable("None", rule.ExVuln == "None")) { rule.ExVuln = "None"; _onMonstersChanged(); }
                 foreach (var el in Elements)
@@ -256,7 +309,7 @@ internal sealed class LegacyMonstersUi
             ImGui.SetNextItemWidth(-1);
             string wepLabel = "<AUTO>";
             if (rule.WeaponId != 0) { var w = _settings.ItemRules.FirstOrDefault(x => x.Id == rule.WeaponId); if (w != null) wepLabel = w.Name; }
-            if (ImGui.BeginCombo($"##Wep{i}", wepLabel, ImGuiComboFlags.NoArrowButton))
+            if (ImGui.BeginCombo($"##Wep{i}", wepLabel, ImGuiComboFlags.None))
             {
                 if (ImGui.Selectable("<AUTO>", rule.WeaponId == 0)) { rule.WeaponId = 0; _onMonstersChanged(); }
                 foreach (var item in _settings.ItemRules)
@@ -266,9 +319,51 @@ internal sealed class LegacyMonstersUi
 
             ImGui.TableNextColumn();
             ImGui.SetNextItemWidth(-1);
+            string ammoLabel = "<AUTO>";
+            if (rule.PreferredAmmoItemId != 0)
+            {
+                var ar = _settings.AmmoRules.FirstOrDefault(a => a.Id == rule.PreferredAmmoItemId);
+                if (ar != null) ammoLabel = ar.Name;
+                else if (_worldFilter?[rule.PreferredAmmoItemId] != null)
+                    ammoLabel = _worldFilter[rule.PreferredAmmoItemId]!.Name;
+                else ammoLabel = $"0x{rule.PreferredAmmoItemId:X}";
+            }
+            if (ImGui.BeginCombo($"##AmmoPick{i}", ammoLabel, ImGuiComboFlags.None))
+            {
+                if (ImGui.Selectable("<AUTO>", rule.PreferredAmmoItemId == 0))
+                {
+                    rule.PreferredAmmoItemId = 0;
+                    _onMonstersChanged();
+                }
+                foreach (var a in _settings.AmmoRules)
+                {
+                    if (ImGui.Selectable($"{a.Name}##am{i}_{a.Id}", rule.PreferredAmmoItemId == a.Id))
+                    {
+                        rule.PreferredAmmoItemId = a.Id;
+                        _onMonstersChanged();
+                    }
+                }
+                ImGui.EndCombo();
+            }
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Sel##amsel{i}") && _host.HasGetSelectedItemId)
+            {
+                uint sid = _host.GetSelectedItemId();
+                if (sid != 0 && _worldFilter != null && _worldFilter[(int)sid] is { } pick
+                    && MissileAmmoHelper.GetAmmoKindFromName(pick.Name) != null)
+                {
+                    rule.PreferredAmmoItemId = (int)sid;
+                    _onMonstersChanged();
+                }
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Per-monster loose ammo. Pick from list or click Sel with ammo selected in inventory.");
+
+            ImGui.TableNextColumn();
+            ImGui.SetNextItemWidth(-1);
             string offLabel = "<AUTO>";
             if (rule.OffhandId != 0) { var o = _settings.ItemRules.FirstOrDefault(x => x.Id == rule.OffhandId); if (o != null) offLabel = o.Name; }
-            if (ImGui.BeginCombo($"##Off{i}", offLabel, ImGuiComboFlags.NoArrowButton))
+            if (ImGui.BeginCombo($"##Off{i}", offLabel, ImGuiComboFlags.None))
             {
                 if (ImGui.Selectable("<AUTO>", rule.OffhandId == 0)) { rule.OffhandId = 0; _onMonstersChanged(); }
                 foreach (var item in _settings.ItemRules)
@@ -278,7 +373,7 @@ internal sealed class LegacyMonstersUi
 
             ImGui.TableNextColumn();
             ImGui.SetNextItemWidth(-1);
-            if (ImGui.BeginCombo($"##PetDmg{i}", rule.PetDamage, ImGuiComboFlags.NoArrowButton))
+            if (ImGui.BeginCombo($"##PetDmg{i}", rule.PetDamage, ImGuiComboFlags.None))
             {
                 if (ImGui.Selectable("PAuto", rule.PetDamage == "PAuto")) { rule.PetDamage = "PAuto"; _onMonstersChanged(); }
                 foreach (var el in Elements)
@@ -293,7 +388,7 @@ internal sealed class LegacyMonstersUi
             if (ImGui.SmallButton($"E##e{i}"))
             {
                 _exprEditIndex = i;
-                _exprEditBuffer = rule.MatchExpression ?? "";
+                _exprEditBuffer = rule.MatchExpression ?? string.Empty;
                 ImGui.OpenPopup($"ExprEdit{i}");
             }
             if (hasExpr)
@@ -351,6 +446,9 @@ internal sealed class LegacyMonstersUi
         }
 
         ImGui.EndTable();
+        // Restore table-local styles (frames / padding).
+        ImGui.PopStyleColor(3);
+        ImGui.PopStyleVar(4);
 
         if (deleteIndex >= 0 && deleteIndex < _settings.MonsterRules.Count)
         {
@@ -446,13 +544,15 @@ internal sealed class LegacyMonstersUi
 
     private static bool DrawToggleLight(string id, bool isOn, uint onColor, uint offColor, string? tooltip = null)
     {
+        const float s = 15f; // Slightly larger hit + dot for the dense table.
         Vector2 pos = ImGui.GetCursorScreenPos();
+        float pad = 1.5f;
         ImGui.GetWindowDrawList().AddRectFilled(
-            pos + new Vector2(2, 2),
-            pos + new Vector2(12, 12),
+            pos + new Vector2(pad, pad),
+            pos + new Vector2(pad + s, pad + s),
             isOn ? onColor : offColor,
-            10.0f);
-        ImGui.InvisibleButton(id, new Vector2(14, 14));
+            4.0f);
+        ImGui.InvisibleButton(id, new Vector2(18, 18));
         if (tooltip != null && ImGui.IsItemHovered())
             ImGui.SetTooltip(tooltip);
         return ImGui.IsItemClicked();

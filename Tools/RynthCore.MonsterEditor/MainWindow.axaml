@@ -3,9 +3,27 @@
         xmlns:local="clr-namespace:RynthCore.MonsterEditor"
         x:Class="RynthCore.MonsterEditor.MainWindow"
         Title="RynthAi — Monster Rules Editor"
-        Width="1060" Height="520" MinWidth="800" MinHeight="300">
+        Width="1220" Height="540" MinWidth="900" MinHeight="300">
 
     <DockPanel LastChildFill="True">
+
+        <!-- Explicit save (edits also auto-save on change). -->
+        <Border DockPanel.Dock="Top" Background="#1E1E2E" BorderBrush="#45475A"
+                BorderThickness="0,0,0,1" Padding="8,6">
+            <StackPanel Orientation="Vertical" Spacing="4">
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <Button Content="Save now" Click="SaveToolbar_Click" MinWidth="96" Padding="10,4"
+                            ToolTip.Tip="Writes the MonsterProfiles .json RynthAi uses (Ctrl+S)."/>
+                    <Button Content="Import Virindi .usd" Click="ImportVirindiUsd_Click" MinWidth="160" Padding="10,4"
+                            ToolTip.Tip="Merge monster rules from a Virindi Tank user settings profile (.usd)."/>
+                    <TextBlock Text="Saves the profile file. Ctrl+S. Edits also auto-save in the grid."
+                               VerticalAlignment="Center" Opacity="0.65" FontSize="12"/>
+                </StackPanel>
+                <TextBlock TextWrapping="Wrap" MaxWidth="1180" FontSize="11" Opacity="0.9"
+                          Foreground="#A6E3A1"
+                          Text="The yellow-highlighted row named &quot;Default&quot; is required: RynthAi uses it whenever no other rule matches (name / match expression). It is auto-created; you cannot remove it or change its name. Set damage type, weapon, and toggles for your generic combat template here."/>
+            </StackPanel>
+        </Border>
 
         <!-- Status bar -->
         <Border DockPanel.Dock="Bottom" Background="#181825" BorderBrush="#45475A"
@@ -116,7 +134,7 @@
                     </DataTemplate></DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
 
-                <!-- Name -->
+                <!-- Name (Default row: read-only; must stay &quot;Default&quot; for fallback matching) -->
                 <DataGridTemplateColumn Header="Name" Width="*" MinWidth="100">
                     <DataGridTemplateColumn.CellTemplate><DataTemplate>
                         <TextBlock Text="{Binding Name}"
@@ -126,7 +144,31 @@
                                    FontWeight="{Binding IsDefault, Converter={x:Static local:DefaultWeightConverter.Instance}}"/>
                     </DataTemplate></DataGridTemplateColumn.CellTemplate>
                     <DataGridTemplateColumn.CellEditingTemplate><DataTemplate>
-                        <TextBox Text="{Binding Name, Mode=TwoWay}" Padding="3,1"/>
+                        <TextBox Text="{Binding Name, Mode=TwoWay}" Padding="3,1"
+                                 IsReadOnly="{Binding IsDefault}"
+                                 ToolTip.Tip="The Default row is the catch-all; its name is fixed. Other rows: substring match on target name, or use Match + empty Name with expression."/>
+                    </DataTemplate></DataGridTemplateColumn.CellEditingTemplate>
+                </DataGridTemplateColumn>
+
+                <!-- Type label (RynthAi dashboard) — not used for match logic -->
+                <DataGridTemplateColumn Header="Type" Width="88" MinWidth="72">
+                    <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                        <TextBlock Text="{Binding Category}" Padding="3,1" VerticalAlignment="Center"
+                                  ToolTip.Tip="Optional dashboard label. Empty shows as 'Default' in the RynthAi list for that row."/>
+                    </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                    <DataGridTemplateColumn.CellEditingTemplate><DataTemplate>
+                        <TextBox Text="{Binding Category, Mode=TwoWay}" Padding="3,1" Watermark="(optional)"/>
+                    </DataTemplate></DataGridTemplateColumn.CellEditingTemplate>
+                </DataGridTemplateColumn>
+
+                <!-- vTank-style expression; for non-Default, overrides simple name match when set -->
+                <DataGridTemplateColumn Header="Match" Width="1.1*" MinWidth="120">
+                    <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                        <TextBlock Text="{Binding MatchExpression}" Padding="3,1" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding MatchExpression}"/>
+                    </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                    <DataGridTemplateColumn.CellEditingTemplate><DataTemplate>
+                        <TextBox Text="{Binding MatchExpression, Mode=TwoWay}" Padding="3,1" MinHeight="28" AcceptsReturn="True"
+                                 ToolTip.Tip="vTank-style expression. When set, RynthAi also applies its name/expr rules. Leave empty for name substring only."/>
                     </DataTemplate></DataGridTemplateColumn.CellEditingTemplate>
                 </DataGridTemplateColumn>
 
@@ -180,6 +222,16 @@
                                 </DataTemplate>
                             </ComboBox.ItemTemplate>
                         </ComboBox>
+                    </DataTemplate></DataGridTemplateColumn.CellEditingTemplate>
+                </DataGridTemplateColumn>
+
+                <!-- Preferred missile ammo (inventory object id; 0 = automatic) -->
+                <DataGridTemplateColumn Header="Ammo Id" Width="72" MinWidth="64">
+                    <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                        <TextBlock Text="{Binding PreferredAmmoItemId}" Padding="3,1" VerticalAlignment="Center"/>
+                    </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                    <DataGridTemplateColumn.CellEditingTemplate><DataTemplate>
+                        <TextBox Text="{Binding PreferredAmmoItemId, Mode=TwoWay}" Padding="3,1"/>
                     </DataTemplate></DataGridTemplateColumn.CellEditingTemplate>
                 </DataGridTemplateColumn>
 

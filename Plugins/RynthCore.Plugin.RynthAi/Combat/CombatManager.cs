@@ -1229,7 +1229,7 @@ public class CombatManager : IDisposable
 
     private DateTime _lastEquipTime = DateTime.MinValue;
     private DateTime _lastStanceTime = DateTime.MinValue;
-    private DateTime _lastEquipDiagAt = DateTime.MinValue;
+    private DateTime _lastMissileAmmoEquipAttempt = DateTime.MinValue;
 
     // Returns true when the correct weapon is wielded and combat mode matches — safe to attack.
     // Returns false when a weapon swap or stance change is in progress — caller should skip this tick.
@@ -1300,9 +1300,13 @@ public class CombatManager : IDisposable
 
         if (alreadyWielded)
         {
-            // Don't enter missile mode without ammo — AC rejects it and cycles stance
-            if (desiredMode == CombatMode.Missile && !HasWieldedAmmo())
-                return false;
+            if (desiredMode == CombatMode.Missile)
+            {
+                if (!TryEnsureMissileAmmoForCombat(rule))
+                    return false;
+                if (!HasWieldedAmmo())
+                    return false;
+            }
 
             if (CurrentCombatMode != desiredMode &&
                 (DateTime.Now - lastStanceAttempt).TotalMilliseconds > 1000)
@@ -1505,65 +1509,58 @@ public class CombatManager : IDisposable
 
     private bool HasWieldedAmmo()
     {
-        int playerId = unchecked((int)_playerId);
-
-        // Walk via GetDirectInventory(forceRefresh:true). This is the same path
-        // MissileCraftingManager uses successfully — it triggers per-item
-        // wielder-info lookups on the cache, which populates Wielder /
-        // WieldedLocation. AllKnownObjects() doesn't trigger those probes, so
-        // arrows that arrived via OnCreateObject keep WieldedLocation=0 and
-        // never match. The forced refresh adds ~one InqInt call per pack item
-        // but is cheap and fixes detection definitively.
-        foreach (var item in _worldFilter.GetDirectInventory(forceRefresh: true))
-            if (LooksLikeWieldedAmmo(item, playerId)) return true;
-
-        return false;
+        var inv = _worldFilter.GetDirectInventory(false).ToList();
+        return MissileAmmoHelper.HasWieldedAmmoMatchingKind(inv, _playerId, out _);
     }
 
-    // EquipMask bit for the ammunition slot. Items wielded in this slot are ammo
-    // by definition — far more reliable than name or ItemType inspection because
-    // some servers type their arrows as MissileWeapon (0x100) rather than the
-    // MissileAmmo bit (0x400) that AC's vanilla data has.
-    private const int AmmunitionSlot = 0x00800000;
-
-    private bool LooksLikeWieldedAmmo(WorldObject item, int playerId)
+    /// <summary>
+    /// Equips loose ammo compatible with the wielded missile launcher (bow/crossbow/atlatl),
+    /// honoring per-monster <see cref="MonsterRule.PreferredAmmoItemId"/> and optional ammo rules list.
+    /// </summary>
+    /// <returns>False when an equip was issued or we must wait (throttled); true when nothing to do or already correct.</returns>
+    private bool TryEnsureMissileAmmoForCombat(MonsterRule? rule)
     {
-        if (item == null) return false;
-
-        // Authoritative: ask AC's runtime for the wielder + slot directly.
-        // The cached WieldedLocation/Wielder fields can be 0 forever if the
-        // item arrived via OnCreateObject and never went through the
-        // GetDirectInventory walk that probes wielder info. Querying the
-        // host API per-candidate side-steps that.
-        int loc = 0;
-        bool slotKnown = false;
-        if (_host.HasGetObjectWielderInfo &&
-            _host.TryGetObjectWielderInfo(unchecked((uint)item.Id), out uint wielder, out uint locFromApi))
-        {
-            if (playerId != 0 && wielder != 0 && wielder != (uint)playerId) return false;
-            if (locFromApi > 0) { loc = unchecked((int)locFromApi); slotKnown = true; }
-        }
-
-        // Fall back to InqInt and the cache field if the wielder API didn't answer.
-        if (!slotKnown)
-        {
-            int locInq   = item.Values(LongValueKey.CurrentWieldedLocation, 0);
-            int locCache = item.WieldedLocation;
-            loc = locInq > 0 ? locInq : locCache;
-            if (loc <= 0) return false;
-            if (playerId != 0 && item.Wielder != 0 && item.Wielder != playerId) return false;
-        }
-
-        // Authoritative: ammunition slot bit.
-        if ((loc & AmmunitionSlot) != 0)
+        var inv = _worldFilter.GetDirectInventory(true).ToList();
+        if (!MissileAmmoHelper.TryGetWieldedMissileKind(inv, _playerId, out var kind))
             return true;
 
-        // Name-based fallback for items in non-ammo slots that still match
-        // ammo names (rare server-custom configurations).
-        string n = item.Name;
-        if (string.IsNullOrEmpty(n)) return false;
-        if (n.Contains("Bundle") || n.Contains("Wrapped")) return false;
-        return n.Contains("Arrow") || n.Contains("Quarrel") || n.Contains("Bolt") || n.Contains("Dart");
+        if (MissileAmmoHelper.HasWieldedAmmoMatchingKind(inv, _playerId, out var mk) && mk == kind)
+            return true;
+
+        if ((DateTime.Now - _lastMissileAmmoEquipAttempt).TotalMilliseconds < 1200)
+            return false;
+
+        WorldObject? pick = null;
+        if (rule != null && rule.PreferredAmmoItemId != 0)
+        {
+            var o = _worldFilter[rule.PreferredAmmoItemId];
+            if (o != null && MissileAmmoHelper.IsLooseAmmoForKind(o, kind))
+                pick = o;
+        }
+
+        if (pick == null && _settings.MissileAmmoInventoryRulesOnly)
+        {
+            foreach (var ar in _settings.AmmoRules)
+            {
+                if (!MissileAmmoHelper.AmmoRuleMatchesKind(ar.Category, kind)) continue;
+                var o = _worldFilter[ar.Id];
+                if (o != null && MissileAmmoHelper.IsLooseAmmoForKind(o, kind))
+                {
+                    pick = o;
+                    break;
+                }
+            }
+        }
+        else if (pick == null)
+            pick = MissileAmmoHelper.FindBestLooseAmmo(inv, kind);
+
+        if (pick == null)
+            return false;
+
+        _lastMissileAmmoEquipAttempt = DateTime.Now;
+        try { _host.UseObject((uint)pick.Id); }
+        catch { return false; }
+        return false;
     }
 
     private void AttackTarget()

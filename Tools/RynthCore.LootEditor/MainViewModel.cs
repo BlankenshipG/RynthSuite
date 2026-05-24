@@ -14,7 +14,8 @@ namespace RynthCore.LootEditor;
 
 public class MainViewModel : INotifyPropertyChanged
 {
-    private const string DefaultFolder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
+    /// <summary>Folder used for Open/Save dialogs and startup when launched from RynthAi.</summary>
+    private string _profileFolder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
@@ -248,6 +249,79 @@ public class MainViewModel : INotifyPropertyChanged
         SalvageImportUtl = new RelayCommand(_ => _ = DoSalvageImportUtlAsync());
 
         LoadProfile(new VTankLootProfile());
+        TryApplyStartupCommandLine();
+    }
+
+    /// <summary>
+    /// argv[1] = profiles folder, or a single .json file (legacy). When argv[2] is present, it is the
+    /// active profile path from RynthAi; load it or prepare a new file at that path for first Save.
+    /// </summary>
+    private void TryApplyStartupCommandLine()
+    {
+        try
+        {
+            string[] argv = Environment.GetCommandLineArgs();
+            if (argv.Length < 2) return;
+            string a1 = argv[1].Trim().Trim('"');
+            if (string.IsNullOrEmpty(a1)) return;
+
+            // Two-arg launch: folder + active profile (mirrors Monster editor).
+            if (argv.Length > 2)
+            {
+                string? a2 = argv[2].Trim().Trim('"');
+                if (!string.IsNullOrEmpty(a2) && a2.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (Directory.Exists(a1))
+                        _profileFolder = a1;
+                    else
+                        _profileFolder = Path.GetDirectoryName(a2) ?? a1;
+
+                    if (File.Exists(a2))
+                    {
+                        _filePath = a2;
+                        _searchText = "";
+                        Notify(nameof(SearchText));
+                        LoadProfile(ConvertFromJson(a2));
+                        Status($"Opened {Path.GetFileName(a2)} — Save updates the profile RynthAi loads.");
+                        return;
+                    }
+
+                    // RynthAi selected a .json that does not exist yet: bind Save to that path (no dialog).
+                    string? dir = Path.GetDirectoryName(a2);
+                    if (!string.IsNullOrEmpty(dir))
+                    {
+                        try { Directory.CreateDirectory(dir); } catch { /* best-effort */ }
+                    }
+
+                    _filePath = a2;
+                    _searchText = "";
+                    Notify(nameof(SearchText));
+                    LoadProfile(new VTankLootProfile());
+                    Status($"New profile — Save writes to {Path.GetFileName(a2)} for RynthAi to import.");
+                    return;
+                }
+            }
+
+            if (Directory.Exists(a1))
+            {
+                _profileFolder = a1;
+                Status($"Loot folder: {a1}");
+                return;
+            }
+
+            if (File.Exists(a1) && a1.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            {
+                _filePath = a1;
+                _searchText = "";
+                Notify(nameof(SearchText));
+                LoadProfile(ConvertFromJson(a1));
+                Status($"Opened {Path.GetFileName(a1)}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Status($"Startup args: {ex.Message}");
+        }
     }
 
     // ── Load / save ──────────────────────────────────────────────────────────
@@ -685,9 +759,8 @@ public class MainViewModel : INotifyPropertyChanged
 
     private async Task<IStorageFolder?> GetFolderAsync()
     {
-        if (Directory.Exists(DefaultFolder))
-            return await _window.StorageProvider.TryGetFolderFromPathAsync(DefaultFolder);
-        return null;
+        if (!Directory.Exists(_profileFolder)) return null;
+        return await _window.StorageProvider.TryGetFolderFromPathAsync(_profileFolder);
     }
 
     private async Task ShowError(string msg)

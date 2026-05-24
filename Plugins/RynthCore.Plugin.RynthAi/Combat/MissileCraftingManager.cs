@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using RynthCore.PluginSdk;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.RynthAi.Combat;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -385,7 +386,12 @@ public class MissileCraftingManager
     {
         foreach (var item in inventory)
         {
-            if (!IsPlayerWielded(item) || !LooksLikeMissileWeapon(item))
+            if (!IsPlayerWielded(item))
+                continue;
+            // Same as combat: ammo stacks are often classified MissileWeapon — skip when resolving launcher type.
+            if (MissileAmmoHelper.LooksLikeLooseAmmoForAnyKind(item))
+                continue;
+            if (!LooksLikeMissileWeapon(item))
                 continue;
 
             category = GetWeaponCategory(item.Name);
@@ -398,21 +404,29 @@ public class MissileCraftingManager
 
     private bool HasWieldedAmmo(IEnumerable<WorldObject> inventory, WeaponCategory category)
     {
+        var kind = ToMissileWeaponKind(category);
+        uint pid = _host.GetPlayerId();
         foreach (var item in inventory)
         {
-            if (!IsPlayerWielded(item))
-                continue;
-
-            if (IsLooseAmmo(item, category))
-                return true;
+            if (!IsPlayerWielded(item)) continue;
+            if (MissileAmmoHelper.IsLooseAmmoForKind(item, kind)) return true;
         }
-
         return false;
     }
 
+    private static MissileWeaponKind ToMissileWeaponKind(WeaponCategory category) => category switch
+    {
+        WeaponCategory.Crossbow => MissileWeaponKind.Crossbow,
+        WeaponCategory.Atlatl   => MissileWeaponKind.Atlatl,
+        _                       => MissileWeaponKind.Bow,
+    };
+
     private bool IsPlayerWielded(WorldObject item)
     {
-        if (item.WieldedLocation <= 0)
+        int loc = item.WieldedLocation > 0
+            ? item.WieldedLocation
+            : item.Values(LongValueKey.CurrentWieldedLocation, 0);
+        if (loc <= 0)
             return false;
 
         uint playerId = _host.GetPlayerId();
@@ -443,22 +457,7 @@ public class MissileCraftingManager
     }
 
     private static bool IsLooseAmmo(WorldObject item, WeaponCategory category)
-    {
-        string n = item.Name;
-        if (string.IsNullOrEmpty(n)) return false;
-        string normalized = NormalizeItemName(n);
-        if (normalized.Contains("bundle") || normalized.Contains("wrapped")) return false;
-        if (normalized.Contains("arrowhead") || normalized.Contains("arrowshaft")) return false;
-        if (normalized.Contains("quarrelhead") || normalized.Contains("quarrelshaft")) return false;
-        if (normalized.Contains("darthead") || normalized.Contains("dartshaft")) return false;
-        return category switch
-        {
-            WeaponCategory.Bow      => normalized.Contains("arrow"),
-            WeaponCategory.Crossbow => normalized.Contains("quarrel") || normalized.Contains("bolt"),
-            WeaponCategory.Atlatl   => normalized.Contains("dart"),
-            _                       => false,
-        };
-    }
+        => MissileAmmoHelper.IsLooseAmmoForKind(item, ToMissileWeaponKind(category));
 
     private static int GetAmmoPriority(WorldObject item, WeaponCategory category)
     {

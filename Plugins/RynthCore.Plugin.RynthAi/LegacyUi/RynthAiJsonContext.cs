@@ -6,6 +6,7 @@ using RynthCore.Plugin.RynthAi.LegacyUi;
 namespace RynthCore.Plugin.RynthAi;
 
 [JsonSerializable(typeof(LegacyUiSettings))]
+[JsonSerializable(typeof(AmmoRule))]
 [JsonSerializable(typeof(List<MonsterRule>), TypeInfoPropertyName = "MonsterRuleList")]
 [JsonSerializable(typeof(List<ConsumableRule>), TypeInfoPropertyName = "ConsumableRuleList")]
 [JsonSerializable(typeof(Dictionary<string, CreatureProfile>), TypeInfoPropertyName = "CreatureProfileDict")]
@@ -16,6 +17,7 @@ namespace RynthCore.Plugin.RynthAi;
 [JsonSerializable(typeof(NavCommand))]
 [JsonSerializable(typeof(MetaRuleDto))]
 [JsonSerializable(typeof(MetaCommand))]
+[JsonSerializable(typeof(List<AmmoRule>), TypeInfoPropertyName = "AmmoRuleList")]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     IncludeFields = true,

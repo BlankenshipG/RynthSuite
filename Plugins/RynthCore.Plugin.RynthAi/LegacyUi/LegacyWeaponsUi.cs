@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Numerics;
 using ImGuiNET;
+using RynthCore.Plugin.RynthAi.Combat;
 using RynthCore.PluginSdk;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
@@ -17,6 +18,9 @@ internal sealed class LegacyWeaponsUi
 
     private static readonly string[] ConsumableTypes =
         { "General", "Lockpick", "HealthKit", "ManaStone", "Stamina" };
+
+    private static readonly string[] AmmoCategories =
+        { "Auto", "Bow", "Crossbow", "Atlatl" };
 
     public LegacyWeaponsUi(LegacyUiSettings settings, RynthCoreHost host)
     {
@@ -170,6 +174,68 @@ internal sealed class LegacyWeaponsUi
         ImGui.SameLine();
         ImGui.TextDisabled("(Click an item in inventory first)");
 
+        // ── Missile ammunition (optional manual list) ───────────────────────
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.TextColored(LegacyDashboardRenderer.ColAmber, "Missile ammunition");
+        ImGui.Checkbox("Inventory rules only (no auto-scan for loose ammo)", ref _settings.MissileAmmoInventoryRulesOnly);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Off (default): auto-pick loose arrows / quarrels / darts that match your wielded bow, crossbow, or atlatl.\n" +
+                "On: only stacks listed below (and per-monster Preferred ammo) are used.");
+
+        ImGui.Spacing();
+        if (ImGui.BeginTable("AmmoTable", 3,
+            ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
+        {
+            ImGui.TableSetupColumn("Ammo stack", ImGuiTableColumnFlags.WidthStretch);
+            ImGui.TableSetupColumn("Launcher", ImGuiTableColumnFlags.WidthFixed, 100);
+            ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 50);
+            ImGui.TableHeadersRow();
+
+            for (int i = 0; i < _settings.AmmoRules.Count; i++)
+            {
+                var rule = _settings.AmmoRules[i];
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                bool inCache = _worldFilter?[rule.Id] != null;
+                if (inCache) ImGui.TextUnformatted(rule.Name);
+                else
+                {
+                    ImGui.TextColored(new Vector4(1f, 0.35f, 0.35f, 1f), rule.Name);
+                    ImGui.SameLine();
+                    ImGui.TextColored(new Vector4(1f, 0.35f, 0.35f, 0.7f), "(Gone)");
+                }
+
+                ImGui.TableNextColumn();
+                ImGui.SetNextItemWidth(-1);
+                int catIdx = Array.IndexOf(AmmoCategories, rule.Category);
+                if (catIdx < 0) catIdx = 0;
+                if (ImGui.Combo($"##AmmoCat{i}", ref catIdx, AmmoCategories, AmmoCategories.Length))
+                    rule.Category = AmmoCategories[catIdx];
+
+                ImGui.TableNextColumn();
+                if (ImGui.SmallButton($"Del##a{i}"))
+                {
+                    _settings.AmmoRules.RemoveAt(i);
+                    foreach (var mr in _settings.MonsterRules)
+                        if (mr.PreferredAmmoItemId == rule.Id) mr.PreferredAmmoItemId = 0;
+                    ImGui.EndTable();
+                    ImGui.End();
+                    return;
+                }
+            }
+            ImGui.EndTable();
+        }
+
+        if (!canAdd) ImGui.BeginDisabled();
+        if (ImGui.Button("Add selected as ammo", new Vector2(200, 24)))
+            AddSelectedAmmo();
+        if (!canAdd) ImGui.EndDisabled();
+        ImGui.SameLine();
+        ImGui.TextDisabled("(select loose arrows / quarrels / darts in inventory)");
+
         // ── Mana Stone Tapping ──────────────────────────────────────────────
         ImGui.Spacing();
         ImGui.Separator();
@@ -260,6 +326,38 @@ internal sealed class LegacyWeaponsUi
                 Type = type,
             });
             _host.WriteToChat($"[RynthAi] Added consumable: {wo.Name} (0x{(uint)wo.Id:X8}) [{type}]", 1);
+        }
+    }
+
+    private void AddSelectedAmmo()
+    {
+        uint selId = _host.GetSelectedItemId();
+        if (selId == 0)
+        {
+            _host.WriteToChat("[RynthAi] No item selected — click loose ammo in inventory first.", 1);
+            return;
+        }
+        if (_worldFilter == null) { _host.WriteToChat("[RynthAi] Object cache not ready.", 1); return; }
+
+        var wo = _worldFilter[(int)selId];
+        if (wo == null)
+            _host.WriteToChat($"[RynthAi] Item 0x{selId:X8} not in cache — try again.", 1);
+        else if (MissileAmmoHelper.GetAmmoKindFromName(wo.Name) == null)
+            _host.WriteToChat("[RynthAi] Selected item does not look like loose missile ammo.", 1);
+        else if (_settings.AmmoRules.Any(x => x.Id == wo.Id))
+            _host.WriteToChat($"[RynthAi] {wo.Name} is already listed as ammo.", 1);
+        else
+        {
+            var kind = MissileAmmoHelper.GetAmmoKindFromName(wo.Name)!.Value;
+            string cat = kind switch
+            {
+                MissileWeaponKind.Bow      => "Bow",
+                MissileWeaponKind.Crossbow => "Crossbow",
+                MissileWeaponKind.Atlatl   => "Atlatl",
+                _                          => "Auto",
+            };
+            _settings.AmmoRules.Add(new AmmoRule { Id = wo.Id, Name = wo.Name, Category = cat });
+            _host.WriteToChat($"[RynthAi] Added missile ammo: {wo.Name} [{cat}]", 1);
         }
     }
 
