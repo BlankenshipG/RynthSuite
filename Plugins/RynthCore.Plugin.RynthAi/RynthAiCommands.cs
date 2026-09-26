@@ -1890,6 +1890,20 @@ public sealed partial class RynthAiPlugin
                     : string.Equals(wo.Name, name, StringComparison.OrdinalIgnoreCase))
                     return wo;
             }
+
+            // The live walk above can miss carried items: off AC's main thread it only
+            // knows names from the engine's name snapshot, and an item missing from it
+            // drops out of the walk. Fall back to every object the cache knows and ask
+            // the client who holds it — "/ub usei X" said "Not found" for an item that
+            // "/ub use X" found, because the cache had it filed under the landscape.
+            foreach (var wo in _objectCache.AllKnownObjects())
+            {
+                if ((partial
+                        ? wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
+                        : string.Equals(wo.Name, name, StringComparison.OrdinalIgnoreCase))
+                    && IsCarriedByPlayer(wo.Id))
+                    return wo;
+            }
         }
 
         if (land)
@@ -1916,6 +1930,22 @@ public sealed partial class RynthAiPlugin
         }
 
         return null;
+    }
+
+    /// <summary>True when the client says the player holds this object: worn or
+    /// wielded, in the main pack, or in a side pack (item → pack → player).</summary>
+    private bool IsCarriedByPlayer(int objectId)
+    {
+        if (_playerId == 0 || !Host.HasGetObjectOwnershipInfo) return false;
+        uint id = unchecked((uint)objectId);
+        for (int depth = 0; depth < 3; depth++)
+        {
+            if (!Host.TryGetObjectOwnershipInfo(id, out uint container, out uint wielder, out _)) return false;
+            if (wielder == _playerId || container == _playerId) return true;
+            if (container == 0) return false;
+            id = container;
+        }
+        return false;
     }
 
     private void HandleUseCommand(string[] parts, bool inv, bool land, bool partial)

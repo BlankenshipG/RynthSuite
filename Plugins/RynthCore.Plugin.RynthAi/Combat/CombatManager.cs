@@ -2466,17 +2466,21 @@ public class CombatManager : IDisposable
         if (targetWcid != 0 && _damageStore != null)
         {
             uint eff = _damageStore.GetEffectiveWeapon(targetWcid);
-            if (eff != 0) { targetWeaponId = (int)eff; weaponSource = "DamageTab"; }
+            if (eff != 0 && IsUsableCombatWeapon((int)eff)) { targetWeaponId = (int)eff; weaponSource = "DamageTab"; }
         }
         if (targetWeaponId == 0)
         {
             // No Damage-tab choice yet → element/wand auto (element from rule.DamageType or weakness).
-            var bestWeapon = _settings.ItemRules.FirstOrDefault(i => i.Element.Equals(desired, StringComparison.OrdinalIgnoreCase))
-                             ?? _settings.ItemRules.FirstOrDefault();
+            // Casters are skipped when the character has no War/Void Magic: a wand listed
+            // above the bow for the same element put a missile character in Magic mode,
+            // casting war spells the server refused ("You don't have all the components")
+            // while combat held the action lock and the route never ran.
+            var bestWeapon = _settings.ItemRules.FirstOrDefault(i => i.Element.Equals(desired, StringComparison.OrdinalIgnoreCase) && IsUsableCombatWeapon(i.Id))
+                             ?? _settings.ItemRules.FirstOrDefault(i => IsUsableCombatWeapon(i.Id));
             if (bestWeapon != null) { targetWeaponId = bestWeapon.Id; weaponSource = "ItemRules"; }
         }
 
-        if (targetWeaponId == 0)
+        if (targetWeaponId == 0 && CanAttackWithMagic)
         {
             targetWeaponId = FindWandInItems();
             if (targetWeaponId != 0) weaponSource = "FindWandInItems";
@@ -3415,6 +3419,23 @@ public class CombatManager : IDisposable
     private static bool IsWandObject(WorldObject wo) =>
         wo.ObjectClass == AcObjectClass.WandStaffOrb || IsWandName(wo.Name);
 
+    /// <summary>War or Void Magic trained — the character can attack with a caster.
+    /// Skills not read yet count as trained, like the other skill gates here.</summary>
+    private bool CanAttackWithMagic =>
+        _charSkills == null
+        || _charSkills[AcSkillType.WarMagic].Training >= 2
+        || _charSkills[AcSkillType.VoidMagic].Training >= 2;
+
+    /// <summary>A weapon combat may fight with: anything but a caster when the character
+    /// has no attack magic. An id missing from the world cache stays a candidate — the
+    /// caller already handles that. Debuff casting picks its wand separately.</summary>
+    private bool IsUsableCombatWeapon(int id)
+    {
+        if (CanAttackWithMagic) return true;
+        var wo = _worldFilter[id];
+        return wo == null || !IsWandObject(wo);
+    }
+
     private static bool IsWandName(string name)
     {
         if (string.IsNullOrEmpty(name)) return false;
@@ -3564,6 +3585,7 @@ public class CombatManager : IDisposable
         bool useVoid = element.Equals("Nether", StringComparison.OrdinalIgnoreCase);
         bool warTrained  = _charSkills == null || _charSkills[AcSkillType.WarMagic].Training >= 2;
         bool voidTrained = _charSkills == null || _charSkills[AcSkillType.VoidMagic].Training >= 2;
+        if (!warTrained && !voidTrained) return 0; // no attack magic — used to fall through to War anyway
 
         if (useVoid && !voidTrained && warTrained)  useVoid = false;
         if (!useVoid && !warTrained && voidTrained) useVoid = true;
