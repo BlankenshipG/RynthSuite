@@ -692,8 +692,11 @@ public class CombatManager : IDisposable
 
             // Cache name->wcid (once per type) for AOE kill attribution (tier 5): a mob wiped
             // by an area cast we never directly fought is credited by matching its death message.
+            // Attackable only — this runs before the attackable filter below, so an NPC the
+            // cache misclassifies as a monster could otherwise be credited kills (Damage tab).
             if (!string.IsNullOrEmpty(wo.Name) && _seenMonsterNameToWcid.Count < 256
                 && !_seenMonsterNameToWcid.ContainsKey(wo.Name)
+                && (!_host.HasObjectIsAttackable || _host.ObjectIsAttackable((uint)wo.Id))
                 && _host.HasGetObjectWcid && _host.TryGetObjectWcid((uint)wo.Id, out uint scanWcid) && scanWcid != 0)
                 _seenMonsterNameToWcid[wo.Name] = scanWcid;
 

@@ -1559,8 +1559,23 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // Capture observed creature data into the persistent store. maxHealth>0 means
         // we just got a successful CreatureProfile (Assess succeeded) — the only time
         // we have authoritative max vitals + resists.
-        if (targetId != _playerId && maxHealth > 0)
+        if (targetId != _playerId && maxHealth > 0 && IsFightableCreature(targetId))
             CaptureCreatureSample(targetId, maxHealth);
+    }
+
+    /// <summary>
+    /// Something you can fight — what the Damage tab and creatures.json should learn from.
+    /// Appraising an NPC, a vendor, another player or your own pet also returns health, and
+    /// each one used to become a Damage-tab row (and a creatures.json entry). The attackable
+    /// check also catches NPCs the object cache classifies as monsters.
+    /// </summary>
+    private bool IsFightableCreature(uint objectId)
+    {
+        WorldObject? obj = _objectCache?[unchecked((int)objectId)];
+        if (obj != null && obj.ObjectClass is AcObjectClass.Npc or AcObjectClass.Vendor
+                                             or AcObjectClass.Player or AcObjectClass.CombatPet)
+            return false;
+        return !Host.HasObjectIsAttackable || Host.ObjectIsAttackable(objectId);
     }
 
     // Exact per-hit damage from the engine (AttackerNotification 0x01B1). This is
