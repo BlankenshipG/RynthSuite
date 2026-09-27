@@ -1948,6 +1948,36 @@ public sealed partial class RynthAiPlugin
         return false;
     }
 
+    /// <summary>After an exact-name miss, name up to three items whose names contain the
+    /// typed text and point at the partial-match form of the command ("usei" → "useip").
+    /// Exact is the default, like UtilityBelt, and "/ub usei round" read as a bug.</summary>
+    private void SuggestPartialMatches(string name, bool inv, bool land, string verb)
+    {
+        if (_objectCache == null || name.Length == 0) return;
+
+        var names = new List<string>();
+        bool Wants(WorldObject wo) =>
+            names.Count < 3
+            && wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
+            && !names.Contains(wo.Name, StringComparer.OrdinalIgnoreCase);
+
+        if (inv)
+        {
+            foreach (var wo in _objectCache.GetDirectInventory())
+                if (Wants(wo)) names.Add(wo.Name);
+            foreach (var wo in _objectCache.AllKnownObjects())
+                if (Wants(wo) && IsCarriedByPlayer(wo.Id)) names.Add(wo.Name);
+        }
+        if (land)
+        {
+            foreach (var wo in _objectCache.GetLandscapeObjects())
+                if (Wants(wo)) names.Add(wo.Name);
+        }
+
+        if (names.Count > 0)
+            ChatLine($"[RynthAi]   Did you mean {string.Join(", ", names.Select(n => $"'{n}'"))}? {verb}p matches part of a name.");
+    }
+
     private void HandleUseCommand(string[] parts, bool inv, bool land, bool partial)
     {
         if (parts.Length < 3)
@@ -1974,7 +2004,12 @@ public sealed partial class RynthAiPlugin
         }
 
         var obj = FindObject(argStr.Trim(), inv, land, partial);
-        if (obj == null) { ChatLine($"[RynthAi] Not found: '{argStr.Trim()}'"); return; }
+        if (obj == null)
+        {
+            ChatLine($"[RynthAi] Not found: '{argStr.Trim()}'");
+            if (!partial) SuggestPartialMatches(argStr.Trim(), inv, land, parts[1].ToLowerInvariant());
+            return;
+        }
         Host.UseObject((uint)obj.Id);
         ChatLine($"[RynthAi] UseObject: {obj.Name} (0x{obj.Id:X})");
     }

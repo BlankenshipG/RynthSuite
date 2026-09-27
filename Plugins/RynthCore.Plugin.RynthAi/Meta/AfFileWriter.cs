@@ -92,6 +92,16 @@ internal static class AfFileWriter
         // They now have real keywords in MetaSchema and fall through to the
         // bare-numeric writer below, so they round-trip to the typed enum.
 
+        // Not takes its operand on the same line, as metaf writes it ("Not NoMobsInDist 5");
+        // an All/Any operand's own children then follow, indented, as usual.
+        if (rule.Condition == MetaConditionType.Not && rule.Children is { Count: 1 })
+        {
+            writer.Write(keyword);
+            writer.Write(' ');
+            WriteCondition(writer, rule.Children[0], childIndent);
+            return;
+        }
+
         if (rule.Condition == MetaConditionType.All ||
             rule.Condition == MetaConditionType.Any ||
             rule.Condition == MetaConditionType.Not)

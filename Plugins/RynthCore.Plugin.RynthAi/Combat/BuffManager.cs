@@ -928,10 +928,11 @@ public class BuffManager : IDisposable
         // Emergency override regardless of mode: HP critical + stam available →
         // burn stam for HP. Sits below the configurable thresholds so even a
         // "do nothing" recharge config still saves the character.
-        if (curHealthPct <= 30 && curStamPct > 20)
+        // If it can't be cast, fall through to Heal Self rather than giving up at 30% HP.
+        if (curHealthPct <= 30 && curStamPct > 20 && AttemptVitalCast("Stamina to Health Self"))
         {
             _isHealingSelf = true;
-            return AttemptVitalCast("Stamina to Health Self");
+            return true;
         }
 
         // Pick the threshold set based on hunting state. A target within
@@ -945,25 +946,42 @@ public class BuffManager : IDisposable
         int manaThreshold = inCombat ? _settings.GetManaAt : _settings.TopOffMana;
         int stamThreshold = inCombat ? _settings.RestamAt  : _settings.TopOffStam;
 
-        _isHealingSelf       = curHealthPct < hpThreshold;
-        _isRechargingMana    = curManaPct   < manaThreshold;
-        _isRechargingStamina = curStamPct   < stamThreshold;
-
-        if (_isHealingSelf)
+        // A flag is set only when something was actually done about the vital.
+        // WantsVitalRecharge holds the arbiter on Buffing, above combat and nav, so
+        // flagging a heal that can't happen — spell unknown, Life Magic untrained,
+        // or parked after the server refused it (no components) — stalled the bot:
+        // no route, no fighting back, until natural regen topped it up.
+        if (curHealthPct < hpThreshold && (AttemptHealthKitUse() || AttemptVitalCast("Heal Self")))
         {
-            if (AttemptHealthKitUse()) return true;
-            return AttemptVitalCast("Heal Self");
+            _isHealingSelf = true;
+            return true;
         }
-        if (_isRechargingMana && curStamPct > 15) return AttemptVitalCast("Stamina to Mana Self");
-        if (_isRechargingStamina) return AttemptVitalCast("Revitalize Self");
+        if (curManaPct < manaThreshold && curStamPct > 15 && AttemptVitalCast("Stamina to Mana Self"))
+        {
+            _isRechargingMana = true;
+            return true;
+        }
+        if (curStamPct < stamThreshold && AttemptVitalCast("Revitalize Self"))
+        {
+            _isRechargingStamina = true;
+            return true;
+        }
 
         return false;
     }
 
     private bool AttemptVitalCast(string baseName)
     {
+        if (!IsSkillUsable(AcSkillType.LifeMagic)) return false;
         int spellId = FindBestSpellId(baseName, AcSkillType.LifeMagic);
         if (spellId == 0) return false;
+        // Parked after a hard server refusal (see OnChatWindowText) — the same
+        // per-family cooldown the buff selectors honour.
+        int family = SpellTableStub.GetById(spellId)?.Family ?? 0;
+        if (family != 0
+            && _buffFailCooldownUntil.TryGetValue(family, out DateTime coolUntil)
+            && DateTime.Now < coolUntil)
+            return false;
         if (!EnsureMagicMode()) return true;
         _pendingSpellId = spellId;
         _host.CastSpell((uint)_host.GetPlayerId(), spellId);
@@ -2072,6 +2090,13 @@ public class BuffManager : IDisposable
                     }
                     _buffFailCooldownUntil[pendingSpell.Family] =
                         DateTime.Now.AddSeconds(BuffFailCooldownSec);
+                    // AC's refusal doesn't name the spell and vital casts print no
+                    // "Casting:" line, so say which one. The server's text is not
+                    // echoed: this line comes back through this handler, and it must
+                    // not match the refusal phrases above.
+                    bool noComps = lower.Contains("components") || lower.Contains("missing some required");
+                    _host.WriteToChat($"[RynthAi] Skipping {pendingSpell.Name} for {BuffFailCooldownSec / 60:0} min " +
+                                      $"({(noComps ? "no components for it" : "the server refused it")}).", 2);
                 }
                 _host.Log($"[BuffChat] CLEARED+COOLED pending={_pendingSpellId} ({BuffFailCooldownSec:0}s) — hard rejection in '{text}'");
             }
