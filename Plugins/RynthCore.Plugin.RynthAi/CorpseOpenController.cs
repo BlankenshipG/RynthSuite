@@ -41,6 +41,7 @@ public sealed partial class RynthAiPlugin
     private long _busyCountLastIncrementAt;
     private long _busyCountBecamePositiveAt; // when count first went 0→positive
     private const long BUSY_TIMEOUT_MS = 10_000; // safety: force-clear if stuck >10s
+    private const long NameWaitMs = 3_000;       // extra wait past the assess window for a corpse item's name
 
     // Wedge detection: when AC's item-action state locks up (server-side, e.g.
     // after a corpse pile is opened too fast), EVERY corpse open times out.
@@ -888,6 +889,10 @@ public sealed partial class RynthAiPlugin
         // a native ownership probe per object; this path used to call it up to 3× per tick
         // (fast-path probe, ID-request loop, eval loop) on the shared plugin tick thread.
         List<WorldObject> containedItems = _objectCache.GetContainedItems(corpseId).ToList();
+        // Fill in names/classes the cache stored before they were readable (every tick,
+        // so an item picks its name up as soon as the engine's snapshot has it).
+        for (int i = 0; i < containedItems.Count; i++)
+            containedItems[i] = _objectCache.RefreshIdentity(containedItems[i]);
 
         // Fast path: items for this corpse are already in the cache. AC's CreateObject
         // burst populates the corpse's contents during the landscape sweep that precedes
@@ -949,7 +954,9 @@ public sealed partial class RynthAiPlugin
 
                 // Items with a name whose class has no stat-based loot rules can be
                 // classified immediately from name/class data — no ID request needed.
-                if (hasName && !ItemNeedsAppraisalForLoot(item))
+                // Not while the class is still Unknown: a class rule would reject the item
+                // here and mark it processed before its type was readable.
+                if (hasName && item.ObjectClass != AcObjectClass.Unknown && !ItemNeedsAppraisalForLoot(item))
                 {
                     // Pre-classify: if no match, mark processed so we never re-evaluate.
                     // Items that DO match (e.g. name-only rules) stay unprocessed and will
@@ -1005,17 +1012,27 @@ public sealed partial class RynthAiPlugin
             // processed and left on the corpse: a silent loot miss. So wait while the item
             // lacks appraisal AND either has no name yet OR the profile needs appraisal to
             // classify its class — bounded by the assess window, then best-effort below.
-            if (!hasAppraisalData && (!hasName || ItemNeedsAppraisalForLoot(item)))
+            //
+            // A missing NAME holds the item even once appraised: a blank name fails every
+            // name rule, and the item would be marked processed and left for good - 3 of 4
+            // items on 2026-09-27, the appraisal having arrived before the engine's name
+            // snapshot caught up. Allow NameWaitMs past the assess window for the name.
+            if (!hasName)
             {
-                if (!assessTimedOut)
+                if (now - _corpseIdsRequestedAt < Math.Max(100, settings.LootAssessWindowMs) + NameWaitMs)
                 {
                     pendingDataCount++;
                     continue;
                 }
-                if (!hasName)
+                // Still nameless well past the window — skip this item.
+                _processedCorpseItems.Add(item.Id);
+                continue;
+            }
+            if (!hasAppraisalData && ItemNeedsAppraisalForLoot(item))
+            {
+                if (!assessTimedOut)
                 {
-                    // Timed out with nothing usable — skip this item.
-                    _processedCorpseItems.Add(item.Id);
+                    pendingDataCount++;
                     continue;
                 }
                 // Timed out but we have a name — fall through and classify best-effort.
