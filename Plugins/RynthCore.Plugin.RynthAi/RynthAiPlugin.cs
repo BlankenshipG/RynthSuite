@@ -11,6 +11,7 @@ using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.Plugin.RynthAi.Meta;
 using RynthCore.Plugin.RynthAi.Raycasting;
+using RynthCore.Plugin.RynthAi.Vendor;
 using RynthCore.PluginCore;
 using RynthCore.Loot;
 using RynthCore.Loot.VTank;
@@ -63,6 +64,15 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.0-legacy-ui");
+
+    /// <summary>
+    /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
+    /// updates only when they click, so this stays at 66 while newer calls are feature-
+    /// detected (Host.HasVendorTrade for API v67 vendor trading: AutoVendor reports "needs a
+    /// RynthCore update" without it). The SDK default is CurrentApiVersion, which would make
+    /// every SDK bump refuse older engines. Raise it only for a call RynthAi can't run without.
+    /// </summary>
+    public override uint MinimumApiVersion => 66;
 
     private LegacyDashboardRenderer? _dashboard;
 
@@ -245,6 +255,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _missileCraftingManager = null;
         _jumper?.Cancel();
         _jumper = null;
+        _autoVendor?.Reset();
+        _autoVendor = null;
         _playerId = 0;
         _loginComplete = false;
         _windowVisible = false;
@@ -425,6 +437,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         _jumper = new Jumper(Host, _dashboard.Settings, s => Host.WriteToChat(s, 1));
 
+        if (_objectCache != null)
+        {
+            var dashForAv = _dashboard;
+            _autoVendor = new AutoVendorManager(Host, _dashboard.Settings, _objectCache, _playerId,
+                () => dashForAv?.CharFolder ?? string.Empty);
+            var avForUi = _autoVendor;
+            _dashboard.SetAutoVendorStatusProvider(() => avForUi.Status);
+            _dashboard.SetVendorProfilePathProvider(() => avForUi.OpenVendorProfilePath);
+        }
+
         Log("RynthAi: login complete, legacy ImGui dashboard ready.");
     }
 
@@ -436,6 +458,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     // away from Navigating, and the arbiter's decision is the only thing that
     // decides whether nav runs at all. One edge-detect replaces the cascade.
     private BotActivity _activity = BotActivity.Idle;   // last arbiter decision
+    private bool _macroWasRunning;                      // edge: release held turns when the macro stops
     private BotActivity _navStoppedFor = BotActivity.Idle; // activity we last issued a nav Stop() for
     private bool _navStopIssued;
     // Buffing-coma watchdog (see the Priority-1 block): how long BotAction has
@@ -554,7 +577,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ["TargetFPSFocused"] = (10, 240), ["TargetFPSBackground"] = (5, 60),
         ["BlacklistAttempts"] = (1, 20), ["BlacklistTimeoutSec"] = (5, 120), ["BlacklistCastSettleMs"] = (500, 5000),
         ["TargetNoProgressTimeoutSec"] = (0, 300), ["GiveQueueIntervalMs"] = (50, 2000),
-        ["BowArcVelocity"] = (10, 60), ["CrossbowArcVelocity"] = (10, 80), ["AtlatlArcVelocity"] = (10, 60), ["MagicArcVelocity"] = (10, 60),
+        ["BowArcVelocity"] = (10, 60), ["CrossbowArcVelocity"] = (10, 80), ["AtlatlArcVelocity"] = (10, 60), ["MagicArcVelocity"] = (10, 60), ["MissileArcClearance"] = (0, 3),
         ["HealAt"] = (0, 100), ["RestamAt"] = (0, 100), ["GetManaAt"] = (0, 100),
         ["TopOffHP"] = (0, 100), ["TopOffStam"] = (0, 100), ["TopOffMana"] = (0, 100),
         ["HealOthersAt"] = (0, 100), ["RestamOthersAt"] = (0, 100), ["InfuseOthersAt"] = (0, 100),
@@ -569,10 +592,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ["FollowNavMin"] = (0.5, 20), ["NavRingThickness"] = (1, 16), ["NavLineThickness"] = (1, 16),
         ["NavHeightOffset"] = (-5, 5), ["NavSlopeSink"] = (0, 8), ["OpenDoorRange"] = (0.1, 70), ["MovementMode"] = (0, 2),
         ["NavStopTurnAngle"] = (1, 90), ["NavResumeTurnAngle"] = (1, 45), ["NavDeadZone"] = (0.5, 20), ["NavSweepMult"] = (0.5, 10),
-        ["NavLookaheadYards"] = (0, 30), ["NavTurnRateDegPerSec"] = (30, 720), ["NavTier1TurnSpeed"] = (0.5, 15), ["PostPortalDelaySec"] = (0, 30),
+        ["NavLookaheadYards"] = (0, 30), ["NavShortcutYards"] = (0, 10), ["NavTurnRateDegPerSec"] = (30, 720), ["NavTier1TurnSpeed"] = (0.5, 15), ["PostPortalDelaySec"] = (0, 30),
         ["T2Speed"] = (0.1, 5), ["T2WalkWithinYd"] = (1, 50), ["T2DistanceTo"] = (0.1, 10), ["T2ReissueMs"] = (100, 10000),
         ["T2MaxRangeYd"] = (50, 2000), ["T2MaxLandblocks"] = (1, 20),
-        ["RebuffSecondsRemaining"] = (30, 1800),
+        ["RebuffSecondsRemaining"] = (30, 1800), ["RebuffTopOffSecondsRemaining"] = (30, 3600),
+        ["AutoVendorTries"] = (1, 20), ["AutoVendorTriesTime"] = (500, 30000),
         ["BuffMinSkillLevelTier1"] = (1, 500), ["BuffMinSkillLevelTier2"] = (1, 500), ["BuffMinSkillLevelTier3"] = (1, 500), ["BuffMinSkillLevelTier4"] = (1, 500),
         ["BuffMinSkillLevelTier5"] = (1, 500), ["BuffMinSkillLevelTier6"] = (1, 500), ["BuffMinSkillLevelTier7"] = (1, 500), ["BuffMinSkillLevelTier8"] = (1, 500),
         ["LootJumpHeight"] = (1, 100), ["LootOwnership"] = (0, 2),
@@ -1116,6 +1140,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     return;
                 if (diag) Host.Log($"[RynthAi] OnTick: settings ok, macro={settings.IsMacroRunning} action={settings.BotAction}");
 
+                // Macro switched off: combat stops ticking, so a turn it was holding would
+                // stay held and the character spun on its own (2026-09-27). Let go once.
+                if (_macroWasRunning && !settings.IsMacroRunning)
+                    _combatManager?.ReleaseHeldTurn();
+                _macroWasRunning = settings.IsMacroRunning;
+
                 if (_patrolOnLoginPending && _raycast?.GeometryLoader?.CellDat?.IsLoaded == true)
                 {
                     _patrolOnLoginPending = false;
@@ -1231,6 +1261,25 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     _activity = _arbiter.Apply(in inputs, settings);
                 }
                 catch { /* arbiter must never throw out of the live tick */ }
+
+                // ── AutoVendor (UtilityBelt-style) ───────────────────────────────
+                // Runs whether or not the macro is on: it starts when a vendor opens.
+                // While it holds the bot (a vendoring session, or /ub vendor open
+                // trying to reach a vendor) nothing else moves the character or the
+                // inventory — UB takes VTank's Navigation + ItemUse locks the same way.
+                // Bounded by AutoVendor's own 60 s bail timer.
+                var autoVendor = _autoVendor;
+                if (autoVendor != null)
+                {
+                    autoVendor.Tick(_busyCount);
+                    if (autoVendor.HoldsBot)
+                    {
+                        if (settings.IsMacroRunning)
+                            StopNavFor(BotActivity.Idle);
+                        _metaManager?.Think();
+                        return;
+                    }
+                }
 
                 // ── Priority 1: Buffing ───────────────────────────────────────────
                 // Blocks combat, looting, and navigation entirely. The coma
@@ -1543,6 +1592,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
     public override void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth)
     {
+        float prevRatio = _objectCache?.GetHealthRatio(unchecked((int)targetId)) ?? -1f;
         _objectCache?.OnUpdateHealth(targetId, healthRatio);
         _dashboard?.OnUpdateHealth(targetId, healthRatio, currentHealth, maxHealth);
         if (_loginComplete && targetId == _playerId && maxHealth > 0)
@@ -1551,9 +1601,15 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             _vitals.MaxHealth = maxHealth;
         }
 
-        // When a creature's health changes, something hit it — reset its miss counter
-        // so the blacklist doesn't trigger on valid in-combat targets.
-        if (targetId != _playerId)
+        // When a creature's health DROPS, something hit it — reset its miss counter so the
+        // blacklist doesn't trigger on valid in-combat targets. Only a drop counts: the
+        // client also gets health for a mob the player merely selects (QueryHealth reply),
+        // for the fight target combat queries at lock, and on regen, all at unchanged or
+        // higher health. Counting those as hits reset the no-damage miss streak,
+        // un-blacklisted the mob and gave it the damage-commitment bonus, so selecting a
+        // mob could steer combat and a target the arrows weren't hurting could be held far
+        // past BlacklistAttempts misses (2026-09-27, Olthoi swarm).
+        if (targetId != _playerId && IsHealthDrop(prevRatio, healthRatio))
             _combatManager?.ReportDamageOnTarget((int)targetId);
 
         // Capture observed creature data into the persistent store. maxHealth>0 means
@@ -1561,6 +1617,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // we have authoritative max vitals + resists.
         if (targetId != _playerId && maxHealth > 0 && IsFightableCreature(targetId))
             CaptureCreatureSample(targetId, maxHealth);
+    }
+
+    /// <summary>
+    /// True when a health update means the creature lost health: lower than the last ratio
+    /// we knew, or, for the first report of a creature, below full.
+    /// </summary>
+    private static bool IsHealthDrop(float prevRatio, float newRatio)
+    {
+        if (float.IsNaN(newRatio)) return false;
+        return prevRatio < 0f ? newRatio < 0.999f : newRatio < prevRatio - 0.0005f;
     }
 
     /// <summary>

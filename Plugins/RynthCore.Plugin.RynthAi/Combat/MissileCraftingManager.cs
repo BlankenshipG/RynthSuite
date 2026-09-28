@@ -45,6 +45,7 @@ public class MissileCraftingManager
     private const int APPLY_RETRY_MS = 2000;
     private const int CRAFT_TIMEOUT_MS = 15000;
     private const int EQUIP_DELAY_MS = 500;
+    private const int ERROR_BACKOFF_MS = 60000;
 
     private int _headBundleId = 0;
     private int _shaftBundleId = 0;
@@ -69,15 +70,33 @@ public class MissileCraftingManager
 
     public void ProcessCrafting()
     {
-        if (!_settings.EnableMissileCrafting) return;
+        // While State isn't Idle the plugin holds combat, nav and looting, so turning
+        // crafting off mid-craft must let go too.
+        if (!_settings.EnableMissileCrafting)
+        {
+            if (State != CraftState.Idle) Reset("Missile crafting turned off");
+            return;
+        }
         if (IsBusy) return;
 
-        switch (State)
+        // An exception here used to leave State where it was, and the bot stood still
+        // forever with nothing in chat: say what broke, let go, and try again later.
+        try
         {
-            case CraftState.Idle:          ProcessIdle();          break;
-            case CraftState.Evaluating:    ProcessEvaluating();    break;
-            case CraftState.Combining:     ProcessCombining();     break;
-            case CraftState.EquippingAmmo: ProcessEquippingAmmo(); break;
+            switch (State)
+            {
+                case CraftState.Idle:          ProcessIdle();          break;
+                case CraftState.Evaluating:    ProcessEvaluating();    break;
+                case CraftState.Combining:     ProcessCombining();     break;
+                case CraftState.EquippingAmmo: ProcessEquippingAmmo(); break;
+            }
+        }
+        catch (Exception ex)
+        {
+            string reason = $"Stopped by an error ({ex.GetType().Name}: {ex.Message}); trying again in a minute";
+            if (State == CraftState.Idle) ChatLog(reason);   // Reset only speaks for a craft in progress
+            Reset(reason);
+            _lastAmmoCheck = DateTime.Now.AddMilliseconds(ERROR_BACKOFF_MS - AMMO_CHECK_INTERVAL_MS);
         }
     }
 
@@ -169,9 +188,22 @@ public class MissileCraftingManager
         if (bestCraftable != null)
         { StartCrafting(bestCraftable, inv); return; }
 
+        // No ammo at all and only bundles the skill check calls risky: a bow with nothing
+        // to shoot can't fight, so a combine that may fail beats standing there.
         if (tooHard != null)
-            Reset($"No ammo, and Fletching {fletching?.Buffed} is too low to make {tooHard.OutputName} reliably " +
-                  $"(difficulty {tooHard.Difficulty}; a failed combine destroys both bundles)");
+        {
+            int skill = fletching?.Buffed ?? 250;
+            ChatLog($"No ammo: making {tooHard.OutputName} anyway, about " +
+                    $"{AmmoRecipes.SuccessChance(skill, tooHard.Difficulty):P0} with Fletching {skill} " +
+                    "(a failed combine destroys both bundles)");
+            StartCrafting(tooHard, inv);
+            return;
+        }
+
+        if (fletching != null && fletching.Training < 2
+                 && AmmoRecipes.BestCraftable(inv.Select(i => i.Name), category, 0, out var carried) == null
+                 && carried != null)
+            Reset($"No ammo, and Fletching is untrained, so the bundles for {carried.OutputName} can't be combined");
         else
             Reset("No ammo and no bundles available");
     }

@@ -374,16 +374,32 @@ public sealed partial class RynthAiPlugin
 
     public override void OnVendorOpen(uint vendorId)
     {
+        _metaManager?.OnVendorOpen(vendorId);
+
+        // AutoVendor prints the open line itself (UB's merchant-info line when it can read the
+        // vendor, once per open rather than on every list re-send) and may start a session.
+        var autoVendor = _autoVendor;
+        if (autoVendor != null)
+        {
+            autoVendor.OnVendorOpen(vendorId);
+            return;
+        }
         string label = Host.TryGetObjectName(vendorId, out string name) ? name : $"0x{vendorId:X8}";
         Host.WriteToChat($"[RynthAi] Vendor open: {label}", 1);
-        _metaManager?.OnVendorOpen(vendorId);
     }
 
     public override void OnVendorClose(uint vendorId)
     {
+        _metaManager?.OnVendorClose(vendorId);
+
+        var autoVendor = _autoVendor;
+        if (autoVendor != null)
+        {
+            autoVendor.OnVendorClose(vendorId);
+            return;
+        }
         string label = Host.TryGetObjectName(vendorId, out string name) ? name : $"0x{vendorId:X8}";
         Host.WriteToChat($"[RynthAi] Vendor closed: {label}", 1);
-        _metaManager?.OnVendorClose(vendorId);
     }
 
     private void TickCorpseOpening()

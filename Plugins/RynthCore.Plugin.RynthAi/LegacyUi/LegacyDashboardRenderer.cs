@@ -280,6 +280,12 @@ internal sealed class LegacyDashboardRenderer
     public void SetWorldFilter(WorldObjectCache cache) => _weaponsUi.SetWorldFilter(cache);
 
     public void SetMissileCraftingManager(MissileCraftingManager mgr) => _advancedSettingsUi.SetMissileCraftingManager(mgr);
+    public void SetAutoVendorStatusProvider(Func<string> status) => _advancedSettingsUi.SetAutoVendorStatusProvider(status);
+
+    // The open vendor's AutoVendor profile path (null when no vendor is open), for the
+    // dashboard snapshot's vendorProfilePath.
+    private Func<string?>? _vendorProfilePath;
+    public void SetVendorProfilePathProvider(Func<string?> path) => _vendorProfilePath = path;
 
     public void SetRaycast(Raycasting.MainLogic raycast)
     {
@@ -766,6 +772,8 @@ internal sealed class LegacyDashboardRenderer
                 CrossbowArcVelocity        = s.CrossbowArcVelocity,
                 AtlatlArcVelocity          = s.AtlatlArcVelocity,
                 MagicArcVelocity           = s.MagicArcVelocity,
+                MissileArcClearance        = s.MissileArcClearance,
+                LosDebugLog                = s.LosDebugLog,
                 BlacklistAttempts          = s.BlacklistAttempts,
                 BlacklistTimeoutSec        = s.BlacklistTimeoutSec,
                 BlacklistCastSettleMs      = s.BlacklistCastSettleMs,
@@ -827,6 +835,7 @@ internal sealed class LegacyDashboardRenderer
                 NavDeadZone                = s.NavDeadZone,
                 NavSweepMult               = s.NavSweepMult,
                 NavLookaheadYards          = s.NavLookaheadYards,
+                NavShortcutYards           = s.NavShortcutYards,
                 NavTurnRateDegPerSec       = s.NavTurnRateDegPerSec,
                 NavTier1TurnSpeed          = s.NavTier1TurnSpeed,
                 PostPortalDelaySec         = s.PostPortalDelaySec,
@@ -840,6 +849,7 @@ internal sealed class LegacyDashboardRenderer
                 EnableBuffing              = s.EnableBuffing,
                 RebuffWhenIdle             = s.RebuffWhenIdle,
                 RebuffSecondsRemaining     = s.RebuffSecondsRemaining,
+                RebuffTopOffSecondsRemaining = s.RebuffTopOffSecondsRemaining,
                 BuffMinSkillLevelTier1     = s.BuffMinSkillLevelTier1,
                 BuffMinSkillLevelTier2     = s.BuffMinSkillLevelTier2,
                 BuffMinSkillLevelTier3     = s.BuffMinSkillLevelTier3,
@@ -878,6 +888,16 @@ internal sealed class LegacyDashboardRenderer
                 SalvageSalvageDelayMs      = s.SalvageSalvageDelayMs,
                 SalvageResultDelayFirstMs  = s.SalvageResultDelayFirstMs,
                 SalvageResultDelayFastMs   = s.SalvageResultDelayFastMs,
+                // Vendoring (AutoVendor)
+                AutoVendorEnabled          = s.AutoVendorEnabled,
+                AutoVendorEnableBuying     = s.AutoVendorEnableBuying,
+                AutoVendorEnableSelling    = s.AutoVendorEnableSelling,
+                AutoVendorTestMode         = s.AutoVendorTestMode,
+                AutoVendorThink            = s.AutoVendorThink,
+                AutoVendorShowMerchantInfo = s.AutoVendorShowMerchantInfo,
+                AutoVendorOnlyFromMainPack = s.AutoVendorOnlyFromMainPack,
+                AutoVendorTries            = s.AutoVendorTries,
+                AutoVendorTriesTime        = s.AutoVendorTriesTime,
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.SettingsBridgePayload);
         }
@@ -892,7 +912,20 @@ internal sealed class LegacyDashboardRenderer
         if (string.IsNullOrWhiteSpace(json)) return;
         try
         {
-            var p = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.SettingsBridgePayload);
+            // Lay the sent fields over the current settings, so a field the sender leaves
+            // out keeps its value instead of deserializing to 0 and being applied. The
+            // overlay's Settings panel keeps its own copy of this payload; when that copy
+            // lacked BlacklistCastSettleMs/MonsterDisengageRange, every click zeroed them.
+            var merged = System.Text.Json.Nodes.JsonNode.Parse(BuildSettingsJson(),
+                new System.Text.Json.Nodes.JsonNodeOptions { PropertyNameCaseInsensitive = true })?.AsObject();
+            if (merged == null) return;
+            using (var sent = JsonDocument.Parse(json))
+            {
+                if (sent.RootElement.ValueKind != JsonValueKind.Object) return;
+                foreach (var prop in sent.RootElement.EnumerateObject())
+                    merged[prop.Name] = System.Text.Json.Nodes.JsonNode.Parse(prop.Value.GetRawText());
+            }
+            var p = JsonSerializer.Deserialize(merged.ToJsonString(), RynthAiJsonContext.Default.SettingsBridgePayload);
             if (p == null) return;
             var s = _settings;
             // Display
@@ -918,9 +951,13 @@ internal sealed class LegacyDashboardRenderer
             s.CrossbowArcVelocity        = p.CrossbowArcVelocity;
             s.AtlatlArcVelocity          = p.AtlatlArcVelocity;
             s.MagicArcVelocity           = p.MagicArcVelocity;
+            if (p.MissileArcClearance >= 0f) s.MissileArcClearance = Math.Min(p.MissileArcClearance, 3f);
+            s.LosDebugLog                = p.LosDebugLog;
             s.BlacklistAttempts          = p.BlacklistAttempts;
             s.BlacklistTimeoutSec        = p.BlacklistTimeoutSec;
-            s.BlacklistCastSettleMs      = p.BlacklistCastSettleMs;
+            // -1 = not sent. 0 is never meant (it judges a cast before its damage can land)
+            // and is what the bug saved into profiles, so it keeps the default too.
+            if (p.BlacklistCastSettleMs > 0) s.BlacklistCastSettleMs = p.BlacklistCastSettleMs;
             s.TargetNoProgressTimeoutSec = p.TargetNoProgressTimeoutSec;
             s.GiveQueueIntervalMs        = p.GiveQueueIntervalMs;
             // Recharge
@@ -957,7 +994,7 @@ internal sealed class LegacyDashboardRenderer
             s.MinSkillLevelTier8         = p.MinSkillLevelTier8;
             // Ranges
             s.MonsterRange               = p.MonsterRange;
-            s.MonsterDisengageRange      = p.MonsterDisengageRange;
+            if (p.MonsterDisengageRange >= 0) s.MonsterDisengageRange = p.MonsterDisengageRange;   // -1 = not sent
             s.RingRange                  = p.RingRange;
             s.ApproachRange              = p.ApproachRange;
             s.CorpseApproachRangeMax     = p.CorpseApproachRangeMax;
@@ -979,6 +1016,7 @@ internal sealed class LegacyDashboardRenderer
             s.NavDeadZone                = p.NavDeadZone;
             s.NavSweepMult               = p.NavSweepMult;
             s.NavLookaheadYards          = p.NavLookaheadYards;
+            s.NavShortcutYards           = p.NavShortcutYards;
             s.NavTurnRateDegPerSec       = p.NavTurnRateDegPerSec;
             s.NavTier1TurnSpeed          = p.NavTier1TurnSpeed;
             s.PostPortalDelaySec         = p.PostPortalDelaySec;
@@ -992,6 +1030,7 @@ internal sealed class LegacyDashboardRenderer
             s.EnableBuffing              = p.EnableBuffing;
             s.RebuffWhenIdle             = p.RebuffWhenIdle;
             s.RebuffSecondsRemaining     = p.RebuffSecondsRemaining;
+            if (p.RebuffTopOffSecondsRemaining > 0) s.RebuffTopOffSecondsRemaining = p.RebuffTopOffSecondsRemaining;
             s.BuffMinSkillLevelTier1     = p.BuffMinSkillLevelTier1;
             s.BuffMinSkillLevelTier2     = p.BuffMinSkillLevelTier2;
             s.BuffMinSkillLevelTier3     = p.BuffMinSkillLevelTier3;
@@ -1027,6 +1066,16 @@ internal sealed class LegacyDashboardRenderer
             s.SalvageSalvageDelayMs      = p.SalvageSalvageDelayMs;
             s.SalvageResultDelayFirstMs  = p.SalvageResultDelayFirstMs;
             s.SalvageResultDelayFastMs   = p.SalvageResultDelayFastMs;
+            // Vendoring: only fields the sender actually included (older panels omit them)
+            if (p.AutoVendorEnabled          is bool avOn)    s.AutoVendorEnabled          = avOn;
+            if (p.AutoVendorEnableBuying     is bool avBuy)   s.AutoVendorEnableBuying     = avBuy;
+            if (p.AutoVendorEnableSelling    is bool avSell)  s.AutoVendorEnableSelling    = avSell;
+            if (p.AutoVendorTestMode         is bool avTest)  s.AutoVendorTestMode         = avTest;
+            if (p.AutoVendorThink            is bool avThink) s.AutoVendorThink            = avThink;
+            if (p.AutoVendorShowMerchantInfo is bool avInfo)  s.AutoVendorShowMerchantInfo = avInfo;
+            if (p.AutoVendorOnlyFromMainPack is bool avMain)  s.AutoVendorOnlyFromMainPack = avMain;
+            if (p.AutoVendorTries            is int avTries)  s.AutoVendorTries            = Math.Clamp(avTries, 1, 20);
+            if (p.AutoVendorTriesTime        is int avTime)   s.AutoVendorTriesTime        = Math.Clamp(avTime, 500, 30000);
             SaveSettings();
         }
         catch { }
@@ -1302,6 +1351,7 @@ internal sealed class LegacyDashboardRenderer
         dst.NavDeadZone              = tmp.NavDeadZone;
         dst.NavSweepMult             = tmp.NavSweepMult;
         dst.NavLookaheadYards        = tmp.NavLookaheadYards;
+        dst.NavShortcutYards         = tmp.NavShortcutYards;
         dst.NavTurnRateDegPerSec     = tmp.NavTurnRateDegPerSec;
         dst.NavTier1TurnSpeed        = tmp.NavTier1TurnSpeed;
         dst.PostPortalDelaySec       = tmp.PostPortalDelaySec;
@@ -1384,9 +1434,12 @@ internal sealed class LegacyDashboardRenderer
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;
+        dst.RebuffTopOffSecondsRemaining = tmp.RebuffTopOffSecondsRemaining;
         dst.BlacklistAttempts             = tmp.BlacklistAttempts;
         dst.BlacklistTimeoutSec           = tmp.BlacklistTimeoutSec;
-        dst.BlacklistCastSettleMs         = tmp.BlacklistCastSettleMs;
+        // 0 is never meant (every UI floors it at 250+) and is what the Settings-panel bug
+        // saved into profiles: it judges each cast before its damage can land.
+        dst.BlacklistCastSettleMs         = tmp.BlacklistCastSettleMs > 0 ? tmp.BlacklistCastSettleMs : 1500;
         dst.TargetNoProgressTimeoutSec    = tmp.TargetNoProgressTimeoutSec;
         dst.MeleeAttackPower         = tmp.MeleeAttackPower;
         dst.MissileAttackPower       = tmp.MissileAttackPower;
@@ -1399,6 +1452,8 @@ internal sealed class LegacyDashboardRenderer
         dst.CrossbowArcVelocity      = tmp.CrossbowArcVelocity;
         dst.AtlatlArcVelocity        = tmp.AtlatlArcVelocity;
         dst.MagicArcVelocity         = tmp.MagicArcVelocity;
+        dst.MissileArcClearance      = tmp.MissileArcClearance >= 0f ? Math.Min(tmp.MissileArcClearance, 3f) : 0.5f;
+        dst.LosDebugLog              = tmp.LosDebugLog;
         dst.EnableFPSLimit           = tmp.EnableFPSLimit;
         dst.TargetFPSFocused         = tmp.TargetFPSFocused;
         dst.TargetFPSBackground      = tmp.TargetFPSBackground;
@@ -1453,6 +1508,15 @@ internal sealed class LegacyDashboardRenderer
         dst.EnableManaTapping        = tmp.EnableManaTapping;
         dst.ManaTapMinMana           = tmp.ManaTapMinMana;
         dst.ManaStoneKeepCount       = tmp.ManaStoneKeepCount;
+        dst.AutoVendorEnabled          = tmp.AutoVendorEnabled;
+        dst.AutoVendorEnableBuying     = tmp.AutoVendorEnableBuying;
+        dst.AutoVendorEnableSelling    = tmp.AutoVendorEnableSelling;
+        dst.AutoVendorTestMode         = tmp.AutoVendorTestMode;
+        dst.AutoVendorThink            = tmp.AutoVendorThink;
+        dst.AutoVendorShowMerchantInfo = tmp.AutoVendorShowMerchantInfo;
+        dst.AutoVendorOnlyFromMainPack = tmp.AutoVendorOnlyFromMainPack;
+        dst.AutoVendorTries            = tmp.AutoVendorTries;
+        dst.AutoVendorTriesTime        = tmp.AutoVendorTriesTime;
         dst.MetaDebug                = tmp.MetaDebug;
         dst.StartMacroOnLogin        = tmp.StartMacroOnLogin;
         dst.PatrolOnLogin            = tmp.PatrolOnLogin;
@@ -2542,6 +2606,9 @@ internal sealed class LegacyDashboardRenderer
             string.IsNullOrEmpty(_settings.CurrentNavPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentNavPath)); sb.Append(',');
         AppendString(sb, "currentLootName",
             string.IsNullOrEmpty(_settings.CurrentLootPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentLootPath)); sb.Append(',');
+        // Full paths for the dashboard's Edit (✎) button, which opens the Loot Editor.
+        AppendString(sb, "currentLootPath", _settings.CurrentLootPath ?? string.Empty); sb.Append(',');
+        AppendString(sb, "vendorProfilePath", _vendorProfilePath?.Invoke() ?? string.Empty); sb.Append(',');
         AppendString(sb, "currentMetaName",
             string.IsNullOrEmpty(_settings.CurrentMetaPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentMetaPath)); sb.Append(',');
         AppendInt(sb, "selectedNavIdx", _selectedNavIdx); sb.Append(',');

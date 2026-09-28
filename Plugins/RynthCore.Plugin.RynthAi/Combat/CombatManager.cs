@@ -160,7 +160,7 @@ public class CombatManager : IDisposable
     // a perfectly good target in ~3 ticks (~1.2s at SpellCastIntervalMs=400).
     private bool _offensiveCastThisCycle;
     private DateTime _faceStartTime = DateTime.MinValue;
-    private const double FACE_TIMEOUT_MS = 1000.0; // give up waiting and fire anyway (MISSILE only)
+    private const double FACE_TIMEOUT_MS = 1000.0; // give up waiting and swing anyway (non-native MELEE only)
     private const double FACE_TOLERANCE_DEG = 15.0; // heading error threshold to fire
 
     // ── Magic targeted-cast settle gate (root-cause fix 2026-06-19) ──────────
@@ -168,11 +168,11 @@ public class CombatManager : IDisposable
     // turn-to-face; a turn/stop MoveToState that lands during that deferred
     // windup ORPHANS the cast (DoSpellWords/CreatePlayerSpell never runs) → the
     // gesture animates but 0 damage / "You're too busy!" forever. Self-buffs are
-    // immune (untargeted → synchronous, no turn). Fix: for MAGIC, never cast
-    // mid-turn — keep turning until actually within angle, then release the turn
-    // motions and let the stop reach the server (settle tick) BEFORE the cast.
+    // immune (untargeted → synchronous, no turn). The 2026-06-19 fix turned the
+    // bot itself until within angle, then released and settled before the cast;
+    // since 2026-09-27 the bot doesn't turn for magic at all (the server's own
+    // Rotate does it), and this only settles after releasing a turn melee left held.
     private DateTime _faceSettledAt = DateTime.MinValue;
-    private const double FACE_MAX_WAIT_MS = 2500.0;  // safety: heading never converges (jittery point-blank pose) → cast anyway rather than wedge
     private const double FACE_SETTLE_MS   = 140.0;   // let the turn-stop reach the server (≥ one 30Hz tick) before the cast packet
 
     // ── Magic cast cadence guard ────────────────────────────────────────────
@@ -665,7 +665,9 @@ public class CombatManager : IDisposable
         double maxDist = _settings.MonsterRange;
         TargetingFSM.AttackType attackType = TargetingFSM.AttackType.Linear;
         if (RaycastInitialized && _raycastSystem?.TargetingFSM != null)
-            attackType = _raycastSystem.GetAttackType(CurrentCombatMode, "");
+            attackType = DetermineAttackTypeForLOS();
+        bool losDebug = _settings.LosDebugLog;
+        if (losDebug) LogLosDebugWeapon();
 
         foreach (var wo in _worldFilter.GetLandscape())
         {
@@ -721,14 +723,12 @@ public class CombatManager : IDisposable
             if (dist > (isEngaged ? Math.Max(maxDist, DisengageDistance) : maxDist)) continue;
 
             bool losBlocked = false;
-            if (_settings.EnableRaycasting && RaycastInitialized && _raycastSystem != null)
+            if (_settings.EnableRaycasting && RaycastInitialized && _raycastSystem?.TargetingFSM != null)
             {
                 RaycastCheckCount++;
-                if (_raycastSystem.IsTargetBlocked(_host, (uint)wo.Id, attackType))
-                {
-                    RaycastBlockCount++;
-                    losBlocked = true;
-                }
+                losBlocked = _raycastSystem.TargetingFSM.IsTargetBlocked(_host, (uint)wo.Id, attackType, out var losDetail);
+                if (losBlocked) RaycastBlockCount++;
+                if (losDebug) LogLosDebug(wo, losBlocked, losDetail);
             }
 
             // Don't blacklist from scan — just exclude from this result.
@@ -1337,9 +1337,12 @@ public class CombatManager : IDisposable
     private void DropTarget(string reason)
     {
         if (activeTargetId != 0)
-            _host.Log($"[RynthAi] DropTarget 0x{activeTargetId:X8}: {reason}");
+            _host.Log($"[RynthAi] DropTarget 0x{activeTargetId:X8}: {reason} [{DescribeTargetPos(activeTargetId)}]");
         activeTargetId = 0;
         _lockedTargetId = 0;
+        // A turn held toward the dropped target must be let go, or the character keeps
+        // spinning until something else happens to release it.
+        if (_facingTarget) ClearCombatTurnMotions();
         _facingTarget = false;
         _returnToPhysicalCombat = false;
         _targetLockedAt    = DateTime.MinValue;
@@ -1775,6 +1778,7 @@ public class CombatManager : IDisposable
             fsm.CrossbowArcVelocity   = _settings.CrossbowArcVelocity;
             fsm.AtlatlArcVelocity     = _settings.AtlatlArcVelocity;
             fsm.MagicArcVelocity      = _settings.MagicArcVelocity;
+            fsm.MissileArcClearance   = _settings.MissileArcClearance;
         }
 
         // Deferred predicted kill-shot swap: a cast that armed it is confirmed
@@ -1990,39 +1994,19 @@ public class CombatManager : IDisposable
                 return true;
             }
 
-            // MAGIC: settle-before-cast facing gate. Never cast mid-turn and
-            // never let a turn-stop ride alongside the cast packet — both orphan
-            // the ACE server's deferred targeted-cast windup (root cause of
-            // "animates but 0 damage / too busy"). Makes combat behave like the
-            // working self-buff path. Applies regardless of UseNativeAttack
-            // (native attack is a physical swing; in Magic mode the bot always
-            // casts, so the facing race is the same with or without it).
-            if (CurrentCombatMode == CombatMode.Magic)
+            // MAGIC and MISSILE: the server turns the player to the target itself,
+            // as retail did — ACE Rotate(target) before a targeted cast (and again
+            // after the windup if needed) and before the first missile shot and
+            // between repeat shots. So the bot doesn't turn at all. A client-side
+            // turn servo on top only fought that rotation: missile characters spun
+            // in circles between shots (2026-09-27, Lucy, Olthoi swarm at close
+            // range), and for magic the server waits while the client holds a turn
+            // (PendingTurnRelease), which is where the "animates but 0 damage / too
+            // busy" orphaned windups came from. Applies with or without
+            // UseNativeAttack. Only a turn another mode left held is released — with one
+            // settle tick before a cast, so the stop doesn't ride with the packet.
+            if (CurrentCombatMode == CombatMode.Magic || CurrentCombatMode == CombatMode.Missile)
             {
-                double facingError = GetFacingError(activeTargetId);
-                if (facingError > FACE_TOLERANCE_DEG)
-                {
-                    FaceTarget(activeTargetId);
-                    if (!_facingTarget)
-                    {
-                        _facingTarget = true;
-                        _faceStartTime = DateTime.Now;
-                    }
-                    // Keep turning until actually within angle. Do NOT "fire
-                    // anyway" while still turning (that was the bug). Only a long
-                    // safety timeout falls through, so a jittery point-blank pose
-                    // can't wedge combat forever.
-                    if ((DateTime.Now - _faceStartTime).TotalMilliseconds < FACE_MAX_WAIT_MS)
-                    {
-                        LastCombatSkipReason = "facing-turning"; // D4 record-only
-                        return true;
-                    }
-                    _host.Log($"[CombatCast] facing did not converge in {FACE_MAX_WAIT_MS:0}ms (err={facingError:0.0}°) — releasing turn + casting anyway");
-                }
-
-                // Within angle (or safety-timed-out). If we were turning, release
-                // the turn motions and give the stop ONE settle tick to reach the
-                // server BEFORE the cast packet.
                 if (_facingTarget)
                 {
                     ClearCombatTurnMotions();
@@ -2031,7 +2015,8 @@ public class CombatManager : IDisposable
                     LastCombatSkipReason = "face-settle-release"; // D4 record-only
                     return true; // settle tick
                 }
-                if ((DateTime.Now - _faceSettledAt).TotalMilliseconds < FACE_SETTLE_MS)
+                if (CurrentCombatMode == CombatMode.Magic
+                    && (DateTime.Now - _faceSettledAt).TotalMilliseconds < FACE_SETTLE_MS)
                 {
                     LastCombatSkipReason = "face-settle-wait"; // D4 record-only
                     return true; // let the turn-stop settle on the server first
@@ -2282,11 +2267,20 @@ public class CombatManager : IDisposable
         double bestScore = double.MinValue;
         double heldScore = double.MinValue;   // scored total for the incumbent, for the switch log
         bool incumbentSeen = false;
+        double acquireRange = Math.Max(1.0, _settings.MonsterRange);
         foreach (var c in _scannedTargets)
         {
             double s = ScoreCandidate(c);
+            // The incumbent keeps stickiness and commitment only inside MonsterRange. The
+            // scan holds a locked target out to DisengageDistance (MonsterRange+3 by default)
+            // so a lone mob at the edge doesn't flip engage/peace, not so it can out-score
+            // mobs inside the range the user set. Beyond MonsterRange it competes on its
+            // merits, and any reasonable in-range mob takes over. Before this a target at
+            // 5-8 m kept +45 and could hold off mobs at 3-5 m (2026-09-27, Olthoi swarm:
+            // Monster Range 5, one target kept for over a minute, never out of range).
             if (c.Id == _lockedTargetId)
             {
+                double meritScore = s;
                 s += TARGET_SWITCH_STICKINESS;
                 // Commitment: once we have COMMITTED to the locked target,
                 // finishing it outranks any small positional edge a fresh mob
@@ -2334,6 +2328,8 @@ public class CombatManager : IDisposable
 
                 if (!undamaged || (withinFlightWindow && withinUndamagedGrace))
                     s += DAMAGE_COMMITMENT_BONUS;
+                if (c.Distance > acquireRange)
+                    s = meritScore;   // beyond MonsterRange: no stickiness, no commitment (see above)
                 heldScore = s;
                 incumbentSeen = true;
                 _lockedLastScore = s;
@@ -2365,8 +2361,10 @@ public class CombatManager : IDisposable
         // up) — if this floods the log, selection is thrashing again and the two
         // scores say by how much.
         if (_lockedTargetId != 0)
-            _host.Log($"[CombatTarget] switch 0x{_lockedTargetId:X8} '{_worldFilter[_lockedTargetId]?.Name}' (score={(heldScore == double.MinValue ? "gone" : heldScore.ToString("0.0"))}) " +
-                      $"-> 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' (score={bestScore:0.0})");
+            _host.Log($"[CombatTarget] switch 0x{_lockedTargetId:X8} '{_worldFilter[_lockedTargetId]?.Name}' (score={(heldScore == double.MinValue ? "gone" : heldScore.ToString("0.0"))}, {DescribeTargetPos(_lockedTargetId)}) " +
+                      $"-> 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' (score={bestScore:0.0}, {DescribeTargetPos(bestId)})");
+        else
+            _host.Log($"[CombatTarget] lock 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' (score={bestScore:0.0}, {DescribeTargetPos(bestId)})");
 
         activeTargetId      = bestId;
         _lockedTargetId     = bestId;
@@ -2898,21 +2896,92 @@ public class CombatManager : IDisposable
         return lines;
     }
 
+    /// <summary>
+    /// Attack type for the scan's LOS test. Missile mode names the weapon in hand so the
+    /// bow/crossbow/atlatl arc and its velocity apply (the scan used to pass "", which made
+    /// every missile LOS test a straight line). Peace mode with a missile weapon picked counts
+    /// as missile, so a target acquired from peace is tested with the arc it will be shot on.
+    /// Magic stays a straight line, as before.
+    /// </summary>
     private TargetingFSM.AttackType DetermineAttackTypeForLOS()
     {
-        if (CurrentCombatMode == CombatMode.Magic)
+        if (_raycastSystem?.TargetingFSM == null) return TargetingFSM.AttackType.Linear;
+
+        int mode = CurrentCombatMode;
+        WorldObject? weapon = _equippedWeaponId != 0 ? _worldFilter[_equippedWeaponId] : null;
+        bool missileWeapon = weapon != null && weapon.ObjectClass == AcObjectClass.MissileWeapon;
+        if (mode == CombatMode.NonCombat && missileWeapon)
+            mode = CombatMode.Missile;
+
+        string weaponName = mode == CombatMode.Missile && missileWeapon ? weapon!.Name ?? "" : "";
+        return _raycastSystem.GetAttackType(mode, weaponName);
+    }
+
+    // ── LOS / target-distance diagnostics ────────────────────────────────────
+    // "Far away" can't be judged from the log without positions, so target lock, switch and
+    // drop lines carry the 3D distance, its horizontal and vertical parts and both cells.
+    // With LosDebugLog on, the scan also logs each target's LOS verdict (line / arc, rise,
+    // hit point) when it changes and at most every LosDebugRepeatMs otherwise.
+    private readonly Dictionary<int, (DateTime At, bool Blocked)> _losDebugLast = new();
+    private const double LosDebugRepeatMs = 5000;
+    private const double LosDebugMinGapMs = 1000;
+    private int _losDebugWeaponId;
+
+    /// <summary>"d=6.2m (h=5.9 dz=+1.8) cell=0x61450123 me=0x61450119", or why it can't be measured.</summary>
+    private string DescribeTargetPos(int targetId)
+    {
+        uint pid = _host.GetPlayerId();
+        if (pid == 0 || targetId == 0) return "pos=?";
+        if (!_host.TryGetObjectPosition(pid, out uint pc, out float px, out float py, out float pz))
+            return "pos=? (no player position)";
+        if (!_host.TryGetObjectPosition((uint)targetId, out uint tc, out float tx, out float ty, out float tz))
+            return "pos=? (no target position)";
+        double dx = (((tc >> 24) & 0xFF) * 192.0 + tx) - (((pc >> 24) & 0xFF) * 192.0 + px);
+        double dy = (((tc >> 16) & 0xFF) * 192.0 + ty) - (((pc >> 16) & 0xFF) * 192.0 + py);
+        double dz = tz - pz;
+        double h = Math.Sqrt(dx * dx + dy * dy);
+        double d = Math.Sqrt(h * h + dz * dz);
+        return $"d={d:0.0}m (h={h:0.0} dz={dz:+0.0;-0.0;0.0}) cell=0x{tc:X8} me=0x{pc:X8}";
+    }
+
+    private void LogLosDebug(WorldObject wo, bool blocked, in TargetingFSM.LosDetail det)
+    {
+        DateTime now = DateTime.Now;
+        if (_losDebugLast.TryGetValue(wo.Id, out var last))
         {
-            // Get rule from current target name if available
-            var targetObj = _worldFilter[activeTargetId];
-            var rule = GetRuleForTarget(targetObj);
-            if (rule != null && rule.UseArc) return TargetingFSM.AttackType.MagicArc;
-            return TargetingFSM.AttackType.Linear;
+            double ms = (now - last.At).TotalMilliseconds;
+            bool changed = last.Blocked != blocked;
+            if (ms < LosDebugMinGapMs || (!changed && ms < LosDebugRepeatMs)) return;
         }
+        if (_losDebugLast.Count > 256) _losDebugLast.Clear();
+        _losDebugLast[wo.Id] = (now, blocked);
 
-        if (_raycastSystem?.TargetingFSM != null)
-            return _raycastSystem.GetAttackType(CurrentCombatMode, "");
+        string verdict;
+        if (!det.Checked) verdict = "clear (not tested: no geometry near the path)";
+        else if (det.LineBlocked) verdict = "BLOCKED line";
+        else if (det.ArcChecked && det.Arc.OutOfReach) verdict = "BLOCKED arc: out of reach at this velocity";
+        else if (det.ArcChecked && det.Arc.Blocked) verdict = $"BLOCKED arc: hit {det.Arc.HitAlong:0.0}m out, {det.Arc.HitZ:+0.0;-0.0;0.0}m vs launch";
+        else verdict = "clear";
 
-        return TargetingFSM.AttackType.Linear;
+        string arcInfo = det.Velocity > 0
+            ? $" v={det.Velocity:0.0} rise={det.Arc.Sag:0.00} apex={det.Arc.Apex:0.00} clr={_settings.MissileArcClearance:0.0}{(det.ArcChecked ? "" : " (flat: line only)")}"
+            : "";
+        _host.Log($"[LOS] 0x{(uint)wo.Id:X8} '{wo.Name}' {verdict} | {det.Type}{(det.Dungeon ? " dungeon" : "")}{arcInfo} | {DescribeTargetPos(wo.Id)}");
+    }
+
+    /// <summary>LOS debug: once per missile weapon, what the client knows of its launch speed.</summary>
+    private void LogLosDebugWeapon()
+    {
+        int wid = _equippedWeaponId;
+        if (wid == 0 || wid == _losDebugWeaponId) return;
+        var weapon = _worldFilter[wid];
+        if (weapon == null || weapon.ObjectClass != AcObjectClass.MissileWeapon) return;
+        _losDebugWeaponId = wid;
+        double maxVel = _worldFilter.GetDoubleProperty(wid, (uint)DoubleValueKey.MaximumVelocity, 0);
+        var type = DetermineAttackTypeForLOS();
+        float setting = _raycastSystem?.TargetingFSM?.VelocityFor(type) ?? 0f;
+        _host.Log($"[LOS] missile weapon 0x{(uint)wid:X8} '{weapon.Name}': MaximumVelocity={(maxVel > 0 ? maxVel.ToString("0.0") : "unknown (not appraised)")}, " +
+                  $"LOS uses {type} v={setting:0.0}");
     }
 
     private void FaceTarget(int targetId)
@@ -2959,6 +3028,15 @@ public class CombatManager : IDisposable
     {
         _host.SetMotion(MotionTurnRight, false);
         _host.SetMotion(MotionTurnLeft,  false);
+    }
+
+    /// <summary>Let go of a turn the facing servo is holding. Called when combat stops
+    /// ticking (macro off), which would otherwise leave the turn held for good.</summary>
+    public void ReleaseHeldTurn()
+    {
+        if (!_facingTarget) return;
+        _facingTarget = false;
+        ClearCombatTurnMotions();
     }
 
     /// <summary>

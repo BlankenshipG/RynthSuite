@@ -121,6 +121,11 @@ internal sealed class NavigationEngine
     // waypoint). Tunable in Advanced ▸ Navigation ▸ Steering.
     private double LookaheadYards => Math.Max(0.0, _settings.NavLookaheadYards);
 
+    // Straight-line shortcut on arrival: skip waypoints only while the straight run
+    // to a later one stays within this many yards of every waypoint skipped.
+    // 0 = off (visit every waypoint). Tunable in Advanced ▸ Navigation ▸ Steering.
+    private double ShortcutYards => Math.Max(0.0, _settings.NavShortcutYards);
+
     // Mode 0 heading servo: cap the heading change we command per tick so the
     // turn is smooth and never overshoots (deadbeat). Floored at 10°/s so a
     // stray 0 from an old config can't freeze turning.
@@ -423,7 +428,16 @@ internal sealed class NavigationEngine
     {
         _inPause         = false;
         _inRecovery      = false;
-        _linearDir       = 1;
+        // _linearDir is NOT reset here. Stop() runs on every pause (combat, loot,
+        // buff, door), and resetting it turned a Linear route around after each
+        // fight on the way back: the bot re-walked the far leg to the end instead of
+        // finishing the return. A new route resets it (route swap / ResetRouteState).
+        //
+        // Combat, looting, buffing and doors stop nav and move the character. The
+        // closest-approach reading from before the pause says nothing about where we
+        // are now; kept, the first tick back reads the displacement as a sweep-pass
+        // and advances past a waypoint that was never reached.
+        _prevDist        = double.MaxValue;
         _stopRequestedAt = long.MaxValue;
         ResetPortalState();
         _host.SetAutoRun(false);
@@ -436,6 +450,7 @@ internal sealed class NavigationEngine
     public void ResetRouteState()
     {
         Stop();
+        _linearDir      = 1;
         _stuckCount     = 0;
         _recoveryKind   = RecoveryKind.Jump;
         _prevDist       = double.MaxValue;
@@ -871,36 +886,59 @@ internal sealed class NavigationEngine
             if (skipped > 0)
                 _host.Log($"Nav: skipped {skipped} dense waypoint(s) within {arrival:F1}yd → now on [{_settings.ActiveNavIndex}]");
 
-            // Collinear-waypoint skip: if current target lies nearly on the straight
-            // line from the player to the waypoint after it, skip it. Handles straight
-            // dungeon corridors and outdoor paths with too many recorded points.
-            const double CollinearThreshYards = 2.0;
-            const int    ColSkipBudget        = 64;
-            int          colSkipped           = 0;
-            while (colSkipped < ColSkipBudget && IndexValid(_settings.ActiveNavIndex, route))
+            // Straight-line shortcut: bypass waypoints that the straight run from here
+            // to a later waypoint already passes close to (straight corridors, recorded
+            // routes with many points on a line). EVERY bypassed waypoint must lie
+            // within ShortcutYards of the segment player→new target.
+            //
+            // This used to test each waypoint only against the line to its immediate
+            // successor. A point is never farther than one spacing from the line to the
+            // next point, so on a player-made route with 1-3yd spacing the test passed
+            // step after step around curves and corners: one arrival jumped up to 64
+            // waypoints and aimed a straight line 15-50yd off the route, into walls,
+            // where the stuck ladder then skipped more (2026-09-27). Replaying every
+            // arrival of 518 real VTank routes: 5% cut a corner by >3yd, worst 49.6yd.
+            // The cumulative test caps the deviation at ShortcutYards by construction.
+            double tolerance = ShortcutYards;
+            if (tolerance > 0.0)
             {
-                var curr = route.Points[_settings.ActiveNavIndex];
-                if (curr.Type != NavPointType.Point) break;
+                const int ShortcutBudget = 64;
+                Span<int> bypassed = stackalloc int[ShortcutBudget];
+                int    count = 0;
+                double worst = 0.0;
+                while (count < ShortcutBudget && IndexValid(_settings.ActiveNavIndex, route))
+                {
+                    int ci   = _settings.ActiveNavIndex;
+                    var curr = route.Points[ci];
+                    if (curr.Type != NavPointType.Point) break;
 
-                int ni = PeekNext(_settings.ActiveNavIndex, route);
-                if (ni < 0 || ni == _settings.ActiveNavIndex) break;
-                var next = route.Points[ni];
-                if (next.Type != NavPointType.Point) break;
+                    int ni = PeekNext(ci, route);
+                    if (ni < 0 || ni == ci) break;
+                    var next = route.Points[ni];
+                    if (next.Type != NavPointType.Point) break;
 
-                // Only skip if next is farther from player than curr (don't skip past a turn)
-                double dCurrNS = curr.NS - curNs, dCurrEW = curr.EW - curEw;
-                double dNextNS = next.NS - curNs, dNextEW = next.EW - curEw;
-                if (dNextNS * dNextNS + dNextEW * dNextEW <= dCurrNS * dCurrNS + dCurrEW * dCurrEW) break;
+                    // Only shortcut forward: the new target must be farther from the
+                    // player than the one it replaces (don't skip past a turn back).
+                    double dCurrNS = curr.NS - curNs, dCurrEW = curr.EW - curEw;
+                    double dNextNS = next.NS - curNs, dNextEW = next.EW - curEw;
+                    if (dNextNS * dNextNS + dNextEW * dNextEW <= dCurrNS * dCurrNS + dCurrEW * dCurrEW) break;
 
-                if (CrossDistYards(curNs, curEw, curr.NS, curr.EW, next.NS, next.EW) >= CollinearThreshYards) break;
+                    double off = SegmentDistYards(curr.NS, curr.EW, curNs, curEw, next.NS, next.EW);
+                    for (int b = 0; b < count && off < tolerance; b++)
+                    {
+                        var bp = route.Points[bypassed[b]];
+                        off = Math.Max(off, SegmentDistYards(bp.NS, bp.EW, curNs, curEw, next.NS, next.EW));
+                    }
+                    if (off >= tolerance) break;
 
-                int beforeCol = _settings.ActiveNavIndex;
-                AdvanceOneIndex(route);
-                if (_settings.ActiveNavIndex == beforeCol) break;
-                colSkipped++;
+                    AdvanceOneIndex(route);
+                    if (_settings.ActiveNavIndex == ci) break;
+                    bypassed[count++] = ci;
+                    if (off > worst) worst = off;
+                }
+                if (count > 0)
+                    _host.Log($"Nav: shortcut past {count} waypoint(s), ≤{worst:F1}yd off route → now on [{_settings.ActiveNavIndex}]");
             }
-            if (colSkipped > 0)
-                _host.Log($"Nav: skipped {colSkipped} collinear waypoint(s) → now on [{_settings.ActiveNavIndex}]");
         }
 
         if (_settings.ActiveNavIndex != oldIdx && IndexValid(_settings.ActiveNavIndex, route))
@@ -1734,13 +1772,14 @@ internal sealed class NavigationEngine
 
     private static double Lerp(double a, double b, double t) => a + (b - a) * t;
 
-    // Perpendicular distance (yards) from point B to the infinite line through A and C.
-    private static double CrossDistYards(double aNS, double aEW, double bNS, double bEW, double cNS, double cEW)
+    // Distance (yards) from point P to the segment A→B.
+    private static double SegmentDistYards(double pNS, double pEW, double aNS, double aEW, double bNS, double bEW)
     {
-        double acNS = cNS - aNS, acEW = cEW - aEW;
-        double acLen = Math.Sqrt(acNS * acNS + acEW * acEW);
-        if (acLen < 1e-9) return 0.0;
         double abNS = bNS - aNS, abEW = bEW - aEW;
-        return Math.Abs(abNS * acEW - abEW * acNS) / acLen * 240.0;
+        double len2 = abNS * abNS + abEW * abEW;
+        double t = len2 < 1e-18 ? 0.0
+                 : Math.Clamp(((pNS - aNS) * abNS + (pEW - aEW) * abEW) / len2, 0.0, 1.0);
+        double dNS = pNS - (aNS + t * abNS), dEW = pEW - (aEW + t * abEW);
+        return Math.Sqrt(dNS * dNS + dEW * dEW) * 240.0;
     }
 }

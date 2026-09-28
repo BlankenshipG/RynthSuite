@@ -903,7 +903,11 @@ public class WorldObjectCache
         float dx = gx1 - gx2;
         float dy = gy1 - gy2;
         float dz = z1 - z2;
-        return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        double d = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        // A garbage position read (NaN/∞) must read as out of range. NaN fails every
+        // "dist > limit" test, so it passed both the scan's range gate and Think's
+        // disengage drop, and a target could be kept at any real distance.
+        return double.IsFinite(d) ? d : double.MaxValue;
     }
 
     /// <summary>Enumerate objects in player's inventory (no physics position).</summary>
@@ -1547,7 +1551,7 @@ public class WorldObjectCache
 
     // ── Type-flag item classification ─────────────────────────────────────
 
-    private static AcObjectClass ClassifyByItemType(uint typeFlags)
+    internal static AcObjectClass ClassifyByItemType(uint typeFlags)
     {
         // Most specific / unambiguous types first
         if ((typeFlags & ItemTypePromissoryNote)            != 0) return AcObjectClass.TradeNote;

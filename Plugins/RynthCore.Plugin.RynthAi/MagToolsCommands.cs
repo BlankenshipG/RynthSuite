@@ -209,6 +209,16 @@ public sealed partial class RynthAiPlugin
         ["manastonelootcount"]        = "ManaStoneKeepCount",
         ["rebuftimeremainingseconds"] = "RebuffSecondsRemaining",
         ["navclosestoprange"]         = "NavCloseStopRange",
+        // UtilityBelt AutoVendor options (/ub opt set AutoVendor.TestMode true)
+        ["autovendor.enabled"]          = "AutoVendorEnabled",
+        ["autovendor.enablebuying"]     = "AutoVendorEnableBuying",
+        ["autovendor.enableselling"]    = "AutoVendorEnableSelling",
+        ["autovendor.testmode"]         = "AutoVendorTestMode",
+        ["autovendor.think"]            = "AutoVendorThink",
+        ["autovendor.showmerchantinfo"] = "AutoVendorShowMerchantInfo",
+        ["autovendor.onlyfrommainpack"] = "AutoVendorOnlyFromMainPack",
+        ["autovendor.tries"]            = "AutoVendorTries",
+        ["autovendor.triestime"]        = "AutoVendorTriesTime",
     };
 
     private string? GetOptionValue(string optName)

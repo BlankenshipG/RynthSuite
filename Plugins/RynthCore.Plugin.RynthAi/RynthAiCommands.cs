@@ -80,6 +80,8 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra bufftest           — one-shot: snapshot enchant registries pre/post next item-spell cast (logs to RynthCore.log)");
         ChatLine("[RynthAi] /ra settings savechar <name> — save current settings to named profile (create if new)");
         ChatLine("[RynthAi] /ra settings loadchar <name> — load named settings profile (create from current if new)");
+        ChatLine("[RynthAi] /ub autovendor [profile.utl|cancel] — run AutoVendor at the open vendor (TestMode on by default)");
+        ChatLine("[RynthAi] /ub vendor open[p] <name|id|selected> | opencancel | addbuy[p]/addsell[p] [n] <item> | buyall | sellall | clearbuy | clearsell");
     }
 
     private void HandlePowerCommand(string[] parts)
@@ -324,8 +326,20 @@ public sealed partial class RynthAiPlugin
 
             if (geometry != null && geometry.Count > 0)
             {
-                staticBlocked = RaycastEngine.IsArcPathBlocked(origin, targetPos, arcVelocity, geometry);
-                ChatLine($"[RynthAi LOS] IsArcPathBlocked: {staticBlocked}{(isDungeon && staticBlocked ? "  (likely ceiling — combat LoS forces Linear in dungeons)" : "")}");
+                // Same test combat runs for missile targets: straight line (walls), then the
+                // arc the missile flies plus the clearance headroom (ceilings indoors).
+                float clearance = settings?.MissileArcClearance ?? 0.5f;
+                bool lineBlocked = RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
+                bool arcBlocked = RaycastEngine.IsBallisticArcBlocked(origin, targetPos, arcVelocity, clearance, geometry, out var arc);
+                staticBlocked = lineBlocked || arcBlocked;
+                ChatLine($"[RynthAi LOS] Straight line ({(isDungeon ? "multi-ray" : "single-ray")}): {(lineBlocked ? "BLOCKED" : "clear")}");
+                ChatLine($"[RynthAi LOS] Arc: rises {arc.Sag:F2}m above the line, apex {arc.Apex:F2}m above launch, clearance {clearance:F1}m");
+                if (arc.OutOfReach)
+                    ChatLine($"[RynthAi LOS] Arc: OUT OF REACH at v={arcVelocity:F1} (raise the velocity or get closer)");
+                else if (arcBlocked)
+                    ChatLine($"[RynthAi LOS] Arc: BLOCKED {arc.HitAlong:F1}m out, {arc.HitZ:+0.0;-0.0;0.0}m vs launch{(isDungeon && arc.HitZ > 0.5f ? "  (ceiling)" : "")}");
+                else
+                    ChatLine("[RynthAi LOS] Arc: clear");
             }
         }
         else
@@ -392,63 +406,30 @@ public sealed partial class RynthAiPlugin
         ChatLine($"[RynthAi LOS] Combined LoS ({modeLabel}): {verdict}");
     }
 
-    // Samples a parabolic arc from origin→target at the given launch velocity,
-    // returns true if any sample point dips below terrain Z. Mirrors the math
-    // in RaycastEngine.IsArcPathBlocked so the terrain check tracks the same
-    // trajectory the static-geometry check uses.
+    // Samples the missile's arc from origin→target at the given launch speed and returns
+    // true if any sample point dips below terrain Z. Same flight path as combat's missile
+    // LOS (MissileBallistics: low ballistic solution, AC gravity), without the clearance.
     private static bool TerrainBlockedAlongArc(Raycasting.Vector3 origin, Raycasting.Vector3 target,
         float velocity, Raycasting.GeometryLoader geo,
         out float hitDist, out Raycasting.Vector3 hitPoint)
     {
         hitDist = 0f;
         hitPoint = origin;
-        const float GRAVITY = 9.81f;
-        const int   SAMPLES = 20;
+        const int SAMPLES = 20;
 
-        var delta = target - origin;
-        float horiz = delta.Length2D();
-        if (horiz < 0.1f) return false;
-
-        float maxRange = (velocity * velocity) / GRAVITY;
-        if (horiz > maxRange) return false; // out-of-range is the shooter's problem, not terrain's
-
-        float sinArg = (GRAVITY * horiz) / (velocity * velocity);
-        if (sinArg > 1.0f) sinArg = 1.0f;
-        float launchAngle = (float)(0.5 * Math.Asin(sinArg));
-        if (launchAngle < 0.1f) launchAngle = (float)(Math.PI / 4);
-
-        float cosA = (float)Math.Cos(launchAngle);
-        float sinA = (float)Math.Sin(launchAngle);
-        float vH = velocity * cosA;
-        float vV = velocity * sinA;
-        if (vH < 0.01f) return false;
-
-        float totalTime = horiz / vH;
-        float hdx = delta.X / horiz;
-        float hdy = delta.Y / horiz;
+        var arc = Raycasting.MissileBallistics.Solve(origin.X, origin.Y, origin.Z, target.X, target.Y, target.Z, velocity);
+        if (!arc.Valid || arc.Vertical) return false; // out of reach is the shooter's problem, not terrain's
 
         for (int i = 1; i <= SAMPLES; i++)
         {
             float t = (float)i / SAMPLES;
-            float time = t * totalTime;
-            float hDistAlong = vH * time;
-            // Deep-audit finding #31 (2026-06-18) — mirrors the fix in
-            // RaycastEngine.IsArcPathBlocked: the flat-range parabolic sag
-            // (vV*time - 0.5g*time²) is exactly 0 at t=0 AND t=1 by
-            // construction (totalTime is the equal-height time-of-flight),
-            // so adding it to a straight lerp(origin.Z, target.Z) anchors
-            // both endpoints exactly instead of double-applying the
-            // elevation difference via a separate (1-t) blend.
-            float z = origin.Z + delta.Z * t + (vV * time - 0.5f * GRAVITY * time * time);
-
-            float wx = origin.X + hdx * hDistAlong;
-            float wy = origin.Y + hdy * hDistAlong;
+            arc.PointAt(t, 0f, out float wx, out float wy, out float z);
             float groundZ = geo.GetTerrainZWorld(wx, wy);
             if (float.IsNaN(groundZ)) continue;
 
             if (z < groundZ)
             {
-                hitDist  = hDistAlong;
+                hitDist  = t * arc.HorizDist;
                 hitPoint = new Raycasting.Vector3(wx, wy, z);
                 return true;
             }

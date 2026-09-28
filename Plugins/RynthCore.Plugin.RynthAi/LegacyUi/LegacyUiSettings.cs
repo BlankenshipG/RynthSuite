@@ -40,6 +40,7 @@ public sealed class LegacyUiSettings
     public float NavDeadZone = 4f;
     public float NavSweepMult = 2.5f;
     public float NavLookaheadYards = 4.0f;       // distance to start blending the aim point toward the next waypoint (0 = off)
+    public float NavShortcutYards = 1.0f;        // on arrival, skip waypoints only while the straight run to a later one stays within this of every skipped point (0 = visit every point)
     public float NavTurnRateDegPerSec = 270f;    // mode 0 (heading servo) max turn rate
     public float NavTier1TurnSpeed = 3.0f;       // mode 1 (CM_Movement) DoMovement turn-command speed (magnitude of CMotionInterp turn_speed; 1.0 = native keyboard rate)
     public float PostPortalDelaySec = 4.0f;
@@ -149,6 +150,13 @@ public sealed class LegacyUiSettings
     /// landing.
     /// </summary>
     public int RebuffSecondsRemaining = 300;
+    /// <summary>
+    /// When a buff falls under RebuffSecondsRemaining, also refresh every other buff
+    /// with less than this many seconds left, so they land together instead of each
+    /// interrupting the fight on its own. Buffs with more time are left alone. At or
+    /// below RebuffSecondsRemaining only the expiring buff is recast.
+    /// </summary>
+    public int RebuffTopOffSecondsRemaining = 1200;
     public bool StartMacroOnLogin;
     public bool PatrolOnLogin;
 
@@ -225,6 +233,20 @@ public sealed class LegacyUiSettings
     public float CrossbowArcVelocity  = 40.0f;
     public float AtlatlArcVelocity    = 22.0f;
     public float MagicArcVelocity     = 25.0f;
+    /// <summary>
+    /// Extra headroom (meters) a missile's arc must have at mid-flight for LoS to pass,
+    /// on top of the modelled flight path (launch speed above, AC gravity 9.8). Covers
+    /// what the model can't know exactly: launch height, the real launch speed, the
+    /// projectile's size. Raise it if shots still hit ceilings, lower it if targets
+    /// under a ceiling the arrows clear are skipped. Only used with UseArcs.
+    /// </summary>
+    public float MissileArcClearance  = 0.5f;
+    /// <summary>
+    /// Log each in-range target's LoS verdict (straight line / arc, how high the arc
+    /// rises, where it hits) and the missile weapon's known launch speed. For tuning
+    /// the arc settings; off by default (a few lines a second in a crowd).
+    /// </summary>
+    public bool  LosDebugLog;
 
     public bool EnableFPSLimit = true;
     public int TargetFPSFocused = 60;
@@ -255,6 +277,23 @@ public sealed class LegacyUiSettings
     public bool EnableManaTapping   = false;
     public int  ManaTapMinMana      = 2500;
     public int  ManaStoneKeepCount  = 5;
+
+    // ── AutoVendor (UtilityBelt AutoVendor; /ub autovendor, /ub vendor) ────────
+    /// <summary>Run AutoVendor when a vendor opens (and allow /ub autovendor). UB defaults this on;
+    /// RynthAi defaults it off because the plugin auto-updates and selling can't be undone.</summary>
+    public bool AutoVendorEnabled = false;
+    public bool AutoVendorEnableBuying = true;
+    public bool AutoVendorEnableSelling = true;
+    /// <summary>Only print what would be bought and sold. On by default in RynthAi (UB: off).</summary>
+    public bool AutoVendorTestMode = true;
+    /// <summary>Send "AutoVendor finished: ..." (and fatal/failed lines) as a /tell to yourself, for metas.</summary>
+    public bool AutoVendorThink = false;
+    public bool AutoVendorShowMerchantInfo = true;
+    public bool AutoVendorOnlyFromMainPack = false;
+    /// <summary>Attempts to open a vendor on /ub vendor open[p].</summary>
+    public int AutoVendorTries = 4;
+    /// <summary>Milliseconds between /ub vendor open attempts.</summary>
+    public int AutoVendorTriesTime = 5000;
 
     public List<MonsterRule> MonsterRules { get; set; } = new();
     public List<ItemRule> ItemRules { get; set; } = new();
@@ -372,7 +411,7 @@ public sealed class LegacyUiSettings
     public readonly string[] AdvancedTabs =
     {
         "Display", "UI", "Misc", "Recharge", "Melee Combat", "Spell Combat",
-        "Ranges", "Navigation", "Buffing", "Crafting", "Looting"
+        "Ranges", "Navigation", "Buffing", "Crafting", "Looting", "Vendoring"
     };
 
     [JsonIgnore]
@@ -571,9 +610,13 @@ public sealed class SettingsBridgePayload
     public float CrossbowArcVelocity { get; set; }
     public float AtlatlArcVelocity { get; set; }
     public float MagicArcVelocity { get; set; }
+    public float MissileArcClearance { get; set; } = 0.5f;   // absent in older payloads
+    public bool LosDebugLog { get; set; }
     public int BlacklistAttempts { get; set; }
     public int BlacklistTimeoutSec { get; set; }
-    public int BlacklistCastSettleMs { get; set; }
+    // -1 = absent from the payload: the overlay's Settings panel didn't send it, and
+    // applying the missing 0 made every panel click zero the setting (2026-09-27).
+    public int BlacklistCastSettleMs { get; set; } = -1;
     public int TargetNoProgressTimeoutSec { get; set; }
     public int GiveQueueIntervalMs { get; set; }
 
@@ -614,7 +657,7 @@ public sealed class SettingsBridgePayload
 
     // Ranges
     public int MonsterRange { get; set; }
-    public int MonsterDisengageRange { get; set; }
+    public int MonsterDisengageRange { get; set; } = -1;   // -1 = absent, see BlacklistCastSettleMs
     public int RingRange { get; set; }
     public int ApproachRange { get; set; }
     public double CorpseApproachRangeMax { get; set; }
@@ -637,6 +680,7 @@ public sealed class SettingsBridgePayload
     public float NavDeadZone { get; set; }
     public float NavSweepMult { get; set; }
     public float NavLookaheadYards { get; set; }
+    public float NavShortcutYards { get; set; }
     public float NavTurnRateDegPerSec { get; set; }
     public float NavTier1TurnSpeed { get; set; }
     public float PostPortalDelaySec { get; set; }
@@ -651,6 +695,7 @@ public sealed class SettingsBridgePayload
     public bool EnableBuffing { get; set; }
     public bool RebuffWhenIdle { get; set; }
     public int RebuffSecondsRemaining { get; set; }
+    public int RebuffTopOffSecondsRemaining { get; set; } = 1200;   // absent in older files
     public int BuffMinSkillLevelTier1 { get; set; }
     public int BuffMinSkillLevelTier2 { get; set; }
     public int BuffMinSkillLevelTier3 { get; set; }
@@ -691,6 +736,17 @@ public sealed class SettingsBridgePayload
     public int SalvageSalvageDelayMs { get; set; }
     public int SalvageResultDelayFirstMs { get; set; }
     public int SalvageResultDelayFastMs { get; set; }
+    // AutoVendor. Nullable so a settings panel that doesn't know these fields yet
+    // leaves the character's values alone instead of resetting them.
+    public bool? AutoVendorEnabled { get; set; }
+    public bool? AutoVendorEnableBuying { get; set; }
+    public bool? AutoVendorEnableSelling { get; set; }
+    public bool? AutoVendorTestMode { get; set; }
+    public bool? AutoVendorThink { get; set; }
+    public bool? AutoVendorShowMerchantInfo { get; set; }
+    public bool? AutoVendorOnlyFromMainPack { get; set; }
+    public int? AutoVendorTries { get; set; }
+    public int? AutoVendorTriesTime { get; set; }
 }
 
 public enum MetaConditionType

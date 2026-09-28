@@ -224,6 +224,89 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
             return false; // Arc clears all obstacles
         }
 
+        /// <summary>What <see cref="IsBallisticArcBlocked"/> found, for the LOS debug log and /ra lostest.</summary>
+        public struct ArcLosResult
+        {
+            public bool  Blocked;
+            public bool  OutOfReach;   // the launch speed can't carry the shot that far / that high
+            public float Sag;          // how far the arc rises above the straight line, at most (m)
+            public float Apex;         // highest point of the flight above the launch point (m)
+            public float HitAlong;     // horizontal distance from the shooter to the hit (m)
+            public float HitZ;         // height of the hit above the launch point (m)
+        }
+
+        /// <summary>
+        /// Tests the path a missile really flies: the low ballistic arc at the weapon's launch
+        /// speed (see <see cref="MissileBallistics"/>), raised by <paramref name="clearance"/>
+        /// at mid-flight. Unlike <see cref="IsArcPathBlocked"/> (the old flat-ground
+        /// approximation, kept for magic arcs), the arc passes exactly through the aim point
+        /// for any height difference. Floors and ceilings are part of the dungeon geometry, so
+        /// an arc that rises into a ceiling reports blocked. Out of reach counts as blocked.
+        /// Hits within 0.5 m of the shooter or 0.3 m of the target are ignored, as in the
+        /// straight-line test.
+        /// </summary>
+        public static bool IsBallisticArcBlocked(Vector3 origin, Vector3 target, float speed, float clearance,
+                                                 List<BoundingVolume> geometry, out ArcLosResult result)
+        {
+            result = default;
+            if (float.IsNaN(origin.X) || float.IsNaN(origin.Y) || float.IsNaN(origin.Z) ||
+                float.IsNaN(target.X) || float.IsNaN(target.Y) || float.IsNaN(target.Z))
+                return false;
+
+            var arc = MissileBallistics.Solve(origin.X, origin.Y, origin.Z, target.X, target.Y, target.Z, speed);
+            result.Sag  = arc.MaxRiseAboveChord;
+            result.Apex = arc.ApexAboveLaunch;
+            if (!arc.Valid)
+            {
+                result.OutOfReach = true;
+                result.Blocked = true;
+                return true;
+            }
+            if (geometry == null || geometry.Count == 0)
+                return false;
+
+            clearance = Math.Max(0f, clearance);
+            int n = MissileBallistics.SegmentCount(arc.HorizDist);
+            Vector3 prev = origin;
+            float travelled = 0f;
+
+            for (int i = 1; i <= n; i++)
+            {
+                float t = (float)i / n;
+                Vector3 cur;
+                if (i == n) cur = target;
+                else
+                {
+                    arc.PointAt(t, clearance, out float px, out float py, out float pz);
+                    cur = new Vector3(px, py, pz);
+                }
+
+                Vector3 seg = cur - prev;
+                float len = seg.Length();
+                if (len > 1e-4f)
+                {
+                    Vector3 dir = seg / len;
+                    foreach (var volume in geometry)
+                    {
+                        if (volume.IsDoor) continue;
+                        if (!volume.RayIntersect(prev, dir, len, out float hd)) continue;
+                        if (hd < 0f || hd > len) continue;
+                        if (travelled + hd < 0.5f) continue;          // at the shooter
+                        if (i == n && hd > len - 0.3f) continue;      // at the target
+                        Vector3 hit = prev + dir * hd;
+                        float hx = hit.X - origin.X, hy = hit.Y - origin.Y;
+                        result.Blocked  = true;
+                        result.HitAlong = (float)Math.Sqrt(hx * hx + hy * hy);
+                        result.HitZ     = hit.Z - origin.Z;
+                        return true;
+                    }
+                }
+                travelled += len;
+                prev = cur;
+            }
+            return false;
+        }
+
         /// <summary>
         /// Tests if a line segment between two points intersects any geometry.
         /// Used internally for arc sampling.

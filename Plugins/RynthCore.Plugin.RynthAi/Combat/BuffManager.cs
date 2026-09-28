@@ -36,6 +36,10 @@ public class BuffManager : IDisposable
     private DateTime _lastBuffStanceAttempt = DateTime.MinValue;
     private int _buffStanceConsecutiveFails = 0;
     private bool _isForceRebuffing = false;
+    // Set with _isForceRebuffing when the pass is the automatic batch (one buff fell
+    // under RebuffSecondsRemaining), not the Force Rebuff button. The batch only tops
+    // off buffs under RebuffTopOffSecondsRemaining; Force Rebuff recasts everything.
+    private bool _isAutoBatchRebuff = false;
     private int _pendingSpellId = 0;
     private Action<string>? _onCastResolved;
 
@@ -475,6 +479,7 @@ public class BuffManager : IDisposable
     public void ForceFullRebuff()
     {
         _isForceRebuffing = true;
+        _isAutoBatchRebuff = false;
         _forceRebuffCastFamilies.Clear();
         _buffFailCooldownUntil.Clear(); // explicit recast-all must not be blocked by stale cooldowns
         _silentNoShowCounts.Clear();    // give parked families a fresh shot on FR too
@@ -496,6 +501,7 @@ public class BuffManager : IDisposable
     public void CancelBuffing()
     {
         _isForceRebuffing = false;
+        _isAutoBatchRebuff = false;
         _isRechargingMana = false;
         _isRechargingStamina = false;
         _isHealingSelf = false;
@@ -810,15 +816,17 @@ public class BuffManager : IDisposable
 
             if (_isForceRebuffing)
             {
+                bool wasAutoBatch = _isAutoBatchRebuff;
                 _isForceRebuffing = false;
-                _host.Log($"[FR] complete — cast {_forceRebuffCastFamilies.Count} spell families");
+                _isAutoBatchRebuff = false;
+                _host.Log($"[FR] complete — cast {_forceRebuffCastFamilies.Count} spell families{(wasAutoBatch ? " (auto batch)" : "")}");
                 // Order matters: the flag must already be false (IsBuffActive
                 // short-circuits on _forceRebuffCastFamilies while it is set, so
                 // every family would read "active"), and the set must still be
                 // populated — it is what the audit iterates.
                 AuditBatchSatisfied();
                 _forceRebuffCastFamilies.Clear();
-                _host.WriteToChat("[RynthAi] Force Rebuff Complete.", 1);
+                _host.WriteToChat(wasAutoBatch ? "[RynthAi] Rebuff complete." : "[RynthAi] Force Rebuff Complete.", 1);
             }
         }
     }
@@ -1066,6 +1074,7 @@ public class BuffManager : IDisposable
             // no-show → re-park → another auto-batch → loop. Hard-reject
             // cooldowns are short-lived (120s) so they expire on their own.
             _isForceRebuffing = true;
+            _isAutoBatchRebuff = true;
             _forceRebuffCastFamilies.Clear();
         }
 
@@ -1377,13 +1386,23 @@ public class BuffManager : IDisposable
         // Force Rebuff: ignore live timers entirely — only spells we've already
         // cast THIS rebuff cycle count as "active". The whole point of FR is to
         // recast every spell so all timers align to the same start time.
+        // The automatic batch shares FR's bookkeeping but must NOT recast
+        // everything: one buff under the threshold used to refresh every buff,
+        // even ones with 30+ minutes left (2026-09-27). It tops off only buffs
+        // under RebuffTopOffSecondsRemaining (never less than RebuffSecondsRemaining,
+        // so the buff that started the batch is always in it) and leaves the rest
+        // to their own timers.
         if (_isForceRebuffing)
-            return _forceRebuffCastFamilies.Contains(targetSpell.Family);
+        {
+            if (_forceRebuffCastFamilies.Contains(targetSpell.Family)) return true;
+            if (!_isAutoBatchRebuff) return false;
+            rebufferSecOverride = Math.Max(_settings.RebuffTopOffSecondsRemaining, _settings.RebuffSecondsRemaining);
+        }
 
         int targetLevel = GetSpellLevel(targetSpell);
         // Recast when remaining duration drops below this many seconds.
         // User-configurable via Advanced Settings → Buffing; overridden during
-        // batch-rebuff passes (CheckAndCastSelfBuffs) to 1200s (20 min).
+        // batch-rebuff passes (CheckAndCastSelfBuffs) by RebuffTopOffSecondsRemaining.
         int rebufferSec = Math.Max(0, rebufferSecOverride ?? _settings.RebuffSecondsRemaining);
 
         // Tier-upgrade rule (applies to both item enchantments and player buffs):
@@ -1664,10 +1683,16 @@ public class BuffManager : IDisposable
 
             // Learn the real ceiling this family lands at (Incantations cap below
             // their nominal tier) so IsBuffActive stops chasing an unreachable tier.
-            // Recorded for EVERY entry read, including one the merge above
+            // Recorded for every timed entry read, including one the merge above
             // discarded — the ceiling is about what this character can land, not
-            // about which entry currently wins the family slot.
-            RecordAchievedTier(spellInfo.Family, level);
+            // about which entry currently wins the family slot. NOT for permanent
+            // entries: those are item-granted ("Willpower Other I" on gear), not
+            // something this character cast, and learning their tier as the
+            // ceiling made a permanent level-1 enchant satisfy the family forever
+            // (effective target 1, never expires): after a relog with the real
+            // buff gone, Lucy went 17 minutes without Willpower (2026-09-27).
+            if (!isPermanent)
+                RecordAchievedTier(spellInfo.Family, level);
 
             if (isPermanent && _loggedPermanentFamilies.Add(spellInfo.Family))
                 _host.Log($"[BuffDiag] permanent player enchant tracked: id={spellInfo.Id} '{spellInfo.Name}' (fam={spellInfo.Family}, lvl={level}) — presence-only, not persisted" +
