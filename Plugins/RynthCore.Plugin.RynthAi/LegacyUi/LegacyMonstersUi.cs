@@ -313,7 +313,10 @@ internal sealed class LegacyMonstersUi
             {
                 if (ImGui.Selectable("<AUTO>", rule.WeaponId == 0)) { rule.WeaponId = 0; _onMonstersChanged(); }
                 foreach (var item in _settings.ItemRules)
+                {
+                    if (item.IsShield()) continue; // shields belong in the Offhand column
                     if (ImGui.Selectable(item.Name + $"##wep{i}_{item.Id}", rule.WeaponId == item.Id)) { rule.WeaponId = item.Id; _onMonstersChanged(); }
+                }
                 ImGui.EndCombo();
             }
 
@@ -366,10 +369,16 @@ internal sealed class LegacyMonstersUi
             if (ImGui.BeginCombo($"##Off{i}", offLabel, ImGuiComboFlags.None))
             {
                 if (ImGui.Selectable("<AUTO>", rule.OffhandId == 0)) { rule.OffhandId = 0; _onMonstersChanged(); }
+                // Only shields are equipped in the off hand (Items → Shields).
                 foreach (var item in _settings.ItemRules)
+                {
+                    if (!item.IsShield()) continue;
                     if (ImGui.Selectable(item.Name + $"##off{i}_{item.Id}", rule.OffhandId == item.Id)) { rule.OffhandId = item.Id; _onMonstersChanged(); }
+                }
                 ImGui.EndCombo();
             }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Shield for the secondary hand with one-handed melee weapons.\n<AUTO> = first shield in Items → Shields (when auto-equip is on).");
 
             ImGui.TableNextColumn();
             ImGui.SetNextItemWidth(-1);

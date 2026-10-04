@@ -2575,6 +2575,7 @@ public class BuffManager : IDisposable
         // Prefer explicitly configured wand from item rules
         foreach (var rule in _settings.ItemRules)
         {
+            if (rule.IsShield()) continue; // off-hand entries are never casters
             var wo = _worldObjectCache[rule.Id];
             if (wo != null && IsWandObject(wo)) return rule.Id;
         }

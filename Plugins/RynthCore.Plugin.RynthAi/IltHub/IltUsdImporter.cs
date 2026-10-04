@@ -254,6 +254,9 @@ internal sealed class IltUsdImporter
 
     private void PlanWeapons(UsdTable t, ImportPlan plan)
     {
+        // The VT "shields" table (or any row whose item wields into the shield slot)
+        // becomes an off-hand Shield entry, never a main-hand weapon.
+        bool shieldTable = t.Name.Equals("shields", StringComparison.OrdinalIgnoreCase);
         foreach (var row in t.Rows)
         {
             int id = ParseId(t.Get(row, "Object", "ObjectId", "Id"));
@@ -261,8 +264,15 @@ internal sealed class IltUsdImporter
             var wo = Resolve(id, name);
             if (wo == null) { if (name.Length > 0) plan.Notes.Add($"weapon '{name}' not carried"); continue; }
             if (plan.Weapons.Any(w => w.Id == wo.Id)) continue;
+            bool isShield = shieldTable || Combat.ShieldHelper.IsShieldObject(wo);
             string element = BitsToElement(wo.Values(LongValueKey.DamageType, 0)) ?? "Slash";
-            plan.Weapons.Add(new ItemRule { Id = wo.Id, Name = wo.Name, Action = "Weapon", Element = element });
+            plan.Weapons.Add(new ItemRule
+            {
+                Id      = wo.Id,
+                Name    = wo.Name,
+                Action  = isShield ? ItemRule.ShieldAction : ItemRule.WeaponAction,
+                Element = element,
+            });
         }
     }
 

@@ -118,6 +118,22 @@ public class CombatManager : IDisposable
     private const int CombatBowDequipMaxAttempts = 3;
     private const double WandSwapWieldResolveMs = 4000;
 
+    // ── Off-hand shield equip state ──────────────────────────────────────
+    // Best effort: once the main weapon is wielded and Melee stance reached, a
+    // configured shield is UseObject-ed into the off hand. Same pacing rules as
+    // the wand gate — one attempt in flight, resolve timeout, cooldown after a
+    // miss, and a per-shield failure cap so a shield that can't be wielded
+    // (skill/level requirement, two-hander) never jams the item queue.
+    private int      _shieldPendingId;
+    private DateTime _shieldPendingAt      = DateTime.MinValue;
+    private DateTime _shieldCooldownUntil  = DateTime.MinValue;
+    private readonly Dictionary<int, int> _shieldFailCounts = new();
+    private readonly HashSet<int> _shieldGiveUpWarned = new();
+    private DateTime _lastShieldDiagAt     = DateTime.MinValue;
+    private const double ShieldWieldResolveMs  = 3000;
+    private const double ShieldWieldCooldownMs = 15000;
+    private const int    ShieldWieldFailMax    = 3;
+
     // Clear all stance-deadlock episode state. Called wherever the stance is
     // reached or the target drops, so the next episode starts fresh.
     private void ResetStanceRecovery()
@@ -528,7 +544,8 @@ public class CombatManager : IDisposable
                 pickedWeaponId = (int)deff;
             else
             {
-                var bestWeapon = _settings.ItemRules.FirstOrDefault();
+                // Same filter as EquipWeaponAndSetStance — shields are off-hand only.
+                var bestWeapon = _settings.ItemRules.FirstOrDefault(i => IsUsableCombatWeapon(i.Id));
                 if (bestWeapon != null) pickedWeaponId = bestWeapon.Id;
             }
             if (pickedWeaponId == 0) pickedWeaponId = FindWandInItems();
@@ -2581,6 +2598,7 @@ public class CombatManager : IDisposable
             if (CurrentCombatMode == desiredMode)
             {
                 ResetStanceRecovery(); // reached the stance — clear the whole episode
+                TryEquipOffhandShield(weaponObj, rule, targetWcid); // best effort, never blocks
                 return true;
             }
 
@@ -2650,6 +2668,7 @@ public class CombatManager : IDisposable
         {
             _stanceStuckSince = DateTime.MinValue; ResetWandSwapState(); ResetStanceFlipBackoff(); // reached the stance — clear stuck timer + swap + flip backoff
             ResetCombatWandWieldGate();
+            TryEquipOffhandShield(weaponObj, rule, targetWcid); // best effort, never blocks
             return true;
         }
 
@@ -3517,6 +3536,7 @@ public class CombatManager : IDisposable
         // Prefer explicitly configured wand from item rules
         foreach (var item in _settings.ItemRules)
         {
+            if (item.IsShield()) continue; // off-hand entries are never casters
             var wo = _worldFilter[item.Id];
             if (wo != null && IsWandObject(wo)) return item.Id;
         }
@@ -3540,12 +3560,121 @@ public class CombatManager : IDisposable
 
     /// <summary>A weapon combat may fight with: anything but a caster when the character
     /// has no attack magic. An id missing from the world cache stays a candidate — the
-    /// caller already handles that. Debuff casting picks its wand separately.</summary>
+    /// caller already handles that. Debuff casting picks its wand separately.
+    /// Shields (tagged in Items, or recognised by their equip mask) are never a main-hand
+    /// weapon — they are equipped into the off hand by <see cref="TryEquipOffhandShield"/>.</summary>
     private bool IsUsableCombatWeapon(int id)
     {
+        if (IsShieldItem(id)) return false;
         if (CanAttackWithMagic) return true;
         var wo = _worldFilter[id];
         return wo == null || !IsWandObject(wo);
+    }
+
+    /// <summary>True when <paramref name="id"/> is a shield: tagged Shield in Items, or the
+    /// world object's equip mask / name says so (older settings tagged shields as weapons).</summary>
+    private bool IsShieldItem(int id)
+    {
+        if (id == 0) return false;
+        foreach (var r in _settings.ItemRules)
+            if (r.Id == id && r.IsShield()) return true;
+        return ShieldHelper.IsShieldObject(_worldFilter[id]);
+    }
+
+    /// <summary>A shield still listed in Items (removing it there stops combat equipping it).</summary>
+    private bool IsListedShield(int id)
+    {
+        if (id == 0 || !IsShieldItem(id)) return false;
+        foreach (var r in _settings.ItemRules)
+            if (r.Id == id) return true;
+        return false;
+    }
+
+    /// <summary>Shield to carry against this target, or 0. Priority: Damage-panel per-wcid
+    /// offhand → Monsters-tab rule Offhand → (AutoEquipShield) first shield in Items that is
+    /// in the world cache. Non-shield picks, and picks no longer listed in Items, are ignored.</summary>
+    private int ResolveOffhandShield(MonsterRule? rule, uint targetWcid)
+    {
+        if (targetWcid != 0 && _damageStore != null)
+        {
+            int manual = (int)_damageStore.GetManualOffhand(targetWcid);
+            if (IsListedShield(manual)) return manual;
+        }
+        if (rule != null && IsListedShield(rule.OffhandId))
+            return rule.OffhandId;
+        if (!_settings.AutoEquipShield) return 0;
+        foreach (var r in _settings.ItemRules)
+            if (r.IsShield() && _worldFilter[r.Id] != null) return r.Id;
+        return 0;
+    }
+
+    /// <summary>Wielded by us: CurrentWieldedLocation, with the wielder-info fallback for a
+    /// stale property read (same two checks EquipWeaponAndSetStance uses for the weapon).</summary>
+    private bool IsWieldedByPlayer(WorldObject wo)
+    {
+        if (wo.Values(LongValueKey.CurrentWieldedLocation, 0) > 0) return true;
+        if (!_host.HasGetObjectWielderInfo) return false;
+        uint pid = _host.GetPlayerId();
+        return pid != 0
+            && _host.TryGetObjectWielderInfo((uint)wo.Id, out uint wielder, out _)
+            && wielder == pid;
+    }
+
+    /// <summary>Equip the off-hand shield once the main weapon is wielded and Melee stance is
+    /// reached. Never blocks combat: every early-out simply leaves the off hand as it is.
+    /// Only for one-handed melee weapons — bows, casters and two-handers have no free off hand.</summary>
+    private void TryEquipOffhandShield(WorldObject weaponObj, MonsterRule? rule, uint targetWcid)
+    {
+        if (CurrentCombatMode != CombatMode.Melee || !ShieldHelper.AllowsShield(weaponObj)) return;
+
+        int shieldId = ResolveOffhandShield(rule, targetWcid);
+        if (shieldId == 0) return;
+        var shield = _worldFilter[shieldId];
+        if (shield == null) return; // not carried (or not cached yet)
+
+        DateTime now = DateTime.Now;
+        if (IsWieldedByPlayer(shield))
+        {
+            // Landed (or was already on) — clear the episode for this shield.
+            if (_shieldPendingId == shieldId) _shieldPendingId = 0;
+            _shieldFailCounts.Remove(shieldId);
+            _shieldGiveUpWarned.Remove(shieldId);
+            return;
+        }
+
+        // An attempt is in flight: wait for it to resolve, then count a miss.
+        if (_shieldPendingId != 0)
+        {
+            if ((now - _shieldPendingAt).TotalMilliseconds < ShieldWieldResolveMs) return;
+            _shieldFailCounts.TryGetValue(_shieldPendingId, out int fails);
+            _shieldFailCounts[_shieldPendingId] = ++fails;
+            RynthLog.Write(LogCat.Combat, $"[ShieldDiag] shield 0x{_shieldPendingId:X8} not wielded {ShieldWieldResolveMs:0}ms after UseObject (miss {fails}/{ShieldWieldFailMax})");
+            _shieldPendingId = 0;
+            _shieldCooldownUntil = now.AddMilliseconds(ShieldWieldCooldownMs);
+            return;
+        }
+
+        if (now < _shieldCooldownUntil) return;
+
+        if (_shieldFailCounts.TryGetValue(shieldId, out int failed) && failed >= ShieldWieldFailMax)
+        {
+            if (_shieldGiveUpWarned.Add(shieldId))
+                _host.WriteToChat($"[RynthAi] Could not wield shield '{shield.Name}' after {ShieldWieldFailMax} tries — skipping it (check wield requirements or the weapon is two-handed).", 2);
+            return;
+        }
+
+        // Equips share the swap gate with weapon/wand swaps; on refusal retry next tick.
+        if (_weaponSwapGate != null && !_weaponSwapGate.TryBeginSwap("combat-shield")) return;
+
+        if ((now - _lastShieldDiagAt).TotalSeconds > 5)
+        {
+            _lastShieldDiagAt = now;
+            RynthLog.Write(LogCat.Combat, $"[ShieldDiag] UseObject(0x{shieldId:X8} '{shield.Name}') off hand, weapon=0x{weaponObj.Id:X8} '{weaponObj.Name}'");
+        }
+        _host.UseObject((uint)shieldId);
+        _shieldPendingId = shieldId;
+        _shieldPendingAt = now;
+        _lastEquipTime   = now;
     }
 
     private static bool IsWandName(string name)

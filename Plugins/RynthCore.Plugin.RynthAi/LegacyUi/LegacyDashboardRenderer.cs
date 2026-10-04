@@ -192,6 +192,7 @@ internal sealed class LegacyDashboardRenderer
         _rynthChatUi.OnSettingChanged = SaveSettings;
         // "Tools" buttons on the Items window and the Looting settings page.
         _weaponsUi.SetToolLaunchers(OpenLootEditor, OpenMonsterEditor);
+        _weaponsUi.OnMonstersChanged = SaveMonstersFile;
         _advancedSettingsUi.SetToolLaunchers(OpenLootEditor, OpenMonsterEditor);
         RefreshAllLists();
     }
@@ -561,8 +562,9 @@ internal sealed class LegacyDashboardRenderer
             var payload = new MonstersBridgePayload
             {
                 Rules = _settings.MonsterRules ?? new List<MonsterRule>(),
+                // Shields are tagged so the engine-side pickers can tell them from weapons.
                 Items = (_settings.ItemRules ?? new List<ItemRule>())
-                    .Select(r => new MonsterBridgeItem { Id = r.Id, Name = r.Name }).ToList(),
+                    .Select(r => new MonsterBridgeItem { Id = r.Id, Name = r.IsShield() ? r.Name + " [Shield]" : r.Name }).ToList(),
                 CurrentTargetName = _currentTargetId != 0 ? (_targetLabel ?? string.Empty) : string.Empty,
             };
 
@@ -609,7 +611,10 @@ internal sealed class LegacyDashboardRenderer
             {
                 if (!first) sb.Append(',');
                 first = false;
-                sb.Append("{\"id\":").Append(it.Id).Append(",\"name\":").Append(JsonString(it.Name)).Append('}');
+                // One list feeds both Damage-panel pickers: tag shields (off-hand only; combat
+                // ignores a shield chosen as the weapon).
+                string label = it.IsShield() ? it.Name + " [Shield]" : it.Name;
+                sb.Append("{\"id\":").Append(it.Id).Append(",\"name\":").Append(JsonString(label)).Append('}');
             }
             sb.Append(']');
             return sb.ToString();
@@ -1048,6 +1053,23 @@ internal sealed class LegacyDashboardRenderer
         {
             var p = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.ItemsBridgePayload);
             if (p == null) return;
+            // The engine Items panel only round-trips id/name/element; keep each entry's
+            // Action (Weapon vs off-hand Shield) and KeepBuffed from the current list.
+            var previous = new Dictionary<int, ItemRule>();
+            foreach (var r in _settings.ItemRules ?? new List<ItemRule>())
+                previous.TryAdd(r.Id, r); // tolerate duplicate ids in old settings files
+            foreach (var w in p.Weapons)
+            {
+                if (previous.TryGetValue(w.Id, out var old))
+                {
+                    w.Action     = old.Action;
+                    w.KeepBuffed = old.KeepBuffed;
+                }
+                else if (w.Action == "Loot")
+                {
+                    w.Action = ItemRule.WeaponAction; // the engine panel only adds weapons
+                }
+            }
             _settings.ItemRules          = p.Weapons;
             _settings.ConsumableRules    = p.Consumables;
             _settings.EnableManaTapping  = p.EnableManaTapping;

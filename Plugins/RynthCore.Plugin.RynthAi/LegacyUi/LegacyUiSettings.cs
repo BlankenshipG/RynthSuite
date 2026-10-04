@@ -204,6 +204,12 @@ public sealed class LegacyUiSettings
     /// <summary>When true, only ammo stacks listed under Items → Missile ammunition are considered for auto-equip (besides per-monster override).</summary>
     public bool MissileAmmoInventoryRulesOnly;
     /// <summary>
+    /// When true (default), melee combat with a one-handed weapon equips the first shield listed
+    /// under Items → Shields whenever no off-hand is set for the monster (Damage panel override or
+    /// Monsters rule Offhand). Explicit per-monster off-hands are used regardless.
+    /// </summary>
+    public bool AutoEquipShield = true;
+    /// <summary>
     /// Physical-attack path. FALSE (default since 2026-09-04) = the direct
     /// explicit-target path: Event_TargetedMelee/MissileAttack take the target
     /// id as an argument and never touch AC's single selection global
@@ -511,11 +517,22 @@ public sealed class BuffRule
 
 public sealed class ItemRule
 {
+    /// <summary><see cref="Action"/> value for a weapon (main hand).</summary>
+    public const string WeaponAction = "Weapon";
+
+    /// <summary><see cref="Action"/> value for a shield carried in the secondary (off) hand.</summary>
+    public const string ShieldAction = "Shield";
+
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
+    /// <summary>"Weapon" (main hand) or "Shield" (off hand); older files may hold "Loot".</summary>
     public string Action { get; set; } = "Loot";
+    /// <summary>Damage element (weapons only; ignored for shields).</summary>
     public string Element { get; set; } = "Slash";
     public bool KeepBuffed { get; set; } = true;
+
+    /// <summary>True for an off-hand shield entry. Shields are never chosen as the main weapon.</summary>
+    public bool IsShield() => string.Equals(Action, ShieldAction, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>JSON wire-format types used by the engine-side Avalonia MonstersPanel.</summary>

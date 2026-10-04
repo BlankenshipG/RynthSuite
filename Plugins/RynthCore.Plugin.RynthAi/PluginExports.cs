@@ -339,7 +339,7 @@ public static unsafe class PluginExports
         try { Runtime.Plugin?.SetMonsterWeapon(wcid, weaponId); } catch { }
     }
 
-    // Per-monster offhand override from the Damage panel (offhandId == 0 clears). Stored only.
+    // Per-monster offhand override from the Damage panel (offhandId == 0 clears). Shields are equipped by combat.
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetMonsterOffhand", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void SetMonsterOffhand(uint wcid, uint offhandId)
     {
