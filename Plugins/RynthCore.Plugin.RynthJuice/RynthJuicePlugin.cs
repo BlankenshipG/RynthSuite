@@ -17,7 +17,7 @@ namespace RynthCore.Plugin.RynthJuice;
 public sealed class RynthJuicePlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthJuice");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.1");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.2");
 
     private sealed class HState
     {
@@ -37,8 +37,23 @@ public sealed class RynthJuicePlugin : RynthPluginBase
     private readonly Dictionary<uint, HState> _health = new();
     private readonly HashSet<uint> _killedIds = new();
     private readonly List<JuiceEffects.MobHp> _mobHpScratch = new();
-    private readonly HashSet<uint> _tracked = new();   // candidate mob ids (from OnCreateObject) to poll
-    private readonly List<uint> _pollScratch = new();
+    // Object tracking is split in two so a busy area (~700 created objects, mostly items)
+    // can't starve mob polling:
+    //  * candidates: dynamic objects not yet known to be attackable. Checked in ROTATION
+    //    (queue: dequeue, decide, re-enqueue at the back) with a per-poll budget, so every
+    //    candidate is reached within a few polls. Known non-creatures are dropped.
+    //  * mobs: confirmed attackable. Polled every cycle (budgeted + rotated only if there
+    //    are more than MobPollBudget) so health bars stay continuous.
+    // Membership lives in the sets; the queues may hold stale ids (deleted / moved), which
+    // are discarded lazily when dequeued.
+    private readonly HashSet<uint> _candidateSet = new();
+    private readonly Queue<uint> _candidateQueue = new();
+    private readonly HashSet<uint> _candidateQueued = new(); // ids physically in _candidateQueue (no duplicates after delete+recreate)
+    private readonly HashSet<uint> _mobSet = new();
+    private readonly Queue<uint> _mobQueue = new();
+    private readonly HashSet<uint> _mobQueued = new();       // ids physically in _mobQueue
+    private int _droppedNonCreatures;
+    private bool _trackCapLogged;
     private int _pollLogCount;
     private int _createLogCount;
     private readonly Random _rng = new();
@@ -56,6 +71,11 @@ public sealed class RynthJuicePlugin : RynthPluginBase
     private const int HealMinDelta = 8;     // filters small regen ticks
     private const long DeleteKillRecentDamageMs = 8_000; // delete counts as a kill only if we hit it this recently
     private const long ForgetMs = 60_000;   // prune untouched health entries
+
+    private const int CandidateCheckBudget = 80; // candidates classified per poll (rotating)
+    private const int MobPollBudget = 64;        // confirmed mobs polled per poll (rotating if more)
+    private const int MaxTrackedObjects = 4096;  // safety cap (candidates + mobs); non-creatures are dropped, so this is rarely reached
+    private const uint ItemTypeCreature = 0x10;  // AC ITEM_TYPE.TYPE_CREATURE
 
     // An exact combat-log amount whose health packet hasn't arrived yet (reverse order).
     private struct PendingExact { public bool Has; public int Amount; public bool Crit; public bool Incoming; public long Ts; }
@@ -86,7 +106,7 @@ public sealed class RynthJuicePlugin : RynthPluginBase
         _loginComplete = false;
         _health.Clear();
         _killedIds.Clear();
-        _tracked.Clear();
+        ClearTracking();
         _fx.Clear();
     }
 
@@ -301,22 +321,39 @@ public sealed class RynthJuicePlugin : RynthPluginBase
         if (_debugChat) Host.Log($"[RynthJuice] COMBATDMG dmg={damage} type={damageType} crit={crit} atk={isAttacker}");
     }
 
-    // Track dynamic objects (mobs/items) so we can poll their health each tick —
-    // the streaming-health hook is dead on this client, so polling is how we read
-    // monster HP. ObjectIsAttackable (in the poll) filters out non-creatures.
+    // Track dynamic objects so we can poll mob health — the streaming-health hook is
+    // dead on this client, so polling is how we read monster HP. New objects start as
+    // candidates; the poll promotes attackable ones to mobs and drops non-creatures.
     public override void OnCreateObject(uint objectId)
     {
         // No login/enabled gate: the engine REPLAYS creates for pre-existing objects
         // at plugin init (possibly before OnLoginComplete), and mobs already in the
         // room must be tracked. Polling itself is gated by login/enabled in OnTick.
         if ((objectId & 0x80000000u) == 0) return;     // dynamic objects only
-        if (_tracked.Count >= 800 || !_tracked.Add(objectId)) return;
-        if (_createLogCount < 8) { _createLogCount++; Host.Log($"[RynthJuice] create 0x{objectId:X8} tracked={_tracked.Count}"); }
+        if (_mobSet.Contains(objectId)) return;        // already a confirmed mob
+
+        // Known non-creature (item, portal, …): never a mob — don't track it at all.
+        if (IsKnownNonCreature(objectId)) { _droppedNonCreatures++; return; }
+
+        if (_candidateSet.Count + _mobSet.Count >= MaxTrackedObjects)
+        {
+            if (!_trackCapLogged)
+            {
+                _trackCapLogged = true;
+                Host.Log($"[RynthJuice] tracking cap {MaxTrackedObjects} reached — new objects not tracked until some are deleted");
+            }
+            return;
+        }
+        if (!_candidateSet.Add(objectId)) return;
+        EnqueueCandidate(objectId);
+        if (_createLogCount < 8) { _createLogCount++; Host.Log($"[RynthJuice] create 0x{objectId:X8} candidates={_candidateSet.Count}"); }
     }
 
     public override void OnDeleteObject(uint objectId)
     {
-        _tracked.Remove(objectId);
+        // Queue entries for this id are discarded lazily (set membership is the truth).
+        _candidateSet.Remove(objectId);
+        _mobSet.Remove(objectId);
         // Capture state BEFORE removing it — LastDmgMs is the recent-damage
         // gate below; the old order destroyed it first.
         bool hadState = _health.TryGetValue(objectId, out HState? st);
@@ -461,22 +498,38 @@ public sealed class RynthJuicePlugin : RynthPluginBase
     // HP. Drives both the live health % and instant (no-delay) death detection.
     private void PollMobHealth(long now)
     {
-        if (_tracked.Count == 0)
+        if (_candidateSet.Count == 0 && _mobSet.Count == 0)
         {
             if ((_tick & 0x7F) == 0) Host.Log("[RynthJuice] pollcycle tracked=0 (OnCreateObject delivered no ids)");
             return;
         }
         _mobHpScratch.Clear();
-        _pollScratch.Clear();
-        _pollScratch.AddRange(_tracked); // snapshot so we can remove during the walk
 
-        int budget = 80, atk = 0, vit = 0;
-        foreach (uint id in _pollScratch)
+        // 1) Classify a rotating slice of candidates first, so a mob promoted this poll is
+        //    polled below in the same cycle.
+        int promoted = CheckCandidates();
+
+        // 2) Poll confirmed mobs. Each is dequeued and either re-enqueued at the back or
+        //    dropped, so with more than MobPollBudget mobs the poll still rotates fairly.
+        int atk = 0, vit = 0;
+        int mobChecks = Math.Min(_mobQueue.Count, MobPollBudget);
+        for (int i = 0; i < mobChecks; i++)
         {
-            if (budget-- <= 0) break;
-            if (id == _playerId) { _tracked.Remove(id); continue; }
-            if (!Host.ObjectIsAttackable(id)) continue; // KEEP tracked — classification lags several ticks
+            uint id = _mobQueue.Dequeue();
+            _mobQueued.Remove(id);
+            if (!_mobSet.Contains(id)) continue;          // stale entry (deleted / demoted)
+            if (id == _playerId) { _mobSet.Remove(id); continue; }
+
+            if (!Host.ObjectIsAttackable(id))
+            {
+                // No longer attackable (e.g. died between polls, became friendly): back to
+                // candidates so it is re-checked in rotation instead of polled every cycle.
+                _mobSet.Remove(id);
+                if (_candidateSet.Add(id)) EnqueueCandidate(id);
+                continue;
+            }
             atk++;
+            EnqueueMob(id); // stays a mob unless the kill path below removes it
 
             if (!Host.TryGetTargetVitals(id, out uint h, out uint mx, out _, out _, out _, out _) || (h == 0 && mx == 0))
                 continue; // can't read this tick
@@ -500,7 +553,7 @@ public sealed class RynthJuicePlugin : RynthPluginBase
                     _fx.SpawnKillBurst(cell, e, n, u, crit: false, now);
                     Host.Log($"[RynthJuice] KILL(poll) tgt=0x{id:X8} cell=0x{cell:X8}");
                 }
-                _tracked.Remove(id);
+                _mobSet.Remove(id); // its re-enqueued queue entry is discarded lazily
                 continue;
             }
 
@@ -509,8 +562,80 @@ public sealed class RynthJuicePlugin : RynthPluginBase
         }
 
         if ((_tick & 0x3F) == 0)
-            Host.Log($"[RynthJuice] pollcycle tracked={_tracked.Count} attackable={atk} vitals={vit} bars={_mobHpScratch.Count}");
+            Host.Log($"[RynthJuice] pollcycle candidates={_candidateSet.Count} mobs={_mobSet.Count} promoted={promoted} " +
+                     $"droppedNonCreatures={_droppedNonCreatures} attackable={atk} vitals={vit} bars={_mobHpScratch.Count}");
         if (_mobHpScratch.Count > 0) _fx.RenderMobHealth(Host, _cfg, _mobHpScratch);
+    }
+
+    /// <summary>
+    /// Checks up to <see cref="CandidateCheckBudget"/> candidates from the front of the
+    /// rotation queue. Each is dropped (player / known non-creature), promoted to a mob
+    /// (attackable), or re-enqueued at the back — so successive polls walk the whole list
+    /// instead of re-checking the same first slice. Returns the number promoted.
+    /// </summary>
+    private int CheckCandidates()
+    {
+        int promoted = 0;
+        int checks = Math.Min(_candidateQueue.Count, CandidateCheckBudget);
+        for (int i = 0; i < checks; i++)
+        {
+            uint id = _candidateQueue.Dequeue();
+            _candidateQueued.Remove(id);
+            if (!_candidateSet.Contains(id)) continue;    // stale entry (deleted / promoted)
+
+            if (id == _playerId) { _candidateSet.Remove(id); continue; }
+
+            // Type can arrive after create; once it says "not a creature", stop checking.
+            if (IsKnownNonCreature(id))
+            {
+                _candidateSet.Remove(id);
+                _droppedNonCreatures++;
+                continue;
+            }
+
+            if (Host.ObjectIsAttackable(id))
+            {
+                _candidateSet.Remove(id);
+                if (_mobSet.Add(id)) EnqueueMob(id);
+                promoted++;
+                continue;
+            }
+
+            // Unknown type or a non-attackable creature (NPC, pet): keep in rotation —
+            // attackable state can lag behind create by several ticks.
+            EnqueueCandidate(id);
+        }
+        return promoted;
+    }
+
+    /// <summary>True when the object's ItemType is known and lacks TYPE_CREATURE.
+    /// Type 0 / unreadable counts as unknown (kept as a candidate).</summary>
+    private bool IsKnownNonCreature(uint id)
+        => Host.HasGetItemType
+           && Host.TryGetItemType(id, out uint typeFlags)
+           && typeFlags != 0
+           && (typeFlags & ItemTypeCreature) == 0;
+
+    private void EnqueueCandidate(uint id)
+    {
+        if (_candidateQueued.Add(id)) _candidateQueue.Enqueue(id);
+    }
+
+    private void EnqueueMob(uint id)
+    {
+        if (_mobQueued.Add(id)) _mobQueue.Enqueue(id);
+    }
+
+    private void ClearTracking()
+    {
+        _candidateSet.Clear();
+        _candidateQueue.Clear();
+        _candidateQueued.Clear();
+        _mobSet.Clear();
+        _mobQueue.Clear();
+        _mobQueued.Clear();
+        _droppedNonCreatures = 0;
+        _trackCapLogged = false;
     }
 
     private void PruneHealth(long now)
