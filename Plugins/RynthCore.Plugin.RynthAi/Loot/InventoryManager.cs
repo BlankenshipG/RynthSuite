@@ -33,7 +33,9 @@ public sealed class InventoryManager
     // engine return is enqueue-accepted, not moved-confirmed (AcMainThreadQueue
     // gesture-defers a move up to ~250 ticks ≈ 4-8s), so success and failure are
     // indistinguishable at the call site. We confirm on a LATER snapshot.
-    private sealed class Pending { public DateTime EnqueuedAt; public int FromContainer; }
+    // SourceCount/TargetCount (AutoStack only) are the stack sizes at enqueue time, so a
+    // partial merge (source shrank, target grew, source survives) confirms as success.
+    private sealed class Pending { public DateTime EnqueuedAt; public int FromContainer; public int SourceCount; public int TargetCount; }
     private sealed class Backoff { public DateTime NextRetry; public int Attempts; public DateTime LastTouched; }
     private readonly Dictionary<int, Pending> _cramPending = new();        // item id -> in-flight move
     private readonly Dictionary<int, Backoff> _cramBackoff = new();        // item id -> confirmed-fail backoff
@@ -291,13 +293,38 @@ public sealed class InventoryManager
                     // unreadable failure.
                     if (_stackPending.TryGetValue(key, out var sp))
                     {
+                        // Success: source consumed, or a partial merge moved units (source
+                        // shrank / target grew while both survive).
                         bool sourceGone = !inv.Any(x => x.Id == parts[si].Item.Id);
-                        if (sourceGone)
+                        bool unitsMoved = parts[si].Count < sp.SourceCount || parts[ti].Count > sp.TargetCount;
+                        if (sourceGone || unitsMoved)
                         {
                             _stackPending.Remove(key);
                             _stackBackoff.Remove(key);
                             continue; // this pair resolved — try another
                         }
+
+                        // Engine-reported outcome (API v68+): resolve failures immediately
+                        // instead of waiting out the full grace window.
+                        int status = _host.GetMergeStackResult(
+                            unchecked((uint)parts[si].Item.Id), unchecked((uint)parts[ti].Item.Id), out _, out _);
+                        if (status == RynthCoreHost.MergeStackStatus.TargetFull)
+                        {
+                            // Our counts were stale (engine read the target as full). Not a
+                            // failure — just skip the pair briefly without escalating backoff.
+                            _stackPending.Remove(key);
+                            SetCooldown(_stackBackoff, key, BackoffBaseMs);
+                            RynthLog.Write(LogCat.Inventory, $"[RynthAi] AutoStack: engine skipped {key} — target already full; re-evaluating after {BackoffBaseMs:0}ms");
+                            continue;
+                        }
+                        if (status == RynthCoreHost.MergeStackStatus.Failed || status == RynthCoreHost.MergeStackStatus.QueueFull)
+                        {
+                            _stackPending.Remove(key);
+                            RegisterFailure(_stackBackoff, key);
+                            RynthLog.Write(LogCat.Inventory, $"[RynthAi] AutoStack: engine reported merge {(status == RynthCoreHost.MergeStackStatus.Failed ? "FAILED" : "DROPPED (queue full)")} {key} — backing off");
+                            continue;
+                        }
+
                         if ((DateTime.Now - sp.EnqueuedAt).TotalMilliseconds < MoveConfirmGraceMs)
                             continue; // still in flight — skip this pair this tick
                         _stackPending.Remove(key);
@@ -334,7 +361,13 @@ public sealed class InventoryManager
             // Enqueue accepted — record PENDING, confirm on a later snapshot. Do NOT
             // add the pair-key on success (the old bug that poisoned good merges and
             // starved multi-partial consolidation).
-            _stackPending[pairKey] = new Pending { EnqueuedAt = DateTime.Now, FromContainer = playerId };
+            _stackPending[pairKey] = new Pending
+            {
+                EnqueuedAt = DateTime.Now,
+                FromContainer = playerId,
+                SourceCount = source.Count,
+                TargetCount = target.Count,
+            };
             return true; // one action per tick
         }
 
@@ -360,6 +393,20 @@ public sealed class InventoryManager
         // Past the attempt budget, park far out (still age-pruned) instead of looping.
         if (b.Attempts >= MaxAttemptsBudget) delay = BackoffMaxMs;
         b.NextRetry = DateTime.Now.AddMilliseconds(delay);
+    }
+
+    // Short skip that does NOT count as a failure (attempts unchanged), e.g. the engine
+    // reported the target already full because our snapshot counts were a beat stale.
+    private static void SetCooldown<TKey>(Dictionary<TKey, Backoff> map, TKey key, double delayMs) where TKey : notnull
+    {
+        if (!map.TryGetValue(key, out var b))
+        {
+            b = new Backoff { Attempts = 0 };
+            map[key] = b;
+        }
+        b.LastTouched = DateTime.Now;
+        DateTime until = DateTime.Now.AddMilliseconds(delayMs);
+        if (until > b.NextRetry) b.NextRetry = until;
     }
 
     // Age-prune dead/idle entries so the maps don't grow unbounded across a long

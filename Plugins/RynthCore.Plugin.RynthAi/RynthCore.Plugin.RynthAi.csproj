@@ -16,11 +16,11 @@
     <AssemblyName>RynthCore.Plugin.RynthAi</AssemblyName>
     <Platforms>x86</Platforms>
     <!-- Keep in sync with RynthAiPlugin.VersionPointer (reported via GetVersion). -->
-    <!-- Previous release: 0.6.15 (ILT Hub overlay window). -->
-    <Version>0.6.16</Version>
-    <AssemblyVersion>0.6.16.0</AssemblyVersion>
-    <FileVersion>0.6.16.0</FileVersion>
-    <InformationalVersion>0.6.16-legacy-ui</InformationalVersion>
+    <!-- Previous release: 0.6.16 (typed item classification). -->
+    <Version>0.6.17</Version>
+    <AssemblyVersion>0.6.17.0</AssemblyVersion>
+    <FileVersion>0.6.17.0</FileVersion>
+    <InformationalVersion>0.6.17-legacy-ui</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
