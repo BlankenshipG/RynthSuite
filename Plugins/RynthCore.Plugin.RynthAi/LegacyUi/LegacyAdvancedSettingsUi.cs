@@ -187,13 +187,13 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Separator();
                 ImGui.Text("Item Info (Mag-style)");
-                ImGui.Checkbox("Describe items when selected", ref _settings.ItemInfoOnSelect);
+                ImGui.Checkbox("Describe items when selected", ref _settings.ItemInfoSettings.OnSelect);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Prints one Mag-style line to chat for each item you select:\nset, AL, imbues, slayer, tinks, damage, %a/%md, spells, wield, craft, [ratings].\n/ra iteminfo prints the selected item on demand.");
-                ImGui.Checkbox("Show value and burden", ref _settings.ItemInfoShowValueBurden);
-                ImGui.Checkbox("List all spells", ref _settings.ItemInfoVerboseSpells);
+                if (ImGui.Button("Item Info settings..."))
+                    _settings.ItemInfoSettings.ShowWindow = true;
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Off (Mag default): only cantrips, level 7+ auras, Augmented and\nImpen/banes on unenchantable gear. On: every spell on the item.");
+                    ImGui.SetTooltip("Turn each field on/off, pick ratings, spell list mode,\nchat colour and prefix, with a live preview.");
                 break;
 
             case "UI":

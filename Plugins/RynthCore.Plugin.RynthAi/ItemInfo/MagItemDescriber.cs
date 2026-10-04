@@ -29,8 +29,20 @@ internal interface IItemPropertySource
     IReadOnlyList<int> SpellIds { get; }
 }
 
-/// <summary>Output options (Items → Display → Item Info, or /ra iteminfo value|verbose).</summary>
-internal readonly record struct MagItemInfoOptions(bool ShowValueAndBurden, bool VerboseSpells);
+/// <summary>Per-call output options, snapshotted from <see cref="MagItemInfoSettings"/>.</summary>
+internal readonly record struct MagItemInfoOptions(
+    MagItemInfoField Hidden, int HiddenRatings, bool ShowValueAndBurden, bool AllSpells, int MaxListedSpells)
+{
+    /// <summary>Everything shown, Mag spell filter — used when no settings are loaded yet.</summary>
+    public static readonly MagItemInfoOptions Default = new(MagItemInfoField.None, 0, false, false, 26);
+
+    public static MagItemInfoOptions From(MagItemInfoSettings? s) => s == null
+        ? Default
+        : new((MagItemInfoField)s.HiddenFields, s.HiddenRatings, s.ShowValueAndBurden,
+              s.SpellMode == MagItemInfoSettings.SpellModeAll, s.MaxListedSpells);
+
+    public bool Shows(MagItemInfoField f) => (Hidden & f) == 0;
+}
 
 /// <summary>Builds the Mag-style item info line.</summary>
 internal static class MagItemDescriber
@@ -133,13 +145,14 @@ internal static class MagItemDescriber
         AcObjectClass cls = item.ObjectClass;
         Field fields = FieldsFor(cls);
         bool Has(Field f) => (fields & f) == f;
+        bool Show(MagItemInfoField f) => options.Shows(f);
 
         int Int(uint id) => item.TryGetInt(id, out int v) ? v : 0;
         double Dbl(uint id, double fallback) => item.TryGetDouble(id, out double v) ? v : fallback;
 
         // ── Name: "[Material ]Name (DamageType Mastery)" ────────────────────────
         int material = Int(IntMaterial);
-        if (material > 0)
+        if (material > 0 && Show(MagItemInfoField.Material))
         {
             string matName = MagItemInfoTables.Materials.TryGetValue(material, out string? m) ? m : $"material {material}";
             // Loot names usually omit the material; don't double it when the name already starts with it.
@@ -148,7 +161,7 @@ internal static class MagItemDescriber
         }
         sb.Append(item.Name);
 
-        if (Has(Field.DamageType))
+        if (Has(Field.DamageType) && Show(MagItemInfoField.TypeMastery))
         {
             string dmgType = MagItemInfoTables.DamageTypeName(Int(IntDamageType));
             int mastery = Int(IntWeaponType);
@@ -161,21 +174,21 @@ internal static class MagItemDescriber
 
         // ── Set ─────────────────────────────────────────────────────────────────
         int set = Int(IntEquipmentSet);
-        if (set > 0)
+        if (set > 0 && Show(MagItemInfoField.Set))
             sb.Append(", ").Append(MagItemInfoTables.EquipmentSets.TryGetValue(set, out string? setName) ? setName : $"Unknown set {set}");
 
         // ── Armor level ─────────────────────────────────────────────────────────
         int al = Int(IntArmorLevel);
-        if (al > 0) sb.Append(", AL ").Append(al);
+        if (al > 0 && Show(MagItemInfoField.ArmorLevel)) sb.Append(", AL ").Append(al);
 
         // ── Imbues (ImbuedEffect 179 plus ImbuedEffect2..5 = 303..306) ─────────
-        int imbued = Int(IntImbued) | Int(303) | Int(304) | Int(305) | Int(306);
-        AppendImbues(sb, imbued);
+        if (Show(MagItemInfoField.Imbues))
+            AppendImbues(sb, Int(IntImbued) | Int(303) | Int(304) | Int(305) | Int(306));
 
-        if (Has(Field.ArmorCleave) && Dbl(FloatIgnoreArmor, 0) != 0)
+        if (Has(Field.ArmorCleave) && Show(MagItemInfoField.ArmorCleave) && Dbl(FloatIgnoreArmor, 0) != 0)
             sb.Append(", AC");
 
-        if (Has(Field.CritStats))
+        if (Has(Field.CritStats) && Show(MagItemInfoField.CritStats))
         {
             double critMult = Dbl(FloatCritMultiplier, 0);
             if (critMult > 0) sb.Append(", CritMult (").Append(Fmt(critMult)).Append(')');
@@ -183,19 +196,19 @@ internal static class MagItemDescriber
             if (critFreq > 0) sb.Append(", CritFreq (").Append(Fmt(critFreq)).Append(')');
         }
 
-        if (Has(Field.Splits))
+        if (Has(Field.Splits) && Show(MagItemInfoField.Splits))
         {
             int splits = Int(IntSplitArrows);
             if (splits > 0) sb.Append(", Splits (").Append(splits).Append(')');
         }
 
-        if (Has(Field.Range))
+        if (Has(Field.Range) && Show(MagItemInfoField.Range))
         {
             int yards = MissileRangeYards(Dbl(FloatMaxVelocity, 0));
             if (yards > 0) sb.Append(", Range ").Append(yards).Append("yd");
         }
 
-        if (Has(Field.Cleaves))
+        if (Has(Field.Cleaves) && Show(MagItemInfoField.CleaveMultiStrike))
         {
             int attackType = Int(IntAttackType);
             int mastery = Int(IntWeaponType);
@@ -206,7 +219,7 @@ internal static class MagItemDescriber
         }
 
         // ── Slayer ──────────────────────────────────────────────────────────────
-        if (Has(Field.Slayer))
+        if (Has(Field.Slayer) && Show(MagItemInfoField.Slayer))
         {
             string? slayer = MagItemInfoTables.CreatureTypeName(Int(IntSlayerCreature));
             if (slayer != null) sb.Append(", ").Append(slayer).Append(" Slayer");
@@ -214,21 +227,25 @@ internal static class MagItemDescriber
 
         // ── Tinks + applied materials (TinkerLog) ──────────────────────────────
         int tinks = Int(IntTinks);
-        if (tinks > 0) sb.Append(", Tinks ").Append(tinks);
-        string applied = FormatTinkerLog(item.GetString(StringTinkerLog));
-        if (applied.Length > 0) sb.Append(", Applied: ").Append(applied);
+        if (tinks > 0 && Show(MagItemInfoField.Tinks)) sb.Append(", Tinks ").Append(tinks);
+        if (Show(MagItemInfoField.Applied))
+        {
+            string applied = FormatTinkerLog(item.GetString(StringTinkerLog));
+            if (applied.Length > 0) sb.Append(", Applied: ").Append(applied);
+        }
 
         // ── Damage ──────────────────────────────────────────────────────────────
-        if (Has(Field.Damage))
+        if (Has(Field.Damage) && Show(MagItemInfoField.Damage))
             AppendDamage(sb, cls, Int(IntMaxDamage), Dbl(FloatVariance, 0), Int(IntElementalBonus),
                 Dbl(FloatDamageMod, 1), Dbl(FloatVsMonsters, 1));
 
         // ── Attack / defense / mana conversion percents ───────────────────────
-        if (Has(Field.AttackBonus))    AppendPercent(sb, Dbl(FloatAttack, 1), "%a", 0);
-        if (Has(Field.MeleeDefense))   AppendPercent(sb, Dbl(FloatMeleeDefense, 1), "%md", 0);
-        if (Has(Field.MagicDefense))   AppendPercent(sb, Dbl(FloatMagicDefense, 1), "%mgc.d", 1);
-        if (Has(Field.MissileDefense)) AppendPercent(sb, Dbl(FloatMissileDefense, 1), "%msl.d", 1);
-        if (Has(Field.ManaConversion))
+        bool defenses = Show(MagItemInfoField.Defenses);
+        if (Has(Field.AttackBonus) && Show(MagItemInfoField.Attack)) AppendPercent(sb, Dbl(FloatAttack, 1), "%a", 0);
+        if (Has(Field.MeleeDefense) && defenses)   AppendPercent(sb, Dbl(FloatMeleeDefense, 1), "%md", 0);
+        if (Has(Field.MagicDefense) && defenses)   AppendPercent(sb, Dbl(FloatMagicDefense, 1), "%mgc.d", 1);
+        if (Has(Field.MissileDefense) && defenses) AppendPercent(sb, Dbl(FloatMissileDefense, 1), "%msl.d", 1);
+        if (Has(Field.ManaConversion) && Show(MagItemInfoField.ManaConversion))
         {
             double mc = Dbl(FloatManaConversion, 0);
             if (mc != 0) sb.Append(", ").Append(Math.Round(mc * 100).ToString(CultureInfo.InvariantCulture)).Append("%mc");
@@ -236,30 +253,37 @@ internal static class MagItemDescriber
 
         // ── Spells ──────────────────────────────────────────────────────────────
         bool unenchantable = Int(IntResistMagic) >= 9999;
-        AppendSpells(sb, item.SpellIds, unenchantable, options.VerboseSpells);
+        if (Show(MagItemInfoField.Spells))
+            AppendSpells(sb, item.SpellIds, unenchantable, options.AllSpells, options.MaxListedSpells);
 
         // ── Requirements ────────────────────────────────────────────────────────
-        AppendWieldRequirement(sb, Int(IntWieldReq), Int(IntWieldSkill), Int(IntWieldValue));
-        AppendWieldRequirement(sb, Int(IntWieldReq2), Int(IntWieldSkill2), Int(IntWieldValue2));
+        if (Show(MagItemInfoField.Wield))
+        {
+            AppendWieldRequirement(sb, Int(IntWieldReq), Int(IntWieldSkill), Int(IntWieldValue));
+            AppendWieldRequirement(sb, Int(IntWieldReq2), Int(IntWieldSkill2), Int(IntWieldValue2));
+        }
 
-        int useLevel = Int(IntUseRequiresLevel);
-        if (useLevel > 0) sb.Append(", Lvl ").Append(useLevel);
+        if (Show(MagItemInfoField.Activation))
+        {
+            int useLevel = Int(IntUseRequiresLevel);
+            if (useLevel > 0) sb.Append(", Lvl ").Append(useLevel);
 
-        // "Melee Defense 300 to Activate" — hidden when the wield requirement already covers it.
-        int actSkill = Int(IntActivationSkill), actLevel = Int(IntActivationLevel);
-        if (actLevel > 0 && (Int(IntWieldSkill) != actSkill || Int(IntWieldValue) < actLevel))
-            sb.Append(", ").Append(SkillName(actSkill)).Append(' ').Append(actLevel).Append(" to Activate");
+            // "Melee Defense 300 to Activate" — hidden when the wield requirement already covers it.
+            int actSkill = Int(IntActivationSkill), actLevel = Int(IntActivationLevel);
+            if (actLevel > 0 && (Int(IntWieldSkill) != actSkill || Int(IntWieldValue) < actLevel))
+                sb.Append(", ").Append(SkillName(actSkill)).Append(' ').Append(actLevel).Append(" to Activate");
 
-        // Summoning essences / gems.
-        int useSkill = Int(IntUseRequiresSkill), useSkillLvl = Int(IntUseRequiresSkillLvl), useSpec = Int(IntUseRequiresSpec);
-        if (useSkill > 0 && useSkillLvl > 0) sb.Append(", ").Append(SkillName(useSkill)).Append(' ').Append(useSkillLvl);
-        if (useSpec > 0 && useSkillLvl > 0) sb.Append(", Spec ").Append(SkillName(useSpec)).Append(' ').Append(useSkillLvl);
+            // Summoning essences / gems.
+            int useSkill = Int(IntUseRequiresSkill), useSkillLvl = Int(IntUseRequiresSkillLvl), useSpec = Int(IntUseRequiresSpec);
+            if (useSkill > 0 && useSkillLvl > 0) sb.Append(", ").Append(SkillName(useSkill)).Append(' ').Append(useSkillLvl);
+            if (useSpec > 0 && useSkillLvl > 0) sb.Append(", Spec ").Append(SkillName(useSpec)).Append(' ').Append(useSkillLvl);
+        }
 
         int diff = Int(IntItemDifficulty);
-        if (diff > 0) sb.Append(", Diff ").Append(diff);
+        if (diff > 0 && Show(MagItemInfoField.Difficulty)) sb.Append(", Diff ").Append(diff);
 
         // ── Workmanship ─────────────────────────────────────────────────────────
-        int work = Int(IntWorkmanship);
+        int work = Show(MagItemInfoField.Craft) ? Int(IntWorkmanship) : 0;
         if (cls == AcObjectClass.Salvage)
         {
             int items = Int(IntNumItemsInMaterial);
@@ -275,7 +299,7 @@ internal static class MagItemDescriber
         }
 
         // ── Unenchantable armor: base protections [S/P/B/C/F/A/L] ─────────────
-        if (cls == AcObjectClass.Armor && unenchantable)
+        if (cls == AcObjectClass.Armor && unenchantable && Show(MagItemInfoField.Protections))
         {
             sb.Append(", [");
             for (uint i = 0; i < 7; i++)
@@ -295,9 +319,11 @@ internal static class MagItemDescriber
         }
 
         // ── Ratings ─────────────────────────────────────────────────────────────
-        AppendRatings(sb, item);
+        if (Show(MagItemInfoField.Ratings))
+            AppendRatings(sb, item, options.HiddenRatings);
 
-        if (cls == AcObjectClass.Misc && item.Name.Contains("Keyring", StringComparison.OrdinalIgnoreCase))
+        if (cls == AcObjectClass.Misc && Show(MagItemInfoField.Keyring)
+            && item.Name.Contains("Keyring", StringComparison.OrdinalIgnoreCase))
             sb.Append(", Keys: ").Append(Int(IntNumKeys)).Append(", Uses: ").Append(Int(IntStructure));
 
         return sb.ToString();
@@ -378,7 +404,8 @@ internal static class MagItemDescriber
     /// named high-tier spells (cantrips); drop I–VI, level-7 lore buffs and Incantations.
     /// Verbose lists every spell (capped) for troubleshooting.
     /// </summary>
-    private static void AppendSpells(StringBuilder sb, IReadOnlyList<int> spellIds, bool unenchantable, bool verbose)
+    private static void AppendSpells(StringBuilder sb, IReadOnlyList<int> spellIds, bool unenchantable,
+        bool verbose, int maxVerbose)
     {
         if (spellIds.Count == 0) return;
         var ids = new List<int>(spellIds);
@@ -386,7 +413,6 @@ internal static class MagItemDescriber
         ids.Reverse(); // Mag lists highest spell id first
 
         var seen = new HashSet<int>();
-        const int maxVerbose = 26;
         int shown = 0, skippedVerbose = 0;
         foreach (int id in ids)
         {
@@ -436,31 +462,18 @@ internal static class MagItemDescriber
         return true;                                // cantrips: Legendary Strength, Epic Defender …
     }
 
-    /// <summary>Rating cluster "[D 11, C 8, CD 4]" from ACE Gear* ratings 370–389.</summary>
-    private static void AppendRatings(StringBuilder sb, IItemPropertySource item)
+    /// <summary>Rating cluster "[D 11, C 8, CD 4]" from ACE Gear* ratings 370–389
+    /// (<see cref="MagItemInfoCatalog.Ratings"/>); bit i of <paramref name="hiddenMask"/> skips rating i.</summary>
+    private static void AppendRatings(StringBuilder sb, IItemPropertySource item, int hiddenMask)
     {
         int start = sb.Length;
-        bool first = true;
-        void Part(uint id, string label)
+        var ratings = MagItemInfoCatalog.Ratings;
+        for (int i = 0; i < ratings.Length; i++)
         {
-            if (!item.TryGetInt(id, out int v) || v <= 0 || v > MaxPlausibleRating) return;
-            sb.Append(first ? ", [" : ", ").Append(label).Append(' ').Append(v);
-            first = false;
+            if ((hiddenMask & (1 << i)) != 0) continue;
+            if (!item.TryGetInt(ratings[i].StatId, out int v) || v <= 0 || v > MaxPlausibleRating) continue;
+            sb.Append(sb.Length == start ? ", [" : ", ").Append(ratings[i].Tag).Append(' ').Append(v);
         }
-        Part(370, "D");     // GearDamage
-        Part(371, "DR");    // GearDamageResist
-        Part(372, "C");     // GearCrit
-        Part(374, "CD");    // GearCritDamage
-        Part(373, "CR");    // GearCritResist
-        Part(375, "CDR");   // GearCritDamageResist
-        Part(376, "HB");    // GearHealingBoost
-        Part(379, "V");     // GearMaxHealth (vitality)
-        Part(377, "NR");    // GearNetherResist
-        Part(378, "LR");    // GearLifeResist
-        Part(383, "PKD");   // GearPKDamageRating
-        Part(384, "PKDR");  // GearPKDamageResistRating
-        Part(388, "OP");    // GearOverpower
-        Part(389, "OPR");   // GearOverpowerResist
         if (sb.Length > start) sb.Append(']');
     }
 

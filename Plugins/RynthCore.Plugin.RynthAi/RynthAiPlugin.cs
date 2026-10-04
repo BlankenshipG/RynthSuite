@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.13-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.14-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -176,6 +176,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ComponentDatabase.SetLog(msg => Log(msg));
         _dashboard = new LegacyDashboardRenderer(Host);
         _dashboard.AfterVirindiTankImport = InvalidateLootProfileCaches;
+        _dashboard.SetItemInfoHooks(DescribeSelectedItemForPreview, PrintSelectedItemInfo, TestItemInfoChatType);
         _objectCache = new WorldObjectCache(Host); // must exist before CreateObject events fire during login
         _creatureStore = new CreatureData.CreatureProfileStore();
         try { _creatureStore.Load(); } catch { }
@@ -1611,11 +1612,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
 
         // Mag-style item info on select. RequestId was already sent above, so just queue it.
-        if (currentTargetId != 0 && _dashboard?.Settings.ItemInfoOnSelect == true)
+        var itemInfo = _dashboard?.Settings.ItemInfoSettings;
+        if (currentTargetId != 0 && itemInfo?.OnSelect == true)
         {
             int sid = unchecked((int)currentTargetId);
             WorldObject? obj = _objectCache?[sid];
-            if (obj != null && IsLootableClass(obj.ObjectClass))
+            if (obj != null && IsLootableClass(obj.ObjectClass) && ItemInfoWantsClass(itemInfo, obj.ObjectClass))
                 QueueItemInfo(sid, requestId: false);
         }
     }

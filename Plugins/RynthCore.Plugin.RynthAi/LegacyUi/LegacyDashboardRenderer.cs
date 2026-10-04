@@ -47,6 +47,7 @@ internal sealed class LegacyDashboardRenderer
     /// <summary>Invoked after VirindiTank file import so the plugin can drop cached loot profiles (same effect as re-selecting loot).</summary>
     public Action? AfterVirindiTankImport { get; set; }
     private readonly LegacyAdvancedSettingsUi _advancedSettingsUi;
+    private readonly LegacyItemInfoUi _itemInfoUi;
     private readonly LegacyNavigationUi _navigationUi;
     private readonly LegacyLuaUi _luaUi;
     private readonly LegacyWeaponsUi _weaponsUi;
@@ -194,8 +195,13 @@ internal sealed class LegacyDashboardRenderer
         _weaponsUi.SetToolLaunchers(OpenLootEditor, OpenMonsterEditor);
         _weaponsUi.OnMonstersChanged = SaveMonstersFile;
         _advancedSettingsUi.SetToolLaunchers(OpenLootEditor, OpenMonsterEditor);
+        _itemInfoUi = new LegacyItemInfoUi(_settings);
         RefreshAllLists();
     }
+
+    /// <summary>Wires the Item Info window's preview / print / chat-test buttons (RynthAiPlugin owns the host reads).</summary>
+    public void SetItemInfoHooks(Func<string?> describeSelected, Action printSelected, Action<int> testChatType) =>
+        _itemInfoUi.SetHooks(describeSelected, printSelected, testChatType);
 
     public void OnLoginComplete()
     {
@@ -1354,6 +1360,8 @@ internal sealed class LegacyDashboardRenderer
         dst.EnableCombineSalvage     = tmp.EnableCombineSalvage;
         dst.CombineBagsDuringSalvage = tmp.CombineBagsDuringSalvage;
         dst.ShowTargetStaminaMana    = tmp.ShowTargetStaminaMana;
+        dst.ItemInfoSettings         = tmp.ItemInfoSettings ?? new RynthCore.Plugin.RynthAi.ItemInfo.MagItemInfoSettings();
+        dst.ItemInfoSettings.Sanitize();
         dst.EnableMissileCrafting    = tmp.EnableMissileCrafting;
         dst.MissileCraftAmmoThreshold= tmp.MissileCraftAmmoThreshold;
         dst.LootInterItemDelayMs     = tmp.LootInterItemDelayMs;
@@ -1651,6 +1659,7 @@ internal sealed class LegacyDashboardRenderer
 
             if (DashWindows.ShowNavigation) _navigationUi.Render();
             if (_settings.ShowAdvancedWindow) _advancedSettingsUi.Render();
+            _itemInfoUi.Render(); // no-op unless ItemInfoSettings.ShowWindow
         }
         finally
         {
