@@ -26,6 +26,16 @@ internal sealed class LegacyAdvancedSettingsUi
     private Func<string>? _autoVendorStatus;
     public void SetAutoVendorStatusProvider(Func<string> status) => _autoVendorStatus = status;
 
+    private Action? _openLootEditor;
+    private Action? _openMonsterEditor;
+
+    /// <summary>Wires the "Tools" row at the top of the Looting page (Loot Editor / Monster Editor buttons).</summary>
+    public void SetToolLaunchers(Action openLootEditor, Action openMonsterEditor)
+    {
+        _openLootEditor = openLootEditor;
+        _openMonsterEditor = openMonsterEditor;
+    }
+
     public string MissileCraftingState  => _missileCraftingManager?.State.ToString() ?? string.Empty;
     public bool   MissileCraftingActive => _missileCraftingManager?.IsCrafting ?? false;
     public string MissileCraftingStatus => _missileCraftingManager?.StatusMessage ?? string.Empty;
@@ -697,6 +707,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 break;
 
             case "Looting":
+                ExternalTool.DrawToolButtons("Loot", _openLootEditor, _openMonsterEditor);
                 ImGui.Checkbox("Enable Looting", ref _settings.EnableLooting);
                 ImGui.Checkbox("Boost Loot Priority", ref _settings.BoostLootPriority);
                 ImGui.Checkbox("Loot Only Rare Corpses", ref _settings.LootOnlyRareCorpses);

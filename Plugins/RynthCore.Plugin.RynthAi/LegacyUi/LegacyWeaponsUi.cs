@@ -26,6 +26,16 @@ internal sealed class LegacyWeaponsUi
 
     public void SetWorldFilter(WorldObjectCache cache) => _worldFilter = cache;
 
+    private Action? _openLootEditor;
+    private Action? _openMonsterEditor;
+
+    /// <summary>Wires the "Tools" row at the top of the Items window (Loot Editor / Monster Editor buttons).</summary>
+    public void SetToolLaunchers(Action openLootEditor, Action openMonsterEditor)
+    {
+        _openLootEditor = openLootEditor;
+        _openMonsterEditor = openMonsterEditor;
+    }
+
     public void Render()
     {
         if (!DashWindows.ShowWeapons) return;
@@ -36,6 +46,8 @@ internal sealed class LegacyWeaponsUi
             ImGui.End();
             return;
         }
+
+        ExternalTool.DrawToolButtons("Items", _openLootEditor, _openMonsterEditor);
 
         // ── Weapons Section ─────────────────────────────────────────────────
         ImGui.TextColored(LegacyDashboardRenderer.ColAmber, "Weapons");

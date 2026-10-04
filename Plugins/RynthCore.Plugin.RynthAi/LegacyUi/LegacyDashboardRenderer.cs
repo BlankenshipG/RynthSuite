@@ -146,100 +146,20 @@ internal sealed class LegacyDashboardRenderer
     private volatile InventoryContainerSnapshot[] _invContainers = System.Array.Empty<InventoryContainerSnapshot>();
     private int _inventoryVersion;   // Interlocked: bumped on write, read in BuildInventoryJson
 
-    // ── Monster editor (external process) ────────────────────────────────────
-    // Deep-audit finding #10 (2026-06-18): System.Diagnostics.Process is the
-    // documented H6 hazard — HasExited/CloseMainWindow/Process.Start's
-    // handle-touching accessors silently AV this host under NativeAOT in
-    // injected x86 acclient.exe (the engine already abandoned this API for
-    // OpenProcess/GetExitCodeProcess in PluginLoader.IsPidAliveWin32 for the
-    // identical reason). Runs synchronously on the ImGui/game thread from the
-    // "External Editor" button. Replaced with ShellExecuteExW (retaining the
-    // process handle via SEE_MASK_NOCLOSEPROCESS) + Win32 liveness/close.
+    // ── External tools (Loot Editor, Monster Editor) ───────────────────────────
+    // Launched from the Monsters window ("External Editor"), the Items window and the Looting settings page.
+    // ExternalTool wraps the AOT-safe ShellExecuteExW / WaitForSingleObject / WM_CLOSE handling.
     private FileSystemWatcher? _monsterWatcher;
     private volatile bool _monsterFileChanged;
-    private IntPtr _monsterEditorProcessHandle = IntPtr.Zero;
-    private int _monsterEditorPid;
+    private readonly ExternalTool _monsterEditor = new("Monster Editor");
+    private readonly ExternalTool _lootEditor = new("Loot Editor");
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct SHELLEXECUTEINFOW
+    /// <summary>Releases the tracked editor process handles (the editors keep running). Call on plugin
+    /// Shutdown so the handles aren't leaked if an editor is still open when RynthAi unloads.</summary>
+    public void ReleaseExternalToolHandles()
     {
-        public int cbSize;
-        public uint fMask;
-        public IntPtr hwnd;
-        public string? lpVerb;
-        public string? lpFile;
-        public string? lpParameters;
-        public string? lpDirectory;
-        public int nShow;
-        public IntPtr hInstApp;
-        public IntPtr lpIDList;
-        public string? lpClass;
-        public IntPtr hkeyClass;
-        public uint dwHotKey;
-        public IntPtr hIconOrMonitor;
-        public IntPtr hProcess;
-    }
-
-    private const uint SeeMaskNoCloseProcess = 0x00000040;
-    private const int SwShowNormal = 1;
-    private const uint WaitTimeout = 0x00000102;
-    private const uint WmClose = 0x0010;
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool ShellExecuteExW(ref SHELLEXECUTEINFOW lpExecInfo);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CloseHandle(IntPtr hObject);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
-
-    [DllImport("user32.dll")]
-    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-    [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    /// <summary>Finds the first visible top-level window owned by the given PID (mirrors what
-    /// Process.CloseMainWindow does internally) so WM_CLOSE can be posted without touching
-    /// System.Diagnostics.Process.</summary>
-    private static IntPtr FindMainWindowForPid(int pid)
-    {
-        IntPtr found = IntPtr.Zero;
-        EnumWindows((hWnd, _) =>
-        {
-            GetWindowThreadProcessId(hWnd, out uint wndPid);
-            if (wndPid == (uint)pid && IsWindowVisible(hWnd))
-            {
-                found = hWnd;
-                return false; // stop enumerating
-            }
-            return true;
-        }, IntPtr.Zero);
-        return found;
-    }
-
-    /// <summary>Releases the tracked Monster Editor process handle, if any. Call on plugin
-    /// Shutdown so the handle isn't leaked if the editor is still open when RynthAi unloads.</summary>
-    public void ReleaseMonsterEditorHandle()
-    {
-        if (_monsterEditorProcessHandle != IntPtr.Zero)
-        {
-            CloseHandle(_monsterEditorProcessHandle);
-            _monsterEditorProcessHandle = IntPtr.Zero;
-            _monsterEditorPid = 0;
-        }
+        _monsterEditor.Release();
+        _lootEditor.Release();
     }
 
     public LegacyDashboardRenderer(RynthCoreHost host)
@@ -263,6 +183,9 @@ internal sealed class LegacyDashboardRenderer
         _rynthRadarUi.SetMapData(_dungeonMapUi);
         _rynthChatUi = new RynthChatUi(host, _settings);
         _rynthChatUi.OnSettingChanged = SaveSettings;
+        // "Tools" buttons on the Items window and the Looting settings page.
+        _weaponsUi.SetToolLaunchers(OpenLootEditor, OpenMonsterEditor);
+        _advancedSettingsUi.SetToolLaunchers(OpenLootEditor, OpenMonsterEditor);
         RefreshAllLists();
     }
 
@@ -1135,63 +1058,40 @@ internal sealed class LegacyDashboardRenderer
         return (_currentTargetId, name);
     }
 
-    /// <summary>Launches the standalone Monster Rules editor for the current char folder.</summary>
+    /// <summary>Monsters window "External Editor" button: toggles the Monster Editor (opens it, or closes it
+    /// when it is already open) for the current character folder.</summary>
     private void LaunchMonsterEditor()
+    {
+        if (_monsterEditor.IsRunning)
+        {
+            _monsterEditor.Close();
+            return;
+        }
+        OpenMonsterEditor();
+    }
+
+    /// <summary>Items / Looting "Monster Editor" button: opens the Monster Editor for the current character,
+    /// or brings it to the front if it is already open.</summary>
+    internal void OpenMonsterEditor()
     {
         if (string.IsNullOrEmpty(_charFolder))
         {
-            _host.WriteToChat("[RynthAi] No character loaded — cannot open Monster Editor.", 4);
+            _host.WriteToChat("[RynthAi] No character loaded - cannot open Monster Editor.", 4);
             return;
         }
-
-        // Toggle: if the editor is already running, close it.
-        if (_monsterEditorProcessHandle != IntPtr.Zero)
-        {
-            uint wait = WaitForSingleObject(_monsterEditorProcessHandle, 0);
-            if (wait == WaitTimeout) // still running
-            {
-                IntPtr hwnd = FindMainWindowForPid(_monsterEditorPid);
-                if (hwnd != IntPtr.Zero)
-                    PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
-                else
-                    TerminateProcess(_monsterEditorProcessHandle, 0); // no window found — fall back to a hard kill
-            }
-            ReleaseMonsterEditorHandle();
-            return;
-        }
-
-        // Editor lives at: <RynthAi root>\MonsterEditor\RynthCore.MonsterEditor.exe
-        string rynthAiRoot = Path.GetDirectoryName(Path.GetDirectoryName(_settingsRoot)!)!;
-        string editorExe   = Path.Combine(rynthAiRoot, "MonsterEditor", "RynthCore.MonsterEditor.exe");
-
-        if (!File.Exists(editorExe))
-        {
-            _host.WriteToChat($"[RynthAi] Monster Editor not found: {editorExe}", 4);
-            return;
-        }
-
-        var info = new SHELLEXECUTEINFOW
-        {
-            cbSize       = Marshal.SizeOf<SHELLEXECUTEINFOW>(),
-            fMask        = SeeMaskNoCloseProcess,   // retain hProcess instead of closing it internally
-            lpVerb       = "open",
-            lpFile       = editorExe,
-            lpParameters = $"\"{_charFolder}\"",
-            nShow        = SwShowNormal,
-        };
-
-        if (!ShellExecuteExW(ref info) || info.hProcess == IntPtr.Zero)
-        {
-            _host.WriteToChat("[RynthAi] Failed to launch Monster Editor.", 4);
-            return;
-        }
-
-        _monsterEditorProcessHandle = info.hProcess;
-        _monsterEditorPid = (int)GetProcessId(info.hProcess); // needed to find the main window for WM_CLOSE later
+        string? error = _monsterEditor.OpenOrFocus(ExternalTool.MonsterEditorExe, $"\"{_charFolder}\"");
+        if (error != null) _host.WriteToChat("[RynthAi] " + error, 4);
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint GetProcessId(IntPtr hProcess);
+    /// <summary>Items / Looting "Loot Editor" button: opens the Loot Editor on the current loot profile (when one
+    /// is selected and exists), or brings it to the front if it is already open.</summary>
+    internal void OpenLootEditor()
+    {
+        string profile = _settings.CurrentLootPath?.Trim().Trim('"') ?? string.Empty;
+        string? args = !string.IsNullOrEmpty(profile) && File.Exists(profile) ? $"\"{profile}\"" : null;
+        string? error = _lootEditor.OpenOrFocus(ExternalTool.LootEditorExe, args);
+        if (error != null) _host.WriteToChat("[RynthAi] " + error, 4);
+    }
 
     private void CaptureTransientUiState()
     {

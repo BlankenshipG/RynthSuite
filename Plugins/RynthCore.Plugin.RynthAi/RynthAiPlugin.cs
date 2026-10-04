@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.3-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.4-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -203,7 +203,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         try { _dashboard?.SaveSettings(); } catch { }
         // Release the Monster Editor process handle (if the toggle button
         // launched one) rather than leaking it on plugin unload/hot-reload.
-        try { _dashboard?.ReleaseMonsterEditorHandle(); } catch { }
+        try { _dashboard?.ReleaseExternalToolHandles(); } catch { }
         long tAfterSettings = Environment.TickCount64;
         TeardownSession();
         long tAfterTeardown = Environment.TickCount64;
