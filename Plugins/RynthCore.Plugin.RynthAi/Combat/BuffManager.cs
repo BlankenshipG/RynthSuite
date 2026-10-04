@@ -36,6 +36,10 @@ public class BuffManager : IDisposable
     private DateTime _lastBuffStanceAttempt = DateTime.MinValue;
     private int _buffStanceConsecutiveFails = 0;
     private bool _isForceRebuffing = false;
+    // Set with _isForceRebuffing when the pass is the automatic batch (one buff fell
+    // under RebuffSecondsRemaining), not the Force Rebuff button. The batch only tops
+    // off buffs under RebuffTopOffSecondsRemaining; Force Rebuff recasts everything.
+    private bool _isAutoBatchRebuff = false;
     private int _pendingSpellId = 0;
     private Action<string>? _onCastResolved;
 
@@ -156,6 +160,85 @@ public class BuffManager : IDisposable
     private readonly Dictionary<int, int> _silentNoShowCounts = new();
     private const int SilentNoShowThreshold = 2;
     private static readonly TimeSpan SilentNoShowCooldown = TimeSpan.FromMinutes(30);
+
+    // Family → the spell id we last ISSUED a buff cast for. Lets the post-batch
+    // audit re-check exactly what it tried instead of re-resolving the tier.
+    private readonly Dictionary<int, int> _lastCastSpellIdByFamily = new();
+
+    // Per-family "cast landed but the buff STILL reads inactive" strikes.
+    // Distinct from both existing park mechanisms: _buffFailCooldownUntil catches
+    // chat-explicit hard rejects, _silentNoShowCounts catches casts that produce
+    // no confirmation at all. This catches the nastier third case — AC confirms
+    // the cast, the enchantment really is on the character, and IsBuffActive
+    // still returns false. Nothing in the old code bounded that: the family
+    // re-triggers the auto-batch on the very next tick, and since a single buff
+    // below threshold escalates to a FULL rebuff, one such family makes the bot
+    // recast all ~65 spells back-to-back forever. Two consecutive unsatisfied
+    // batches park the family exactly like a no-show does — time-boxed and
+    // self-recovering, so a genuine transient can't shelve a buff permanently.
+    private readonly Dictionary<int, int> _unsatisfiedStrikes = new();
+    private const int UnsatisfiedStrikeThreshold = 2;
+
+    // When each family's cast was issued, and what its stored expiry was at that
+    // moment. The audit needs both to avoid punishing a perfectly healthy buff:
+    // a refresh takes time to reach the registry, so a family cast near the end
+    // of a batch can still read its OLD timer when the batch ends. Judging it
+    // there produced a false strike on 'Magic Item Tinkering Expertise Self VI'
+    // (observed 2026-09-02 22:34) that read active again a minute later. A family
+    // is only judged once AuditSettleMs has passed since its cast, and only
+    // counts as unsatisfied if its expiry never moved forward. A genuinely stuck
+    // family recurs in every batch, so it still accumulates strikes across them;
+    // a healthy one is simply skipped this round.
+    // ── "You're too busy!" backoff ───────────────────────────────────────────
+    // A refusal means AC is mid-gesture and would not accept the cast. The PARK
+    // path clears _pendingSpellId and says it will "re-issue when the cast gate
+    // reopens", but nothing actually waits for the gate — the next tick re-issues
+    // under SpellCastIntervalMs (400ms). A cast gesture runs ~2s, so under load
+    // that is ~2 refusals/second for as long as the condition lasts: 675 of them
+    // in two episodes on 2026-09-03, with CanCastNow reporting clear and
+    // BusyCount 0 throughout (so neither existing gate saw it).
+    //
+    // Every refusal also pushes a chat line through AC's text pipeline, which is
+    // the documented AddTextToScroll re-entry AV pressure this file already
+    // guards against elsewhere — so a refusal storm is not merely wasted work.
+    //
+    // The refusal is authoritative: AC just told us it is busy. Back off with an
+    // exponential delay and reset the moment a cast is accepted, so a transient
+    // busy window costs a few attempts instead of thousands.
+    // ── Server-paced cast serialization (UseDone / GameEvent 0x01C7) ────────
+    // The server sends UseDone when it FINISHES an action — completed, or refused
+    // with an error (0x1D = YoureTooBusy). It is the authoritative ACE
+    // Player.IsBusy lifecycle signal, and the engine already exposes a monotonic
+    // counter for it. CombatManager has serialized its casts on this since it was
+    // added; BuffManager never did, and paced instead on a flat
+    // SpellCastIntervalMs (400ms) measured from cast ISSUE.
+    //
+    // That interval is shorter than a cast actually takes. Measured over 612
+    // paired buff casts on 2026-09-03, refusal rate by gap since the previous
+    // issue: 400-450ms → 54%, 450-600ms → 100%, 600-900ms → 33%, >900ms → 9.5%,
+    // with "You cast X" arriving at a median 652ms and "too busy" at 307ms. So
+    // the next cast was routinely issued while the previous one was still
+    // resolving. The local CanCastNow gate cannot catch this: it reads
+    // CMotionInterp's pending-motions head, which empties when the LOCAL
+    // animation ends, well before the server is done.
+    //
+    // Waiting for UseDone is self-tuning and needs no per-spell duration table —
+    // a slower tier-8 cast simply produces a later UseDone. Bounded by a timeout
+    // so a dropped event can't wedge buffing, and inert (never waits) on an
+    // engine build without UseDone observation.
+    private int _useDoneSeqAtCast;
+    private bool _awaitingCastResolution;
+    private DateTime _castResolutionDeadline = DateTime.MinValue;
+    private const double CastResolutionTimeoutMs = 2500; // covers a tier-7/8 windup+recoil
+
+    private int _busyRefusalStreak;
+    private DateTime _busyBackoffUntil = DateTime.MinValue;
+    private const double BusyBackoffBaseMs = 500;
+    private const double BusyBackoffMaxMs  = 8000;
+
+    private readonly Dictionary<int, DateTime> _castIssuedAtByFamily = new();
+    private readonly Dictionary<int, DateTime> _expiryAtCastByFamily = new();
+    private const double AuditSettleMs = 15_000.0;
 
     private sealed class RegistrySnapshot
     {
@@ -396,9 +479,13 @@ public class BuffManager : IDisposable
     public void ForceFullRebuff()
     {
         _isForceRebuffing = true;
+        _isAutoBatchRebuff = false;
         _forceRebuffCastFamilies.Clear();
         _buffFailCooldownUntil.Clear(); // explicit recast-all must not be blocked by stale cooldowns
         _silentNoShowCounts.Clear();    // give parked families a fresh shot on FR too
+        _unsatisfiedStrikes.Clear();    // ditto for the post-batch satisfaction audit
+        _castIssuedAtByFamily.Clear();
+        _expiryAtCastByFamily.Clear();
         _ramBuffTimers.Clear();
         _itemSpellTimers.Clear();
         _pendingSpellId = 0;
@@ -414,12 +501,28 @@ public class BuffManager : IDisposable
     public void CancelBuffing()
     {
         _isForceRebuffing = false;
+        _isAutoBatchRebuff = false;
         _isRechargingMana = false;
         _isRechargingStamina = false;
         _isHealingSelf = false;
         _pendingSpellId = 0;
         _host.WriteToChat("[RynthAi] Sequence cancelled.", 5);
     }
+
+    /// <summary>
+    /// Spell id of a cast awaiting server confirmation, or 0. Read by the activity
+    /// arbiter: a cast in flight must keep Buffing winning so CombatManager can't
+    /// slip a peace-mode switch in mid-cast and fizzle it.
+    /// </summary>
+    public int PendingSpellId => _pendingSpellId;
+
+    /// <summary>
+    /// True when the last vitals evaluation wanted a heal / restam / remana. Also
+    /// read by the arbiter — vital recharges run even with buffing switched off,
+    /// and they need the same mid-cast protection a buff gets. Side-effect free:
+    /// CheckVitals repopulates these flags every cycle it reaches.
+    /// </summary>
+    public bool WantsVitalRecharge => _isHealingSelf || _isRechargingMana || _isRechargingStamina;
 
     public BuffStateSnapshot GetStateSnapshot() => new()
     {
@@ -561,6 +664,7 @@ public class BuffManager : IDisposable
                         // marked cast here or the batch respins this buff forever.
                         if (_isForceRebuffing) _forceRebuffCastFamilies.Add(pendingSpell.Family);
                         _pendingSpellId = 0; // landed — registry confirms it; advance
+                        NoteCastAccepted();  // it went through — end any too-busy backoff
                         _onCastResolved?.Invoke("self-buff confirmed (registry)");
                     }
                     else if (sinceCastMs > SelfBuffGiveUpMs)
@@ -594,9 +698,10 @@ public class BuffManager : IDisposable
                         _onCastResolved?.Invoke("self-buff no-show (registry)");
                     }
                 }
-                // Hold buffing state while the self-buff cast is in flight so
-                // CombatManager can't sneak a peace-mode switch in mid-cast.
-                if (_pendingSpellId != 0) { _settings.BotAction = "Buffing"; return; }
+                // Yield while the self-buff cast is in flight. PendingSpellId keeps
+                // the arbiter on Buffing, so CombatManager can't sneak a peace-mode
+                // switch in mid-cast.
+                if (_pendingSpellId != 0) return;
             }
             else if (pendingIsArmor)
             {
@@ -654,15 +759,12 @@ public class BuffManager : IDisposable
                     _onCastResolved?.Invoke("no-chat timeout (armor)");
                 }
                 // Hold the cycle until chat resolves the item cast.
-                if (_pendingSpellId != 0) { _settings.BotAction = "Buffing"; return; }
+                if (_pendingSpellId != 0) return;
             }
         }
 
         if ((DateTime.Now - _lastCastAttempt).TotalMilliseconds < _settings.SpellCastIntervalMs)
-        {
-            _settings.BotAction = "Buffing";
             return;
-        }
 
         // Don't issue a cast while the previous cast GESTURE is still animating.
         // CanCastNow is the engine's CMotionInterp gesture gate (the REAL cast
@@ -674,44 +776,148 @@ public class BuffManager : IDisposable
         // true and the SpellCastIntervalMs throttle + parked-pending still bound
         // retries. BusyCount stays as a secondary guard so we also don't queue
         // casts/UseObject while the hourglass action is mid-flight.
-        // Keep BotAction pinned to "Buffing" while our cast is in flight so
-        // CombatManager can't sneak in a peace-mode switch mid-cast.
+        // Buffing priority (including "hold it while our cast is in flight so
+        // CombatManager can't sneak in a peace-mode switch mid-cast") is the
+        // arbiter's call now — it reads PendingSpellId / WantsVitalRecharge /
+        // NeedsAnyBuff and is the sole writer of the "Buffing" string.
         if (!CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s)) || BusyCount > 0)
         {
             LastBuffSkipReason = BusyCount > 0 ? "busy (BusyCount>0)" : "cast gate closed (CanCastNow=false / gesture animating)";
-            if (_pendingSpellId != 0) _settings.BotAction = "Buffing";
             return;
         }
 
         if (CheckVitals())
+            return;
+
+        // Too-busy backoff gates BUFFING only, and sits after CheckVitals on
+        // purpose: a refused heal is worth retrying hard, a refused buff is not.
+        // Blocking vitals here would have delayed emergency heals by up to 8s,
+        // and the observed refusal episode happened while the character was being
+        // swarmed by Olthoi — exactly when that would be most dangerous.
+        // Wait for the server to finish the previous cast before issuing another.
+        // Sits with the backoff, after CheckVitals, so it paces BUFFING only — a
+        // heal must never queue behind a buff's resolution.
+        if (IsAwaitingCastResolution())
         {
-            _settings.BotAction = "Buffing";
+            LastBuffSkipReason = "awaiting server UseDone for the previous cast";
+            return;
+        }
+
+        if (DateTime.Now < _busyBackoffUntil)
+        {
+            LastBuffSkipReason = $"too-busy backoff ({(_busyBackoffUntil - DateTime.Now).TotalMilliseconds:0}ms left, streak={_busyRefusalStreak})";
             return;
         }
 
         if (_settings.EnableBuffing)
         {
             if (CheckAndCastSelfBuffs())
-            {
-                _settings.BotAction = "Buffing";
                 return;
-            }
 
             if (_isForceRebuffing)
             {
+                bool wasAutoBatch = _isAutoBatchRebuff;
                 _isForceRebuffing = false;
-                _host.Log($"[FR] complete — cast {_forceRebuffCastFamilies.Count} spell families");
+                _isAutoBatchRebuff = false;
+                _host.Log($"[FR] complete — cast {_forceRebuffCastFamilies.Count} spell families{(wasAutoBatch ? " (auto batch)" : "")}");
+                // Order matters: the flag must already be false (IsBuffActive
+                // short-circuits on _forceRebuffCastFamilies while it is set, so
+                // every family would read "active"), and the set must still be
+                // populated — it is what the audit iterates.
+                AuditBatchSatisfied();
                 _forceRebuffCastFamilies.Clear();
-                _host.WriteToChat("[RynthAi] Force Rebuff Complete.", 1);
+                _host.WriteToChat(wasAutoBatch ? "[RynthAi] Rebuff complete." : "[RynthAi] Force Rebuff Complete.", 1);
             }
         }
+    }
 
-        // Don't release the "Buffing" state while a cast is still pending server
-        // confirmation — otherwise CombatManager.OnHeartbeat runs in the window
-        // between cast-issued and "You cast X" chat arriving, and the peace-mode
-        // switch fizzles the spell.
-        if (_settings.BotAction == "Buffing" && _pendingSpellId == 0)
-            _settings.BotAction = "Default";
+    /// <summary>
+    /// Post-batch audit. Every family the batch actually CAST should read active
+    /// now that the batch is over. One that doesn't is not going to be fixed by
+    /// casting it again: the cast goes out, AC confirms it, the enchantment is
+    /// genuinely on the character, and IsBuffActive still says false.
+    ///
+    /// The case this was written for: a permanent item-granted lower tier living
+    /// in the same spell family as the tier we want, which keeps the tier-upgrade
+    /// rule firing no matter how many times the higher tier lands. Because ANY
+    /// single buff below threshold escalates to a full rebuff, one such family is
+    /// enough to make the bot recast every buff it owns, back-to-back, forever.
+    ///
+    /// Park the family after UnsatisfiedStrikeThreshold consecutive batches. This
+    /// is a backstop, not the cure — it bounds the damage from any future
+    /// "lands but never reads active" bug rather than one specific cause.
+    ///
+    /// Must be called with _isForceRebuffing already false: while it is set,
+    /// IsBuffActive answers from _forceRebuffCastFamilies and every family in
+    /// that set reads active by construction.
+    /// </summary>
+    /// <summary>Stored expiry for a family across BOTH timer dictionaries
+    /// (player buffs in _ramBuffTimers, item enchants in _itemSpellTimers), or
+    /// DateTime.MinValue when the family has no timer at all.</summary>
+    private DateTime CurrentExpiryFor(int family)
+    {
+        if (_ramBuffTimers.TryGetValue(family, out RamTimerInfo? t)) return t.Expiration;
+        if (_itemSpellTimers.TryGetValue(family, out ItemSpellRecord? i)) return i.ExpiresAt;
+        return DateTime.MinValue;
+    }
+
+    private void AuditBatchSatisfied()
+    {
+        foreach (int family in _forceRebuffCastFamilies)
+        {
+            if (!_lastCastSpellIdByFamily.TryGetValue(family, out int spellId) || spellId == 0)
+                continue;
+
+            if (IsBuffActive(spellId))
+            {
+                _unsatisfiedStrikes.Remove(family); // satisfied — forget past strikes
+                continue;
+            }
+
+            // Give the refresh time to reach the registry before judging. A cast
+            // issued seconds ago legitimately still reads its old timer.
+            if (!_castIssuedAtByFamily.TryGetValue(family, out DateTime castAt)
+                || (DateTime.Now - castAt).TotalMilliseconds < AuditSettleMs)
+                continue;
+
+            // The expiry moved forward, so the cast DID land — this family is
+            // simply still inside the rebuff window for some other reason (a
+            // duration shorter than RebuffSecondsRemaining, say). Not "cast that
+            // never takes effect", so it must not accumulate strikes.
+            DateTime expiryNow = CurrentExpiryFor(family);
+            if (_expiryAtCastByFamily.TryGetValue(family, out DateTime expiryThen)
+                && expiryNow > expiryThen)
+            {
+                _unsatisfiedStrikes.Remove(family);
+                continue;
+            }
+
+            string name = SpellTableStub.GetById(spellId)?.Name ?? spellId.ToString();
+            int strikes = _unsatisfiedStrikes.TryGetValue(family, out int prev) ? prev + 1 : 1;
+            _unsatisfiedStrikes[family] = strikes;
+
+            if (strikes < UnsatisfiedStrikeThreshold)
+            {
+                _host.Log($"[BuffDiag] batch audit: '{name}' (id={spellId}, fam={family}) was cast this batch but still reads inactive — strike {strikes}/{UnsatisfiedStrikeThreshold}.");
+                continue;
+            }
+
+            _unsatisfiedStrikes.Remove(family);
+            _buffFailCooldownUntil[family] = DateTime.Now + SilentNoShowCooldown;
+
+            // Spell out the stored timer: the two causes that produce this look
+            // identical from the outside. Either a lower-tier enchantment is
+            // stuck in the family (storedLvl below the tier we cast), or
+            // RebuffSecondsRemaining is set above this spell's own duration, so
+            // it is "due for recast" the instant it lands. The numbers below
+            // separate them at a glance.
+            string stored = _ramBuffTimers.TryGetValue(family, out RamTimerInfo? t)
+                ? $"stored='{t.SpellName}' lvl={t.SpellLevel} remainSec={(t.IsPermanent ? "permanent" : (t.Expiration - DateTime.Now).TotalSeconds.ToString("F0"))}"
+                : "no timer entry";
+            _host.Log($"[BuffDiag] batch audit: '{name}' (id={spellId}, fam={family}) lands but never reads active after {UnsatisfiedStrikeThreshold} batches — " +
+                      $"parking {SilentNoShowCooldown.TotalMinutes:0}min so it can't drive continuous rebuff cycles. " +
+                      $"{stored}, rebuffThresholdSec={_settings.RebuffSecondsRemaining}.");
+        }
     }
 
     private bool CheckVitals()
@@ -730,10 +936,11 @@ public class BuffManager : IDisposable
         // Emergency override regardless of mode: HP critical + stam available →
         // burn stam for HP. Sits below the configurable thresholds so even a
         // "do nothing" recharge config still saves the character.
-        if (curHealthPct <= 30 && curStamPct > 20)
+        // If it can't be cast, fall through to Heal Self rather than giving up at 30% HP.
+        if (curHealthPct <= 30 && curStamPct > 20 && AttemptVitalCast("Stamina to Health Self"))
         {
             _isHealingSelf = true;
-            return AttemptVitalCast("Stamina to Health Self");
+            return true;
         }
 
         // Pick the threshold set based on hunting state. A target within
@@ -747,29 +954,47 @@ public class BuffManager : IDisposable
         int manaThreshold = inCombat ? _settings.GetManaAt : _settings.TopOffMana;
         int stamThreshold = inCombat ? _settings.RestamAt  : _settings.TopOffStam;
 
-        _isHealingSelf       = curHealthPct < hpThreshold;
-        _isRechargingMana    = curManaPct   < manaThreshold;
-        _isRechargingStamina = curStamPct   < stamThreshold;
-
-        if (_isHealingSelf)
+        // A flag is set only when something was actually done about the vital.
+        // WantsVitalRecharge holds the arbiter on Buffing, above combat and nav, so
+        // flagging a heal that can't happen — spell unknown, Life Magic untrained,
+        // or parked after the server refused it (no components) — stalled the bot:
+        // no route, no fighting back, until natural regen topped it up.
+        if (curHealthPct < hpThreshold && (AttemptHealthKitUse() || AttemptVitalCast("Heal Self")))
         {
-            if (AttemptHealthKitUse()) return true;
-            return AttemptVitalCast("Heal Self");
+            _isHealingSelf = true;
+            return true;
         }
-        if (_isRechargingMana && curStamPct > 15) return AttemptVitalCast("Stamina to Mana Self");
-        if (_isRechargingStamina) return AttemptVitalCast("Revitalize Self");
+        if (curManaPct < manaThreshold && curStamPct > 15 && AttemptVitalCast("Stamina to Mana Self"))
+        {
+            _isRechargingMana = true;
+            return true;
+        }
+        if (curStamPct < stamThreshold && AttemptVitalCast("Revitalize Self"))
+        {
+            _isRechargingStamina = true;
+            return true;
+        }
 
         return false;
     }
 
     private bool AttemptVitalCast(string baseName)
     {
+        if (!IsSkillUsable(AcSkillType.LifeMagic)) return false;
         int spellId = FindBestSpellId(baseName, AcSkillType.LifeMagic);
         if (spellId == 0) return false;
+        // Parked after a hard server refusal (see OnChatWindowText) — the same
+        // per-family cooldown the buff selectors honour.
+        int family = SpellTableStub.GetById(spellId)?.Family ?? 0;
+        if (family != 0
+            && _buffFailCooldownUntil.TryGetValue(family, out DateTime coolUntil)
+            && DateTime.Now < coolUntil)
+            return false;
         if (!EnsureMagicMode()) return true;
         _pendingSpellId = spellId;
         _host.CastSpell((uint)_host.GetPlayerId(), spellId);
         _lastCastAttempt = DateTime.Now;
+        NoteCastIssued();
         return true;
     }
 
@@ -849,6 +1074,7 @@ public class BuffManager : IDisposable
             // no-show → re-park → another auto-batch → loop. Hard-reject
             // cooldowns are short-lived (120s) so they expire on their own.
             _isForceRebuffing = true;
+            _isAutoBatchRebuff = true;
             _forceRebuffCastFamilies.Clear();
         }
 
@@ -900,7 +1126,7 @@ public class BuffManager : IDisposable
                     // FIX: the bow->wand swap provably can't succeed right now (no open
                     // pack / repeated fails). Park THIS family in the existing per-family
                     // cooldown so AnyBuffBelowThreshold + this selector skip it ->
-                    // CheckAndCastSelfBuffs returns false -> BotAction resets to 'Default'
+                    // NeedsAnyBuff() goes false -> the arbiter stops picking Buffing
                     // -> combat runs. Buffing stays top priority; only the impossible
                     // family is shelved, time-boxed, and auto-retried.
                     if (buffFamily != 0)
@@ -910,10 +1136,16 @@ public class BuffManager : IDisposable
                     continue;
                 }
                 LastBuffSkipReason = "magic-mode swap in progress (yielding tick)";
-                return true; // normal in-progress swap — keep BotAction='Buffing' and yield
+                return true; // normal in-progress swap — yield the tick (NeedsAnyBuff still holds Buffing)
             }
 
             _pendingSpellId = spellId;
+            if (buffFamily != 0)
+            {
+                _lastCastSpellIdByFamily[buffFamily] = spellId;
+                _castIssuedAtByFamily[buffFamily]    = DateTime.Now;
+                _expiryAtCastByFamily[buffFamily]    = CurrentExpiryFor(buffFamily);
+            }
 
             var spellInfo = SpellTableStub.GetById(spellId);
             if (spellInfo != null)
@@ -927,6 +1159,7 @@ public class BuffManager : IDisposable
             if (diagnose) _host.Log($"[FR] CAST '{buffBaseName}' resolvedSpellId={spellId} (pending now set)");
             bool castOk = _host.CastSpell((uint)_host.GetPlayerId(), spellId);
             _lastCastAttempt = DateTime.Now;
+            if (castOk) NoteCastIssued();
             if (!castOk)
             {
                 // Local CastSpell rejected — packet never went out, so no chat
@@ -1153,13 +1386,23 @@ public class BuffManager : IDisposable
         // Force Rebuff: ignore live timers entirely — only spells we've already
         // cast THIS rebuff cycle count as "active". The whole point of FR is to
         // recast every spell so all timers align to the same start time.
+        // The automatic batch shares FR's bookkeeping but must NOT recast
+        // everything: one buff under the threshold used to refresh every buff,
+        // even ones with 30+ minutes left (2026-09-27). It tops off only buffs
+        // under RebuffTopOffSecondsRemaining (never less than RebuffSecondsRemaining,
+        // so the buff that started the batch is always in it) and leaves the rest
+        // to their own timers.
         if (_isForceRebuffing)
-            return _forceRebuffCastFamilies.Contains(targetSpell.Family);
+        {
+            if (_forceRebuffCastFamilies.Contains(targetSpell.Family)) return true;
+            if (!_isAutoBatchRebuff) return false;
+            rebufferSecOverride = Math.Max(_settings.RebuffTopOffSecondsRemaining, _settings.RebuffSecondsRemaining);
+        }
 
         int targetLevel = GetSpellLevel(targetSpell);
         // Recast when remaining duration drops below this many seconds.
         // User-configurable via Advanced Settings → Buffing; overridden during
-        // batch-rebuff passes (CheckAndCastSelfBuffs) to 1200s (20 min).
+        // batch-rebuff passes (CheckAndCastSelfBuffs) by RebuffTopOffSecondsRemaining.
         int rebufferSec = Math.Max(0, rebufferSecOverride ?? _settings.RebuffSecondsRemaining);
 
         // Tier-upgrade rule (applies to both item enchantments and player buffs):
@@ -1293,10 +1536,42 @@ public class BuffManager : IDisposable
         return 1;
     }
 
+    private int _archmageAugs = -1;      // -1 = not read yet
+    private long _archmageAugsReadAt;
+
+    /// <summary>
+    /// Ranks of Archmage's Endurance (AUGMENTATION_INCREASED_SPELL_DURATION, 5x,
+    /// +20% enchantment duration each). Was hardcoded to 0, so every duration on an
+    /// augmented character was 20-100% short and armor banes/auras recast early
+    /// (2026-06-03 audit P1#3).
+    ///
+    /// Fails closed to 0 — the previous behaviour — whenever the property can't be
+    /// read, and clamps to the game's 5-rank cap so a bad read can't inflate a
+    /// duration past 2x and leave the character silently unbuffed.
+    /// </summary>
     private int GetArchmageEnduranceCount()
     {
-        // TODO: Read augmentation count from AC object memory (key 238 on player object)
-        return 0; // STUB
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        // Augs change at most once per purchase; re-read occasionally so buying one
+        // mid-session takes effect without paying for a property read per call.
+        if (_archmageAugs >= 0 && now - _archmageAugsReadAt < 60000) return _archmageAugs;
+
+        if (!_host.HasGetObjectIntProperty) return _archmageAugs > 0 ? _archmageAugs : 0;
+
+        uint playerId = _host.GetPlayerId();
+        if (playerId == 0) return _archmageAugs > 0 ? _archmageAugs : 0;
+
+        if (!_host.TryGetObjectIntProperty(
+                playerId, (uint)LongValueKey.AugmentationIncreasedSpellDuration, out int augs))
+            return _archmageAugs > 0 ? _archmageAugs : 0;
+
+        augs = Math.Clamp(augs, 0, 5);
+        if (augs != _archmageAugs)
+            _host.Log($"[Buff] Archmage's Endurance rank {augs}/5 — enchantment durations x{1.0 + augs * 0.20:0.00}");
+
+        _archmageAugs       = augs;
+        _archmageAugsReadAt = now;
+        return augs;
     }
 
     private double GetCustomSpellDuration(int spellLevel)
@@ -1371,19 +1646,59 @@ public class BuffManager : IDisposable
             bool isPermanent = remainingSeconds > 86400 * 365;
 
             int level = GetSpellLevel(spellInfo);
-            _ramBuffTimers[spellInfo.Family] = new RamTimerInfo
+            var candidate = new RamTimerInfo
             {
                 Expiration  = isPermanent ? PermanentSentinel : DateTime.Now.AddSeconds(remainingSeconds),
                 SpellLevel  = level,
                 SpellName   = spellInfo.Name,
                 IsPermanent = isPermanent,
             };
+
+            // A family can hold MORE THAN ONE live enchantment at once. The real
+            // case: a permanent item-granted "Armor Tinkering Expertise Self VI"
+            // (id=707, no expiry) sitting in the same family as the tier-7
+            // "Jibril's Blessing" (id=2197) we cast. AC applies the STRONGEST, so
+            // that is what the timer must reflect.
+            //
+            // This used to assign unconditionally, so whichever entry the registry
+            // happened to return LAST won. When that was the lower permanent tier,
+            // the stored level (6) stayed below the target (7) forever and the
+            // tier-upgrade rule in IsBuffActive fired on every poll — and because
+            // the recast lands, confirms, and is then immediately clobbered again
+            // by the next refresh, nothing ever broke the cycle. One family stuck
+            // like this drags the whole auto-batch with it (a single buff below
+            // threshold escalates to a full rebuff), which is how a ~65-spell
+            // rebuff ended up running back-to-back indefinitely.
+            //
+            // Keep the higher tier; on a tie keep whichever lasts longer
+            // (PermanentSentinel naturally sorts last, so a permanent entry wins
+            // a tie against a timed one of the same tier).
+            bool keepExisting =
+                _ramBuffTimers.TryGetValue(spellInfo.Family, out RamTimerInfo? seen)
+                && (seen.SpellLevel > level
+                    || (seen.SpellLevel == level && seen.Expiration >= candidate.Expiration));
+
+            if (!keepExisting)
+                _ramBuffTimers[spellInfo.Family] = candidate;
+
             // Learn the real ceiling this family lands at (Incantations cap below
             // their nominal tier) so IsBuffActive stops chasing an unreachable tier.
-            RecordAchievedTier(spellInfo.Family, level);
+            // Recorded for every timed entry read, including one the merge above
+            // discarded — the ceiling is about what this character can land, not
+            // about which entry currently wins the family slot. NOT for permanent
+            // entries: those are item-granted ("Willpower Other I" on gear), not
+            // something this character cast, and learning their tier as the
+            // ceiling made a permanent level-1 enchant satisfy the family forever
+            // (effective target 1, never expires): after a relog with the real
+            // buff gone, Lucy went 17 minutes without Willpower (2026-09-27).
+            if (!isPermanent)
+                RecordAchievedTier(spellInfo.Family, level);
 
             if (isPermanent && _loggedPermanentFamilies.Add(spellInfo.Family))
-                _host.Log($"[BuffDiag] permanent player enchant tracked: id={spellInfo.Id} '{spellInfo.Name}' (fam={spellInfo.Family}, lvl={level}) — presence-only, not persisted");
+                _host.Log($"[BuffDiag] permanent player enchant tracked: id={spellInfo.Id} '{spellInfo.Name}' (fam={spellInfo.Family}, lvl={level}) — presence-only, not persisted" +
+                          (keepExisting
+                              ? $" — outranked in this family by '{seen!.SpellName}' (lvl={seen.SpellLevel}), which owns the timer"
+                              : ""));
         }
 
         // Restore item enchantment timers that weren't covered by player enchantments
@@ -1758,9 +2073,18 @@ public class BuffManager : IDisposable
                     _itemSpellTimers.Remove(pendingSpell.Family);
                     SaveBuffTimers();
                 }
-                _host.Log($"[BuffChat] PARKED pending={_pendingSpellId} — AC too busy (cast gesture in progress); throttle kept, re-issue when cast gate reopens.");
+                _host.Log($"[BuffChat] PARKED pending={_pendingSpellId} — AC too busy (cast gesture in progress); throttle kept, backing off before re-issue.");
             }
             _pendingSpellId = 0;
+
+            // AC is authoritatively busy — wait, escalating, rather than retrying
+            // on the 400ms tick. Cleared by NoteCastAccepted on the next success.
+            _busyRefusalStreak++;
+            double backoffMs = Math.Min(BusyBackoffBaseMs * Math.Pow(2, _busyRefusalStreak - 1), BusyBackoffMaxMs);
+            _busyBackoffUntil = DateTime.Now.AddMilliseconds(backoffMs);
+            if (_busyRefusalStreak == 1 || _busyRefusalStreak % 5 == 0)
+                _host.Log($"[BuffChat] too-busy streak={_busyRefusalStreak} — backing off {backoffMs:0}ms before the next cast attempt.");
+
             _onCastResolved?.Invoke("too busy");
             return;
         }
@@ -1791,6 +2115,13 @@ public class BuffManager : IDisposable
                     }
                     _buffFailCooldownUntil[pendingSpell.Family] =
                         DateTime.Now.AddSeconds(BuffFailCooldownSec);
+                    // AC's refusal doesn't name the spell and vital casts print no
+                    // "Casting:" line, so say which one. The server's text is not
+                    // echoed: this line comes back through this handler, and it must
+                    // not match the refusal phrases above.
+                    bool noComps = lower.Contains("components") || lower.Contains("missing some required");
+                    _host.WriteToChat($"[RynthAi] Skipping {pendingSpell.Name} for {BuffFailCooldownSec / 60:0} min " +
+                                      $"({(noComps ? "no components for it" : "the server refused it")}).", 2);
                 }
                 _host.Log($"[BuffChat] CLEARED+COOLED pending={_pendingSpellId} ({BuffFailCooldownSec:0}s) — hard rejection in '{text}'");
             }
@@ -1848,6 +2179,7 @@ public class BuffManager : IDisposable
         if (spellInfo != null)
         {
             _buffFailCooldownUntil.Remove(spellInfo.Family); // it cast — clear any stale hard-fail cooldown
+            NoteCastAccepted();                              // AC accepted a cast — end any too-busy backoff
             // Chat-authoritative record: only NOW (AC confirmed "you cast X").
             // Item/armor enchants live in _itemSpellTimers (what IsBuffActive
             // checks for them); player buffs in _ramBuffTimers.
@@ -1868,6 +2200,47 @@ public class BuffManager : IDisposable
         }
         _pendingSpellId = 0;
         _onCastResolved?.Invoke($"cast '{spellName}'");
+    }
+
+    /// <summary>Record that a cast just went out, so the next one waits for the
+    /// server to report the action finished rather than a blind interval.</summary>
+    private void NoteCastIssued()
+    {
+        if (!_host.HasUseDoneSeq) { _awaitingCastResolution = false; return; }
+        _useDoneSeqAtCast        = _host.GetUseDoneSeq();
+        _awaitingCastResolution  = true;
+        _castResolutionDeadline  = DateTime.Now.AddMilliseconds(CastResolutionTimeoutMs);
+    }
+
+    /// <summary>True while the server has not yet reported finishing the last
+    /// cast. Self-clears on the UseDone-seq advance (completed OR refused) or on
+    /// the timeout, so this can never wedge the buff loop.</summary>
+    private bool IsAwaitingCastResolution()
+    {
+        if (!_awaitingCastResolution) return false;
+        if (_host.HasUseDoneSeq && _host.GetUseDoneSeq() != _useDoneSeqAtCast)
+        {
+            _awaitingCastResolution = false;
+            return false;
+        }
+        if (DateTime.Now >= _castResolutionDeadline)
+        {
+            _awaitingCastResolution = false;
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>A cast was accepted by AC, so whatever it was busy with has
+    /// cleared — drop the too-busy backoff immediately rather than serving out a
+    /// stale delay.</summary>
+    private void NoteCastAccepted()
+    {
+        if (_busyRefusalStreak == 0 && _busyBackoffUntil == DateTime.MinValue) return;
+        if (_busyRefusalStreak > 0)
+            _host.Log($"[BuffChat] cast accepted after {_busyRefusalStreak} too-busy refusal(s) — backoff cleared.");
+        _busyRefusalStreak = 0;
+        _busyBackoffUntil  = DateTime.MinValue;
     }
 
     private void RecordSpellTimer(SpellInfo spellInfo, double durationSeconds = -1)

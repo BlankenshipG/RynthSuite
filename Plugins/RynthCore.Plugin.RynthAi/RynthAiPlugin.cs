@@ -11,6 +11,7 @@ using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.Plugin.RynthAi.Meta;
 using RynthCore.Plugin.RynthAi.Raycasting;
+using RynthCore.Plugin.RynthAi.Vendor;
 using RynthCore.PluginCore;
 using RynthCore.Loot;
 using RynthCore.Loot.VTank;
@@ -63,6 +64,15 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.0-legacy-ui");
+
+    /// <summary>
+    /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
+    /// updates only when they click, so this stays at 66 while newer calls are feature-
+    /// detected (Host.HasVendorTrade for API v67 vendor trading: AutoVendor reports "needs a
+    /// RynthCore update" without it). The SDK default is CurrentApiVersion, which would make
+    /// every SDK bump refuse older engines. Raise it only for a call RynthAi can't run without.
+    /// </summary>
+    public override uint MinimumApiVersion => 66;
 
     private LegacyDashboardRenderer? _dashboard;
 
@@ -180,6 +190,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         long t0 = Environment.TickCount64;
         try { _dashboard?.SaveSettings(); } catch { }
+        // Release the Monster Editor process handle (if the toggle button
+        // launched one) rather than leaking it on plugin unload/hot-reload.
+        try { _dashboard?.ReleaseMonsterEditorHandle(); } catch { }
         long tAfterSettings = Environment.TickCount64;
         TeardownSession();
         long tAfterTeardown = Environment.TickCount64;
@@ -242,6 +255,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _missileCraftingManager = null;
         _jumper?.Cancel();
         _jumper = null;
+        _autoVendor?.Reset();
+        _autoVendor = null;
         _playerId = 0;
         _loginComplete = false;
         _windowVisible = false;
@@ -422,14 +437,30 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         _jumper = new Jumper(Host, _dashboard.Settings, s => Host.WriteToChat(s, 1));
 
+        if (_objectCache != null)
+        {
+            var dashForAv = _dashboard;
+            _autoVendor = new AutoVendorManager(Host, _dashboard.Settings, _objectCache, _playerId,
+                () => dashForAv?.CharFolder ?? string.Empty);
+            var avForUi = _autoVendor;
+            _dashboard.SetAutoVendorStatusProvider(() => avForUi.Status);
+            _dashboard.SetVendorProfilePathProvider(() => avForUi.OpenVendorProfilePath);
+        }
+
         Log("RynthAi: login complete, legacy ImGui dashboard ready.");
     }
 
     private bool _combatDbgActive = false;
     private int _combatDbgFrames = 0;
-    private bool _buffingPausedNav;
-    private bool _combatPausedNav;
-    private bool _corpsePausedNav;
+    // STEP 5 (ACTIVITY_ARBITER_PLAN.md): the four hand-managed nav pause flags
+    // (_buffingPausedNav / _combatPausedNav / _corpsePausedNav and their reset
+    // fan-out) are gone. Nav is stopped by StopNavFor() on the single transition
+    // away from Navigating, and the arbiter's decision is the only thing that
+    // decides whether nav runs at all. One edge-detect replaces the cascade.
+    private BotActivity _activity = BotActivity.Idle;   // last arbiter decision
+    private bool _macroWasRunning;                      // edge: release held turns when the macro stops
+    private BotActivity _navStoppedFor = BotActivity.Idle; // activity we last issued a nav Stop() for
+    private bool _navStopIssued;
     // Buffing-coma watchdog (see the Priority-1 block): how long BotAction has
     // been continuously 'Buffing', and the once-per-interval recovery bypass.
     private DateTime _buffingHeldSince = DateTime.MinValue;
@@ -437,8 +468,40 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private bool _buffComaWarned;
     private const double BuffComaThresholdMs = 5 * 60_000;  // 5 min continuous Buffing = pathological
     private const double BuffComaBypassEveryMs = 10_000;    // let recovery tick through every ~10s
-    private long _combatEndedAt;       // Timestamp when combat stopped blocking
-    private const long LootGraceMs = 2000; // Hold nav after combat ends so corpses can spawn
+    // Loot grace. NOT a pause flag: corpse CreateObject events arrive a tick or
+    // two after the kill, so between "combat ended" and "corpse exists in the
+    // cache" there is a window where nothing wants to loot and nav would walk
+    // away from the body. This timestamp feeds the PURE WantLooting input
+    // (HasLootWork) rather than gating nav directly, so it is data the decision
+    // is computed from, not a lock some subsystem has to remember to release.
+    private long _combatEndedAt;
+    private const long LootGraceMs = 2000;
+
+    /// <summary>
+    /// Stop nav movement once, on the transition into a non-Navigating activity.
+    /// Replaces the four _*PausedNav flags: each existed only to answer "have I
+    /// already issued the Stop() for this owner?", and each had to be reset from
+    /// every other branch of the cascade — that reset fan-out is how a stale flag
+    /// stranded the bot. One field, one question, cleared in exactly one place
+    /// (the nav-owns-the-tick branch in OnTick).
+    /// </summary>
+    private void StopNavFor(BotActivity owner)
+    {
+        if (_navStopIssued && _navStoppedFor == owner)
+            return;
+
+        _navStopIssued = true;
+        _navStoppedFor = owner;
+
+        _navigationEngine?.Stop();
+        if (Host.HasStopCompletely)
+            Host.StopCompletely();
+
+        // Combat taking the tick invalidates any in-progress door interaction.
+        // The legacy cascade did this on the combat edge only; keep it there.
+        if (owner == BotActivity.Combat)
+            ResetDoorState();
+    }
     private DateTime _lastFreeSlotsPushAt = DateTime.MinValue; // throttle the status-feed pack-slots compute
     private DateTime _lastCombatTelemetryAt = DateTime.MinValue; // throttle the D2/D6 combat-telemetry push+log
     private int _lastCombatTelemetrySig = int.MinValue;          // change key so a static-mob wedge logs once, not every tick
@@ -462,6 +525,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (string.IsNullOrEmpty(action)) return;
         _forwardedRemoteCommands.Enqueue((action, value ?? string.Empty));
     }
+
+    // /ra pause <sec> deadline (Environment.TickCount64 ms); 0 = no pause armed.
+    private long _macroResumeAt;
 
     /// Map a remote command to the bot's existing control surface. All targets are SafeInvoke-grade
     /// (managed flags / file I/O) or proven pump-safe (clearbusy = Host.ForceResetBusyCount, same call
@@ -511,7 +577,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ["TargetFPSFocused"] = (10, 240), ["TargetFPSBackground"] = (5, 60),
         ["BlacklistAttempts"] = (1, 20), ["BlacklistTimeoutSec"] = (5, 120), ["BlacklistCastSettleMs"] = (500, 5000),
         ["TargetNoProgressTimeoutSec"] = (0, 300), ["GiveQueueIntervalMs"] = (50, 2000),
-        ["BowArcVelocity"] = (10, 60), ["CrossbowArcVelocity"] = (10, 80), ["AtlatlArcVelocity"] = (10, 60), ["MagicArcVelocity"] = (10, 60),
+        ["BowArcVelocity"] = (10, 60), ["CrossbowArcVelocity"] = (10, 80), ["AtlatlArcVelocity"] = (10, 60), ["MagicArcVelocity"] = (10, 60), ["MissileArcClearance"] = (0, 3),
         ["HealAt"] = (0, 100), ["RestamAt"] = (0, 100), ["GetManaAt"] = (0, 100),
         ["TopOffHP"] = (0, 100), ["TopOffStam"] = (0, 100), ["TopOffMana"] = (0, 100),
         ["HealOthersAt"] = (0, 100), ["RestamOthersAt"] = (0, 100), ["InfuseOthersAt"] = (0, 100),
@@ -526,10 +592,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ["FollowNavMin"] = (0.5, 20), ["NavRingThickness"] = (1, 16), ["NavLineThickness"] = (1, 16),
         ["NavHeightOffset"] = (-5, 5), ["NavSlopeSink"] = (0, 8), ["OpenDoorRange"] = (0.1, 70), ["MovementMode"] = (0, 2),
         ["NavStopTurnAngle"] = (1, 90), ["NavResumeTurnAngle"] = (1, 45), ["NavDeadZone"] = (0.5, 20), ["NavSweepMult"] = (0.5, 10),
-        ["NavLookaheadYards"] = (0, 30), ["NavTurnRateDegPerSec"] = (30, 720), ["NavTier1TurnSpeed"] = (0.5, 15), ["PostPortalDelaySec"] = (0, 30),
+        ["NavLookaheadYards"] = (0, 30), ["NavShortcutYards"] = (0, 10), ["NavTurnRateDegPerSec"] = (30, 720), ["NavTier1TurnSpeed"] = (0.5, 15), ["PostPortalDelaySec"] = (0, 30),
         ["T2Speed"] = (0.1, 5), ["T2WalkWithinYd"] = (1, 50), ["T2DistanceTo"] = (0.1, 10), ["T2ReissueMs"] = (100, 10000),
         ["T2MaxRangeYd"] = (50, 2000), ["T2MaxLandblocks"] = (1, 20),
-        ["RebuffSecondsRemaining"] = (30, 1800),
+        ["RebuffSecondsRemaining"] = (30, 1800), ["RebuffTopOffSecondsRemaining"] = (30, 3600),
+        ["AutoVendorTries"] = (1, 20), ["AutoVendorTriesTime"] = (500, 30000),
         ["BuffMinSkillLevelTier1"] = (1, 500), ["BuffMinSkillLevelTier2"] = (1, 500), ["BuffMinSkillLevelTier3"] = (1, 500), ["BuffMinSkillLevelTier4"] = (1, 500),
         ["BuffMinSkillLevelTier5"] = (1, 500), ["BuffMinSkillLevelTier6"] = (1, 500), ["BuffMinSkillLevelTier7"] = (1, 500), ["BuffMinSkillLevelTier8"] = (1, 500),
         ["LootJumpHeight"] = (1, 100), ["LootOwnership"] = (0, 2),
@@ -878,6 +945,19 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         {
             _dashboard?.DrainMetaCommands();   // apply queued meta edits on this (plugin-tick) thread
 
+            // /ra pause <sec>: restart the macro once the window elapses. Cleared by
+            // an explicit /ra start or /ra stop, so a manual decision always wins.
+            if (_macroResumeAt != 0 && Environment.TickCount64 >= _macroResumeAt)
+            {
+                _macroResumeAt = 0;
+                var pauseDash = _dashboard;
+                if (pauseDash != null && !pauseDash.Settings.IsMacroRunning)
+                {
+                    pauseDash.TogglePanelMacro();
+                    ChatLine("[RynthAi] Pause elapsed — macro RESUMED.");
+                }
+            }
+
             // Remote control: apply any phone-issued commands. ~50ms cadence so the movement d-pad
             // feels responsive (press→move latency); a tiny dir glob is cheap. No-op when empty.
             // Monotonic clock (TickCount64) — a wall-clock step must never stall this safety-critical poll.
@@ -1060,6 +1140,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     return;
                 if (diag) Host.Log($"[RynthAi] OnTick: settings ok, macro={settings.IsMacroRunning} action={settings.BotAction}");
 
+                // Macro switched off: combat stops ticking, so a turn it was holding would
+                // stay held and the character spun on its own (2026-09-27). Let go once.
+                if (_macroWasRunning && !settings.IsMacroRunning)
+                    _combatManager?.ReleaseHeldTurn();
+                _macroWasRunning = settings.IsMacroRunning;
+
                 if (_patrolOnLoginPending && _raycast?.GeometryLoader?.CellDat?.IsLoaded == true)
                 {
                     _patrolOnLoginPending = false;
@@ -1071,92 +1157,139 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // looping through it. Cheap no-op unless a new hazard cell was registered.
                 TickDunPatrolHazardReroute();
 
-                // ── Activity arbiter — STEP 2: AUTHORITATIVE for Combat↔Nav ──
-                // The arbiter is now the SOLE writer of the "Combat" /
-                // "Navigating" / "Default" BotAction strings (CombatManager's
-                // own writes were removed in the same step). Buffing/Looting/
-                // Salvaging strings are still written by their legacy managers
-                // (migrated in steps 3-4). wantCombat uses the tight
-                // HasEngageableTarget predicate — NOT HasTargets — so far-off
-                // mobs no longer latch the action lock while nav is blocked.
-                // See ACTIVITY_ARBITER_PLAN.md.
+                // ── Activity arbiter — STEP 5: AUTHORITATIVE, full stop ──
+                // The arbiter is the SOLE writer of every BotAction string, and
+                // its typed decision (_activity) is what gates the rest of this
+                // method. No manager writes the string; the buff and salvage
+                // gap-fills are gone; the four nav pause flags are gone. wantCombat
+                // uses the tight HasEngageableTarget predicate — NOT HasTargets —
+                // so far-off mobs no longer latch the action lock while nav is
+                // blocked. See ACTIVITY_ARBITER_PLAN.md.
                 try
                 {
                     _arbiter ??= new ActivityArbiter(m => Host.Log($"[RynthAi] {m}"));
-                    bool wantBuff = settings.EnableBuffing && _buffManager != null && _buffManager.NeedsAnyBuff();
-                    bool wantCombat = settings.EnableCombat && _combatManager != null && _combatManager.HasEngageableTarget;
-                    bool wantLoot = _openedContainerId != 0 || _targetCorpseId != 0;
-                    bool wantSalvage = _salvageManager != null && _salvageManager.IsBusy;
-                    bool routeLoaded = settings.CurrentRoute != null && settings.CurrentRoute.Points.Count > 0;
-                    bool wantNav = settings.IsMacroRunning && settings.EnableNavigation && routeLoaded;
-                    var inputs = new ArbiterInputs(
-                        settings.IsMacroRunning, wantBuff, wantCombat, wantLoot, wantSalvage, wantNav);
-                    _arbiter.ApplyStep2(in inputs, settings);
-                }
-                catch { /* arbiter must never throw out of the live tick */ }
 
-                // Gap-fill: BuffManager sets BotAction = "Buffing" while casting, but
-                // resets it to "Default" between casts. If buffs are still needed,
-                // keep it locked to "Buffing" so nothing sneaks in between casts.
-                if (_buffManager != null
-                    && settings.EnableBuffing
-                    && _buffManager.NeedsAnyBuff()
-                    && settings.BotAction != "Buffing")
-                {
-                    settings.BotAction = "Buffing";
-                }
+                    // The three reasons buffing gets to hold the top slot, which is
+                    // what BuffManager's seven scattered string writes encoded:
+                    //  - a cast awaiting server confirmation (releasing mid-cast let
+                    //    CombatManager's peace-mode switch fizzle the spell),
+                    //  - a wanted vital recharge (these run even with buffing OFF),
+                    //  - buffs actually below threshold.
+                    bool wantBuffRaw = _buffManager != null
+                                    && (_buffManager.PendingSpellId != 0
+                                        || _buffManager.WantsVitalRecharge
+                                        || (settings.EnableBuffing && _buffManager.NeedsAnyBuff()));
+                    bool wantBuff = wantBuffRaw;
 
-                // ── Priority 1: Buffing ───────────────────────────────────────────
-                // Blocks combat, looting, and navigation entirely.
-                if (settings.IsMacroRunning
-                    && string.Equals(settings.BotAction, "Buffing", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Buffing-coma watchdog. Buffing stays TOP priority — but on
-                    // 2026-06-12 a stance deadlock made NeedsAnyBuff() hold
-                    // Buffing for 1h54m while BuffManager silently retried mode
-                    // flips: the bot stood unbuffed and dormant, and the ONE
-                    // component with stance recovery (CombatManager) never got a
-                    // tick. A normal full rebuff cycle is 1-2 min; >5 min of
-                    // CONTINUOUS Buffing is pathological regardless of cause.
-                    // Past that, warn once and let one tick per ~10s fall
-                    // through to the combat heartbeat so its stance recovery can
-                    // run. Buffing reclaims priority on the very next tick.
-                    if (_buffingHeldSince == DateTime.MinValue)
-                        _buffingHeldSince = DateTime.Now;
-                    double heldMs = (DateTime.Now - _buffingHeldSince).TotalMilliseconds;
-                    bool comaBypass = heldMs > BuffComaThresholdMs
-                        && (DateTime.Now - _lastBuffComaBypassAt).TotalMilliseconds > BuffComaBypassEveryMs;
-                    if (comaBypass)
+                    // ── Buffing-coma watchdog (STEP 5: decides, no longer falls through) ──
+                    // 2026-06-12: a stance deadlock made NeedsAnyBuff() hold Buffing for
+                    // 1h54m while BuffManager silently retried mode flips — the bot stood
+                    // unbuffed and dormant, and the ONE component with stance recovery
+                    // (CombatManager) never got a tick. A normal full rebuff cycle is
+                    // 1-2 min; >5 min of CONTINUOUS wanting-to-buff is pathological
+                    // regardless of cause.
+                    //
+                    // This used to sit after the string was written and "fall through" to
+                    // the combat heartbeat. That could never work: CombatManager.canRun
+                    // rejects BotAction=="Buffing", and stance recovery lives inside
+                    // EquipWeaponAndSetStance, downstream of Think(), downstream of
+                    // canRun. So the watchdog printed its warning and recovered nothing.
+                    // It now suppresses wantBuff for one tick instead — the arbiter picks
+                    // Combat, canRun opens, and recovery actually runs. Buffing reclaims
+                    // the decision on the very next tick.
+                    //
+                    // The hold timer keys off wantBuffRaw, NOT off the decision: keying it
+                    // off the decision would reset it on the bypass tick itself and the
+                    // ~10s retry cadence would silently become "once every 5 minutes".
+                    if (!wantBuffRaw)
                     {
-                        _lastBuffComaBypassAt = DateTime.Now;
-                        if (!_buffComaWarned)
-                        {
-                            _buffComaWarned = true;
-                            Host.Log($"[RynthAi] BUFFING COMA: BotAction has been 'Buffing' continuously for {heldMs / 60000:0.0} min with buffs still needed — letting combat/stance recovery tick through every ~10s. Check for a stance wedge.");
-                            Host.WriteToChat($"[RynthAi] Buffing has been stuck for {heldMs / 60000:0} min (stance wedge?) — engaging recovery. /ra clearbusy or relog if it persists.", 2);
-                        }
-                        // fall through — combat heartbeat below gets one shot
+                        _buffingHeldSince = DateTime.MinValue;
+                        _buffComaWarned = false;
                     }
                     else
                     {
-                        if (!_buffingPausedNav)
+                        if (_buffingHeldSince == DateTime.MinValue)
+                            _buffingHeldSince = DateTime.Now;
+
+                        double heldMs = (DateTime.Now - _buffingHeldSince).TotalMilliseconds;
+                        if (heldMs > BuffComaThresholdMs
+                            && (DateTime.Now - _lastBuffComaBypassAt).TotalMilliseconds > BuffComaBypassEveryMs)
                         {
-                            _navigationEngine?.Stop();
-                            if (Host.HasStopCompletely) Host.StopCompletely();
-                            _buffingPausedNav   = true;
-                            _combatPausedNav    = false;
-                            _corpsePausedNav    = false;
-                            _combatEndedAt      = 0;
+                            _lastBuffComaBypassAt = DateTime.Now;
+                            wantBuff = false; // yield ONE tick so stance recovery can run
+                            if (!_buffComaWarned)
+                            {
+                                _buffComaWarned = true;
+                                Host.Log($"[RynthAi] BUFFING COMA: buffing has wanted the tick continuously for {heldMs / 60000:0.0} min with buffs still needed — yielding one tick per ~10s so combat/stance recovery can run. Check for a stance wedge.");
+                                Host.WriteToChat($"[RynthAi] Buffing has been stuck for {heldMs / 60000:0} min (stance wedge?) — engaging recovery. /ra clearbusy or relog if it persists.", 2);
+                            }
                         }
+                    }
+
+                    bool wantCombat = settings.EnableCombat && _combatManager != null && _combatManager.HasEngageableTarget;
+                    bool engaged    = _combatManager?.IsUnderCloseAttack == true;
+
+                    // Loot-grace bookkeeping. Remember the tick combat stopped
+                    // wanting to run so HasLootWork can hold Looting across the
+                    // gap before the corpse object materialises in the cache.
+                    // This is the ONLY surviving piece of the old cascade, and it
+                    // survives as an input to a pure predicate, not as a lock.
+                    long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    if (wantCombat)
+                        _combatEndedAt = 0;
+                    else if (_combatEndedAt == 0 && _activity == BotActivity.Combat)
+                        _combatEndedAt = nowMs;
+
+                    bool wantLoot = HasLootWork(settings, nowMs);
+                    bool wantSalvage = _salvageManager != null && _salvageManager.IsBusy;
+                    bool routeLoaded = settings.CurrentRoute != null && settings.CurrentRoute.Points.Count > 0;
+
+                    // Fellowship-follow steers toward a live leader position and
+                    // needs no route, so it counts as nav work in its own right —
+                    // without this, turning Follow on with no route loaded would
+                    // leave wantNav false and NavigationEngine.Tick would never be
+                    // called to do the following.
+                    bool followActive = settings.FollowMode && settings.FollowTargetId != 0;
+                    bool wantNav = settings.IsMacroRunning && settings.EnableNavigation
+                                && (routeLoaded || followActive);
+                    var inputs = new ArbiterInputs(
+                        settings.IsMacroRunning, wantBuff, wantCombat, wantLoot, wantSalvage, wantNav,
+                        combatEngaged: engaged,
+                        boostNav:      settings.BoostNavPriority,
+                        boostLoot:     settings.BoostLootPriority,
+                        followActive:  followActive);
+                    _activity = _arbiter.Apply(in inputs, settings);
+                }
+                catch { /* arbiter must never throw out of the live tick */ }
+
+                // ── AutoVendor (UtilityBelt-style) ───────────────────────────────
+                // Runs whether or not the macro is on: it starts when a vendor opens.
+                // While it holds the bot (a vendoring session, or /ub vendor open
+                // trying to reach a vendor) nothing else moves the character or the
+                // inventory — UB takes VTank's Navigation + ItemUse locks the same way.
+                // Bounded by AutoVendor's own 60 s bail timer.
+                var autoVendor = _autoVendor;
+                if (autoVendor != null)
+                {
+                    autoVendor.Tick(_busyCount);
+                    if (autoVendor.HoldsBot)
+                    {
+                        if (settings.IsMacroRunning)
+                            StopNavFor(BotActivity.Idle);
                         _metaManager?.Think();
                         return;
                     }
                 }
-                else
+
+                // ── Priority 1: Buffing ───────────────────────────────────────────
+                // Blocks combat, looting, and navigation entirely. The coma
+                // watchdog that used to live here now runs ahead of the decision
+                // (it suppresses wantBuff for a tick), so this is just the hold.
+                if (settings.IsMacroRunning && _activity == BotActivity.Buffing)
                 {
-                    _buffingPausedNav = false;
-                    _buffingHeldSince = DateTime.MinValue;
-                    _buffComaWarned = false;
+                    StopNavFor(BotActivity.Buffing);
+                    _metaManager?.Think();
+                    return;
                 }
 
                 // AutoCram / AutoStack — only while idle (not looting a corpse, not crafting).
@@ -1248,26 +1381,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     _salvageManager?.OnTick(_busyCount);
                 if (diag) Host.Log("[RynthAi] OnTick: before manaStoneManager");
 
-                // Salvage-priority gap-fill: hold BotAction at "Salvaging" while
-                // a container is open OR the salvage queue has items — UNLESS a
-                // mob is engageable, in which case combat must win (don't stand
-                // there getting hit). "Buffing" still wins (buffs = survival).
-                if (settings.IsMacroRunning
-                    && settings.BotAction != "Buffing"
-                    && !combatThreat
-                    && (_openedContainerId != 0 || _salvageManager?.IsBusy == true))
-                {
-                    settings.BotAction = "Salvaging";
-                }
-                else if (settings.BotAction == "Salvaging"
-                         && (combatThreat
-                             || (_openedContainerId == 0 && _salvageManager?.IsBusy != true)))
-                {
-                    // Release the legacy 'Salvaging' lock so CombatManager.canRun
-                    // is true and the arbiter can take Combat. Salvage re-grabs
-                    // it next tick once the threat is gone.
-                    settings.BotAction = "Default";
-                }
+                // STEP 4: the salvage gap-fill that used to pin/release
+                // "Salvaging" here is GONE. Its whole content — "salvage wants
+                // the tick while the queue is busy, unless combat or buffing
+                // outranks it" — is now the WantSalvaging input plus the fixed
+                // priority order in ActivityArbiter.Decide. The release branch
+                // it needed (hand back the string so CombatManager.canRun could
+                // become true) is unnecessary once one writer recomputes the
+                // decision from scratch every tick.
 
                 // Mana stone tapping — runs after salvage, independent of looting state.
                 _manaStoneManager?.OnHeartbeat(_busyCount);
@@ -1288,39 +1409,38 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     }
                 }
 
-                // BoostNavPriority must only suppress combat/loot when there is
-                // actually navigation to prioritise. With nav disabled or no
-                // route points there is nothing to boost, so an unconditional
-                // return here just starves combat and the bot stands among mobs
-                // without hunting. Same "nav active" predicate the arbiter uses
-                // for wantNav (~line 404): IsMacroRunning && EnableNavigation &&
-                // route-has-points.
-                bool navActiveForBoost = settings.IsMacroRunning
-                                      && settings.EnableNavigation
-                                      && settings.CurrentRoute != null
-                                      && settings.CurrentRoute.Points.Count > 0;
-                if (settings.BoostNavPriority && navActiveForBoost)
-                {
-                    if (string.Equals(settings.BotAction, "Combat", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(settings.BotAction, "Looting", StringComparison.OrdinalIgnoreCase))
-                    {
-                        settings.BotAction = "Default";
-                    }
+                // ── STEP 5: the decision drives who ticks ────────────────────
+                // This replaces ~90 lines of legacy cascade: the BoostNav and
+                // BoostLoot string-stomps (both are inputs to Decide now), the
+                // combatBlocking/corpseBlocking/lootGrace recomputation, and the
+                // four hand-managed pause flags. There is exactly one question
+                // left — "what did the arbiter decide?" — and one edge-detect for
+                // stopping nav movement on the transition away from Navigating.
+                bool navOwnsTick = _activity == BotActivity.Navigating;
 
-                    _combatPausedNav = false;
-                    _corpsePausedNav = false;
-                    bool doorBlocking = TickDoorInteraction();
-                    if (!doorBlocking)
-                        _navigationEngine?.Tick();
-                    _metaManager?.Think();
-                    return;
-                }
+                // Nav must keep ticking during portal/recall actions so teleport
+                // detection works — combat and looting must not suppress it.
+                bool navInPortal = _navigationEngine?.IsInPortalAction == true;
 
-                if (settings.BoostLootPriority)
+                // These two run EVERY tick, whoever won. They self-gate internally
+                // — attacks via CombatManager.canRun, corpse claims via
+                // CanClaimCorpse, both reading the string the arbiter has already
+                // written this tick — so the decision still controls what they
+                // DO. The order below is about latency, not permission.
+                //
+                // Do NOT gate OnHeartbeat on the decision. It is what runs
+                // ScanNearbyTargets, which populates _scannedTargets, which is what
+                // HasEngageableTarget reads, which is the arbiter's OWN wantCombat
+                // input. Gating it is circular and self-latching: nav wins the tick
+                // → the scan never refreshes → no targets are ever seen → wantCombat
+                // stays false → nav wins forever. That is the 2026-09-04 "ignores
+                // all monsters and just navigates" regression. The scan issues no
+                // game commands, so running it while another activity owns the tick
+                // costs nothing and is what keeps the decision honest.
+                if (_activity == BotActivity.Looting)
                 {
                     TickCorpseOpening();
-                    if (!IsCorpseNavigationClaimActive(settings))
-                        _combatManager?.OnHeartbeat();
+                    _combatManager?.OnHeartbeat();
                 }
                 else
                 {
@@ -1328,67 +1448,21 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     if (diag) Host.Log("[RynthAi] OnTick: after combatManager.OnHeartbeat");
                     TickCorpseOpening();
                 }
+
                 if (diag) Host.Log("[RynthAi] OnTick: before nav");
-                // Mirror the arbiter's wantCombat predicate: only pause nav when
-                // combat can actually engage. LOS-blocked mobs would freeze the bot
-                // (arbiter picks Nav, but combatBlocking paused it) — instead let
-                // nav close distance until HasEngageableTarget flips true.
-                bool combatBlocking = settings.EnableCombat
-                                   && _combatManager != null
-                                   && _combatManager.HasEngageableTarget;
-                bool corpseBlocking = IsCorpseNavigationClaimActive(settings);
 
-                // Track when combat stops blocking so we can hold nav
-                // for a grace period — corpse CreateObject events arrive
-                // a tick or two after the kill, and nav would walk away.
-                long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                if (combatBlocking)
+                if (navOwnsTick || navInPortal)
                 {
-                    _combatEndedAt = 0; // still fighting
-                }
-                else if (_combatPausedNav && _combatEndedAt == 0)
-                {
-                    _combatEndedAt = now; // combat just ended this tick
-                }
-
-                bool lootGraceActive = settings.EnableLooting
-                                    && _combatEndedAt != 0
-                                    && (now - _combatEndedAt) < LootGraceMs;
-
-                // Nav must keep ticking during portal/recall actions so teleport
-                // detection works — combat and looting must not suppress it.
-                bool navInPortal = _navigationEngine?.IsInPortalAction == true;
-
-                if ((combatBlocking || corpseBlocking || lootGraceActive) && !navInPortal)
-                {
-                    // Stop nav movement immediately the first tick another controller takes over.
-                    if (combatBlocking && !_combatPausedNav)
-                    {
-                        _navigationEngine?.Stop();
-                        if (Host.HasStopCompletely)
-                            Host.StopCompletely();
-                        _combatPausedNav = true;
-                        ResetDoorState();
-                    }
-
-                    if ((corpseBlocking || lootGraceActive) && !_corpsePausedNav)
-                    {
-                        _navigationEngine?.Stop();
-                        if (Host.HasStopCompletely)
-                            Host.StopCompletely();
-                        _corpsePausedNav = true;
-                    }
-
-                }
-                else
-                {
-                    _combatPausedNav = false;
-                    _corpsePausedNav = false;
-                    _combatEndedAt = 0;
+                    _navStopIssued = false;
+                    _navStoppedFor = BotActivity.Idle;
 
                     bool doorBlocking = TickDoorInteraction();
                     if (!doorBlocking)
                         _navigationEngine?.Tick();
+                }
+                else
+                {
+                    StopNavFor(_activity);
                 }
 
                 TickPendingMtLoot();
@@ -1518,6 +1592,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
     public override void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth)
     {
+        float prevRatio = _objectCache?.GetHealthRatio(unchecked((int)targetId)) ?? -1f;
         _objectCache?.OnUpdateHealth(targetId, healthRatio);
         _dashboard?.OnUpdateHealth(targetId, healthRatio, currentHealth, maxHealth);
         if (_loginComplete && targetId == _playerId && maxHealth > 0)
@@ -1526,16 +1601,47 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             _vitals.MaxHealth = maxHealth;
         }
 
-        // When a creature's health changes, something hit it — reset its miss counter
-        // so the blacklist doesn't trigger on valid in-combat targets.
-        if (targetId != _playerId)
+        // When a creature's health DROPS, something hit it — reset its miss counter so the
+        // blacklist doesn't trigger on valid in-combat targets. Only a drop counts: the
+        // client also gets health for a mob the player merely selects (QueryHealth reply),
+        // for the fight target combat queries at lock, and on regen, all at unchanged or
+        // higher health. Counting those as hits reset the no-damage miss streak,
+        // un-blacklisted the mob and gave it the damage-commitment bonus, so selecting a
+        // mob could steer combat and a target the arrows weren't hurting could be held far
+        // past BlacklistAttempts misses (2026-09-27, Olthoi swarm).
+        if (targetId != _playerId && IsHealthDrop(prevRatio, healthRatio))
             _combatManager?.ReportDamageOnTarget((int)targetId);
 
         // Capture observed creature data into the persistent store. maxHealth>0 means
         // we just got a successful CreatureProfile (Assess succeeded) — the only time
         // we have authoritative max vitals + resists.
-        if (targetId != _playerId && maxHealth > 0)
+        if (targetId != _playerId && maxHealth > 0 && IsFightableCreature(targetId))
             CaptureCreatureSample(targetId, maxHealth);
+    }
+
+    /// <summary>
+    /// True when a health update means the creature lost health: lower than the last ratio
+    /// we knew, or, for the first report of a creature, below full.
+    /// </summary>
+    private static bool IsHealthDrop(float prevRatio, float newRatio)
+    {
+        if (float.IsNaN(newRatio)) return false;
+        return prevRatio < 0f ? newRatio < 0.999f : newRatio < prevRatio - 0.0005f;
+    }
+
+    /// <summary>
+    /// Something you can fight — what the Damage tab and creatures.json should learn from.
+    /// Appraising an NPC, a vendor, another player or your own pet also returns health, and
+    /// each one used to become a Damage-tab row (and a creatures.json entry). The attackable
+    /// check also catches NPCs the object cache classifies as monsters.
+    /// </summary>
+    private bool IsFightableCreature(uint objectId)
+    {
+        WorldObject? obj = _objectCache?[unchecked((int)objectId)];
+        if (obj != null && obj.ObjectClass is AcObjectClass.Npc or AcObjectClass.Vendor
+                                             or AcObjectClass.Player or AcObjectClass.CombatPet)
+            return false;
+        return !Host.HasObjectIsAttackable || Host.ObjectIsAttackable(objectId);
     }
 
     // Exact per-hit damage from the engine (AttackerNotification 0x01B1). This is
@@ -2122,6 +2228,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "dumpinv":      HandleDumpInventoryCommand(); break;
             case "combat":       HandleCombatStateCommand(); break;
             case "why":          HandleWhyCommand(); break;
+            case "start":
+            case "resume":
+            case "stop":
+            case "pause":        HandleMacroRunCommand(cmd, parts); break;
+            case "navstate":     HandleNavStateCommand(); break;
+            case "salvstate":    HandleSalvageStateCommand(); break;
             case "mapdump":      HandleMapDumpCommand(); break;
             case "clearbusy":    HandleClearBusyCommand(); break;
             case "panic":        HandlePanicCommand(); break;

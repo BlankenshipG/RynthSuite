@@ -1194,49 +1194,88 @@ internal sealed class ExpressionEngine
     }
 
     // Higher-order helpers: set $0/$1/$2, evaluate template, restore.
+    //
+    // Deep-audit finding #26 (2026-06-18): despite this comment, none of the
+    // four functions below actually restored "0"/"1"/"2" afterward — they
+    // wrote straight into the persistent _variables dictionary and left
+    // whatever the last loop iteration set. Nested list ops clobbered each
+    // other's $0/$1 mid-evaluation, and a user's own numeric-named $0/$1/$2
+    // (if they had any) were silently overwritten for the rest of the meta.
+    // Snapshot before, restore-or-Remove in a finally, per the fix note.
+
+    /// <summary>Snapshots the given _variables keys, returning a restore action for a finally block.</summary>
+    private Action SnapshotVars(params string[] keys)
+    {
+        var saved = new (string Key, bool Had, string? Value)[keys.Length];
+        for (int i = 0; i < keys.Length; i++)
+            saved[i] = (keys[i], _variables.TryGetValue(keys[i], out var v), v);
+        return () =>
+        {
+            foreach (var (key, had, value) in saved)
+            {
+                if (had) _variables[key] = value!;
+                else _variables.Remove(key);
+            }
+        };
+    }
 
     private string EvalListFilter(string handle, string exprTemplate)
     {
         var list = GetList(handle);
         if (list == null || exprTemplate.Length == 0) return NewList();
-        var result = new List<string>();
-        for (int i = 0; i < list.Count; i++)
+        var restore = SnapshotVars("0", "1");
+        try
         {
-            _variables["0"] = Fmt((long)i);
-            _variables["1"] = list[i];
-            if (ToBool(Evaluate(exprTemplate)))
-                result.Add(list[i]);
+            var result = new List<string>();
+            for (int i = 0; i < list.Count; i++)
+            {
+                _variables["0"] = Fmt((long)i);
+                _variables["1"] = list[i];
+                if (ToBool(Evaluate(exprTemplate)))
+                    result.Add(list[i]);
+            }
+            return NewList(result);
         }
-        return NewList(result);
+        finally { restore(); }
     }
 
     private string EvalListMap(string handle, string exprTemplate)
     {
         var list = GetList(handle);
         if (list == null || exprTemplate.Length == 0) return NewList();
-        var result = new List<string>(list.Count);
-        for (int i = 0; i < list.Count; i++)
+        var restore = SnapshotVars("0", "1");
+        try
         {
-            _variables["0"] = Fmt((long)i);
-            _variables["1"] = list[i];
-            result.Add(Evaluate(exprTemplate));
+            var result = new List<string>(list.Count);
+            for (int i = 0; i < list.Count; i++)
+            {
+                _variables["0"] = Fmt((long)i);
+                _variables["1"] = list[i];
+                result.Add(Evaluate(exprTemplate));
+            }
+            return NewList(result);
         }
-        return NewList(result);
+        finally { restore(); }
     }
 
     private string EvalListReduce(string handle, string exprTemplate)
     {
         var list = GetList(handle);
         if (list == null || list.Count == 0 || exprTemplate.Length == 0) return "0";
-        string acc = "0";
-        for (int i = 0; i < list.Count; i++)
+        var restore = SnapshotVars("0", "1", "2");
+        try
         {
-            _variables["0"] = Fmt((long)i);
-            _variables["1"] = list[i];
-            _variables["2"] = acc;
-            acc = Evaluate(exprTemplate);
+            string acc = "0";
+            for (int i = 0; i < list.Count; i++)
+            {
+                _variables["0"] = Fmt((long)i);
+                _variables["1"] = list[i];
+                _variables["2"] = acc;
+                acc = Evaluate(exprTemplate);
+            }
+            return acc;
         }
-        return acc;
+        finally { restore(); }
     }
 
     private string EvalListSort(string handle, string exprTemplate)
@@ -1244,20 +1283,25 @@ internal sealed class ExpressionEngine
         var list = GetList(handle);
         if (list == null) return NewList();
         var copy = new List<string>(list);
-        if (exprTemplate.Length > 0)
+        var restore = SnapshotVars("1", "2");
+        try
         {
-            copy.Sort((a, b) =>
+            if (exprTemplate.Length > 0)
             {
-                _variables["1"] = a;
-                _variables["2"] = b;
-                return (int)ToLong(Evaluate(exprTemplate));
-            });
+                copy.Sort((a, b) =>
+                {
+                    _variables["1"] = a;
+                    _variables["2"] = b;
+                    return (int)ToLong(Evaluate(exprTemplate));
+                });
+            }
+            else
+            {
+                copy.Sort(StringComparer.Ordinal);
+            }
+            return NewList(copy);
         }
-        else
-        {
-            copy.Sort(StringComparer.Ordinal);
-        }
-        return NewList(copy);
+        finally { restore(); }
     }
 
     // ── World state implementations ───────────────────────────────────────────
@@ -2965,24 +3009,43 @@ internal sealed class ExpressionEngine
         "Evensong","Evensong-and-Half","Gloaming","Gloaming-and-Half"
     };
 
-    private static unsafe double ReadGameClock()
+    private bool _loggedGameClockNotInWorld;
+
+    /// <summary>
+    /// Reads the raw double at 0x008379A8 — the AC game clock register. That address
+    /// is only mapped once the client is in world, so any getgame* expression
+    /// evaluated before world entry used to fault (2026-06-03 audit P3). An
+    /// AccessViolationException is a corrupted-state exception and is NOT catchable
+    /// in .NET, so this guards instead of catching: no player id means no world,
+    /// which means the register must not be touched.
+    /// </summary>
+    private double ReadGameClock()
     {
-        // Read the raw double at 0x008379A8 — the AC game clock register.
+        if (!_host.HasGetPlayerId || _host.GetPlayerId() == 0)
+        {
+            if (!_loggedGameClockNotInWorld)
+            {
+                _loggedGameClockNotInWorld = true;
+                _host.Log("[Meta] getgame* evaluated before world entry — game clock unreadable, returning 0 (not faulting).");
+            }
+            return 0;
+        }
+
         long raw = System.Runtime.InteropServices.Marshal.ReadInt64(new IntPtr(unchecked((int)0x008379A8)));
         return BitConverter.Int64BitsToDouble(raw);
     }
 
-    private static double GetGameTicks()
+    private double GetGameTicks()
     {
         double rawTicks = ReadGameClock();
         return rawTicks - 210 + (TicksInHour * 8) + (TicksInHour * HoursInDay * DaysInMonth * MonthsInYear * 10);
     }
 
-    private static int GetGameYear()   => (int)(GetGameTicks() / TicksInYear);
-    private static int GetGameMonth()  => (int)(GetGameTicks() % TicksInYear  / TicksInMonth);
-    private static int GetGameDay()    => (int)(GetGameTicks() % TicksInMonth / TicksInDay);
-    private static int GetGameHour()   => (int)(GetGameTicks() % TicksInDay   / TicksInHour);
-    private static bool GetIsDay()     { int h = GetGameHour(); return h >= 4 && h < 12; }
+    private int GetGameYear()   => (int)(GetGameTicks() / TicksInYear);
+    private int GetGameMonth()  => (int)(GetGameTicks() % TicksInYear  / TicksInMonth);
+    private int GetGameDay()    => (int)(GetGameTicks() % TicksInMonth / TicksInDay);
+    private int GetGameHour()   => (int)(GetGameTicks() % TicksInDay   / TicksInHour);
+    private bool GetIsDay()     { int h = GetGameHour(); return h >= 4 && h < 12; }
 
     // Lookup by index (0-based), matches UB: getgamemonthname[0] = "Morningthaw", getgamemonthname[1] = "Solclaim"
     private static string GetGameMonthName(string arg)
@@ -2997,7 +3060,7 @@ internal sealed class ExpressionEngine
         return n >= 0 && n < HourNames.Length ? HourNames[n] : "";
     }
 
-    private static int GetMinutesUntilDay()
+    private int GetMinutesUntilDay()
     {
         if (GetIsDay()) return 0;
         // Ticks remaining until hour 4 (dawn)
@@ -3009,7 +3072,7 @@ internal sealed class ExpressionEngine
         return (int)(ticksUntil / 60);
     }
 
-    private static int GetMinutesUntilNight()
+    private int GetMinutesUntilNight()
     {
         if (!GetIsDay()) return 0;
         // Ticks remaining until hour 12 (dusk)
@@ -3141,6 +3204,13 @@ internal sealed class ExpressionEngine
             ["EnableLooting"]       = (() => B(s.EnableLooting),       v => s.EnableLooting       = ToDouble(v) != 0),
             ["EnableMeta"]          = (() => B(s.EnableMeta),          v => s.EnableMeta          = ToDouble(v) != 0),
             ["EnableRaycasting"]    = (() => B(s.EnableRaycasting),    v => s.EnableRaycasting    = ToDouble(v) != 0),
+            ["UseArcs"]             = (() => B(s.UseArcs),             v => s.UseArcs             = ToDouble(v) != 0),
+            ["LosDebugLog"]         = (() => B(s.LosDebugLog),         v => s.LosDebugLog         = ToDouble(v) != 0),
+            ["BowArcVelocity"]      = (() => F(s.BowArcVelocity),      v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.BowArcVelocity      = Math.Clamp(f, 10f, 60f); }),
+            ["CrossbowArcVelocity"] = (() => F(s.CrossbowArcVelocity), v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.CrossbowArcVelocity = Math.Clamp(f, 10f, 80f); }),
+            ["AtlatlArcVelocity"]   = (() => F(s.AtlatlArcVelocity),   v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.AtlatlArcVelocity   = Math.Clamp(f, 10f, 60f); }),
+            ["MagicArcVelocity"]    = (() => F(s.MagicArcVelocity),    v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.MagicArcVelocity    = Math.Clamp(f, 10f, 60f); }),
+            ["MissileArcClearance"] = (() => F(s.MissileArcClearance), v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.MissileArcClearance = Math.Clamp(f, 0f, 3f); }),
             ["EnableAutostack"]     = (() => B(s.EnableAutostack),     v => s.EnableAutostack     = ToDouble(v) != 0),
             ["EnableAutocram"]      = (() => B(s.EnableAutocram),      v => s.EnableAutocram      = ToDouble(v) != 0),
             ["EnableCombineSalvage"]= (() => B(s.EnableCombineSalvage),v => s.EnableCombineSalvage= ToDouble(v) != 0),
@@ -3173,7 +3243,19 @@ internal sealed class ExpressionEngine
             ["CorpseApproachRangeMin"] = (() => D(s.CorpseApproachRangeMin), v => { if (double.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out double d)) s.CorpseApproachRangeMin = d; }),
             ["ManaStoneKeepCount"]     = (() => I(s.ManaStoneKeepCount),     v => { if (int.TryParse(v, out int i)) s.ManaStoneKeepCount = i; }),
             ["RebuffSecondsRemaining"] = (() => I(s.RebuffSecondsRemaining), v => { if (int.TryParse(v, out int i)) s.RebuffSecondsRemaining = i; }),
+            ["RebuffTopOffSecondsRemaining"] = (() => I(s.RebuffTopOffSecondsRemaining), v => { if (int.TryParse(v, out int i)) s.RebuffTopOffSecondsRemaining = i; }),
+            // AutoVendor (UB names map here through /ub opt: AutoVendor.Enabled -> AutoVendorEnabled, ...)
+            ["AutoVendorEnabled"]          = (() => B(s.AutoVendorEnabled),          v => s.AutoVendorEnabled          = ToDouble(v) != 0),
+            ["AutoVendorEnableBuying"]     = (() => B(s.AutoVendorEnableBuying),     v => s.AutoVendorEnableBuying     = ToDouble(v) != 0),
+            ["AutoVendorEnableSelling"]    = (() => B(s.AutoVendorEnableSelling),    v => s.AutoVendorEnableSelling    = ToDouble(v) != 0),
+            ["AutoVendorTestMode"]         = (() => B(s.AutoVendorTestMode),         v => s.AutoVendorTestMode         = ToDouble(v) != 0),
+            ["AutoVendorThink"]            = (() => B(s.AutoVendorThink),            v => s.AutoVendorThink            = ToDouble(v) != 0),
+            ["AutoVendorShowMerchantInfo"] = (() => B(s.AutoVendorShowMerchantInfo), v => s.AutoVendorShowMerchantInfo = ToDouble(v) != 0),
+            ["AutoVendorOnlyFromMainPack"] = (() => B(s.AutoVendorOnlyFromMainPack), v => s.AutoVendorOnlyFromMainPack = ToDouble(v) != 0),
+            ["AutoVendorTries"]            = (() => I(s.AutoVendorTries),            v => { if (int.TryParse(v, out int i)) s.AutoVendorTries = Math.Clamp(i, 1, 20); }),
+            ["AutoVendorTriesTime"]        = (() => I(s.AutoVendorTriesTime),        v => { if (int.TryParse(v, out int i)) s.AutoVendorTriesTime = Math.Clamp(i, 500, 30000); }),
             ["NavCloseStopRange"]      = (() => F(s.NavCloseStopRange),      v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.NavCloseStopRange = f; }),
+            ["NavShortcutYards"]       = (() => F(s.NavShortcutYards),       v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.NavShortcutYards = Math.Clamp(f, 0f, 10f); }),
             ["MaxMonRange"]         = (() => D(s.MaxMonRange),         v => { if (double.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out double d)) s.MaxMonRange = d; }),
             ["NavRingThickness"]    = (() => F(s.NavRingThickness),    v => { if (float.TryParse(v,  System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f))  s.NavRingThickness = f; }),
             ["NavLineThickness"]    = (() => F(s.NavLineThickness),    v => { if (float.TryParse(v,  System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f))  s.NavLineThickness = f; }),

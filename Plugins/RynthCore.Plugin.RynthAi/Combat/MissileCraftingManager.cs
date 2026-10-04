@@ -45,6 +45,7 @@ public class MissileCraftingManager
     private const int APPLY_RETRY_MS = 2000;
     private const int CRAFT_TIMEOUT_MS = 15000;
     private const int EQUIP_DELAY_MS = 500;
+    private const int ERROR_BACKOFF_MS = 60000;
 
     private int _headBundleId = 0;
     private int _shaftBundleId = 0;
@@ -56,56 +57,6 @@ public class MissileCraftingManager
     private readonly Queue<int[]> _pendingBundlePairs = new();
     private int _totalCombines = 0;
     private int _combinesCompleted = 0;
-
-    // ══════════════════════════════════════════════════════════════════
-    //  RECIPE DATABASE
-    // ══════════════════════════════════════════════════════════════════
-
-    public enum WeaponCategory { Bow, Crossbow, Atlatl }
-
-    public class AmmoRecipe
-    {
-        public string HeadBundleName = "";
-        public string ShaftBundleName = "";
-        public string OutputName = "";
-        public WeaponCategory Category;
-        public bool RequiresSpecialized;
-        public int Priority;
-    }
-
-    public static readonly List<AmmoRecipe> AllRecipes = new List<AmmoRecipe>
-    {
-        // ── ARROWS (Bow) ───────────────────────────────────────────
-        new() { HeadBundleName = "Wrapped Bundle of Lethal Prismatic Arrowheads",   ShaftBundleName = "Wrapped Bundle of Arrowshafts", OutputName = "Lethal Prismatic Arrow",   Category = WeaponCategory.Bow, RequiresSpecialized = true,  Priority = 40 },
-        new() { HeadBundleName = "Wrapped Bundle of Deadly Prismatic Arrowheads",   ShaftBundleName = "Wrapped Bundle of Arrowshafts", OutputName = "Deadly Prismatic Arrow",   Category = WeaponCategory.Bow, RequiresSpecialized = true,  Priority = 30 },
-        new() { HeadBundleName = "Wrapped Bundle of Greater Prismatic Arrowheads",  ShaftBundleName = "Wrapped Bundle of Arrowshafts", OutputName = "Greater Prismatic Arrow",  Category = WeaponCategory.Bow, RequiresSpecialized = false, Priority = 20 },
-        new() { HeadBundleName = "Wrapped Bundle of Prismatic Arrowheads",          ShaftBundleName = "Wrapped Bundle of Arrowshafts", OutputName = "Prismatic Arrow",          Category = WeaponCategory.Bow, RequiresSpecialized = false, Priority = 10 },
-        new() { HeadBundleName = "Wrapped Bundle of Armor Piercing Arrowheads",    ShaftBundleName = "Wrapped Bundle of Arrowshafts", OutputName = "Armor Piercing Arrow",    Category = WeaponCategory.Bow, RequiresSpecialized = false, Priority = 6  },
-        new() { HeadBundleName = "Wrapped Bundle of Broad Arrowheads",             ShaftBundleName = "Wrapped Bundle of Arrowshafts", OutputName = "Broad Head Arrow",        Category = WeaponCategory.Bow, RequiresSpecialized = false, Priority = 5  },
-        new() { HeadBundleName = "Wrapped Bundle of Blunt Arrowheads",             ShaftBundleName = "Wrapped Bundle of Arrowshafts", OutputName = "Blunt Arrow",             Category = WeaponCategory.Bow, RequiresSpecialized = false, Priority = 4  },
-        new() { HeadBundleName = "Wrapped Bundle of Frog Crotch Arrowheads",       ShaftBundleName = "Wrapped Bundle of Arrowshafts", OutputName = "Frog Crotch Arrow",       Category = WeaponCategory.Bow, RequiresSpecialized = false, Priority = 3  },
-        new() { HeadBundleName = "Wrapped Bundle of Arrowheads",                   ShaftBundleName = "Wrapped Bundle of Arrowshafts", OutputName = "Arrow",                   Category = WeaponCategory.Bow, RequiresSpecialized = false, Priority = 1  },
-
-        // ── QUARRELS (Crossbow) ────────────────────────────────────
-        new() { HeadBundleName = "Wrapped Bundle of Lethal Prismatic Quarrelheads",  ShaftBundleName = "Wrapped Bundle of Quarrelshafts", OutputName = "Lethal Prismatic Quarrel",  Category = WeaponCategory.Crossbow, RequiresSpecialized = true,  Priority = 40 },
-        new() { HeadBundleName = "Wrapped Bundle of Deadly Prismatic Quarrelheads",  ShaftBundleName = "Wrapped Bundle of Quarrelshafts", OutputName = "Deadly Prismatic Quarrel",  Category = WeaponCategory.Crossbow, RequiresSpecialized = true,  Priority = 30 },
-        new() { HeadBundleName = "Wrapped Bundle of Greater Prismatic Quarrelheads", ShaftBundleName = "Wrapped Bundle of Quarrelshafts", OutputName = "Greater Prismatic Quarrel", Category = WeaponCategory.Crossbow, RequiresSpecialized = false, Priority = 20 },
-        new() { HeadBundleName = "Wrapped Bundle of Prismatic Quarrelheads",         ShaftBundleName = "Wrapped Bundle of Quarrelshafts", OutputName = "Prismatic Quarrel",         Category = WeaponCategory.Crossbow, RequiresSpecialized = false, Priority = 10 },
-        new() { HeadBundleName = "Wrapped Bundle of Armor Piercing Quarrelheads",   ShaftBundleName = "Wrapped Bundle of Quarrelshafts", OutputName = "Armor Piercing Quarrel",   Category = WeaponCategory.Crossbow, RequiresSpecialized = false, Priority = 6  },
-        new() { HeadBundleName = "Wrapped Bundle of Broad Quarrelheads",            ShaftBundleName = "Wrapped Bundle of Quarrelshafts", OutputName = "Broad Head Quarrel",       Category = WeaponCategory.Crossbow, RequiresSpecialized = false, Priority = 5  },
-        new() { HeadBundleName = "Wrapped Bundle of Blunt Quarrelheads",            ShaftBundleName = "Wrapped Bundle of Quarrelshafts", OutputName = "Blunt Quarrel",            Category = WeaponCategory.Crossbow, RequiresSpecialized = false, Priority = 4  },
-        new() { HeadBundleName = "Wrapped Bundle of Quarrelheads",                  ShaftBundleName = "Wrapped Bundle of Quarrelshafts", OutputName = "Quarrel",                  Category = WeaponCategory.Crossbow, RequiresSpecialized = false, Priority = 1  },
-
-        // ── DARTS (Atlatl) ─────────────────────────────────────────
-        new() { HeadBundleName = "Wrapped Bundle of Lethal Prismatic Atlatl Dart Heads",  ShaftBundleName = "Wrapped Bundle of Atlatl Dart Shafts", OutputName = "Lethal Prismatic Atlatl Dart",  Category = WeaponCategory.Atlatl, RequiresSpecialized = true,  Priority = 40 },
-        new() { HeadBundleName = "Wrapped Bundle of Deadly Prismatic Atlatl Dart Heads",  ShaftBundleName = "Wrapped Bundle of Atlatl Dart Shafts", OutputName = "Deadly Prismatic Atlatl Dart",  Category = WeaponCategory.Atlatl, RequiresSpecialized = true,  Priority = 30 },
-        new() { HeadBundleName = "Wrapped Bundle of Greater Prismatic Atlatl Dart Heads", ShaftBundleName = "Wrapped Bundle of Atlatl Dart Shafts", OutputName = "Greater Prismatic Atlatl Dart", Category = WeaponCategory.Atlatl, RequiresSpecialized = false, Priority = 20 },
-        new() { HeadBundleName = "Wrapped Bundle of Prismatic Atlatl Dart Heads",         ShaftBundleName = "Wrapped Bundle of Atlatl Dart Shafts", OutputName = "Prismatic Atlatl Dart",         Category = WeaponCategory.Atlatl, RequiresSpecialized = false, Priority = 10 },
-        new() { HeadBundleName = "Wrapped Bundle of Armor Piercing Atlatl Dart Heads",   ShaftBundleName = "Wrapped Bundle of Atlatl Dart Shafts", OutputName = "Armor Piercing Atlatl Dart",   Category = WeaponCategory.Atlatl, RequiresSpecialized = false, Priority = 6  },
-        new() { HeadBundleName = "Wrapped Bundle of Broad Atlatl Dart Heads",            ShaftBundleName = "Wrapped Bundle of Atlatl Dart Shafts", OutputName = "Broad Head Atlatl Dart",       Category = WeaponCategory.Atlatl, RequiresSpecialized = false, Priority = 5  },
-        new() { HeadBundleName = "Wrapped Bundle of Blunt Atlatl Dart Heads",            ShaftBundleName = "Wrapped Bundle of Atlatl Dart Shafts", OutputName = "Blunt Atlatl Dart",            Category = WeaponCategory.Atlatl, RequiresSpecialized = false, Priority = 4  },
-        new() { HeadBundleName = "Wrapped Bundle of Atlatl Dart Heads",                  ShaftBundleName = "Wrapped Bundle of Atlatl Dart Shafts", OutputName = "Atlatl Dart",                  Category = WeaponCategory.Atlatl, RequiresSpecialized = false, Priority = 1  },
-    };
 
     public MissileCraftingManager(RynthCoreHost host, LegacyUiSettings settings)
     {
@@ -119,15 +70,33 @@ public class MissileCraftingManager
 
     public void ProcessCrafting()
     {
-        if (!_settings.EnableMissileCrafting) return;
+        // While State isn't Idle the plugin holds combat, nav and looting, so turning
+        // crafting off mid-craft must let go too.
+        if (!_settings.EnableMissileCrafting)
+        {
+            if (State != CraftState.Idle) Reset("Missile crafting turned off");
+            return;
+        }
         if (IsBusy) return;
 
-        switch (State)
+        // An exception here used to leave State where it was, and the bot stood still
+        // forever with nothing in chat: say what broke, let go, and try again later.
+        try
         {
-            case CraftState.Idle:          ProcessIdle();          break;
-            case CraftState.Evaluating:    ProcessEvaluating();    break;
-            case CraftState.Combining:     ProcessCombining();     break;
-            case CraftState.EquippingAmmo: ProcessEquippingAmmo(); break;
+            switch (State)
+            {
+                case CraftState.Idle:          ProcessIdle();          break;
+                case CraftState.Evaluating:    ProcessEvaluating();    break;
+                case CraftState.Combining:     ProcessCombining();     break;
+                case CraftState.EquippingAmmo: ProcessEquippingAmmo(); break;
+            }
+        }
+        catch (Exception ex)
+        {
+            string reason = $"Stopped by an error ({ex.GetType().Name}: {ex.Message}); trying again in a minute";
+            if (State == CraftState.Idle) ChatLog(reason);   // Reset only speaks for a craft in progress
+            Reset(reason);
+            _lastAmmoCheck = DateTime.Now.AddMilliseconds(ERROR_BACKOFF_MS - AMMO_CHECK_INTERVAL_MS);
         }
     }
 
@@ -187,20 +156,14 @@ public class MissileCraftingManager
     {
         var inv = GetInventory(forceRefresh: true);
         WeaponCategory category = ResolveWeaponCategory(inv);
-        int trainingLevel = _charSkills?[AcSkillType.Fletching].Training ?? 2;
 
-        AmmoRecipe? bestCraftable = null;
-        foreach (var recipe in AllRecipes
-            .Where(r => r.Category == category)
-            .OrderByDescending(r => r.Priority))
-        {
-            if (recipe.RequiresSpecialized && trainingLevel < 3) continue;
-            if (!recipe.RequiresSpecialized && trainingLevel < 2) continue;
-
-            bool hasHead  = inv.Any(i => MatchesRecipeComponent(i.Name, recipe.HeadBundleName));
-            bool hasShaft = inv.Any(i => MatchesRecipeComponent(i.Name, recipe.ShaftBundleName));
-            if (hasHead && hasShaft) { bestCraftable = recipe; break; }
-        }
+        // Fletching can't be used untrained. Past that, the recipe's difficulty against
+        // the buffed skill decides — a failed combine destroys both bundles.
+        var fletching = _charSkills?[AcSkillType.Fletching];
+        AmmoRecipe? bestCraftable = null, tooHard = null;
+        if ((fletching?.Training ?? 2) >= 2)
+            bestCraftable = AmmoRecipes.BestCraftable(inv.Select(i => i.Name), category,
+                                                      fletching?.Buffed ?? 250, out tooHard);
 
         int bestExistingPriority = 0;
         WorldObject? bestExistingAmmo = null;
@@ -211,7 +174,7 @@ public class MissileCraftingManager
             if (pri > bestExistingPriority) { bestExistingPriority = pri; bestExistingAmmo = item; }
         }
 
-        if (bestCraftable != null && bestCraftable.Priority > bestExistingPriority)
+        if (bestCraftable != null && bestCraftable.Rank > bestExistingPriority)
         { StartCrafting(bestCraftable, inv); return; }
 
         if (bestExistingAmmo != null)
@@ -225,7 +188,24 @@ public class MissileCraftingManager
         if (bestCraftable != null)
         { StartCrafting(bestCraftable, inv); return; }
 
-        Reset("No ammo and no bundles available");
+        // No ammo at all and only bundles the skill check calls risky: a bow with nothing
+        // to shoot can't fight, so a combine that may fail beats standing there.
+        if (tooHard != null)
+        {
+            int skill = fletching?.Buffed ?? 250;
+            ChatLog($"No ammo: making {tooHard.OutputName} anyway, about " +
+                    $"{AmmoRecipes.SuccessChance(skill, tooHard.Difficulty):P0} with Fletching {skill} " +
+                    "(a failed combine destroys both bundles)");
+            StartCrafting(tooHard, inv);
+            return;
+        }
+
+        if (fletching != null && fletching.Training < 2
+                 && AmmoRecipes.BestCraftable(inv.Select(i => i.Name), category, 0, out var carried) == null
+                 && carried != null)
+            Reset($"No ammo, and Fletching is untrained, so the bundles for {carried.OutputName} can't be combined");
+        else
+            Reset("No ammo and no bundles available");
     }
 
     private void StartCrafting(AmmoRecipe recipe, List<WorldObject> inv)
@@ -237,8 +217,8 @@ public class MissileCraftingManager
 
         try { _host.ChangeCombatMode(CombatMode.NonCombat); } catch { }
 
-        var headItems  = inv.Where(i => MatchesRecipeComponent(i.Name, recipe.HeadBundleName)).ToList();
-        var shaftItems = inv.Where(i => MatchesRecipeComponent(i.Name, recipe.ShaftBundleName)).ToList();
+        var headItems  = inv.Where(i => recipe.IsHead(i.Name)).ToList();
+        var shaftItems = inv.Where(i => recipe.IsShaft(i.Name)).ToList();
 
         if (headItems.Count == 0 || shaftItems.Count == 0)
         {
@@ -442,31 +422,11 @@ public class MissileCraftingManager
         return WeaponCategory.Bow;
     }
 
-    private static bool IsLooseAmmo(WorldObject item, WeaponCategory category)
-    {
-        string n = item.Name;
-        if (string.IsNullOrEmpty(n)) return false;
-        string normalized = NormalizeItemName(n);
-        if (normalized.Contains("bundle") || normalized.Contains("wrapped")) return false;
-        if (normalized.Contains("arrowhead") || normalized.Contains("arrowshaft")) return false;
-        if (normalized.Contains("quarrelhead") || normalized.Contains("quarrelshaft")) return false;
-        if (normalized.Contains("darthead") || normalized.Contains("dartshaft")) return false;
-        return category switch
-        {
-            WeaponCategory.Bow      => normalized.Contains("arrow"),
-            WeaponCategory.Crossbow => normalized.Contains("quarrel") || normalized.Contains("bolt"),
-            WeaponCategory.Atlatl   => normalized.Contains("dart"),
-            _                       => false,
-        };
-    }
+    private static bool IsLooseAmmo(WorldObject item, WeaponCategory category) =>
+        AmmoRecipes.IsLooseAmmoName(item.Name, category);
 
-    private static int GetAmmoPriority(WorldObject item, WeaponCategory category)
-    {
-        if (string.IsNullOrEmpty(item.Name)) return 0;
-        foreach (var recipe in AllRecipes.Where(r => r.Category == category).OrderByDescending(r => r.Priority))
-            if (item.Name.Equals(recipe.OutputName, StringComparison.OrdinalIgnoreCase)) return recipe.Priority;
-        return 1;
-    }
+    private static int GetAmmoPriority(WorldObject item, WeaponCategory category) =>
+        AmmoRecipes.OutputRank(item.Name, category);
 
     private WorldObject? FindBestAmmoInInventory(WeaponCategory category, IEnumerable<WorldObject> inventory)
     {
@@ -479,42 +439,6 @@ public class MissileCraftingManager
             if (pri > bestPri) { bestPri = pri; best = item; }
         }
         return best;
-    }
-
-    private static bool MatchesRecipeComponent(string itemName, string recipeName)
-    {
-        if (string.IsNullOrWhiteSpace(itemName) || string.IsNullOrWhiteSpace(recipeName))
-            return false;
-
-        string itemNorm = NormalizeItemName(itemName);
-        string recipeNorm = NormalizeItemName(recipeName);
-        if (itemNorm == recipeNorm)
-            return true;
-
-        // Recipe components are always "Wrapped Bundle of ..." — a finished arrow/quarrel/
-        // dart must never match a component slot. Its bare name (e.g. "arrow") is a substring
-        // of "...arrowshafts"/"...arrowheads", so the loose substring test below would otherwise
-        // pick up already-crafted ammo as a component, making the bot try to combine a finished
-        // arrow onto a bundle and stall forever.
-        if (!itemNorm.Contains("bundle"))
-            return false;
-
-        return itemNorm.Contains(recipeNorm) || recipeNorm.Contains(itemNorm);
-    }
-
-    private static string NormalizeItemName(string value)
-    {
-        Span<char> buffer = stackalloc char[value.Length];
-        int count = 0;
-        foreach (char ch in value)
-        {
-            if (!char.IsLetterOrDigit(ch))
-                continue;
-
-            buffer[count++] = char.ToLowerInvariant(ch);
-        }
-
-        return new string(buffer[..count]);
     }
 
 

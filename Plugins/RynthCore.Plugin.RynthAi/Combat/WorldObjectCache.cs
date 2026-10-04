@@ -903,7 +903,11 @@ public class WorldObjectCache
         float dx = gx1 - gx2;
         float dy = gy1 - gy2;
         float dz = z1 - z2;
-        return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        double d = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        // A garbage position read (NaN/∞) must read as out of range. NaN fails every
+        // "dist > limit" test, so it passed both the scan's range gate and Think's
+        // disengage drop, and a target could be kept at any real distance.
+        return double.IsFinite(d) ? d : double.MaxValue;
     }
 
     /// <summary>Enumerate objects in player's inventory (no physics position).</summary>
@@ -1102,6 +1106,48 @@ public class WorldObjectCache
         // non-full main pack is AV-safe (the AV is only on a genuinely FULL target).
         int mainFree = 102 - mainUsed;
         return mainFree > 0 ? playerId : 0;
+    }
+
+    /// <summary>
+    /// Re-reads the name and item type of an object stored with a blank name or an Unknown
+    /// class, and replaces its entry when either improved. Corpse items are usually created
+    /// before the engine's off-thread identity snapshot (refreshed every ~0.5 s) has them,
+    /// so they were classified once with no name and no type and never revisited: looting
+    /// then judged 3 of 4 items nameless and left them (2026-09-27). Cheap when complete.
+    /// </summary>
+    public WorldObject RefreshIdentity(WorldObject wo)
+    {
+        bool needName = string.IsNullOrWhiteSpace(wo.Name);
+        bool needClass = wo.ObjectClass == AcObjectClass.Unknown;
+        if (!needName && !needClass)
+            return wo;
+
+        uint uid = unchecked((uint)wo.Id);
+        string name = wo.Name ?? string.Empty;
+        if (needName && _host.TryGetObjectName(uid, out string n) && !string.IsNullOrWhiteSpace(n))
+            name = n;
+
+        AcObjectClass cls = wo.ObjectClass;
+        if (needClass)
+        {
+            if (_host.TryGetItemType(uid, out uint flags) && (flags & ItemTypeCreature) == 0)
+                cls = ClassifyByItemType(flags);
+            if (cls == AcObjectClass.Unknown && name.Length > 0)
+                cls = ClassifyInventoryItem(name);
+        }
+
+        if (name == wo.Name && cls == wo.ObjectClass)
+            return wo;
+
+        lock (_gate)
+        {
+            // Only replace the entry we were handed; a concurrent reclassify wins.
+            if (!_byId.TryGetValue(wo.Id, out var current) || !ReferenceEquals(current, wo))
+                return current ?? wo;
+            var fresh = Make(wo.Id, name, cls);
+            _byId[wo.Id] = fresh;
+            return fresh;
+        }
     }
 
     public IEnumerable<WorldObject> GetContainedItems(int containerId)
@@ -1547,7 +1593,7 @@ public class WorldObjectCache
 
     // ── Type-flag item classification ─────────────────────────────────────
 
-    private static AcObjectClass ClassifyByItemType(uint typeFlags)
+    internal static AcObjectClass ClassifyByItemType(uint typeFlags)
     {
         // Most specific / unambiguous types first
         if ((typeFlags & ItemTypePromissoryNote)            != 0) return AcObjectClass.TradeNote;

@@ -180,18 +180,34 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 float t = (float)i / ARC_SAMPLE_COUNT;
                 float time = t * totalTime;
 
-                // Kinematic equations
+                // Kinematic equations.
+                // Deep-audit finding #31 (2026-06-18): the old code computed
+                // the flat-range parabola (assumes origin.Z == target.Z) as
+                // `height`, then bolted on a SEPARATE `heightAdjust*(1-t)`
+                // blend for the actual elevation difference — double-applying
+                // the vertical offset. Neither the true ballistic curve nor a
+                // straight line resulted; at t=1 the arc's own height term
+                // (origin.Z + vVertical*totalTime - 0.5g*totalTime²) is
+                // exactly origin.Z (that's what makes totalTime =
+                // horizontalDist/vHorizontal the correct equal-height
+                // time-of-flight), so the sample landed at origin.Z instead
+                // of target.Z — biasing the LOS verdict for sloped shots.
+                //
+                // Fix: `parabolicSag` is that SAME flat-range height term
+                // relative to origin.Z — by construction it is exactly 0 at
+                // t=0 AND at t=1 (proven via the time-of-flight identity
+                // above), so adding it to a straight lerp(origin.Z, target.Z)
+                // never disturbs either endpoint, while still producing a
+                // real parabolic bump in between. This anchors t=1 at
+                // target.Z exactly (the final explicit segment below no
+                // longer has to patch just the endpoint).
                 float hDist = vHorizontal * time;
-                float height = origin.Z + vVertical * time - 0.5f * GRAVITY * time * time;
-
-                // Adjust height to interpolate between origin.Z and target.Z
-                // (accounts for height difference between origin and target)
-                float heightAdjust = verticalDist * t;
+                float parabolicSag = vVertical * time - 0.5f * GRAVITY * time * time;
 
                 Vector3 arcPoint = new Vector3(
                     origin.X + hdx * hDist,
                     origin.Y + hdy * hDist,
-                    height + heightAdjust * (1.0f - t) // Blend in height difference
+                    origin.Z + verticalDist * t + parabolicSag
                 );
 
                 // Test this segment for collisions
@@ -206,6 +222,89 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 return true;
 
             return false; // Arc clears all obstacles
+        }
+
+        /// <summary>What <see cref="IsBallisticArcBlocked"/> found, for the LOS debug log and /ra lostest.</summary>
+        public struct ArcLosResult
+        {
+            public bool  Blocked;
+            public bool  OutOfReach;   // the launch speed can't carry the shot that far / that high
+            public float Sag;          // how far the arc rises above the straight line, at most (m)
+            public float Apex;         // highest point of the flight above the launch point (m)
+            public float HitAlong;     // horizontal distance from the shooter to the hit (m)
+            public float HitZ;         // height of the hit above the launch point (m)
+        }
+
+        /// <summary>
+        /// Tests the path a missile really flies: the low ballistic arc at the weapon's launch
+        /// speed (see <see cref="MissileBallistics"/>), raised by <paramref name="clearance"/>
+        /// at mid-flight. Unlike <see cref="IsArcPathBlocked"/> (the old flat-ground
+        /// approximation, kept for magic arcs), the arc passes exactly through the aim point
+        /// for any height difference. Floors and ceilings are part of the dungeon geometry, so
+        /// an arc that rises into a ceiling reports blocked. Out of reach counts as blocked.
+        /// Hits within 0.5 m of the shooter or 0.3 m of the target are ignored, as in the
+        /// straight-line test.
+        /// </summary>
+        public static bool IsBallisticArcBlocked(Vector3 origin, Vector3 target, float speed, float clearance,
+                                                 List<BoundingVolume> geometry, out ArcLosResult result)
+        {
+            result = default;
+            if (float.IsNaN(origin.X) || float.IsNaN(origin.Y) || float.IsNaN(origin.Z) ||
+                float.IsNaN(target.X) || float.IsNaN(target.Y) || float.IsNaN(target.Z))
+                return false;
+
+            var arc = MissileBallistics.Solve(origin.X, origin.Y, origin.Z, target.X, target.Y, target.Z, speed);
+            result.Sag  = arc.MaxRiseAboveChord;
+            result.Apex = arc.ApexAboveLaunch;
+            if (!arc.Valid)
+            {
+                result.OutOfReach = true;
+                result.Blocked = true;
+                return true;
+            }
+            if (geometry == null || geometry.Count == 0)
+                return false;
+
+            clearance = Math.Max(0f, clearance);
+            int n = MissileBallistics.SegmentCount(arc.HorizDist);
+            Vector3 prev = origin;
+            float travelled = 0f;
+
+            for (int i = 1; i <= n; i++)
+            {
+                float t = (float)i / n;
+                Vector3 cur;
+                if (i == n) cur = target;
+                else
+                {
+                    arc.PointAt(t, clearance, out float px, out float py, out float pz);
+                    cur = new Vector3(px, py, pz);
+                }
+
+                Vector3 seg = cur - prev;
+                float len = seg.Length();
+                if (len > 1e-4f)
+                {
+                    Vector3 dir = seg / len;
+                    foreach (var volume in geometry)
+                    {
+                        if (volume.IsDoor) continue;
+                        if (!volume.RayIntersect(prev, dir, len, out float hd)) continue;
+                        if (hd < 0f || hd > len) continue;
+                        if (travelled + hd < 0.5f) continue;          // at the shooter
+                        if (i == n && hd > len - 0.3f) continue;      // at the target
+                        Vector3 hit = prev + dir * hd;
+                        float hx = hit.X - origin.X, hy = hit.Y - origin.Y;
+                        result.Blocked  = true;
+                        result.HitAlong = (float)Math.Sqrt(hx * hx + hy * hy);
+                        result.HitZ     = hit.Z - origin.Z;
+                        return true;
+                    }
+                }
+                travelled += len;
+                prev = cur;
+            }
+            return false;
         }
 
         /// <summary>

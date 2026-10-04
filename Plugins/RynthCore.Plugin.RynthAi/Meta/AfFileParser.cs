@@ -142,11 +142,10 @@ internal static class AfFileParser
         idx++;
 
         // If compound condition, parse children until DO: or end of state
-        if (rule.Condition == MetaConditionType.All ||
-            rule.Condition == MetaConditionType.Any ||
-            rule.Condition == MetaConditionType.Not)
+        MetaRule? container = ChildContainer(rule);
+        if (container != null)
         {
-            rule.Children = new List<MetaRule>();
+            container.Children ??= new List<MetaRule>();
             while (idx < lines.Length)
             {
                 string trimmed = lines[idx].TrimStart();
@@ -177,11 +176,10 @@ internal static class AfFileParser
                 idx++;
 
                 // If child is compound, recursively parse its children
-                if (child.Condition == MetaConditionType.All ||
-                    child.Condition == MetaConditionType.Any ||
-                    child.Condition == MetaConditionType.Not)
+                MetaRule? childBox = ChildContainer(child);
+                if (childBox != null)
                 {
-                    child.Children = new List<MetaRule>();
+                    childBox.Children ??= new List<MetaRule>();
                     int childIndent = lineIndent;
                     while (idx < lines.Length)
                     {
@@ -204,19 +202,18 @@ internal static class AfFileParser
                         idx++;
 
                         // Support one more level of nesting
-                        if (grandchild.Condition == MetaConditionType.All ||
-                            grandchild.Condition == MetaConditionType.Any ||
-                            grandchild.Condition == MetaConditionType.Not)
+                        MetaRule? grandBox = ChildContainer(grandchild);
+                        if (grandBox != null)
                         {
-                            grandchild.Children = new List<MetaRule>();
-                            ParseNestedConditionChildren(lines, ref idx, grandchild, ci);
+                            grandBox.Children ??= new List<MetaRule>();
+                            ParseNestedConditionChildren(lines, ref idx, grandBox, ci);
                         }
 
-                        child.Children.Add(grandchild);
+                        childBox.Children.Add(grandchild);
                     }
                 }
 
-                rule.Children.Add(child);
+                container.Children.Add(child);
             }
         }
 
@@ -322,16 +319,31 @@ internal static class AfFileParser
             ParseConditionLine(ct, child);
             idx++;
 
-            if (child.Condition == MetaConditionType.All ||
-                child.Condition == MetaConditionType.Any ||
-                child.Condition == MetaConditionType.Not)
+            MetaRule? childBox = ChildContainer(child);
+            if (childBox != null)
             {
-                child.Children = new List<MetaRule>();
-                ParseNestedConditionChildren(lines, ref idx, child, ci);
+                childBox.Children ??= new List<MetaRule>();
+                ParseNestedConditionChildren(lines, ref idx, childBox, ci);
             }
 
             parent.Children.Add(child);
         }
+    }
+
+    /// <summary>
+    /// The rule that the indented condition lines under <paramref name="rule"/> belong to.
+    /// All/Any take them, and so does a bare Not (RynthAi's old two-line form). A metaf
+    /// Not carries its operand on its own line ("Not NoMobsInDist 5"), so lines follow
+    /// only when that operand is itself All/Any ("Not All" + children) — they are its.
+    /// Null when nothing may follow.
+    /// </summary>
+    private static MetaRule? ChildContainer(MetaRule rule)
+    {
+        while (rule.Condition == MetaConditionType.Not && rule.Children is { Count: 1 })
+            rule = rule.Children[0];
+        return rule.Condition is MetaConditionType.All or MetaConditionType.Any or MetaConditionType.Not
+            ? rule
+            : null;
     }
 
     // ── Line parsers ────────────────────────────────────────────────────────
@@ -373,6 +385,20 @@ internal static class AfFileParser
         }
 
         rule.Condition = condType;
+
+        // metaf writes Not's operand on the same line: "Not NoMobsInDist 5". This used
+        // to be dropped — an empty Not never fires. (A bare "Not" with its operand on
+        // the next line is RynthAi's old form; ChildContainer still accepts it.)
+        if (condType == MetaConditionType.Not)
+        {
+            if (rest.Length > 0)
+            {
+                var operand = new MetaRule { State = rule.State };
+                ParseConditionLine(rest, operand);
+                rule.Children = new List<MetaRule> { operand };
+            }
+            return;
+        }
 
         // Parse condition data based on type
         switch (condType)

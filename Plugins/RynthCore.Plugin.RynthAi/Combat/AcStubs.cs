@@ -23,6 +23,11 @@ public enum LongValueKey
     MaximumHealth          = 39,  // creature base max HP (STypeInt 39)
     CreatureType           = 62,  // creature type / species ID
 
+    // AUGMENTATION_INCREASED_SPELL_DURATION — Archmage's Endurance, stacks 5x.
+    // Each rank adds +20% enchantment duration. Verified against Chorizite
+    // AcClient/STypes.cs STypeInt ordinal 238.
+    AugmentationIncreasedSpellDuration = 238,
+
     // Legacy alias kept for call-site compatibility
     EquippedSlots          = 10,
 }
@@ -49,6 +54,7 @@ public enum DoubleValueKey
     DamageVariance = 22,
     CurrentPowerMod = 23,
     AccuracyMod = 24,
+    MaximumVelocity = 26,   // missile launcher launch speed (m/s); known once appraised
     WeaponDefense = 29,
     UseRadius = 54,
     WeaponOffense = 61,
@@ -101,17 +107,59 @@ public class WorldObject
     // Set by WorldObjectCache when it creates/updates this object
     internal WorldObjectCache? Cache { get; set; }
 
-    public int Values(LongValueKey key, int defaultValue)
-        => Cache?.GetIntProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    /// <summary>
+    /// Values that answer Values() before any live read (AutoVendor: a vendor-list item
+    /// built from the engine's vendor snapshot, or an item's known name). Null = live only.
+    /// </summary>
+    internal ItemPropertyOverlay? Overlay { get; set; }
+
+    public int Values(LongValueKey key, int defaultValue) => Values((int)key, defaultValue);
 
     public int Values(int key, int defaultValue)
-        => Cache?.GetIntProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    {
+        var o = Overlay;
+        if (o != null)
+        {
+            if (o.Ints.TryGetValue(unchecked((uint)key), out int v)) return v;
+            if (!o.LiveFallback) return defaultValue;
+        }
+        return Cache?.GetIntProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    }
 
     public string Values(StringValueKey key, string defaultValue)
-        => Cache?.GetStringProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    {
+        var o = Overlay;
+        if (o != null)
+        {
+            if (o.Strings.TryGetValue((uint)key, out string? v)) return v;
+            if (!o.LiveFallback) return defaultValue;
+        }
+        return Cache?.GetStringProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    }
 
     public double Values(DoubleValueKey key, double defaultValue)
-        => Cache?.GetDoubleProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    {
+        var o = Overlay;
+        if (o != null)
+        {
+            if (o.Doubles.TryGetValue((uint)key, out double v)) return v;
+            if (!o.LiveFallback) return defaultValue;
+        }
+        return Cache?.GetDoubleProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    }
+}
+
+/// <summary>
+/// Fixed property values for a <see cref="WorldObject"/>. With LiveFallback off, a key
+/// that isn't here reads as the caller's default instead of the client object's value
+/// (a vendor-list item carries only what the vendor snapshot holds).
+/// </summary>
+internal sealed class ItemPropertyOverlay
+{
+    public Dictionary<uint, int> Ints { get; } = new();
+    public Dictionary<uint, string> Strings { get; } = new();
+    public Dictionary<uint, double> Doubles { get; } = new();
+    public bool LiveFallback { get; init; }
 }
 
 // ── SpellInfo stub ────────────────────────────────────────────────────────

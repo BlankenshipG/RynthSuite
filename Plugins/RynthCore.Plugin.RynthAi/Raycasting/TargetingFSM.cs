@@ -45,6 +45,41 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         // If true, use arc checks for missile weapons. If false, treat all as linear.
         public bool UseArcs { get; set; } = true;
 
+        // Extra headroom (m) the missile arc must have at mid-flight, on top of the modelled
+        // flight path. Covers launch height, the real launch speed and the projectile's size.
+        // CombatManager overrides it from LegacyUiSettings.MissileArcClearance each tick.
+        public float MissileArcClearance { get; set; } = 0.5f;
+
+        // An arc that rises less than this above the straight line is flown as that line:
+        // the straight-line test (multi-ray in dungeons, ±0.3 m) already covers it, and the
+        // clearance bump is not applied to short, flat shots.
+        private const float ArcSagIgnoreMeters = 0.15f;
+
+        /// <summary>How a LOS verdict was reached, for the LOS debug log.</summary>
+        public struct LosDetail
+        {
+            public AttackType Type;
+            public bool  Dungeon;
+            public bool  Checked;       // false = no verdict computed (no geometry near, too far, no position)
+            public float Velocity;      // launch speed used for a missile arc (0 = straight line)
+            public bool  LineBlocked;
+            public bool  ArcChecked;
+            public RaycastEngine.ArcLosResult Arc;
+        }
+
+        private static bool IsMissileArc(AttackType t) =>
+            t == AttackType.BowArc || t == AttackType.CrossbowArc || t == AttackType.AtlatlArc;
+
+        /// <summary>Launch speed configured for a missile attack type.</summary>
+        public float VelocityFor(AttackType t) => t switch
+        {
+            AttackType.BowArc      => BowArcVelocity,
+            AttackType.CrossbowArc => CrossbowArcVelocity,
+            AttackType.AtlatlArc   => AtlatlArcVelocity,
+            AttackType.MagicArc    => MagicArcVelocity,
+            _                      => 0f,
+        };
+
         // Max scan distance in meters. Only check LOS for targets within this range.
         // Set from CombatManager based on MonsterRange + buffer.
         public float MaxScanDistanceMeters { get; set; } = 120.0f;
@@ -62,7 +97,23 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         /// Returns false if the target is clear to attack.
         /// </summary>
         public bool IsTargetBlocked(RynthCoreHost host, uint targetId, AttackType attackType)
+            => IsTargetBlocked(host, targetId, attackType, out _);
+
+        /// <summary>
+        /// As <see cref="IsTargetBlocked(RynthCoreHost, uint, AttackType)"/>, and reports how the
+        /// verdict was reached.
+        ///
+        /// Missile weapons (bow, crossbow, atlatl) with UseArcs on: the target must pass the
+        /// straight line (walls, corner seams) AND the arc the missile really flies, low
+        /// ballistic solution at the weapon's launch speed plus MissileArcClearance headroom.
+        /// Indoors this is what catches ceilings: the old code forced a straight-line test in
+        /// dungeons, so a target 20-50 m down a corridor passed LOS while the arrow, rising
+        /// 2-6 m on its way there, hit the ceiling (2026-09-27, Longbow, Olthoi swarm).
+        /// </summary>
+        public bool IsTargetBlocked(RynthCoreHost host, uint targetId, AttackType attackType, out LosDetail detail)
         {
+            detail = default;
+            detail.Type = attackType;
             if (!_geoLoader.IsInitialized)
                 return false;
 
@@ -90,55 +141,72 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 uint landcell = GetPlayerLandcell(host);
                 uint cellPart = landcell & 0xFFFF;
                 bool isDungeon = cellPart >= 0x0100;
+                detail.Dungeon = isDungeon;
 
-                // Force linear checks indoors — arc trajectories hit ceilings
-                if (isDungeon)
+                bool missileArc = UseArcs && IsMissileArc(attackType);
+
+                // Magic arcs keep the old rule: straight line indoors.
+                if (isDungeon && !missileArc)
                     attackType = AttackType.Linear;
+                detail.Type = attackType;
 
                 var geometry = _geoLoader.GetLandblockGeometry(landcell);
 
                 if (geometry == null || geometry.Count == 0)
                     return false;
 
+                // The missile's real path: solved up front so the pre-filter box covers its apex.
+                MissileArc arc = default;
+                float arcHeadroom = 0f;
+                if (missileArc)
+                {
+                    detail.Velocity = VelocityFor(attackType);
+                    arc = MissileBallistics.Solve(origin.X, origin.Y, origin.Z,
+                                                  targetPos.X, targetPos.Y, targetPos.Z, detail.Velocity);
+                    arcHeadroom = arc.ApexAboveLaunch + Math.Max(0f, MissileArcClearance) + 0.5f;
+                }
+
                 // Pre-filter: skip full ray test if no geometry near the path
                 float margin = Math.Min(flatDist * 0.3f, 15.0f);
                 margin = Math.Max(margin, 3.0f);
+                margin = Math.Max(margin, arcHeadroom);
                 if (!RaycastEngine.HasNearbyGeometry(origin, targetPos, geometry, margin))
                     return false;
+
+                detail.Checked = true;
+
+                if (missileArc)
+                {
+                    // Walls first (cheap, and most blocked targets stop here). In dungeons use
+                    // multi-ray: 5 rays covering the player silhouette catch thin corner
+                    // geometry that a single center ray slips through.
+                    detail.LineBlocked = RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
+                    if (detail.LineBlocked)
+                        return true;
+
+                    // A short, flat shot is the straight line just tested.
+                    if (arc.Valid && arc.MaxRiseAboveChord < ArcSagIgnoreMeters)
+                    {
+                        detail.Arc.Sag  = arc.MaxRiseAboveChord;
+                        detail.Arc.Apex = arc.ApexAboveLaunch;
+                        return false;
+                    }
+
+                    detail.ArcChecked = true;
+                    return RaycastEngine.IsBallisticArcBlocked(origin, targetPos, detail.Velocity,
+                        MissileArcClearance, geometry, out detail.Arc);
+                }
 
                 // In dungeons use multi-ray checks — 5 rays covering the player silhouette
                 // catch thin corner geometry that a single center ray slips through.
                 switch (attackType)
                 {
                     case AttackType.Linear:
-                        return RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
-
-                    case AttackType.BowArc:
-                        if (UseArcs)
-                        {
-                            if (!RaycastEngine.IsArcPathBlocked(origin, targetPos, BowArcVelocity, geometry))
-                                return false;
-                            return RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
-                        }
-                        return RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
-
+                    case AttackType.BowArc:       // arcs off (UseArcs=false) → straight line
                     case AttackType.CrossbowArc:
-                        if (UseArcs)
-                        {
-                            if (!RaycastEngine.IsArcPathBlocked(origin, targetPos, CrossbowArcVelocity, geometry))
-                                return false;
-                            return RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
-                        }
-                        return RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
-
                     case AttackType.AtlatlArc:
-                        if (UseArcs)
-                        {
-                            if (!RaycastEngine.IsArcPathBlocked(origin, targetPos, AtlatlArcVelocity, geometry))
-                                return false;
-                            return RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
-                        }
-                        return RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
+                        detail.LineBlocked = RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
+                        return detail.LineBlocked;
 
                     case AttackType.MagicArc:
                         if (UseArcs && !isDungeon)
@@ -289,8 +357,14 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 if (currentCombatMode == 2)
                     return AttackType.Linear;
 
-                // MISSILE MODE: Check the weapon name for bow vs crossbow vs thrown
-                if (currentCombatMode == 4 && !string.IsNullOrEmpty(wieldedWeaponName))
+                // MISSILE MODE: Check the weapon name for bow vs crossbow vs thrown.
+                // No name (weapon not resolved yet) is still a missile shot: bow arc. The
+                // combat scan used to pass "" here, which fell through to Linear, so no missile
+                // LOS check ever used an arc or the per-weapon velocities.
+                if (currentCombatMode == 4 && string.IsNullOrEmpty(wieldedWeaponName))
+                    return UseArcs ? AttackType.BowArc : AttackType.Linear;
+
+                if (currentCombatMode == 4)
                 {
                     string name = wieldedWeaponName.ToLower();
 

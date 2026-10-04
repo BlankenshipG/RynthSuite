@@ -158,6 +158,14 @@ public static class VTankLootEvaluator
         }
     }
 
+    /// <summary>
+    /// One condition on its own, same semantics as inside <see cref="Match(VTankLootRule, WorldObject?, VTankLootContext?)"/>.
+    /// AutoVendor judges conditions one at a time so it can tell "no" from "can't tell".
+    /// Throws on a malformed data line or an unsupported node type (the caller decides what that means).
+    /// </summary>
+    public static bool MatchCondition(VTankLootCondition cond, WorldObject item, VTankLootContext? ctx)
+        => Match(cond, item, unchecked((uint)item.Id), ctx);
+
     private static bool Match(VTankLootCondition cond, WorldObject item, uint itemId, VTankLootContext? ctx)
     {
         var d = cond.DataLines;
