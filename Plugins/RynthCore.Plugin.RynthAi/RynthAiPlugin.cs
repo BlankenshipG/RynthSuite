@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.12-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.13-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -1028,6 +1028,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 }
             }
 
+            TickItemInfo(); // /ra iteminfo: print once the requested appraisal lands (or times out)
+
             // Remote control: apply any phone-issued commands. ~50ms cadence so the movement d-pad
             // feels responsive (press→move latency); a tiny dir glob is cheap. No-op when empty.
             // Monotonic clock (TickCount64) — a wall-clock step must never stall this safety-critical poll.
@@ -1606,6 +1608,15 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // Skip non-items (monsters, players, NPCs, doors, corpses, portals, etc.)
             if (obj != null && IsLootableClass(obj.ObjectClass))
                 InspectLootRuleForItem(sid, quiet: true);
+        }
+
+        // Mag-style item info on select. RequestId was already sent above, so just queue it.
+        if (currentTargetId != 0 && _dashboard?.Settings.ItemInfoOnSelect == true)
+        {
+            int sid = unchecked((int)currentTargetId);
+            WorldObject? obj = _objectCache?[sid];
+            if (obj != null && IsLootableClass(obj.ObjectClass))
+                QueueItemInfo(sid, requestId: false);
         }
     }
 
@@ -2317,6 +2328,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "lootparse":    HandleLootParseCommand(trimmed); break;
             case "lootcheckinv": HandleLootCheckInventoryCommand(trimmed); break;
             case "lootcheck":    HandleLootCheckSelectedCommand(parts); break;
+            case "iteminfo":
+            case "ii":           HandleItemInfoCommand(parts); break;
             case "corpseinfo":   HandleCorpseInfoCommand(); break;
             case "corpsecheck":  HandleCorpseCheckCommand(parts); break;
             case "corpseopen":   HandleCorpseOpenCommand(); break;

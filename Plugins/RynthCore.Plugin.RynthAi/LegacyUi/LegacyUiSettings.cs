@@ -69,6 +69,14 @@ public sealed class LegacyUiSettings
 
     public bool ShowTargetStaminaMana;
 
+    /// <summary>Print the Mag-style item info line (ratings, damage, spells, slayer, imbues)
+    /// whenever an item is selected. /ra iteminfo prints it on demand regardless.</summary>
+    public bool ItemInfoOnSelect;
+    /// <summary>Append ", Value N, BU N" to the item info line.</summary>
+    public bool ItemInfoShowValueBurden;
+    /// <summary>List every spell on the item instead of Mag's high-tier / cantrip filter.</summary>
+    public bool ItemInfoVerboseSpells;
+
     public bool EnableMissileCrafting = true;
     public int MissileCraftAmmoThreshold = 1000;
 

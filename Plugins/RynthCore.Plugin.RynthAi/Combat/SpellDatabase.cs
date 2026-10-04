@@ -8,6 +8,9 @@ namespace RynthCore.Plugin.RynthAi;
 public static class SpellDatabase
 {
     private static readonly Dictionary<int, string> _spellNames = new();
+    // Family + difficulty (power) per spell id, from SpellData.txt columns 3 and 7.
+    // Used by the Mag-style item info spell filter (cantrip / aura tiers).
+    private static readonly Dictionary<int, (int Family, int Difficulty)> _spellMeta = new();
     private static bool _loaded = false;
 
     private static readonly Dictionary<int, string> _builtinSpells = new Dictionary<int, string>
@@ -38,6 +41,7 @@ public static class SpellDatabase
     public static void Load(Action<string>? log = null)
     {
         _spellNames.Clear();
+        _spellMeta.Clear();
         _loaded = false;
 
         try
@@ -59,7 +63,13 @@ public static class SpellDatabase
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 string[] columns = line.Split('\t');
                 if (columns.Length >= 2 && int.TryParse(columns[0].Trim(), out int spellId))
+                {
                     _spellNames[spellId] = columns[1].Trim();
+                    if (columns.Length >= 7
+                        && int.TryParse(columns[2].Trim(), out int family)
+                        && int.TryParse(columns[6].Trim(), out int difficulty))
+                        _spellMeta[spellId] = (family, difficulty);
+                }
             }
 
             _loaded = _spellNames.Count > 0;
@@ -76,6 +86,25 @@ public static class SpellDatabase
         if (_builtinSpells.TryGetValue(spellId, out string? builtin)) return builtin;
         return $"Unknown Spell ({spellId})";
     }
+
+    /// <summary>Spell family and difficulty (power) — e.g. Legendary Strength = (261, 35),
+    /// Aura of Elysa's Sight = (152, 300). False when the spell isn't in SpellData.txt.</summary>
+    public static bool TryGetSpellMeta(int spellId, out int family, out int difficulty)
+    {
+        if (_spellMeta.TryGetValue(spellId, out var meta))
+        {
+            family = meta.Family;
+            difficulty = meta.Difficulty;
+            return true;
+        }
+        family = 0;
+        difficulty = 0;
+        return false;
+    }
+
+    /// <summary>True when the spell id is in the embedded table or the built-in recall list.</summary>
+    public static bool HasSpell(int spellId) =>
+        _spellNames.ContainsKey(spellId) || _builtinSpells.ContainsKey(spellId);
 
     public static string GetSpellNameOrId(int spellId)
     {

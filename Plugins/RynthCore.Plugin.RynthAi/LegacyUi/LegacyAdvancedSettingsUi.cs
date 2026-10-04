@@ -183,6 +183,17 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Show Target Stamina / Mana", ref _settings.ShowTargetStaminaMana);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("When enabled, displays stamina and mana bars\nfor the selected target (requires appraisal data).");
+
+                ImGui.Spacing();
+                ImGui.Separator();
+                ImGui.Text("Item Info (Mag-style)");
+                ImGui.Checkbox("Describe items when selected", ref _settings.ItemInfoOnSelect);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Prints one Mag-style line to chat for each item you select:\nset, AL, imbues, slayer, tinks, damage, %a/%md, spells, wield, craft, [ratings].\n/ra iteminfo prints the selected item on demand.");
+                ImGui.Checkbox("Show value and burden", ref _settings.ItemInfoShowValueBurden);
+                ImGui.Checkbox("List all spells", ref _settings.ItemInfoVerboseSpells);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Off (Mag default): only cantrips, level 7+ auras, Augmented and\nImpen/banes on unenchantable gear. On: every spell on the item.");
                 break;
 
             case "UI":

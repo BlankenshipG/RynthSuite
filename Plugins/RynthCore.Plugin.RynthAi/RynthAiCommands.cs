@@ -177,6 +177,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra lootparse     — inspect the selected loot profile");
         ChatLine("[RynthAi] /ra lootcheckinv  — test the loot profile against inventory");
         ChatLine("[RynthAi] /ra lootcheck     — classify selected item (on|off = auto on click)");
+        ChatLine("[RynthAi] /ra iteminfo (ii) — Mag-style item line (on|off = on select; value|verbose on|off)");
         ChatLine("[RynthAi] /ra dumpinv       — dump all inventory items (cache + direct)");
         ChatLine("[RynthAi] /ra combat        — dump combat state machine snapshot");
         ChatLine("[RynthAi] /ra why           — one-glance diagnosis of why the bot is idle/attacking");
