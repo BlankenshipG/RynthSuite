@@ -28,6 +28,7 @@ internal sealed class IltHubController
     private readonly List<IIltFeature> _features = new();
     private long _lastSaveAt;
     private bool _questOutcomeHooked;
+    private bool _availabilityAnnounced; // "/ra hub to open" hint printed this session
 
     public IltBanking Banking { get; }
     public IltPets Pets { get; }
@@ -118,6 +119,15 @@ internal sealed class IltHubController
         _ctx.Capture.Tick();
         _ctx.Options.Tick();
         HookQuestOutcome();
+
+        // One hint per session once the server confirms Hub features. The window is separate
+        // from the main RynthAi panel, so say how to open it.
+        if (!_availabilityAnnounced && Available)
+        {
+            _availabilityAnnounced = true;
+            if (!_ctx.State.WindowVisible)
+                _ctx.Chat("[ILT Hub] ILT server features detected. Type /ra hub to open the ILT Hub window.");
+        }
 
         // Features run only on ILT-like worlds; elsewhere the Hub is fully dormant.
         if (_ctx.Options.IsIltLikeWorld)

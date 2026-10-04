@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.14-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.15-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -2466,6 +2466,38 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         catch (Exception ex)
         {
             RynthLog.Exception(LogCat.UI, ex, "OnRender");
+        }
+        finally
+        {
+            ImGui.SetCurrentContext(previousContext);
+        }
+    }
+
+    /// <summary>
+    /// RynthPluginRenderOverlay: called instead of <see cref="OnRender"/> when the engine's ImGui
+    /// shell is off (Avalonia UI). Draws only the windows the Avalonia RynthAi panel doesn't
+    /// have: the ILT Hub (+ its confirm popups and games HUD) and the Item Info settings window.
+    /// They are separate windows that add to the Avalonia panel; macro/automation never depends
+    /// on them, and any exception is swallowed here so it can't reach the engine.
+    /// </summary>
+    public void OnRenderOverlay()
+    {
+        if (!_initialized || !_loginComplete || Host.ImGuiContext == IntPtr.Zero)
+            return;
+
+        IntPtr previousContext = ImGui.GetCurrentContext();
+        ImGui.SetCurrentContext(Host.ImGuiContext);
+        try
+        {
+            int pushedColors = LegacyDashboardRenderer.PushDashboardStyle();
+            try { _iltHub?.Render(); }
+            finally { ImGui.PopStyleColor(pushedColors); }
+
+            _dashboard?.RenderOverlayWindows();
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Exception(LogCat.UI, ex, "OnRenderOverlay");
         }
         finally
         {

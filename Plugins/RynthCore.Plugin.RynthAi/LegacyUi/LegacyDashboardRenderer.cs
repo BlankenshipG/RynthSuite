@@ -1628,21 +1628,7 @@ internal sealed class LegacyDashboardRenderer
             CheckAndSave();
         }
 
-        // Plugin-wide style overrides: muted slate-blue accents instead of the
-        // previous vivid sky-blue, which was overpowering in the macro tab.
-        ImGui.PushStyleColor(ImGuiCol.FrameBg,         new Vector4(0.18f, 0.22f, 0.28f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered,  new Vector4(0.24f, 0.30f, 0.38f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgActive,   new Vector4(0.30f, 0.38f, 0.48f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.CheckMark,       new Vector4(0.85f, 0.90f, 1.00f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.PopupBg,         new Vector4(0.10f, 0.14f, 0.20f, 0.98f));
-        ImGui.PushStyleColor(ImGuiCol.Header,          new Vector4(0.20f, 0.28f, 0.36f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.HeaderHovered,   new Vector4(0.26f, 0.36f, 0.46f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.HeaderActive,    new Vector4(0.32f, 0.44f, 0.58f, 1.00f));
-        // Title bars — same slate-blue family. TitleBgActive replaces ImGui's
-        // default vivid yellow that's especially jarring on detached viewports.
-        ImGui.PushStyleColor(ImGuiCol.TitleBg,         new Vector4(0.14f, 0.18f, 0.24f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.TitleBgActive,   new Vector4(0.22f, 0.30f, 0.40f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.TitleBgCollapsed,new Vector4(0.10f, 0.14f, 0.20f, 0.85f));
+        int pushedColors = PushDashboardStyle();
 
         try
         {
@@ -1663,8 +1649,47 @@ internal sealed class LegacyDashboardRenderer
         }
         finally
         {
-            ImGui.PopStyleColor(11);
+            ImGui.PopStyleColor(pushedColors);
         }
+    }
+
+    /// <summary>
+    /// Avalonia-mode (ImGui shell off) extras: only windows with no Avalonia panel, drawn as
+    /// separate windows beside the Avalonia RynthAi panel. Currently the Item Info window
+    /// (the ILT Hub renders itself from RynthAiPlugin.OnRenderOverlay).
+    /// </summary>
+    public void RenderOverlayWindows()
+    {
+        int pushedColors = PushDashboardStyle();
+        try
+        {
+            _itemInfoUi.Render(); // no-op unless ItemInfoSettings.ShowWindow
+        }
+        finally
+        {
+            ImGui.PopStyleColor(pushedColors);
+        }
+    }
+
+    /// <summary>Pushes RynthAi's window colours; returns the count for PopStyleColor.</summary>
+    internal static int PushDashboardStyle()
+    {
+        // Plugin-wide style overrides: muted slate-blue accents instead of the
+        // previous vivid sky-blue, which was overpowering in the macro tab.
+        ImGui.PushStyleColor(ImGuiCol.FrameBg,         new Vector4(0.18f, 0.22f, 0.28f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered,  new Vector4(0.24f, 0.30f, 0.38f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.FrameBgActive,   new Vector4(0.30f, 0.38f, 0.48f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.CheckMark,       new Vector4(0.85f, 0.90f, 1.00f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.PopupBg,         new Vector4(0.10f, 0.14f, 0.20f, 0.98f));
+        ImGui.PushStyleColor(ImGuiCol.Header,          new Vector4(0.20f, 0.28f, 0.36f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.HeaderHovered,   new Vector4(0.26f, 0.36f, 0.46f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.HeaderActive,    new Vector4(0.32f, 0.44f, 0.58f, 1.00f));
+        // Title bars — same slate-blue family. TitleBgActive replaces ImGui's
+        // default vivid yellow that's especially jarring on detached viewports.
+        ImGui.PushStyleColor(ImGuiCol.TitleBg,         new Vector4(0.14f, 0.18f, 0.24f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.TitleBgActive,   new Vector4(0.22f, 0.30f, 0.40f, 1.00f));
+        ImGui.PushStyleColor(ImGuiCol.TitleBgCollapsed,new Vector4(0.10f, 0.14f, 0.20f, 0.85f));
+        return 11;
     }
 
     // Rendered every frame regardless of whether the main dashboard is visible.
