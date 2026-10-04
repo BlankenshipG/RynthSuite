@@ -17,7 +17,7 @@ namespace RynthCore.Plugin.RynthJuice;
 public sealed class RynthJuicePlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthJuice");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.0");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.1");
 
     private sealed class HState
     {

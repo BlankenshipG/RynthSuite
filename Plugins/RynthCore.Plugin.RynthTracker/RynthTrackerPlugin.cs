@@ -8,7 +8,7 @@ namespace RynthCore.Plugin.RynthTracker;
 public sealed class RynthTrackerPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthTracker");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.0");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.1");
 
     private uint _playerId;
     private bool _loginComplete;

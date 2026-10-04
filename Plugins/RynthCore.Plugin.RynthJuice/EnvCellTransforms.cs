@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using RynthCore.Install;
 using RynthCore.Plugin.RynthAi.Raycasting; // DatDatabase lives in the RynthCore.TerrainData assembly under this namespace
 
 namespace RynthCore.Plugin.RynthJuice;
@@ -111,7 +112,7 @@ internal sealed class EnvCellTransforms : IDisposable
         string? exe = Environment.ProcessPath;
         string? exeDir = string.IsNullOrEmpty(exe) ? null : Path.GetDirectoryName(exe);
         if (!string.IsNullOrEmpty(exeDir)) yield return exeDir!;
-        yield return @"C:\Games\RynthCore\AcClient";
+        yield return Path.Combine(RynthInstallPaths.CoreDir, "AcClient"); // RynthCore's private client copy
         yield return @"C:\Turbine\Asheron's Call";
         yield return @"C:\Games\Asheron's Call";
         yield return @"C:\Program Files (x86)\Turbine\Asheron's Call";
