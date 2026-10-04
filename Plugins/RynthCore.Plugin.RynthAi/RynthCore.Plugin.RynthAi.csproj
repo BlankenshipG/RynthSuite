@@ -16,11 +16,11 @@
     <AssemblyName>RynthCore.Plugin.RynthAi</AssemblyName>
     <Platforms>x86</Platforms>
     <!-- Keep in sync with RynthAiPlugin.VersionPointer (reported via GetVersion). -->
-    <!-- Previous releases: 0.5.4 (feat/ilt-hub) and 0.6.9 (SK-local); 0.6.10 is the unified SK-local line. -->
-    <Version>0.6.10</Version>
-    <AssemblyVersion>0.6.10.0</AssemblyVersion>
-    <FileVersion>0.6.10.0</FileVersion>
-    <InformationalVersion>0.6.10-legacy-ui</InformationalVersion>
+    <!-- Previous release: 0.6.10 (unified SK-local line). -->
+    <Version>0.6.11</Version>
+    <AssemblyVersion>0.6.11.0</AssemblyVersion>
+    <FileVersion>0.6.11.0</FileVersion>
+    <InformationalVersion>0.6.11-legacy-ui</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -65,6 +65,8 @@
   <ItemGroup>
     <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
     <Compile Include="..\..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- UB damage-insights seed schema, shared with the Monster Editor importer. -->
+    <Compile Include="..\..\Shared\UbMobSeed.cs" Link="Shared\UbMobSeed.cs" />
   </ItemGroup>
 
 </Project>

@@ -174,6 +174,44 @@ public partial class MainWindow : Window
         SetStatus(r.Message + tail, error: false);
     }
 
+    /// <summary>
+    /// Builds the RynthAi damage-type seed from UtilityBelt's damage insights
+    /// (see <see cref="UbMobSeedImport"/>). Uses UB's InfiniteLeaftide folder when it has
+    /// databases, otherwise asks for the UB server folder. Monster rules are not modified.
+    /// </summary>
+    private async void ImportUbInsights_Click(object? sender, RoutedEventArgs e)
+    {
+        string folder = UbMobSeedImport.DefaultServerFolder;
+        if (UbMobSeedImport.FindDatabases(folder).Count == 0)
+        {
+            var sp = StorageProvider;
+            if (sp == null) return;
+            var picked = await sp.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = "Select the UtilityBelt server folder (contains mob_damage_insights.ldb)",
+                AllowMultiple = false,
+            });
+            string? local = picked.FirstOrDefault()?.TryGetLocalPath();
+            if (string.IsNullOrEmpty(local)) { SetStatus("UB import cancelled.", error: true); return; }
+            folder = local;
+        }
+
+        SetStatus($"Reading UB damage insights from {folder} …");
+        string output = UbMobSeedImport.DefaultOutputPath;
+        UbMobSeedImport.Result r;
+        try
+        {
+            // LiteDB reads are synchronous; keep the UI responsive while snapshots are copied and parsed.
+            r = await System.Threading.Tasks.Task.Run(() => UbMobSeedImport.Run(folder, output));
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"UB import failed: {ex.Message}", error: true);
+            return;
+        }
+        SetStatus(r.Message, error: !r.Ok);
+    }
+
     private void MergeVirindiImportedRows(IReadOnlyList<MonsterRule> src, out int added, out int mergedDefault)
     {
         added         = 0;

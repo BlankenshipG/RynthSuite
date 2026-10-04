@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.10-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.11-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -140,6 +140,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     // Per-character learned combat damage (avg damage by wcid/element/tier +
     // learned HP-to-kill), used by CombatManager for kill-shot prediction.
     private CreatureData.MonsterDamageStore? _damageStore;
+    // Shared read-only UB damage-type seed (Monster Editor import); "Auto" element fallback.
+    private CreatureData.UbMobSeedStore? _mobSeedStore;
     // wcids appraised this session (AutoId of nearby mobs). Surfaced as bare rows in the
     // Damage table so monsters populate as you encounter them, before you've fought them.
     private readonly HashSet<uint> _seenMonstersThisSession = new();
@@ -178,6 +180,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _creatureStore = new CreatureData.CreatureProfileStore();
         try { _creatureStore.Load(); } catch { }
         _damageStore = new CreatureData.MonsterDamageStore();
+        _mobSeedStore = new CreatureData.UbMobSeedStore();
+        try { _mobSeedStore.Load(); } catch { }
+        if (_mobSeedStore.Count > 0)
+            Log($"RynthAi: UB damage-type seed loaded ({_mobSeedStore.Count} monsters).");
         Func<string, CreatureData.CreatureProfile?> lookup = ruleName =>
         {
             if (_creatureStore == null || string.IsNullOrEmpty(ruleName)) return null;
@@ -213,6 +219,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         long tAfterStore = Environment.TickCount64;
         _creatureStore = null;
         _damageStore = null;
+        _mobSeedStore = null;
         _objectCache = null;
         _initialized = false;
         _dashboard = null;
@@ -438,6 +445,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager.SetCharacterSkills(_charSkills);
         _combatManager.SetPlayerId(_playerId);
         _combatManager.SetDamageStores(_creatureStore, _damageStore);
+        _combatManager.SetMobSeedStore(_mobSeedStore);
         _navigationEngine?.SetCombatManager(_combatManager);
         // BuffManager.CheckVitals consults CombatManager.HasCloseThreat to pick
         // between in-combat and idle top-off recharge thresholds. Wire here

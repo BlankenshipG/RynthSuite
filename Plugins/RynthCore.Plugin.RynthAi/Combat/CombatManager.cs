@@ -347,6 +347,12 @@ public class CombatManager : IDisposable
         _damageStore = damage;
     }
 
+    // Shared read-only UB damage-type seed: ranked elements per wcid/name, used by
+    // GetPreferredElement only when the monster has no appraised resists.
+    private UbMobSeedStore? _mobSeedStore;
+
+    internal void SetMobSeedStore(UbMobSeedStore? seed) => _mobSeedStore = seed;
+
     public int RaycastBlockCount { get; private set; }
     public int RaycastCheckCount { get; private set; }
 
@@ -3455,7 +3461,10 @@ public class CombatManager : IDisposable
                 var (weakType, resist) = CreatureProfileStore.GetWeakest(prof);
                 if (resist < 1.0 && !string.IsNullOrEmpty(weakType))
                 {
-                    string elem = char.ToUpperInvariant(weakType[0]) + weakType.Substring(1);
+                    // Resists name it "electric"; the spell tables key that element as "Lightning".
+                    string elem = weakType.Equals("electric", StringComparison.OrdinalIgnoreCase)
+                        ? "Lightning"
+                        : char.ToUpperInvariant(weakType[0]) + weakType.Substring(1);
                     if (FindBestShapedSpell(elem, rule, out _) != 0)
                     {
                         if (_autoElemDiagCount < 20)
@@ -3465,6 +3474,29 @@ public class CombatManager : IDisposable
                         }
                         return elem;
                     }
+                }
+            }
+        }
+
+        // UB damage-insights seed: damage types ranked by what players landed on this
+        // monster. Take the best-ranked one this character can actually cast with the
+        // rule's shapes (e.g. Nether only when Void spells resolve).
+        if (target != null && rule != null && _mobSeedStore != null && !string.IsNullOrEmpty(target.Name))
+        {
+            uint wcid = _fightTargetWcid != 0 && target.Id == _fightTargetId ? _fightTargetWcid : 0;
+            if (wcid == 0 && _host.HasGetObjectWcid && _host.TryGetObjectWcid((uint)target.Id, out uint tw)) wcid = tw;
+
+            if (_mobSeedStore.TryGetRanked(wcid, target.Name, out var ranked))
+            {
+                foreach (var seeded in ranked)
+                {
+                    if (FindBestShapedSpell(seeded.Element, rule, out _) == 0) continue;
+                    if (_autoElemDiagCount < 20)
+                    {
+                        _autoElemDiagCount++;
+                        RynthLog.Write(LogCat.Combat, $"[CombatCast] auto-element '{target.Name}': UB seed {seeded.Element} (score {seeded.Score:0.00}, {seeded.Hits} hits, wcid {wcid})");
+                    }
+                    return seeded.Element;
                 }
             }
         }

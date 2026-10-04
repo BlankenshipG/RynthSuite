@@ -16,6 +16,8 @@
                             ToolTip.Tip="Writes the MonsterProfiles .json RynthAi uses (Ctrl+S)."/>
                     <Button Content="Import Virindi .usd" Click="ImportVirindiUsd_Click" MinWidth="160" Padding="10,4"
                             ToolTip.Tip="Merge monster rules from a Virindi Tank user settings profile (.usd)."/>
+                    <Button Content="Import UB damage insights" Click="ImportUbInsights_Click" MinWidth="190" Padding="10,4"
+                            ToolTip.Tip="Rank each monster's best damage types from UtilityBelt's mob_damage_insights.ldb (shared server DB + character DBs). RynthAi uses the ranking for 'Auto' damage type when a monster has no appraised resists. Rules are not changed."/>
                     <TextBlock Text="Saves the profile file. Ctrl+S. Edits also auto-save in the grid."
                                VerticalAlignment="Center" Opacity="0.65" FontSize="12"/>
                 </StackPanel>

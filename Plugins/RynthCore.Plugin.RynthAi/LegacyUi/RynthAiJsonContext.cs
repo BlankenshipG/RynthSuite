@@ -11,6 +11,8 @@ namespace RynthCore.Plugin.RynthAi;
 [JsonSerializable(typeof(List<MonsterRule>), TypeInfoPropertyName = "MonsterRuleList")]
 [JsonSerializable(typeof(List<ConsumableRule>), TypeInfoPropertyName = "ConsumableRuleList")]
 [JsonSerializable(typeof(Dictionary<string, CreatureProfile>), TypeInfoPropertyName = "CreatureProfileDict")]
+// UB damage-insights seed (CreatureData/UbMobSeedStore.cs), written by the Monster Editor.
+[JsonSerializable(typeof(RynthCore.CreatureSeed.UbMobSeedFile))]
 [JsonSerializable(typeof(MonstersBridgePayload))]
 [JsonSerializable(typeof(SettingsBridgePayload))]
 [JsonSerializable(typeof(NavBridgePayload))]
