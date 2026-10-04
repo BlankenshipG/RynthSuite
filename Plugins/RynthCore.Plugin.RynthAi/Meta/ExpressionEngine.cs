@@ -9,6 +9,7 @@ using RynthCore.Plugin.RynthAi.CreatureData;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.Loot.VTank;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.Meta;
 
@@ -59,7 +60,7 @@ internal sealed class ExpressionEngine
     private readonly Dictionary<string, (RynthCore.Loot.LootProfile Profile, DateTime Mtime)> _giveNativeProfileCache
         = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string ItemGiverDir
-        = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "ItemGiver");
+        = Path.Combine(RynthInstallPaths.RynthAiDir, "ItemGiver");
 
     // Stopwatch store: handle → Stopwatch. Persistent (not cleared per eval) — handles are stored in variables.
     private readonly Dictionary<string, System.Diagnostics.Stopwatch> _stopwatches = new(StringComparer.Ordinal);
@@ -100,8 +101,8 @@ internal sealed class ExpressionEngine
     private long _lastVarFlushMs;
     private string? _pvarPathCached;
     private const long VarFlushIntervalMs = 2000;
-    private static readonly string PvarsDir  = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "pvars");
-    private static readonly string GvarsPath = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "gvars.txt");
+    private static readonly string PvarsDir  = Path.Combine(RynthInstallPaths.RynthAiDir, "pvars");
+    private static readonly string GvarsPath = Path.Combine(RynthInstallPaths.RynthAiDir, "gvars.txt");
     private Dictionary<string, (Func<string> Get, Action<string> Set)>? _settingsMap;
 
     public IReadOnlyDictionary<string, string> Variables => _variables;
@@ -471,6 +472,7 @@ internal sealed class ExpressionEngine
             "getfellowshiplocked"      => (_fellowshipTracker?.IsLocked == true ? "1" : "0"),
             "getfellowshipisleader"    => (_fellowshipTracker?.IsLeader == true ? "1" : "0"),
             "getfellowshipisopen"      => (_fellowshipTracker?.IsOpen == true ? "1" : "0"),
+            "getfellowshipstatus"      => EvalGetFellowshipStatus(),
             "getfellowshipisfull"      => EvalFellowshipIsFull(),
             "getfellowshipcanrecruit"  => EvalFellowshipCanRecruit(),
             "getfellowid"              => EvalGetFellowId(A(0)),
@@ -483,10 +485,10 @@ internal sealed class ExpressionEngine
             "raoptset" or "uboptset" => EvalOptSet(A(0), A(1)),
 
             // ── RynthAi settings / meta state (VTank-compatible names) ────────
-            "rasetmetastate" => EvalVtSetMetaState(Tmpl(0)),
+            "rasetmetastate" or "vtsetmetastate" or "setmetastate" => EvalVtSetMetaState(Tmpl(0)),
             "ragetmetastate" => _settings?.CurrentState ?? "",
-            "rasetsetting"   => EvalVtSetSetting(Tmpl(0), A(1)),
-            "ragetsetting"   => EvalVtGetSetting(Tmpl(0)),
+            "rasetsetting" or "vtsetsetting"     => EvalVtSetSetting(Tmpl(0), A(1)),
+            "ragetsetting" or "vtgetsetting" or "vtankgetsetting" => EvalVtGetSetting(Tmpl(0)),
 
             // ── Dynamic evaluation ────────────────────────────────────────────
             "exec"      => Evaluate(A(0)),
@@ -508,8 +510,20 @@ internal sealed class ExpressionEngine
             "dictclear"     => EvalDictClear(A(0)),
             "dictcopy"      => EvalDictCopy(A(0)),
 
-            _ => ""
+            _ => EvalUnknownFunction(funcName)
         };
+    }
+
+    /// <summary>Unknown-function fallback (M3): returns "" per engine convention but logs the
+    /// missing verb ONCE per distinct name, so a typo'd or unsupported meta function is visible
+    /// instead of silently evaluating to empty. Rate-limited by the seen-set to avoid log spam.</summary>
+    private readonly HashSet<string> _loggedUnknownFns = new();
+    private string EvalUnknownFunction(string funcName)
+    {
+        if (!string.IsNullOrEmpty(funcName) && _loggedUnknownFns.Add(funcName))
+            RynthLog.Write(LogCat.Expressions, $"[Meta] unknown expression function '{funcName}[...]' — evaluates to empty; " +
+                      "check spelling / supported verbs. (logged once per name)");
+        return "";
     }
 
     // ── Variable / char-prop implementations ──────────────────────────────────
@@ -1181,49 +1195,88 @@ internal sealed class ExpressionEngine
     }
 
     // Higher-order helpers: set $0/$1/$2, evaluate template, restore.
+    //
+    // Deep-audit finding #26 (2026-06-18): despite this comment, none of the
+    // four functions below actually restored "0"/"1"/"2" afterward — they
+    // wrote straight into the persistent _variables dictionary and left
+    // whatever the last loop iteration set. Nested list ops clobbered each
+    // other's $0/$1 mid-evaluation, and a user's own numeric-named $0/$1/$2
+    // (if they had any) were silently overwritten for the rest of the meta.
+    // Snapshot before, restore-or-Remove in a finally, per the fix note.
+
+    /// <summary>Snapshots the given _variables keys, returning a restore action for a finally block.</summary>
+    private Action SnapshotVars(params string[] keys)
+    {
+        var saved = new (string Key, bool Had, string? Value)[keys.Length];
+        for (int i = 0; i < keys.Length; i++)
+            saved[i] = (keys[i], _variables.TryGetValue(keys[i], out var v), v);
+        return () =>
+        {
+            foreach (var (key, had, value) in saved)
+            {
+                if (had) _variables[key] = value!;
+                else _variables.Remove(key);
+            }
+        };
+    }
 
     private string EvalListFilter(string handle, string exprTemplate)
     {
         var list = GetList(handle);
         if (list == null || exprTemplate.Length == 0) return NewList();
-        var result = new List<string>();
-        for (int i = 0; i < list.Count; i++)
+        var restore = SnapshotVars("0", "1");
+        try
         {
-            _variables["0"] = Fmt((long)i);
-            _variables["1"] = list[i];
-            if (ToBool(Evaluate(exprTemplate)))
-                result.Add(list[i]);
+            var result = new List<string>();
+            for (int i = 0; i < list.Count; i++)
+            {
+                _variables["0"] = Fmt((long)i);
+                _variables["1"] = list[i];
+                if (ToBool(Evaluate(exprTemplate)))
+                    result.Add(list[i]);
+            }
+            return NewList(result);
         }
-        return NewList(result);
+        finally { restore(); }
     }
 
     private string EvalListMap(string handle, string exprTemplate)
     {
         var list = GetList(handle);
         if (list == null || exprTemplate.Length == 0) return NewList();
-        var result = new List<string>(list.Count);
-        for (int i = 0; i < list.Count; i++)
+        var restore = SnapshotVars("0", "1");
+        try
         {
-            _variables["0"] = Fmt((long)i);
-            _variables["1"] = list[i];
-            result.Add(Evaluate(exprTemplate));
+            var result = new List<string>(list.Count);
+            for (int i = 0; i < list.Count; i++)
+            {
+                _variables["0"] = Fmt((long)i);
+                _variables["1"] = list[i];
+                result.Add(Evaluate(exprTemplate));
+            }
+            return NewList(result);
         }
-        return NewList(result);
+        finally { restore(); }
     }
 
     private string EvalListReduce(string handle, string exprTemplate)
     {
         var list = GetList(handle);
         if (list == null || list.Count == 0 || exprTemplate.Length == 0) return "0";
-        string acc = "0";
-        for (int i = 0; i < list.Count; i++)
+        var restore = SnapshotVars("0", "1", "2");
+        try
         {
-            _variables["0"] = Fmt((long)i);
-            _variables["1"] = list[i];
-            _variables["2"] = acc;
-            acc = Evaluate(exprTemplate);
+            string acc = "0";
+            for (int i = 0; i < list.Count; i++)
+            {
+                _variables["0"] = Fmt((long)i);
+                _variables["1"] = list[i];
+                _variables["2"] = acc;
+                acc = Evaluate(exprTemplate);
+            }
+            return acc;
         }
-        return acc;
+        finally { restore(); }
     }
 
     private string EvalListSort(string handle, string exprTemplate)
@@ -1231,20 +1284,25 @@ internal sealed class ExpressionEngine
         var list = GetList(handle);
         if (list == null) return NewList();
         var copy = new List<string>(list);
-        if (exprTemplate.Length > 0)
+        var restore = SnapshotVars("1", "2");
+        try
         {
-            copy.Sort((a, b) =>
+            if (exprTemplate.Length > 0)
             {
-                _variables["1"] = a;
-                _variables["2"] = b;
-                return (int)ToLong(Evaluate(exprTemplate));
-            });
+                copy.Sort((a, b) =>
+                {
+                    _variables["1"] = a;
+                    _variables["2"] = b;
+                    return (int)ToLong(Evaluate(exprTemplate));
+                });
+            }
+            else
+            {
+                copy.Sort(StringComparer.Ordinal);
+            }
+            return NewList(copy);
         }
-        else
-        {
-            copy.Sort(StringComparer.Ordinal);
-        }
-        return NewList(copy);
+        finally { restore(); }
     }
 
     // ── World state implementations ───────────────────────────────────────────
@@ -1379,9 +1437,8 @@ internal sealed class ExpressionEngine
     private string EvalWobjectFindInInventoryByNameRx(string pattern)
     {
         if (_worldObjectCache == null || string.IsNullOrEmpty(pattern)) return "0";
-        Regex re;
-        try { re = new Regex(pattern, RegexOptions.IgnoreCase); }
-        catch { return "0"; }
+        var re = RegexCache.Get(pattern, RegexOptions.IgnoreCase);
+        if (re == null) return "0";
 
         foreach (var wo in _worldObjectCache.GetDirectInventory(forceRefresh: true))
         {
@@ -1394,9 +1451,8 @@ internal sealed class ExpressionEngine
     private string EvalWobjectFindAllInventoryByNameRx(string pattern)
     {
         if (_worldObjectCache == null || string.IsNullOrEmpty(pattern)) return "[]";
-        Regex re;
-        try { re = new Regex(pattern, RegexOptions.IgnoreCase); }
-        catch { return "[]"; }
+        var re = RegexCache.Get(pattern, RegexOptions.IgnoreCase);
+        if (re == null) return "[]";
 
         var items = new List<string>();
         foreach (var wo in _worldObjectCache.GetDirectInventory(forceRefresh: true))
@@ -1474,9 +1530,8 @@ internal sealed class ExpressionEngine
     private string EvalWobjectFindAllByNameRx(string pattern)
     {
         if (_worldObjectCache == null || string.IsNullOrEmpty(pattern)) return "[]";
-        Regex re;
-        try { re = new Regex(pattern, RegexOptions.IgnoreCase); }
-        catch { return "[]"; }
+        var re = RegexCache.Get(pattern, RegexOptions.IgnoreCase);
+        if (re == null) return "[]";
 
         var items = new List<string>();
         var seen = new System.Collections.Generic.HashSet<int>();
@@ -1587,9 +1642,8 @@ internal sealed class ExpressionEngine
     private string EvalWobjectFindAllLandscapeByNameRx(string pattern)
     {
         if (_worldObjectCache == null || string.IsNullOrEmpty(pattern)) return "[]";
-        Regex re;
-        try { re = new Regex(pattern, RegexOptions.IgnoreCase); }
-        catch { return "[]"; }
+        var re = RegexCache.Get(pattern, RegexOptions.IgnoreCase);
+        if (re == null) return "[]";
 
         var items = new List<string>();
         foreach (var wo in _worldObjectCache.GetLandscapeObjects())
@@ -1832,9 +1886,8 @@ internal sealed class ExpressionEngine
         if (!int.TryParse(classArg.Trim(), out int targetClass)) return "0";
         if (string.IsNullOrEmpty(pattern)) return "0";
 
-        Regex re;
-        try { re = new Regex(pattern, RegexOptions.IgnoreCase); }
-        catch { return "0"; }
+        var re = RegexCache.Get(pattern, RegexOptions.IgnoreCase);
+        if (re == null) return "0";
 
         uint bestId = 0;
         string bestName = string.Empty;
@@ -2267,8 +2320,8 @@ internal sealed class ExpressionEngine
     private string EvalItemCountByNameRx(string pattern)
     {
         if (_worldObjectCache == null || string.IsNullOrEmpty(pattern)) return "0";
-        Regex? rx = null;
-        try { rx = new Regex(pattern, RegexOptions.IgnoreCase); } catch { return "0"; }
+        var rx = RegexCache.Get(pattern, RegexOptions.IgnoreCase);
+        if (rx == null) return "0";
         int total = 0;
         foreach (var wo in _worldObjectCache.GetDirectInventory())
             if (rx.IsMatch(wo.Name))
@@ -2326,44 +2379,265 @@ internal sealed class ExpressionEngine
         return "1";
     }
 
+    // ── Meta-cast magic-mode swap state (mirrors BuffManager.EnsureMagicMode) ──
+    // FIX (2026-06-24, bow->wand meta-cast swap): stock ACE refuses to wield a
+    // Held-slot wand while a melee/missile weapon is in the main hand and does NOT
+    // auto-dequip it (CheckWeaponCollision, Player_Inventory.cs:1991). The OLD
+    // bare UseObject(wand) below therefore never confirmed, so a Meta-driven
+    // self-buff/cast (actiontrycast / actiontrycastbyid) deadlocked the bot
+    // forever — stuck re-issuing the equip, never reaching Magic, blocking
+    // everything (the exact BuffManager coma). We must stow the wielded weapon
+    // into a capacity-verified open pack FIRST (AutoCram pattern, AV-safe), then
+    // wield the wand. Every path is bounded so a stale dequip, a full inventory,
+    // or an unwieldable wand degrades and yields instead of looping.
+    private int _castWieldPendingId;
+    private DateTime _castWieldPendingAt = DateTime.MinValue;
+    private DateTime _castWieldCooldownUntil = DateTime.MinValue;
+    private int _castWieldFailCount;
+    private int _castBowDequipPendingId;
+    private DateTime _castBowDequipAt = DateTime.MinValue;
+    private int _castBowDequipAttempts;
+    private bool _castCombatTornDown;
+    private DateTime _castStanceStuckSince = DateTime.MinValue;
+    private DateTime _castStanceLastRecoverAt = DateTime.MinValue;
+    private DateTime _castStanceLastFlipAt = DateTime.MinValue;
+    private int _castStanceReEquips;
+    private const double CastWieldResolveTimeoutMs = 2500;
+    private const double CastWieldCooldownMs = 5000;
+    private const int CastWieldFailMax = 3;
+    private const int CastBowDequipMaxAttempts = 3;
+    private const int CastStanceReEquipMax = 2;
+    private const double CastStanceStuckRecoverMs = 8000;
+    private const double CastStanceFlipGateMs = 1200;
+
     /// <summary>
     /// Ensures the character is in magic mode. Returns true if already in magic mode.
-    /// Otherwise takes one step (equip wand or change stance) and returns false.
+    /// Otherwise takes one bounded step (dequip blocking weapon, equip wand, or change
+    /// stance) and returns false. Mirrors BuffManager.EnsureMagicMode so a Meta cast
+    /// can never deadlock on the stock-ACE bow→wand collision.
     /// </summary>
     private bool EnsureMagicModeForCast()
     {
-        if (_host.HasGetCurrentCombatMode && _host.GetCurrentCombatMode() == CombatMode.Magic)
-            return true;
-
-        if (_worldObjectCache != null && _host.HasUseObject)
+        if (!_host.HasGetCurrentCombatMode)
         {
-            WorldObject? wand = null;
-            foreach (var wo in _worldObjectCache.GetDirectInventory())
-            {
-                if (wo.ObjectClass != AcObjectClass.WandStaffOrb) continue;
-                wand = wo;
-                break;
-            }
-
-            if (wand != null)
-            {
-                bool wielded = _host.HasGetObjectWielderInfo
-                    ? (_host.GetPlayerId() is uint pid && pid != 0
-                       && _host.TryGetObjectWielderInfo(unchecked((uint)wand.Id), out uint w, out _)
-                       && w == pid)
-                    : wand.Values(LongValueKey.CurrentWieldedLocation, 0) > 0;
-
-                if (!wielded)
-                {
-                    _host.UseObject(unchecked((uint)wand.Id));
-                    return false;
-                }
-            }
+            // Can't read mode — best-effort flip and bail.
+            if (_host.HasChangeCombatMode) _host.ChangeCombatMode(CombatMode.Magic);
+            return false;
         }
 
-        if (_host.HasChangeCombatMode)
+        if (_host.GetCurrentCombatMode() == CombatMode.Magic)
+        {
+            // Reached Magic — clear the whole swap state machine so a later
+            // recoverable episode (e.g. after a slot frees from looting) starts clean.
+            _castWieldPendingId = 0;
+            _castWieldCooldownUntil = DateTime.MinValue;
+            _castWieldFailCount = 0;
+            _castBowDequipPendingId = 0;
+            _castBowDequipAttempts = 0;
+            _castCombatTornDown = false;
+            _castStanceStuckSince = DateTime.MinValue;
+            _castStanceReEquips = 0;
+            return true;
+        }
+
+        int wandId = FindCastWand();
+        if (wandId == 0 || !_host.HasUseObject)
+        {
+            // No wand (or no UseObject) — try bare-handed magic.
+            if (_host.HasChangeCombatMode) _host.ChangeCombatMode(CombatMode.Magic);
+            return false;
+        }
+
+        DateTime now = DateTime.Now;
+
+        if (!IsCastWielded(wandId))
+        {
+            // Wield gate: don't spam UseObject while a prior equip is in flight.
+            if (now < _castWieldCooldownUntil) return false;
+
+            if (_castWieldPendingId != 0)
+            {
+                if ((now - _castWieldPendingAt).TotalMilliseconds < CastWieldResolveTimeoutMs)
+                    return false;
+                RynthLog.Write(LogCat.Expressions, $"[MetaCast] wand 0x{(uint)_castWieldPendingId:X8} wield not confirmed in " +
+                          $"{CastWieldResolveTimeoutMs:0}ms — cooling down {CastWieldCooldownMs:0}ms");
+                _castWieldPendingId = 0;
+                _castWieldCooldownUntil = now.AddMilliseconds(CastWieldCooldownMs);
+                // Bound the previously-infinite wield loop: after a few cooldowns the
+                // swap provably can't complete now (no pack to free the bow, or an
+                // unresolvable collision) — degrade so the meta retries later, not forever.
+                if (++_castWieldFailCount >= CastWieldFailMax)
+                    return CastSwapDegrade(wandId, FindCastWieldedNonWand(wandId));
+                return false;
+            }
+
+            // Tear down any in-flight physical attack BEFORE the UseObject (once per
+            // episode), or AC gets an equip while m_bAttacking is set and wedges the
+            // item-action gate ("you can only move or use one item at a time").
+            int mode = _host.GetCurrentCombatMode();
+            if (!_castCombatTornDown && (mode == CombatMode.Melee || mode == CombatMode.Missile))
+            {
+                if (_host.HasCancelAttack)   _host.CancelAttack();
+                if (_host.HasStopCompletely) _host.StopCompletely();
+                _castCombatTornDown = true;
+                RynthLog.Write(LogCat.Expressions, $"[MetaCast] CancelAttack+StopCompletely before wand equip (mode was {mode})");
+            }
+
+            // Stock ACE won't auto-dequip the bow for a Held-slot wand: stow the wielded
+            // non-wand weapon into a capacity-verified open pack FIRST, then wield the wand.
+            int bowId = FindCastWieldedNonWand(wandId);
+            if (bowId != 0 && _host.HasMoveItemInternal)
+            {
+                if (_castBowDequipPendingId == bowId
+                    && (now - _castBowDequipAt).TotalMilliseconds < CastWieldResolveTimeoutMs
+                    && IsCastWielded(bowId))
+                    return false; // dequip still resolving
+
+                if (IsCastWielded(bowId))
+                {
+                    int openPack = WorldObjectCache.FindPackFor(_host, _worldObjectCache, includeMainPack: true, requireFree: 1);
+                    if (openPack == 0 || _castBowDequipAttempts >= CastBowDequipMaxAttempts)
+                    {
+                        RynthLog.Write(LogCat.Expressions, $"[MetaCast] bow 0x{(uint)bowId:X8} dequip blocked (openPack=0x{(uint)openPack:X8}, " +
+                                  $"attempts={_castBowDequipAttempts}/{CastBowDequipMaxAttempts}) — degrading");
+                        return CastSwapDegrade(wandId, bowId);
+                    }
+                    _castBowDequipAttempts++;
+                    _host.MoveItemInternal((uint)bowId, (uint)openPack, 0, 1); // amount>=1 (engine rejects 0)
+                    _castBowDequipPendingId = bowId;
+                    _castBowDequipAt = now;
+                    RynthLog.Write(LogCat.Expressions, $"[MetaCast] dequip bow 0x{(uint)bowId:X8} -> pack 0x{(uint)openPack:X8} " +
+                              $"(attempt {_castBowDequipAttempts}/{CastBowDequipMaxAttempts}) before wand equip");
+                    return false; // yield until the bow is out of hand
+                }
+                _castBowDequipPendingId = 0; // bow confirmed unwielded — fall through to wield the wand
+            }
+
+            _host.UseObject((uint)wandId);
+            _castWieldPendingId = wandId;
+            _castWieldPendingAt = now;
+            return false; // yield — let the server equip the wand
+        }
+
+        // Wand wielded — clear the wield gate and flip stance with bounded recovery.
+        if (_castWieldPendingId == wandId)
+        {
+            _castWieldPendingId = 0;
+            _castWieldCooldownUntil = DateTime.MinValue;
+        }
+
+        if (_castStanceStuckSince == DateTime.MinValue)
+            _castStanceStuckSince = now;
+        double stuckMs = (now - _castStanceStuckSince).TotalMilliseconds;
+
+        // Capped re-equip recovery (mirrors CombatManager/BuffManager): resyncs a rare
+        // stale "wielded reads true". HARD-CAPPED — UseObject on a genuinely wielded wand
+        // is a MOVE to AC, and unbounded re-equip jams the item-action queue permanently.
+        if (_castStanceReEquips < CastStanceReEquipMax
+            && stuckMs > CastStanceStuckRecoverMs
+            && (now - _castStanceLastRecoverAt).TotalMilliseconds > CastStanceStuckRecoverMs)
+        {
+            _castStanceLastRecoverAt = now;
+            _castStanceReEquips++;
+            RynthLog.Write(LogCat.Expressions, $"[MetaCast] stance STUCK {stuckMs:0}ms (wielded, mode≠Magic) — re-equip {_castStanceReEquips}/{CastStanceReEquipMax} 0x{(uint)wandId:X8}");
+            _host.UseObject((uint)wandId);
+            return false;
+        }
+
+        // Throttle the mode flip so we don't issue ChangeCombatMode every pulse.
+        if (_host.HasChangeCombatMode
+            && (now - _castStanceLastFlipAt).TotalMilliseconds > CastStanceFlipGateMs)
+        {
             _host.ChangeCombatMode(CombatMode.Magic);
+            _castStanceLastFlipAt = now;
+        }
         return false;
+    }
+
+    // Bounded degrade for the meta-cast swap. If the wand ended up wielded but mode never
+    // flipped, dequip it so the bow can re-wield; otherwise re-wield the bow we stowed so
+    // the character is never left bare-handed. Reset the state machine and yield — the meta
+    // retries on a later pulse once inventory/stance frees up (no buff family to park here).
+    private bool CastSwapDegrade(int wandId, int bowId)
+    {
+        if (wandId != 0 && _host.HasMoveItemInternal && IsCastWielded(wandId))
+        {
+            int openPack = WorldObjectCache.FindPackFor(_host, _worldObjectCache, includeMainPack: true, requireFree: 1);
+            if (openPack != 0) _host.MoveItemInternal((uint)wandId, (uint)openPack, 0, 1);
+        }
+        else if (bowId != 0 && !IsCastWielded(bowId) && _host.HasUseObject)
+        {
+            _host.UseObject((uint)bowId); // re-wield the bow we dequipped
+        }
+        _castWieldPendingId = 0;
+        _castBowDequipPendingId = 0;
+        _castBowDequipAttempts = 0;
+        _castWieldFailCount = 0;
+        _castCombatTornDown = false;
+        return false;
+    }
+
+    // First wand in direct inventory. Robust IsWandObject (ObjectClass OR name) per the
+    // wand-classification pitfall: an Unknown-class wand still needs to be found and wielded.
+    private int FindCastWand()
+    {
+        if (_worldObjectCache == null) return 0;
+        foreach (var wo in _worldObjectCache.GetDirectInventory())
+            if (IsCastWandObject(wo)) return wo.Id;
+        return 0;
+    }
+
+    // Live (forceRefresh) wielded check — never trusts a stale cache snapshot (gates an
+    // AV-risky move). Mirrors BuffManager.IsWieldedLive.
+    private bool IsCastWielded(int id)
+    {
+        if (id == 0 || _worldObjectCache == null) return false;
+        foreach (var wo in _worldObjectCache.GetDirectInventory(forceRefresh: true))
+            if (wo.Id == id)
+                return wo.Values(LongValueKey.CurrentWieldedLocation, 0) > 0;
+        if (_host.HasGetObjectWielderInfo)
+        {
+            uint pid = _host.GetPlayerId();
+            if (pid != 0 && _host.TryGetObjectWielderInfo((uint)id, out uint wielder, out _))
+                return wielder == pid;
+        }
+        return false;
+    }
+
+    // The currently-wielded non-wand weapon (the bow) that blocks the Held-slot wand.
+    private int FindCastWieldedNonWand(int wandId)
+    {
+        if (_worldObjectCache == null) return 0;
+        foreach (var wo in _worldObjectCache.GetDirectInventory(forceRefresh: true))
+        {
+            if (wo.Id == wandId) continue;
+            if (IsCastWandObject(wo)) continue;
+            if (wo.Values(LongValueKey.CurrentWieldedLocation, 0) > 0
+                && (wo.ObjectClass == AcObjectClass.MeleeWeapon
+                 || wo.ObjectClass == AcObjectClass.MissileWeapon))
+                return wo.Id;
+        }
+        return 0;
+    }
+
+    // FindCastOpenPack DELETED (P2a) — replaced by shared
+    // WorldObjectCache.FindPackFor(host, cache, includeMainPack:true, requireFree:1).
+    // MetaCast wand-swap: requireFree:1 so a single free slot still allows the swap.
+    // Call sites: the meta-cast dequip block + CastSwapDegrade.
+
+    private static bool IsCastWandObject(WorldObject wo) =>
+        wo.ObjectClass == AcObjectClass.WandStaffOrb || IsCastWandName(wo.Name);
+
+    private static bool IsCastWandName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        return name.IndexOf("Orb",      StringComparison.OrdinalIgnoreCase) >= 0
+            || name.IndexOf("Staff",    StringComparison.OrdinalIgnoreCase) >= 0
+            || name.IndexOf("Wand",     StringComparison.OrdinalIgnoreCase) >= 0
+            || name.IndexOf("Scepter",  StringComparison.OrdinalIgnoreCase) >= 0
+            || name.IndexOf("Sceptre",  StringComparison.OrdinalIgnoreCase) >= 0
+            || name.IndexOf("Baton",    StringComparison.OrdinalIgnoreCase) >= 0
+            || name.IndexOf("Crozier",  StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private string EvalActionTryCastById(string arg)
@@ -2736,24 +3010,43 @@ internal sealed class ExpressionEngine
         "Evensong","Evensong-and-Half","Gloaming","Gloaming-and-Half"
     };
 
-    private static unsafe double ReadGameClock()
+    private bool _loggedGameClockNotInWorld;
+
+    /// <summary>
+    /// Reads the raw double at 0x008379A8 — the AC game clock register. That address
+    /// is only mapped once the client is in world, so any getgame* expression
+    /// evaluated before world entry used to fault (2026-06-03 audit P3). An
+    /// AccessViolationException is a corrupted-state exception and is NOT catchable
+    /// in .NET, so this guards instead of catching: no player id means no world,
+    /// which means the register must not be touched.
+    /// </summary>
+    private double ReadGameClock()
     {
-        // Read the raw double at 0x008379A8 — the AC game clock register.
+        if (!_host.HasGetPlayerId || _host.GetPlayerId() == 0)
+        {
+            if (!_loggedGameClockNotInWorld)
+            {
+                _loggedGameClockNotInWorld = true;
+                RynthLog.Write(LogCat.Expressions, "[Meta] getgame* evaluated before world entry — game clock unreadable, returning 0 (not faulting).");
+            }
+            return 0;
+        }
+
         long raw = System.Runtime.InteropServices.Marshal.ReadInt64(new IntPtr(unchecked((int)0x008379A8)));
         return BitConverter.Int64BitsToDouble(raw);
     }
 
-    private static double GetGameTicks()
+    private double GetGameTicks()
     {
         double rawTicks = ReadGameClock();
         return rawTicks - 210 + (TicksInHour * 8) + (TicksInHour * HoursInDay * DaysInMonth * MonthsInYear * 10);
     }
 
-    private static int GetGameYear()   => (int)(GetGameTicks() / TicksInYear);
-    private static int GetGameMonth()  => (int)(GetGameTicks() % TicksInYear  / TicksInMonth);
-    private static int GetGameDay()    => (int)(GetGameTicks() % TicksInMonth / TicksInDay);
-    private static int GetGameHour()   => (int)(GetGameTicks() % TicksInDay   / TicksInHour);
-    private static bool GetIsDay()     { int h = GetGameHour(); return h >= 4 && h < 12; }
+    private int GetGameYear()   => (int)(GetGameTicks() / TicksInYear);
+    private int GetGameMonth()  => (int)(GetGameTicks() % TicksInYear  / TicksInMonth);
+    private int GetGameDay()    => (int)(GetGameTicks() % TicksInMonth / TicksInDay);
+    private int GetGameHour()   => (int)(GetGameTicks() % TicksInDay   / TicksInHour);
+    private bool GetIsDay()     { int h = GetGameHour(); return h >= 4 && h < 12; }
 
     // Lookup by index (0-based), matches UB: getgamemonthname[0] = "Morningthaw", getgamemonthname[1] = "Solclaim"
     private static string GetGameMonthName(string arg)
@@ -2768,7 +3061,7 @@ internal sealed class ExpressionEngine
         return n >= 0 && n < HourNames.Length ? HourNames[n] : "";
     }
 
-    private static int GetMinutesUntilDay()
+    private int GetMinutesUntilDay()
     {
         if (GetIsDay()) return 0;
         // Ticks remaining until hour 4 (dawn)
@@ -2780,7 +3073,7 @@ internal sealed class ExpressionEngine
         return (int)(ticksUntil / 60);
     }
 
-    private static int GetMinutesUntilNight()
+    private int GetMinutesUntilNight()
     {
         if (!GetIsDay()) return 0;
         // Ticks remaining until hour 12 (dusk)
@@ -2803,6 +3096,19 @@ internal sealed class ExpressionEngine
         if (_fellowshipTracker == null || !_fellowshipTracker.IsInFellowship) return "0";
         if (_fellowshipTracker.MemberCount >= 9) return "0";
         return (_fellowshipTracker.IsLeader || _fellowshipTracker.IsOpen) ? "1" : "0";
+    }
+
+    // VTank getfellowshipstatus[] — the migration keystone (~149 metas use it).
+    // Contract reverse-engineered from real meta usage across the VTank library
+    // (512 calls: only ==0 / ==1 / !=0; AutoFellow gates `/ub fellow recruit`
+    // — a leader-only action — on ==1):
+    //   0 = not in a fellowship
+    //   1 = in a fellowship and you are the leader
+    //   2 = in a fellowship and you are NOT the leader
+    private string EvalGetFellowshipStatus()
+    {
+        if (_fellowshipTracker == null || !_fellowshipTracker.IsInFellowship) return "0";
+        return _fellowshipTracker.IsLeader ? "1" : "2";
     }
 
     private string EvalGetFellowId(string arg)
@@ -2899,6 +3205,13 @@ internal sealed class ExpressionEngine
             ["EnableLooting"]       = (() => B(s.EnableLooting),       v => s.EnableLooting       = ToDouble(v) != 0),
             ["EnableMeta"]          = (() => B(s.EnableMeta),          v => s.EnableMeta          = ToDouble(v) != 0),
             ["EnableRaycasting"]    = (() => B(s.EnableRaycasting),    v => s.EnableRaycasting    = ToDouble(v) != 0),
+            ["UseArcs"]             = (() => B(s.UseArcs),             v => s.UseArcs             = ToDouble(v) != 0),
+            ["LosDebugLog"]         = (() => B(s.LosDebugLog),         v => s.LosDebugLog         = ToDouble(v) != 0),
+            ["BowArcVelocity"]      = (() => F(s.BowArcVelocity),      v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.BowArcVelocity      = Math.Clamp(f, 10f, 60f); }),
+            ["CrossbowArcVelocity"] = (() => F(s.CrossbowArcVelocity), v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.CrossbowArcVelocity = Math.Clamp(f, 10f, 80f); }),
+            ["AtlatlArcVelocity"]   = (() => F(s.AtlatlArcVelocity),   v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.AtlatlArcVelocity   = Math.Clamp(f, 10f, 60f); }),
+            ["MagicArcVelocity"]    = (() => F(s.MagicArcVelocity),    v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.MagicArcVelocity    = Math.Clamp(f, 10f, 60f); }),
+            ["MissileArcClearance"] = (() => F(s.MissileArcClearance), v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.MissileArcClearance = Math.Clamp(f, 0f, 3f); }),
             ["EnableAutostack"]     = (() => B(s.EnableAutostack),     v => s.EnableAutostack     = ToDouble(v) != 0),
             ["EnableAutocram"]      = (() => B(s.EnableAutocram),      v => s.EnableAutocram      = ToDouble(v) != 0),
             ["EnableCombineSalvage"]= (() => B(s.EnableCombineSalvage),v => s.EnableCombineSalvage= ToDouble(v) != 0),
@@ -2926,6 +3239,24 @@ internal sealed class ExpressionEngine
             ["MissileAttackPower"]  = (() => I(s.MissileAttackPower),  v => { if (int.TryParse(v, out int i)) s.MissileAttackPower = i; }),
             ["CustomPetRange"]      = (() => I(s.CustomPetRange),      v => { if (int.TryParse(v, out int i)) s.CustomPetRange   = i; }),
             ["PetMinMonsters"]      = (() => I(s.PetMinMonsters),      v => { if (int.TryParse(v, out int i)) s.PetMinMonsters   = i; }),
+            // VTank-meta migration (Phase 2): fields existed but weren't exposed here.
+            ["CorpseApproachRangeMax"] = (() => D(s.CorpseApproachRangeMax), v => { if (double.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out double d)) s.CorpseApproachRangeMax = d; }),
+            ["CorpseApproachRangeMin"] = (() => D(s.CorpseApproachRangeMin), v => { if (double.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out double d)) s.CorpseApproachRangeMin = d; }),
+            ["ManaStoneKeepCount"]     = (() => I(s.ManaStoneKeepCount),     v => { if (int.TryParse(v, out int i)) s.ManaStoneKeepCount = i; }),
+            ["RebuffSecondsRemaining"] = (() => I(s.RebuffSecondsRemaining), v => { if (int.TryParse(v, out int i)) s.RebuffSecondsRemaining = i; }),
+            ["RebuffTopOffSecondsRemaining"] = (() => I(s.RebuffTopOffSecondsRemaining), v => { if (int.TryParse(v, out int i)) s.RebuffTopOffSecondsRemaining = i; }),
+            // AutoVendor (UB names map here through /ub opt: AutoVendor.Enabled -> AutoVendorEnabled, ...)
+            ["AutoVendorEnabled"]          = (() => B(s.AutoVendorEnabled),          v => s.AutoVendorEnabled          = ToDouble(v) != 0),
+            ["AutoVendorEnableBuying"]     = (() => B(s.AutoVendorEnableBuying),     v => s.AutoVendorEnableBuying     = ToDouble(v) != 0),
+            ["AutoVendorEnableSelling"]    = (() => B(s.AutoVendorEnableSelling),    v => s.AutoVendorEnableSelling    = ToDouble(v) != 0),
+            ["AutoVendorTestMode"]         = (() => B(s.AutoVendorTestMode),         v => s.AutoVendorTestMode         = ToDouble(v) != 0),
+            ["AutoVendorThink"]            = (() => B(s.AutoVendorThink),            v => s.AutoVendorThink            = ToDouble(v) != 0),
+            ["AutoVendorShowMerchantInfo"] = (() => B(s.AutoVendorShowMerchantInfo), v => s.AutoVendorShowMerchantInfo = ToDouble(v) != 0),
+            ["AutoVendorOnlyFromMainPack"] = (() => B(s.AutoVendorOnlyFromMainPack), v => s.AutoVendorOnlyFromMainPack = ToDouble(v) != 0),
+            ["AutoVendorTries"]            = (() => I(s.AutoVendorTries),            v => { if (int.TryParse(v, out int i)) s.AutoVendorTries = Math.Clamp(i, 1, 20); }),
+            ["AutoVendorTriesTime"]        = (() => I(s.AutoVendorTriesTime),        v => { if (int.TryParse(v, out int i)) s.AutoVendorTriesTime = Math.Clamp(i, 500, 30000); }),
+            ["NavCloseStopRange"]      = (() => F(s.NavCloseStopRange),      v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.NavCloseStopRange = f; }),
+            ["NavShortcutYards"]       = (() => F(s.NavShortcutYards),       v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.NavShortcutYards = Math.Clamp(f, 0f, 10f); }),
             ["MaxMonRange"]         = (() => D(s.MaxMonRange),         v => { if (double.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out double d)) s.MaxMonRange = d; }),
             ["NavRingThickness"]    = (() => F(s.NavRingThickness),    v => { if (float.TryParse(v,  System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f))  s.NavRingThickness = f; }),
             ["NavLineThickness"]    = (() => F(s.NavLineThickness),    v => { if (float.TryParse(v,  System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f))  s.NavLineThickness = f; }),
@@ -3107,13 +3438,15 @@ internal sealed class ExpressionEngine
     private static string Fmt(double d) => d.ToString("G", CultureInfo.InvariantCulture);
     private static string Fmt(long l)   => l.ToString(CultureInfo.InvariantCulture);
 
-    /// <summary>Equality: numeric if both sides parse as numbers, otherwise ordinal string.</summary>
+    /// <summary>Equality: numeric if both sides parse as numbers, otherwise case-INSENSITIVE
+    /// string (M1). Case-insensitivity matches author intent ($x==True is true for 'true') and
+    /// the conventions of the metas we import; numeric compares are unaffected.</summary>
     private static bool AreEqual(string a, string b)
     {
         if (double.TryParse(a, NumberStyles.Float | NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out double da)
          && double.TryParse(b, NumberStyles.Float | NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out double db))
             return da == db;
-        return string.Equals(a, b, StringComparison.Ordinal);
+        return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
     }
 
     // ── Argument splitter ─────────────────────────────────────────────────────
@@ -3247,12 +3580,18 @@ internal sealed class ExpressionEngine
             return l;
         }
 
-        // Priority 6: ==
+        // Priority 6: ==  != (M1: != was previously unsupported and silently dropped, failing OPEN)
         private string ParseEquality()
         {
             var l = ParseComparison();
             Ws();
-            while (Try("==")) { var r = ParseComparison(); l = AreEqual(l, r) ? "1" : "0"; Ws(); }
+            while (true)
+            {
+                if (Try("=="))      { var r = ParseComparison(); l =  AreEqual(l, r) ? "1" : "0"; }
+                else if (Try("!=")) { var r = ParseComparison(); l = !AreEqual(l, r) ? "1" : "0"; }
+                else break;
+                Ws();
+            }
             return l;
         }
 

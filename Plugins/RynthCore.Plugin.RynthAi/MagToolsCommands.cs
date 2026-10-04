@@ -88,6 +88,12 @@ public sealed partial class RynthAiPlugin
                 if (Host.HasInvokeChatParser) Host.InvokeChatParser("/quit");
                 return true;
 
+            // ── Send a chat line / slash command (VTank /mt send) ────────────
+            case "send":
+                if (parts.Length >= 3 && Host.HasInvokeChatParser)
+                    Host.InvokeChatParser(string.Join(" ", parts, 2, parts.Length - 2));
+                return true;
+
             default:
                 return false;
         }
@@ -142,7 +148,7 @@ public sealed partial class RynthAiPlugin
             if (val != null)
             {
                 _rememberedOptions[optName.ToLower()] = val;
-                Host.Log($"[RynthAi] Remembered {optName} = {val}");
+                RynthLog.Write(LogCat.Commands, $"[RynthAi] Remembered {optName} = {val}");
             }
             return true;
         }
@@ -153,7 +159,7 @@ public sealed partial class RynthAiPlugin
             if (_rememberedOptions.TryGetValue(optName.ToLower(), out string? saved))
             {
                 SetOptionValue(optName, saved);
-                Host.Log($"[RynthAi] Restored {optName} = {saved}");
+                RynthLog.Write(LogCat.Commands, $"[RynthAi] Restored {optName} = {saved}");
             }
             return true;
         }
@@ -184,6 +190,35 @@ public sealed partial class RynthAiPlugin
         ["autofellowmanagement"]      = "AutoFellowMgmt",
         ["switchwandstodebuff"]       = "UseDispelItems",
         ["lootonlyrarecorpses"]       = "MineOnly",
+        // VTank-meta migration aliases (mirror of MetaManager.VtOptionMap so options
+        // set via /ub opt / /mt opt resolve the same as /vt opt set).
+        ["autocram"]                  = "EnableAutocram",
+        ["autostack"]                 = "EnableAutostack",
+        ["usedispelitems"]            = "UseDispelItems",
+        ["castdispelself"]            = "CastDispelSelf",
+        ["opendoorrange"]             = "OpenDoorRange",
+        ["recharge-norm-hitp"]        = "HealAt",
+        ["recharge-norm-mana"]        = "GetManaAt",
+        ["recharge-norm-stam"]        = "RestamAt",
+        ["recharge-notarg-hitp"]      = "TopOffHP",
+        ["recharge-notarg-mana"]      = "TopOffMana",
+        ["recharge-notarg-stam"]      = "TopOffStam",
+        ["petmonsterdensity"]         = "PetMinMonsters",
+        ["corpseapproachrange-max"]   = "CorpseApproachRangeMax",
+        ["corpseapproachrange-min"]   = "CorpseApproachRangeMin",
+        ["manastonelootcount"]        = "ManaStoneKeepCount",
+        ["rebuftimeremainingseconds"] = "RebuffSecondsRemaining",
+        ["navclosestoprange"]         = "NavCloseStopRange",
+        // UtilityBelt AutoVendor options (/ub opt set AutoVendor.TestMode true)
+        ["autovendor.enabled"]          = "AutoVendorEnabled",
+        ["autovendor.enablebuying"]     = "AutoVendorEnableBuying",
+        ["autovendor.enableselling"]    = "AutoVendorEnableSelling",
+        ["autovendor.testmode"]         = "AutoVendorTestMode",
+        ["autovendor.think"]            = "AutoVendorThink",
+        ["autovendor.showmerchantinfo"] = "AutoVendorShowMerchantInfo",
+        ["autovendor.onlyfrommainpack"] = "AutoVendorOnlyFromMainPack",
+        ["autovendor.tries"]            = "AutoVendorTries",
+        ["autovendor.triestime"]        = "AutoVendorTriesTime",
     };
 
     private string? GetOptionValue(string optName)
@@ -402,7 +437,7 @@ public sealed partial class RynthAiPlugin
         }
 
         Host.UseObject(unchecked((uint)best.Id));
-        Host.Log($"[RynthAi] /mt use {type}: {best.Name} (0x{(uint)best.Id:X8}) at {bestDist:F1}m");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt use {type}: {best.Name} (0x{(uint)best.Id:X8}) at {bestDist:F1}m");
         return true;
     }
 
@@ -413,7 +448,6 @@ public sealed partial class RynthAiPlugin
     private bool HandleMtGive(string[] parts, bool partial)
     {
         if (parts.Length < 3) return false;
-        if (!Host.HasMoveItemExternal) { ChatLine("[RynthAi] MoveItemExternal not available."); return true; }
 
         string argStr = string.Join(" ", parts, 2, parts.Length - 2);
         int toIdx = argStr.IndexOf(" to ", StringComparison.OrdinalIgnoreCase);
@@ -428,8 +462,20 @@ public sealed partial class RynthAiPlugin
         var target = FindObject(targetName, inv: false, land: true, partial: true);
         if (target == null) { ChatLine($"[RynthAi] Target not found: '{targetName}'"); return true; }
 
-        Host.MoveItemExternal(unchecked((uint)item.Id), unchecked((uint)target.Id), 0);
-        Host.Log($"[RynthAi] /mt give: {item.Name} → {target.Name}");
+        // Giving to an NPC requires AC's give GameAction (Event_GiveObjectRequest).
+        // The old path used MoveItemExternal = move-to-CONTAINER, which does NOT
+        // give to an NPC — so /mt givep silently did nothing. Use the real give
+        // primitive (engine API v62+); on an older engine, say so rather than
+        // pretend it worked.
+        if (Host.HasGiveObjectTo)
+        {
+            bool ok = Host.GiveObjectTo(unchecked((uint)item.Id), unchecked((uint)target.Id), 0);
+            RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt give: {item.Name} → {target.Name} (give ok={ok})");
+        }
+        else
+        {
+            ChatLine("[RynthAi] Give requires engine API v62+ — update the RynthCore engine.");
+        }
         return true;
     }
 
@@ -445,84 +491,148 @@ public sealed partial class RynthAiPlugin
     private long _pendingMtLootExpiryMs;
     private const long PendingMtLootTimeoutMs = 8_000;
 
+    /// <summary>
+    /// Resolve the container /mt loot should pull from. Prefer the auto-looter's
+    /// tracked open corpse (<see cref="_openedContainerId"/>), but fall back to
+    /// whatever the client currently has open (GetGroundContainerId). The fallback
+    /// is what lets /mt loot work on a corpse RynthAi already finished + marked
+    /// completed (so SyncCorpseContainerState refuses to re-register it), or one
+    /// opened manually / by the meta with auto-looting disabled.
+    /// </summary>
+    private int ResolveOpenLootContainer()
+    {
+        if (_openedContainerId != 0)
+            return _openedContainerId;
+        if (Host.HasGetGroundContainerId)
+        {
+            int raw = unchecked((int)Host.GetGroundContainerId());
+            if (raw != 0)
+                return raw;
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Enumerate a container's contents as (id, name) pairs. Prefers AC's live
+    /// container query (GetContainerContents), which reads the actual client
+    /// container object and is immune to the passive cache-population timing that
+    /// leaves GetContainedItems empty for a freshly-opened corpse. Falls back to
+    /// the ownership-probe cache scan only when the direct API isn't available or
+    /// returns nothing.
+    /// </summary>
+    private List<(uint Id, string Name)> EnumerateContainer(int containerId)
+    {
+        var result = new List<(uint, string)>();
+        if (containerId == 0) return result;
+
+        if (Host.HasGetContainerContents)
+        {
+            uint[] buf = new uint[256];
+            int count = Host.GetContainerContents(unchecked((uint)containerId), buf);
+            for (int i = 0; i < count && i < buf.Length; i++)
+            {
+                uint id = buf[i];
+                if (id == 0) continue;
+                Host.TryGetObjectName(id, out string name);
+                result.Add((id, name ?? string.Empty));
+            }
+            if (result.Count > 0) return result;
+        }
+
+        // Fallback: passive cache ownership scan.
+        if (_objectCache != null)
+            foreach (WorldObject wo in _objectCache.GetContainedItems(containerId))
+                result.Add((unchecked((uint)wo.Id), wo.Name));
+
+        return result;
+    }
+
+    /// <summary>
+    /// Find a named item inside a container. An exact (case-insensitive) match
+    /// wins; when no exact match exists we fall back to a substring match so a
+    /// meta written as "/mt loot Acid" still grabs "Olthoi Acid Larva". Passing
+    /// partial:true skips straight to substring matching.
+    /// </summary>
+    private (uint Id, string Name)? FindContainedItem(int containerId, string name, bool partial)
+    {
+        if (containerId == 0 || string.IsNullOrEmpty(name))
+            return null;
+
+        (uint Id, string Name)? substringHit = null;
+        foreach (var item in EnumerateContainer(containerId))
+        {
+            if (!partial && string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase))
+                return item; // exact match preferred
+            if (substringHit == null &&
+                item.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
+                substringHit = item;
+        }
+        return substringHit; // substring fallback (or the only mode when partial)
+    }
+
     internal void TickPendingMtLoot()
     {
         if (_pendingMtLootName == null) return;
-        if (_openedContainerId == 0) return; // still waiting for corpse to open
+
+        int container = ResolveOpenLootContainer();
+        if (container == 0) return; // still waiting for a container to open
 
         if (CorpseNowMs > _pendingMtLootExpiryMs)
         {
-            ChatLine($"[RynthAi] /mt loot: timed out waiting for '{_pendingMtLootName}' in corpse.");
+            ChatLine($"[RynthAi] /mt loot: timed out waiting for '{_pendingMtLootName}'.");
             _pendingMtLootName = null;
             return;
         }
 
-        if (_objectCache == null) return;
+        var found = FindContainedItem(container, _pendingMtLootName, _pendingMtLootPartial);
+        if (found == null) return; // items may not be available yet — try again next tick
 
-        WorldObject? found = null;
-        foreach (WorldObject item in _objectCache.GetContainedItems(_openedContainerId))
-        {
-            bool match = _pendingMtLootPartial
-                ? item.Name.IndexOf(_pendingMtLootName, StringComparison.OrdinalIgnoreCase) >= 0
-                : string.Equals(item.Name, _pendingMtLootName, StringComparison.OrdinalIgnoreCase);
-            if (match) { found = item; break; }
-        }
-
-        if (found == null) return; // items may not be in cache yet — try again next tick
-
-        Host.SelectItem(unchecked((uint)found.Id));
-        Host.UseObject(unchecked((uint)found.Id));
-        Host.Log($"[RynthAi] /mt loot (deferred): {found.Name} (0x{(uint)found.Id:X8}) from corpse 0x{(uint)_openedContainerId:X8}");
+        Host.SelectItem(found.Value.Id);
+        Host.UseObject(found.Value.Id);
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt loot (deferred): {found.Value.Name} (0x{found.Value.Id:X8}) from container 0x{(uint)container:X8}");
         _pendingMtLootName = null;
     }
 
     private bool HandleMtLoot(string[] parts, bool partial)
     {
-        // Pick a named item from the currently opened corpse container.
+        // Pick a named item from the currently opened corpse/container.
         if (parts.Length < 3) return false;
         if (!Host.HasUseObject) { ChatLine("[RynthAi] UseObject not available."); return true; }
 
         string name = string.Join(" ", parts, 2, parts.Length - 2).Trim();
+        int container = ResolveOpenLootContainer();
 
-        // If the corpse is already open, try immediately.
-        if (_openedContainerId != 0 && _objectCache != null)
+        // If a container is open, try immediately.
+        if (container != 0)
         {
-            WorldObject? found = null;
-            foreach (WorldObject item in _objectCache.GetContainedItems(_openedContainerId))
-            {
-                bool match = partial
-                    ? item.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
-                    : string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase);
-                if (match) { found = item; break; }
-            }
-
+            var found = FindContainedItem(container, name, partial);
             if (found != null)
             {
-                Host.SelectItem(unchecked((uint)found.Id));
-                Host.UseObject(unchecked((uint)found.Id));
-                Host.Log($"[RynthAi] /mt loot: {found.Name} (0x{(uint)found.Id:X8}) from corpse 0x{(uint)_openedContainerId:X8}");
+                Host.SelectItem(found.Value.Id);
+                Host.UseObject(found.Value.Id);
+                RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt loot: {found.Value.Name} (0x{found.Value.Id:X8}) from container 0x{(uint)container:X8}");
                 _pendingMtLootName = null;
                 return true;
             }
 
-            // Item not found — list what IS in the corpse so the user can check names.
+            // Item not found — list what IS in the container so names can be checked.
             var itemNames = new System.Text.StringBuilder();
-            foreach (WorldObject item in _objectCache.GetContainedItems(_openedContainerId))
+            foreach (var item in EnumerateContainer(container))
             {
                 if (itemNames.Length > 0) itemNames.Append(", ");
                 itemNames.Append(item.Name);
             }
             if (itemNames.Length > 0)
-                ChatLine($"[RynthAi] /mt loot: '{name}' not found. Corpse contains: {itemNames}");
+                ChatLine($"[RynthAi] /mt loot: '{name}' not found. Container 0x{(uint)container:X8} contains: {itemNames}");
             else
-                ChatLine($"[RynthAi] /mt loot: '{name}' not found (corpse appears empty or items still loading — queuing)");
+                ChatLine($"[RynthAi] /mt loot: '{name}' not found (container 0x{(uint)container:X8} appears empty or still loading — queuing)");
         }
 
-        // Corpse not open yet, or items not in cache — queue for deferred retry.
+        // Container not open yet, or items not in cache — queue for deferred retry.
         _pendingMtLootName = name;
         _pendingMtLootPartial = partial;
         _pendingMtLootExpiryMs = CorpseNowMs + PendingMtLootTimeoutMs;
-        Host.Log($"[RynthAi] /mt loot: '{name}' queued (corpse={_openedContainerId != 0})");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt loot: '{name}' queued (container=0x{(uint)container:X8})");
         return true;
     }
 
@@ -541,7 +651,7 @@ public sealed partial class RynthAiPlugin
 
         // Drop = move to the ground (container 0)
         Host.MoveItemExternal(unchecked((uint)item.Id), 0, 0);
-        Host.Log($"[RynthAi] /mt drop: {item.Name} (0x{(uint)item.Id:X8})");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt drop: {item.Name} (0x{(uint)item.Id:X8})");
         return true;
     }
 
@@ -559,7 +669,7 @@ public sealed partial class RynthAiPlugin
         if (item == null) { ChatLine($"[RynthAi] Item not found: '{name}'"); return true; }
 
         Host.UseObject(unchecked((uint)item.Id));
-        Host.Log($"[RynthAi] /mt equip: {item.Name} (0x{(uint)item.Id:X8})");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt equip: {item.Name} (0x{(uint)item.Id:X8})");
         return true;
     }
 
@@ -585,12 +695,26 @@ public sealed partial class RynthAiPlugin
 
         if (found == null) { ChatLine($"[RynthAi] Wielded item not found: '{name}'"); return true; }
 
-        // Move to player (main pack)
-        uint playerId = Host.GetPlayerId();
-        Host.MoveItemInternal(unchecked((uint)found.Id), playerId, 0, 0);
-        Host.Log($"[RynthAi] /mt dequip: {found.Name} (0x{(uint)found.Id:X8}) → pack");
+        // FIX (2026-06-24): MoveItemInternal with amount=0 is a silent no-op — the engine
+        // guard (ClientHelperHooks.cs:431 `if (amount <= 0) return false;`) rejects it, so
+        // the old amount=0 call dequipped nothing. Must pass amount>=1. Also target a
+        // capacity-verified open pack (not the main pack blindly) — moving into a FULL pack
+        // CRASHES the client via the native PutItemInContainer path.
+        int dest = WorldObjectCache.FindPackFor(Host, _objectCache, includeMainPack: true, requireFree: 1);
+        if (dest == 0)
+        {
+            ChatLine($"[RynthAi] /mt dequip: no open pack for '{found.Name}' — inventory full.");
+            return true;
+        }
+        Host.MoveItemInternal(unchecked((uint)found.Id), unchecked((uint)dest), 0, 1);
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt dequip: {found.Name} (0x{(uint)found.Id:X8}) → pack 0x{(uint)dest:X8}");
         return true;
     }
+
+    // FindOpenPackForDequip DELETED (P2a) — replaced by shared
+    // WorldObjectCache.FindPackFor(host, cache, includeMainPack:true, requireFree:1).
+    // User-driven /mt dequip: requireFree:1 so a single genuinely-free slot still
+    // counts (do not report 'full' when 1 slot exists).
 
     // ═════════════════════════════════════════════════════════════════════════
     //  /mt fellow

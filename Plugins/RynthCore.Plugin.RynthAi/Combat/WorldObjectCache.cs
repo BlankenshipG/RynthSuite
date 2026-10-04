@@ -16,11 +16,27 @@ namespace RynthCore.Plugin.RynthAi;
 ///   - Landscape  : TryGetObjectPosition returns true + not a creature = static object
 ///   - Weapon type: TryGetItemType flags first; name-based heuristics as fallback
 ///
-/// All accesses are from the game thread (EndScene hook thread), so no locks are needed.
+/// THREADING: the mutating handlers (OnCreateObject/OnDeleteObject/OnUpdateHealth) and the
+/// classify pump (Tick → TryClassify/ReclassifyUnknownDynamics) all run on the engine's
+/// plugin pump thread — the engine queues AC's main-thread object events and dispatches them
+/// (PluginManager.ProcessPendingActions) then runs TickAll, sequentially on that one thread.
+/// HOWEVER the read enumerators (GetLandscape/GetLandscapeObjects/GetInventory/AllKnownObjects/
+/// GetContainedItems/GetDirectInventory) are ALSO pulled from the Avalonia panel poll thread
+/// (~10 Hz) for the radar/dashboard snapshot. Enumerating a collection there while the pump
+/// mutates it throws "Collection was modified"; escaping the snapshot's reverse-P/Invoke
+/// boundary that fail-fasts the NativeAOT runtime (0xC0000602). So ALL collection access goes
+/// through _gate: mutators lock their whole body, enumerators copy-under-lock then iterate the
+/// copy outside the lock. The _host.* reads used here are non-blocking/cache-served off-thread,
+/// so holding _gate across them cannot deadlock against AC's main thread.
 /// </summary>
 public class WorldObjectCache
 {
     private readonly RynthCoreHost _host;
+
+    // Serializes all collection access (see the THREADING note above). Single reentrant
+    // monitor — the indexer re-enters via EnsureInCache — and one lock means no lock-ordering
+    // deadlock is possible. Contended only between the pump thread and the ~10 Hz Avalonia poll.
+    private readonly object _gate = new();
 
     private readonly Dictionary<int, WorldObject> _byId = new();
     private readonly HashSet<int> _creatures = new();   // received OnUpdateHealth or TYPE_CREATURE
@@ -119,15 +135,18 @@ public class WorldObjectCache
 
     public void SetPlayerId(uint playerId)
     {
-        _playerId = playerId;
-        _loginTime = DateTime.Now;
-        _deletedWhilePending.Clear();
-        // Remove self if mistakenly added as creature before login completed
-        if (playerId == 0) return;
-        int sid = (int)playerId;
-        _creatures.Remove(sid);
-        _landscape.Remove(sid);
-        _byId.Remove(sid);
+        lock (_gate)
+        {
+            _playerId = playerId;
+            _loginTime = DateTime.Now;
+            _deletedWhilePending.Clear();
+            // Remove self if mistakenly added as creature before login completed
+            if (playerId == 0) return;
+            int sid = (int)playerId;
+            _creatures.Remove(sid);
+            _landscape.Remove(sid);
+            _byId.Remove(sid);
+        }
     }
 
     // ── Event handlers ────────────────────────────────────────────────────
@@ -137,13 +156,18 @@ public class WorldObjectCache
         // AC recycles dynamic GUIDs after delete. A fresh create on a previously-deleted
         // id means the new object should classify normally — drop any stale delete mark
         // before re-queueing so TryClassify doesn't skip it.
-        _deletedWhilePending.Remove(id);
-        _pending.Enqueue(id);
-        _seenCreateObject.Add(id); // diagnostic: record that the engine fired CreateObject for this uid
+        lock (_gate)
+        {
+            _deletedWhilePending.Remove(id);
+            _pending.Enqueue(id);
+            _seenCreateObject.Add(id); // diagnostic: record that the engine fired CreateObject for this uid
+        }
     }
 
     public void OnDeleteObject(uint id)
     {
+        lock (_gate)
+        {
         int sid = (int)id;
         bool wasInventory = _inventory.Remove(sid);
         bool wasClassified = _byId.Remove(sid);
@@ -170,18 +194,25 @@ public class WorldObjectCache
             {
                 _deleteBeforeClassifyLogCount++;
                 bool seenCreate = _seenCreateObject.Contains(id);
-                _host.Log($"[ReclassifyDiag] 0x{id:X8} DELETE-BEFORE-CLASSIFY seenCreate={(seenCreate ? 1 : 0)}");
+                RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{id:X8} DELETE-BEFORE-CLASSIFY seenCreate={(seenCreate ? 1 : 0)}");
             }
         }
         if (wasInventory)
             _inventoryDirty = true;
+        }
     }
 
     /// <summary>Returns the last known health ratio (0–1) for <paramref name="id"/>, or -1 if no update has been received.</summary>
-    public float GetHealthRatio(int id) => _healthRatios.TryGetValue(id, out float v) ? v : -1f;
+    public float GetHealthRatio(int id)
+    {
+        lock (_gate)
+            return _healthRatios.TryGetValue(id, out float v) ? v : -1f;
+    }
 
     public void OnUpdateHealth(uint id, float healthRatio)
     {
+        lock (_gate)
+        {
         if (_playerId != 0 && id == _playerId)
             return; // ignore self
 
@@ -203,7 +234,7 @@ public class WorldObjectCache
             bool seenCreate = _seenCreateObject.Contains(id);
             bool inLandscape = _landscape.Contains(sid);
             bool inById = _byId.ContainsKey(sid);
-            _host.Log($"[ReclassifyDiag] 0x{id:X8} HEALTHADD-RESCUE ratio={healthRatio:0.00} seenCreate={(seenCreate ? 1 : 0)} inLandscape={(inLandscape ? 1 : 0)} inById={(inById ? 1 : 0)} wasSkipped={(wasSkipped ? 1 : 0)}");
+            RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{id:X8} HEALTHADD-RESCUE ratio={healthRatio:0.00} seenCreate={(seenCreate ? 1 : 0)} inLandscape={(inLandscape ? 1 : 0)} inById={(inById ? 1 : 0)} wasSkipped={(wasSkipped ? 1 : 0)}");
         }
         else if (_reclassifySkipState.ContainsKey(id))
         {
@@ -238,6 +269,7 @@ public class WorldObjectCache
 
         _landscape.Add(sid);
         _inventory.Remove(sid);
+        }
     }
 
     // ── Per-frame processing ──────────────────────────────────────────────
@@ -262,17 +294,27 @@ public class WorldObjectCache
     /// <summary>Call from OnTick to classify queued objects.</summary>
     public void Tick()
     {
-        int pending0 = _pending.Count;
+        int pending0;
+        lock (_gate) pending0 = _pending.Count;
+
         int processed = 0;
-        while (_pending.Count > 0 && processed < MaxClassifyPerTick)
+        while (processed < MaxClassifyPerTick)
         {
-            TryClassify(_pending.Dequeue());
+            uint uid;
+            lock (_gate)
+            {
+                if (_pending.Count == 0) break;
+                uid = _pending.Dequeue();
+            }
+            TryClassify(uid); // re-enters _gate for its own body
             processed++;
         }
         if (processed > 0 && _tickDiagCount < 3)
         {
             _tickDiagCount++;
-            _host.Log($"[RynthAi] Cache.Tick classified {processed} from {pending0} pending, total now {_byId.Count}, landscape={_landscape.Count}, creatures={_creatures.Count}");
+            int total, landscape, creatures;
+            lock (_gate) { total = _byId.Count; landscape = _landscape.Count; creatures = _creatures.Count; }
+            RynthLog.Write(LogCat.WorldCache, $"[RynthAi] Cache.Tick classified {processed} from {pending0} pending, total now {total}, landscape={landscape}, creatures={creatures}");
         }
 
         // Periodically re-check Unknown landscape objects — dynamic creatures whose weenie
@@ -304,13 +346,13 @@ public class WorldObjectCache
                 if (found > 0)
                 {
                     _initialScanDone = true;
-                    _host.Log($"[RynthAi] Inventory scan: discovered {found} item(s), inventory now {_inventory.Count}");
+                    RynthLog.Write(LogCat.WorldCache, $"[RynthAi] Inventory scan: discovered {found} item(s), inventory now {_inventory.Count}");
                 }
                 else if (_initialScanRetries >= MaxInitialScanRetries)
                 {
                     _initialScanDone = true;
                     _inventoryDirty = false;
-                    _host.Log($"[RynthAi] Inventory scan: gave up after {_initialScanRetries} retries (topCount was 0)");
+                    RynthLog.Write(LogCat.WorldCache, $"[RynthAi] Inventory scan: gave up after {_initialScanRetries} retries (topCount was 0)");
                 }
             }
         }
@@ -331,11 +373,13 @@ public class WorldObjectCache
         int atk = -1;
         try { if (_host.HasObjectIsAttackable) atk = _host.ObjectIsAttackable(uid) ? 1 : 0; }
         catch { atk = -2; }
-        _host.Log($"[ClassifyTrace] 0x{uid:X8} name={(hasName ? 1 : 0)} pos={(hasPos ? 1 : 0)} gotType={(gotType ? 1 : 0)} flags=0x{flags:X8} creature={((flags & ItemTypeCreature) != 0 ? 1 : 0)} atk={atk} {note}");
+        RynthLog.Write(LogCat.WorldCache, $"[ClassifyTrace] 0x{uid:X8} name={(hasName ? 1 : 0)} pos={(hasPos ? 1 : 0)} gotType={(gotType ? 1 : 0)} flags=0x{flags:X8} creature={((flags & ItemTypeCreature) != 0 ? 1 : 0)} atk={atk} {note}");
     }
 
     private void TryClassify(uint uid)
     {
+        lock (_gate)
+        {
         // Slow-retry eviction: any uid TryClassify gets to process is by definition no
         // longer "abandoned" for this pass. If we give up again below, the give-up
         // branch re-adds; if we succeed or hit a clean early-return, the set is now
@@ -355,7 +399,7 @@ public class WorldObjectCache
             if (uid >= 0x80000000u && _deleteWhilePendingSkipLogCount < MaxDeleteWhilePendingSkipLogLines)
             {
                 _deleteWhilePendingSkipLogCount++;
-                _host.Log($"[ReclassifyDiag] 0x{uid:X8} DELETE-WHILE-PENDING-SKIP");
+                RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} DELETE-WHILE-PENDING-SKIP");
             }
             return;
         }
@@ -404,7 +448,7 @@ public class WorldObjectCache
                     if (_classifyGiveupLogCount < MaxClassifyGiveupLogLines)
                     {
                         _classifyGiveupLogCount++;
-                        _host.Log($"[ReclassifyDiag] 0x{uid:X8} CLASSIFY-GIVEUP retries={retries} (name+pos unreadable across {MaxClassifyRetries} ticks; parked in slow-retry)");
+                        RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} CLASSIFY-GIVEUP retries={retries} (name+pos unreadable across {MaxClassifyRetries} ticks; parked in slow-retry)");
                     }
                 }
             }
@@ -547,10 +591,12 @@ public class WorldObjectCache
 
             cls = AcObjectClass.Unknown; // landscape non-creature (static object, portal, etc.)
             _landscape.Add(id);
+            MaybeRegisterHazard(uid, name); // lava/acid hotspots arrive here as Unknown landscape
         }
 
         _classifyRetry.Remove(uid);
         _byId[id] = Make(id, name, cls);
+        }
     }
 
     /// <summary>
@@ -563,9 +609,12 @@ public class WorldObjectCache
     /// </summary>
     private void FlushSlowRetry()
     {
-        if (_slowRetry.Count == 0) return;
-        foreach (uint uid in _slowRetry)
-            _pending.Enqueue(uid);
+        lock (_gate)
+        {
+            if (_slowRetry.Count == 0) return;
+            foreach (uint uid in _slowRetry)
+                _pending.Enqueue(uid);
+        }
     }
 
     /// <summary>
@@ -575,6 +624,8 @@ public class WorldObjectCache
     /// </summary>
     private void ReclassifyUnknownDynamics()
     {
+        lock (_gate)
+        {
         List<int>? toPromote = null;
         List<int>? toCorpse  = null;
         foreach (int id in _landscape)
@@ -636,7 +687,7 @@ public class WorldObjectCache
                 _inventory.Remove(id);
                 _byId[id] = Make(id, name ?? string.Empty, AcObjectClass.Corpse);
             }
-            _host.Log($"[RynthAi] ReclassifyUnknownDynamics: rescued {toCorpse.Count} stale corpse(s) → Corpse");
+            RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ReclassifyUnknownDynamics: rescued {toCorpse.Count} stale corpse(s) → Corpse");
         }
 
         // DIAG: heartbeat — Unknown landscape candidates checked but nothing promoted
@@ -647,7 +698,7 @@ public class WorldObjectCache
             && _reclassifyDiagSummaryCount < MaxReclassifyDiagSummaries)
         {
             _reclassifyDiagSummaryCount++;
-            _host.Log($"[ReclassifyDiag] pass: {_reclassifySkipState.Count} stuck Unknown landscape candidate(s), 0 promoted");
+            RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] pass: {_reclassifySkipState.Count} stuck Unknown landscape candidate(s), 0 promoted");
         }
 
         if (toPromote == null) return;
@@ -661,7 +712,8 @@ public class WorldObjectCache
             _reclassifySkipState.Remove(uid); // diagnostic state cleared on success
         }
 
-        _host.Log($"[RynthAi] ReclassifyUnknownDynamics: promoted {toPromote.Count} object(s) to Creature");
+        RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ReclassifyUnknownDynamics: promoted {toPromote.Count} object(s) to Creature");
+        }
     }
 
     // Diagnostic helper for ReclassifyUnknownDynamics. Logs the live engine signals
@@ -686,7 +738,7 @@ public class WorldObjectCache
             return; // state unchanged — suppress duplicate
         _reclassifySkipState[uid] = state;
         _reclassifyDiagCount++;
-        _host.Log($"[ReclassifyDiag] 0x{uid:X8} skip: {state}");
+        RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} skip: {state}");
     }
 
     // ── WorldFilter API ───────────────────────────────────────────────────
@@ -695,6 +747,8 @@ public class WorldObjectCache
     {
         get
         {
+            lock (_gate)
+            {
             if (_byId.TryGetValue(id, out var wo))
             {
                 // Patch empty name on access
@@ -738,7 +792,7 @@ public class WorldObjectCache
                     {
                         _indexerRescueLogCount++;
                         bool seenCreate = _seenCreateObject.Contains(uid);
-                        _host.Log($"[ReclassifyDiag] 0x{uid:X8} INDEXER-RESCUE name='{name}' flags=0x{typeFlags:X8} seenCreate={(seenCreate ? 1 : 0)}");
+                        RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} INDEXER-RESCUE name='{name}' flags=0x{typeFlags:X8} seenCreate={(seenCreate ? 1 : 0)}");
                     }
                 }
                 else
@@ -755,12 +809,15 @@ public class WorldObjectCache
             {
                 _inventory.Remove(id);
                 _landscape.Add(id);
+                if (cls == AcObjectClass.Unknown)
+                    MaybeRegisterHazard(uid, name);
             }
             else
             {
                 _inventory.Add(id);
             }
             return obj;
+            }
         }
     }
 
@@ -846,16 +903,25 @@ public class WorldObjectCache
         float dx = gx1 - gx2;
         float dy = gy1 - gy2;
         float dz = z1 - z2;
-        return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        double d = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        // A garbage position read (NaN/∞) must read as out of range. NaN fails every
+        // "dist > limit" test, so it passed both the scan's range gate and Think's
+        // disengage drop, and a target could be kept at any real distance.
+        return double.IsFinite(d) ? d : double.MaxValue;
     }
 
     /// <summary>Enumerate objects in player's inventory (no physics position).</summary>
     public IEnumerable<WorldObject> GetInventory()
     {
-        foreach (int id in _inventory)
+        // Copy-under-lock then iterate the copy outside the lock (the Avalonia radar/
+        // dashboard poll thread enumerates this while the pump thread mutates _inventory).
+        lock (_gate)
         {
-            if (_byId.TryGetValue(id, out var wo))
-                yield return wo;
+            var snapshot = new List<WorldObject>(_inventory.Count);
+            foreach (int id in _inventory)
+                if (_byId.TryGetValue(id, out var wo))
+                    snapshot.Add(wo);
+            return snapshot;
         }
     }
 
@@ -865,7 +931,11 @@ public class WorldObjectCache
     /// yet (the cache classifies items asynchronously and the wielderInfo probe
     /// can race with consumers like HasWieldedAmmo).
     /// </summary>
-    public IEnumerable<WorldObject> AllKnownObjects() => _byId.Values;
+    public IEnumerable<WorldObject> AllKnownObjects()
+    {
+        lock (_gate)
+            return new List<WorldObject>(_byId.Values);
+    }
 
     /// <summary>
     /// Lightweight live inventory snapshot built from GetContainerContents.
@@ -874,6 +944,11 @@ public class WorldObjectCache
     /// </summary>
     public IReadOnlyList<WorldObject> GetDirectInventory(bool forceRefresh = false)
     {
+        // Whole-body lock: the rescan clears+rebuilds _directInventory*, and callers may
+        // arrive from the pump thread AND Avalonia button handlers. Each exit returns a
+        // snapshot copy so the caller never iterates the live list a later call will clear.
+        lock (_gate)
+        {
         DateTime now = DateTime.Now;
 
         if (!_host.HasGetContainerContents)
@@ -884,17 +959,17 @@ public class WorldObjectCache
                 foreach (var item in GetInventory())
                     _directInventory.Add(item);
             }
-            return _directInventory;
+            return _directInventory.ToList();
         }
 
         double scanAgeMs = (now - _lastDirectInventoryScan).TotalMilliseconds;
         if (_directInventory.Count > 0)
         {
             if (!forceRefresh && scanAgeMs < DirectInventoryCooldownMs)
-                return _directInventory;
+                return _directInventory.ToList();
 
             if (forceRefresh && scanAgeMs < DirectInventoryForceRefreshMinMs)
-                return _directInventory;
+                return _directInventory.ToList();
         }
 
         _lastDirectInventoryScan = now;
@@ -904,7 +979,7 @@ public class WorldObjectCache
 
         uint playerId = _host.GetPlayerId();
         if (playerId == 0)
-            return _directInventory;
+            return _directInventory.ToList();
 
         _host.TryGetObjectPosition(playerId, out _, out _, out _, out _);
 
@@ -930,7 +1005,9 @@ public class WorldObjectCache
             for (int i = 0; i < count; i++)
             {
                 uint itemId = buf[i];
-                if (!TryAddDirectInventoryItem(itemId, playerId, out bool isContainer))
+                // Pass the container being enumerated + the item's index as the authoritative
+                // parent/slot for the remote inventory view (stashed onto the WorldObject).
+                if (!TryAddDirectInventoryItem(itemId, playerId, containerId, i, out bool isContainer))
                     continue;
 
                 if (isContainer && seenContainers.Add(itemId))
@@ -946,53 +1023,400 @@ public class WorldObjectCache
                 UpsertDirectInventoryItem(cachedItem);
         }
 
-        return _directInventory;
+        return _directInventory.ToList();
+        }
+    }
+
+    // ── Shared AV-safe pack finder (P2a) ──────────────────────────────────
+    // ONE finder replacing the 4 divergent clones (InventoryManager.FindOpenPack,
+    // BuffManager.FindOpenPackForDequip, MagToolsCommands.FindOpenPackForDequip,
+    // ExpressionEngine.FindCastOpenPack). A FULL target pack CRASHES the client via
+    // the native PutItemInContainer path, so we ONLY ever return a sub-pack whose
+    // resolved free capacity (ItemsCapacity>0) is >= requireFree, picking the MOST-
+    // free so a single mis-count can't tip a near-full pack over. The P0 engine gate
+    // (ClientHelperHooks.IsFullOwnedContainer) is the hard truth; requireFree is
+    // purely churn tuning.
+    //
+    //   includeMainPack=false  -> AutoCram: cram empties the MAIN pack, so it must
+    //                             NEVER target it (would self-move and spin).
+    //   includeMainPack=true   -> wand-swap / dequip: the bow needs ONE slot; fall
+    //                             back to the main pack (top-level slots, cap 102)
+    //                             when no sub-pack qualifies.
+    //   requireFree            -> min free slots a sub-pack must have to be picked
+    //                             (2 for the auto-loops = anti-churn margin; 1 for
+    //                             user-driven /mt dequip + MetaCast wand-swap).
+    //
+    // The spec's `item` parameter is intentionally dropped: no clone ever read the
+    // source item when choosing a destination (vestigial). Two overloads preserve
+    // both snapshot disciplines: the (cache) overload force-refreshes for the AV-
+    // risky dequip paths (must not read stale); the (inv) overload reuses a caller-
+    // supplied snapshot (AutoCram's single per-tick snapshot — no double BFS).
+    public static int FindPackFor(RynthCoreHost host, WorldObjectCache? cache,
+                                  bool includeMainPack, int requireFree)
+    {
+        if (cache == null) return 0;
+        int playerId = unchecked((int)host.GetPlayerId());
+        if (playerId == 0) return 0;
+        // forceRefresh — the dequip paths gate an AV-risky move, so must not read a
+        // stale cache before the move.
+        var inv = cache.GetDirectInventory(forceRefresh: true);
+        return FindPackFor(inv, playerId, includeMainPack, requireFree);
+    }
+
+    // Snapshot overload — caller supplies an already-built inventory list (AutoCram
+    // reuses its single per-tick GetDirectInventory snapshot here; do NOT re-refresh).
+    public static int FindPackFor(IReadOnlyList<WorldObject> inv, int playerId,
+                                  bool includeMainPack, int requireFree)
+    {
+        if (inv == null || playerId == 0) return 0;
+        if (requireFree < 1) requireFree = 1;
+        int bestPack = 0, bestFree = 0;
+        int mainUsed = 0; // loose top-level item-slot occupancy (mirrors ScanInventoryStatus 594-604)
+        foreach (var p in inv)
+        {
+            if (p.Container != playerId) continue;
+            // Main-pack item-slot tally: loose, non-equipped, non-foci, non-container
+            // items directly in the player pack. Sub-packs occupy the side-pack slots,
+            // NOT the 102 item slots, so they're excluded from this count.
+            if (p.ObjectClass != AcObjectClass.Container
+                && p.ObjectClass != AcObjectClass.Foci
+                && p.Values(LongValueKey.EquippedSlots, 0) == 0)
+                mainUsed++;
+            if (p.ObjectClass != AcObjectClass.Container) continue;
+            // Skip foci — technically containers but reserved for spell components.
+            if (!string.IsNullOrEmpty(p.Name)
+                && p.Name.IndexOf("Foci", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+            int capacity = p.Values(LongValueKey.ItemsCapacity, 0);
+            if (capacity <= 0) continue; // capacity unknown — don't risk the move
+            int used = 0;
+            foreach (var it in inv)
+            {
+                if (it.Container != p.Id) continue;
+                if (it.ObjectClass == AcObjectClass.Container) continue; // sub-containers use CONTAINERS_CAPACITY
+                used++;
+            }
+            int free = capacity - used;
+            // requireFree margin: a pack with fewer than requireFree slots is ineligible
+            // so a single mis-count can't tip a near-full pack over (anti-churn).
+            if (free >= requireFree && free > bestFree) { bestFree = free; bestPack = p.Id; }
+        }
+        if (bestPack != 0) return bestPack;
+        if (!includeMainPack) return 0; // AutoCram: never target the main pack (would self-move/spin)
+        // Dequip fallback: the bow needs ONE free main-pack slot; a dequip into a
+        // non-full main pack is AV-safe (the AV is only on a genuinely FULL target).
+        int mainFree = 102 - mainUsed;
+        return mainFree > 0 ? playerId : 0;
+    }
+
+    /// <summary>
+    /// Re-reads the name and item type of an object stored with a blank name or an Unknown
+    /// class, and replaces its entry when either improved. Corpse items are usually created
+    /// before the engine's off-thread identity snapshot (refreshed every ~0.5 s) has them,
+    /// so they were classified once with no name and no type and never revisited: looting
+    /// then judged 3 of 4 items nameless and left them (2026-09-27). Cheap when complete.
+    /// </summary>
+    public WorldObject RefreshIdentity(WorldObject wo)
+    {
+        bool needName = string.IsNullOrWhiteSpace(wo.Name);
+        bool needClass = wo.ObjectClass == AcObjectClass.Unknown;
+        if (!needName && !needClass)
+            return wo;
+
+        uint uid = unchecked((uint)wo.Id);
+        string name = wo.Name ?? string.Empty;
+        if (needName && _host.TryGetObjectName(uid, out string n) && !string.IsNullOrWhiteSpace(n))
+            name = n;
+
+        AcObjectClass cls = wo.ObjectClass;
+        if (needClass)
+        {
+            if (_host.TryGetItemType(uid, out uint flags) && (flags & ItemTypeCreature) == 0)
+                cls = ClassifyByItemType(flags);
+            if (cls == AcObjectClass.Unknown && name.Length > 0)
+                cls = ClassifyInventoryItem(name);
+        }
+
+        if (name == wo.Name && cls == wo.ObjectClass)
+            return wo;
+
+        lock (_gate)
+        {
+            // Only replace the entry we were handed; a concurrent reclassify wins.
+            if (!_byId.TryGetValue(wo.Id, out var current) || !ReferenceEquals(current, wo))
+                return current ?? wo;
+            var fresh = Make(wo.Id, name, cls);
+            _byId[wo.Id] = fresh;
+            return fresh;
+        }
     }
 
     public IEnumerable<WorldObject> GetContainedItems(int containerId)
     {
         if (containerId == 0)
-            yield break;
+            return Array.Empty<WorldObject>();
 
-        foreach (int id in _inventory)
+        // Snapshot candidates under the lock (pure collection reads); resolve container
+        // ownership outside the lock — GetContainerId is a host-only read, no cache access.
+        List<WorldObject> candidates;
+        lock (_gate)
         {
-            if (!_byId.TryGetValue(id, out var wo))
-                continue;
-            if (GetContainerId(id) != containerId)
-                continue;
-            yield return wo;
+            candidates = new List<WorldObject>(_inventory.Count);
+            foreach (int id in _inventory)
+                if (_byId.TryGetValue(id, out var wo))
+                    candidates.Add(wo);
+
+            // Quest items and items with dynamic (0x80000000+) GUIDs are classified
+            // as landscape rather than inventory. Check landscape too so they appear
+            // as corpse contents when an open corpse is scanned.
+            foreach (int id in _landscape)
+            {
+                if (_inventory.Contains(id)) continue; // already added above
+                if (_creatures.Contains(id)) continue; // it's a live creature, not a container item
+                if (_byId.TryGetValue(id, out var wo))
+                    candidates.Add(wo);
+            }
         }
 
-        // Quest items and items with dynamic (0x80000000+) GUIDs are classified
-        // as landscape rather than inventory. Check landscape too so they appear
-        // as corpse contents when an open corpse is scanned.
-        foreach (int id in _landscape)
-        {
-            if (_inventory.Contains(id)) continue; // already yielded above
-            if (_creatures.Contains(id)) continue; // it's a live creature, not a container item
-            if (!_byId.TryGetValue(id, out var wo)) continue;
-            if (GetContainerId(id) != containerId) continue;
-            yield return wo;
-        }
+        var result = new List<WorldObject>();
+        foreach (var wo in candidates)
+            if (GetContainerId(wo.Id) == containerId)
+                result.Add(wo);
+        return result;
     }
 
     /// <summary>Enumerate landscape creatures (received health updates or TYPE_CREATURE).</summary>
     public IEnumerable<WorldObject> GetLandscape()
     {
-        foreach (int id in _creatures)
+        // Copy-under-lock — the Avalonia radar poll enumerates this cross-thread (see GetInventory).
+        lock (_gate)
         {
-            if (_byId.TryGetValue(id, out var wo))
-                yield return wo;
+            var snapshot = new List<WorldObject>(_creatures.Count);
+            foreach (int id in _creatures)
+                if (_byId.TryGetValue(id, out var wo))
+                    snapshot.Add(wo);
+            return snapshot;
         }
     }
 
     /// <summary>Enumerate all world objects with a valid landscape position, including corpses.</summary>
     public IEnumerable<WorldObject> GetLandscapeObjects()
     {
-        foreach (int id in _landscape)
+        // Copy-under-lock — the Avalonia radar poll enumerates this cross-thread (see GetInventory).
+        lock (_gate)
         {
-            if (_byId.TryGetValue(id, out var wo))
-                yield return wo;
+            var snapshot = new List<WorldObject>(_landscape.Count);
+            foreach (int id in _landscape)
+                if (_byId.TryGetValue(id, out var wo))
+                    snapshot.Add(wo);
+            return snapshot;
+        }
+    }
+
+    // ── Hazard cells (lava / acid / fire / cold pools) ───────────────────────
+    //
+    // Hotspot weenies in AC are server-side WorldObjects that damage on collision;
+    // they're not part of the EnvCell graph and so the dungeon pathfinder can't see
+    // them. We populate this set two ways:
+    //   1. WO sightings: any landscape (positioned, non-creature) object whose name
+    //      matches a known hazard pattern marks its cellId here.
+    //   2. Reactive blacklist: NavigationEngine / patrol loop marks the player's
+    //      current cell if HP drops with no nearby hostile (see MarkCellHazard).
+    // DungeonPathfinder consumes this set via the hazardCells parameter on
+    // FindPath / BuildPatrolRoute and skips edges into hazard cells the same way
+    // it skips drop edges.
+
+    private static readonly string[] HazardNamePatterns =
+    {
+        "lava", "pool of acid", "acid pool", "pool of fire", "pool of cold",
+        "cesspool", "hot spring", "magma",
+    };
+
+    private readonly HashSet<uint> _hazardCells = new();
+
+    // Bumped every time a NEW hazard cell is registered. The patrol controller
+    // snapshots this when it builds a route and compares each tick: a change means
+    // a lava/acid hotspot was sighted that the current route doesn't yet avoid, so
+    // the route must be rebuilt around it. Cheaper than diffing the set every tick.
+    private int _hazardVersion;
+
+    public int HazardVersion
+    {
+        get { lock (_gate) return _hazardVersion; }
+    }
+
+    public bool IsHazardCell(uint cellId)
+    {
+        lock (_gate)
+            return _hazardCells.Contains(cellId);
+    }
+
+    public int HazardCellCount
+    {
+        get { lock (_gate) return _hazardCells.Count; }
+    }
+
+    /// <summary>Live hazard cells for a landblock (cellId &gt;&gt; 16 == landblockKey).</summary>
+    public List<uint> GetHazardCellsForLandblock(uint landblockKey)
+    {
+        lock (_gate)
+        {
+            var list = new List<uint>();
+            foreach (uint c in _hazardCells)
+                if ((c >> 16) == landblockKey) list.Add(c);
+            list.Sort();
+            return list;
+        }
+    }
+
+    /// <summary>
+    /// Manually marks a cell as a hazard (user "this is lava" command / UI button). Adds to
+    /// the live set, persists it, and bumps <see cref="HazardVersion"/> so an active patrol
+    /// reroutes around it. Returns true if it was newly added.
+    /// </summary>
+    public bool AddHazardCell(uint cellId)
+    {
+        if (cellId == 0) return false;
+        lock (_gate)
+        {
+            if (!_hazardCells.Add(cellId)) return false;
+            _hazardVersion++;
+            DungeonHazardStore.Append(cellId >> 16, cellId);
+            RynthLog.Write(LogCat.WorldCache, $"[Hazard] manually marked cell 0x{cellId:X8}");
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Removes a manually- or auto-marked hazard cell from the live set and the on-disk store.
+    /// Bumps <see cref="HazardVersion"/>. Returns true if it was present.
+    /// </summary>
+    public bool RemoveHazardCell(uint cellId)
+    {
+        lock (_gate)
+        {
+            bool removed = _hazardCells.Remove(cellId);
+            DungeonHazardStore.RemoveCell(cellId >> 16, cellId);
+            if (removed) _hazardVersion++;
+            return removed;
+        }
+    }
+
+    /// <summary>
+    /// Drops live hazard cells for one landblock (cellId &gt;&gt; 16 == landblockKey) and
+    /// re-arms seeding for it, so a later patrol of that dungeon reloads from disk fresh.
+    /// Bumps <see cref="HazardVersion"/> so an active patrol there rebuilds without the
+    /// cleared cells. The caller is responsible for clearing the on-disk store separately.
+    /// </summary>
+    public void ClearLiveHazards(uint landblockKey)
+    {
+        lock (_gate)
+        {
+            _hazardCells.RemoveWhere(c => (c >> 16) == landblockKey);
+            if (_hazardsSeededLandblock == landblockKey) _hazardsSeededLandblock = 0;
+            _hazardVersion++;
+        }
+    }
+
+    /// <summary>Drops every live hazard cell and re-arms seeding. Bumps HazardVersion.</summary>
+    public void ClearAllLiveHazards()
+    {
+        lock (_gate)
+        {
+            _hazardCells.Clear();
+            _hazardsSeededLandblock = 0;
+            _hazardVersion++;
+        }
+    }
+
+    public IReadOnlySet<uint> GetHazardCells()
+    {
+        // Snapshot — consumers (DungeonPathfinder) want a point-in-time set per path call.
+        lock (_gate)
+            return new HashSet<uint>(_hazardCells);
+    }
+
+    // Landblock whose persisted hazards have already been merged in, so SeedHazardsFromStore
+    // is a cheap no-op when the patrol builder calls it every (re)build for the same dungeon.
+    private uint _hazardsSeededLandblock;
+
+    /// <summary>
+    /// Merges the on-disk hazard cells recorded for <paramref name="landblockKey"/> on prior
+    /// visits into the live set, so a patrol route built right after entering a known dungeon
+    /// avoids them from the start instead of having to re-sight and reroute. Cheap no-op once
+    /// per landblock. Bumps <see cref="HazardVersion"/> if it adds anything (so an already-
+    /// running patrol reroutes around the loaded cells too).
+    /// </summary>
+    public void SeedHazardsFromStore(uint landblockKey)
+    {
+        lock (_gate)
+        {
+            if (_hazardsSeededLandblock == landblockKey) return;
+            _hazardsSeededLandblock = landblockKey;
+
+            var persisted = DungeonHazardStore.Load(landblockKey);
+            int added = 0;
+            foreach (uint cell in persisted)
+                if (_hazardCells.Add(cell)) added++;
+
+            if (added > 0)
+            {
+                _hazardVersion++;
+                RynthLog.Write(LogCat.WorldCache, $"[Hazard] seeded {added} persisted hazard cell(s) for landblock 0x{landblockKey:X4}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Detector C: marks EnvCells flagged by their lava/acid surface texture as live hazard cells.
+    /// Unlike <see cref="AddHazardCell"/> these are NOT persisted to DungeonHazardStore — they are
+    /// re-derived from the cell.dat surface palette + the hazard-texture set on every patrol build,
+    /// so the texture set stays the single source of truth (re-running with a smaller texture set
+    /// must drop them). Bumps <see cref="HazardVersion"/> if it adds anything. Never throws.
+    /// </summary>
+    public void SeedSurfaceHazards(IEnumerable<uint> cells)
+    {
+        if (cells == null) return;
+        lock (_gate)
+        {
+            int added = 0;
+            foreach (uint c in cells)
+                if (c != 0 && _hazardCells.Add(c)) added++;
+
+            if (added > 0)
+            {
+                _hazardVersion++;
+                RynthLog.Write(LogCat.WorldCache, $"[Hazard] Detector C: {added} EnvCell-surface hazard cell(s) seeded from floor textures");
+            }
+        }
+    }
+
+    private static bool IsHazardName(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        foreach (string pat in HazardNamePatterns)
+            if (name.IndexOf(pat, StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Inspect a freshly-classified landscape object and register it as a hazard if
+    /// its name matches a known hotspot pattern (lava, acid pool, etc.).
+    /// Safe to call repeatedly for the same uid — set membership is idempotent.
+    /// </summary>
+    private void MaybeRegisterHazard(uint uid, string name)
+    {
+        if (!IsHazardName(name)) return;
+        if (!_host.TryGetObjectPosition(uid, out uint cellId, out _, out _, out _)) return;
+        if (cellId == 0) return;
+        if (_hazardCells.Add(cellId))
+        {
+            _hazardVersion++;
+            // Persist so future visits to this dungeon avoid the cell from the first
+            // waypoint. Keyed by landblock (cellId >> 16) — hazards are static world
+            // geometry, identical for every character.
+            DungeonHazardStore.Append(cellId >> 16, cellId);
+            RynthLog.Write(LogCat.WorldCache, $"[Hazard] 0x{uid:X8} '{name}' → cell 0x{cellId:X8} (persisted)");
         }
     }
 
@@ -1003,6 +1427,8 @@ public class WorldObjectCache
     /// </summary>
     public int ScanFullInventory()
     {
+        lock (_gate)
+        {
         if (!_host.HasGetContainerContents) return -1;
         uint playerId = _host.GetPlayerId();
         if (playerId == 0) return -1;
@@ -1020,7 +1446,7 @@ public class WorldObjectCache
 
         // Scan player's direct contents
         int topCount = _host.GetContainerContents(playerId, buf);
-        _host.Log($"[RynthAi] ScanFullInventory: topCount={topCount} for player 0x{playerId:X8}");
+        RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ScanFullInventory: topCount={topCount} for player 0x{playerId:X8}");
         for (int i = 0; i < topCount; i++)
             discovered += EnsureInCache(buf[i]);
 
@@ -1042,30 +1468,34 @@ public class WorldObjectCache
         }
 
         if (discovered > 0)
-            _host.Log($"[RynthAi] ScanFullInventory: discovered {discovered} new item(s) across {packIds.Count + 1} container(s)");
+            RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ScanFullInventory: discovered {discovered} new item(s) across {packIds.Count + 1} container(s)");
 
         return discovered;
+        }
     }
 
     private int EnsureInCache(uint uid)
     {
-        int id = (int)uid;
-        // Use the indexer for lazy lookup (reads name, classifies, adds to cache)
-        if (_byId.ContainsKey(id) || this[id] != null)
+        lock (_gate)
         {
-            // Item is known to be inside a container — force into _inventory
-            // even if the indexer classified it as landscape (equipped items have positions)
-            if (!_inventory.Contains(id))
+            int id = (int)uid;
+            // Use the indexer for lazy lookup (reads name, classifies, adds to cache)
+            if (_byId.ContainsKey(id) || this[id] != null)
             {
-                _inventory.Add(id);
-                _landscape.Remove(id);
+                // Item is known to be inside a container — force into _inventory
+                // even if the indexer classified it as landscape (equipped items have positions)
+                if (!_inventory.Contains(id))
+                {
+                    _inventory.Add(id);
+                    _landscape.Remove(id);
+                }
+                return _byId.ContainsKey(id) ? 1 : 0;
             }
-            return _byId.ContainsKey(id) ? 1 : 0;
+            return 0;
         }
-        return 0;
     }
 
-    private bool TryAddDirectInventoryItem(uint uid, uint playerId, out bool isContainer)
+    private bool TryAddDirectInventoryItem(uint uid, uint playerId, uint containerId, int slot, out bool isContainer)
     {
         isContainer = false;
 
@@ -1101,6 +1531,8 @@ public class WorldObjectCache
 
         var wo = new WorldObject(id, name, cls);
         wo._wieldedLocationDirect = wieldedLocation;
+        wo._directContainerId = unchecked((int)containerId);   // authoritative parent from the BFS
+        wo._directSlot = slot;                                  // position in this container's contents
         wo.Cache = this;
         UpsertDirectInventoryItem(wo);
         return true;
@@ -1145,7 +1577,10 @@ public class WorldObjectCache
 
     /// <summary>Cache statistics for diagnostics.</summary>
     public (int Total, int Creatures, int Inventory, int Landscape, int Pending) GetStats()
-        => (_byId.Count, _creatures.Count, _inventory.Count, _landscape.Count, _pending.Count);
+    {
+        lock (_gate)
+            return (_byId.Count, _creatures.Count, _inventory.Count, _landscape.Count, _pending.Count);
+    }
 
     // ── Factory ───────────────────────────────────────────────────────────
 
@@ -1158,7 +1593,7 @@ public class WorldObjectCache
 
     // ── Type-flag item classification ─────────────────────────────────────
 
-    private static AcObjectClass ClassifyByItemType(uint typeFlags)
+    internal static AcObjectClass ClassifyByItemType(uint typeFlags)
     {
         // Most specific / unambiguous types first
         if ((typeFlags & ItemTypePromissoryNote)            != 0) return AcObjectClass.TradeNote;

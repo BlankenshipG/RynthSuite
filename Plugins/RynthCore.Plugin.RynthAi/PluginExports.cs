@@ -91,6 +91,12 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnUpdateHealth", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth) => Runtime.OnUpdateHealth(targetId, healthRatio, currentHealth, maxHealth);
 
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnCombatDamage", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void OnCombatDamage(uint damage, uint damageType, uint crit, uint isAttacker) => Runtime.OnCombatDamage(damage, damageType, crit, isAttacker);
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnKillNotification", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void OnKillNotification(IntPtr textUtf16) => Runtime.OnKillNotification(textUtf16);
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnEnchantmentAdded", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnEnchantmentAdded(uint spellId, double durationSeconds) => Runtime.OnEnchantmentAdded(spellId, durationSeconds);
 
@@ -102,7 +108,14 @@ public static unsafe class PluginExports
     // The returned ANSI buffer is freed on the next call; the caller MUST copy
     // its string before calling any of these again.
 
-    private static IntPtr _snapshotPtr = IntPtr.Zero;
+    // [ThreadStatic]: this snapshot is polled concurrently from MULTIPLE threads — the engine's Avalonia
+    // RynthAiPanel (~Hz), the heartbeat status-export (1/s), and (Phase C) the RynthRemote plugin via the
+    // engine's GetPluginSnapshotJson broker. With a single shared pointer the alloc-new→swap→free-old below
+    // races: one caller frees the buffer another is mid-read → garbage ('0x18' JsonException) / use-after-free.
+    // Per-thread storage gives each caller its own buffer (same discipline as the engine's account-name
+    // scratch), so no caller ever frees another thread's pointer. (No initializer — [ThreadStatic] defaults
+    // to IntPtr.Zero on every thread.)
+    [ThreadStatic] private static IntPtr _snapshotPtr;
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetSnapshotJson", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static IntPtr GetSnapshotJson()
@@ -127,31 +140,85 @@ public static unsafe class PluginExports
         }
     }
 
+    // ── Full-inventory bridge (read-only remote inventory viewer, P1) ───────────
+    // Dedicated export (NOT folded into the 150ms status snapshot) so 100s of items never ride the
+    // hot path. The RynthRemote plugin polls this on its own slower cadence (P2). Per-thread buffer
+    // (same reasoning as _snapshotPtr): polled from multiple threads; never free another's pointer.
+    [ThreadStatic] private static IntPtr _inventoryPtr;
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetInventoryJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetInventoryJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.DashboardRenderer?.BuildInventoryJson() ?? "{}";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _inventoryPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    // ── Remote-command bridge (engine SendPluginCommand broker → this plugin) ──
+    // When RynthRemote owns the command drain, the engine forwards each phone-issued
+    // (action,value) command here. We COPY the ANSI args (the caller frees them right
+    // after this returns) and enqueue them for the pump thread (RynthAiPlugin.OnTick →
+    // ApplyRemoteCommand); we NEVER apply on the caller's thread. The whole body is
+    // guarded — a managed exception must not cross the native boundary.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginApplyRemoteCommand", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void ApplyRemoteCommand(IntPtr actionAnsi, IntPtr valueAnsi)
+    {
+        try
+        {
+            string action = actionAnsi != IntPtr.Zero ? (Marshal.PtrToStringAnsi(actionAnsi) ?? string.Empty) : string.Empty;
+            string value  = valueAnsi  != IntPtr.Zero ? (Marshal.PtrToStringAnsi(valueAnsi)  ?? string.Empty) : string.Empty;
+            if (action.Length == 0) return;
+            Runtime.Plugin?.EnqueueRemoteCommand(action, value);
+        }
+        catch { /* never let a managed exception cross the native boundary */ }
+    }
+
+    // Every void action export below is a reverse-P/Invoke (UnmanagedCallersOnly)
+    // boundary: a managed exception escaping one fail-fasts the NativeAOT runtime
+    // (no dump, no log — the "illegal exception" crash class). Funnel them through
+    // this guard so a UI click that races plugin state (e.g. SelectProfile indexing
+    // a profile list mid-Refresh) can never kill the AC client.
+    private static void SafeInvoke(Action action)
+    {
+        try { action(); }
+        catch { /* never let a managed exception cross the native boundary */ }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginToggleMacro", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void ToggleMacro() => Runtime.Plugin?.DashboardRenderer?.TogglePanelMacro();
+    public static void ToggleMacro() => SafeInvoke(() => Runtime.Plugin?.DashboardRenderer?.TogglePanelMacro());
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetSubsystemEnabled", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void SetSubsystemEnabled(int subsystemId, int enabled)
-        => Runtime.Plugin?.DashboardRenderer?.SetSubsystemEnabled(subsystemId, enabled != 0);
+        => SafeInvoke(() => Runtime.Plugin?.DashboardRenderer?.SetSubsystemEnabled(subsystemId, enabled != 0));
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginSelectProfile", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void SelectProfile(int kind, int index)
-        => Runtime.Plugin?.DashboardRenderer?.SelectProfileAtIndex(kind, index);
+        => SafeInvoke(() => Runtime.Plugin?.DashboardRenderer?.SelectProfileAtIndex(kind, index));
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginForceRebuff", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void ForceRebuff() => Runtime.Plugin?.DashboardRenderer?.RequestForceRebuff();
+    public static void ForceRebuff() => SafeInvoke(() => Runtime.Plugin?.DashboardRenderer?.RequestForceRebuff());
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginCancelForceRebuff", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void CancelForceRebuff() => Runtime.Plugin?.DashboardRenderer?.RequestCancelForceRebuff();
+    public static void CancelForceRebuff() => SafeInvoke(() => Runtime.Plugin?.DashboardRenderer?.RequestCancelForceRebuff());
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginAdjustOpacity", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void AdjustOpacity(float delta) => Runtime.Plugin?.DashboardRenderer?.AdjustOpacity(delta);
+    public static void AdjustOpacity(float delta) => SafeInvoke(() => Runtime.Plugin?.DashboardRenderer?.AdjustOpacity(delta));
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginTogglePanelLock", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void TogglePanelLock() => Runtime.Plugin?.DashboardRenderer?.TogglePanelLock();
+    public static void TogglePanelLock() => SafeInvoke(() => Runtime.Plugin?.DashboardRenderer?.TogglePanelLock());
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginTogglePanelMinimize", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void TogglePanelMinimize() => Runtime.Plugin?.DashboardRenderer?.TogglePanelMinimize();
+    public static void TogglePanelMinimize() => SafeInvoke(() => Runtime.Plugin?.DashboardRenderer?.TogglePanelMinimize());
 
     // ── Radar bridge (engine-side Avalonia radar panel) ─────────────────────
     // Engine passes the MapVersion it has cached (0 on first call). When the
@@ -180,6 +247,119 @@ public static unsafe class PluginExports
     // ── Monsters bridge (engine-side Avalonia MonstersPanel) ────────────────
 
     private static IntPtr _monstersPtr = IntPtr.Zero;
+    private static IntPtr _monsterDamagePtr = IntPtr.Zero;
+
+    // Live per-monster casts-to-kill table (engine MonsterDamagePanel polls this).
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetMonsterDamageText", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetMonsterDamageText()
+    {
+        try
+        {
+            string text = Runtime.Plugin?.BuildMonsterDamageText() ?? "";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(text);
+            IntPtr oldPtr = Interlocked.Exchange(ref _monsterDamagePtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    private static IntPtr _monsterDamageJsonPtr = IntPtr.Zero;
+
+    // Structured per-monster rows for the interactive Damage panel (UTF-8/ANSI JSON).
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetMonsterDamageJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetMonsterDamageJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildMonsterDamageJson() ?? "[]";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _monsterDamageJsonPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    // Manual HP override from the Damage panel (hp <= 0 clears it).
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetMonsterHp", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void SetMonsterHp(uint wcid, int hp)
+    {
+        try { Runtime.Plugin?.SetMonsterHp(wcid, hp); } catch { }
+    }
+
+    // Delete one learned row. keyUtf8 = ANSI "wcid:weaponId:element:tier". Returns 1 on success.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginDeleteMonsterRow", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static int DeleteMonsterRow(IntPtr keyUtf8)
+    {
+        try
+        {
+            string? key = Marshal.PtrToStringAnsi(keyUtf8);
+            return (Runtime.Plugin?.DeleteMonsterRow(key ?? "") ?? false) ? 1 : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static IntPtr _combatWeaponsPtr = IntPtr.Zero;
+
+    // Selectable weapons for the Damage-panel weapon/offhand pickers (ANSI JSON array [{id,name}]).
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetCombatWeaponsJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetCombatWeaponsJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildCombatWeaponsJson() ?? "[]";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _combatWeaponsPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    // Per-monster weapon override from the Damage panel (weaponId == 0 clears → use learned best).
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetMonsterWeapon", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void SetMonsterWeapon(uint wcid, uint weaponId)
+    {
+        try { Runtime.Plugin?.SetMonsterWeapon(wcid, weaponId); } catch { }
+    }
+
+    // Per-monster offhand override from the Damage panel (offhandId == 0 clears). Stored only.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetMonsterOffhand", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void SetMonsterOffhand(uint wcid, uint offhandId)
+    {
+        try { Runtime.Plugin?.SetMonsterOffhand(wcid, offhandId); } catch { }
+    }
+
+    // Per-character DEFAULT weapon from the Damage panel's Default line (weaponId == 0 clears →
+    // monsters on Default fall through to learned-best). Sweeping fallback for all Default monsters.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetDefaultWeapon", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void SetDefaultWeapon(uint weaponId)
+    {
+        try { Runtime.Plugin?.SetDefaultWeapon(weaponId); } catch { }
+    }
+
+    // Master reset: zero all learned damage stats, keep monster names + manual overrides.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginClearMonsterStats", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void ClearMonsterStats()
+    {
+        try { Runtime.Plugin?.ClearMonsterStats(); } catch { }
+    }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetMonstersJson", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static IntPtr GetMonstersJson()
@@ -282,12 +462,37 @@ public static unsafe class PluginExports
             string? json = Marshal.PtrToStringAnsi(ansiJson);
             if (string.IsNullOrEmpty(json)) return;
             var cmd = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.NavCommand);
-            if (cmd?.Cmd == "dunPatrol")
-                Runtime.Plugin?.HandleDungeonNavPatrol();
-            else
-                Runtime.Plugin?.DashboardRenderer?.HandleNavCommand(json);
+            switch (cmd?.Cmd)
+            {
+                case "dunPatrol":       Runtime.Plugin?.HandleDungeonNavPatrol();              break;
+                case "clearHazards":    Runtime.Plugin?.ClearDungeonHazards(cmd.NavName);      break;
+                case "clearHazardsAll": Runtime.Plugin?.ClearAllDungeonHazards();              break;
+                case "markHazardHere":  Runtime.Plugin?.MarkCurrentCellHazardFromUi();         break;
+                case "unmarkHazardHere":Runtime.Plugin?.UnmarkCurrentCellHazardFromUi();       break;
+                default:                Runtime.Plugin?.DashboardRenderer?.HandleNavCommand(json); break;
+            }
         }
         catch { }
+    }
+
+    private static IntPtr _patrolInfoPtr = IntPtr.Zero;
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetPatrolInfoJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetPatrolInfoJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildPatrolInfoJson() ?? "{}";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _patrolInfoPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
     }
 
     // ── Items bridge (engine-side Avalonia ItemsPanel) ──────────────────────

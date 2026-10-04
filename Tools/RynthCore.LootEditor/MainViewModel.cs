@@ -9,13 +9,18 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+using RynthCore.Install;
 
 namespace RynthCore.LootEditor;
 
 public class MainViewModel : INotifyPropertyChanged
 {
-    /// <summary>Folder used for Open/Save dialogs and startup when launched from RynthAi.</summary>
-    private string _profileFolder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
+    private static readonly string DefaultFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"LootProfiles");
+    // RynthAi's AutoVendor reads <Vendor Name>.utl / default.utl from here (and from
+    // AutoVendor folders per server and per character, which IsAutoVendorPath also covers).
+    private static readonly string AutoVendorFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"AutoVendor");
+    /// <summary>Folder used for Open/Save dialogs; starts at DefaultFolder and is overridden by RynthAi's launch arguments.</summary>
+    private string _profileFolder = DefaultFolder;
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
@@ -173,6 +178,42 @@ public class MainViewModel : INotifyPropertyChanged
     {
         string baseName = string.IsNullOrEmpty(_filePath) ? "untitled.utl" : Path.GetFileName(_filePath);
         WindowTitle = $"RynthCore Loot Editor — {baseName}{(_dirty ? "*" : "")}";
+
+        // The folder switch follows the open file, so Save As lands next to it.
+        if (!string.IsNullOrEmpty(_filePath))
+            UseAutoVendorFolder = IsAutoVendorPath(_filePath);
+        Notify(nameof(IsAutoVendorProfile));
+    }
+
+    // ── Profile folder (Loot / AutoVendor) ───────────────────────────────────
+
+    private bool _useAutoVendorFolder;
+    /// <summary>Open / Save start in the AutoVendor folder instead of LootProfiles.</summary>
+    public bool UseAutoVendorFolder
+    {
+        get => _useAutoVendorFolder;
+        set
+        {
+            Set(ref _useAutoVendorFolder, value);
+            Notify(nameof(UseLootFolder));
+            Notify(nameof(ProfileFolderHint));
+            Notify(nameof(IsAutoVendorProfile));
+        }
+    }
+    public bool UseLootFolder => !_useAutoVendorFolder;
+    public string ProfileFolderHint => $"Open and Save start in {(_useAutoVendorFolder ? AutoVendorFolder : _profileFolder)}";
+
+    /// <summary>An AutoVendor profile is open (or, for an unsaved one, the AutoVendor folder is picked).</summary>
+    public bool IsAutoVendorProfile =>
+        string.IsNullOrEmpty(_filePath) ? _useAutoVendorFolder : IsAutoVendorPath(_filePath);
+
+    private static bool IsAutoVendorPath(string path)
+    {
+        string? dir = Path.GetDirectoryName(Path.GetFullPath(path));
+        for (; !string.IsNullOrEmpty(dir); dir = Path.GetDirectoryName(dir))
+            if (string.Equals(Path.GetFileName(dir), "AutoVendor", StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
     }
 
     // ── Picker option lists ──────────────────────────────────────────────────
@@ -208,6 +249,7 @@ public class MainViewModel : INotifyPropertyChanged
     public RelayCommand RuleMoveUp    { get; }
     public RelayCommand RuleMoveDown  { get; }
     public RelayCommand SetActionFilter { get; }
+    public RelayCommand SetProfileFolder { get; }
     public RelayCommand CondAdd     { get; }
     public RelayCommand CondDelete  { get; }
     public RelayCommand CondMoveUp  { get; }
@@ -240,6 +282,8 @@ public class MainViewModel : INotifyPropertyChanged
                 _ => null,
             };
         });
+        SetProfileFolder = new RelayCommand(arg =>
+            UseAutoVendorFolder = string.Equals(arg as string, "AutoVendor", StringComparison.OrdinalIgnoreCase));
         CondAdd      = new RelayCommand(_ => DoCondAdd());
         CondDelete   = new RelayCommand(_ => DoCondDelete(), _ => _selectedCondition != null);
         CondMoveUp   = new RelayCommand(_ => DoCondMove(-1), _ => CanMoveCond(-1));
@@ -345,6 +389,40 @@ public class MainViewModel : INotifyPropertyChanged
         _filePath = null;
         SearchText = "";
         LoadProfile(new VTankLootProfile());
+    }
+
+    /// <summary>
+    /// Opens the profile named on the command line (RynthAi's dashboard Edit button passes
+    /// the loot profile in use, or the open vendor's AutoVendor profile). A path that doesn't
+    /// exist yet starts an empty profile that saves there - how a vendor gets its first one.
+    /// </summary>
+    public void OpenFromCommandLine(string path)
+    {
+        try
+        {
+            path = Path.GetFullPath(path);
+            if (File.Exists(path))
+            {
+                VTankLootProfile loaded = path.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                    ? ConvertFromJson(path)
+                    : VTankLootParser.Load(path);
+                _filePath = path;
+                SearchText = "";
+                LoadProfile(loaded);
+                Status($"Opened {Path.GetFileName(path)} ({loaded.Rules.Count} rules)");
+            }
+            else
+            {
+                _filePath = path;
+                SearchText = "";
+                LoadProfile(new VTankLootProfile());
+                Status($"New profile - Save writes {path}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Status($"Could not open {path}: {ex.Message}");
+        }
     }
 
     private async Task DoOpenAsync()
@@ -759,8 +837,14 @@ public class MainViewModel : INotifyPropertyChanged
 
     private async Task<IStorageFolder?> GetFolderAsync()
     {
-        if (!Directory.Exists(_profileFolder)) return null;
-        return await _window.StorageProvider.TryGetFolderFromPathAsync(_profileFolder);
+        string folder = _useAutoVendorFolder ? AutoVendorFolder : _profileFolder;
+        if (_useAutoVendorFolder && !Directory.Exists(folder))
+        {
+            try { Directory.CreateDirectory(folder); } catch { }
+        }
+        if (Directory.Exists(folder))
+            return await _window.StorageProvider.TryGetFolderFromPathAsync(folder);
+        return null;
     }
 
     private async Task ShowError(string msg)

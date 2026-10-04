@@ -18,7 +18,7 @@ namespace RynthCore.Plugin.RynthVision;
 public sealed class RynthVisionPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthVision");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.0");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.1");
 
     private readonly VisionSettings _settings = new();
     private readonly TerrainSampler _terrain = new();

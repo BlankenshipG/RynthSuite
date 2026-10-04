@@ -74,6 +74,26 @@ public sealed class SalvageManager
     private readonly Dictionary<uint, int> _itemRetryCount = new();
     private const int MaxItemRetries = 3;
 
+    // Backoff after a refused panel step. Without it a failed UseObject/AddItem
+    // re-queues the item and TickIdle dequeues it again on the very next tick,
+    // so one busy hiccup burns all three attempts inside ~50ms and the item is
+    // dropped. A second is long enough for the action queue to clear.
+    private long _idleRetryReadyAt;
+    private const long RetryBackoffMs = 1000;
+
+    // Same for the combine sweep: a refused UseObject used to skip the whole
+    // material group immediately, and with no timer set the next tick tried the
+    // next group — so one hiccup could tear through every group in the sweep.
+    // Retry the group a few times on the same backoff before giving up on it.
+    private int _combineOpenAttempts;
+    private const int MaxCombineOpenAttempts = 3;
+
+    // Last thing that went wrong, for GetStateSnapshot. The Log() trail has this
+    // but the log is where you look *after* you know salvage is the problem;
+    // this is so a state dump says so on its own.
+    private string _lastError = string.Empty;
+    private long _lastErrorAt;
+
     // Periodic combine sweep — even when no items have been salvaged this
     // session (or every salvage gave up after retries), we still want to
     // periodically merge any under-full bags sitting in inventory.
@@ -205,6 +225,10 @@ public sealed class SalvageManager
         if (busyCount > 0)
             return;
 
+        // Serving out the backoff from a refused panel step.
+        if (now < _idleRetryReadyAt)
+            return;
+
         uint itemId = _queue.Dequeue();
         if (itemId == 0)
             return;
@@ -224,6 +248,7 @@ public sealed class SalvageManager
         if (ustId == 0)
         {
             _host.WriteToChat("[RynthAi] Salvage: No UST found in inventory — item skipped. Add a Ust to your pack.", 2);
+            NoteError("no UST in inventory — item skipped");
             Log($"[Salvage] No UST found in inventory — skipping 0x{itemId:X8}.");
             return;
         }
@@ -237,9 +262,11 @@ public sealed class SalvageManager
         if (!_host.UseObject(_currentUstId))
         {
             Log($"[Salvage] UseObject(UST) failed for 0x{_currentUstId:X8} — re-queuing item.");
-            _queue.Enqueue(itemId); // re-queue so we retry next tick
+            NoteError($"UseObject(UST) failed for 0x{_currentUstId:X8}");
             _currentItemId = 0;
             _currentUstId = 0;
+            RequeueOrDrop(itemId, "UseObject(UST) failed");
+            _idleRetryReadyAt = now + RetryBackoffMs;
             return;
         }
 
@@ -253,13 +280,16 @@ public sealed class SalvageManager
         if (!_host.SalvagePanelAddItem(_currentItemId))
         {
             Log($"[Salvage] SalvagePanelAddItem failed for 0x{_currentItemId:X8} (panel instance not ready — re-queuing).");
+            NoteError($"SalvagePanelAddItem failed for 0x{_currentItemId:X8} (panel not ready)");
             // Re-queue the item so we retry on the next idle cycle. Reset panel-ever-opened
             // so the longer first-open delays are applied on retry.
-            _queue.Enqueue(_currentItemId);
+            uint failedItemId = _currentItemId;
             _currentItemId = 0;
             _currentUstId = 0;
             _panelEverOpened = false;
             _phase = Phase.Idle;
+            RequeueOrDrop(failedItemId, "SalvagePanelAddItem failed");
+            _idleRetryReadyAt = now + RetryBackoffMs;
             return;
         }
 
@@ -421,6 +451,7 @@ public sealed class SalvageManager
         {
             _itemRetryCount.Remove(itemId);
             Log($"[Salvage] Giving up on 0x{itemId:X8} after {MaxItemRetries} attempts ({reason}).");
+            NoteError($"gave up on 0x{itemId:X8} after {MaxItemRetries} attempts ({reason})");
             // Trigger a combine scan if dropping this item left the queue empty.
             if (_queue.Count == 0) _pendingCombineScan = true;
             return;
@@ -517,17 +548,29 @@ public sealed class SalvageManager
                 if (ust == 0)
                 {
                     Log("[Salvage] Combine: no UST available — aborting combine cycle.");
+            NoteError("combine: no UST in inventory");
                     _combineGroups = null;
                     _phase = Phase.Idle;
                     return;
                 }
                 if (!_host.UseObject(ust))
                 {
-                    Log("[Salvage] Combine: UseObject(UST) failed — skipping this group.");
+                    _combineOpenAttempts++;
+                    if (_combineOpenAttempts < MaxCombineOpenAttempts)
+                    {
+                        Log($"[Salvage] Combine: UseObject(UST) failed — retrying this group in {RetryBackoffMs}ms (attempt {_combineOpenAttempts}/{MaxCombineOpenAttempts}).");
+                        _combinePhaseReadyAt = now + RetryBackoffMs;
+                        return;
+                    }
+                    Log($"[Salvage] Combine: UseObject(UST) failed {_combineOpenAttempts}x — skipping this group.");
+                    NoteError($"combine: UseObject(UST) failed {_combineOpenAttempts}x — group skipped");
+                    _combineOpenAttempts = 0;
                     _combineGroupIdx++;
                     _combineAddIdx = 0;
+                    _combinePhaseReadyAt = now + RetryBackoffMs;
                     return;
                 }
+                _combineOpenAttempts = 0;
                 int openDelay = _panelEverOpened ? _settings.SalvageOpenDelayFastMs : _settings.SalvageOpenDelayFirstMs;
                 _combinePhaseReadyAt = now + openDelay;
                 _combinePhase = CombinePhase.OpeningPanel;
@@ -897,11 +940,18 @@ public sealed class SalvageManager
     {
         if (_cache == null) return false;
         uint playerId = _host.GetPlayerId();
-        if (playerId == 0) return true;
+        // Fail closed when the player id isn't readable yet — matches every other
+        // playerId==0 guard in the plugin (InventoryManager:94, WorldObjectCache:977,
+        // FindPackFor). Returning true here counted every scanned object as ours.
+        if (playerId == 0) return false;
 
         int pid = unchecked((int)playerId);
         if (item.Wielder != 0 && item.Wielder != pid) return false;
-        if (item.Container == 0 || item.Container == pid) return true;
+        if (item.Container == pid) return true;
+        // Container==0 means "not in any pack" — that's a wielded item (ours only if
+        // we're the wielder) or an item lying on the ground. It used to return true
+        // for both, so ground USTs read as carried. 2026-06-03 audit P2.
+        if (item.Container == 0) return item.Wielder == pid;
 
         var owner = _cache[item.Container];
         if (owner == null) return false;
@@ -913,11 +963,26 @@ public sealed class SalvageManager
     {
         if (string.IsNullOrEmpty(name))
             return false;
-        // UST names end in "Ust" (e.g. "Salvaging Ust", "Aged Legendary Salvaging Ust",
-        // "Sturdy Iron Salvaging Ust"). Exclude only actual salvage bags — those follow
-        // the precise "Salvage (Material)" format, caught by IsSalvageBag.
-        return name.Contains("Ust", StringComparison.OrdinalIgnoreCase)
-            && !IsSalvageBag(name);
+        // UST names carry "Ust" as its own word (e.g. "Salvaging Ust", "Aged Legendary
+        // Salvaging Ust", "Sturdy Iron Salvaging Ust"). A bare Contains also matched
+        // "Just"/"Robust"/"Lustrous" (2026-06-03 audit P2); a word match keeps working
+        // if a name ever carries a suffix, which EndsWith would not.
+        // Exclude actual salvage bags — the "Salvage (Material)" format, via IsSalvageBag.
+        return HasWordUst(name) && !IsSalvageBag(name);
+    }
+
+    /// <summary>True when "Ust" appears as a whole word (letter/digit boundaries).</summary>
+    private static bool HasWordUst(string name)
+    {
+        for (int i = 0; i + 3 <= name.Length; i++)
+        {
+            if (!(name[i] is 'U' or 'u') || !(name[i + 1] is 'S' or 's') || !(name[i + 2] is 'T' or 't'))
+                continue;
+            if (i > 0 && char.IsLetterOrDigit(name[i - 1])) continue;
+            if (i + 3 < name.Length && char.IsLetterOrDigit(name[i + 3])) continue;
+            return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -948,5 +1013,72 @@ public sealed class SalvageManager
         return name.Contains("Salvage (", StringComparison.OrdinalIgnoreCase);
     }
 
-    private void Log(string message) => _host.Log(message);
+    private void Log(string message) => RynthLog.Write(LogCat.Salvage, message);
+
+    private void NoteError(string what)
+    {
+        _lastError   = what;
+        _lastErrorAt = NowMs;
+    }
+
+    /// <summary>
+    /// One-shot view of the salvage FSM. Salvage had no snapshot (Combat/Buff/Meta
+    /// did), so a wedged panel cycle meant reading the log backwards to work out
+    /// which phase it died in. Read-only; safe from the UI or a chat command.
+    /// </summary>
+    public SalvageStateSnapshot GetStateSnapshot()
+    {
+        long now = NowMs;
+        return new SalvageStateSnapshot
+        {
+            HasPanelApi        = _host.HasSalvagePanel && _host.HasUseObject,
+            EnableCombine      = _settings.EnableCombineSalvage,
+            Phase              = _phase.ToString(),
+            PhaseReadyInMs     = Math.Max(0, _phaseReadyAt - now),
+            QueueCount         = _queue.Count,
+            CurrentItemId      = _currentItemId,
+            CurrentUstId       = _currentUstId,
+            PanelEverOpened    = _panelEverOpened,
+            PendingCombineScan = _pendingCombineScan,
+            RetryTrackedItems  = _itemRetryCount.Count,
+            RetryBackoffInMs   = Math.Max(0, _idleRetryReadyAt - now),
+            CombinePhase       = _combinePhase.ToString(),
+            CombineGroupIdx    = _combineGroupIdx,
+            CombineGroupCount  = _combineGroups?.Count ?? 0,
+            CombineAddIdx      = _combineAddIdx,
+            CombineOpenAttempts = _combineOpenAttempts,
+            MsSinceCombineSweep = _lastCombineSweepAt == 0 ? -1 : now - _lastCombineSweepAt,
+            GroupsSucceeded    = _combineGroupsSucceeded,
+            GroupsFailed       = _combineGroupsFailed,
+            BagsMerged         = _bagsMergedThisSession,
+            LastError          = _lastError,
+            MsSinceLastError   = _lastErrorAt == 0 ? -1 : now - _lastErrorAt,
+        };
+    }
+
+    public struct SalvageStateSnapshot
+    {
+        public bool   HasPanelApi;
+        public bool   EnableCombine;
+        public string Phase;
+        public long   PhaseReadyInMs;
+        public int    QueueCount;
+        public uint   CurrentItemId;
+        public uint   CurrentUstId;
+        public bool   PanelEverOpened;
+        public bool   PendingCombineScan;
+        public int    RetryTrackedItems;
+        public long   RetryBackoffInMs;
+        public string CombinePhase;
+        public int    CombineGroupIdx;
+        public int    CombineGroupCount;
+        public int    CombineAddIdx;
+        public int    CombineOpenAttempts;
+        public long   MsSinceCombineSweep;
+        public int    GroupsSucceeded;
+        public int    GroupsFailed;
+        public int    BagsMerged;
+        public string LastError;
+        public long   MsSinceLastError;
+    }
 }

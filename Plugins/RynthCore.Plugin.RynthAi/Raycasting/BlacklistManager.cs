@@ -22,7 +22,11 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
 
         /// <summary>
         /// Number of consecutive attack failures before a target is blacklisted.
-        /// Default: 3 attempts (adjustable for different difficulty settings).
+        /// Default: 1 — CombatManager sets this explicitly (CombatManager.cs:1711)
+        /// because the "give it N casts before giving up" counting lives in
+        /// JudgePendingCast; one report reaching here already means judged-failed.
+        /// (The stale "Default: 3" comment here drove a 2026-06-03 audit finding
+        /// that read the 1 as a bug — it isn't.)
         /// </summary>
         public int AttemptThreshold { get; set; } = 1;
 
@@ -89,6 +93,15 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
 
             // Target still blacklisted
             return true;
+        }
+
+        /// <summary>Forget a target entirely (D8): drop its failure count and any blacklist entry.
+        /// Called when the object is deleted so a respawn reusing the GUID starts from a clean slate
+        /// instead of inheriting the despawned object's 300s blacklist timeout.</summary>
+        public void ForgetTarget(int targetId)
+        {
+            _failureCounts.Remove(targetId);
+            _blacklistExpirations.Remove(targetId);
         }
 
         /// <summary>

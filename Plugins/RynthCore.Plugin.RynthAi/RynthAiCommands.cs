@@ -7,6 +7,7 @@ using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.Plugin.RynthAi.Meta;
 using RynthCore.Plugin.RynthAi.Raycasting;
 using RynthCore.Loot.VTank;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -20,11 +21,121 @@ public sealed partial class RynthAiPlugin
         Host.WriteToChat(text, 1);
     }
 
+    // ── Diagnostics: /ra debug | /ra trace | /ra logs (UtilityBelt-style) ─────
+
+    /// <summary>Parses an on/off word; returns null for anything else (caller treats it as status).</summary>
+    private static bool? ParseOnOff(string? word) => word?.ToLowerInvariant() switch
+    {
+        "on" or "true" or "1" or "enable" => true,
+        "off" or "false" or "0" or "disable" => false,
+        _ => null,
+    };
+
+    /// <summary>"/ra debug [on|off|status]" — global switch that echoes trace + exception lines to chat.</summary>
+    private void HandleDebugCommand(string[] parts)
+    {
+        string arg = parts.Length > 2 ? parts[2] : "status";
+        bool? state = arg.Equals("toggle", StringComparison.OrdinalIgnoreCase) ? !RynthLog.DebugToChat : ParseOnOff(arg);
+        if (state.HasValue) RynthLog.DebugToChat = state.Value;
+        ChatLine($"[RynthAi] Debug-to-chat is {(RynthLog.DebugToChat ? "ON" : "off")}."
+                 + (RynthLog.DebugToChat && RynthLog.TracedCategories().Count == 0 ? " (no categories traced — see /ra trace list)" : ""));
+    }
+
+    /// <summary>
+    /// "/ra trace &lt;cat|all|ilt|list&gt; [on|off|status]" — per-function trace files.
+    /// A bare category toggles it; "all" / "ilt" act on every / every ILT Hub category.
+    /// </summary>
+    private void HandleTraceCommand(string[] parts)
+    {
+        string target = parts.Length > 2 ? parts[2] : "status";
+        string? action = parts.Length > 3 ? parts[3] : null;
+
+        if (target.Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (string l in RynthLog.StatusLines()) ChatLine(l);
+            return;
+        }
+
+        if (target.Equals("list", StringComparison.OrdinalIgnoreCase))
+        {
+            var names = new List<string>();
+            foreach (LogCat c in Enum.GetValues<LogCat>())
+                names.Add(RynthLog.IsTracing(c) ? c + "*" : c.ToString());
+            ChatLine("[RynthAi] Trace categories (* = on): " + string.Join(", ", names));
+            return;
+        }
+
+        bool? state = ParseOnOff(action);
+        bool isAll = target.Equals("all", StringComparison.OrdinalIgnoreCase);
+        bool isIlt = target.Equals("ilt", StringComparison.OrdinalIgnoreCase);
+        if (isAll || isIlt)
+        {
+            if (!state.HasValue) { foreach (string l in RynthLog.StatusLines()) ChatLine(l); return; }
+            int n = RynthLog.SetTracingByPrefix(isIlt ? "Ilt" : string.Empty, state.Value);
+            ChatLine($"[RynthAi] Tracing {(state.Value ? "enabled" : "disabled")} for {n} {(isIlt ? "ILT Hub " : "")}categories.");
+            return;
+        }
+
+        if (!RynthLog.TryParseCategory(target, out LogCat cat))
+        {
+            ChatLine($"[RynthAi] Unknown trace category '{target}'. Use /ra trace list.");
+            return;
+        }
+
+        if (action != null && action.Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            ChatLine($"[RynthAi] Trace {cat}: {(RynthLog.IsTracing(cat) ? "ON" : "off")}");
+            return;
+        }
+
+        bool enable = state ?? !RynthLog.IsTracing(cat);
+        RynthLog.SetTracing(cat, enable);
+        ChatLine($"[RynthAi] Trace {cat}: {(enable ? "ON" : "off")} → {RynthLog.TraceDirectory}");
+    }
+
+    /// <summary>"/ra logs [open|prune|flush|file on|off]" — diagnostics folder and housekeeping.</summary>
+    private void HandleLogsCommand(string[] parts)
+    {
+        string sub = parts.Length > 2 ? parts[2].ToLowerInvariant() : "status";
+        switch (sub)
+        {
+            case "open":
+                try
+                {
+                    RynthLog.Flush();
+                    System.IO.Directory.CreateDirectory(RynthLog.Directory);
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{RynthLog.Directory}\"") { UseShellExecute = true });
+                }
+                catch (Exception ex) { RynthLog.Exception(LogCat.Commands, ex, "logs open"); ChatLine($"[RynthAi] Could not open {RynthLog.Directory}: {ex.Message}"); }
+                break;
+            case "prune":
+                ChatLine($"[RynthAi] Pruned {RynthLog.Prune()} old diagnostics file(s).");
+                break;
+            case "flush":
+                RynthLog.Flush();
+                ChatLine("[RynthAi] Diagnostics flushed to disk.");
+                break;
+            case "file":
+                bool? state = ParseOnOff(parts.Length > 3 ? parts[3] : null);
+                if (state.HasValue) RynthLog.FileLogAll = state.Value;
+                ChatLine($"[RynthAi] Daily RynthAi log file is {(RynthLog.FileLogAll ? "ON" : "off")}.");
+                break;
+            default:
+                foreach (string l in RynthLog.StatusLines()) ChatLine(l);
+                break;
+        }
+    }
+
     private void HandleHelpCommand()
     {
         ChatLine("[RynthAi] === Commands ===");
         ChatLine("[RynthAi] /ra fellow       â€” fellowship diagnostics and queries");
         ChatLine("[RynthAi] /ra help          — show this list");
+        ChatLine("[RynthAi] /ra debug [on|off|status]  — echo trace + error lines to chat");
+        ChatLine("[RynthAi] /ra trace <cat|all|ilt|list> [on|off|status] — per-function trace files (Logs\\Diagnostics\\Trace)");
+        ChatLine("[RynthAi] /ra logs [open|prune|flush|file on|off] — diagnostics folder / housekeeping");
+        ChatLine("[RynthAi] /ra hub [show|hide|refresh|status|bank|force on|off|profile ...|suit ...] — ILT Hub (ILT worlds)");
+        ChatLine("[RynthAi] /ra quests [refresh|check <regex>] — ILT Hub quest tracker");
         ChatLine("[RynthAi] /ra power <0-100|auto> — set attack power (auto = recklessness-aware)");
         ChatLine("[RynthAi] /ra cast <spellId> — cast spell on current target");
         ChatLine("[RynthAi] /ra buffs         — show active buff timers");
@@ -43,6 +154,8 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra givexp [count] <item> to <player>       — partial player name match");
         ChatLine("[RynthAi] /ra givepp [count] <item> to <player>       — partial item and player");
         ChatLine("[RynthAi] /ra giver [count] <regex> to <player>       — regex item name match");
+        ChatLine("[RynthAi] /ra givea[p|xp|pp|r] <item> to <player>     — give ALL matching stacks ('… stop' cancels the queue)");
+        ChatLine("[RynthAi] /ra gap <item> to <player>                  — alias for giveapp (give all, partial item + partial player)");
         ChatLine("[RynthAi] /ra ig <profile> to <player>                — give items matching loot profile");
         ChatLine("[RynthAi] /ra igp <profile> to <player>               — ig with partial player name");
         ChatLine("[RynthAi] /ra use[i|l][p|pi|lp] <name> [on <name2>]  — use item (i=inv, l=land, p=partial)");
@@ -55,6 +168,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra addnavpt      — append a waypoint at current location to loaded nav");
         ChatLine("[RynthAi] /ra dunnav <NS> <EW>  — navigate to NS/EW coords through dungeon (no nav file needed)");
         ChatLine("[RynthAi] /ra dunnav-patrol      — circular hunt patrol through the whole dungeon (no nav file needed)");
+        ChatLine("[RynthAi] /ra hazard add|del|list|near — mark current cell as lava/acid so patrol avoids it");
         ChatLine("[RynthAi] /ra jump[swzxc] [heading] [holdtime] — jump with optional face/direction (s=run w=fwd x=back z=strafeL c=strafeR)");
         ChatLine("[RynthAi] /ra corpseinfo    — show corpse range/open diagnostics");
         ChatLine("[RynthAi] /ra corpsecheck   — explain whether a corpse would be looted");
@@ -65,6 +179,11 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra lootcheck     — classify selected item (on|off = auto on click)");
         ChatLine("[RynthAi] /ra dumpinv       — dump all inventory items (cache + direct)");
         ChatLine("[RynthAi] /ra combat        — dump combat state machine snapshot");
+        ChatLine("[RynthAi] /ra why           — one-glance diagnosis of why the bot is idle/attacking");
+        ChatLine("[RynthAi] /ra start | stop   — start/stop the macro from chat");
+        ChatLine("[RynthAi] /ra pause [sec]    — stop the macro, auto-resume after sec (default 60)");
+        ChatLine("[RynthAi] /ra navstate      — dump navigation state machine snapshot");
+        ChatLine("[RynthAi] /ra salvstate     — dump salvage state machine snapshot");
         ChatLine("[RynthAi] /ra clearbusy     — force-clear busy state (hourglass cursor)");
         ChatLine("[RynthAi] /ra panic         — full AC state reset (cancel attack + peace mode + stop motion + clear busy)");
         ChatLine("[RynthAi] /ra forcebuff          — force-recast all buffs immediately");
@@ -72,6 +191,8 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra bufftest           — one-shot: snapshot enchant registries pre/post next item-spell cast (logs to RynthCore.log)");
         ChatLine("[RynthAi] /ra settings savechar <name> — save current settings to named profile (create if new)");
         ChatLine("[RynthAi] /ra settings loadchar <name> — load named settings profile (create from current if new)");
+        ChatLine("[RynthAi] /ub autovendor [profile.utl|cancel] — run AutoVendor at the open vendor (TestMode on by default)");
+        ChatLine("[RynthAi] /ub vendor open[p] <name|id|selected> | opencancel | addbuy[p]/addsell[p] [n] <item> | buyall | sellall | clearbuy | clearsell");
     }
 
     private void HandlePowerCommand(string[] parts)
@@ -316,8 +437,20 @@ public sealed partial class RynthAiPlugin
 
             if (geometry != null && geometry.Count > 0)
             {
-                staticBlocked = RaycastEngine.IsArcPathBlocked(origin, targetPos, arcVelocity, geometry);
-                ChatLine($"[RynthAi LOS] IsArcPathBlocked: {staticBlocked}{(isDungeon && staticBlocked ? "  (likely ceiling — combat LoS forces Linear in dungeons)" : "")}");
+                // Same test combat runs for missile targets: straight line (walls), then the
+                // arc the missile flies plus the clearance headroom (ceilings indoors).
+                float clearance = settings?.MissileArcClearance ?? 0.5f;
+                bool lineBlocked = RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
+                bool arcBlocked = RaycastEngine.IsBallisticArcBlocked(origin, targetPos, arcVelocity, clearance, geometry, out var arc);
+                staticBlocked = lineBlocked || arcBlocked;
+                ChatLine($"[RynthAi LOS] Straight line ({(isDungeon ? "multi-ray" : "single-ray")}): {(lineBlocked ? "BLOCKED" : "clear")}");
+                ChatLine($"[RynthAi LOS] Arc: rises {arc.Sag:F2}m above the line, apex {arc.Apex:F2}m above launch, clearance {clearance:F1}m");
+                if (arc.OutOfReach)
+                    ChatLine($"[RynthAi LOS] Arc: OUT OF REACH at v={arcVelocity:F1} (raise the velocity or get closer)");
+                else if (arcBlocked)
+                    ChatLine($"[RynthAi LOS] Arc: BLOCKED {arc.HitAlong:F1}m out, {arc.HitZ:+0.0;-0.0;0.0}m vs launch{(isDungeon && arc.HitZ > 0.5f ? "  (ceiling)" : "")}");
+                else
+                    ChatLine("[RynthAi LOS] Arc: clear");
             }
         }
         else
@@ -384,57 +517,30 @@ public sealed partial class RynthAiPlugin
         ChatLine($"[RynthAi LOS] Combined LoS ({modeLabel}): {verdict}");
     }
 
-    // Samples a parabolic arc from origin→target at the given launch velocity,
-    // returns true if any sample point dips below terrain Z. Mirrors the math
-    // in RaycastEngine.IsArcPathBlocked so the terrain check tracks the same
-    // trajectory the static-geometry check uses.
+    // Samples the missile's arc from origin→target at the given launch speed and returns
+    // true if any sample point dips below terrain Z. Same flight path as combat's missile
+    // LOS (MissileBallistics: low ballistic solution, AC gravity), without the clearance.
     private static bool TerrainBlockedAlongArc(Raycasting.Vector3 origin, Raycasting.Vector3 target,
         float velocity, Raycasting.GeometryLoader geo,
         out float hitDist, out Raycasting.Vector3 hitPoint)
     {
         hitDist = 0f;
         hitPoint = origin;
-        const float GRAVITY = 9.81f;
-        const int   SAMPLES = 20;
+        const int SAMPLES = 20;
 
-        var delta = target - origin;
-        float horiz = delta.Length2D();
-        if (horiz < 0.1f) return false;
-
-        float maxRange = (velocity * velocity) / GRAVITY;
-        if (horiz > maxRange) return false; // out-of-range is the shooter's problem, not terrain's
-
-        float sinArg = (GRAVITY * horiz) / (velocity * velocity);
-        if (sinArg > 1.0f) sinArg = 1.0f;
-        float launchAngle = (float)(0.5 * Math.Asin(sinArg));
-        if (launchAngle < 0.1f) launchAngle = (float)(Math.PI / 4);
-
-        float cosA = (float)Math.Cos(launchAngle);
-        float sinA = (float)Math.Sin(launchAngle);
-        float vH = velocity * cosA;
-        float vV = velocity * sinA;
-        if (vH < 0.01f) return false;
-
-        float totalTime = horiz / vH;
-        float hdx = delta.X / horiz;
-        float hdy = delta.Y / horiz;
+        var arc = Raycasting.MissileBallistics.Solve(origin.X, origin.Y, origin.Z, target.X, target.Y, target.Z, velocity);
+        if (!arc.Valid || arc.Vertical) return false; // out of reach is the shooter's problem, not terrain's
 
         for (int i = 1; i <= SAMPLES; i++)
         {
             float t = (float)i / SAMPLES;
-            float time = t * totalTime;
-            float hDistAlong = vH * time;
-            float z = origin.Z + vV * time - 0.5f * GRAVITY * time * time;
-            z += delta.Z * t * (1.0f - t); // same blend IsArcPathBlocked uses
-
-            float wx = origin.X + hdx * hDistAlong;
-            float wy = origin.Y + hdy * hDistAlong;
+            arc.PointAt(t, 0f, out float wx, out float wy, out float z);
             float groundZ = geo.GetTerrainZWorld(wx, wy);
             if (float.IsNaN(groundZ)) continue;
 
             if (z < groundZ)
             {
-                hitDist  = hDistAlong;
+                hitDist  = t * arc.HorizDist;
                 hitPoint = new Raycasting.Vector3(wx, wy, z);
                 return true;
             }
@@ -1001,6 +1107,44 @@ public sealed partial class RynthAiPlugin
         _jumper.Start(letters, heading, holdMs);
     }
 
+    // /ra follow [on|off|status] — track the fellowship leader's live position
+    // instead of a route. Opt-in; off by default each session.
+    private void HandleFollowCommand(string[] parts)
+    {
+        var settings = _dashboard?.Settings;
+        if (settings == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+
+        string arg = parts.Length >= 3
+            ? parts[2].ToLowerInvariant()
+            : (settings.FollowMode ? "off" : "on");
+
+        switch (arg)
+        {
+            case "on":
+            case "leader":
+                settings.FollowMode = true;
+                settings.EnableNavigation = true;   // follow is a nav activity
+                ChatLine(settings.IsMacroRunning
+                    ? "[RynthAi] Follow ON — tracking the fellowship leader."
+                    : "[RynthAi] Follow ON — start the bot to begin moving.");
+                break;
+            case "off":
+                settings.FollowMode = false;
+                settings.FollowTargetId = 0;
+                ChatLine("[RynthAi] Follow OFF.");
+                break;
+            case "status":
+                ChatLine($"[RynthAi] Follow: {(settings.FollowMode ? "ON" : "off")}  " +
+                         $"targetId=0x{settings.FollowTargetId:X8}  " +
+                         $"inFellow={(_fellowshipTracker?.IsInFellowship ?? false)}  " +
+                         $"isLeader={(_fellowshipTracker?.IsLeader ?? false)}");
+                break;
+            default:
+                ChatLine("[RynthAi] Usage: /ra follow [on|off|status]");
+                break;
+        }
+    }
+
     private void HandleAddNavPointCommand()
     {
         var settings = _dashboard?.Settings;
@@ -1322,6 +1466,74 @@ public sealed partial class RynthAiPlugin
         }
     }
 
+    /// <summary>/ra why — one-glance "why is the bot doing (or not doing) what it's doing": the
+    /// winning activity, the legacy BotAction, busy count, target lock + cast state, and the D2
+    /// three-tier scan counts, plus a one-line interpretation of the likely stall cause. Turns an
+    /// "it's just standing there" investigation into a single read. (D3)</summary>
+    private void HandleWhyCommand()
+    {
+        if (_combatManager == null) { ChatLine("[RynthAi] Combat manager not ready."); return; }
+        var s = _combatManager.GetStateSnapshot();
+
+        int total  = _combatManager.LastScanTotalMonsters;
+        int ring   = _combatManager.LastScanInRing;
+        int poss   = _combatManager.LastScanPossible;
+        int losBlk = _combatManager.LastScanLosBlocked;
+
+        string arbiter = _arbiter != null
+            ? $"{ActivityArbiter.ToBotAction(_arbiter.Current)} ({_arbiter.Current})"
+            : "n/a (not started)";
+
+        ChatLine("[RynthAi] === Why ===");
+        ChatLine($"[RynthAi] macro={s.IsMacroRunning}  botAction='{s.BotAction}'  arbiter={arbiter}");
+        ChatLine($"[RynthAi] enableCombat={s.EnableCombat}  busy={s.BusyCount}  facing={s.FacingTarget}");
+        ChatLine($"[RynthAi] targets: total={total} ring={ring} possible={poss} losBlk={losBlk}  scanned={s.ScannedCount}");
+        ChatLine($"[RynthAi] active=0x{(uint)s.ActiveTargetId:X8}  locked=0x{(uint)s.LockedTargetId:X8}");
+        // D4 record-only skip reasons: why the last combat/buff cycle did (or didn't) cast.
+        ChatLine($"[RynthAi] combatSkip='{s.LastCombatSkipReason}'"
+                 + (_buffManager != null ? $"  buffSkip='{_buffManager.GetStateSnapshot().LastBuffSkipReason}'" : ""));
+        if (s.ScannedCount > 0)
+            ChatLine($"[RynthAi] closest: '{s.ClosestScannedName}' @ {s.ClosestScannedDist:0.0}yd");
+
+        // Nav and salvage each own a piece of the "standing there" class, so name
+        // what they're holding rather than leaving it to /ra navstate + /ra salvstate.
+        if (_navigationEngine != null)
+        {
+            var n = _navigationEngine.GetStateSnapshot();
+            string navHold = !n.EnableNavigation ? "nav disabled"
+                           : n.InRecovery        ? $"STUCK-recovery {n.RecoveryKind} ({n.RecoveryRemainMs}ms, x{n.StuckCount})"
+                           : n.InPause           ? $"route pause ({n.PauseRemainMs}ms)"
+                           : n.PortalState != "None" ? $"portal/recall {n.PortalState}"
+                           : n.PointCount == 0   ? "no route loaded"
+                           : n.Stopped           ? "stopped (gated by BotAction)"
+                           : "running";
+            ChatLine($"[RynthAi] nav: {navHold}  pt={n.Index + 1}/{n.PointCount} ({n.PointType})"
+                     + (double.IsNaN(n.DistYd) ? "" : $" {n.DistYd:0.0}yd err={n.HeadingErrDeg:+0.0;-0.0}°"));
+        }
+        if (_salvageManager != null)
+        {
+            var v = _salvageManager.GetStateSnapshot();
+            if (v.QueueCount > 0 || v.Phase != "Idle" || v.LastError.Length > 0)
+                ChatLine($"[RynthAi] salvage: phase={v.Phase} queue={v.QueueCount} combine={v.CombinePhase}"
+                         + $" grp={v.CombineGroupIdx + 1}/{v.CombineGroupCount}"
+                         + (v.LastError.Length > 0 ? $"  lastErr='{v.LastError}' ({v.MsSinceLastError / 1000}s ago)" : ""));
+        }
+
+        // Interpretation — the point of D2/D3: name the most likely reason it isn't attacking.
+        string why =
+            !s.IsMacroRunning        ? "macro is STOPPED (start it from the panel / command)." :
+            !s.EnableCombat          ? "combat is disabled in settings." :
+            s.BusyCount > 0          ? "AC busy>0 — waiting on a server action (cast/use/move); try /ra clearbusy if stuck." :
+            total < 0                ? "no combat scan has run yet (cold start / just logged in)." :
+            total == 0               ? "no monsters in the object cache (respawn-blind, or wrong area)." :
+            ring  == 0               ? "monsters exist but ALL out of engage range (nav not closing distance?)." :
+            poss == 0 && losBlk > 0  ? "monsters in range but LOS-blocked (behind walls)." :
+            poss == 0                ? "monsters in range but all filtered (blacklist / not-attackable)." :
+            s.ActiveTargetId == 0    ? "candidates exist but none acquired yet (should engage next tick)." :
+                                       "engaged — should be attacking; if not, check busy / cast cadence.";
+        ChatLine($"[RynthAi] likely: {why}");
+    }
+
     private void HandleCombatStateCommand()
     {
         if (_combatManager == null) { ChatLine("[RynthAi] Combat manager not ready."); return; }
@@ -1400,7 +1612,7 @@ public sealed partial class RynthAiPlugin
             ChatLine($"[RynthAi] buff: ramTimers={b.RamBuffTimerCount} itemTimers={b.ItemSpellTimerCount} hp={b.HealthPct}% mana={b.ManaPct}% stam={b.StaminaPct}%");
         }
 
-        Host.Log($"[RynthAi combat] macro={s.IsMacroRunning} ec={s.EnableCombat} ba={s.BotAction} " +
+        RynthLog.Write(LogCat.Commands, $"[RynthAi combat] macro={s.IsMacroRunning} ec={s.EnableCombat} ba={s.BotAction} " +
                  $"mode_cached={cachedMode} mode_live={liveMode} desired={desiredMode} " +
                  $"active=0x{(uint)s.ActiveTargetId:X8} locked=0x{(uint)s.LockedTargetId:X8} facing={s.FacingTarget} " +
                  $"scanned={s.ScannedCount} closest=0x{(uint)s.ClosestScannedId:X8} '{s.ClosestScannedName}' @ {s.ClosestScannedDist:F1}yd " +
@@ -1408,16 +1620,122 @@ public sealed partial class RynthAiPlugin
                  $"busy={s.BusyCount} sinceAtk={sinceAttackS:F1}s sinceStance={sinceStanceS:F1}s sinceEquip={sinceEquipS:F1}s sinceLost={sinceLostS:F1}s");
     }
 
+    /// <summary>
+    /// /ra start | /ra stop | /ra pause [sec] | /ra resume — macro control from chat.
+    /// Until now the only way to start or stop a box was the ImGui button, which is
+    /// unreachable on a background box (and on the phone-remote path, which already
+    /// had this via TogglePanelMacro). Routed through the same TogglePanelMacro the
+    /// button and the remote use, so there's still one write path for the flag.
+    /// </summary>
+    private void HandleMacroRunCommand(string verb, string[] parts)
+    {
+        var dash = _dashboard;
+        if (dash == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        bool running = dash.Settings.IsMacroRunning;
+
+        switch (verb)
+        {
+            case "start":
+            case "resume":
+                _macroResumeAt = 0;
+                if (running) { ChatLine("[RynthAi] Macro already RUNNING."); return; }
+                dash.TogglePanelMacro();
+                ChatLine("[RynthAi] Macro STARTED.");
+                return;
+
+            case "stop":
+                _macroResumeAt = 0;
+                if (!running) { ChatLine("[RynthAi] Macro already STOPPED."); return; }
+                dash.TogglePanelMacro();
+                // Kill autorun now rather than waiting out the nav engine's stop
+                // debounce — a /ra stop is usually issued because the box is
+                // running somewhere you don't want it to.
+                _navigationEngine?.Stop();
+                ChatLine("[RynthAi] Macro STOPPED.");
+                return;
+
+            case "pause":
+            {
+                int sec = 60;
+                if (parts.Length >= 3 && int.TryParse(parts[2], out int parsed))
+                    sec = Math.Clamp(parsed, 1, 3600);
+                if (running)
+                {
+                    dash.TogglePanelMacro();
+                    _navigationEngine?.Stop();
+                }
+                _macroResumeAt = CorpseNowMs + sec * 1000L;
+                ChatLine($"[RynthAi] Macro PAUSED — auto-resume in {sec}s ('/ra start' to resume now, '/ra stop' to cancel).");
+                return;
+            }
+        }
+    }
+
+    /// <summary>/ra navstate — dump the nav engine's snapshot. Nav is the other half of
+    /// the "bot just stands there" class and had no state surface of its own.</summary>
+    private void HandleNavStateCommand()
+    {
+        if (_navigationEngine == null) { ChatLine("[RynthAi] Navigation engine not ready."); return; }
+        var n = _navigationEngine.GetStateSnapshot();
+
+        ChatLine("[RynthAi] === Nav State ===");
+        ChatLine($"[RynthAi] macro={n.IsMacroRunning}  enableNav={n.EnableNavigation}  botAction='{n.BotAction}'");
+        ChatLine($"[RynthAi] route={n.RouteType} pts={n.PointCount}  idx={n.Index} ({n.PointType})  linearDir={n.LinearDir}");
+        ChatLine($"[RynthAi] dist={(double.IsNaN(n.DistYd) ? "n/a" : n.DistYd.ToString("0.0") + "yd")}"
+                 + $"  headingErr={(double.IsNaN(n.HeadingErrDeg) ? "n/a" : n.HeadingErrDeg.ToString("+0.0;-0.0") + "°")}"
+                 + $"  sinceSteer={n.MsSinceSteer}ms");
+        ChatLine($"[RynthAi] moving={n.MovingForward} turning={n.Turning} stopped={n.Stopped}");
+        ChatLine($"[RynthAi] pause={n.InPause} ({n.PauseRemainMs}ms)  portal={n.PortalState}");
+        ChatLine($"[RynthAi] recovery={n.InRecovery} kind={n.RecoveryKind} remain={n.RecoveryRemainMs}ms  stuckCount={n.StuckCount}");
+        if (n.FollowMode)
+            ChatLine($"[RynthAi] follow: target=0x{n.FollowTargetId:X8}");
+        ChatLine($"[RynthAi] status: {n.StatusLine}");
+
+        RynthLog.Write(LogCat.Commands, $"[RynthAi navstate] macro={n.IsMacroRunning} enableNav={n.EnableNavigation} ba='{n.BotAction}' "
+                 + $"route={n.RouteType} pts={n.PointCount} idx={n.Index}({n.PointType}) dir={n.LinearDir} "
+                 + $"dist={n.DistYd:F1} err={n.HeadingErrDeg:F1} sinceSteer={n.MsSinceSteer}ms "
+                 + $"moving={n.MovingForward} turning={n.Turning} stopped={n.Stopped} "
+                 + $"pause={n.InPause}/{n.PauseRemainMs}ms portal={n.PortalState} "
+                 + $"recovery={n.InRecovery}/{n.RecoveryKind}/{n.RecoveryRemainMs}ms stuck={n.StuckCount}");
+    }
+
+    /// <summary>/ra salvstate — dump the salvage FSM snapshot: which phase, what's queued,
+    /// where the combine sweep is, and the last thing that failed.</summary>
+    private void HandleSalvageStateCommand()
+    {
+        if (_salvageManager == null) { ChatLine("[RynthAi] Salvage manager not ready."); return; }
+        var v = _salvageManager.GetStateSnapshot();
+
+        ChatLine("[RynthAi] === Salvage State ===");
+        ChatLine($"[RynthAi] panelApi={v.HasPanelApi}  combineEnabled={v.EnableCombine}");
+        ChatLine($"[RynthAi] phase={v.Phase} readyIn={v.PhaseReadyInMs}ms  queue={v.QueueCount}  panelEverOpened={v.PanelEverOpened}");
+        ChatLine($"[RynthAi] item=0x{v.CurrentItemId:X8}  ust=0x{v.CurrentUstId:X8}");
+        ChatLine($"[RynthAi] combine: phase={v.CombinePhase} grp={v.CombineGroupIdx + 1}/{v.CombineGroupCount} addIdx={v.CombineAddIdx} openAttempts={v.CombineOpenAttempts}");
+        ChatLine($"[RynthAi] combine: pendingScan={v.PendingCombineScan} sinceSweep={(v.MsSinceCombineSweep < 0 ? "never" : (v.MsSinceCombineSweep / 1000) + "s")}");
+        ChatLine($"[RynthAi] retries: tracked={v.RetryTrackedItems} backoffIn={v.RetryBackoffInMs}ms");
+        ChatLine($"[RynthAi] session: groupsOk={v.GroupsSucceeded} groupsFail={v.GroupsFailed} bagsMerged={v.BagsMerged}");
+        ChatLine(v.LastError.Length > 0
+            ? $"[RynthAi] lastError: '{v.LastError}' ({v.MsSinceLastError / 1000}s ago)"
+            : "[RynthAi] lastError: none");
+
+        RynthLog.Write(LogCat.Commands, $"[RynthAi salvstate] panelApi={v.HasPanelApi} combine={v.EnableCombine} phase={v.Phase}/{v.PhaseReadyInMs}ms "
+                 + $"queue={v.QueueCount} item=0x{v.CurrentItemId:X8} ust=0x{v.CurrentUstId:X8} "
+                 + $"cphase={v.CombinePhase} grp={v.CombineGroupIdx}/{v.CombineGroupCount} add={v.CombineAddIdx} "
+                 + $"openAttempts={v.CombineOpenAttempts} pendingScan={v.PendingCombineScan} sinceSweep={v.MsSinceCombineSweep}ms "
+                 + $"retries={v.RetryTrackedItems} backoff={v.RetryBackoffInMs}ms ok={v.GroupsSucceeded} fail={v.GroupsFailed} "
+                 + $"merged={v.BagsMerged} lastErr='{v.LastError}'@{v.MsSinceLastError}ms");
+    }
+
     private void HandleDumpInventoryCommand()
     {
-        Host.Log("[RynthAi dumpinv] ENTRY");
+        RynthLog.Write(LogCat.Commands, "[RynthAi dumpinv] ENTRY");
         if (_objectCache == null) { ChatLine("[RynthAi] Cache not ready."); return; }
         uint playerId = Host.GetPlayerId();
-        Host.Log($"[RynthAi dumpinv] playerId=0x{playerId:X8}");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] playerId=0x{playerId:X8}");
         if (playerId == 0) { ChatLine("[RynthAi] Not logged in."); return; }
 
         // ── Part 1: Cached inventory — NO native ownership calls, just IDs and names ──
-        Host.Log("[RynthAi dumpinv] Starting Part 1 - cache enum");
+        RynthLog.Write(LogCat.Commands, "[RynthAi dumpinv] Starting Part 1 - cache enum");
         ChatLine("[RynthAi] === Cached Inventory ===");
         int cacheCount = 0;
         try
@@ -1435,10 +1753,10 @@ public sealed partial class RynthAiPlugin
             ChatLine($"[RynthAi] Cache enumeration error: {ex.Message}");
         }
         ChatLine($"[RynthAi] Cache total: {cacheCount} item(s)");
-        Host.Log($"[RynthAi dumpinv] Part 1 done, {cacheCount} items");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] Part 1 done, {cacheCount} items");
 
         // ── Part 2: Direct container scan via GetContainerContents ──
-        Host.Log($"[RynthAi dumpinv] HasGetContainerContents={Host.HasGetContainerContents}");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] HasGetContainerContents={Host.HasGetContainerContents}");
         ChatLine($"[RynthAi] HasGetContainerContents={Host.HasGetContainerContents}");
         if (!Host.HasGetContainerContents)
         {
@@ -1446,14 +1764,14 @@ public sealed partial class RynthAiPlugin
             return;
         }
 
-        Host.Log("[RynthAi dumpinv] Calling GetContainerContents for player...");
+        RynthLog.Write(LogCat.Commands, "[RynthAi dumpinv] Calling GetContainerContents for player...");
         try
         {
             uint[] topBuf = new uint[256];
-            Host.Log("[RynthAi dumpinv] about to call GetContainerContents...");
+            RynthLog.Write(LogCat.Commands, "[RynthAi dumpinv] about to call GetContainerContents...");
             int topCount = Host.GetContainerContents(playerId, topBuf);
-            Host.Log($"[RynthAi dumpinv] GetContainerContents returned {topCount}");
-            Host.Log($"[RynthAi dumpinv] first few IDs: {(topCount > 0 ? $"0x{topBuf[0]:X8}" : "none")} {(topCount > 1 ? $"0x{topBuf[1]:X8}" : "")}");
+            RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] GetContainerContents returned {topCount}");
+            RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] first few IDs: {(topCount > 0 ? $"0x{topBuf[0]:X8}" : "none")} {(topCount > 1 ? $"0x{topBuf[1]:X8}" : "")}");
             ChatLine($"[RynthAi] === Player container: {topCount} item(s) ===");
 
             var packIds = new System.Collections.Generic.List<uint>();
@@ -1488,7 +1806,7 @@ public sealed partial class RynthAiPlugin
         }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi dumpinv] EXCEPTION: {ex}");
+            RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] EXCEPTION: {ex}");
             ChatLine($"[RynthAi] Direct scan error: {ex.Message}");
         }
     }
@@ -1638,7 +1956,7 @@ public sealed partial class RynthAiPlugin
             string range = uid >= 0x80000000u ? "dyn" : "sta";
             Host.TryGetItemType(uid, out uint flags);
             string name = wo.Name.Length > 0 ? wo.Name : "(no name)";
-            Host.Log($"[mapdump] 0x{uid:X8} [{range}] flags=0x{flags:X5} cls={wo.ObjectClass} name={name}");
+            RynthLog.Write(LogCat.Commands, $"[mapdump] 0x{uid:X8} [{range}] flags=0x{flags:X5} cls={wo.ObjectClass} name={name}");
             if (shown < 30)
             {
                 ChatLine($"  0x{uid:X8} [{range}] fl=0x{flags:X5} {wo.ObjectClass} \"{name}\"");
@@ -1664,20 +1982,92 @@ public sealed partial class RynthAiPlugin
                     : string.Equals(wo.Name, name, StringComparison.OrdinalIgnoreCase))
                     return wo;
             }
-        }
 
-        if (land)
-        {
-            foreach (var wo in _objectCache.GetLandscapeObjects())
+            // The live walk above can miss carried items: off AC's main thread it only
+            // knows names from the engine's name snapshot, and an item missing from it
+            // drops out of the walk. Fall back to every object the cache knows and ask
+            // the client who holds it — "/ub usei X" said "Not found" for an item that
+            // "/ub use X" found, because the cache had it filed under the landscape.
+            foreach (var wo in _objectCache.AllKnownObjects())
             {
-                if (partial
-                    ? wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
-                    : string.Equals(wo.Name, name, StringComparison.OrdinalIgnoreCase))
+                if ((partial
+                        ? wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
+                        : string.Equals(wo.Name, name, StringComparison.OrdinalIgnoreCase))
+                    && IsCarriedByPlayer(wo.Id))
                     return wo;
             }
         }
 
+        if (land)
+        {
+            // Multiple landscape objects can share an exact name (e.g. 4 identically
+            // named corpses in a hive). Prefer the NEAREST match — the one the player
+            // is on / closest to — over an arbitrary first hit that could be a far
+            // corpse out of use range. BUT a corpse's live position can be momentarily
+            // unreadable (TryGetObjectPosition fails → Distance returns double.MaxValue),
+            // so fall back to the first match rather than reporting "not found".
+            WorldObject? best = null, anyMatch = null;
+            double bestDist = double.MaxValue;
+            foreach (var wo in _objectCache.GetLandscapeObjects())
+            {
+                bool match = partial
+                    ? wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
+                    : string.Equals(wo.Name, name, StringComparison.OrdinalIgnoreCase);
+                if (!match) continue;
+                anyMatch ??= wo;
+                double dist = _playerId != 0 ? _objectCache.Distance((int)_playerId, wo.Id) : double.MaxValue;
+                if (dist < bestDist) { bestDist = dist; best = wo; }
+            }
+            if (best != null || anyMatch != null) return best ?? anyMatch;
+        }
+
         return null;
+    }
+
+    /// <summary>True when the client says the player holds this object: worn or
+    /// wielded, in the main pack, or in a side pack (item → pack → player).</summary>
+    private bool IsCarriedByPlayer(int objectId)
+    {
+        if (_playerId == 0 || !Host.HasGetObjectOwnershipInfo) return false;
+        uint id = unchecked((uint)objectId);
+        for (int depth = 0; depth < 3; depth++)
+        {
+            if (!Host.TryGetObjectOwnershipInfo(id, out uint container, out uint wielder, out _)) return false;
+            if (wielder == _playerId || container == _playerId) return true;
+            if (container == 0) return false;
+            id = container;
+        }
+        return false;
+    }
+
+    /// <summary>After an exact-name miss, name up to three items whose names contain the
+    /// typed text and point at the partial-match form of the command ("usei" → "useip").
+    /// Exact is the default, like UtilityBelt, and "/ub usei round" read as a bug.</summary>
+    private void SuggestPartialMatches(string name, bool inv, bool land, string verb)
+    {
+        if (_objectCache == null || name.Length == 0) return;
+
+        var names = new List<string>();
+        bool Wants(WorldObject wo) =>
+            names.Count < 3
+            && wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
+            && !names.Contains(wo.Name, StringComparer.OrdinalIgnoreCase);
+
+        if (inv)
+        {
+            foreach (var wo in _objectCache.GetDirectInventory())
+                if (Wants(wo)) names.Add(wo.Name);
+            foreach (var wo in _objectCache.AllKnownObjects())
+                if (Wants(wo) && IsCarriedByPlayer(wo.Id)) names.Add(wo.Name);
+        }
+        if (land)
+        {
+            foreach (var wo in _objectCache.GetLandscapeObjects())
+                if (Wants(wo)) names.Add(wo.Name);
+        }
+
+        if (names.Count > 0)
+            ChatLine($"[RynthAi]   Did you mean {string.Join(", ", names.Select(n => $"'{n}'"))}? {verb}p matches part of a name.");
     }
 
     private void HandleUseCommand(string[] parts, bool inv, bool land, bool partial)
@@ -1706,7 +2096,12 @@ public sealed partial class RynthAiPlugin
         }
 
         var obj = FindObject(argStr.Trim(), inv, land, partial);
-        if (obj == null) { ChatLine($"[RynthAi] Not found: '{argStr.Trim()}'"); return; }
+        if (obj == null)
+        {
+            ChatLine($"[RynthAi] Not found: '{argStr.Trim()}'");
+            if (!partial) SuggestPartialMatches(argStr.Trim(), inv, land, parts[1].ToLowerInvariant());
+            return;
+        }
         Host.UseObject((uint)obj.Id);
         ChatLine($"[RynthAi] UseObject: {obj.Name} (0x{obj.Id:X})");
     }
@@ -1845,7 +2240,7 @@ public sealed partial class RynthAiPlugin
         string playerPart = argStr.Substring(toIdx + 4).Trim();
 
         // Resolve profile path — bare name resolved from ItemGiver dir, .utl extension added if needed
-        const string itemGiverDir = @"C:\Games\RynthSuite\RynthAi\ItemGiver";
+        string itemGiverDir = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"ItemGiver");
         string profilePath = System.IO.Path.IsPathRooted(profileArg)
             ? profileArg
             : System.IO.Path.Combine(itemGiverDir, profileArg);
@@ -1976,48 +2371,541 @@ public sealed partial class RynthAiPlugin
     /// Builds a Circular hunt patrol covering every cell in the current dungeon landblock.
     /// Called from both /ra dunnav-patrol and the NavPanel "Dungeon Patrol" button.
     /// </summary>
-    public void HandleDungeonNavPatrol()
+    public void HandleDungeonNavPatrol() => BuildDunPatrol(isRebuild: false);
+
+    /// <summary>
+    /// Builds (or rebuilds) the circular dungeon patrol route from the player's current
+    /// cell, excluding all currently-known hazard cells, and installs it as the active
+    /// route. When <paramref name="isRebuild"/> is true this was triggered by OnTick
+    /// after a new hazard was sighted mid-patrol — it reroutes silently (no fresh
+    /// "patrol started" chatter, just a one-line note) and never flips IsMacroRunning.
+    /// </summary>
+    private void BuildDunPatrol(bool isRebuild)
     {
         var settings = _dashboard?.Settings;
-        if (settings == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (settings == null) { if (!isRebuild) ChatLine("[RynthAi] Settings not ready."); return; }
 
-        if (!Host.TryGetPlayerPose(out uint playerCell, out _, out _, out float patrolWZ, out _, out _, out _, out _))
+        if (!Host.TryGetPlayerPose(out uint playerCell, out float playerLocalX, out float playerLocalY,
+                                   out float patrolWZ, out _, out _, out _, out _))
         {
-            ChatLine("[RynthAi] Cannot get player position."); return;
+            if (!isRebuild) ChatLine("[RynthAi] Cannot get player position."); return;
         }
 
         uint landblockKey = playerCell >> 16;
         bool isDungeon    = (playerCell & 0xFFFF) >= 0x0100;
         if (!isDungeon)
         {
-            ChatLine("[RynthAi] dunnav-patrol requires you to be inside a dungeon (cell >= 0x0100)."); return;
+            // Left the dungeon (e.g. portalled out) — stop tracking; nothing to rebuild.
+            _dunPatrolActive = false;
+            if (!isRebuild) ChatLine("[RynthAi] dunnav-patrol requires you to be inside a dungeon (cell >= 0x0100).");
+            return;
         }
 
         var cellDat = _raycast?.GeometryLoader.CellDat;
         if (cellDat == null || !cellDat.IsLoaded)
         {
-            ChatLine("[RynthAi] Cell dat not loaded — raycast system must be initialized first."); return;
+            if (!isRebuild) ChatLine("[RynthAi] Cell dat not loaded — raycast system must be initialized first."); return;
         }
 
         if (!NavCoordinateHelper.TryGetNavCoords(Host, out double playerNS, out double playerEW))
         {
-            ChatLine("[RynthAi] Cannot get player nav coordinates."); return;
+            if (!isRebuild) ChatLine("[RynthAi] Cannot get player nav coordinates."); return;
         }
 
         var graph = DungeonPathfinder.GetGraph(landblockKey, cellDat);
-        if (graph.Count == 0) { ChatLine("[RynthAi] DunNav-Patrol: dungeon graph is empty."); return; }
+        if (graph.Count == 0) { if (!isRebuild) ChatLine("[RynthAi] DunNav-Patrol: dungeon graph is empty."); return; }
 
-        uint startCell = DungeonPathfinder.NearestCell(graph, playerNS, playerEW, patrolWZ);
-        if (startCell == 0) { ChatLine("[RynthAi] DunNav-Patrol: cannot find starting cell."); return; }
+        // Prefer the actual cell the player is standing in. NearestCell-by-distance can
+        // pick a same-floor cell across an interior wall when the player is hugging a
+        // wall corner; the engine's own playerCell is authoritative.
+        uint startCell;
+        if (graph.ContainsKey(playerCell))
+        {
+            startCell = playerCell;
+        }
+        else
+        {
+            startCell = DungeonPathfinder.NearestCell(graph, playerNS, playerEW, patrolWZ);
+            if (startCell == 0) { if (!isRebuild) ChatLine("[RynthAi] DunNav-Patrol: cannot find starting cell."); return; }
+        }
 
-        var route = DungeonPathfinder.BuildPatrolRoute(graph, startCell);
+        // Pull in hazards discovered on previous visits to this dungeon so the route avoids
+        // them from the first waypoint — hazards are static, so a dungeon we've already
+        // explored is built clean without having to re-sight and reroute.
+        _objectCache?.SeedHazardsFromStore(landblockKey);
 
-        settings.IsMacroRunning   = true;
+        // Detector C: offline EnvCell-surface hazard cells (lava/acid floor textures). Catches the
+        // invisible-HotSpot majority the live weenie scan can't see — pure dat reads, cached per
+        // landblock. No-op unless the user has flagged hazard textures (/ra hazard learnhere|texture).
+        var portalDat = _raycast?.GeometryLoader?.PortalDat;
+        if (portalDat != null)
+        {
+            var surfaceHazards = DungeonHazardSurfaces.ComputeHazardCells(landblockKey, cellDat, portalDat);
+            if (surfaceHazards.Count > 0) _objectCache?.SeedSurfaceHazards(surfaceHazards);
+        }
+
+        var hazards = _objectCache?.GetHazardCells();
+
+        // Start-in-hazard evacuation: if the player is standing on an excluded (acid/lava) cell, build
+        // the patrol from the nearest SAFE cell and prepend a lead-in waypoint so the first move walks
+        // out of the hazard onto safe ground — instead of producing an empty, hazard-locked route.
+        bool   evacuate = false;
+        double evacNS = 0, evacEW = 0, evacZ = 0;
+        if (hazards != null && hazards.Contains(startCell))
+        {
+            uint safeCell = DungeonPathfinder.NearestSafeCell(graph, startCell, hazards, patrolWZ);
+            if (safeCell != 0 && graph.TryGetValue(safeCell, out var safeNode))
+            {
+                evacuate = true;
+                evacNS = safeNode.NS; evacEW = safeNode.EW; evacZ = safeNode.Z / 240.0;
+                startCell = safeCell;
+            }
+        }
+
+        var route = DungeonPathfinder.BuildPatrolRoute(graph, startCell, hazards);
+
+        // Lead the bot out of the hazard first.
+        if (evacuate)
+            route.Points.Insert(0, new NavPoint { Type = NavPointType.Point, NS = evacNS, EW = evacEW, Z = evacZ });
+
+        // Empty-route guard: a single-cell / hazard-locked start yields no waypoints. Do NOT claim the
+        // patrol started or enable nav — the bot would just stand in place (in the hazard) taking damage.
+        if (route.Points.Count == 0)
+        {
+            _dunPatrolActive = false;
+            if (!isRebuild)
+                ChatLine("[RynthAi] DunNav-Patrol: no walkable route from here — you're standing in or surrounded by a hazard. Move to safe ground and retry.");
+            return;
+        }
+
+        // Pick the first waypoint with a clear line of sight from the player. The patrol
+        // builder emits its first waypoints at the doorway between startCell and its DFS-
+        // chosen neighbor — that doorway can sit on the far wall of startCell, so a player
+        // who logged in near the opposite wall faces a pillar or corner between them and
+        // waypoint 0. Walking the list forward to the first LOS-clear point sidesteps the
+        // "patrol immediately runs into a wall on login" failure mode.
+        int startIdx = FindFirstLineOfSightWaypoint(route, playerCell, playerLocalX, playerLocalY, patrolWZ);
+
+        if (!isRebuild)
+            settings.IsMacroRunning = true;
         settings.CurrentNavPath   = string.Empty;
         settings.CurrentRoute     = route;
-        settings.ActiveNavIndex   = 0;
+        settings.ActiveNavIndex   = startIdx;
         settings.EnableNavigation = true;
 
-        ChatLine($"[RynthAi] DunNav-Patrol: {graph.Count} cells, {route.Points.Count} waypoints → circular patrol started");
+        // Arm mid-patrol hazard rerouting: remember which dungeon this route belongs to
+        // and the hazard generation it already accounts for. OnTick rebuilds when a newer
+        // hazard is sighted in this same landblock.
+        _dunPatrolActive        = true;
+        _dunPatrolLandblock     = landblockKey;
+        _dunPatrolHazardVersion = _objectCache?.HazardVersion ?? 0;
+
+        int hazardCount = hazards?.Count ?? 0;
+        string hazardNote = hazardCount > 0 ? $", {hazardCount} hazard cell(s) avoided" : "";
+        if (isRebuild)
+        {
+            ChatLine($"[RynthAi] DunNav-Patrol: new hazard sighted → rerouted around it ({hazardCount} hazard cell(s) avoided).");
+        }
+        else
+        {
+            string skipNote = startIdx > 0 ? $", skipped {startIdx} blocked waypoint(s)" : "";
+            ChatLine($"[RynthAi] DunNav-Patrol: {graph.Count} cells, {route.Points.Count} waypoints → circular patrol started{skipNote}{hazardNote}");
+        }
+    }
+
+    /// <summary>
+    /// Called once per OnTick while logged in. If a dunnav-patrol is running and a new
+    /// hazard (lava/acid hotspot) has been sighted since the route was built, rebuilds the
+    /// route so the hotspot is treated as a wall the bot turns around at. No-op otherwise.
+    /// </summary>
+    private void TickDunPatrolHazardReroute()
+    {
+        if (!_dunPatrolActive) return;
+        if (_objectCache == null) return;
+
+        var settings = _dashboard?.Settings;
+        // Patrol stopped, navigation disabled, or a different (recorded) route was loaded —
+        // stand down; we only own the auto-generated, file-less circular patrol.
+        if (settings == null || !settings.IsMacroRunning || !settings.EnableNavigation
+            || !string.IsNullOrEmpty(settings.CurrentNavPath)
+            || settings.CurrentRoute?.RouteType != NavRouteType.Circular)
+        {
+            _dunPatrolActive = false;
+            return;
+        }
+
+        if (_objectCache.HazardVersion == _dunPatrolHazardVersion) return; // nothing new sighted
+
+        // Only reroute if still in the dungeon this patrol was built for. A portal to a new
+        // landblock means BuildDunPatrol would (correctly) re-home, but that should happen via
+        // an explicit /ra dunnav-patrol, not a hazard tick — so just resync and skip.
+        if (!Host.TryGetPlayerPose(out uint playerCell, out _, out _, out _, out _, out _, out _, out _)
+            || (playerCell >> 16) != _dunPatrolLandblock)
+        {
+            _dunPatrolHazardVersion = _objectCache.HazardVersion;
+            return;
+        }
+
+        BuildDunPatrol(isRebuild: true);
+    }
+
+    // ── Patrol-management info / actions (engine-side right-click flyout) ──────
+
+    /// <summary>
+    /// JSON for the engine Avalonia patrol flyout: the player's current dungeon + the set of
+    /// dungeons that have persisted hazard cells. Built by hand (NativeAOT-friendly, no
+    /// reflection). All values are plain ints / hex strings, so no escaping is needed.
+    /// </summary>
+    public string BuildPatrolInfoJson()
+    {
+        bool inDungeon = false;
+        uint landblock = 0;
+        if (Host.TryGetPlayerPose(out uint cell, out _, out _, out _, out _, out _, out _, out _))
+        {
+            landblock = cell >> 16;
+            inDungeon = (cell & 0xFFFF) >= 0x0100;
+        }
+
+        var sb = new System.Text.StringBuilder(256);
+        sb.Append('{');
+        sb.Append("\"inDungeon\":").Append(inDungeon ? "true" : "false").Append(',');
+        sb.Append("\"currentLandblock\":\"").Append(landblock.ToString("X4")).Append("\",");
+        sb.Append("\"currentHazards\":").Append(inDungeon ? DungeonHazardStore.Count(landblock) : 0).Append(',');
+        sb.Append("\"liveHazards\":").Append(_objectCache?.HazardCellCount ?? 0).Append(',');
+        sb.Append("\"dungeons\":[");
+        var lbs = DungeonHazardStore.ListLandblocks();
+        for (int i = 0; i < lbs.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"landblock\":\"").Append(lbs[i].ToString("X4"))
+              .Append("\",\"cells\":").Append(DungeonHazardStore.Count(lbs[i])).Append('}');
+        }
+        sb.Append("],");
+        sb.Append("\"routes\":[");
+        try
+        {
+            string navFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"NavProfiles");
+            if (System.IO.Directory.Exists(navFolder))
+            {
+                var files = System.IO.Directory.GetFiles(navFolder, "*.nav");
+                Array.Sort(files);
+                for (int i = 0; i < files.Length; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    string nm = System.IO.Path.GetFileNameWithoutExtension(files[i]);
+                    sb.Append('"').Append(JsonEscape(nm)).Append('"');
+                }
+            }
+        }
+        catch { }
+        sb.Append("]}");
+        return sb.ToString();
+    }
+
+    // Minimal JSON string escaper for route names (which can contain user-chosen chars).
+    private static string JsonEscape(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length + 8);
+        foreach (char c in s)
+        {
+            switch (c)
+            {
+                case '"':  sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\n': sb.Append("\\n");  break;
+                case '\r': sb.Append("\\r");  break;
+                case '\t': sb.Append("\\t");  break;
+                default:
+                    if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4"));
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Clears persisted + live hazards for one landblock (hex string, e.g. "AB12").</summary>
+    public void ClearDungeonHazards(string landblockHex)
+    {
+        if (string.IsNullOrWhiteSpace(landblockHex)) return;
+        string h = landblockHex.Trim();
+        if (h.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) h = h.Substring(2);
+        if (!uint.TryParse(h, System.Globalization.NumberStyles.HexNumber,
+                           System.Globalization.CultureInfo.InvariantCulture, out uint lb))
+            return;
+        DungeonHazardStore.Clear(lb);
+        _objectCache?.ClearLiveHazards(lb);
+        ChatLine($"[RynthAi] Cleared recorded hazards for dungeon 0x{lb:X4}.");
+    }
+
+    /// <summary>Clears every persisted + live hazard cell across all dungeons.</summary>
+    public void ClearAllDungeonHazards()
+    {
+        DungeonHazardStore.ClearAll();
+        _objectCache?.ClearAllLiveHazards();
+        ChatLine("[RynthAi] Cleared all recorded dungeon hazards.");
+    }
+
+    // ── Manual hazard marking (/ra hazard …) ─────────────────────────────────
+    //
+    // AC dungeon lava/acid is usually baked into the EnvCell environment, NOT a named
+    // world object, so the name-pattern auto-detector can't see it. Manual marking lets
+    // the user stand on (or next to) a hazard and flag that cell directly; it then feeds
+    // the exact same persistence + route-exclusion path as an auto-detected hazard.
+
+    public void HandleHazardCommand(string[] parts)
+    {
+        // parts = ["ra", "hazard", <sub>, <args...>] — the dispatcher splits the whole command,
+        // so the hazard subcommand is parts[2] (matches HandleSettingsCommand's parts[2] convention).
+        string sub = parts.Length > 2 ? parts[2].ToLowerInvariant() : "help";
+        switch (sub)
+        {
+            case "add":
+            case "mark":   MarkCurrentCellHazard();   break;
+            case "del":
+            case "rm":
+            case "remove":
+            case "unmark": UnmarkCurrentCellHazard(); break;
+            case "list":   ListDungeonHazardCells();  break;
+            case "near":
+            case "scan":   ScanNearbyLandscape();     break;
+            case "surf":
+            case "surfaces": DumpCurrentCellSurfaces();  break;
+            case "learnhere":
+            case "learn":    LearnHazardTextureHere();   break;
+            case "texture":
+            case "tex":      HandleHazardTextureCommand(parts); break;
+            default:
+                ChatLine("[RynthAi] /ra hazard add|del|list|near|surfaces|learnhere|texture");
+                ChatLine("[RynthAi]   add       — mark the cell you're standing in as a hazard (patrol turns around at it)");
+                ChatLine("[RynthAi]   del       — unmark the current cell");
+                ChatLine("[RynthAi]   list      — recorded hazard cells in this dungeon");
+                ChatLine("[RynthAi]   near      — list nearby landscape object names + cells (diagnostic)");
+                ChatLine("[RynthAi]   surfaces  — dump the current cell's surface texture ids (Detector C diagnostic)");
+                ChatLine("[RynthAi]   learnhere — stand on lava/acid: auto-flag its floor texture (precision-guarded)");
+                ChatLine("[RynthAi]   texture add|del|list 0x<id> — manage Detector C lava/acid floor textures");
+                break;
+        }
+    }
+
+    // ── Detector C: EnvCell-surface hazard textures (lava/acid floors) ─────────
+
+    /// <summary>Dumps the current EnvCell's surface palette → OrigTextureId, flagging known-hazard textures.</summary>
+    private void DumpCurrentCellSurfaces()
+    {
+        if (!TryGetCurrentDungeonCell(out uint cell)) return;
+        var cellDat   = _raycast?.GeometryLoader?.CellDat;
+        var portalDat = _raycast?.GeometryLoader?.PortalDat;
+        if (cellDat == null || portalDat == null || !cellDat.IsLoaded)
+        {
+            ChatLine("[RynthAi] Geometry not loaded — raycast must be initialized first."); return;
+        }
+
+        var surfaces = DungeonHazardSurfaces.GetCellSurfaces(cellDat, portalDat, cell);
+        if (surfaces.Count == 0) { ChatLine($"[RynthAi] EnvCell 0x{cell:X8}: no readable surfaces."); return; }
+
+        ChatLine($"[RynthAi] EnvCell 0x{cell:X8} surfaces ({surfaces.Count}) — texId is the Detector C hazard key:");
+        foreach (var (surfIdx, texId) in surfaces)
+        {
+            string texStr = texId == 0 ? "(solid color)" : $"0x{texId:X8}";
+            string tag    = texId != 0 && DungeonHazardSurfaces.IsHazardTexture(texId) ? "  ← HAZARD" : "";
+            ChatLine($"[RynthAi]   surf 0x{surfIdx:X4}  tex {texStr}{tag}");
+        }
+        ChatLine("[RynthAi] On a lava/acid floor, run /ra hazard learnhere (auto) or /ra hazard texture add 0x<texId>.");
+    }
+
+    /// <summary>Stand on a hazard floor: flags the texture(s) rare across this landblock (the lava texture).</summary>
+    private void LearnHazardTextureHere()
+    {
+        if (!TryGetCurrentDungeonCell(out uint cell)) return;
+        var cellDat   = _raycast?.GeometryLoader?.CellDat;
+        var portalDat = _raycast?.GeometryLoader?.PortalDat;
+        if (cellDat == null || portalDat == null || !cellDat.IsLoaded)
+        {
+            ChatLine("[RynthAi] Geometry not loaded — raycast must be initialized first."); return;
+        }
+
+        var learned = DungeonHazardSurfaces.LearnFromCell(cell, cellDat, portalDat);
+        DungeonPathfinder.InvalidateCache();
+        if (learned.Count == 0)
+        {
+            ChatLine("[RynthAi] No rare floor texture found here to flag. If this IS lava, use /ra hazard surfaces then texture add 0x<id>.");
+            return;
+        }
+        foreach (uint t in learned) ChatLine($"[RynthAi] Flagged hazard texture 0x{t:X8}.");
+        ChatLine("[RynthAi] Re-run /ra dunnav-patrol to rebuild the route avoiding every cell with that floor.");
+    }
+
+    private void HandleHazardTextureCommand(string[] parts)
+    {
+        // parts = ["ra", "hazard", "texture", <sub>, <id>] — sub at parts[3], id at parts[4].
+        string sub = parts.Length > 3 ? parts[3].ToLowerInvariant() : "list";
+        switch (sub)
+        {
+            case "add":
+            {
+                if (parts.Length < 5 || !TryParseHexUint(parts[4], out uint tex))
+                { ChatLine("[RynthAi] Usage: /ra hazard texture add 0x<OrigTextureId>"); return; }
+                bool added = DungeonHazardSurfaces.AddHazardTexture(tex);
+                DungeonPathfinder.InvalidateCache();
+                ChatLine(added
+                    ? $"[RynthAi] Added hazard texture 0x{tex:X8}. Re-run /ra dunnav-patrol to rebuild around it."
+                    : $"[RynthAi] Texture 0x{tex:X8} was already flagged.");
+                break;
+            }
+            case "del":
+            case "rm":
+            case "remove":
+            {
+                if (parts.Length < 5 || !TryParseHexUint(parts[4], out uint tex))
+                { ChatLine("[RynthAi] Usage: /ra hazard texture del 0x<OrigTextureId>"); return; }
+                bool removed = DungeonHazardSurfaces.RemoveHazardTexture(tex);
+                DungeonPathfinder.InvalidateCache();
+                ChatLine(removed ? $"[RynthAi] Removed hazard texture 0x{tex:X8}." : $"[RynthAi] Texture 0x{tex:X8} was not flagged.");
+                break;
+            }
+            default:
+            {
+                var list = DungeonHazardSurfaces.ListHazardTextures();
+                if (list.Count == 0)
+                {
+                    ChatLine("[RynthAi] No hazard textures flagged. Stand on lava and use /ra hazard learnhere (or surfaces + texture add).");
+                    return;
+                }
+                ChatLine($"[RynthAi] Detector C hazard textures ({list.Count}):");
+                foreach (uint t in list) ChatLine($"[RynthAi]   0x{t:X8}");
+                break;
+            }
+        }
+    }
+
+    private static bool TryParseHexUint(string s, out uint value)
+    {
+        value = 0;
+        if (string.IsNullOrWhiteSpace(s)) return false;
+        s = s.Trim();
+        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) s = s.Substring(2);
+        return uint.TryParse(s, System.Globalization.NumberStyles.HexNumber,
+                             System.Globalization.CultureInfo.InvariantCulture, out value);
+    }
+
+    private bool TryGetCurrentDungeonCell(out uint cell)
+    {
+        cell = 0;
+        if (!Host.TryGetPlayerPose(out uint c, out _, out _, out _, out _, out _, out _, out _))
+        {
+            ChatLine("[RynthAi] Cannot read player position."); return false;
+        }
+        if ((c & 0xFFFF) < 0x0100)
+        {
+            ChatLine("[RynthAi] You must be inside a dungeon (cell >= 0x0100) to mark hazards."); return false;
+        }
+        cell = c;
+        return true;
+    }
+
+    /// <summary>Public entry for the engine patrol flyout "Mark this cell" button.</summary>
+    public void MarkCurrentCellHazardFromUi() => MarkCurrentCellHazard();
+    /// <summary>Public entry for the engine patrol flyout "Unmark this cell" button.</summary>
+    public void UnmarkCurrentCellHazardFromUi() => UnmarkCurrentCellHazard();
+
+    private void MarkCurrentCellHazard()
+    {
+        if (!TryGetCurrentDungeonCell(out uint cell)) return;
+        bool added = _objectCache?.AddHazardCell(cell) ?? false;
+        if (added)
+            ChatLine($"[RynthAi] Marked cell 0x{cell:X8} as a hazard — patrol will avoid it (saved). Re-run /ra dunnav-patrol to rebuild now.");
+        else
+            ChatLine($"[RynthAi] Cell 0x{cell:X8} was already marked as a hazard.");
+    }
+
+    private void UnmarkCurrentCellHazard()
+    {
+        if (!TryGetCurrentDungeonCell(out uint cell)) return;
+        bool removed = _objectCache?.RemoveHazardCell(cell) ?? false;
+        ChatLine(removed
+            ? $"[RynthAi] Unmarked hazard cell 0x{cell:X8}."
+            : $"[RynthAi] Cell 0x{cell:X8} was not marked as a hazard.");
+    }
+
+    private void ListDungeonHazardCells()
+    {
+        if (!Host.TryGetPlayerPose(out uint c, out _, out _, out _, out _, out _, out _, out _))
+        {
+            ChatLine("[RynthAi] Cannot read player position."); return;
+        }
+        uint lb = c >> 16;
+        var cells = _objectCache?.GetHazardCellsForLandblock(lb) ?? new System.Collections.Generic.List<uint>();
+        if (cells.Count == 0)
+        {
+            ChatLine($"[RynthAi] No hazard cells recorded for dungeon 0x{lb:X4}.");
+            return;
+        }
+        ChatLine($"[RynthAi] Hazard cells in dungeon 0x{lb:X4} ({cells.Count}):");
+        foreach (uint cell in cells)
+            ChatLine($"[RynthAi]   0x{cell:X8}{(cell == c ? "  ← you are here" : "")}");
+    }
+
+    private void ScanNearbyLandscape()
+    {
+        if (_objectCache == null) { ChatLine("[RynthAi] Object cache not ready."); return; }
+        int shown = 0;
+        ChatLine("[RynthAi] Nearby landscape objects (name → cell):");
+        foreach (var wo in _objectCache.GetLandscape())
+        {
+            uint uid = (uint)wo.Id;
+            string name = string.IsNullOrEmpty(wo.Name) ? "(no name)" : wo.Name;
+            string cellStr = Host.TryGetObjectPosition(uid, out uint cell, out _, out _, out _)
+                ? $"0x{cell:X8}" : "(no pos)";
+            ChatLine($"[RynthAi]   {name} → {cellStr}  (0x{uid:X8})");
+            if (++shown >= 20) { ChatLine("[RynthAi]   … (truncated at 20)"); break; }
+        }
+        if (shown == 0) ChatLine("[RynthAi]   (none in cache)");
+    }
+
+    /// <summary>
+    /// Scans <paramref name="route"/> and returns the index of the first NavPoint whose
+    /// world position has clear line of sight from the player. Returns 0 if no LOS check
+    /// is possible (no raycast subsystem / no geometry) or if no waypoint clears — at
+    /// worst we behave like the old "always start at 0" code, so this is a strict win.
+    /// </summary>
+    private int FindFirstLineOfSightWaypoint(NavRouteParser route, uint playerCell,
+                                             float playerLocalX, float playerLocalY, float playerZ)
+    {
+        if (route?.Points == null || route.Points.Count == 0) return 0;
+        var geo = _raycast?.GeometryLoader;
+        if (geo == null) return 0;
+
+        var geometry = geo.GetLandblockGeometry(playerCell);
+        if (geometry == null || geometry.Count == 0) return 0;
+
+        uint pBlockX = (playerCell >> 24) & 0xFF;
+        uint pBlockY = (playerCell >> 16) & 0xFF;
+        // Origin ≈ chest height so the ray doesn't graze floor polygons at the source.
+        var origin = new Vector3(pBlockX * 192f + playerLocalX,
+                                 pBlockY * 192f + playerLocalY,
+                                 playerZ + 1.0f);
+
+        for (int i = 0; i < route.Points.Count; i++)
+        {
+            var p = route.Points[i];
+            if (p.Type != NavPointType.Point) continue; // skip pause/chat/portal-action nodes
+
+            // NavPoint NS/EW use the same basis as NavCoordinateHelper; invert to world:
+            //   globalX = (EW * 10 + 1019.5) * 24
+            //   globalY = (NS * 10 + 1019.5) * 24
+            //   worldZ  = navZ * 240   (NavPoint.Z is raw / 240)
+            float gx = (float)((p.EW * 10.0 + 1019.5) * 24.0);
+            float gy = (float)((p.NS * 10.0 + 1019.5) * 24.0);
+            float gz = (float)(p.Z * 240.0) + 1.0f;
+            var target = new Vector3(gx, gy, gz);
+
+            // multiRay=true matches dungeon LOS used elsewhere (TargetingFSM) so thin
+            // corner walls don't slip between the center ray.
+            if (!RaycastEngine.IsLinearPathBlocked(origin, target, geometry, multiRay: true))
+                return i;
+        }
+
+        return 0;
     }
 }

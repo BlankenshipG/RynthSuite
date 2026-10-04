@@ -25,6 +25,43 @@ public sealed partial class RynthAiPlugin
             return true;
         }
 
+        // /ub autovendor ... and /ub vendor ... (UtilityBelt AutoVendor) — Vendor/AutoVendorCommands.cs
+        if (TryHandleAutoVendorCommand(cmd, fullCommand))
+            return true;
+
+        // Most remaining /ub verbs (use / usep / uselp / useip / face / give /
+        // givep / combatstate / cast …) share semantics with the natively
+        // implemented /mt verbs, which talk to host primitives (UseObject /
+        // TurnToHeading / settings) — NOT to Mag-Tools or Decal. Translate the
+        // prefix and reuse that handler so the command works with no external
+        // plugin loaded. Verbs /mt doesn't know (mexec, ig, prepclick, …) fall
+        // through to HandleMtCommand returning false → "Unrecognized /ub".
+        int sp = fullCommand.IndexOf(' ');
+
+        // Verbs /mt doesn't implement but /ra does — route to the /ra dispatcher
+        // (VTank-meta migration). "/ub follow X" → "/ra follow X"; myquests → /ra
+        // quest-flag refresh.
+        if (sp > 0 && cmd is "follow" or "ig" or "mexec" or "myquests")
+        {
+            HandleRaCommand("/ra" + fullCommand.Substring(sp));
+            return true;
+        }
+
+        // /ub clearbugged is RynthAi's clearbusy (force-reset busy state) under a
+        // different name.
+        if (cmd == "clearbugged")
+        {
+            HandleRaCommand("/ra clearbusy");
+            return true;
+        }
+
+        if (sp > 0)
+        {
+            string translated = "/mt" + fullCommand.Substring(sp);   // "/ub use X" → "/mt use X"
+            if (HandleMtCommand(translated))
+                return true;
+        }
+
         return false;
     }
 }

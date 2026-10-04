@@ -17,9 +17,10 @@ namespace RynthCore.Plugin.RynthAi;
 internal sealed class NavMarkerRenderer
 {
     // Colors — ARGB format for D3D9 (0xAARRGGBB)
-    private const uint ColorCyan3D = 0xFF00FFFF;
-    private const uint ColorRed3D  = 0xFFFF4444;
-    private const uint ColorLine3D = 0xFF0088FF;
+    private const uint ColorCyan3D   = 0xFF00FFFF;
+    private const uint ColorRed3D    = 0xFFFF4444;
+    private const uint ColorLine3D   = 0xFF0088FF;
+    private const uint ColorPortal3D = 0xFFFF44FF;  // magenta — live portal target
 
     // Colors — ABGR format for ImGui fallback
     private const uint ColorCyanImGui = 0xFFFFFF00;
@@ -68,13 +69,13 @@ internal sealed class NavMarkerRenderer
             return;
         try
         {
-            if (!TryPrepareFrame(out var route, out int count, out float px, out float py, out float pz,
+            if (!TryPrepareFrame(out var route, out int winStart, out int count, out float px, out float py, out float pz,
                     out double playerNS, out double playerEW, out float ringRadius, out float heightOffset))
                 return;
 
-            Render3D(route, count, px, py, pz, playerNS, playerEW, ringRadius, heightOffset);
+            Render3D(route, winStart, count, px, py, pz, playerNS, playerEW, ringRadius, heightOffset);
         }
-        catch (Exception ex) { _host.Log($"NavMarkers(3D): {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Write(LogCat.Navigation, $"NavMarkers(3D): {ex.Message}"); }
     }
 
     /// <summary>
@@ -88,22 +89,22 @@ internal sealed class NavMarkerRenderer
             return;
         try
         {
-            if (!TryPrepareFrame(out var route, out int count, out float px, out float py, out float pz,
+            if (!TryPrepareFrame(out var route, out int winStart, out int count, out float px, out float py, out float pz,
                     out double playerNS, out double playerEW, out float ringRadius, out float heightOffset))
                 return;
 
-            RenderImGuiFallback(route, count, px, py, pz, playerNS, playerEW, ringRadius, heightOffset);
+            RenderImGuiFallback(route, winStart, count, px, py, pz, playerNS, playerEW, ringRadius, heightOffset);
         }
-        catch (Exception ex) { _host.Log($"NavMarkers(ImGui): {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Write(LogCat.Navigation, $"NavMarkers(ImGui): {ex.Message}"); }
     }
 
-    private bool TryPrepareFrame(out NavRouteParser route, out int count,
+    private bool TryPrepareFrame(out NavRouteParser route, out int winStart, out int count,
         out float px, out float py, out float pz,
         out double playerNS, out double playerEW,
         out float ringRadius, out float heightOffset)
     {
         _frameCount++;
-        route = null!; count = 0;
+        route = null!; winStart = 0; count = 0;
         px = py = pz = 0f;
         playerNS = playerEW = 0.0;
         ringRadius = 0f; heightOffset = 0f;
@@ -129,34 +130,82 @@ internal sealed class NavMarkerRenderer
         route = r;
         ringRadius = Math.Max(0.1f, _settings.FollowNavMin);
         heightOffset = _settings.NavHeightOffset;
-        count = Math.Min(r.Points.Count, MaxMarkers);
+
+        // Render a contiguous window of the route centered on the active
+        // waypoint rather than the first MaxMarkers points. Rings and lines are
+        // per-primitive D3D9 draw calls (not batched), so an unbounded route
+        // would flood EndScene — but a player-centered window keeps the markers
+        // visible wherever you patrol while the draw-call count stays bounded.
+        // (Was: first-MaxMarkers truncation, which left long stretches of a
+        // 300+ waypoint dungeon route — ordered by DFS, so visually patchy —
+        // with no markers at all.)
+        int n = r.Points.Count;
+        count = Math.Min(n, MaxMarkers);
+        if (n <= count)
+        {
+            winStart = 0;
+        }
+        else
+        {
+            int active = _settings.ActiveNavIndex;
+            if (active < 0 || active >= n) active = 0;
+            int half = count / 2;
+            if (r.RouteType == NavRouteType.Circular)
+                winStart = ((active - half) % n + n) % n;
+            else
+                winStart = Math.Clamp(active - half, 0, n - count);
+        }
         return true;
+    }
+
+    // Absolute route index of the k-th point in the render window. The modulo
+    // wraps circular routes; for non-circular routes winStart is clamped so the
+    // window never runs off the end and the modulo is a no-op.
+    private static int WindowAbsIdx(int winStart, int k, int n) => (winStart + k) % n;
+
+    // Next window slot to connect a line to. Stays within the window (contiguous
+    // route points), and only wraps to slot 0 when the window IS the whole route
+    // (small circular route) — never draws a long wrap line across a partial
+    // window.
+    private static int NextInWindow(int k, int count, int n, bool circular)
+    {
+        if (k + 1 < count) return k + 1;
+        if (count == n && circular) return 0;
+        return -1;
     }
 
     // ═══════════════════════════════════════════════════════════════════
     //  3D rendering path — real D3D9 geometry via engine API
     // ═══════════════════════════════════════════════════════════════════
 
-    private void Render3D(NavRouteParser route, int count, float px, float py, float pz,
+    private void Render3D(NavRouteParser route, int winStart, int count, float px, float py, float pz,
         double playerNS, double playerEW, float ringRadius, float heightOffset)
     {
         // Ring thickness in world units (the band width of the annulus)
         float ringThick = _settings.NavRingThickness * 0.02f;  // Scale from UI units to world units
         float lineThick = _settings.NavLineThickness * 0.01f;
 
+        int n = route.Points.Count;
+        bool circular = route.RouteType == NavRouteType.Circular;
+
         // ── Pass 1: Submit rings ─────────────────────────────────────
-        // Store world positions for line pass
+        // Arrays are indexed by window slot k (0..count), not absolute route
+        // index — the absolute index can run far past count on a long route.
         float[] wxArr = new float[count];
         float[] wyArr = new float[count];
         float[] wzArr = new float[count];
         bool[] validArr = new bool[count];
 
-        for (int i = 0; i < count; i++)
+        for (int k = 0; k < count; k++)
         {
+            int i = WindowAbsIdx(winStart, k, n);
             var pt = route.Points[i];
-            if (pt.Type != NavPointType.Point &&
-                pt.Type != NavPointType.Recall &&
-                pt.Type != NavPointType.PortalNPC)
+            // Only draw markers at real travel Points. Action waypoints
+            // (PortalNPC / Recall / Chat / Pause) fire in place and carry
+            // placeholder coordinates (a PortalNPC coord pointing "to the
+            // abyss" is the recurring case), so a ring drawn there floats far
+            // off in empty space.
+            if (pt.Type != NavPointType.Point)
                 continue;
 
             // D3D coords: X=EW, Y=height(up), Z=NS
@@ -164,8 +213,8 @@ internal sealed class NavMarkerRenderer
             float wy = ResolveMarkerWorldY(route, i, heightOffset);
             float wz = py + (float)((pt.NS - playerNS) * 240.0);
 
-            wxArr[i] = wx; wyArr[i] = wy; wzArr[i] = wz;
-            validArr[i] = true;
+            wxArr[k] = wx; wyArr[k] = wy; wzArr[k] = wz;
+            validArr[k] = true;
 
             bool isActive = (i == _settings.ActiveNavIndex);
             uint color = isActive ? ColorRed3D : ColorCyan3D;
@@ -175,25 +224,49 @@ internal sealed class NavMarkerRenderer
 
         }
 
-        // ── Pass 2: Submit connecting lines ──────────────────────────
-        for (int i = 0; i < count; i++)
+        // ── Pass 2: Submit connecting lines (consecutive Points only) ──
+        // validArr is true only for Point waypoints, so a non-Point between two
+        // Points (portal / recall / chat / pause) leaves the next slot invalid
+        // and BREAKS the line there. That is correct: you teleport across a
+        // portal, you don't walk — so no segment should span it (this is what
+        // produced the "line to the abyss", whether to the portal's placeholder
+        // coord or onward to the post-teleport destination point).
+        for (int k = 0; k < count; k++)
         {
-            if (!validArr[i]) continue;
-            int next = NextVisualIdx(i, route);
-            if (next < 0 || next >= count || !validArr[next]) continue;
+            if (!validArr[k]) continue;
+            int nk = NextInWindow(k, count, n, circular);
+            if (nk < 0 || nk >= count || !validArr[nk]) continue;
 
-            _host.Nav3DAddLine(wxArr[i], wyArr[i], wzArr[i],
-                               wxArr[next], wyArr[next], wzArr[next],
+            _host.Nav3DAddLine(wxArr[k], wyArr[k], wzArr[k],
+                               wxArr[nk], wyArr[nk], wzArr[nk],
                                lineThick, ColorLine3D);
         }
 
+        // ── Pass 3: live portal marker + line ────────────────────────
+        // While the engine is actively using a portal/NPC it publishes the
+        // resolved object id (the waypoint's own coord is a placeholder, so we
+        // can't use it). Draw a distinct magenta ring at the portal's REAL
+        // position plus a line from the player to it — a visible "walk in here".
+        uint portalId = _settings.ActivePortalObjId;
+        if (portalId != 0 &&
+            _host.HasGetObjectPosition &&
+            _host.TryGetObjectPosition(portalId, out uint pcell, out float ppx, out float ppy, out float ppz) &&
+            NavCoordinateHelper.TryConvertPoseToCoords(pcell, ppx, ppy, out double portNS, out double portEW))
+        {
+            float pwx = px + (float)((portEW - playerEW) * 240.0);
+            float pwz = py + (float)((portNS - playerNS) * 240.0);
+            float pwy = ppz + heightOffset;   // portal ground height (same frame as marker Z)
+
+            _host.Nav3DAddRing(pwx, pwy, pwz, ringRadius, ringThick * 1.4f, ColorPortal3D);
+            _host.Nav3DAddLine(px, pwy, py, pwx, pwy, pwz, lineThick, ColorPortal3D);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
     //  ImGui fallback path — 2D projected lines (original implementation)
     // ═══════════════════════════════════════════════════════════════════
 
-    private void RenderImGuiFallback(NavRouteParser route, int count, float px, float py, float pz,
+    private void RenderImGuiFallback(NavRouteParser route, int winStart, int count, float px, float py, float pz,
         double playerNS, double playerEW, float ringRadius, float heightOffset)
     {
         if (!_host.HasWorldToScreen || !_host.HasGetViewportSize)
@@ -225,16 +298,26 @@ internal sealed class NavMarkerRenderer
 
         var drawList = ImGui.GetWindowDrawList();
 
-        // ── Pass 1: project waypoint centers ─────────────────────────
-        int projected = 0;
-        for (int i = 0; i < count; i++)
-        {
-            var pt = route.Points[i];
-            _centerVis[i] = false;
+        int n = route.Points.Count;
+        bool circular = route.RouteType == NavRouteType.Circular;
 
-            if (pt.Type != NavPointType.Point &&
-                pt.Type != NavPointType.Recall &&
-                pt.Type != NavPointType.PortalNPC)
+        // ── Pass 1: project waypoint centers ─────────────────────────
+        // Per-frame arrays are indexed by window slot k (0..count); the active
+        // waypoint's absolute route index i is used only for route lookups and
+        // the on-screen index label.
+        int projected = 0;
+        for (int k = 0; k < count; k++)
+        {
+            int i = WindowAbsIdx(winStart, k, n);
+            var pt = route.Points[i];
+            _centerVis[k] = false;
+
+            // Only draw markers at real travel Points. Action waypoints
+            // (PortalNPC / Recall / Chat / Pause) fire in place and carry
+            // placeholder coordinates (a PortalNPC coord pointing "to the
+            // abyss" is the recurring case), so a ring drawn there floats far
+            // off in empty space.
+            if (pt.Type != NavPointType.Point)
                 continue;
 
             float wx = px + (float)((pt.EW - playerEW) * 240.0);
@@ -243,26 +326,28 @@ internal sealed class NavMarkerRenderer
 
             if (_host.WorldToScreen(wx, wy, wz, out float sx, out float sy))
             {
-                _centerScreen[i] = new Vector2(sx, sy);
-                _centerVis[i] = true;
+                _centerScreen[k] = new Vector2(sx, sy);
+                _centerVis[k] = true;
 
                 float dx = wx - px, dy = wy - pz, dz = wz - py;
-                _centerDepth[i] = (float)Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                _centerDepth[k] = (float)Math.Sqrt(dx * dx + dy * dy + dz * dz);
                 projected++;
             }
         }
 
-        // ── Pass 2: connecting lines ─────────────────────────────────
+        // ── Pass 2: connecting lines (consecutive Points only) ───────
+        // _centerVis is set only for Point waypoints, so a non-Point between two
+        // Points breaks the line there (no segment spans a teleport).
         float baseLineThick = Math.Max(1f, _settings.NavLineThickness);
-        for (int i = 0; i < count; i++)
+        for (int k = 0; k < count; k++)
         {
-            if (!_centerVis[i]) continue;
-            int next = NextVisualIdx(i, route);
-            if (next < 0 || next >= count || !_centerVis[next]) continue;
+            if (!_centerVis[k]) continue;
+            int nk = NextInWindow(k, count, n, circular);
+            if (nk < 0 || nk >= count || !_centerVis[nk]) continue;
 
-            float avgD = (_centerDepth[i] + _centerDepth[next]) * 0.5f;
+            float avgD = (_centerDepth[k] + _centerDepth[nk]) * 0.5f;
             float thick = Math.Clamp(baseLineThick * 60f / Math.Max(avgD, 1f), baseLineThick * 0.5f, baseLineThick * 2f);
-            drawList.AddLine(_centerScreen[i], _centerScreen[next], ColorLineImGui, thick);
+            drawList.AddLine(_centerScreen[k], _centerScreen[nk], ColorLineImGui, thick);
         }
 
         // ── Pass 3: 3D ground rings at each waypoint ────────────────
@@ -271,12 +356,16 @@ internal sealed class NavMarkerRenderer
         bool[] rvis = new bool[RingSegments];
         float baseRingThick = Math.Max(1f, _settings.NavRingThickness);
 
-        for (int i = 0; i < count; i++)
+        for (int k = 0; k < count; k++)
         {
+            int i = WindowAbsIdx(winStart, k, n);
             var pt = route.Points[i];
-            if (pt.Type != NavPointType.Point &&
-                pt.Type != NavPointType.Recall &&
-                pt.Type != NavPointType.PortalNPC)
+            // Only draw markers at real travel Points. Action waypoints
+            // (PortalNPC / Recall / Chat / Pause) fire in place and carry
+            // placeholder coordinates (a PortalNPC coord pointing "to the
+            // abyss" is the recurring case), so a ring drawn there floats far
+            // off in empty space.
+            if (pt.Type != NavPointType.Point)
                 continue;
 
             float cx = px + (float)((pt.EW - playerEW) * 240.0);
@@ -310,26 +399,18 @@ internal sealed class NavMarkerRenderer
                 }
             }
 
-            // Index label above the ring
-            if (_centerVis[i])
+            // Index label above the ring (absolute route index)
+            if (_centerVis[k])
             {
                 string label = i.ToString();
                 var sz = ImGui.CalcTextSize(label);
-                drawList.AddText(_centerScreen[i] - new Vector2(sz.X * 0.5f, 16f), color, label);
+                drawList.AddText(_centerScreen[k] - new Vector2(sz.X * 0.5f, 16f), color, label);
             }
         }
 
         ImGui.End();
         ImGui.PopStyleVar(2);
         ImGui.PopStyleColor();
-    }
-
-    private static int NextVisualIdx(int i, NavRouteParser route)
-    {
-        int next = i + 1;
-        if (next >= route.Points.Count)
-            return route.RouteType == NavRouteType.Circular ? 0 : -1;
-        return next;
     }
 
     // Nav-coord → AC world-metre scale. The horizontal render math (proven

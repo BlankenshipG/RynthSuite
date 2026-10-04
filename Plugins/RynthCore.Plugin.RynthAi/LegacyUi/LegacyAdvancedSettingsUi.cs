@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using ImGuiNET;
 
@@ -7,6 +8,9 @@ internal sealed class LegacyAdvancedSettingsUi
 {
     private readonly LegacyUiSettings _settings;
     private MissileCraftingManager? _missileCraftingManager;
+
+    // Scratch buffer for the "never attack" name entry box.
+    private string _newBlacklistName = "";
 
     private static readonly string[] AttackHeights = { "Low", "Medium", "High" };
     private static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
@@ -18,6 +22,19 @@ internal sealed class LegacyAdvancedSettingsUi
     }
 
     public void SetMissileCraftingManager(MissileCraftingManager mgr) => _missileCraftingManager = mgr;
+
+    private Func<string>? _autoVendorStatus;
+    public void SetAutoVendorStatusProvider(Func<string> status) => _autoVendorStatus = status;
+
+    private Action? _openLootEditor;
+    private Action? _openMonsterEditor;
+
+    /// <summary>Wires the "Tools" row at the top of the Looting page (Loot Editor / Monster Editor buttons).</summary>
+    public void SetToolLaunchers(Action openLootEditor, Action openMonsterEditor)
+    {
+        _openLootEditor = openLootEditor;
+        _openMonsterEditor = openMonsterEditor;
+    }
 
     public string MissileCraftingState  => _missileCraftingManager?.State.ToString() ?? string.Empty;
     public bool   MissileCraftingActive => _missileCraftingManager?.IsCrafting ?? false;
@@ -54,6 +71,100 @@ internal sealed class LegacyAdvancedSettingsUi
         }
 
         ImGui.End();
+    }
+
+    /// <summary>
+    /// Diagnostics tab: global debug-to-chat, daily file log and one trace checkbox per
+    /// RynthAi function (same switches as /ra debug, /ra trace, /ra logs). Toggles persist
+    /// immediately to Logs\Diagnostics\diagnostics.json.
+    /// </summary>
+    private void RenderDiagnostics()
+    {
+        ImGui.Text("Logging & Debugging");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        bool debugToChat = RynthLog.DebugToChat;
+        if (ImGui.Checkbox("Debug to chat##Diag", ref debugToChat)) RynthLog.DebugToChat = debugToChat;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Echo trace lines and errors from the categories ticked below into the chat window.");
+
+        bool fileAll = RynthLog.FileLogAll;
+        if (ImGui.Checkbox("Daily RynthAi log file##Diag", ref fileAll)) RynthLog.FileLogAll = fileAll;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Mirror every RynthAi log line to rynthai_<date>.txt (kept 7 days).");
+
+        ImGui.TextDisabled($"Folder: {RynthLog.Directory}");
+        if (ImGui.Button("All on##Diag")) RynthLog.SetTracingByPrefix(string.Empty, true);
+        ImGui.SameLine();
+        if (ImGui.Button("All off##Diag")) RynthLog.SetTracingByPrefix(string.Empty, false);
+        ImGui.SameLine();
+        if (ImGui.Button("ILT Hub on##Diag")) RynthLog.SetTracingByPrefix("Ilt", true);
+        ImGui.SameLine();
+        if (ImGui.Button("Prune old##Diag")) RynthLog.Prune();
+
+        ImGui.Spacing();
+        ImGui.Text("Trace per function (Trace\\<Category>_<date>.txt):");
+
+        // Three-column grid of category checkboxes.
+        if (ImGui.BeginTable("DiagCats", 3))
+        {
+            foreach (LogCat cat in Enum.GetValues<LogCat>())
+            {
+                ImGui.TableNextColumn();
+                bool on = RynthLog.IsTracing(cat);
+                if (ImGui.Checkbox($"{cat}##DiagCat", ref on)) RynthLog.SetTracing(cat, on);
+            }
+            ImGui.EndTable();
+        }
+
+        ImGui.Spacing();
+        ImGui.TextDisabled("Exceptions always go to exceptions_<date>.txt with full stack traces (throttled).");
+    }
+
+    private void RenderVendoring()
+    {
+        ImGui.Text("AutoVendor (UtilityBelt)");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        string status = _autoVendorStatus?.Invoke() ?? "Not logged in";
+        ImGui.TextDisabled($"Status: {status}");
+        ImGui.Spacing();
+
+        ImGui.Checkbox("Enabled##AV", ref _settings.AutoVendorEnabled);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Buy and sell by a loot profile when a vendor opens (and allow /ub autovendor).\n" +
+                             "Profiles: <Vendor Name>.utl or default.utl in your character's AutoVendor\n" +
+                             "folder, the server folder, or " + Vendor.AutoVendorManager.MainProfileDir + ".");
+        ImGui.Checkbox("Test Mode (only print what it would do)##AV", ref _settings.AutoVendorTestMode);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Lists what would be bought and sold without trading. Leave this on until\n" +
+                             "the list looks right: selling can't be undone.");
+        ImGui.Checkbox("Buy##AV", ref _settings.AutoVendorEnableBuying);
+        ImGui.SameLine();
+        ImGui.Checkbox("Sell##AV", ref _settings.AutoVendorEnableSelling);
+        ImGui.Checkbox("Only Sell From Main Pack##AV", ref _settings.AutoVendorOnlyFromMainPack);
+        ImGui.Checkbox("Show Merchant Info##AV", ref _settings.AutoVendorShowMerchantInfo);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Print the vendor's buy/sell rates and max value when it opens.");
+        ImGui.Checkbox("Think When Finished##AV", ref _settings.AutoVendorThink);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Send 'AutoVendor finished: <vendor>' (and failures) as a /tell to yourself,\n" +
+                             "so a meta's chat condition can wait for it.");
+
+        ImGui.Spacing();
+        ImGui.Text("/ub vendor open");
+        ImGui.SetNextItemWidth(120);
+        if (ImGui.InputInt("Tries##AV", ref _settings.AutoVendorTries))
+            _settings.AutoVendorTries = Math.Clamp(_settings.AutoVendorTries, 1, 20);
+        ImGui.SetNextItemWidth(120);
+        if (ImGui.InputInt("Time Between Tries (ms)##AV", ref _settings.AutoVendorTriesTime, 250))
+            _settings.AutoVendorTriesTime = Math.Clamp(_settings.AutoVendorTriesTime, 500, 30000);
+
+        ImGui.Spacing();
+        ImGui.TextDisabled("Never sold: equipped, attuned, bonded, retained, tinkered, imbued,");
+        ImGui.TextDisabled("inscribed, rare, zero value, packs, or anything a Keep rule could match.");
     }
 
     private void RenderTabContent(int tabIndex)
@@ -143,10 +254,15 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Text("Missile Arc Velocities (m/s)");
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Per-weapon projectile speed used for line-of-sight arc checks.\nLower velocity = higher arc. Tune until LoS matches in-game hits.\nDungeons always use linear checks to avoid false ceiling blocks.");
+                    ImGui.SetTooltip("Per-weapon launch speed used for line-of-sight arc checks.\n" +
+                                     "Lower velocity = higher arc. Tune until LoS matches in-game hits\n" +
+                                     "(/ra lostest bow on a selected mob shows the arc and where it hits).\n" +
+                                     "Indoors the arc is checked against ceilings too.");
                 ImGui.Checkbox("Use Arcs for Missile LoS", ref _settings.UseArcs);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("When off, all missile LoS checks are linear (eye-to-eye).");
+                    ImGui.SetTooltip("On: a missile target must pass the straight line AND the arc the\n" +
+                                     "missile flies (checked against ceilings in dungeons).\n" +
+                                     "Off: all missile LoS checks are a straight line (eye-to-eye).");
                 if (_settings.UseArcs)
                 {
                     ImGui.Indent();
@@ -158,8 +274,18 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SliderFloat("Atlatl",   ref _settings.AtlatlArcVelocity,   10.0f, 60.0f, "%.1f");
                     ImGui.SetNextItemWidth(150);
                     ImGui.SliderFloat("Magic Arc", ref _settings.MagicArcVelocity,   10.0f, 60.0f, "%.1f");
+                    ImGui.SetNextItemWidth(150);
+                    ImGui.SliderFloat("Arc Clearance (m)", ref _settings.MissileArcClearance, 0.0f, 3.0f, "%.1f");
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("Extra headroom the arc must have at mid-flight. Raise it if shots\n" +
+                                         "still hit ceilings; lower it if mobs the arrows can reach are skipped.\n" +
+                                         "Default 0.5.");
                     ImGui.Unindent();
                 }
+                ImGui.Checkbox("LoS Debug Log", ref _settings.LosDebugLog);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Log each in-range mob's LoS verdict ([LOS] lines: straight line or arc,\n" +
+                                     "how high the arc rises, where it hits, distance and cells). For tuning.");
 
                 ImGui.Separator();
                 ImGui.Spacing();
@@ -182,6 +308,46 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SetTooltip(
                         "Blacklist a target after being engaged this many seconds without dealing damage.\n" +
                         "0 = disabled. Default 60s. Useful for targets stuck in geometry or unreachable.");
+
+                ImGui.Spacing();
+                ImGui.Text("Never Attack (by name)");
+                ImGui.SetNextItemWidth(220);
+                bool addByEnter = ImGui.InputTextWithHint("##blacklistName", "Monster name (e.g. Drudge)",
+                    ref _newBlacklistName, 64, ImGuiInputTextFlags.EnterReturnsTrue);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Monsters whose name CONTAINS this text (case-insensitive) are never\n" +
+                        "targeted, faced, or attacked. This manual do-not-attack list is\n" +
+                        "separate from the automatic no-damage blacklist above.");
+                ImGui.SameLine();
+                if ((ImGui.Button("Add##blacklist") || addByEnter) && !string.IsNullOrWhiteSpace(_newBlacklistName))
+                {
+                    string entry = _newBlacklistName.Trim();
+                    bool exists = false;
+                    for (int i = 0; i < _settings.MonsterNameBlacklist.Count; i++)
+                        if (string.Equals(_settings.MonsterNameBlacklist[i], entry, StringComparison.OrdinalIgnoreCase))
+                        { exists = true; break; }
+                    if (!exists) _settings.MonsterNameBlacklist.Add(entry);
+                    _newBlacklistName = "";
+                }
+
+                if (_settings.MonsterNameBlacklist.Count == 0)
+                {
+                    ImGui.TextDisabled("(empty — any monster may be attacked)");
+                }
+                else
+                {
+                    int removeIdx = -1;
+                    for (int i = 0; i < _settings.MonsterNameBlacklist.Count; i++)
+                    {
+                        ImGui.PushID(i);
+                        if (ImGui.SmallButton("X")) removeIdx = i;
+                        ImGui.SameLine();
+                        ImGui.TextUnformatted(_settings.MonsterNameBlacklist[i]);
+                        ImGui.PopID();
+                    }
+                    if (removeIdx >= 0) _settings.MonsterNameBlacklist.RemoveAt(removeIdx);
+                }
 
                 ImGui.Separator();
                 ImGui.Spacing();
@@ -349,9 +515,18 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.SliderInt("Spell Interval (ms)", ref _settings.SpellCastIntervalMs, 100, 1500);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip(
-                        "Delay between spell casts (buffing and combat).\n" +
-                        "Lower = faster spell chains. 400ms is a good balance.\n" +
+                        "Delay between BUFF / utility spell casts (not combat).\n" +
+                        "Lower = faster buff chains. 400ms is a good balance.\n" +
                         "Below 200ms may cause fizzles or dropped casts on laggy servers.");
+
+                ImGui.SetNextItemWidth(180);
+                ImGui.SliderInt("Attack Spell Delay (ms)", ref _settings.AttackSpellIntervalMs, 250, 5000);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Delay between offensive (war/void) COMBAT casts only.\n" +
+                        "Spacing casts ~1-2s (1500ms default) stops back-to-back\n" +
+                        "\"You're too busy!\" refusals that drop casts and cost kills.\n" +
+                        "Does NOT affect buffing speed.");
 
                 ImGui.Spacing();
                 ImGui.Checkbox("Cast Dispel Self", ref _settings.CastDispelSelf);
@@ -496,6 +671,12 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SetTooltip("Within this distance of a waypoint, blend the aim point toward the next one to cut corners smoothly. 0 = off (aim straight at each waypoint).");
 
                 ImGui.SetNextItemWidth(80);
+                ImGui.InputFloat("Shortcut Tolerance (yd)", ref _settings.NavShortcutYards, 0.5f, 1f, "%.1f");
+                _settings.NavShortcutYards = Math.Clamp(_settings.NavShortcutYards, 0f, 10f);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("On reaching a waypoint, skip ahead only while the straight line to a later waypoint passes within this distance of every waypoint skipped. Lower keeps closer to the route; 0 = visit every waypoint.");
+
+                ImGui.SetNextItemWidth(80);
                 ImGui.InputFloat("Turn Rate (deg/s)", ref _settings.NavTurnRateDegPerSec, 15f, 45f, "%.0f");
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Mode 0 (heading servo) max turn speed. Higher = snappier turns, lower = gentler. Ignored by Tier 1 / Tier 2.");
@@ -546,6 +727,15 @@ internal sealed class LegacyAdvancedSettingsUi
                         "values (<60s) risk a gap between the old buff dropping and the new one\n" +
                         "landing.");
 
+                ImGui.SetNextItemWidth(180);
+                ImGui.SliderInt("Also Refresh Under (seconds left)", ref _settings.RebuffTopOffSecondsRemaining, 30, 3600);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "When a buff is due, also recast every other buff with less than this\n" +
+                        "much time left, so they land together. Buffs with more time are left\n" +
+                        "alone. Default 1200 (20 minutes). At or below 'Rebuff With', only the\n" +
+                        "expiring buff is recast.");
+
                 ImGui.Spacing();
                 ImGui.Separator();
                 ImGui.Text("Buff Difficulty (Min Buffed Skill)");
@@ -575,6 +765,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 break;
 
             case "Looting":
+                ExternalTool.DrawToolButtons("Loot", _openLootEditor, _openMonsterEditor);
                 ImGui.Checkbox("Enable Looting", ref _settings.EnableLooting);
                 ImGui.Checkbox("Boost Loot Priority", ref _settings.BoostLootPriority);
                 ImGui.Checkbox("Loot Only Rare Corpses", ref _settings.LootOnlyRareCorpses);
@@ -655,6 +846,14 @@ internal sealed class LegacyAdvancedSettingsUi
                         }
                     }
                 }
+                break;
+
+            case "Vendoring":
+                RenderVendoring();
+                break;
+
+            case "Diagnostics":
+                RenderDiagnostics();
                 break;
 
             default:

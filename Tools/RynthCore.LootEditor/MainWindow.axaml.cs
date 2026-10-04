@@ -9,11 +9,16 @@ public partial class MainWindow : Window
     private readonly MainViewModel _vm;
     private bool _forceClose;
 
-    public MainWindow()
+    public MainWindow() : this(null) { }
+
+    /// <param name="openPath">A profile to open at startup (from the command line), or null.</param>
+    public MainWindow(string? openPath)
     {
         InitializeComponent();
         _vm = new MainViewModel(this);
         DataContext = _vm;
+        if (!string.IsNullOrWhiteSpace(openPath))
+            _vm.OpenFromCommandLine(openPath);
 
         // Global save — File menu "Save" has no system gesture on all platforms; match Monster editor.
         KeyDown += (_, e) =>

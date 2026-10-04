@@ -65,6 +65,10 @@ internal static class AfFileParser
                 {
                     ParseState(lines, ref idx, result.Rules);
                 }
+                else if (trimmed.StartsWith("NAVDATA:"))
+                {
+                    ParseNavData(lines, ref idx, result.EmbeddedNavs);
+                }
                 else if (trimmed.StartsWith("NAV:"))
                 {
                     ParseNavSection(lines, ref idx, result.EmbeddedNavs);
@@ -138,11 +142,10 @@ internal static class AfFileParser
         idx++;
 
         // If compound condition, parse children until DO: or end of state
-        if (rule.Condition == MetaConditionType.All ||
-            rule.Condition == MetaConditionType.Any ||
-            rule.Condition == MetaConditionType.Not)
+        MetaRule? container = ChildContainer(rule);
+        if (container != null)
         {
-            rule.Children = new List<MetaRule>();
+            container.Children ??= new List<MetaRule>();
             while (idx < lines.Length)
             {
                 string trimmed = lines[idx].TrimStart();
@@ -173,11 +176,10 @@ internal static class AfFileParser
                 idx++;
 
                 // If child is compound, recursively parse its children
-                if (child.Condition == MetaConditionType.All ||
-                    child.Condition == MetaConditionType.Any ||
-                    child.Condition == MetaConditionType.Not)
+                MetaRule? childBox = ChildContainer(child);
+                if (childBox != null)
                 {
-                    child.Children = new List<MetaRule>();
+                    childBox.Children ??= new List<MetaRule>();
                     int childIndent = lineIndent;
                     while (idx < lines.Length)
                     {
@@ -200,19 +202,18 @@ internal static class AfFileParser
                         idx++;
 
                         // Support one more level of nesting
-                        if (grandchild.Condition == MetaConditionType.All ||
-                            grandchild.Condition == MetaConditionType.Any ||
-                            grandchild.Condition == MetaConditionType.Not)
+                        MetaRule? grandBox = ChildContainer(grandchild);
+                        if (grandBox != null)
                         {
-                            grandchild.Children = new List<MetaRule>();
-                            ParseNestedConditionChildren(lines, ref idx, grandchild, ci);
+                            grandBox.Children ??= new List<MetaRule>();
+                            ParseNestedConditionChildren(lines, ref idx, grandBox, ci);
                         }
 
-                        child.Children.Add(grandchild);
+                        childBox.Children.Add(grandchild);
                     }
                 }
 
-                rule.Children.Add(child);
+                container.Children.Add(child);
             }
         }
 
@@ -318,16 +319,31 @@ internal static class AfFileParser
             ParseConditionLine(ct, child);
             idx++;
 
-            if (child.Condition == MetaConditionType.All ||
-                child.Condition == MetaConditionType.Any ||
-                child.Condition == MetaConditionType.Not)
+            MetaRule? childBox = ChildContainer(child);
+            if (childBox != null)
             {
-                child.Children = new List<MetaRule>();
-                ParseNestedConditionChildren(lines, ref idx, child, ci);
+                childBox.Children ??= new List<MetaRule>();
+                ParseNestedConditionChildren(lines, ref idx, childBox, ci);
             }
 
             parent.Children.Add(child);
         }
+    }
+
+    /// <summary>
+    /// The rule that the indented condition lines under <paramref name="rule"/> belong to.
+    /// All/Any take them, and so does a bare Not (RynthAi's old two-line form). A metaf
+    /// Not carries its operand on its own line ("Not NoMobsInDist 5"), so lines follow
+    /// only when that operand is itself All/Any ("Not All" + children) — they are its.
+    /// Null when nothing may follow.
+    /// </summary>
+    private static MetaRule? ChildContainer(MetaRule rule)
+    {
+        while (rule.Condition == MetaConditionType.Not && rule.Children is { Count: 1 })
+            rule = rule.Children[0];
+        return rule.Condition is MetaConditionType.All or MetaConditionType.Any or MetaConditionType.Not
+            ? rule
+            : null;
     }
 
     // ── Line parsers ────────────────────────────────────────────────────────
@@ -369,6 +385,20 @@ internal static class AfFileParser
         }
 
         rule.Condition = condType;
+
+        // metaf writes Not's operand on the same line: "Not NoMobsInDist 5". This used
+        // to be dropped — an empty Not never fires. (A bare "Not" with its operand on
+        // the next line is RynthAi's old form; ChildContainer still accepts it.)
+        if (condType == MetaConditionType.Not)
+        {
+            if (rest.Length > 0)
+            {
+                var operand = new MetaRule { State = rule.State };
+                ParseConditionLine(rest, operand);
+                rule.Children = new List<MetaRule> { operand };
+            }
+            return;
+        }
 
         // Parse condition data based on type
         switch (condType)
@@ -564,6 +594,36 @@ internal static class AfFileParser
     }
 
     // ── NAV section parsing ─────────────────────────────────────────────────
+
+    // Reads a `NAVDATA: <name> <lineCount> ~~ {` block (written by AfFileWriter):
+    // the canonical uTank2 nav lines stored verbatim. Count-prefixed so a waypoint
+    // string containing "~~ }" cannot terminate the block early. This is the exact
+    // representation MetFileParser produces and the nav engine consumes — so a route
+    // round-trips losslessly regardless of waypoint type (Portal/Vendor/NPC included).
+    private static void ParseNavData(string[] lines, ref int idx,
+        Dictionary<string, List<string>> navRoutes)
+    {
+        string body = StripPrefix(lines[idx].TrimStart(), "NAVDATA:");
+        int comment = body.IndexOf("~~", StringComparison.Ordinal);
+        if (comment >= 0) body = body.Substring(0, comment).TrimEnd();
+        // Trailing token is the line count; everything before it is the route name
+        // (names are space-sanitized on write; parse from the right to be safe).
+        int sp = body.LastIndexOf(' ');
+        string name = sp > 0 ? body.Substring(0, sp).Trim() : body.Trim();
+        int count = 0;
+        if (sp > 0)
+            int.TryParse(body.Substring(sp + 1).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out count);
+        idx++; // consume header
+
+        var navLines = new List<string>(count);
+        for (int k = 0; k < count && idx < lines.Length; k++)
+            navLines.Add(lines[idx++]);
+
+        if (idx < lines.Length && lines[idx].Trim() == "~~ }") idx++; // consume closer
+
+        if (!string.IsNullOrEmpty(name) && navLines.Count >= 3)
+            navRoutes[name] = navLines;
+    }
 
     private static void ParseNavSection(string[] lines, ref int idx, Dictionary<string, List<string>> navRoutes)
     {
@@ -770,22 +830,20 @@ internal static class AfFileParser
 
     private static int CountNavPoints(List<string> navFileLines)
     {
+        // Mirror NavRouteParser exactly via its shared trailer table so the two
+        // counters cannot drift (the drift — type 6 counted as +12 here but read
+        // as 6 trailer lines there — is what corrupted Portal routes pre-fix).
         int count = 0;
         int i = 0;
         while (i < navFileLines.Count)
         {
-            if (!int.TryParse(navFileLines[i], out int pointType)) { i++; continue; }
+            if (!int.TryParse(navFileLines[i], NumberStyles.Integer, CultureInfo.InvariantCulture, out int pointType))
+                break; // desync / trailing data — stop counting
+            if (!NavRouteParser.IsKnownType(pointType))
+                break; // unknown type: trailer length unknown, stop (matches NavRouteParser)
 
             count++;
-            i += 5; // type + EW + NS + Z + flag
-
-            switch (pointType)
-            {
-                case 2: i += 1; break; // Recall: +spellId
-                case 3: i += 1; break; // Pause: +ms
-                case 4: i += 1; break; // Chat: +command
-                case 6: i += 12; break; // PortalNPC: +name+class+tie+exitEW+NS+Z+0+landEW+NS+Z+0
-            }
+            i += 5 + NavRouteParser.TrailerLineCount((NavPointType)pointType); // type+EW+NS+Z+flag + trailer
         }
         return count;
     }

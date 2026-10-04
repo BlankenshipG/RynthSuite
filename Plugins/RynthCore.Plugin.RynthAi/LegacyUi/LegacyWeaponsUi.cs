@@ -17,7 +17,7 @@ internal sealed class LegacyWeaponsUi
         { "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
 
     private static readonly string[] ConsumableTypes =
-        { "General", "Lockpick", "HealthKit", "ManaStone", "Stamina" };
+        { "General", "Lockpick", "HealthKit", "ManaStone", "Stamina", "Pet" };
 
     private static readonly string[] AmmoCategories =
         { "Auto", "Bow", "Crossbow", "Atlatl" };
@@ -30,6 +30,16 @@ internal sealed class LegacyWeaponsUi
 
     public void SetWorldFilter(WorldObjectCache cache) => _worldFilter = cache;
 
+    private Action? _openLootEditor;
+    private Action? _openMonsterEditor;
+
+    /// <summary>Wires the "Tools" row at the top of the Items window (Loot Editor / Monster Editor buttons).</summary>
+    public void SetToolLaunchers(Action openLootEditor, Action openMonsterEditor)
+    {
+        _openLootEditor = openLootEditor;
+        _openMonsterEditor = openMonsterEditor;
+    }
+
     public void Render()
     {
         if (!DashWindows.ShowWeapons) return;
@@ -40,6 +50,8 @@ internal sealed class LegacyWeaponsUi
             ImGui.End();
             return;
         }
+
+        ExternalTool.DrawToolButtons("Items", _openLootEditor, _openMonsterEditor);
 
         // ── Weapons Section ─────────────────────────────────────────────────
         ImGui.TextColored(LegacyDashboardRenderer.ColAmber, "Weapons");
@@ -411,6 +423,10 @@ internal sealed class LegacyWeaponsUi
         if (name.Contains("Lockpick", StringComparison.OrdinalIgnoreCase) ||
             name.Contains("Lock Pick", StringComparison.OrdinalIgnoreCase))
             return "Lockpick";
+
+        // Combat-pet summoning essences (PetDevices) — consumed by PetManager.
+        if (name.Contains("Essence", StringComparison.OrdinalIgnoreCase))
+            return "Pet";
 
         return "General";
     }

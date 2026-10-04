@@ -23,6 +23,11 @@ public enum LongValueKey
     MaximumHealth          = 39,  // creature base max HP (STypeInt 39)
     CreatureType           = 62,  // creature type / species ID
 
+    // AUGMENTATION_INCREASED_SPELL_DURATION — Archmage's Endurance, stacks 5x.
+    // Each rank adds +20% enchantment duration. Verified against Chorizite
+    // AcClient/STypes.cs STypeInt ordinal 238.
+    AugmentationIncreasedSpellDuration = 238,
+
     // Legacy alias kept for call-site compatibility
     EquippedSlots          = 10,
 }
@@ -49,6 +54,7 @@ public enum DoubleValueKey
     DamageVariance = 22,
     CurrentPowerMod = 23,
     AccuracyMod = 24,
+    MaximumVelocity = 26,   // missile launcher launch speed (m/s); known once appraised
     WeaponDefense = 29,
     UseRadius = 54,
     WeaponOffense = 61,
@@ -82,6 +88,15 @@ public class WorldObject
     // Direct override for items discovered by lightweight scan (bypasses cache)
     internal int _wieldedLocationDirect = -1;
 
+    // Remote full-inventory capture (P1): stashed by WorldObjectCache during the direct-inventory
+    // BFS walk so the snapshot is self-contained. _directContainerId/_directSlot come from the BFS
+    // structure (the container we just enumerated + the item's index in its contents array) — more
+    // reliable than a live Container read, which AutoCram showed can return 0/stale off-thread.
+    internal int _directContainerId;        // parent container GUID (player or a side-pack), 0 if unset
+    internal int _directSlot = -1;          // 0-based position in GetContainerContents(), -1 if unset
+    public int DirectContainerId => _directContainerId;
+    public int DirectSlot => _directSlot;
+
     public WorldObject(int id, string name, AcObjectClass objectClass = AcObjectClass.Unknown)
     {
         Id = id;
@@ -92,17 +107,59 @@ public class WorldObject
     // Set by WorldObjectCache when it creates/updates this object
     internal WorldObjectCache? Cache { get; set; }
 
-    public int Values(LongValueKey key, int defaultValue)
-        => Cache?.GetIntProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    /// <summary>
+    /// Values that answer Values() before any live read (AutoVendor: a vendor-list item
+    /// built from the engine's vendor snapshot, or an item's known name). Null = live only.
+    /// </summary>
+    internal ItemPropertyOverlay? Overlay { get; set; }
+
+    public int Values(LongValueKey key, int defaultValue) => Values((int)key, defaultValue);
 
     public int Values(int key, int defaultValue)
-        => Cache?.GetIntProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    {
+        var o = Overlay;
+        if (o != null)
+        {
+            if (o.Ints.TryGetValue(unchecked((uint)key), out int v)) return v;
+            if (!o.LiveFallback) return defaultValue;
+        }
+        return Cache?.GetIntProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    }
 
     public string Values(StringValueKey key, string defaultValue)
-        => Cache?.GetStringProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    {
+        var o = Overlay;
+        if (o != null)
+        {
+            if (o.Strings.TryGetValue((uint)key, out string? v)) return v;
+            if (!o.LiveFallback) return defaultValue;
+        }
+        return Cache?.GetStringProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    }
 
     public double Values(DoubleValueKey key, double defaultValue)
-        => Cache?.GetDoubleProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    {
+        var o = Overlay;
+        if (o != null)
+        {
+            if (o.Doubles.TryGetValue((uint)key, out double v)) return v;
+            if (!o.LiveFallback) return defaultValue;
+        }
+        return Cache?.GetDoubleProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+    }
+}
+
+/// <summary>
+/// Fixed property values for a <see cref="WorldObject"/>. With LiveFallback off, a key
+/// that isn't here reads as the caller's default instead of the client object's value
+/// (a vendor-list item carries only what the vendor snapshot holds).
+/// </summary>
+internal sealed class ItemPropertyOverlay
+{
+    public Dictionary<uint, int> Ints { get; } = new();
+    public Dictionary<uint, string> Strings { get; } = new();
+    public Dictionary<uint, double> Doubles { get; } = new();
+    public bool LiveFallback { get; init; }
 }
 
 // ── SpellInfo stub ────────────────────────────────────────────────────────
@@ -118,11 +175,17 @@ public class SpellInfo
     /// </summary>
     public int Family { get; }
 
+    /// <summary>Spell LEVEL 1-8 (the roman-numeral tier of THIS spell), or 0 if not derivable.
+    /// Roman suffix (e.g. "... VII"=7) first; else "Incantation of ..."=8 and tier-7 lore names=7.
+    /// This is the spell's own level — distinct from the caster's highest castable tier.</summary>
+    public int Level { get; }
+
     public SpellInfo(int id, string name)
     {
         Id = id;
         Name = name ?? "";
         Family = ComputeFamily(Name);
+        Level = ComputeLevel(Name);
     }
 
     private static readonly string[] TierSuffixes =
@@ -206,6 +269,31 @@ public class SpellInfo
         { "Astyrrian's Bane", "Lightning Bane" },
         { "Archer's Bane", "Piercing Bane" },
     };
+
+    // Derive the spell's own level (1-8). Roman suffix wins; else an "Incantation of ..."
+    // form is level 8 and a recognized tier-7 lore name is level 7. 0 = not derivable.
+    private static int ComputeLevel(string spellName)
+    {
+        if (string.IsNullOrEmpty(spellName)) return 0;
+        int sp = spellName.TrimEnd().LastIndexOf(' ');
+        if (sp >= 0)
+        {
+            switch (spellName.Trim()[(sp + 1)..].ToUpperInvariant())
+            {
+                case "I":    return 1;
+                case "II":   return 2;
+                case "III":  return 3;
+                case "IV":   return 4;
+                case "V":    return 5;
+                case "VI":   return 6;
+                case "VII":  return 7;
+                case "VIII": return 8;
+            }
+        }
+        if (spellName.StartsWith("Incantation of ", StringComparison.OrdinalIgnoreCase)) return 8;
+        if (LoreToBase.ContainsKey(spellName.Trim())) return 7;
+        return 0;
+    }
 
     private static int ComputeFamily(string spellName)
     {
@@ -345,7 +433,7 @@ public class CharacterSkills
                 if (!_loggedReadFailure)
                 {
                     _loggedReadFailure = true;
-                    _host.Log($"[RynthAi] CharacterSkills: host returned success+buffed=0 for trained skill {skill} (player=0x{_playerId:X8}, stype={stype}, training={training}) — engine qualities artifact, not a real level. Using capable-stub fallback until a real read lands (NOT collapsing tier).");
+                    RynthLog.Write(LogCat.Combat, $"[RynthAi] CharacterSkills: host returned success+buffed=0 for trained skill {skill} (player=0x{_playerId:X8}, stype={stype}, training={training}) — engine qualities artifact, not a real level. Using capable-stub fallback until a real read lands (NOT collapsing tier).");
                 }
                 return new CharacterSkillInfo(2, 250);
             }
@@ -360,7 +448,7 @@ public class CharacterSkills
             if (!_loggedReadFailure)
             {
                 _loggedReadFailure = true;
-                _host.Log($"[RynthAi] CharacterSkills: host skill read failed (player=0x{_playerId:X8}, skill={skill}, stype={stype}) — engine player-qualities ptr likely not seeded. Using capable-stub fallback until a real read lands.");
+                RynthLog.Write(LogCat.Combat, $"[RynthAi] CharacterSkills: host skill read failed (player=0x{_playerId:X8}, skill={skill}, stype={stype}) — engine player-qualities ptr likely not seeded. Using capable-stub fallback until a real read lands.");
             }
             return new CharacterSkillInfo(2, 250);
         }

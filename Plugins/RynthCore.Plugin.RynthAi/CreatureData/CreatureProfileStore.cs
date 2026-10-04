@@ -2,18 +2,19 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.CreatureData;
 
 /// <summary>
 /// Thread-safe disk-backed store of CreatureProfile records.
-/// File: C:\Games\RynthSuite\RynthAi\CreatureData\creatures.json
+/// File: <SuiteDir>\RynthAi\CreatureData\creatures.json
 /// Shared across all characters; engine writes, optional external editor reads.
 /// Keyed by composite "name|wcid" so tier variants don't collide.
 /// </summary>
 internal sealed class CreatureProfileStore
 {
-    private const string Folder = @"C:\Games\RynthSuite\RynthAi\CreatureData";
+    private static readonly string Folder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"CreatureData");
     private const string FileName = "creatures.json";
 
     private readonly object _lock = new();
@@ -114,6 +115,21 @@ internal sealed class CreatureProfileStore
             profile = best;
             return best != null;
         }
+    }
+
+    /// <summary>Lookup by wcid (for UI joins). Returns the first profile with this Wcid.</summary>
+    public bool TryGetByWcid(uint wcid, out CreatureProfile? profile)
+    {
+        profile = null;
+        if (wcid == 0) return false;
+        lock (_lock)
+        {
+            foreach (var kv in _byKey)
+            {
+                if (kv.Value.Wcid == wcid) { profile = kv.Value; return true; }
+            }
+        }
+        return false;
     }
 
     /// <summary>

@@ -13,6 +13,8 @@ public static class DashWindows
     public static bool ShowWeapons;
     public static bool ShowLua;
     public static bool ShowDungeonMap;
+    /// <summary>ILT Hub window (persisted in ilt-hub.json, not in the combat profile).</summary>
+    public static bool ShowIltHub;
 }
 
 public sealed class LegacyUiSettings
@@ -40,6 +42,7 @@ public sealed class LegacyUiSettings
     public float NavDeadZone = 4f;
     public float NavSweepMult = 2.5f;
     public float NavLookaheadYards = 4.0f;       // distance to start blending the aim point toward the next waypoint (0 = off)
+    public float NavShortcutYards = 1.0f;        // on arrival, skip waypoints only while the straight run to a later one stays within this of every skipped point (0 = visit every point)
     public float NavTurnRateDegPerSec = 270f;    // mode 0 (heading servo) max turn rate
     public float NavTier1TurnSpeed = 3.0f;       // mode 1 (CM_Movement) DoMovement turn-command speed (magnitude of CMotionInterp turn_speed; 1.0 = native keyboard rate)
     public float PostPortalDelaySec = 4.0f;
@@ -113,6 +116,10 @@ public sealed class LegacyUiSettings
     public int ApproachRange = 4;
     public int MinRingTargets = 4;
     public float FollowNavMin = 1.5f;
+    // VTank navclosestoprange: stop this many LANDBLOCK FRACTIONS short of a finite
+    // (Once) route's final point (×240 = yards; 0.00625 ≈ 1.5yd). 0 = off. Runtime-
+    // set by migrated metas; not persisted.
+    public float NavCloseStopRange = 0f;
     public float NavRingThickness = 6.0f;
     public float NavLineThickness = 6.0f;
     public float NavHeightOffset = 0.05f;
@@ -122,6 +129,7 @@ public sealed class LegacyUiSettings
     public bool SummonPets;
     public int CustomPetRange = 5;
     public int PetMinMonsters = 1;
+    public bool PetAutoRefill = true;   // auto-consume Encapsulated Spirits to recharge empty essences
     public bool AdvancedOptions;
     public bool MineOnly = true;
     public bool ShowEditor;
@@ -144,6 +152,13 @@ public sealed class LegacyUiSettings
     /// landing.
     /// </summary>
     public int RebuffSecondsRemaining = 300;
+    /// <summary>
+    /// When a buff falls under RebuffSecondsRemaining, also refresh every other buff
+    /// with less than this many seconds left, so they land together instead of each
+    /// interrupting the fight on its own. Buffs with more time are left alone. At or
+    /// below RebuffSecondsRemaining only the expiring buff is recast.
+    /// </summary>
+    public int RebuffTopOffSecondsRemaining = 1200;
     public bool StartMacroOnLogin;
     public bool PatrolOnLogin;
 
@@ -162,15 +177,54 @@ public sealed class LegacyUiSettings
     /// </summary>
     public int TargetNoProgressTimeoutSec = 0; // 0 = disabled; set to e.g. 120 to blacklist stuck targets
 
+    /// <summary>
+    /// User-configured "never attack" list. Any monster whose name CONTAINS one
+    /// of these entries (case-insensitive) is excluded from combat target
+    /// acquisition entirely — never scanned, faced, or attacked. This is a manual
+    /// do-not-attack list, separate from the automatic no-damage blacklist above.
+    /// Edited in Advanced → Combat → Monster Blacklist.
+    /// </summary>
+    public List<string> MonsterNameBlacklist { get; set; } = new();
+
     public int GiveQueueIntervalMs = 150;
 
     public int SpellCastIntervalMs = 400;
+
+    /// <summary>
+    /// Minimum delay between offensive (war/void) COMBAT spell casts, in ms.
+    /// Combat magic uses this instead of <see cref="SpellCastIntervalMs"/> so
+    /// attack pacing can be slowed (~1-2s) without slowing buff chains. Default
+    /// 1500ms ("a second or two") — spacing offensive casts stops back-to-back
+    /// "You're too busy!" refusals that drop casts and cost kills. ≤0 ⇒ 1500.
+    /// </summary>
+    public int AttackSpellIntervalMs = 1500;
 
     public int MeleeAttackPower = -1;
     public int MissileAttackPower = -1;
     /// <summary>When true, only ammo stacks listed under Items → Missile ammunition are considered for auto-equip (besides per-monster override).</summary>
     public bool MissileAmmoInventoryRulesOnly;
-    public bool UseNativeAttack = true;
+    /// <summary>
+    /// Physical-attack path. FALSE (default since 2026-09-04) = the direct
+    /// explicit-target path: Event_TargetedMelee/MissileAttack take the target
+    /// id as an argument and never touch AC's single selection global
+    /// (0x00871E54), so combat no longer clobbers the inventory item you have
+    /// selected. TRUE = AC's native ClientCombatSystem pipeline, which has no
+    /// target argument and therefore must be preceded by SelectItem(targetId) —
+    /// that SelectItem was the last selection clobber in the combat hot path.
+    ///
+    /// This defaulted to true until now for one reason: the direct path does not
+    /// turn the character to face the monster, and swings/arrows at the wrong
+    /// heading go nowhere (ExplicitTarget_Combat_Findings_2026-06-03.md §5). The
+    /// facing servo in CombatManager.OnHeartbeat now covers both melee and
+    /// missile on the non-native path, which is exactly what that blocker asked
+    /// for, so the default flips.
+    ///
+    /// Kept as a setting rather than hard-gated: the servo has not been soaked
+    /// against a moving target across a long session, and re-ticking this box in
+    /// the Advanced settings UI restores the old behaviour live, without a
+    /// rebuild, if the swings look wrong.
+    /// </summary>
+    public bool UseNativeAttack = false;
     public bool UseRecklessness;
     public int MeleeAttackHeight = 1;
     public int MissileAttackHeight = 1;
@@ -183,6 +237,20 @@ public sealed class LegacyUiSettings
     public float CrossbowArcVelocity  = 40.0f;
     public float AtlatlArcVelocity    = 22.0f;
     public float MagicArcVelocity     = 25.0f;
+    /// <summary>
+    /// Extra headroom (meters) a missile's arc must have at mid-flight for LoS to pass,
+    /// on top of the modelled flight path (launch speed above, AC gravity 9.8). Covers
+    /// what the model can't know exactly: launch height, the real launch speed, the
+    /// projectile's size. Raise it if shots still hit ceilings, lower it if targets
+    /// under a ceiling the arrows clear are skipped. Only used with UseArcs.
+    /// </summary>
+    public float MissileArcClearance  = 0.5f;
+    /// <summary>
+    /// Log each in-range target's LoS verdict (straight line / arc, how high the arc
+    /// rises, where it hits) and the missile weapon's known launch speed. For tuning
+    /// the arc settings; off by default (a few lines a second in a crowd).
+    /// </summary>
+    public bool  LosDebugLog;
 
     public bool EnableFPSLimit = true;
     public int TargetFPSFocused = 60;
@@ -213,6 +281,23 @@ public sealed class LegacyUiSettings
     public bool EnableManaTapping   = false;
     public int  ManaTapMinMana      = 2500;
     public int  ManaStoneKeepCount  = 5;
+
+    // ── AutoVendor (UtilityBelt AutoVendor; /ub autovendor, /ub vendor) ────────
+    /// <summary>Run AutoVendor when a vendor opens (and allow /ub autovendor). UB defaults this on;
+    /// RynthAi defaults it off because the plugin auto-updates and selling can't be undone.</summary>
+    public bool AutoVendorEnabled = false;
+    public bool AutoVendorEnableBuying = true;
+    public bool AutoVendorEnableSelling = true;
+    /// <summary>Only print what would be bought and sold. On by default in RynthAi (UB: off).</summary>
+    public bool AutoVendorTestMode = true;
+    /// <summary>Send "AutoVendor finished: ..." (and fatal/failed lines) as a /tell to yourself, for metas.</summary>
+    public bool AutoVendorThink = false;
+    public bool AutoVendorShowMerchantInfo = true;
+    public bool AutoVendorOnlyFromMainPack = false;
+    /// <summary>Attempts to open a vendor on /ub vendor open[p].</summary>
+    public int AutoVendorTries = 4;
+    /// <summary>Milliseconds between /ub vendor open attempts.</summary>
+    public int AutoVendorTriesTime = 5000;
 
     public List<MonsterRule> MonsterRules { get; set; } = new();
     public List<ItemRule> ItemRules { get; set; } = new();
@@ -332,7 +417,7 @@ public sealed class LegacyUiSettings
     public readonly string[] AdvancedTabs =
     {
         "Display", "UI", "Misc", "Recharge", "Melee Combat", "Missile Combat", "Spell Combat",
-        "Ranges", "Navigation", "Buffing", "Crafting", "Looting"
+        "Ranges", "Navigation", "Buffing", "Crafting", "Looting", "Vendoring", "Diagnostics"
     };
 
     [JsonIgnore]
@@ -343,6 +428,23 @@ public sealed class LegacyUiSettings
 
     [JsonIgnore]
     public bool NavIsStuck = false;
+
+    // Runtime-only: the object id of the portal/NPC the nav engine is actively
+    // using (resolved by FirePortalNpcUse), or 0 when not using one. Lets the
+    // marker renderer draw a ring + line to the portal's REAL position, since
+    // the PortalNPC waypoint's stored coordinate is an unreliable placeholder.
+    [JsonIgnore]
+    public uint ActivePortalObjId = 0;
+
+    // Fellowship-follow: when on, nav steers toward the live target instead of a
+    // route. Runtime-only (off each session; enable via /ra follow on).
+    [JsonIgnore]
+    public bool FollowMode = false;
+
+    // Resolved object id of the follow target (the fellowship leader), published
+    // by the plugin each tick; 0 when not in a fellowship / target not loaded.
+    [JsonIgnore]
+    public uint FollowTargetId = 0;
 
     public LegacyUiSettings()
     {
@@ -524,9 +626,13 @@ public sealed class SettingsBridgePayload
     public float CrossbowArcVelocity { get; set; }
     public float AtlatlArcVelocity { get; set; }
     public float MagicArcVelocity { get; set; }
+    public float MissileArcClearance { get; set; } = 0.5f;   // absent in older payloads
+    public bool LosDebugLog { get; set; }
     public int BlacklistAttempts { get; set; }
     public int BlacklistTimeoutSec { get; set; }
-    public int BlacklistCastSettleMs { get; set; }
+    // -1 = absent from the payload: the overlay's Settings panel didn't send it, and
+    // applying the missing 0 made every panel click zero the setting (2026-09-27).
+    public int BlacklistCastSettleMs { get; set; } = -1;
     public int TargetNoProgressTimeoutSec { get; set; }
     public int GiveQueueIntervalMs { get; set; }
 
@@ -553,6 +659,7 @@ public sealed class SettingsBridgePayload
 
     // Spell Combat
     public int SpellCastIntervalMs { get; set; }
+    public int AttackSpellIntervalMs { get; set; }
     public bool CastDispelSelf { get; set; }
     public int MinRingTargets { get; set; }
     public int MinSkillLevelTier1 { get; set; }
@@ -566,7 +673,7 @@ public sealed class SettingsBridgePayload
 
     // Ranges
     public int MonsterRange { get; set; }
-    public int MonsterDisengageRange { get; set; }
+    public int MonsterDisengageRange { get; set; } = -1;   // -1 = absent, see BlacklistCastSettleMs
     public int RingRange { get; set; }
     public int ApproachRange { get; set; }
     public double CorpseApproachRangeMax { get; set; }
@@ -589,6 +696,7 @@ public sealed class SettingsBridgePayload
     public float NavDeadZone { get; set; }
     public float NavSweepMult { get; set; }
     public float NavLookaheadYards { get; set; }
+    public float NavShortcutYards { get; set; }
     public float NavTurnRateDegPerSec { get; set; }
     public float NavTier1TurnSpeed { get; set; }
     public float PostPortalDelaySec { get; set; }
@@ -603,6 +711,7 @@ public sealed class SettingsBridgePayload
     public bool EnableBuffing { get; set; }
     public bool RebuffWhenIdle { get; set; }
     public int RebuffSecondsRemaining { get; set; }
+    public int RebuffTopOffSecondsRemaining { get; set; } = 1200;   // absent in older files
     public int BuffMinSkillLevelTier1 { get; set; }
     public int BuffMinSkillLevelTier2 { get; set; }
     public int BuffMinSkillLevelTier3 { get; set; }
@@ -643,6 +752,17 @@ public sealed class SettingsBridgePayload
     public int SalvageSalvageDelayMs { get; set; }
     public int SalvageResultDelayFirstMs { get; set; }
     public int SalvageResultDelayFastMs { get; set; }
+    // AutoVendor. Nullable so a settings panel that doesn't know these fields yet
+    // leaves the character's values alone instead of resetting them.
+    public bool? AutoVendorEnabled { get; set; }
+    public bool? AutoVendorEnableBuying { get; set; }
+    public bool? AutoVendorEnableSelling { get; set; }
+    public bool? AutoVendorTestMode { get; set; }
+    public bool? AutoVendorThink { get; set; }
+    public bool? AutoVendorShowMerchantInfo { get; set; }
+    public bool? AutoVendorOnlyFromMainPack { get; set; }
+    public int? AutoVendorTries { get; set; }
+    public int? AutoVendorTriesTime { get; set; }
 }
 
 public enum MetaConditionType

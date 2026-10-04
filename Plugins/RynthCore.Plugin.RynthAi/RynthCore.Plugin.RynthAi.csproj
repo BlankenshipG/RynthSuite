@@ -15,11 +15,11 @@
     <RootNamespace>RynthCore.Plugin.RynthAi</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthAi</AssemblyName>
     <Platforms>x86</Platforms>
-    <!-- Previous release line: 0.6.8 (VirindiTank dashboard import parity). -->
-    <Version>0.6.9</Version>
-    <AssemblyVersion>0.6.9.0</AssemblyVersion>
-    <FileVersion>0.6.9.0</FileVersion>
-    <InformationalVersion>0.6.9-vt-import-active-loot-monsters</InformationalVersion>
+    <!-- Keep in sync with RynthAiPlugin.VersionPointer (reported via GetVersion). -->
+    <Version>0.5.4</Version>
+    <AssemblyVersion>0.5.4.0</AssemblyVersion>
+    <FileVersion>0.5.4.0</FileVersion>
+    <InformationalVersion>0.5.4-legacy-ui</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -60,5 +60,10 @@
   <Target Name="RemoveBundledImGuiNativeFromPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
     <Delete Files="$(PublishDir)cimgui.dll" Condition="Exists('$(PublishDir)cimgui.dll')" />
   </Target>
+
+  <ItemGroup>
+    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
+    <Compile Include="..\..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+  </ItemGroup>
 
 </Project>

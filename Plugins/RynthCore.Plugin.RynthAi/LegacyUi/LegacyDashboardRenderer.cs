@@ -10,6 +10,7 @@ using RynthCore.PluginSdk;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.Meta;
 using RynthCore.Plugin.RynthAi.ProfileImport;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -60,11 +61,18 @@ internal sealed class LegacyDashboardRenderer
     private readonly List<string> _navFiles = new();
     private readonly List<string> _lootFiles = new();
     private readonly List<string> _metaFiles = new();
-    private readonly string _navFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
-    private readonly string _lootFolder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
-    private readonly string _metaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
-    private readonly string _settingsRoot = @"C:\Games\RynthSuite\RynthAi\SettingsProfiles\ACEmulator";
-    private readonly string _monstersFolder = @"C:\Games\RynthSuite\RynthAi\MonsterProfiles";
+    // Guards the four profile-name lists above against the cross-thread race
+    // between BuildSnapshotJson (Avalonia panel poll thread, ~30 Hz) and the
+    // Refresh*Files mutators (AC pump thread). Enumerating a List<string> while
+    // another thread Clear()s it throws InvalidOperationException; when that
+    // escaped the snapshot poll's reverse-P/Invoke boundary it fail-fasted the
+    // NativeAOT runtime. Copy-under-lock on read; lock the Clear+AddRange swap.
+    private readonly object _profileListsLock = new();
+    private readonly string _navFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"NavProfiles");
+    private readonly string _lootFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"LootProfiles");
+    private readonly string _metaFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
+    private readonly string _settingsRoot = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"SettingsProfiles\ACEmulator");
+    private readonly string _monstersFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MonsterProfiles");
 
     private int _selectedNavIdx;
     private bool _isMinimized;
@@ -109,11 +117,57 @@ internal sealed class LegacyDashboardRenderer
     private uint _playerMana;
     private uint _playerMaxMana;
 
-    // ── Monster editor (external process) ────────────────────────────────────
+    // ── Session kills for the status feed (kills/hour). The other stats (xp/lum/deaths/vitae)
+    // are read engine-side (PrefetchPlayerStats) and written to the status file directly — the
+    // off-thread plugin pump can't do those main-thread AC reads. ──
+    private DateTime _sessionStartUtc = DateTime.UtcNow;
+    private long _sessionKills;       // Interlocked: incremented on the pump thread, read in the snapshot
+    private double _killsPerHour;
+    private long _lastKillTicks;      // DateTime.UtcNow.Ticks of the last kill (0 = none yet this session)
+    // volatile: written on the pump thread (SetFreeSlots/SetComponentCounts), read on the snapshot-poll
+    // thread (BuildSnapshotJson). x86 int writes are atomic but give no visibility guarantee — without
+    // volatile the reader can see a stale value indefinitely. (_sessionKills uses Interlocked for the same reason.)
+    private volatile int _freeSlots = -1;      // main-pack empty slots; -1 = unknown. Pushed from the plugin tick.
+    private volatile int _scarabs = -1;        // total scarab spell components in inventory; -1 = unknown.
+    private volatile int _tapers = -1;         // total prismatic tapers in inventory; -1 = unknown.
+    // Per-tier scarab breakdown (name -> count), pushed from the pump thread as a fresh immutable array;
+    // volatile ref so the snapshot-poll thread always sees the latest (ref assignment is atomic).
+    private volatile KeyValuePair<string, int>[] _scarabsByType = System.Array.Empty<KeyValuePair<string, int>>();
+    // Equipped gear with full appraisal, pushed from the pump thread; volatile ref.
+    private volatile EquipAppraisal[] _equipment = System.Array.Empty<EquipAppraisal>();
+
+    // D2 three-tier target telemetry + D6 attack-cast/kill ratio, pushed from the pump thread
+    // (SetScanCounts/SetCastStats) and read on the snapshot-poll thread — volatile for visibility
+    // (same rationale as _freeSlots above). -1 = no scan yet this session.
+    private volatile int _scanTotal = -1;      // monsters the client renders this scan
+    private volatile int _scanRing = -1;       // of those, within engage range
+    private volatile int _scanPossible = -1;   // of those, surviving all combat filters (attack candidates)
+    private volatile int _scanLosBlocked = -1; // in-range + attackable but wall-blocked (LOS)
+    private volatile int _sessionAttackCasts;  // offensive combat casts issued this session
+    private volatile int _castsSinceLastKill;  // offensive casts since the last credited kill (orphan signal)
+
+    // Full read-only inventory for the remote viewer (P1), pushed from the pump thread; volatile refs.
+    // Kept OUT of BuildSnapshotJson (the 150ms hot path) — served by its own RynthPluginGetInventoryJson
+    // export so 100s of items never ride the status snapshot. _inventoryVersion bumps on each rescan.
+    private volatile InventoryItemSnapshot[] _invItems = System.Array.Empty<InventoryItemSnapshot>();
+    private volatile InventoryContainerSnapshot[] _invContainers = System.Array.Empty<InventoryContainerSnapshot>();
+    private int _inventoryVersion;   // Interlocked: bumped on write, read in BuildInventoryJson
+
+    // ── External tools (Loot Editor, Monster Editor) ───────────────────────────
+    // Launched from the Monsters window ("External Editor"), the Items window and the Looting settings page.
+    // ExternalTool wraps the AOT-safe ShellExecuteExW / WaitForSingleObject / WM_CLOSE handling.
     private FileSystemWatcher? _monsterWatcher;
     private volatile bool _monsterFileChanged;
-    private System.Diagnostics.Process? _monsterEditorProcess;
-    private System.Diagnostics.Process? _lootEditorProcess;
+    private readonly ExternalTool _monsterEditor = new("Monster Editor");
+    private readonly ExternalTool _lootEditor = new("Loot Editor");
+
+    /// <summary>Releases the tracked editor process handles (the editors keep running). Call on plugin
+    /// Shutdown so the handles aren't leaked if an editor is still open when RynthAi unloads.</summary>
+    public void ReleaseExternalToolHandles()
+    {
+        _monsterEditor.Release();
+        _lootEditor.Release();
+    }
 
     public LegacyDashboardRenderer(RynthCoreHost host)
     {
@@ -136,10 +190,17 @@ internal sealed class LegacyDashboardRenderer
         _rynthRadarUi.SetMapData(_dungeonMapUi);
         _rynthChatUi = new RynthChatUi(host, _settings);
         _rynthChatUi.OnSettingChanged = SaveSettings;
+        // "Tools" buttons on the Items window and the Looting settings page.
+        _weaponsUi.SetToolLaunchers(OpenLootEditor, OpenMonsterEditor);
+        _advancedSettingsUi.SetToolLaunchers(OpenLootEditor, OpenMonsterEditor);
         RefreshAllLists();
     }
 
-    public void OnLoginComplete() => RefreshAllLists();
+    public void OnLoginComplete()
+    {
+        RefreshAllLists();
+        ResetSessionStats();
+    }
 
     /// <summary>
     /// Returns the current per-character folder (set during LoadSettings).
@@ -154,6 +215,12 @@ internal sealed class LegacyDashboardRenderer
     }
 
     public void SetMissileCraftingManager(MissileCraftingManager mgr) => _advancedSettingsUi.SetMissileCraftingManager(mgr);
+    public void SetAutoVendorStatusProvider(Func<string> status) => _advancedSettingsUi.SetAutoVendorStatusProvider(status);
+
+    // The open vendor's AutoVendor profile path (null when no vendor is open), for the
+    // dashboard snapshot's vendorProfilePath.
+    private Func<string?>? _vendorProfilePath;
+    public void SetVendorProfilePathProvider(Func<string?> path) => _vendorProfilePath = path;
 
     public void SetRaycast(Raycasting.MainLogic raycast)
     {
@@ -527,6 +594,53 @@ internal sealed class LegacyDashboardRenderer
         }
     }
 
+    /// <summary>Selectable weapons for the Damage-panel weapon/offhand pickers, as a JSON array
+    /// [{"id":..,"name":..}] from _settings.ItemRules — the same configured-weapons source the
+    /// Monsters tab's picker uses. Manual JSON (NativeAOT-trivial, no extra JsonContext type).</summary>
+    public string BuildCombatWeaponsJson()
+    {
+        try
+        {
+            var items = _settings.ItemRules ?? new List<ItemRule>();
+            var sb = new System.Text.StringBuilder();
+            sb.Append('[');
+            bool first = true;
+            foreach (var it in items)
+            {
+                if (!first) sb.Append(',');
+                first = false;
+                sb.Append("{\"id\":").Append(it.Id).Append(",\"name\":").Append(JsonString(it.Name)).Append('}');
+            }
+            sb.Append(']');
+            return sb.ToString();
+        }
+        catch { return "[]"; }
+    }
+
+    private static string JsonString(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return "\"\"";
+        var sb = new System.Text.StringBuilder(s.Length + 2);
+        sb.Append('"');
+        foreach (char c in s)
+        {
+            switch (c)
+            {
+                case '"':  sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4"));
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        sb.Append('"');
+        return sb.ToString();
+    }
+
     /// <summary>Set by RynthAiPlugin so the snapshot can decorate rules with captured profile data.</summary>
     public Func<string, CreatureData.CreatureProfile?>? CreatureLookupForRules { get; set; }
 
@@ -552,7 +666,9 @@ internal sealed class LegacyDashboardRenderer
             {
                 var existingDefault = _settings.MonsterRules
                     .FirstOrDefault(r => r.Name.Equals("Default", StringComparison.OrdinalIgnoreCase));
-                if (existingDefault != null) incoming.Insert(0, existingDefault);
+                // Synthesize one if neither incoming nor existing has a Default — combat's
+                // GetRuleForTarget fallback assumes it always exists, so never leave it absent.
+                incoming.Insert(0, existingDefault ?? new MonsterRule { Name = "Default" });
             }
 
             _settings.MonsterRules = incoming;
@@ -593,6 +709,8 @@ internal sealed class LegacyDashboardRenderer
                 CrossbowArcVelocity        = s.CrossbowArcVelocity,
                 AtlatlArcVelocity          = s.AtlatlArcVelocity,
                 MagicArcVelocity           = s.MagicArcVelocity,
+                MissileArcClearance        = s.MissileArcClearance,
+                LosDebugLog                = s.LosDebugLog,
                 BlacklistAttempts          = s.BlacklistAttempts,
                 BlacklistTimeoutSec        = s.BlacklistTimeoutSec,
                 BlacklistCastSettleMs      = s.BlacklistCastSettleMs,
@@ -619,6 +737,7 @@ internal sealed class LegacyDashboardRenderer
                 PetMinMonsters             = s.PetMinMonsters,
                 // Spell Combat
                 SpellCastIntervalMs        = s.SpellCastIntervalMs,
+                AttackSpellIntervalMs      = s.AttackSpellIntervalMs,
                 CastDispelSelf             = s.CastDispelSelf,
                 MinRingTargets             = s.MinRingTargets,
                 MinSkillLevelTier1         = s.MinSkillLevelTier1,
@@ -653,6 +772,7 @@ internal sealed class LegacyDashboardRenderer
                 NavDeadZone                = s.NavDeadZone,
                 NavSweepMult               = s.NavSweepMult,
                 NavLookaheadYards          = s.NavLookaheadYards,
+                NavShortcutYards           = s.NavShortcutYards,
                 NavTurnRateDegPerSec       = s.NavTurnRateDegPerSec,
                 NavTier1TurnSpeed          = s.NavTier1TurnSpeed,
                 PostPortalDelaySec         = s.PostPortalDelaySec,
@@ -666,6 +786,7 @@ internal sealed class LegacyDashboardRenderer
                 EnableBuffing              = s.EnableBuffing,
                 RebuffWhenIdle             = s.RebuffWhenIdle,
                 RebuffSecondsRemaining     = s.RebuffSecondsRemaining,
+                RebuffTopOffSecondsRemaining = s.RebuffTopOffSecondsRemaining,
                 BuffMinSkillLevelTier1     = s.BuffMinSkillLevelTier1,
                 BuffMinSkillLevelTier2     = s.BuffMinSkillLevelTier2,
                 BuffMinSkillLevelTier3     = s.BuffMinSkillLevelTier3,
@@ -704,6 +825,16 @@ internal sealed class LegacyDashboardRenderer
                 SalvageSalvageDelayMs      = s.SalvageSalvageDelayMs,
                 SalvageResultDelayFirstMs  = s.SalvageResultDelayFirstMs,
                 SalvageResultDelayFastMs   = s.SalvageResultDelayFastMs,
+                // Vendoring (AutoVendor)
+                AutoVendorEnabled          = s.AutoVendorEnabled,
+                AutoVendorEnableBuying     = s.AutoVendorEnableBuying,
+                AutoVendorEnableSelling    = s.AutoVendorEnableSelling,
+                AutoVendorTestMode         = s.AutoVendorTestMode,
+                AutoVendorThink            = s.AutoVendorThink,
+                AutoVendorShowMerchantInfo = s.AutoVendorShowMerchantInfo,
+                AutoVendorOnlyFromMainPack = s.AutoVendorOnlyFromMainPack,
+                AutoVendorTries            = s.AutoVendorTries,
+                AutoVendorTriesTime        = s.AutoVendorTriesTime,
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.SettingsBridgePayload);
         }
@@ -718,7 +849,20 @@ internal sealed class LegacyDashboardRenderer
         if (string.IsNullOrWhiteSpace(json)) return;
         try
         {
-            var p = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.SettingsBridgePayload);
+            // Lay the sent fields over the current settings, so a field the sender leaves
+            // out keeps its value instead of deserializing to 0 and being applied. The
+            // overlay's Settings panel keeps its own copy of this payload; when that copy
+            // lacked BlacklistCastSettleMs/MonsterDisengageRange, every click zeroed them.
+            var merged = System.Text.Json.Nodes.JsonNode.Parse(BuildSettingsJson(),
+                new System.Text.Json.Nodes.JsonNodeOptions { PropertyNameCaseInsensitive = true })?.AsObject();
+            if (merged == null) return;
+            using (var sent = JsonDocument.Parse(json))
+            {
+                if (sent.RootElement.ValueKind != JsonValueKind.Object) return;
+                foreach (var prop in sent.RootElement.EnumerateObject())
+                    merged[prop.Name] = System.Text.Json.Nodes.JsonNode.Parse(prop.Value.GetRawText());
+            }
+            var p = JsonSerializer.Deserialize(merged.ToJsonString(), RynthAiJsonContext.Default.SettingsBridgePayload);
             if (p == null) return;
             var s = _settings;
             // Display
@@ -744,9 +888,13 @@ internal sealed class LegacyDashboardRenderer
             s.CrossbowArcVelocity        = p.CrossbowArcVelocity;
             s.AtlatlArcVelocity          = p.AtlatlArcVelocity;
             s.MagicArcVelocity           = p.MagicArcVelocity;
+            if (p.MissileArcClearance >= 0f) s.MissileArcClearance = Math.Min(p.MissileArcClearance, 3f);
+            s.LosDebugLog                = p.LosDebugLog;
             s.BlacklistAttempts          = p.BlacklistAttempts;
             s.BlacklistTimeoutSec        = p.BlacklistTimeoutSec;
-            s.BlacklistCastSettleMs      = p.BlacklistCastSettleMs;
+            // -1 = not sent. 0 is never meant (it judges a cast before its damage can land)
+            // and is what the bug saved into profiles, so it keeps the default too.
+            if (p.BlacklistCastSettleMs > 0) s.BlacklistCastSettleMs = p.BlacklistCastSettleMs;
             s.TargetNoProgressTimeoutSec = p.TargetNoProgressTimeoutSec;
             s.GiveQueueIntervalMs        = p.GiveQueueIntervalMs;
             // Recharge
@@ -770,6 +918,7 @@ internal sealed class LegacyDashboardRenderer
             s.PetMinMonsters             = p.PetMinMonsters;
             // Spell Combat
             s.SpellCastIntervalMs        = p.SpellCastIntervalMs;
+            s.AttackSpellIntervalMs      = p.AttackSpellIntervalMs;
             s.CastDispelSelf             = p.CastDispelSelf;
             s.MinRingTargets             = p.MinRingTargets;
             s.MinSkillLevelTier1         = p.MinSkillLevelTier1;
@@ -782,7 +931,7 @@ internal sealed class LegacyDashboardRenderer
             s.MinSkillLevelTier8         = p.MinSkillLevelTier8;
             // Ranges
             s.MonsterRange               = p.MonsterRange;
-            s.MonsterDisengageRange      = p.MonsterDisengageRange;
+            if (p.MonsterDisengageRange >= 0) s.MonsterDisengageRange = p.MonsterDisengageRange;   // -1 = not sent
             s.RingRange                  = p.RingRange;
             s.ApproachRange              = p.ApproachRange;
             s.CorpseApproachRangeMax     = p.CorpseApproachRangeMax;
@@ -804,6 +953,7 @@ internal sealed class LegacyDashboardRenderer
             s.NavDeadZone                = p.NavDeadZone;
             s.NavSweepMult               = p.NavSweepMult;
             s.NavLookaheadYards          = p.NavLookaheadYards;
+            s.NavShortcutYards           = p.NavShortcutYards;
             s.NavTurnRateDegPerSec       = p.NavTurnRateDegPerSec;
             s.NavTier1TurnSpeed          = p.NavTier1TurnSpeed;
             s.PostPortalDelaySec         = p.PostPortalDelaySec;
@@ -817,6 +967,7 @@ internal sealed class LegacyDashboardRenderer
             s.EnableBuffing              = p.EnableBuffing;
             s.RebuffWhenIdle             = p.RebuffWhenIdle;
             s.RebuffSecondsRemaining     = p.RebuffSecondsRemaining;
+            if (p.RebuffTopOffSecondsRemaining > 0) s.RebuffTopOffSecondsRemaining = p.RebuffTopOffSecondsRemaining;
             s.BuffMinSkillLevelTier1     = p.BuffMinSkillLevelTier1;
             s.BuffMinSkillLevelTier2     = p.BuffMinSkillLevelTier2;
             s.BuffMinSkillLevelTier3     = p.BuffMinSkillLevelTier3;
@@ -852,6 +1003,16 @@ internal sealed class LegacyDashboardRenderer
             s.SalvageSalvageDelayMs      = p.SalvageSalvageDelayMs;
             s.SalvageResultDelayFirstMs  = p.SalvageResultDelayFirstMs;
             s.SalvageResultDelayFastMs   = p.SalvageResultDelayFastMs;
+            // Vendoring: only fields the sender actually included (older panels omit them)
+            if (p.AutoVendorEnabled          is bool avOn)    s.AutoVendorEnabled          = avOn;
+            if (p.AutoVendorEnableBuying     is bool avBuy)   s.AutoVendorEnableBuying     = avBuy;
+            if (p.AutoVendorEnableSelling    is bool avSell)  s.AutoVendorEnableSelling    = avSell;
+            if (p.AutoVendorTestMode         is bool avTest)  s.AutoVendorTestMode         = avTest;
+            if (p.AutoVendorThink            is bool avThink) s.AutoVendorThink            = avThink;
+            if (p.AutoVendorShowMerchantInfo is bool avInfo)  s.AutoVendorShowMerchantInfo = avInfo;
+            if (p.AutoVendorOnlyFromMainPack is bool avMain)  s.AutoVendorOnlyFromMainPack = avMain;
+            if (p.AutoVendorTries            is int avTries)  s.AutoVendorTries            = Math.Clamp(avTries, 1, 20);
+            if (p.AutoVendorTriesTime        is int avTime)   s.AutoVendorTriesTime        = Math.Clamp(avTime, 500, 30000);
             SaveSettings();
         }
         catch { }
@@ -910,94 +1071,84 @@ internal sealed class LegacyDashboardRenderer
         return (_currentTargetId, name);
     }
 
-    /// <summary>Launches the standalone Monster Rules editor for the current char folder.</summary>
+    /// <summary>Monsters window "External Editor" button: toggles the Monster Editor (opens it, or closes it
+    /// when it is already open) for the current character folder.</summary>
     private void LaunchMonsterEditor()
+    {
+        if (_monsterEditor.IsRunning)
+        {
+            _monsterEditor.Close();
+            return;
+        }
+        OpenMonsterEditor();
+    }
+
+    /// <summary>Items / Looting "Monster Editor" button: opens the Monster Editor for the current character,
+    /// or brings it to the front if it is already open.</summary>
+    internal void OpenMonsterEditor()
     {
         if (string.IsNullOrEmpty(_charFolder))
         {
-            _host.WriteToChat("[RynthAi] No character loaded — cannot open Monster Editor.", 4);
+            _host.WriteToChat("[RynthAi] No character loaded - cannot open Monster Editor.", 4);
             return;
         }
-
-        // Toggle: if the editor is already running, close it.
-        if (_monsterEditorProcess != null && !_monsterEditorProcess.HasExited)
-        {
-            _monsterEditorProcess.CloseMainWindow();
-            _monsterEditorProcess = null;
-            return;
-        }
-
-        string rynthAiRoot = SuiteToolPaths.GetRynthAiRootFromSettingsRoot(_settingsRoot);
-        string? editorExe  = SuiteToolPaths.FindPublishedTool(rynthAiRoot, "MonsterEditor", "RynthCore.MonsterEditor.exe");
-        if (string.IsNullOrEmpty(editorExe))
-        {
-            _host.WriteToChat(
-                "[RynthAi] Monster Editor not found. Install RynthBundle so RynthCore.MonsterEditor.exe is under the same install as RynthCore (Tools\\MonsterEditor), or use legacy RynthAi\\Tools paths.",
-                4);
-            return;
-        }
-
+        // Arg1 = per-character settings folder (weapon ids). Arg2 = MonsterProfiles\<char>.json, the same
+        // file the plugin reads, so editor saves land where RynthAi looks.
         string monstersPath = MonstersFilePath;
-        if (string.IsNullOrEmpty(monstersPath))
+        string args = $"\"{_charFolder}\"";
+        if (!string.IsNullOrEmpty(monstersPath))
         {
-            _host.WriteToChat("[RynthAi] Monster profile path unavailable.", 4);
-            return;
+            try { Directory.CreateDirectory(Path.GetDirectoryName(monstersPath)!); }
+            catch { /* editor can still open without the folder */ }
+            args += $" \"{monstersPath}\"";
         }
 
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(monstersPath)!);
-        }
-        catch { /* editor may still open */ }
-
-        // Arg1 = per-character settings folder (weapon ids). Arg2 = MonsterProfiles\<char>.json (same file the plugin uses).
-        var psi = new System.Diagnostics.ProcessStartInfo
-        {
-            FileName        = editorExe,
-            Arguments       = $"\"{_charFolder}\" \"{monstersPath}\"",
-            WorkingDirectory = Path.GetDirectoryName(editorExe) ?? string.Empty,
-            UseShellExecute = true,
-        };
-        _monsterEditorProcess = System.Diagnostics.Process.Start(psi);
+        string exe = ResolveToolExe(ExternalTool.MonsterEditorExe, "MonsterEditor", "RynthCore.MonsterEditor.exe");
+        string? error = _monsterEditor.OpenOrFocus(exe, args);
+        if (error != null) _host.WriteToChat("[RynthAi] " + error, 4);
     }
 
-    /// <summary>Launches the standalone Loot profile editor with the configured loot profiles folder.</summary>
+    /// <summary>Items / Looting "Loot Editor" button: opens the Loot Editor on the loot profiles folder (plus the
+    /// active .json profile so Save targets the file RynthAi loads), or brings it to the front if already open.</summary>
+    internal void OpenLootEditor()
+    {
+        string profile = _settings.CurrentLootPath?.Trim().Trim('"') ?? string.Empty;
+
+        // Arg1 = profiles folder (the profile's own folder when one is selected). Arg2 = active native .json.
+        string folder = !string.IsNullOrEmpty(profile) ? (Path.GetDirectoryName(profile) ?? _lootFolder) : _lootFolder;
+        try { Directory.CreateDirectory(folder); }
+        catch { /* best-effort */ }
+        string args = $"\"{folder}\"";
+        if (profile.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            args += $" \"{profile}\"";
+
+        string exe = ResolveToolExe(ExternalTool.LootEditorExe, "LootEditor", "RynthCore.LootEditor.exe");
+        string? error = _lootEditor.OpenOrFocus(exe, args);
+        if (error != null) _host.WriteToChat("[RynthAi] " + error, 4);
+    }
+
+    /// <summary>Looting tab "Loot Editor" toggle: closes the Loot Editor when it is open, otherwise opens it.</summary>
     private void LaunchLootEditor()
     {
-        if (_lootEditorProcess != null && !_lootEditorProcess.HasExited)
+        if (_lootEditor.IsRunning)
         {
-            _lootEditorProcess.CloseMainWindow();
-            _lootEditorProcess = null;
+            _lootEditor.Close();
             return;
         }
+        OpenLootEditor();
+    }
 
+    /// <summary>
+    /// Returns the installer location of a suite tool when it exists, otherwise falls back to the
+    /// legacy search (SuiteToolPaths: RynthAi\Tools, side-by-side bundle layouts). When neither exists
+    /// the installer path is returned so ExternalTool reports the expected location.
+    /// </summary>
+    private string ResolveToolExe(string installedExe, string toolFolder, string exeName)
+    {
+        if (File.Exists(installedExe))
+            return installedExe;
         string rynthAiRoot = SuiteToolPaths.GetRynthAiRootFromSettingsRoot(_settingsRoot);
-        string? editorExe = SuiteToolPaths.FindPublishedTool(rynthAiRoot, "LootEditor", "RynthCore.LootEditor.exe");
-        if (string.IsNullOrEmpty(editorExe))
-        {
-            _host.WriteToChat(
-                "[RynthAi] Loot Editor not found. Install RynthBundle so RynthCore.LootEditor.exe is under the same install as RynthCore (Tools\\LootEditor), or use legacy RynthAi\\ paths.",
-                4);
-            return;
-        }
-
-        try { Directory.CreateDirectory(_lootFolder); }
-        catch { /* best-effort */ }
-
-        // Arg1 = profiles folder; Arg2 = active native .json (same as RynthAi /reload-loot) so Save targets the right file.
-        string lootArgs = $"\"{_lootFolder}\"";
-        if (!string.IsNullOrWhiteSpace(_settings.CurrentLootPath)
-            && _settings.CurrentLootPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-            lootArgs = $"\"{_lootFolder}\" \"{_settings.CurrentLootPath}\"";
-
-        var psi = new System.Diagnostics.ProcessStartInfo
-        {
-            FileName         = editorExe,
-            Arguments        = lootArgs,
-            WorkingDirectory = Path.GetDirectoryName(editorExe) ?? string.Empty,
-            UseShellExecute  = true,
-        };
-        _lootEditorProcess = System.Diagnostics.Process.Start(psi);
+        return SuiteToolPaths.FindPublishedTool(rynthAiRoot, toolFolder, exeName) ?? installedExe;
     }
 
     private void CaptureTransientUiState()
@@ -1159,6 +1310,7 @@ internal sealed class LegacyDashboardRenderer
         dst.NavDeadZone              = tmp.NavDeadZone;
         dst.NavSweepMult             = tmp.NavSweepMult;
         dst.NavLookaheadYards        = tmp.NavLookaheadYards;
+        dst.NavShortcutYards         = tmp.NavShortcutYards;
         dst.NavTurnRateDegPerSec     = tmp.NavTurnRateDegPerSec;
         dst.NavTier1TurnSpeed        = tmp.NavTier1TurnSpeed;
         dst.PostPortalDelaySec       = tmp.PostPortalDelaySec;
@@ -1241,9 +1393,12 @@ internal sealed class LegacyDashboardRenderer
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;
+        dst.RebuffTopOffSecondsRemaining = tmp.RebuffTopOffSecondsRemaining;
         dst.BlacklistAttempts             = tmp.BlacklistAttempts;
         dst.BlacklistTimeoutSec           = tmp.BlacklistTimeoutSec;
-        dst.BlacklistCastSettleMs         = tmp.BlacklistCastSettleMs;
+        // 0 is never meant (every UI floors it at 250+) and is what the Settings-panel bug
+        // saved into profiles: it judges each cast before its damage can land.
+        dst.BlacklistCastSettleMs         = tmp.BlacklistCastSettleMs > 0 ? tmp.BlacklistCastSettleMs : 1500;
         dst.TargetNoProgressTimeoutSec    = tmp.TargetNoProgressTimeoutSec;
         dst.MeleeAttackPower         = tmp.MeleeAttackPower;
         dst.MissileAttackPower       = tmp.MissileAttackPower;
@@ -1256,6 +1411,8 @@ internal sealed class LegacyDashboardRenderer
         dst.CrossbowArcVelocity      = tmp.CrossbowArcVelocity;
         dst.AtlatlArcVelocity        = tmp.AtlatlArcVelocity;
         dst.MagicArcVelocity         = tmp.MagicArcVelocity;
+        dst.MissileArcClearance      = tmp.MissileArcClearance >= 0f ? Math.Min(tmp.MissileArcClearance, 3f) : 0.5f;
+        dst.LosDebugLog              = tmp.LosDebugLog;
         dst.EnableFPSLimit           = tmp.EnableFPSLimit;
         dst.TargetFPSFocused         = tmp.TargetFPSFocused;
         dst.TargetFPSBackground      = tmp.TargetFPSBackground;
@@ -1312,12 +1469,22 @@ internal sealed class LegacyDashboardRenderer
         dst.EnableManaTapping        = tmp.EnableManaTapping;
         dst.ManaTapMinMana           = tmp.ManaTapMinMana;
         dst.ManaStoneKeepCount       = tmp.ManaStoneKeepCount;
+        dst.AutoVendorEnabled          = tmp.AutoVendorEnabled;
+        dst.AutoVendorEnableBuying     = tmp.AutoVendorEnableBuying;
+        dst.AutoVendorEnableSelling    = tmp.AutoVendorEnableSelling;
+        dst.AutoVendorTestMode         = tmp.AutoVendorTestMode;
+        dst.AutoVendorThink            = tmp.AutoVendorThink;
+        dst.AutoVendorShowMerchantInfo = tmp.AutoVendorShowMerchantInfo;
+        dst.AutoVendorOnlyFromMainPack = tmp.AutoVendorOnlyFromMainPack;
+        dst.AutoVendorTries            = tmp.AutoVendorTries;
+        dst.AutoVendorTriesTime        = tmp.AutoVendorTriesTime;
         dst.MetaDebug                = tmp.MetaDebug;
         dst.StartMacroOnLogin        = tmp.StartMacroOnLogin;
         dst.PatrolOnLogin            = tmp.PatrolOnLogin;
         dst.ShowTerrainPassability   = tmp.ShowTerrainPassability;
         dst.GiveQueueIntervalMs      = tmp.GiveQueueIntervalMs;
         dst.SpellCastIntervalMs      = tmp.SpellCastIntervalMs;
+        dst.AttackSpellIntervalMs    = tmp.AttackSpellIntervalMs;
         dst.EmbeddedNavs             = tmp.EmbeddedNavs;
         dst.SuppressRetailRadar      = tmp.SuppressRetailRadar;
         dst.ShowRynthRadar           = tmp.ShowRynthRadar;
@@ -1895,6 +2062,152 @@ internal sealed class LegacyDashboardRenderer
         }
     }
 
+    /// Reset the per-session counters at login so the per-hour rates measure THIS session.
+    private void ResetSessionStats()
+    {
+        _sessionStartUtc = DateTime.UtcNow;
+        System.Threading.Interlocked.Exchange(ref _sessionKills, 0);
+        System.Threading.Interlocked.Exchange(ref _lastKillTicks, 0);
+    }
+
+    /// Called from the plugin's OnKillNotification (pump thread) for each kill — feeds kills/hour
+    /// and the "time since last kill" liveness signal.
+    public void RecordKill()
+    {
+        System.Threading.Interlocked.Increment(ref _sessionKills);
+        System.Threading.Interlocked.Exchange(ref _lastKillTicks, DateTime.UtcNow.Ticks);
+    }
+
+    /// Pushed from the plugin tick (it owns the inventory cache) — main-pack empty slots. -1 = unknown.
+    public void SetFreeSlots(int slots) => _freeSlots = slots;
+
+    /// Pushed from the plugin tick — D2 three-tier target counts (-1 = no scan yet).
+    public void SetScanCounts(int total, int ring, int possible, int losBlocked)
+    {
+        _scanTotal = total;
+        _scanRing = ring;
+        _scanPossible = possible;
+        _scanLosBlocked = losBlocked;
+    }
+
+    /// Pushed from the plugin tick — D6 offensive attack-cast tallies.
+    public void SetCastStats(int sessionAttackCasts, int castsSinceLastKill)
+    {
+        _sessionAttackCasts = sessionAttackCasts;
+        _castsSinceLastKill = castsSinceLastKill;
+    }
+
+    private volatile bool _uiHidden;   // remote "Hide UI" state, surfaced to the status feed
+    public void SetUiHidden(bool hidden) => _uiHidden = hidden;
+
+    /// Pushed from the plugin tick — casting-component tallies (scarabs / prismatic tapers) and the
+    /// per-tier scarab breakdown. -1 = unknown; byType may be null (treated as empty).
+    public void SetComponentCounts(int scarabs, int tapers, List<KeyValuePair<string, int>> byType)
+    {
+        _scarabs = scarabs;
+        _tapers = tapers;
+        _scarabsByType = byType != null ? byType.ToArray() : System.Array.Empty<KeyValuePair<string, int>>();
+    }
+
+    /// Pushed from the plugin tick — the gear the character is wearing/wielding, with full appraisal.
+    public void SetEquipment(List<EquipAppraisal> equipment)
+        => _equipment = equipment != null ? equipment.ToArray() : System.Array.Empty<EquipAppraisal>();
+
+    /// Pushed from the plugin tick — the full read-only inventory (containers + items) for the remote
+    /// viewer. Atomic ref-swap of both arrays + a monotonic version bump (consumers detect change).
+    public void SetInventory(List<InventoryContainerSnapshot> containers, List<InventoryItemSnapshot> items)
+    {
+        _invContainers = containers != null ? containers.ToArray() : System.Array.Empty<InventoryContainerSnapshot>();
+        _invItems = items != null ? items.ToArray() : System.Array.Empty<InventoryItemSnapshot>();
+        System.Threading.Interlocked.Increment(ref _inventoryVersion);
+    }
+
+    /// Serialize the full inventory (schema "rynthcore.inventory/1") for the dedicated
+    /// RynthPluginGetInventoryJson export. Own builder + 32KB initial capacity (the hot
+    /// BuildSnapshotJson stays lean at 2KB). Reads the volatile arrays once (atomic ref).
+    public string BuildInventoryJson()
+    {
+        var items = _invItems;
+        var containers = _invContainers;
+        int version = System.Threading.Interlocked.CompareExchange(ref _inventoryVersion, 0, 0);
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        var sb = new System.Text.StringBuilder(32768);
+        sb.Append('{');
+        AppendString(sb, "schema", "rynthcore.inventory/1"); sb.Append(',');
+        AppendInt(sb, "version", version); sb.Append(',');
+        AppendInt(sb, "itemCount", items.Length); sb.Append(',');
+        sb.Append("\"containers\":[");
+        for (int i = 0; i < containers.Length; i++)
+        {
+            var c = containers[i];
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"id\":").Append(c.Id);
+            sb.Append(",\"name\":\""); AppendEscaped(sb, c.Name ?? string.Empty); sb.Append('"');
+            sb.Append(",\"kind\":\""); AppendEscaped(sb, c.Kind ?? string.Empty); sb.Append('"');
+            sb.Append(",\"capacity\":").Append(c.Capacity);
+            sb.Append('}');
+        }
+        sb.Append("],\"items\":[");
+        for (int i = 0; i < items.Length; i++)
+        {
+            var it = items[i];
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"id\":").Append(it.Id);
+            sb.Append(",\"name\":\""); AppendEscaped(sb, it.Name ?? string.Empty); sb.Append('"');
+            sb.Append(",\"wcid\":").Append(it.Wcid);
+            sb.Append(",\"objectClass\":").Append(it.ObjectClass);
+            sb.Append(",\"containerId\":").Append(it.ContainerId);
+            sb.Append(",\"location\":").Append(it.Location);
+            sb.Append(",\"slot\":").Append(it.Slot);
+            sb.Append(",\"stackCount\":").Append(it.StackCount);
+            sb.Append(",\"iconDid\":").Append(it.IconDid);
+            sb.Append(",\"equipped\":").Append(it.Equipped ? "true" : "false");
+            sb.Append(",\"wieldedLocation\":").Append(it.WieldedLocation);
+            sb.Append(",\"appraisal\":");
+            if (it.Appraisal is { } a) AppendInventoryAppraisal(sb, a, ci);
+            else sb.Append("null");
+            sb.Append('}');
+        }
+        sb.Append("]}");
+        return sb.ToString();
+    }
+
+    /// Emit the appraisal sub-object for an inventory item — same field shape/names as the
+    /// equipment entry in BuildSnapshotJson (minus name/id/slot, which live on the item), so the
+    /// app reuses the existing AcEquipItem appraisal fragment verbatim.
+    private static void AppendInventoryAppraisal(System.Text.StringBuilder sb, EquipAppraisal a, System.Globalization.CultureInfo ci)
+    {
+        sb.Append("{\"armorLevel\":").Append(a.ArmorLevel);
+        if (a.Resist is { Length: 7 })
+        {
+            sb.Append(",\"resist\":[");
+            for (int r = 0; r < 7; r++) { if (r > 0) sb.Append(','); sb.Append(a.Resist[r].ToString("0.###", ci)); }
+            sb.Append(']');
+        }
+        sb.Append(",\"value\":").Append(a.Value).Append(",\"burden\":").Append(a.Burden)
+          .Append(",\"workmanship\":").Append(a.Workmanship).Append(",\"material\":").Append(a.Material)
+          .Append(",\"maxMana\":").Append(a.MaxMana).Append(",\"curMana\":").Append(a.CurMana)
+          .Append(",\"damage\":").Append(a.Damage).Append(",\"damageType\":").Append(a.DamageType)
+          .Append(",\"weaponDef\":").Append(a.WeaponDef.ToString("0.###", ci))
+          .Append(",\"missileDef\":").Append(a.MissileDef.ToString("0.###", ci))
+          .Append(",\"magicDef\":").Append(a.MagicDef.ToString("0.###", ci))
+          .Append(",\"variance\":").Append(a.Variance.ToString("0.###", ci))
+          .Append(",\"elementalMod\":").Append(a.ElementalMod.ToString("0.###", ci));
+        sb.Append(",\"spells\":[");
+        for (int s = 0; s < a.Spells.Length; s++) { if (s > 0) sb.Append(','); sb.Append('"'); AppendEscaped(sb, a.Spells[s] ?? string.Empty); sb.Append('"'); }
+        sb.Append(']');
+        sb.Append(",\"longDesc\":\""); AppendEscaped(sb, a.LongDesc ?? string.Empty); sb.Append('"');
+        sb.Append('}');
+    }
+
+    /// Whole-session kills/hour from the kill counter — a pure counter + clock, safe to compute
+    /// on the off-thread snapshot poll (no AC read).
+    private void RefreshKillsPerHour()
+    {
+        double hours = (DateTime.UtcNow - _sessionStartUtc).TotalHours;
+        _killsPerHour = hours > 1.0 / 3600.0 ? System.Threading.Interlocked.Read(ref _sessionKills) / hours : 0;
+    }
+
     private static float ToRatio(uint value, uint maxValue)
     {
         if (maxValue == 0)
@@ -1926,6 +2239,9 @@ internal sealed class LegacyDashboardRenderer
         ImGui.TableNextRow();
         ImGui.TableNextColumn(); LegacyDashboardDrawing.GridBtn("Dungeon Map", "map", ref DashWindows.ShowDungeonMap);
         ImGui.TableNextColumn();
+        // ILT Hub launcher: only on ACECustom/ILT worlds with at least one server feature on.
+        if (IltHubAvailable?.Invoke() == true)
+            LegacyDashboardDrawing.GridBtn("ILT Hub", "heart", ref DashWindows.ShowIltHub);
         ImGui.EndTable();
     }
 
@@ -2000,6 +2316,9 @@ internal sealed class LegacyDashboardRenderer
         _showProfileFolderSelector = open && _showProfileFolderSelector;
     }
 
+    /// <summary>Set by the plugin: true when the ILT Hub should be offered in the launcher grid.</summary>
+    internal Func<bool>? IltHubAvailable { get; set; }
+
     private static void RenderPlaceholderWindow(string title, ref bool open, string message)
     {
         ImGui.SetNextWindowSize(new Vector2(420, 260), ImGuiCond.FirstUseEver);
@@ -2063,8 +2382,7 @@ internal sealed class LegacyDashboardRenderer
 
     private void RefreshProfilesList()
     {
-        _profiles.Clear();
-        _profiles.Add("Default");
+        var list = new List<string> { "Default" };
         try
         {
             if (!string.IsNullOrEmpty(_profileFolder) && Directory.Exists(_profileFolder))
@@ -2075,73 +2393,99 @@ internal sealed class LegacyDashboardRenderer
                     if (name.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
                     if (name.Equals("Default", StringComparison.OrdinalIgnoreCase)) continue;
                     if (name.Equals("monsters", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (!_profiles.Contains(name, StringComparer.OrdinalIgnoreCase))
-                        _profiles.Add(name);
+                    if (!list.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        list.Add(name);
                 }
             }
         }
         catch { }
-        if (!_profiles.Contains(_settings.SelectedProfile, StringComparer.OrdinalIgnoreCase))
-            _settings.SelectedProfile = _profiles[0];
+        // Deep-audit finding #16 (2026-06-18): Contains/[0] used to read
+        // _profiles just after releasing the lock — a concurrent
+        // SelectProfileAtIndex export call (poll thread) could be mid-index
+        // against a list this same read races. Moved inside the lock.
+        lock (_profileListsLock)
+        {
+            _profiles.Clear();
+            _profiles.AddRange(list);
+            if (!_profiles.Contains(_settings.SelectedProfile, StringComparer.OrdinalIgnoreCase))
+                _settings.SelectedProfile = _profiles[0];
+        }
     }
 
     private void RefreshNavFiles()
     {
-        _navFiles.Clear(); _navFiles.Add("None"); _selectedNavIdx = 0;
-        if (!Directory.Exists(_navFolder)) return;
-        foreach (string file in Directory.GetFiles(_navFolder, "*.nav"))
-        {
-            _navFiles.Add(Path.GetFileNameWithoutExtension(file));
-            if (file.Equals(_settings.CurrentNavPath, StringComparison.OrdinalIgnoreCase)) _selectedNavIdx = _navFiles.Count - 1;
-        }
+        var list = new List<string> { "None" };
+        int sel = 0;
+        if (Directory.Exists(_navFolder))
+            foreach (string file in Directory.GetFiles(_navFolder, "*.nav"))
+            {
+                list.Add(Path.GetFileNameWithoutExtension(file));
+                if (file.Equals(_settings.CurrentNavPath, StringComparison.OrdinalIgnoreCase)) sel = list.Count - 1;
+            }
+        lock (_profileListsLock) { _navFiles.Clear(); _navFiles.AddRange(list); }
+        _selectedNavIdx = sel;
     }
 
     private void RefreshLootFiles()
     {
-        _lootFiles.Clear(); _lootFiles.Add("None");
-        if (!Directory.Exists(_lootFolder)) return;
-
-        var files = new System.Collections.Generic.List<string>();
-        files.AddRange(Directory.GetFiles(_lootFolder, "*.utl"));
-        files.AddRange(Directory.GetFiles(_lootFolder, "*.json"));
-        files.Sort(StringComparer.OrdinalIgnoreCase);
-
-        foreach (string file in files)
+        var list = new System.Collections.Generic.List<string> { "None" };
+        int idx = _settings.LootProfileIdx;
+        if (Directory.Exists(_lootFolder))
         {
-            _lootFiles.Add(Path.GetFileName(file));
-            if (file.Equals(_settings.CurrentLootPath, StringComparison.OrdinalIgnoreCase))
-                _settings.LootProfileIdx = _lootFiles.Count - 1;
+            var files = new System.Collections.Generic.List<string>();
+            files.AddRange(Directory.GetFiles(_lootFolder, "*.utl"));
+            files.AddRange(Directory.GetFiles(_lootFolder, "*.json"));
+            files.Sort(StringComparer.OrdinalIgnoreCase);
+
+            foreach (string file in files)
+            {
+                list.Add(Path.GetFileName(file));
+                if (file.Equals(_settings.CurrentLootPath, StringComparison.OrdinalIgnoreCase))
+                    idx = list.Count - 1;
+            }
         }
+        lock (_profileListsLock) { _lootFiles.Clear(); _lootFiles.AddRange(list); }
+        _settings.LootProfileIdx = idx;
     }
 
     private void RefreshMetaFiles()
     {
-        _metaFiles.Clear();
-        _metaFiles.Add("None");
-        _settings.MetaProfileIdx = 0;
-        if (!Directory.Exists(_metaFolder)) return;
-
-        var files = new List<string>();
-        foreach (string f in Directory.GetFiles(_metaFolder, "*.met"))
+        var list = new List<string> { "None" };
+        int idx = 0;
+        if (Directory.Exists(_metaFolder))
         {
-            if (Path.GetFileName(f).StartsWith("--")) continue;
-            files.Add(f);
-        }
-        files.AddRange(Directory.GetFiles(_metaFolder, "*.af"));
-        files.Sort(StringComparer.OrdinalIgnoreCase);
+            var files = new List<string>();
+            foreach (string f in Directory.GetFiles(_metaFolder, "*.met"))
+            {
+                if (Path.GetFileName(f).StartsWith("--")) continue;
+                files.Add(f);
+            }
+            files.AddRange(Directory.GetFiles(_metaFolder, "*.af"));
+            files.Sort(StringComparer.OrdinalIgnoreCase);
 
-        foreach (string file in files)
-        {
-            _metaFiles.Add(Path.GetFileName(file));
-            if (file.Equals(_settings.CurrentMetaPath, StringComparison.OrdinalIgnoreCase))
-                _settings.MetaProfileIdx = _metaFiles.Count - 1;
+            foreach (string file in files)
+            {
+                list.Add(Path.GetFileName(file));
+                if (file.Equals(_settings.CurrentMetaPath, StringComparison.OrdinalIgnoreCase))
+                    idx = list.Count - 1;
+            }
         }
+        lock (_profileListsLock) { _metaFiles.Clear(); _metaFiles.AddRange(list); }
+        _settings.MetaProfileIdx = idx;
     }
 
     private void LoadSelectedNav()
     {
-        if (_selectedNavIdx < 0 || _selectedNavIdx >= _navFiles.Count) return;
-        string selection = _navFiles[_selectedNavIdx];
+        // Same finding #16 class as SelectProfileAtIndex above — this direct
+        // index into _navFiles is also reachable from the Avalonia poll
+        // thread (via SelectProfileAtIndex) racing the pump thread's
+        // Refresh*Files Clear()/AddRange().
+        string? selection;
+        lock (_profileListsLock)
+        {
+            if (_selectedNavIdx < 0 || _selectedNavIdx >= _navFiles.Count) return;
+            selection = _navFiles[_selectedNavIdx];
+        }
         if (selection == "None")
         {
             _settings.CurrentNavPath = string.Empty;
@@ -2153,6 +2497,11 @@ internal sealed class LegacyDashboardRenderer
         string filePath = Path.Combine(_navFolder, selection + ".nav");
         _settings.CurrentNavPath = filePath;
         _settings.CurrentRoute = NavRouteParser.Load(filePath);
+        if (_settings.CurrentRoute.LoadWarning != null)
+        {
+            RynthLog.Write(LogCat.UI, _settings.CurrentRoute.LoadWarning);
+            _host.WriteToChat($"[RynthAi] {_settings.CurrentRoute.LoadWarning}", 4);
+        }
         // Follow and Once routes start from the top so opening Recall/Portal/Chat
         // actions always fire. Circular and Linear routes jump in at the nearest point.
         _settings.ActiveNavIndex =
@@ -2328,7 +2677,7 @@ internal sealed class LegacyDashboardRenderer
 
     // ── Snapshot bridge (read by the engine-side Avalonia RynthAi panel) ────
     // The Avalonia panel mirrors this dashboard. It pulls a JSON snapshot via
-    // RynthPluginGetSnapshotJson every ~250ms and renders the same fields.
+    // RynthPluginGetSnapshotJson every ~33ms and renders the same fields.
 
     public string BuildSnapshotJson()
     {
@@ -2337,6 +2686,7 @@ internal sealed class LegacyDashboardRenderer
         // returned zero — but the next OnUpdateHealth event or live qualities
         // read will fix that within a tick or two.
         RefreshPlayerVitals();
+        RefreshKillsPerHour();   // pure counter/clock — safe off-thread
 
         var sb = new System.Text.StringBuilder(2048);
         sb.Append('{');
@@ -2344,20 +2694,35 @@ internal sealed class LegacyDashboardRenderer
         AppendString(sb, "currentState", _settings.CurrentState ?? string.Empty); sb.Append(',');
         AppendString(sb, "botAction", _settings.BotAction ?? "Default"); sb.Append(',');
         AppendString(sb, "selectedProfile", _settings.SelectedProfile ?? "Default"); sb.Append(',');
-        AppendStringArray(sb, "profiles", _profiles); sb.Append(',');
-        AppendStringArray(sb, "navProfiles", _navFiles); sb.Append(',');
-        AppendStringArray(sb, "lootProfiles", _lootFiles); sb.Append(',');
-        AppendStringArray(sb, "metaProfiles", _metaFiles); sb.Append(',');
+        // Copy the four profile lists under the lock so we never enumerate one
+        // while a Refresh*Files mutator Clear()s it on the pump thread — that
+        // race threw InvalidOperationException and, escaping this snapshot
+        // poll's reverse-P/Invoke boundary, fail-fasted the NativeAOT runtime.
+        List<string> profilesCopy, navCopy, lootCopy, metaCopy;
+        lock (_profileListsLock)
+        {
+            profilesCopy = new List<string>(_profiles);
+            navCopy      = new List<string>(_navFiles);
+            lootCopy     = new List<string>(_lootFiles);
+            metaCopy     = new List<string>(_metaFiles);
+        }
+        AppendStringArray(sb, "profiles", profilesCopy); sb.Append(',');
+        AppendStringArray(sb, "navProfiles", navCopy); sb.Append(',');
+        AppendStringArray(sb, "lootProfiles", lootCopy); sb.Append(',');
+        AppendStringArray(sb, "metaProfiles", metaCopy); sb.Append(',');
         AppendString(sb, "currentNavName",
             string.IsNullOrEmpty(_settings.CurrentNavPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentNavPath)); sb.Append(',');
         AppendString(sb, "currentLootName",
             string.IsNullOrEmpty(_settings.CurrentLootPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentLootPath)); sb.Append(',');
+        // Full paths for the dashboard's Edit (✎) button, which opens the Loot Editor.
+        AppendString(sb, "currentLootPath", _settings.CurrentLootPath ?? string.Empty); sb.Append(',');
+        AppendString(sb, "vendorProfilePath", _vendorProfilePath?.Invoke() ?? string.Empty); sb.Append(',');
         AppendString(sb, "currentMetaName",
             string.IsNullOrEmpty(_settings.CurrentMetaPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentMetaPath)); sb.Append(',');
         AppendInt(sb, "selectedNavIdx", _selectedNavIdx); sb.Append(',');
         AppendInt(sb, "selectedLootIdx", _settings.LootProfileIdx); sb.Append(',');
         AppendInt(sb, "selectedMetaIdx", _settings.MetaProfileIdx); sb.Append(',');
-        AppendInt(sb, "selectedProfileIdx", Math.Max(0, _profiles.IndexOf(_settings.SelectedProfile ?? string.Empty))); sb.Append(',');
+        AppendInt(sb, "selectedProfileIdx", Math.Max(0, profilesCopy.IndexOf(_settings.SelectedProfile ?? string.Empty))); sb.Append(',');
         AppendBool(sb, "combatEnabled", _settings.EnableCombat); sb.Append(',');
         AppendBool(sb, "buffingEnabled", _settings.EnableBuffing); sb.Append(',');
         AppendBool(sb, "navigationEnabled", _settings.EnableNavigation); sb.Append(',');
@@ -2382,7 +2747,85 @@ internal sealed class LegacyDashboardRenderer
         AppendBool(sb, "showTargetStaminaMana", _settings.ShowTargetStaminaMana); sb.Append(',');
         AppendBool(sb, "isLocked", _isLocked); sb.Append(',');
         AppendBool(sb, "isMinimized", _isMinimized); sb.Append(',');
-        AppendFloat(sb, "bgOpacity", _bgOpacity);
+        AppendFloat(sb, "bgOpacity", _bgOpacity); sb.Append(',');
+        // kills/hour, session kills, last-kill age, and free pack slots are bot-derived
+        // (kill counter + inventory cache); the rest of the player stats are engine top-level.
+        AppendFloat(sb, "killsPerHour", (float)_killsPerHour); sb.Append(',');
+        AppendInt(sb, "sessionKills", (int)System.Threading.Interlocked.Read(ref _sessionKills)); sb.Append(',');
+        long lastKillTicks = System.Threading.Interlocked.Read(ref _lastKillTicks);
+        int secsSinceLastKill = lastKillTicks == 0
+            ? -1
+            : (int)Math.Clamp((DateTime.UtcNow - new DateTime(lastKillTicks, DateTimeKind.Utc)).TotalSeconds, 0, int.MaxValue);
+        AppendInt(sb, "secsSinceLastKill", secsSinceLastKill); sb.Append(',');
+        AppendInt(sb, "freeSlots", _freeSlots); sb.Append(',');
+        // D2 three-tier target telemetry + D6 attack-cast/kill ratio (orphan early-warning).
+        AppendInt(sb, "scanTotal", _scanTotal); sb.Append(',');
+        AppendInt(sb, "scanRing", _scanRing); sb.Append(',');
+        AppendInt(sb, "scanPossible", _scanPossible); sb.Append(',');
+        AppendInt(sb, "scanLosBlocked", _scanLosBlocked); sb.Append(',');
+        AppendInt(sb, "sessionAttackCasts", _sessionAttackCasts); sb.Append(',');
+        AppendInt(sb, "castsSinceLastKill", _castsSinceLastKill); sb.Append(',');
+        int killsForRatio = (int)System.Threading.Interlocked.Read(ref _sessionKills);
+        AppendFloat(sb, "castsPerKill", killsForRatio > 0 ? (float)_sessionAttackCasts / killsForRatio : 0f); sb.Append(',');
+        AppendBool(sb, "uiHidden", _uiHidden); sb.Append(',');
+        AppendInt(sb, "scarabs", _scarabs); sb.Append(',');
+        AppendInt(sb, "tapers", _tapers); sb.Append(',');
+        // Per-tier scarab breakdown: [{"name":"Lead Scarab","count":N}, ...]
+        var byType = _scarabsByType;
+        sb.Append("\"scarabsByType\":[");
+        for (int i = 0; i < byType.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"name\":\"");
+            AppendEscaped(sb, byType[i].Key ?? string.Empty);
+            sb.Append("\",\"count\":").Append(byType[i].Value).Append('}');
+        }
+        sb.Append("],");
+        // Equipped gear with full appraisal: name/id/slot + armor/resist/weapon/value/mana/spells/desc.
+        var equip = _equipment;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        sb.Append("\"equipment\":[");
+        for (int i = 0; i < equip.Length; i++)
+        {
+            var a = equip[i];
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"name\":\"");
+            AppendEscaped(sb, a.Name ?? string.Empty);
+            sb.Append("\",\"id\":").Append(a.Id).Append(",\"slot\":").Append(a.Slot);
+            sb.Append(",\"armorLevel\":").Append(a.ArmorLevel);
+            if (a.Resist is { Length: 7 })
+            {
+                sb.Append(",\"resist\":[");
+                for (int r = 0; r < 7; r++) { if (r > 0) sb.Append(','); sb.Append(a.Resist[r].ToString("0.###", inv)); }
+                sb.Append(']');
+            }
+            sb.Append(",\"value\":").Append(a.Value).Append(",\"burden\":").Append(a.Burden)
+              .Append(",\"workmanship\":").Append(a.Workmanship).Append(",\"material\":").Append(a.Material)
+              .Append(",\"maxMana\":").Append(a.MaxMana).Append(",\"curMana\":").Append(a.CurMana)
+              .Append(",\"damage\":").Append(a.Damage).Append(",\"damageType\":").Append(a.DamageType)
+              .Append(",\"weaponDef\":").Append(a.WeaponDef.ToString("0.###", inv))
+              .Append(",\"missileDef\":").Append(a.MissileDef.ToString("0.###", inv))
+              .Append(",\"magicDef\":").Append(a.MagicDef.ToString("0.###", inv))
+              .Append(",\"variance\":").Append(a.Variance.ToString("0.###", inv))
+              .Append(",\"elementalMod\":").Append(a.ElementalMod.ToString("0.###", inv));
+            sb.Append(",\"spells\":[");
+            for (int s = 0; s < a.Spells.Length; s++) { if (s > 0) sb.Append(','); sb.Append('"'); AppendEscaped(sb, a.Spells[s] ?? string.Empty); sb.Append('"'); }
+            sb.Append(']');
+            sb.Append(",\"longDesc\":\""); AppendEscaped(sb, a.LongDesc ?? string.Empty); sb.Append('"');
+            sb.Append('}');
+        }
+        sb.Append(']');
+        // Recent chat lines for the phone chat view: [{"t":"text","c":<chatType>}, ...] (oldest->newest).
+        sb.Append(",\"recentChat\":[");
+        var chat = _rynthChatUi.SnapshotRecent(60);
+        for (int i = 0; i < chat.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"t\":\"");
+            AppendEscaped(sb, chat[i].Text ?? string.Empty);
+            sb.Append("\",\"c\":").Append(chat[i].Type).Append('}');
+        }
+        sb.Append(']');
         sb.Append('}');
         return sb.ToString();
     }
@@ -2408,30 +2851,48 @@ internal sealed class LegacyDashboardRenderer
     /// </summary>
     public void SelectProfileAtIndex(int kind, int index)
     {
+        // Deep-audit finding #16 (2026-06-18): this export (poll thread) used
+        // to bounds-check and index _navFiles/_lootFiles/_metaFiles/_profiles
+        // with no lock at all, racing the Refresh*Files mutators' Clear()/
+        // AddRange() on the pump thread — a torn read or
+        // ArgumentOutOfRangeException. Snapshot the one list this call needs
+        // under _profileListsLock first, mirroring BuildSnapshotJson.
+        string? navFile = null, lootFile = null, metaFile = null, profileName = null;
+        lock (_profileListsLock)
+        {
+            switch (kind)
+            {
+                case 0: if (index >= 0 && index < _navFiles.Count) navFile = _navFiles[index]; break;
+                case 1: if (index >= 0 && index < _lootFiles.Count) lootFile = _lootFiles[index]; break;
+                case 2: if (index >= 0 && index < _metaFiles.Count) metaFile = _metaFiles[index]; break;
+                case 3: if (index >= 0 && index < _profiles.Count) profileName = _profiles[index]; break;
+            }
+        }
+
         switch (kind)
         {
             case 0:
-                if (index >= 0 && index < _navFiles.Count) { _selectedNavIdx = index; LoadSelectedNav(); }
+                if (navFile != null) { _selectedNavIdx = index; LoadSelectedNav(); }
                 break;
             case 1:
-                if (index >= 0 && index < _lootFiles.Count)
+                if (lootFile != null)
                 {
                     _settings.LootProfileIdx = index;
-                    _settings.CurrentLootPath = index == 0 ? string.Empty : Path.Combine(_lootFolder, _lootFiles[index]);
+                    _settings.CurrentLootPath = index == 0 ? string.Empty : Path.Combine(_lootFolder, lootFile);
                     SaveSettings();
                 }
                 break;
             case 2:
-                if (index >= 0 && index < _metaFiles.Count)
+                if (metaFile != null)
                 {
                     _settings.MetaProfileIdx = index;
-                    string path = index == 0 ? string.Empty : Path.Combine(_metaFolder, _metaFiles[index]);
+                    string path = index == 0 ? string.Empty : Path.Combine(_metaFolder, metaFile);
                     _metaUi.LoadMacroFile(path);
                     SaveSettings();
                 }
                 break;
             case 3:
-                if (index >= 0 && index < _profiles.Count) SwitchProfile(_profiles[index]);
+                if (profileName != null) SwitchProfile(profileName);
                 break;
         }
     }
@@ -2504,7 +2965,7 @@ internal sealed class LegacyDashboardRenderer
 
     // ── Meta bridge ───────────────────────────────────────────────────────────
 
-    private static readonly string MetaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
+    private static readonly string MetaFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
 
     public string BuildMetaJson()
     {
@@ -2533,7 +2994,8 @@ internal sealed class LegacyDashboardRenderer
         sb.Append("],");
 
         var states = _settings.MetaRules.Select(r => r.State).Distinct().ToList();
-        if (!states.Contains("Default")) states.Insert(0, "Default");
+        if (!states.Contains("Default")) states.Add("Default");
+        states = states.OrderBy(s => s, System.StringComparer.OrdinalIgnoreCase).ToList();
         AppendStringArray(sb, "states", states); sb.Append(',');
 
         AppendStringArray(sb, "navFiles", _navFiles); sb.Append(',');
@@ -2594,7 +3056,7 @@ internal sealed class LegacyDashboardRenderer
         {
             // Was a silent catch — surface it (§2.8 philosophy) but don't spam:
             // this only fires on an actual directory/IO failure, not per refresh.
-            _host.Log($"[Meta] BuildMetaFileList FAILED for '{MetaFolder}': {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Write(LogCat.UI, $"[Meta] BuildMetaFileList FAILED for '{MetaFolder}': {ex.GetType().Name}: {ex.Message}");
         }
         return result;
     }
