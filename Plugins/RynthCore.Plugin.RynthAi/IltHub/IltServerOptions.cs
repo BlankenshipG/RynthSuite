@@ -70,6 +70,13 @@ internal sealed class IltServerOptions
     /// <summary>Wait this long after login before the one-shot refresh so chat/world are settled.</summary>
     private const long LoginRefreshDelayMs = 6000;
 
+    /// <summary>
+    /// Upper bound on waiting for the world name. The engine hook / launch-context file can report
+    /// it well after the 6 s delay (late inject, Decal coexistence); deciding "not ILT" on an empty
+    /// name would leave every feature bit Unknown and the Hub hidden for the whole session.
+    /// </summary>
+    private const long WorldNameWaitMs = 60000;
+
     public IltServerOptions(RynthCoreHost host, IltChatCapture capture, IltHubState state, Action<string> chat)
     {
         _host = host;
@@ -144,14 +151,31 @@ internal sealed class IltServerOptions
         _loginRefreshDone = false;
     }
 
-    /// <summary>Pump-thread tick: fires the delayed login refresh once.</summary>
+    /// <summary>
+    /// Pump-thread tick: fires the delayed login refresh once. While the world name is still
+    /// unknown it keeps checking (a cheap string compare per tick) until the name arrives or
+    /// WorldNameWaitMs expires; only a known non-ILT world, or the timeout, ends the wait.
+    /// </summary>
     public void Tick()
     {
         if (_loginRefreshDone || _loginAt == 0) return;
-        if (Environment.TickCount64 - _loginAt < LoginRefreshDelayMs) return;
-        _loginRefreshDone = true;
+        long sinceLogin = Environment.TickCount64 - _loginAt;
+        if (sinceLogin < LoginRefreshDelayMs) return;
+
         if (IsIltLikeWorld)
+        {
+            _loginRefreshDone = true;
             Refresh(manual: false);
+            return;
+        }
+
+        // World not reported yet: try again next tick rather than concluding "not ILT".
+        if (string.IsNullOrEmpty(WorldName) && sinceLogin < WorldNameWaitMs)
+            return;
+
+        _loginRefreshDone = true;
+        RynthLog.Trace(LogCat.IltOptions,
+            $"login refresh skipped: world='{WorldName}' is not ILT-like (waited {sinceLogin / 1000}s)");
     }
 
     /// <summary>

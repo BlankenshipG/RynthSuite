@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.4-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.10-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -296,6 +296,23 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _nativeLootProfileTime = DateTime.MinValue;
     }
 
+    /// <summary>
+    /// Creates the ILT Hub for the loaded character and wires the dashboard's launcher tile to it.
+    /// No-op until the per-character folder is established (the Hub persists its state there),
+    /// so it is called both from OnLoginComplete and from the deferred settings load in OnTick.
+    /// </summary>
+    private void CreateIltHub()
+    {
+        if (_dashboard == null || string.IsNullOrEmpty(_dashboard.CharFolder))
+            return;
+
+        var dashForHub = _dashboard;
+        _iltHub = new IltHub.IltHubController(Host, _dashboard.CharFolder,
+            () => _objectCache, () => dashForHub?.Settings, () => _questTracker,
+            () => dashForHub?.SaveSettings());
+        _dashboard.IltHubAvailable = () => _iltHub?.Available == true;
+    }
+
     public override void OnLoginComplete()
     {
         if (!_initialized || _dashboard is null)
@@ -439,14 +456,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         // ILT Hub: per-character state lives next to the combat profile. Created before the
         // login quest refresh so cached server options can skip /myquests where it is off.
-        if (!string.IsNullOrEmpty(_dashboard.CharFolder))
-        {
-            var dashForHub = _dashboard;
-            _iltHub = new IltHub.IltHubController(Host, _dashboard.CharFolder,
-                () => _objectCache, () => dashForHub?.Settings, () => _questTracker,
-                () => dashForHub?.SaveSettings());
-            _dashboard.IltHubAvailable = () => _iltHub?.Available == true;
-        }
+        // When CharFolder is still empty here, the deferred settings load in OnTick creates it.
+        CreateIltHub();
 
         if (_iltHub?.SkipLoginQuestRefresh != true)
             _questTracker.Refresh(); // auto-populate quest flags on login
@@ -1103,6 +1114,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                         _damageStore?.SetCharacter(_dashboard.CharFolder);
                         _patrolOnLoginPending = _dashboard.Settings.PatrolOnLogin;
                         Log($"RynthAi: per-character settings established late for '{lateName}' (early OnLoginComplete read had failed).");
+
+                        // The Hub needs CharFolder for its state file, so the early login path
+                        // skipped it; create it now so /ra hub and the launcher tile work this session.
+                        if (_iltHub == null)
+                        {
+                            CreateIltHub();
+                            _iltHub?.OnLoginComplete(lateName, _petManager);
+                        }
                     }
                 }
             }

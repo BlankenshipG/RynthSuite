@@ -16,10 +16,11 @@
     <AssemblyName>RynthCore.Plugin.RynthAi</AssemblyName>
     <Platforms>x86</Platforms>
     <!-- Keep in sync with RynthAiPlugin.VersionPointer (reported via GetVersion). -->
-    <Version>0.5.4</Version>
-    <AssemblyVersion>0.5.4.0</AssemblyVersion>
-    <FileVersion>0.5.4.0</FileVersion>
-    <InformationalVersion>0.5.4-legacy-ui</InformationalVersion>
+    <!-- Previous releases: 0.5.4 (feat/ilt-hub) and 0.6.9 (SK-local); 0.6.10 is the unified SK-local line. -->
+    <Version>0.6.10</Version>
+    <AssemblyVersion>0.6.10.0</AssemblyVersion>
+    <FileVersion>0.6.10.0</FileVersion>
+    <InformationalVersion>0.6.10-legacy-ui</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
