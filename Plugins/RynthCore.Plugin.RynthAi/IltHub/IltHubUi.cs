@@ -25,6 +25,7 @@ internal sealed class IltHubUi
     private string[] _profileList = Array.Empty<string>();
     private int _profileIdx;
     private bool _wasDrawn; // last frame's window state, for the shown/hidden log events
+    private bool _drawLogged; // window geometry logged for the current show
 
     public IltHubUi(IltHubController hub, IltHubContext ctx)
     {
@@ -44,6 +45,7 @@ internal sealed class IltHubUi
             // Logged on the first frame the window is (or stops being) drawn, so the line also
             // proves the overlay is actually rendering it.
             _wasDrawn = drawn;
+            _drawLogged = false; // log geometry again on the next show
             if (drawn)
                 RynthLog.Event(LogEvents.IltWindowShown, $"window shown (world='{_ctx.Options.WorldName}', available={_hub.Available})");
             else
@@ -59,7 +61,13 @@ internal sealed class IltHubUi
     {
         ImGui.SetNextWindowSize(new Vector2(640, 720), ImGuiCond.FirstUseEver);
         bool open = true;
-        if (ImGui.Begin("ILT Hub##ilthub", ref open))
+        bool expanded = ImGui.Begin("ILT Hub##ilthub", ref open);
+        if (!_drawLogged)
+        {
+            _drawLogged = true;
+            LogAndRescueGeometry(expanded);
+        }
+        if (expanded)
         {
             RenderHeader();
             ImGui.Separator();
@@ -68,6 +76,30 @@ internal sealed class IltHubUi
         }
         ImGui.End();
         if (!open) _hub.SetVisible(false);
+    }
+
+    /// <summary>
+    /// First frame of each show (called between Begin and End): logs where the window is and, if a
+    /// saved imgui.ini position leaves it with less than 40 px on screen, moves it back to (40, 40).
+    /// </summary>
+    private void LogAndRescueGeometry(bool expanded)
+    {
+        Vector2 pos = ImGui.GetWindowPos();
+        Vector2 size = ImGui.GetWindowSize();
+        Vector2 display = ImGui.GetIO().DisplaySize;
+        const float MinVisible = 40f;
+        bool onScreen = pos.X + size.X >= MinVisible && pos.Y + size.Y >= MinVisible
+                     && pos.X <= display.X - MinVisible && pos.Y <= display.Y - MinVisible;
+
+        RynthLog.Write(LogCat.IltHub,
+            $"[IltHub] window drawn: expanded={expanded} collapsed={ImGui.IsWindowCollapsed()} " +
+            $"pos=({pos.X:0},{pos.Y:0}) size=({size.X:0},{size.Y:0}) display=({display.X:0},{display.Y:0}) onScreen={onScreen}");
+
+        if (!onScreen && display.X > MinVisible * 2 && display.Y > MinVisible * 2)
+        {
+            ImGui.SetWindowPos(new Vector2(MinVisible, MinVisible));
+            RynthLog.Write(LogCat.IltHub, "[IltHub] window was off-screen - moved to (40,40).");
+        }
     }
 
     private void RenderHeader()

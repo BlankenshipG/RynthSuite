@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.18-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.19-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -2488,7 +2488,22 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     public void OnRenderOverlay()
     {
         if (!_initialized || !_loginComplete || Host.ImGuiContext == IntPtr.Zero)
+        {
+            // Logged once per distinct reason so a Hub that never appears can be traced to this gate.
+            string reason = !_initialized ? "not initialized" : !_loginComplete ? "login not complete" : "no ImGui context";
+            if (reason != _overlaySkipReasonLogged)
+            {
+                _overlaySkipReasonLogged = reason;
+                RynthLog.Write(LogCat.UI, $"[Overlay] OnRenderOverlay skipped: {reason}.");
+            }
             return;
+        }
+
+        if (!_overlayEnteredLogged)
+        {
+            _overlayEnteredLogged = true;
+            RynthLog.Write(LogCat.UI, $"[Overlay] OnRenderOverlay drawing (iltHub={(_iltHub != null ? "ready" : "null")}).");
+        }
 
         IntPtr previousContext = ImGui.GetCurrentContext();
         ImGui.SetCurrentContext(Host.ImGuiContext);
@@ -2509,6 +2524,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             ImGui.SetCurrentContext(previousContext);
         }
     }
+
+    // One-time OnRenderOverlay diagnostics (render thread only).
+    private string? _overlaySkipReasonLogged;
+    private bool _overlayEnteredLogged;
 
     private void EnsureImGuiResolver()
     {
