@@ -18,6 +18,7 @@ Do **not** put the playbook only on a docs-only PR branch — keep it with the H
 | Assessment + playbook | **Done** — plan + this playbook (Pet: SummonPets mechanics + breeding) |
 | Remotes / aelrynth overlay | **Done on `main`** — Core [#1](https://github.com/BlankenshipG/RynthCore/pull/1), Suite [#1](https://github.com/BlankenshipG/RynthSuite/pull/1) |
 | ILT Hub P0–P2 | **On Suite `feat/ilt-hub`** — `ad61194` (0.5.1 Hub) + `18b4579` (0.5.2 diagnostics/security). **Not on `main`. No Hub PR yet.** |
+| SK-local unified (2026-10-04) | **Done** — Core + Suite `SK-local` contain `main`, `feat/full-installer`, `feat/ilt-hub`, `SK`, PR #2. RynthAi **0.6.10** fixes Hub creation on late settings load and the world-name wait in the login probe. ub-Rythai 3.1.10 is an optional installer component. |
 | Pet: SummonPets / breeding | **Partial** — picker/charms/HealingBuddy/rosters + hardened empty-summon. **Still open:** deepen PetManager; bond/potency UI; **breeding** if `pet_breeding_enabled` |
 | ACECustom `/ilt features` | **Not done** — still “Coming Soon” |
 | In-AC smoke | **Not done in this project** |
