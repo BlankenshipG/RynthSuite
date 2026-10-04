@@ -23,6 +23,9 @@ internal sealed class LegacyAdvancedSettingsUi
 
     public void SetMissileCraftingManager(MissileCraftingManager mgr) => _missileCraftingManager = mgr;
 
+    private Func<string>? _autoVendorStatus;
+    public void SetAutoVendorStatusProvider(Func<string> status) => _autoVendorStatus = status;
+
     public string MissileCraftingState  => _missileCraftingManager?.State.ToString() ?? string.Empty;
     public bool   MissileCraftingActive => _missileCraftingManager?.IsCrafting ?? false;
     public string MissileCraftingStatus => _missileCraftingManager?.StatusMessage ?? string.Empty;
@@ -58,6 +61,51 @@ internal sealed class LegacyAdvancedSettingsUi
         }
 
         ImGui.End();
+    }
+
+    private void RenderVendoring()
+    {
+        ImGui.Text("AutoVendor (UtilityBelt)");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        string status = _autoVendorStatus?.Invoke() ?? "Not logged in";
+        ImGui.TextDisabled($"Status: {status}");
+        ImGui.Spacing();
+
+        ImGui.Checkbox("Enabled##AV", ref _settings.AutoVendorEnabled);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Buy and sell by a loot profile when a vendor opens (and allow /ub autovendor).\n" +
+                             "Profiles: <Vendor Name>.utl or default.utl in your character's AutoVendor\n" +
+                             "folder, the server folder, or " + Vendor.AutoVendorManager.MainProfileDir + ".");
+        ImGui.Checkbox("Test Mode (only print what it would do)##AV", ref _settings.AutoVendorTestMode);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Lists what would be bought and sold without trading. Leave this on until\n" +
+                             "the list looks right: selling can't be undone.");
+        ImGui.Checkbox("Buy##AV", ref _settings.AutoVendorEnableBuying);
+        ImGui.SameLine();
+        ImGui.Checkbox("Sell##AV", ref _settings.AutoVendorEnableSelling);
+        ImGui.Checkbox("Only Sell From Main Pack##AV", ref _settings.AutoVendorOnlyFromMainPack);
+        ImGui.Checkbox("Show Merchant Info##AV", ref _settings.AutoVendorShowMerchantInfo);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Print the vendor's buy/sell rates and max value when it opens.");
+        ImGui.Checkbox("Think When Finished##AV", ref _settings.AutoVendorThink);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Send 'AutoVendor finished: <vendor>' (and failures) as a /tell to yourself,\n" +
+                             "so a meta's chat condition can wait for it.");
+
+        ImGui.Spacing();
+        ImGui.Text("/ub vendor open");
+        ImGui.SetNextItemWidth(120);
+        if (ImGui.InputInt("Tries##AV", ref _settings.AutoVendorTries))
+            _settings.AutoVendorTries = Math.Clamp(_settings.AutoVendorTries, 1, 20);
+        ImGui.SetNextItemWidth(120);
+        if (ImGui.InputInt("Time Between Tries (ms)##AV", ref _settings.AutoVendorTriesTime, 250))
+            _settings.AutoVendorTriesTime = Math.Clamp(_settings.AutoVendorTriesTime, 500, 30000);
+
+        ImGui.Spacing();
+        ImGui.TextDisabled("Never sold: equipped, attuned, bonded, retained, tinkered, imbued,");
+        ImGui.TextDisabled("inscribed, rare, zero value, packs, or anything a Keep rule could match.");
     }
 
     private void RenderTabContent(int tabIndex)
@@ -147,10 +195,15 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Text("Missile Arc Velocities (m/s)");
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Per-weapon projectile speed used for line-of-sight arc checks.\nLower velocity = higher arc. Tune until LoS matches in-game hits.\nDungeons always use linear checks to avoid false ceiling blocks.");
+                    ImGui.SetTooltip("Per-weapon launch speed used for line-of-sight arc checks.\n" +
+                                     "Lower velocity = higher arc. Tune until LoS matches in-game hits\n" +
+                                     "(/ra lostest bow on a selected mob shows the arc and where it hits).\n" +
+                                     "Indoors the arc is checked against ceilings too.");
                 ImGui.Checkbox("Use Arcs for Missile LoS", ref _settings.UseArcs);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("When off, all missile LoS checks are linear (eye-to-eye).");
+                    ImGui.SetTooltip("On: a missile target must pass the straight line AND the arc the\n" +
+                                     "missile flies (checked against ceilings in dungeons).\n" +
+                                     "Off: all missile LoS checks are a straight line (eye-to-eye).");
                 if (_settings.UseArcs)
                 {
                     ImGui.Indent();
@@ -162,8 +215,18 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SliderFloat("Atlatl",   ref _settings.AtlatlArcVelocity,   10.0f, 60.0f, "%.1f");
                     ImGui.SetNextItemWidth(150);
                     ImGui.SliderFloat("Magic Arc", ref _settings.MagicArcVelocity,   10.0f, 60.0f, "%.1f");
+                    ImGui.SetNextItemWidth(150);
+                    ImGui.SliderFloat("Arc Clearance (m)", ref _settings.MissileArcClearance, 0.0f, 3.0f, "%.1f");
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("Extra headroom the arc must have at mid-flight. Raise it if shots\n" +
+                                         "still hit ceilings; lower it if mobs the arrows can reach are skipped.\n" +
+                                         "Default 0.5.");
                     ImGui.Unindent();
                 }
+                ImGui.Checkbox("LoS Debug Log", ref _settings.LosDebugLog);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Log each in-range mob's LoS verdict ([LOS] lines: straight line or arc,\n" +
+                                     "how high the arc rises, where it hits, distance and cells). For tuning.");
 
                 ImGui.Separator();
                 ImGui.Spacing();
@@ -491,6 +554,12 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SetTooltip("Within this distance of a waypoint, blend the aim point toward the next one to cut corners smoothly. 0 = off (aim straight at each waypoint).");
 
                 ImGui.SetNextItemWidth(80);
+                ImGui.InputFloat("Shortcut Tolerance (yd)", ref _settings.NavShortcutYards, 0.5f, 1f, "%.1f");
+                _settings.NavShortcutYards = Math.Clamp(_settings.NavShortcutYards, 0f, 10f);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("On reaching a waypoint, skip ahead only while the straight line to a later waypoint passes within this distance of every waypoint skipped. Lower keeps closer to the route; 0 = visit every waypoint.");
+
+                ImGui.SetNextItemWidth(80);
                 ImGui.InputFloat("Turn Rate (deg/s)", ref _settings.NavTurnRateDegPerSec, 15f, 45f, "%.0f");
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Mode 0 (heading servo) max turn speed. Higher = snappier turns, lower = gentler. Ignored by Tier 1 / Tier 2.");
@@ -540,6 +609,15 @@ internal sealed class LegacyAdvancedSettingsUi
                         "Default 300 (5 minutes). Lower values rebuff more eagerly; very low\n" +
                         "values (<60s) risk a gap between the old buff dropping and the new one\n" +
                         "landing.");
+
+                ImGui.SetNextItemWidth(180);
+                ImGui.SliderInt("Also Refresh Under (seconds left)", ref _settings.RebuffTopOffSecondsRemaining, 30, 3600);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "When a buff is due, also recast every other buff with less than this\n" +
+                        "much time left, so they land together. Buffs with more time are left\n" +
+                        "alone. Default 1200 (20 minutes). At or below 'Rebuff With', only the\n" +
+                        "expiring buff is recast.");
 
                 ImGui.Spacing();
                 ImGui.Separator();
@@ -665,6 +743,10 @@ internal sealed class LegacyAdvancedSettingsUi
                     if (!string.IsNullOrEmpty(_missileCraftingManager.StatusMessage))
                         ImGui.TextWrapped(_missileCraftingManager.StatusMessage);
                 }
+                break;
+
+            case "Vendoring":
+                RenderVendoring();
                 break;
 
             default:

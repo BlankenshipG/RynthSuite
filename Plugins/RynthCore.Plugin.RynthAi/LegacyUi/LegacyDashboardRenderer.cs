@@ -146,9 +146,100 @@ internal sealed class LegacyDashboardRenderer
     private int _inventoryVersion;   // Interlocked: bumped on write, read in BuildInventoryJson
 
     // ── Monster editor (external process) ────────────────────────────────────
+    // Deep-audit finding #10 (2026-06-18): System.Diagnostics.Process is the
+    // documented H6 hazard — HasExited/CloseMainWindow/Process.Start's
+    // handle-touching accessors silently AV this host under NativeAOT in
+    // injected x86 acclient.exe (the engine already abandoned this API for
+    // OpenProcess/GetExitCodeProcess in PluginLoader.IsPidAliveWin32 for the
+    // identical reason). Runs synchronously on the ImGui/game thread from the
+    // "External Editor" button. Replaced with ShellExecuteExW (retaining the
+    // process handle via SEE_MASK_NOCLOSEPROCESS) + Win32 liveness/close.
     private FileSystemWatcher? _monsterWatcher;
     private volatile bool _monsterFileChanged;
-    private System.Diagnostics.Process? _monsterEditorProcess;
+    private IntPtr _monsterEditorProcessHandle = IntPtr.Zero;
+    private int _monsterEditorPid;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct SHELLEXECUTEINFOW
+    {
+        public int cbSize;
+        public uint fMask;
+        public IntPtr hwnd;
+        public string? lpVerb;
+        public string? lpFile;
+        public string? lpParameters;
+        public string? lpDirectory;
+        public int nShow;
+        public IntPtr hInstApp;
+        public IntPtr lpIDList;
+        public string? lpClass;
+        public IntPtr hkeyClass;
+        public uint dwHotKey;
+        public IntPtr hIconOrMonitor;
+        public IntPtr hProcess;
+    }
+
+    private const uint SeeMaskNoCloseProcess = 0x00000040;
+    private const int SwShowNormal = 1;
+    private const uint WaitTimeout = 0x00000102;
+    private const uint WmClose = 0x0010;
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool ShellExecuteExW(ref SHELLEXECUTEINFOW lpExecInfo);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    /// <summary>Finds the first visible top-level window owned by the given PID (mirrors what
+    /// Process.CloseMainWindow does internally) so WM_CLOSE can be posted without touching
+    /// System.Diagnostics.Process.</summary>
+    private static IntPtr FindMainWindowForPid(int pid)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((hWnd, _) =>
+        {
+            GetWindowThreadProcessId(hWnd, out uint wndPid);
+            if (wndPid == (uint)pid && IsWindowVisible(hWnd))
+            {
+                found = hWnd;
+                return false; // stop enumerating
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    /// <summary>Releases the tracked Monster Editor process handle, if any. Call on plugin
+    /// Shutdown so the handle isn't leaked if the editor is still open when RynthAi unloads.</summary>
+    public void ReleaseMonsterEditorHandle()
+    {
+        if (_monsterEditorProcessHandle != IntPtr.Zero)
+        {
+            CloseHandle(_monsterEditorProcessHandle);
+            _monsterEditorProcessHandle = IntPtr.Zero;
+            _monsterEditorPid = 0;
+        }
+    }
 
     public LegacyDashboardRenderer(RynthCoreHost host)
     {
@@ -189,6 +280,12 @@ internal sealed class LegacyDashboardRenderer
     public void SetWorldFilter(WorldObjectCache cache) => _weaponsUi.SetWorldFilter(cache);
 
     public void SetMissileCraftingManager(MissileCraftingManager mgr) => _advancedSettingsUi.SetMissileCraftingManager(mgr);
+    public void SetAutoVendorStatusProvider(Func<string> status) => _advancedSettingsUi.SetAutoVendorStatusProvider(status);
+
+    // The open vendor's AutoVendor profile path (null when no vendor is open), for the
+    // dashboard snapshot's vendorProfilePath.
+    private Func<string?>? _vendorProfilePath;
+    public void SetVendorProfilePathProvider(Func<string?> path) => _vendorProfilePath = path;
 
     public void SetRaycast(Raycasting.MainLogic raycast)
     {
@@ -675,6 +772,8 @@ internal sealed class LegacyDashboardRenderer
                 CrossbowArcVelocity        = s.CrossbowArcVelocity,
                 AtlatlArcVelocity          = s.AtlatlArcVelocity,
                 MagicArcVelocity           = s.MagicArcVelocity,
+                MissileArcClearance        = s.MissileArcClearance,
+                LosDebugLog                = s.LosDebugLog,
                 BlacklistAttempts          = s.BlacklistAttempts,
                 BlacklistTimeoutSec        = s.BlacklistTimeoutSec,
                 BlacklistCastSettleMs      = s.BlacklistCastSettleMs,
@@ -736,6 +835,7 @@ internal sealed class LegacyDashboardRenderer
                 NavDeadZone                = s.NavDeadZone,
                 NavSweepMult               = s.NavSweepMult,
                 NavLookaheadYards          = s.NavLookaheadYards,
+                NavShortcutYards           = s.NavShortcutYards,
                 NavTurnRateDegPerSec       = s.NavTurnRateDegPerSec,
                 NavTier1TurnSpeed          = s.NavTier1TurnSpeed,
                 PostPortalDelaySec         = s.PostPortalDelaySec,
@@ -749,6 +849,7 @@ internal sealed class LegacyDashboardRenderer
                 EnableBuffing              = s.EnableBuffing,
                 RebuffWhenIdle             = s.RebuffWhenIdle,
                 RebuffSecondsRemaining     = s.RebuffSecondsRemaining,
+                RebuffTopOffSecondsRemaining = s.RebuffTopOffSecondsRemaining,
                 BuffMinSkillLevelTier1     = s.BuffMinSkillLevelTier1,
                 BuffMinSkillLevelTier2     = s.BuffMinSkillLevelTier2,
                 BuffMinSkillLevelTier3     = s.BuffMinSkillLevelTier3,
@@ -787,6 +888,16 @@ internal sealed class LegacyDashboardRenderer
                 SalvageSalvageDelayMs      = s.SalvageSalvageDelayMs,
                 SalvageResultDelayFirstMs  = s.SalvageResultDelayFirstMs,
                 SalvageResultDelayFastMs   = s.SalvageResultDelayFastMs,
+                // Vendoring (AutoVendor)
+                AutoVendorEnabled          = s.AutoVendorEnabled,
+                AutoVendorEnableBuying     = s.AutoVendorEnableBuying,
+                AutoVendorEnableSelling    = s.AutoVendorEnableSelling,
+                AutoVendorTestMode         = s.AutoVendorTestMode,
+                AutoVendorThink            = s.AutoVendorThink,
+                AutoVendorShowMerchantInfo = s.AutoVendorShowMerchantInfo,
+                AutoVendorOnlyFromMainPack = s.AutoVendorOnlyFromMainPack,
+                AutoVendorTries            = s.AutoVendorTries,
+                AutoVendorTriesTime        = s.AutoVendorTriesTime,
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.SettingsBridgePayload);
         }
@@ -801,7 +912,20 @@ internal sealed class LegacyDashboardRenderer
         if (string.IsNullOrWhiteSpace(json)) return;
         try
         {
-            var p = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.SettingsBridgePayload);
+            // Lay the sent fields over the current settings, so a field the sender leaves
+            // out keeps its value instead of deserializing to 0 and being applied. The
+            // overlay's Settings panel keeps its own copy of this payload; when that copy
+            // lacked BlacklistCastSettleMs/MonsterDisengageRange, every click zeroed them.
+            var merged = System.Text.Json.Nodes.JsonNode.Parse(BuildSettingsJson(),
+                new System.Text.Json.Nodes.JsonNodeOptions { PropertyNameCaseInsensitive = true })?.AsObject();
+            if (merged == null) return;
+            using (var sent = JsonDocument.Parse(json))
+            {
+                if (sent.RootElement.ValueKind != JsonValueKind.Object) return;
+                foreach (var prop in sent.RootElement.EnumerateObject())
+                    merged[prop.Name] = System.Text.Json.Nodes.JsonNode.Parse(prop.Value.GetRawText());
+            }
+            var p = JsonSerializer.Deserialize(merged.ToJsonString(), RynthAiJsonContext.Default.SettingsBridgePayload);
             if (p == null) return;
             var s = _settings;
             // Display
@@ -827,9 +951,13 @@ internal sealed class LegacyDashboardRenderer
             s.CrossbowArcVelocity        = p.CrossbowArcVelocity;
             s.AtlatlArcVelocity          = p.AtlatlArcVelocity;
             s.MagicArcVelocity           = p.MagicArcVelocity;
+            if (p.MissileArcClearance >= 0f) s.MissileArcClearance = Math.Min(p.MissileArcClearance, 3f);
+            s.LosDebugLog                = p.LosDebugLog;
             s.BlacklistAttempts          = p.BlacklistAttempts;
             s.BlacklistTimeoutSec        = p.BlacklistTimeoutSec;
-            s.BlacklistCastSettleMs      = p.BlacklistCastSettleMs;
+            // -1 = not sent. 0 is never meant (it judges a cast before its damage can land)
+            // and is what the bug saved into profiles, so it keeps the default too.
+            if (p.BlacklistCastSettleMs > 0) s.BlacklistCastSettleMs = p.BlacklistCastSettleMs;
             s.TargetNoProgressTimeoutSec = p.TargetNoProgressTimeoutSec;
             s.GiveQueueIntervalMs        = p.GiveQueueIntervalMs;
             // Recharge
@@ -866,7 +994,7 @@ internal sealed class LegacyDashboardRenderer
             s.MinSkillLevelTier8         = p.MinSkillLevelTier8;
             // Ranges
             s.MonsterRange               = p.MonsterRange;
-            s.MonsterDisengageRange      = p.MonsterDisengageRange;
+            if (p.MonsterDisengageRange >= 0) s.MonsterDisengageRange = p.MonsterDisengageRange;   // -1 = not sent
             s.RingRange                  = p.RingRange;
             s.ApproachRange              = p.ApproachRange;
             s.CorpseApproachRangeMax     = p.CorpseApproachRangeMax;
@@ -888,6 +1016,7 @@ internal sealed class LegacyDashboardRenderer
             s.NavDeadZone                = p.NavDeadZone;
             s.NavSweepMult               = p.NavSweepMult;
             s.NavLookaheadYards          = p.NavLookaheadYards;
+            s.NavShortcutYards           = p.NavShortcutYards;
             s.NavTurnRateDegPerSec       = p.NavTurnRateDegPerSec;
             s.NavTier1TurnSpeed          = p.NavTier1TurnSpeed;
             s.PostPortalDelaySec         = p.PostPortalDelaySec;
@@ -901,6 +1030,7 @@ internal sealed class LegacyDashboardRenderer
             s.EnableBuffing              = p.EnableBuffing;
             s.RebuffWhenIdle             = p.RebuffWhenIdle;
             s.RebuffSecondsRemaining     = p.RebuffSecondsRemaining;
+            if (p.RebuffTopOffSecondsRemaining > 0) s.RebuffTopOffSecondsRemaining = p.RebuffTopOffSecondsRemaining;
             s.BuffMinSkillLevelTier1     = p.BuffMinSkillLevelTier1;
             s.BuffMinSkillLevelTier2     = p.BuffMinSkillLevelTier2;
             s.BuffMinSkillLevelTier3     = p.BuffMinSkillLevelTier3;
@@ -936,6 +1066,16 @@ internal sealed class LegacyDashboardRenderer
             s.SalvageSalvageDelayMs      = p.SalvageSalvageDelayMs;
             s.SalvageResultDelayFirstMs  = p.SalvageResultDelayFirstMs;
             s.SalvageResultDelayFastMs   = p.SalvageResultDelayFastMs;
+            // Vendoring: only fields the sender actually included (older panels omit them)
+            if (p.AutoVendorEnabled          is bool avOn)    s.AutoVendorEnabled          = avOn;
+            if (p.AutoVendorEnableBuying     is bool avBuy)   s.AutoVendorEnableBuying     = avBuy;
+            if (p.AutoVendorEnableSelling    is bool avSell)  s.AutoVendorEnableSelling    = avSell;
+            if (p.AutoVendorTestMode         is bool avTest)  s.AutoVendorTestMode         = avTest;
+            if (p.AutoVendorThink            is bool avThink) s.AutoVendorThink            = avThink;
+            if (p.AutoVendorShowMerchantInfo is bool avInfo)  s.AutoVendorShowMerchantInfo = avInfo;
+            if (p.AutoVendorOnlyFromMainPack is bool avMain)  s.AutoVendorOnlyFromMainPack = avMain;
+            if (p.AutoVendorTries            is int avTries)  s.AutoVendorTries            = Math.Clamp(avTries, 1, 20);
+            if (p.AutoVendorTriesTime        is int avTime)   s.AutoVendorTriesTime        = Math.Clamp(avTime, 500, 30000);
             SaveSettings();
         }
         catch { }
@@ -1004,10 +1144,18 @@ internal sealed class LegacyDashboardRenderer
         }
 
         // Toggle: if the editor is already running, close it.
-        if (_monsterEditorProcess != null && !_monsterEditorProcess.HasExited)
+        if (_monsterEditorProcessHandle != IntPtr.Zero)
         {
-            _monsterEditorProcess.CloseMainWindow();
-            _monsterEditorProcess = null;
+            uint wait = WaitForSingleObject(_monsterEditorProcessHandle, 0);
+            if (wait == WaitTimeout) // still running
+            {
+                IntPtr hwnd = FindMainWindowForPid(_monsterEditorPid);
+                if (hwnd != IntPtr.Zero)
+                    PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
+                else
+                    TerminateProcess(_monsterEditorProcessHandle, 0); // no window found — fall back to a hard kill
+            }
+            ReleaseMonsterEditorHandle();
             return;
         }
 
@@ -1021,14 +1169,28 @@ internal sealed class LegacyDashboardRenderer
             return;
         }
 
-        var psi = new System.Diagnostics.ProcessStartInfo
+        var info = new SHELLEXECUTEINFOW
         {
-            FileName        = editorExe,
-            Arguments       = $"\"{_charFolder}\"",
-            UseShellExecute = true,
+            cbSize       = Marshal.SizeOf<SHELLEXECUTEINFOW>(),
+            fMask        = SeeMaskNoCloseProcess,   // retain hProcess instead of closing it internally
+            lpVerb       = "open",
+            lpFile       = editorExe,
+            lpParameters = $"\"{_charFolder}\"",
+            nShow        = SwShowNormal,
         };
-        _monsterEditorProcess = System.Diagnostics.Process.Start(psi);
+
+        if (!ShellExecuteExW(ref info) || info.hProcess == IntPtr.Zero)
+        {
+            _host.WriteToChat("[RynthAi] Failed to launch Monster Editor.", 4);
+            return;
+        }
+
+        _monsterEditorProcessHandle = info.hProcess;
+        _monsterEditorPid = (int)GetProcessId(info.hProcess); // needed to find the main window for WM_CLOSE later
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint GetProcessId(IntPtr hProcess);
 
     private void CaptureTransientUiState()
     {
@@ -1189,6 +1351,7 @@ internal sealed class LegacyDashboardRenderer
         dst.NavDeadZone              = tmp.NavDeadZone;
         dst.NavSweepMult             = tmp.NavSweepMult;
         dst.NavLookaheadYards        = tmp.NavLookaheadYards;
+        dst.NavShortcutYards         = tmp.NavShortcutYards;
         dst.NavTurnRateDegPerSec     = tmp.NavTurnRateDegPerSec;
         dst.NavTier1TurnSpeed        = tmp.NavTier1TurnSpeed;
         dst.PostPortalDelaySec       = tmp.PostPortalDelaySec;
@@ -1271,9 +1434,12 @@ internal sealed class LegacyDashboardRenderer
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;
+        dst.RebuffTopOffSecondsRemaining = tmp.RebuffTopOffSecondsRemaining;
         dst.BlacklistAttempts             = tmp.BlacklistAttempts;
         dst.BlacklistTimeoutSec           = tmp.BlacklistTimeoutSec;
-        dst.BlacklistCastSettleMs         = tmp.BlacklistCastSettleMs;
+        // 0 is never meant (every UI floors it at 250+) and is what the Settings-panel bug
+        // saved into profiles: it judges each cast before its damage can land.
+        dst.BlacklistCastSettleMs         = tmp.BlacklistCastSettleMs > 0 ? tmp.BlacklistCastSettleMs : 1500;
         dst.TargetNoProgressTimeoutSec    = tmp.TargetNoProgressTimeoutSec;
         dst.MeleeAttackPower         = tmp.MeleeAttackPower;
         dst.MissileAttackPower       = tmp.MissileAttackPower;
@@ -1286,6 +1452,8 @@ internal sealed class LegacyDashboardRenderer
         dst.CrossbowArcVelocity      = tmp.CrossbowArcVelocity;
         dst.AtlatlArcVelocity        = tmp.AtlatlArcVelocity;
         dst.MagicArcVelocity         = tmp.MagicArcVelocity;
+        dst.MissileArcClearance      = tmp.MissileArcClearance >= 0f ? Math.Min(tmp.MissileArcClearance, 3f) : 0.5f;
+        dst.LosDebugLog              = tmp.LosDebugLog;
         dst.EnableFPSLimit           = tmp.EnableFPSLimit;
         dst.TargetFPSFocused         = tmp.TargetFPSFocused;
         dst.TargetFPSBackground      = tmp.TargetFPSBackground;
@@ -1340,6 +1508,15 @@ internal sealed class LegacyDashboardRenderer
         dst.EnableManaTapping        = tmp.EnableManaTapping;
         dst.ManaTapMinMana           = tmp.ManaTapMinMana;
         dst.ManaStoneKeepCount       = tmp.ManaStoneKeepCount;
+        dst.AutoVendorEnabled          = tmp.AutoVendorEnabled;
+        dst.AutoVendorEnableBuying     = tmp.AutoVendorEnableBuying;
+        dst.AutoVendorEnableSelling    = tmp.AutoVendorEnableSelling;
+        dst.AutoVendorTestMode         = tmp.AutoVendorTestMode;
+        dst.AutoVendorThink            = tmp.AutoVendorThink;
+        dst.AutoVendorShowMerchantInfo = tmp.AutoVendorShowMerchantInfo;
+        dst.AutoVendorOnlyFromMainPack = tmp.AutoVendorOnlyFromMainPack;
+        dst.AutoVendorTries            = tmp.AutoVendorTries;
+        dst.AutoVendorTriesTime        = tmp.AutoVendorTriesTime;
         dst.MetaDebug                = tmp.MetaDebug;
         dst.StartMacroOnLogin        = tmp.StartMacroOnLogin;
         dst.PatrolOnLogin            = tmp.PatrolOnLogin;
@@ -2114,9 +2291,17 @@ internal sealed class LegacyDashboardRenderer
             }
         }
         catch { }
-        lock (_profileListsLock) { _profiles.Clear(); _profiles.AddRange(list); }
-        if (!_profiles.Contains(_settings.SelectedProfile, StringComparer.OrdinalIgnoreCase))
-            _settings.SelectedProfile = _profiles[0];
+        // Deep-audit finding #16 (2026-06-18): Contains/[0] used to read
+        // _profiles just after releasing the lock — a concurrent
+        // SelectProfileAtIndex export call (poll thread) could be mid-index
+        // against a list this same read races. Moved inside the lock.
+        lock (_profileListsLock)
+        {
+            _profiles.Clear();
+            _profiles.AddRange(list);
+            if (!_profiles.Contains(_settings.SelectedProfile, StringComparer.OrdinalIgnoreCase))
+                _settings.SelectedProfile = _profiles[0];
+        }
     }
 
     private void RefreshNavFiles()
@@ -2183,8 +2368,16 @@ internal sealed class LegacyDashboardRenderer
 
     private void LoadSelectedNav()
     {
-        if (_selectedNavIdx < 0 || _selectedNavIdx >= _navFiles.Count) return;
-        string selection = _navFiles[_selectedNavIdx];
+        // Same finding #16 class as SelectProfileAtIndex above — this direct
+        // index into _navFiles is also reachable from the Avalonia poll
+        // thread (via SelectProfileAtIndex) racing the pump thread's
+        // Refresh*Files Clear()/AddRange().
+        string? selection;
+        lock (_profileListsLock)
+        {
+            if (_selectedNavIdx < 0 || _selectedNavIdx >= _navFiles.Count) return;
+            selection = _navFiles[_selectedNavIdx];
+        }
         if (selection == "None")
         {
             _settings.CurrentNavPath = string.Empty;
@@ -2413,6 +2606,9 @@ internal sealed class LegacyDashboardRenderer
             string.IsNullOrEmpty(_settings.CurrentNavPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentNavPath)); sb.Append(',');
         AppendString(sb, "currentLootName",
             string.IsNullOrEmpty(_settings.CurrentLootPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentLootPath)); sb.Append(',');
+        // Full paths for the dashboard's Edit (✎) button, which opens the Loot Editor.
+        AppendString(sb, "currentLootPath", _settings.CurrentLootPath ?? string.Empty); sb.Append(',');
+        AppendString(sb, "vendorProfilePath", _vendorProfilePath?.Invoke() ?? string.Empty); sb.Append(',');
         AppendString(sb, "currentMetaName",
             string.IsNullOrEmpty(_settings.CurrentMetaPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentMetaPath)); sb.Append(',');
         AppendInt(sb, "selectedNavIdx", _selectedNavIdx); sb.Append(',');
@@ -2547,30 +2743,48 @@ internal sealed class LegacyDashboardRenderer
     /// </summary>
     public void SelectProfileAtIndex(int kind, int index)
     {
+        // Deep-audit finding #16 (2026-06-18): this export (poll thread) used
+        // to bounds-check and index _navFiles/_lootFiles/_metaFiles/_profiles
+        // with no lock at all, racing the Refresh*Files mutators' Clear()/
+        // AddRange() on the pump thread — a torn read or
+        // ArgumentOutOfRangeException. Snapshot the one list this call needs
+        // under _profileListsLock first, mirroring BuildSnapshotJson.
+        string? navFile = null, lootFile = null, metaFile = null, profileName = null;
+        lock (_profileListsLock)
+        {
+            switch (kind)
+            {
+                case 0: if (index >= 0 && index < _navFiles.Count) navFile = _navFiles[index]; break;
+                case 1: if (index >= 0 && index < _lootFiles.Count) lootFile = _lootFiles[index]; break;
+                case 2: if (index >= 0 && index < _metaFiles.Count) metaFile = _metaFiles[index]; break;
+                case 3: if (index >= 0 && index < _profiles.Count) profileName = _profiles[index]; break;
+            }
+        }
+
         switch (kind)
         {
             case 0:
-                if (index >= 0 && index < _navFiles.Count) { _selectedNavIdx = index; LoadSelectedNav(); }
+                if (navFile != null) { _selectedNavIdx = index; LoadSelectedNav(); }
                 break;
             case 1:
-                if (index >= 0 && index < _lootFiles.Count)
+                if (lootFile != null)
                 {
                     _settings.LootProfileIdx = index;
-                    _settings.CurrentLootPath = index == 0 ? string.Empty : Path.Combine(_lootFolder, _lootFiles[index]);
+                    _settings.CurrentLootPath = index == 0 ? string.Empty : Path.Combine(_lootFolder, lootFile);
                     SaveSettings();
                 }
                 break;
             case 2:
-                if (index >= 0 && index < _metaFiles.Count)
+                if (metaFile != null)
                 {
                     _settings.MetaProfileIdx = index;
-                    string path = index == 0 ? string.Empty : Path.Combine(_metaFolder, _metaFiles[index]);
+                    string path = index == 0 ? string.Empty : Path.Combine(_metaFolder, metaFile);
                     _metaUi.LoadMacroFile(path);
                     SaveSettings();
                 }
                 break;
             case 3:
-                if (index >= 0 && index < _profiles.Count) SwitchProfile(_profiles[index]);
+                if (profileName != null) SwitchProfile(profileName);
                 break;
         }
     }

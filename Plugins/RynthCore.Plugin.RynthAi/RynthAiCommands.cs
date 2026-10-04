@@ -69,6 +69,10 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra dumpinv       — dump all inventory items (cache + direct)");
         ChatLine("[RynthAi] /ra combat        — dump combat state machine snapshot");
         ChatLine("[RynthAi] /ra why           — one-glance diagnosis of why the bot is idle/attacking");
+        ChatLine("[RynthAi] /ra start | stop   — start/stop the macro from chat");
+        ChatLine("[RynthAi] /ra pause [sec]    — stop the macro, auto-resume after sec (default 60)");
+        ChatLine("[RynthAi] /ra navstate      — dump navigation state machine snapshot");
+        ChatLine("[RynthAi] /ra salvstate     — dump salvage state machine snapshot");
         ChatLine("[RynthAi] /ra clearbusy     — force-clear busy state (hourglass cursor)");
         ChatLine("[RynthAi] /ra panic         — full AC state reset (cancel attack + peace mode + stop motion + clear busy)");
         ChatLine("[RynthAi] /ra forcebuff          — force-recast all buffs immediately");
@@ -76,6 +80,8 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra bufftest           — one-shot: snapshot enchant registries pre/post next item-spell cast (logs to RynthCore.log)");
         ChatLine("[RynthAi] /ra settings savechar <name> — save current settings to named profile (create if new)");
         ChatLine("[RynthAi] /ra settings loadchar <name> — load named settings profile (create from current if new)");
+        ChatLine("[RynthAi] /ub autovendor [profile.utl|cancel] — run AutoVendor at the open vendor (TestMode on by default)");
+        ChatLine("[RynthAi] /ub vendor open[p] <name|id|selected> | opencancel | addbuy[p]/addsell[p] [n] <item> | buyall | sellall | clearbuy | clearsell");
     }
 
     private void HandlePowerCommand(string[] parts)
@@ -320,8 +326,20 @@ public sealed partial class RynthAiPlugin
 
             if (geometry != null && geometry.Count > 0)
             {
-                staticBlocked = RaycastEngine.IsArcPathBlocked(origin, targetPos, arcVelocity, geometry);
-                ChatLine($"[RynthAi LOS] IsArcPathBlocked: {staticBlocked}{(isDungeon && staticBlocked ? "  (likely ceiling — combat LoS forces Linear in dungeons)" : "")}");
+                // Same test combat runs for missile targets: straight line (walls), then the
+                // arc the missile flies plus the clearance headroom (ceilings indoors).
+                float clearance = settings?.MissileArcClearance ?? 0.5f;
+                bool lineBlocked = RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
+                bool arcBlocked = RaycastEngine.IsBallisticArcBlocked(origin, targetPos, arcVelocity, clearance, geometry, out var arc);
+                staticBlocked = lineBlocked || arcBlocked;
+                ChatLine($"[RynthAi LOS] Straight line ({(isDungeon ? "multi-ray" : "single-ray")}): {(lineBlocked ? "BLOCKED" : "clear")}");
+                ChatLine($"[RynthAi LOS] Arc: rises {arc.Sag:F2}m above the line, apex {arc.Apex:F2}m above launch, clearance {clearance:F1}m");
+                if (arc.OutOfReach)
+                    ChatLine($"[RynthAi LOS] Arc: OUT OF REACH at v={arcVelocity:F1} (raise the velocity or get closer)");
+                else if (arcBlocked)
+                    ChatLine($"[RynthAi LOS] Arc: BLOCKED {arc.HitAlong:F1}m out, {arc.HitZ:+0.0;-0.0;0.0}m vs launch{(isDungeon && arc.HitZ > 0.5f ? "  (ceiling)" : "")}");
+                else
+                    ChatLine("[RynthAi LOS] Arc: clear");
             }
         }
         else
@@ -388,57 +406,30 @@ public sealed partial class RynthAiPlugin
         ChatLine($"[RynthAi LOS] Combined LoS ({modeLabel}): {verdict}");
     }
 
-    // Samples a parabolic arc from origin→target at the given launch velocity,
-    // returns true if any sample point dips below terrain Z. Mirrors the math
-    // in RaycastEngine.IsArcPathBlocked so the terrain check tracks the same
-    // trajectory the static-geometry check uses.
+    // Samples the missile's arc from origin→target at the given launch speed and returns
+    // true if any sample point dips below terrain Z. Same flight path as combat's missile
+    // LOS (MissileBallistics: low ballistic solution, AC gravity), without the clearance.
     private static bool TerrainBlockedAlongArc(Raycasting.Vector3 origin, Raycasting.Vector3 target,
         float velocity, Raycasting.GeometryLoader geo,
         out float hitDist, out Raycasting.Vector3 hitPoint)
     {
         hitDist = 0f;
         hitPoint = origin;
-        const float GRAVITY = 9.81f;
-        const int   SAMPLES = 20;
+        const int SAMPLES = 20;
 
-        var delta = target - origin;
-        float horiz = delta.Length2D();
-        if (horiz < 0.1f) return false;
-
-        float maxRange = (velocity * velocity) / GRAVITY;
-        if (horiz > maxRange) return false; // out-of-range is the shooter's problem, not terrain's
-
-        float sinArg = (GRAVITY * horiz) / (velocity * velocity);
-        if (sinArg > 1.0f) sinArg = 1.0f;
-        float launchAngle = (float)(0.5 * Math.Asin(sinArg));
-        if (launchAngle < 0.1f) launchAngle = (float)(Math.PI / 4);
-
-        float cosA = (float)Math.Cos(launchAngle);
-        float sinA = (float)Math.Sin(launchAngle);
-        float vH = velocity * cosA;
-        float vV = velocity * sinA;
-        if (vH < 0.01f) return false;
-
-        float totalTime = horiz / vH;
-        float hdx = delta.X / horiz;
-        float hdy = delta.Y / horiz;
+        var arc = Raycasting.MissileBallistics.Solve(origin.X, origin.Y, origin.Z, target.X, target.Y, target.Z, velocity);
+        if (!arc.Valid || arc.Vertical) return false; // out of reach is the shooter's problem, not terrain's
 
         for (int i = 1; i <= SAMPLES; i++)
         {
             float t = (float)i / SAMPLES;
-            float time = t * totalTime;
-            float hDistAlong = vH * time;
-            float z = origin.Z + vV * time - 0.5f * GRAVITY * time * time;
-            z += delta.Z * t * (1.0f - t); // same blend IsArcPathBlocked uses
-
-            float wx = origin.X + hdx * hDistAlong;
-            float wy = origin.Y + hdy * hDistAlong;
+            arc.PointAt(t, 0f, out float wx, out float wy, out float z);
             float groundZ = geo.GetTerrainZWorld(wx, wy);
             if (float.IsNaN(groundZ)) continue;
 
             if (z < groundZ)
             {
-                hitDist  = hDistAlong;
+                hitDist  = t * arc.HorizDist;
                 hitPoint = new Raycasting.Vector3(wx, wy, z);
                 return true;
             }
@@ -1393,6 +1384,30 @@ public sealed partial class RynthAiPlugin
         if (s.ScannedCount > 0)
             ChatLine($"[RynthAi] closest: '{s.ClosestScannedName}' @ {s.ClosestScannedDist:0.0}yd");
 
+        // Nav and salvage each own a piece of the "standing there" class, so name
+        // what they're holding rather than leaving it to /ra navstate + /ra salvstate.
+        if (_navigationEngine != null)
+        {
+            var n = _navigationEngine.GetStateSnapshot();
+            string navHold = !n.EnableNavigation ? "nav disabled"
+                           : n.InRecovery        ? $"STUCK-recovery {n.RecoveryKind} ({n.RecoveryRemainMs}ms, x{n.StuckCount})"
+                           : n.InPause           ? $"route pause ({n.PauseRemainMs}ms)"
+                           : n.PortalState != "None" ? $"portal/recall {n.PortalState}"
+                           : n.PointCount == 0   ? "no route loaded"
+                           : n.Stopped           ? "stopped (gated by BotAction)"
+                           : "running";
+            ChatLine($"[RynthAi] nav: {navHold}  pt={n.Index + 1}/{n.PointCount} ({n.PointType})"
+                     + (double.IsNaN(n.DistYd) ? "" : $" {n.DistYd:0.0}yd err={n.HeadingErrDeg:+0.0;-0.0}°"));
+        }
+        if (_salvageManager != null)
+        {
+            var v = _salvageManager.GetStateSnapshot();
+            if (v.QueueCount > 0 || v.Phase != "Idle" || v.LastError.Length > 0)
+                ChatLine($"[RynthAi] salvage: phase={v.Phase} queue={v.QueueCount} combine={v.CombinePhase}"
+                         + $" grp={v.CombineGroupIdx + 1}/{v.CombineGroupCount}"
+                         + (v.LastError.Length > 0 ? $"  lastErr='{v.LastError}' ({v.MsSinceLastError / 1000}s ago)" : ""));
+        }
+
         // Interpretation — the point of D2/D3: name the most likely reason it isn't attacking.
         string why =
             !s.IsMacroRunning        ? "macro is STOPPED (start it from the panel / command)." :
@@ -1492,6 +1507,112 @@ public sealed partial class RynthAiPlugin
                  $"scanned={s.ScannedCount} closest=0x{(uint)s.ClosestScannedId:X8} '{s.ClosestScannedName}' @ {s.ClosestScannedDist:F1}yd " +
                  $"weapon=0x{(uint)s.PickedWeaponId:X8} '{s.PickedWeaponName}' wieldLoc={s.PickedWeaponWieldLoc} " +
                  $"busy={s.BusyCount} sinceAtk={sinceAttackS:F1}s sinceStance={sinceStanceS:F1}s sinceEquip={sinceEquipS:F1}s sinceLost={sinceLostS:F1}s");
+    }
+
+    /// <summary>
+    /// /ra start | /ra stop | /ra pause [sec] | /ra resume — macro control from chat.
+    /// Until now the only way to start or stop a box was the ImGui button, which is
+    /// unreachable on a background box (and on the phone-remote path, which already
+    /// had this via TogglePanelMacro). Routed through the same TogglePanelMacro the
+    /// button and the remote use, so there's still one write path for the flag.
+    /// </summary>
+    private void HandleMacroRunCommand(string verb, string[] parts)
+    {
+        var dash = _dashboard;
+        if (dash == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        bool running = dash.Settings.IsMacroRunning;
+
+        switch (verb)
+        {
+            case "start":
+            case "resume":
+                _macroResumeAt = 0;
+                if (running) { ChatLine("[RynthAi] Macro already RUNNING."); return; }
+                dash.TogglePanelMacro();
+                ChatLine("[RynthAi] Macro STARTED.");
+                return;
+
+            case "stop":
+                _macroResumeAt = 0;
+                if (!running) { ChatLine("[RynthAi] Macro already STOPPED."); return; }
+                dash.TogglePanelMacro();
+                // Kill autorun now rather than waiting out the nav engine's stop
+                // debounce — a /ra stop is usually issued because the box is
+                // running somewhere you don't want it to.
+                _navigationEngine?.Stop();
+                ChatLine("[RynthAi] Macro STOPPED.");
+                return;
+
+            case "pause":
+            {
+                int sec = 60;
+                if (parts.Length >= 3 && int.TryParse(parts[2], out int parsed))
+                    sec = Math.Clamp(parsed, 1, 3600);
+                if (running)
+                {
+                    dash.TogglePanelMacro();
+                    _navigationEngine?.Stop();
+                }
+                _macroResumeAt = CorpseNowMs + sec * 1000L;
+                ChatLine($"[RynthAi] Macro PAUSED — auto-resume in {sec}s ('/ra start' to resume now, '/ra stop' to cancel).");
+                return;
+            }
+        }
+    }
+
+    /// <summary>/ra navstate — dump the nav engine's snapshot. Nav is the other half of
+    /// the "bot just stands there" class and had no state surface of its own.</summary>
+    private void HandleNavStateCommand()
+    {
+        if (_navigationEngine == null) { ChatLine("[RynthAi] Navigation engine not ready."); return; }
+        var n = _navigationEngine.GetStateSnapshot();
+
+        ChatLine("[RynthAi] === Nav State ===");
+        ChatLine($"[RynthAi] macro={n.IsMacroRunning}  enableNav={n.EnableNavigation}  botAction='{n.BotAction}'");
+        ChatLine($"[RynthAi] route={n.RouteType} pts={n.PointCount}  idx={n.Index} ({n.PointType})  linearDir={n.LinearDir}");
+        ChatLine($"[RynthAi] dist={(double.IsNaN(n.DistYd) ? "n/a" : n.DistYd.ToString("0.0") + "yd")}"
+                 + $"  headingErr={(double.IsNaN(n.HeadingErrDeg) ? "n/a" : n.HeadingErrDeg.ToString("+0.0;-0.0") + "°")}"
+                 + $"  sinceSteer={n.MsSinceSteer}ms");
+        ChatLine($"[RynthAi] moving={n.MovingForward} turning={n.Turning} stopped={n.Stopped}");
+        ChatLine($"[RynthAi] pause={n.InPause} ({n.PauseRemainMs}ms)  portal={n.PortalState}");
+        ChatLine($"[RynthAi] recovery={n.InRecovery} kind={n.RecoveryKind} remain={n.RecoveryRemainMs}ms  stuckCount={n.StuckCount}");
+        if (n.FollowMode)
+            ChatLine($"[RynthAi] follow: target=0x{n.FollowTargetId:X8}");
+        ChatLine($"[RynthAi] status: {n.StatusLine}");
+
+        Host.Log($"[RynthAi navstate] macro={n.IsMacroRunning} enableNav={n.EnableNavigation} ba='{n.BotAction}' "
+                 + $"route={n.RouteType} pts={n.PointCount} idx={n.Index}({n.PointType}) dir={n.LinearDir} "
+                 + $"dist={n.DistYd:F1} err={n.HeadingErrDeg:F1} sinceSteer={n.MsSinceSteer}ms "
+                 + $"moving={n.MovingForward} turning={n.Turning} stopped={n.Stopped} "
+                 + $"pause={n.InPause}/{n.PauseRemainMs}ms portal={n.PortalState} "
+                 + $"recovery={n.InRecovery}/{n.RecoveryKind}/{n.RecoveryRemainMs}ms stuck={n.StuckCount}");
+    }
+
+    /// <summary>/ra salvstate — dump the salvage FSM snapshot: which phase, what's queued,
+    /// where the combine sweep is, and the last thing that failed.</summary>
+    private void HandleSalvageStateCommand()
+    {
+        if (_salvageManager == null) { ChatLine("[RynthAi] Salvage manager not ready."); return; }
+        var v = _salvageManager.GetStateSnapshot();
+
+        ChatLine("[RynthAi] === Salvage State ===");
+        ChatLine($"[RynthAi] panelApi={v.HasPanelApi}  combineEnabled={v.EnableCombine}");
+        ChatLine($"[RynthAi] phase={v.Phase} readyIn={v.PhaseReadyInMs}ms  queue={v.QueueCount}  panelEverOpened={v.PanelEverOpened}");
+        ChatLine($"[RynthAi] item=0x{v.CurrentItemId:X8}  ust=0x{v.CurrentUstId:X8}");
+        ChatLine($"[RynthAi] combine: phase={v.CombinePhase} grp={v.CombineGroupIdx + 1}/{v.CombineGroupCount} addIdx={v.CombineAddIdx} openAttempts={v.CombineOpenAttempts}");
+        ChatLine($"[RynthAi] combine: pendingScan={v.PendingCombineScan} sinceSweep={(v.MsSinceCombineSweep < 0 ? "never" : (v.MsSinceCombineSweep / 1000) + "s")}");
+        ChatLine($"[RynthAi] retries: tracked={v.RetryTrackedItems} backoffIn={v.RetryBackoffInMs}ms");
+        ChatLine($"[RynthAi] session: groupsOk={v.GroupsSucceeded} groupsFail={v.GroupsFailed} bagsMerged={v.BagsMerged}");
+        ChatLine(v.LastError.Length > 0
+            ? $"[RynthAi] lastError: '{v.LastError}' ({v.MsSinceLastError / 1000}s ago)"
+            : "[RynthAi] lastError: none");
+
+        Host.Log($"[RynthAi salvstate] panelApi={v.HasPanelApi} combine={v.EnableCombine} phase={v.Phase}/{v.PhaseReadyInMs}ms "
+                 + $"queue={v.QueueCount} item=0x{v.CurrentItemId:X8} ust=0x{v.CurrentUstId:X8} "
+                 + $"cphase={v.CombinePhase} grp={v.CombineGroupIdx}/{v.CombineGroupCount} add={v.CombineAddIdx} "
+                 + $"openAttempts={v.CombineOpenAttempts} pendingScan={v.PendingCombineScan} sinceSweep={v.MsSinceCombineSweep}ms "
+                 + $"retries={v.RetryTrackedItems} backoff={v.RetryBackoffInMs}ms ok={v.GroupsSucceeded} fail={v.GroupsFailed} "
+                 + $"merged={v.BagsMerged} lastErr='{v.LastError}'@{v.MsSinceLastError}ms");
     }
 
     private void HandleDumpInventoryCommand()
@@ -1750,6 +1871,20 @@ public sealed partial class RynthAiPlugin
                     : string.Equals(wo.Name, name, StringComparison.OrdinalIgnoreCase))
                     return wo;
             }
+
+            // The live walk above can miss carried items: off AC's main thread it only
+            // knows names from the engine's name snapshot, and an item missing from it
+            // drops out of the walk. Fall back to every object the cache knows and ask
+            // the client who holds it — "/ub usei X" said "Not found" for an item that
+            // "/ub use X" found, because the cache had it filed under the landscape.
+            foreach (var wo in _objectCache.AllKnownObjects())
+            {
+                if ((partial
+                        ? wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
+                        : string.Equals(wo.Name, name, StringComparison.OrdinalIgnoreCase))
+                    && IsCarriedByPlayer(wo.Id))
+                    return wo;
+            }
         }
 
         if (land)
@@ -1778,6 +1913,52 @@ public sealed partial class RynthAiPlugin
         return null;
     }
 
+    /// <summary>True when the client says the player holds this object: worn or
+    /// wielded, in the main pack, or in a side pack (item → pack → player).</summary>
+    private bool IsCarriedByPlayer(int objectId)
+    {
+        if (_playerId == 0 || !Host.HasGetObjectOwnershipInfo) return false;
+        uint id = unchecked((uint)objectId);
+        for (int depth = 0; depth < 3; depth++)
+        {
+            if (!Host.TryGetObjectOwnershipInfo(id, out uint container, out uint wielder, out _)) return false;
+            if (wielder == _playerId || container == _playerId) return true;
+            if (container == 0) return false;
+            id = container;
+        }
+        return false;
+    }
+
+    /// <summary>After an exact-name miss, name up to three items whose names contain the
+    /// typed text and point at the partial-match form of the command ("usei" → "useip").
+    /// Exact is the default, like UtilityBelt, and "/ub usei round" read as a bug.</summary>
+    private void SuggestPartialMatches(string name, bool inv, bool land, string verb)
+    {
+        if (_objectCache == null || name.Length == 0) return;
+
+        var names = new List<string>();
+        bool Wants(WorldObject wo) =>
+            names.Count < 3
+            && wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
+            && !names.Contains(wo.Name, StringComparer.OrdinalIgnoreCase);
+
+        if (inv)
+        {
+            foreach (var wo in _objectCache.GetDirectInventory())
+                if (Wants(wo)) names.Add(wo.Name);
+            foreach (var wo in _objectCache.AllKnownObjects())
+                if (Wants(wo) && IsCarriedByPlayer(wo.Id)) names.Add(wo.Name);
+        }
+        if (land)
+        {
+            foreach (var wo in _objectCache.GetLandscapeObjects())
+                if (Wants(wo)) names.Add(wo.Name);
+        }
+
+        if (names.Count > 0)
+            ChatLine($"[RynthAi]   Did you mean {string.Join(", ", names.Select(n => $"'{n}'"))}? {verb}p matches part of a name.");
+    }
+
     private void HandleUseCommand(string[] parts, bool inv, bool land, bool partial)
     {
         if (parts.Length < 3)
@@ -1804,7 +1985,12 @@ public sealed partial class RynthAiPlugin
         }
 
         var obj = FindObject(argStr.Trim(), inv, land, partial);
-        if (obj == null) { ChatLine($"[RynthAi] Not found: '{argStr.Trim()}'"); return; }
+        if (obj == null)
+        {
+            ChatLine($"[RynthAi] Not found: '{argStr.Trim()}'");
+            if (!partial) SuggestPartialMatches(argStr.Trim(), inv, land, parts[1].ToLowerInvariant());
+            return;
+        }
         Host.UseObject((uint)obj.Id);
         ChatLine($"[RynthAi] UseObject: {obj.Name} (0x{obj.Id:X})");
     }

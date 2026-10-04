@@ -25,6 +25,10 @@ public sealed partial class RynthAiPlugin
             return true;
         }
 
+        // /ub autovendor ... and /ub vendor ... (UtilityBelt AutoVendor) — Vendor/AutoVendorCommands.cs
+        if (TryHandleAutoVendorCommand(cmd, fullCommand))
+            return true;
+
         // Most remaining /ub verbs (use / usep / uselp / useip / face / give /
         // givep / combatstate / cast …) share semantics with the natively
         // implemented /mt verbs, which talk to host primitives (UseObject /

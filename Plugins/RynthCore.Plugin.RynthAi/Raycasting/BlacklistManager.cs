@@ -22,7 +22,11 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
 
         /// <summary>
         /// Number of consecutive attack failures before a target is blacklisted.
-        /// Default: 3 attempts (adjustable for different difficulty settings).
+        /// Default: 1 — CombatManager sets this explicitly (CombatManager.cs:1711)
+        /// because the "give it N casts before giving up" counting lives in
+        /// JudgePendingCast; one report reaching here already means judged-failed.
+        /// (The stale "Default: 3" comment here drove a 2026-06-03 audit finding
+        /// that read the 1 as a bug — it isn't.)
         /// </summary>
         public int AttemptThreshold { get; set; } = 1;
 
