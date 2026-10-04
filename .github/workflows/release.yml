@@ -44,7 +44,9 @@ jobs:
         $override = "${{ github.event.inputs.rynthcore_ref }}"
         if ($override) { $want = $override }
         Write-Host "Cloning RynthCore to: $dest (pin target: $want)"
-        git clone https://github.com/tombohar/RynthCore.git $dest
+        # Sibling fork on the same GitHub owner. Canonical public source:
+        # https://aelrynth.com/git/RynthCore.git
+        git clone "https://github.com/${{ github.repository_owner }}/RynthCore.git" $dest
         if ($LASTEXITCODE -ne 0) { throw "git clone RynthCore failed" }
         git -C $dest fetch --tags --quiet
         if ($want -and (git -C $dest rev-parse --verify --quiet "$want^{commit}")) {
@@ -152,4 +154,4 @@ jobs:
           | `RynthCore.MonsterEditor.zip` | Monster database editor — extract and run `RynthCore.MonsterEditor.exe` |
           | `RynthCore.Plugin.RynthAi.dll` | Plugin DLL — drop into `C:\Games\RynthCore\Runtime\Plugins\` to update without reinstalling |
 
-          > **New install?** Use the [RynthCore installer](https://github.com/tombohar/RynthCore/releases/latest) instead — it sets up everything automatically.
+          > **New install?** Use the [RynthCore installer](https://aelrynth.com/downloads/rynth/RynthCore-Setup.exe) instead — it sets up everything automatically. See [aelrynth.com/rynth.html](https://aelrynth.com/rynth.html).

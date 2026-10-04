@@ -1,6 +1,6 @@
 # RynthSuite
 
-RynthCore-based plugins and tools for Asheron's Call. Requires [RynthCore](https://github.com/tombohar/RynthCore) — a .NET 10 NativeAOT injection framework for the AC client.
+RynthCore-based plugins and tools for Asheron's Call. Requires [RynthCore](https://aelrynth.com/rynth.html) — a .NET 10 NativeAOT injection framework for the AC client (`git clone https://aelrynth.com/git/RynthCore.git`).
 
 ---
 
@@ -49,7 +49,7 @@ Cross-platform Avalonia editors built on the shared LootSdk. These target `net10
 
 ## Requirements
 
-- [RynthCore](https://github.com/tombohar/RynthCore) built and deployed to `C:\Games\RynthCore\`
+- [RynthCore](https://aelrynth.com/rynth.html) built and deployed to `C:\Games\RynthCore\` (source: `https://aelrynth.com/git/RynthCore.git`)
 - **.NET 10 SDK (x86)** for the plugin (NativeAOT)
 - .NET 10 SDK for the tools (any platform)
 - Asheron's Call client installed at `C:\Turbine\Asheron's Call\` (for raycasting `.dat` access)
