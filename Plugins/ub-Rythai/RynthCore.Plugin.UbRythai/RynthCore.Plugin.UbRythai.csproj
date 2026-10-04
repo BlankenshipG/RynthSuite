@@ -6,10 +6,11 @@
       Do NOT add net48 here — classic Utility Belt / UB-ILT (Decal) builds net48 in UB/ and ub-IT/
       (UtilityBelt.csproj multi-TFM). ub-Rythai is a separate deliverable: .NET 10 vs .NET Framework 4.8.
     -->
-    <Version>3.1.9</Version>
-    <AssemblyVersion>3.1.9.0</AssemblyVersion>
-    <FileVersion>3.1.9.0</FileVersion>
-    <InformationalVersion>3.1.9</InformationalVersion>
+    <!-- Previous release: 3.1.9 (standalone ub-Rythai repo layout). -->
+    <Version>3.1.10</Version>
+    <AssemblyVersion>3.1.10.0</AssemblyVersion>
+    <FileVersion>3.1.10.0</FileVersion>
+    <InformationalVersion>3.1.10</InformationalVersion>
     <TargetFramework>net10.0-windows</TargetFramework>
     <PlatformTarget>x86</PlatformTarget>
     <RuntimeIdentifier>win-x86</RuntimeIdentifier>
@@ -24,6 +25,8 @@
     <RootNamespace>RynthCore.Plugin.UbRythai</RootNamespace>
     <AssemblyName>RynthCore.Plugin.UbRythai</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Sibling RynthCore checkout: <workspace>\RynthCore beside <workspace>\RynthSuite (this project lives in RynthSuite\Plugins\ub-Rythai\<project>\). -->
+    <RynthCoreRoot Condition="'$(RynthCoreRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\RynthCore\</RynthCoreRoot>
   </PropertyGroup>
 
   <ItemGroup>
@@ -35,16 +38,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
-    <ProjectReference Include="..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+    <ProjectReference Include="$(RynthCoreRoot)src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
+    <ProjectReference Include="$(RynthCoreRoot)src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
   </ItemGroup>
 
   <Target Name="CopyPublishedPluginToEngineOutputs" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
     <ItemGroup>
-      <_EnginePluginDir Include="$(MSBuildThisFileDirectory)..\..\RynthCore\src\RynthCore.Engine\bin\$(Configuration)\net10.0-windows\win-x86\Plugins\" />
-      <_EnginePluginDir Include="$(MSBuildThisFileDirectory)..\..\RynthCore\src\RynthCore.Engine\bin\$(PlatformTarget)\$(Configuration)\net10.0-windows\win-x86\Plugins\" />
-      <_EnginePluginPublishDir Include="$(MSBuildThisFileDirectory)..\..\RynthCore\src\RynthCore.Engine\bin\$(Configuration)\net10.0-windows\win-x86\publish\Plugins\" />
-      <_EnginePluginPublishDir Include="$(MSBuildThisFileDirectory)..\..\RynthCore\src\RynthCore.Engine\bin\$(PlatformTarget)\$(Configuration)\net10.0-windows\win-x86\publish\Plugins\" />
+      <_EnginePluginDir Include="$(RynthCoreRoot)src\RynthCore.Engine\bin\$(Configuration)\net10.0-windows\win-x86\Plugins\" />
+      <_EnginePluginDir Include="$(RynthCoreRoot)src\RynthCore.Engine\bin\$(PlatformTarget)\$(Configuration)\net10.0-windows\win-x86\Plugins\" />
+      <_EnginePluginPublishDir Include="$(RynthCoreRoot)src\RynthCore.Engine\bin\$(Configuration)\net10.0-windows\win-x86\publish\Plugins\" />
+      <_EnginePluginPublishDir Include="$(RynthCoreRoot)src\RynthCore.Engine\bin\$(PlatformTarget)\$(Configuration)\net10.0-windows\win-x86\publish\Plugins\" />
     </ItemGroup>
 
     <MakeDir Directories="@(_EnginePluginDir)" />
