@@ -42,4 +42,6 @@
 - RynthAi `0.5.4` (feat/ilt-hub) / `0.6.9` (SK-local) → `0.6.10` (`0.6.10-legacy-ui`). The unified
   version is above both lines so neither install treats it as older.
 - Loot Editor `0.1.1` → `0.1.2`.
+- Monster Editor `0.1.4` → `0.1.5` (SK USD import + ilt-hub install paths; duplicate
+  `Tmds.DBus.Protocol` package reference from the merge removed).
 - ub-Rythai `3.1.9` → `3.1.10`.
