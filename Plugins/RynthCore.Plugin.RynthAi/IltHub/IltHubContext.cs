@@ -83,7 +83,7 @@ internal sealed class IltHubContext
         while (guard++ < 64 && _posted.TryDequeue(out var a))
         {
             try { a(); }
-            catch (Exception ex) { Host.Log($"[IltHub] posted action threw: {ex.Message}"); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "posted action"); }
         }
     }
 

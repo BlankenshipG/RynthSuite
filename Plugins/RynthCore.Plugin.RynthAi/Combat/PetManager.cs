@@ -120,7 +120,7 @@ internal sealed class PetManager
             bool spiritGone = _activeSpiritId != 0 && _objectCache[_activeSpiritId] == null;
             if (spiritGone || DeviceHasCharges(_activeDeviceId))
             {
-                _host.Log($"[RynthAi] Pet: refill complete (essence 0x{(uint)_activeDeviceId:X8}).");
+                RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: refill complete (essence 0x{(uint)_activeDeviceId:X8}).");
                 GoIdle();
             }
         }
@@ -129,7 +129,7 @@ internal sealed class PetManager
         // decrement that never lands), and waiting on it would wedge the subsystem.
         if (_state != PetState.Idle && now - _actionIssuedAt > ActionTimeoutMs)
         {
-            _host.Log($"[RynthAi] Pet: action timeout in {_state} after {now - _actionIssuedAt}ms (essence 0x{(uint)_activeDeviceId:X8}); cooling down.");
+            RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: action timeout in {_state} after {now - _actionIssuedAt}ms (essence 0x{(uint)_activeDeviceId:X8}); cooling down.");
             if (_activeDeviceId != 0)
                 _deviceCooldownUntil[_activeDeviceId] = now + DeviceFailCooldownMs;
             // A summon that we simply couldn't confirm very likely DID work — assume
@@ -165,7 +165,7 @@ internal sealed class PetManager
             // Drop to Idle; the next think tick reads Structure==0 and refills it.
             if (text.Contains("enough charges", StringComparison.OrdinalIgnoreCase))
             {
-                _host.Log($"[RynthAi] Pet: essence 0x{(uint)_activeDeviceId:X8} reports empty; will refill.");
+                RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: essence 0x{(uint)_activeDeviceId:X8} reports empty; will refill.");
                 // The server-side pyreal refill didn't happen (charm off / no pyreals):
                 // park the essence so the empty-summon path can't spin on it.
                 if (AllowSummonOnEmpty?.Invoke() == true && _activeDeviceId != 0)
@@ -257,7 +257,7 @@ internal sealed class PetManager
         _activeSpiritId   = 0;
         _preActionCharges = charges;
         _actionIssuedAt   = NowMs;
-        _host.Log($"[RynthAi] Pet: summoning from essence 0x{(uint)deviceId:X8} (charges={charges}).");
+        RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: summoning from essence 0x{(uint)deviceId:X8} (charges={charges}).");
         _host.UseObject(unchecked((uint)deviceId));
     }
 
@@ -269,7 +269,7 @@ internal sealed class PetManager
         _activeDeviceId = deviceId;
         _activeSpiritId = spiritId;
         _actionIssuedAt = NowMs;
-        _host.Log($"[RynthAi] Pet: refilling essence 0x{(uint)deviceId:X8} with spirit 0x{(uint)spiritId:X8}.");
+        RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: refilling essence 0x{(uint)deviceId:X8} with spirit 0x{(uint)spiritId:X8}.");
         _host.UseObjectOn(unchecked((uint)spiritId), unchecked((uint)deviceId));
     }
 

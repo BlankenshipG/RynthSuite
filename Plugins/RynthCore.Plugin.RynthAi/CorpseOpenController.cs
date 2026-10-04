@@ -1411,7 +1411,7 @@ public sealed partial class RynthAiPlugin
 
             // One-time-per-corpse log so we can see what the count was based on.
             if (_pendingManaStoneIds.Count == 0)
-                Host.Log($"[RynthAi] ManaStone count for cap check: live={liveCount} pending={pendingNotYetCounted} cap={settings.ManaStoneKeepCount} (cache_known={_objectCache?.AllKnownObjects().Count() ?? 0})");
+                RynthLog.Write(LogCat.Looting, $"[RynthAi] ManaStone count for cap check: live={liveCount} pending={pendingNotYetCounted} cap={settings.ManaStoneKeepCount} (cache_known={_objectCache?.AllKnownObjects().Count() ?? 0})");
 
             // If this specific stone is already approved, return the same answer
             // we returned last time (no further log spam, no count change).

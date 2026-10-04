@@ -140,7 +140,7 @@ public sealed class InventoryManager
                     continue;                       // still in flight — don't re-enqueue or blacklist
                 _cramPending.Remove(item.Id);
                 RegisterFailure(_cramBackoff, item.Id);
-                _host.Log($"[RynthAi] AutoCram: CONFIRMED move failure id=0x{item.Id:X8} (still in main pack after {MoveConfirmGraceMs:0}ms) — backing off");
+                RynthLog.Write(LogCat.Inventory, $"[RynthAi] AutoCram: CONFIRMED move failure id=0x{item.Id:X8} (still in main pack after {MoveConfirmGraceMs:0}ms) — backing off");
                 continue;
             }
             // Backed-off after a confirmed failure: skip until NextRetry.
@@ -182,16 +182,16 @@ public sealed class InventoryManager
                 }
                 int mainFree = 102 - mainUsed;
                 if (mainFree > 0)
-                    _host.Log($"[RynthAi] AutoCram: {crammable} crammable items but no open sub-pack; main pack has room (mainFree={mainFree}) — leaving items in main pack");
+                    RynthLog.Write(LogCat.Inventory, $"[RynthAi] AutoCram: {crammable} crammable items but no open sub-pack; main pack has room (mainFree={mainFree}) — leaving items in main pack");
                 else
-                    _host.Log($"[RynthAi] AutoCram: {crammable} crammable items and inventory genuinely full (no sub-pack room, mainUsed={mainUsed}/102)");
+                    RynthLog.Write(LogCat.Inventory, $"[RynthAi] AutoCram: {crammable} crammable items and inventory genuinely full (no sub-pack room, mainUsed={mainUsed}/102)");
                 break; // no open SUB-pack — stop scanning this tick (engine gate makes any future move fail-closed)
             }
 
             int amount = item.Values(LongValueKey.StackCount, 1);
             if (amount < 1) amount = 1;
 
-            _host.Log($"[RynthAi] AutoCram: move {item.Name} id=0x{item.Id:X8} -> pack=0x{(uint)targetPack:X8} slot=0 amount={amount}");
+            RynthLog.Write(LogCat.Inventory, $"[RynthAi] AutoCram: move {item.Name} id=0x{item.Id:X8} -> pack=0x{(uint)targetPack:X8} slot=0 amount={amount}");
             bool ok = _host.MoveItemInternal(
                 unchecked((uint)item.Id),
                 unchecked((uint)targetPack),
@@ -203,7 +203,7 @@ public sealed class InventoryManager
                 // Enqueue itself was rejected (engine guard, e.g. amount<=0 or the P0
                 // full-owned-container gate) — that IS a confirmed failure now.
                 RegisterFailure(_cramBackoff, item.Id);
-                _host.Log($"[RynthAi] AutoCram: MoveItemInternal REJECTED id=0x{item.Id:X8} pack=0x{(uint)targetPack:X8} amount={amount} — backing off");
+                RynthLog.Write(LogCat.Inventory, $"[RynthAi] AutoCram: MoveItemInternal REJECTED id=0x{item.Id:X8} pack=0x{(uint)targetPack:X8} amount={amount} — backing off");
                 return true; // one action per tick
             }
 
@@ -302,7 +302,7 @@ public sealed class InventoryManager
                             continue; // still in flight — skip this pair this tick
                         _stackPending.Remove(key);
                         RegisterFailure(_stackBackoff, key);
-                        _host.Log($"[RynthAi] AutoStack: CONFIRMED merge failure {key} (source survived after {MoveConfirmGraceMs:0}ms) — backing off");
+                        RynthLog.Write(LogCat.Inventory, $"[RynthAi] AutoStack: CONFIRMED merge failure {key} (source survived after {MoveConfirmGraceMs:0}ms) — backing off");
                         continue;
                     }
                     if (_stackBackoff.TryGetValue(key, out var sb) && DateTime.Now < sb.NextRetry)
@@ -319,7 +319,7 @@ public sealed class InventoryManager
             var target = chosenTarget.Value;
             var source = chosenSource.Value;
 
-            _host.Log($"[RynthAi] AutoStack: merge {source.Item.Name} src=0x{source.Item.Id:X8}({source.Count}) -> tgt=0x{target.Item.Id:X8}({target.Count}) max={max}");
+            RynthLog.Write(LogCat.Inventory, $"[RynthAi] AutoStack: merge {source.Item.Name} src=0x{source.Item.Id:X8}({source.Count}) -> tgt=0x{target.Item.Id:X8}({target.Count}) max={max}");
             bool ok = _host.MergeStackInternal(
                 unchecked((uint)source.Item.Id),
                 unchecked((uint)target.Item.Id));
@@ -327,7 +327,7 @@ public sealed class InventoryManager
             if (!ok)
             {
                 RegisterFailure(_stackBackoff, pairKey);
-                _host.Log($"[RynthAi] AutoStack: MergeStackInternal REJECTED src=0x{source.Item.Id:X8} tgt=0x{target.Item.Id:X8} — backing off");
+                RynthLog.Write(LogCat.Inventory, $"[RynthAi] AutoStack: MergeStackInternal REJECTED src=0x{source.Item.Id:X8} tgt=0x{target.Item.Id:X8} — backing off");
                 return true; // one action per tick
             }
 

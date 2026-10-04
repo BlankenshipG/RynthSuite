@@ -48,6 +48,7 @@ internal sealed class IltSessionRates : IIltFeature
     /// <summary>Banking hook: bank balance changed (pump thread).</summary>
     public void OnBankBalanceChanged(string key, long oldValue, long newValue)
     {
+        RynthLog.Trace(LogCat.IltRates, $"balance {key}: {oldValue} -> {newValue}");
         // The first read after login only establishes the baseline (old value is the stale cache).
         if (_lastSampleAt == 0) return;
         long delta = newValue - oldValue;
@@ -60,6 +61,7 @@ internal sealed class IltSessionRates : IIltFeature
 
     public void Reset()
     {
+        RynthLog.Trace(LogCat.IltRates, $"Reset()");
         _start = DateTime.UtcNow;
         _startXp = -1;
         _xp = _lum = _coins = _pyreals = 0;

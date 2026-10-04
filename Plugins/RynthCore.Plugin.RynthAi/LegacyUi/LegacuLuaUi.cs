@@ -121,7 +121,7 @@ internal sealed class LegacyLuaUi
         {
             if (!Directory.Exists(_luaFolder)) Directory.CreateDirectory(_luaFolder);
             File.WriteAllText(Path.Combine(_luaFolder, _newLuaFileName + ".lua"), _settings.LuaScript);
-            _host.Log($"Saved Lua script: {_newLuaFileName}.lua");
+            RynthLog.Write(LogCat.UI, $"Saved Lua script: {_newLuaFileName}.lua");
             RefreshLuaFiles();
         }
 

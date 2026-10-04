@@ -73,7 +73,7 @@ public sealed partial class RynthAiPlugin
             int doorId = FindNearestClosedDoor(settings.OpenDoorRange, now);
             if (doorId == 0) return false;
 
-            Host.Log($"[RynthAi] Door: targeting 0x{(uint)doorId:X8} (state={GetDoorStateDebug(doorId)}, busy={_busyCount})");
+            RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: targeting 0x{(uint)doorId:X8} (state={GetDoorStateDebug(doorId)}, busy={_busyCount})");
             _doorTargetId = doorId;
             _doorState = DoorState.Opening;
             _doorAttempts = 0;
@@ -94,7 +94,7 @@ public sealed partial class RynthAiPlugin
             // Check if the door opened while we were waiting (slow state propagation)
             if (IsDoorOpen(_doorTargetId))
             {
-                Host.Log($"[RynthAi] Door: 0x{(uint)_doorTargetId:X8} opened (late detect) — ready for next");
+                RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: 0x{(uint)_doorTargetId:X8} opened (late detect) — ready for next");
                 MarkDoorOpenedAndReset(now);
                 return false;
             }
@@ -102,12 +102,12 @@ public sealed partial class RynthAiPlugin
             _doorAttempts++;
             if (_doorAttempts >= DoorMaxAttempts)
             {
-                Host.Log($"[RynthAi] Door: max attempts ({DoorMaxAttempts}) for 0x{(uint)_doorTargetId:X8}, cooldown");
+                RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: max attempts ({DoorMaxAttempts}) for 0x{(uint)_doorTargetId:X8}, cooldown");
                 _doorState = DoorState.Cooldown;
                 _doorActionAt = now;
                 return true;
             }
-            Host.Log($"[RynthAi] Door: timeout in {_doorState}, retry #{_doorAttempts} for 0x{(uint)_doorTargetId:X8} (busy={_busyCount})");
+            RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: timeout in {_doorState}, retry #{_doorAttempts} for 0x{(uint)_doorTargetId:X8} (busy={_busyCount})");
             _doorState = DoorState.Opening;
             _doorActionAt = now;
             Host.UseObject(unchecked((uint)_doorTargetId));
@@ -120,11 +120,11 @@ public sealed partial class RynthAiPlugin
                 if (_busyCount > 0) return true;
                 if (IsDoorOpen(_doorTargetId))
                 {
-                    Host.Log($"[RynthAi] Door: 0x{(uint)_doorTargetId:X8} opened OK — ready for next");
+                    RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: 0x{(uint)_doorTargetId:X8} opened OK — ready for next");
                     MarkDoorOpenedAndReset(now);
                     return false;
                 }
-                Host.Log($"[RynthAi] Door: 0x{(uint)_doorTargetId:X8} not open after use ({GetDoorStateDebug(_doorTargetId)}), checking result");
+                RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: 0x{(uint)_doorTargetId:X8} not open after use ({GetDoorStateDebug(_doorTargetId)}), checking result");
                 _doorState = DoorState.CheckingResult;
                 _doorActionAt = now;
                 return true;
@@ -132,7 +132,7 @@ public sealed partial class RynthAiPlugin
             case DoorState.CheckingResult:
                 if (!settings.AutoUnlockDoors)
                 {
-                    Host.Log("[RynthAi] Door: not open & auto-unlock off, cooldown");
+                    RynthLog.Write(LogCat.Doors, "[RynthAi] Door: not open & auto-unlock off, cooldown");
                     _doorState = DoorState.Cooldown;
                     _doorActionAt = now;
                     return true;
@@ -140,12 +140,12 @@ public sealed partial class RynthAiPlugin
                 var lockpick = FindLockpickInConsumables();
                 if (lockpick == null)
                 {
-                    Host.Log("[RynthAi] Door: locked but no lockpick in consumables, cooldown");
+                    RynthLog.Write(LogCat.Doors, "[RynthAi] Door: locked but no lockpick in consumables, cooldown");
                     _doorState = DoorState.Cooldown;
                     _doorActionAt = now;
                     return true;
                 }
-                Host.Log($"[RynthAi] Door: using lockpick {lockpick.Name} on 0x{(uint)_doorTargetId:X8}");
+                RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: using lockpick {lockpick.Name} on 0x{(uint)_doorTargetId:X8}");
                 _doorState = DoorState.Unlocking;
                 _doorActionAt = now;
                 Host.UseObjectOn(unchecked((uint)lockpick.Id), unchecked((uint)_doorTargetId));
@@ -153,7 +153,7 @@ public sealed partial class RynthAiPlugin
 
             case DoorState.Unlocking:
                 if (_busyCount > 0) return true;
-                Host.Log($"[RynthAi] Door: unlock done, retrying open 0x{(uint)_doorTargetId:X8}");
+                RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: unlock done, retrying open 0x{(uint)_doorTargetId:X8}");
                 _doorState = DoorState.RetryOpen;
                 _doorActionAt = now;
                 Host.UseObject(unchecked((uint)_doorTargetId));
@@ -163,14 +163,14 @@ public sealed partial class RynthAiPlugin
                 if (_busyCount > 0) return true;
                 if (IsDoorOpen(_doorTargetId))
                 {
-                    Host.Log($"[RynthAi] Door: 0x{(uint)_doorTargetId:X8} unlocked & opened OK — ready for next");
+                    RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: 0x{(uint)_doorTargetId:X8} unlocked & opened OK — ready for next");
                     MarkDoorOpenedAndReset(now);
                     return false;
                 }
                 _doorAttempts++;
                 if (_doorAttempts >= DoorMaxAttempts)
                 {
-                    Host.Log($"[RynthAi] Door: max attempts after unlock for 0x{(uint)_doorTargetId:X8}, cooldown");
+                    RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: max attempts after unlock for 0x{(uint)_doorTargetId:X8}, cooldown");
                     _doorState = DoorState.Cooldown;
                     _doorActionAt = now;
                 }
@@ -185,7 +185,7 @@ public sealed partial class RynthAiPlugin
             case DoorState.Cooldown:
                 if (now - _doorActionAt >= DoorCooldownMs)
                 {
-                    Host.Log($"[RynthAi] Door: cooldown done for 0x{(uint)_doorTargetId:X8}, resetting");
+                    RynthLog.Write(LogCat.Doors, $"[RynthAi] Door: cooldown done for 0x{(uint)_doorTargetId:X8}, resetting");
                     ResetDoorState();
                 }
                 return _doorState != DoorState.None;
@@ -267,7 +267,7 @@ public sealed partial class RynthAiPlugin
         if (bestId == 0 && doorsFound > 0 && (now - _doorLastDiagAt) >= 5000)
         {
             _doorLastDiagAt = now;
-            Host.Log($"[RynthAi] Door scan: {totalLandscape} landscape, {doorsFound} doors, {openSkipped} open, {recentSkipped} recent-skip, range={rangeMeters:F1}m");
+            RynthLog.Write(LogCat.Doors, $"[RynthAi] Door scan: {totalLandscape} landscape, {doorsFound} doors, {openSkipped} open, {recentSkipped} recent-skip, range={rangeMeters:F1}m");
         }
 
         return bestId;

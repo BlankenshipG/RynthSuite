@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.1-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.2-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -147,8 +147,17 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private int _settingsSaveTickCounter;
     private int _settingsLoadRetryCounter;
 
+    /// <summary>
+    /// Hides <c>RynthPluginBase.Log</c> so every plugin log line also flows through
+    /// <see cref="RynthLog"/> (daily file, per-category trace, "[Prefix]" routing).
+    /// </summary>
+    private new void Log(string message) => RynthLog.Write(LogCat.General, message);
+
     public override int Initialize()
     {
+        // Diagnostics first, so everything below (and any init exception) is captured.
+        RynthLog.Init(Host);
+
         // ImGuiContext is null when the engine is in Decal coexistence mode
         // (no EndScene hook, no ImGui). The legacy ImGui dashboard's
         // constructor is pure object setup — it doesn't call any ImGui
@@ -207,6 +216,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _initialized = false;
         _dashboard = null;
         Log($"RynthAi: Shutdown done — SaveSettings={tAfterSettings - t0} ms, TeardownSession={tAfterTeardown - tAfterSettings} ms, SaveCreatureStore={tAfterStore - tAfterTeardown} ms, total={tAfterStore - t0} ms");
+        RynthLog.Shutdown(); // flush + close diagnostics files last so the line above is kept
     }
 
     /// <summary>
@@ -220,6 +230,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         Log("RynthAi: logout — tearing down session.");
         try { _dashboard?.SaveSettings(); } catch { }
         TeardownSession();
+        RynthLog.Flush();
     }
 
     /// <summary>
@@ -246,7 +257,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _fellowshipTracker?.Dispose();
         _fellowshipTracker = null;
         _metaManager = null;
-        try { _iltHub?.OnLogout(); } catch (Exception ex) { Log($"RynthAi: ILT Hub logout error: {ex.Message}"); }
+        try { _iltHub?.OnLogout(); } catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "logout"); }
         _iltHub = null;
         if (_dashboard != null) _dashboard.IltHubAvailable = null;
         _questTracker = null;
@@ -323,7 +334,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             }
             catch (Exception ex)
             {
-                Log($"RynthAi: raycast init error: {ex.Message}");
+                RynthLog.Exception(LogCat.Raycast, ex, "raycast init");
             }
         });
 
@@ -586,7 +597,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // movestart/movestop are applied DIRECTLY by the RynthRemote plugin (pure Host.SetAutoRun/
             // SetMotion + its own dead-man watchdog) and are never forwarded here.
         }
-        Host.Log($"[RynthAi] applied remote command: {action}={value}");
+        RynthLog.Write(LogCat.General, $"[RynthAi] applied remote command: {action}={value}");
     }
 
     // Settings the phone must never write (engine-populated read-only status).
@@ -660,12 +671,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     default: return;   // no writable string/null settings
                 }
             }
-            if (ReadOnlySettingKeys.Contains(key)) { Host.Log($"[RynthAi] setSetting rejected read-only '{key}'"); return; }
+            if (ReadOnlySettingKeys.Contains(key)) { RynthLog.Write(LogCat.General, $"[RynthAi] setSetting rejected read-only '{key}'"); return; }
             if (key.Equals("EnableBuffing", StringComparison.OrdinalIgnoreCase) && isBool && !boolVal)
-            { Host.Log("[RynthAi] setSetting BLOCKED: EnableBuffing OFF from remote (turn off in-game)"); return; }
+            { RynthLog.Write(LogCat.General, "[RynthAi] setSetting BLOCKED: EnableBuffing OFF from remote (turn off in-game)"); return; }
 
             var obj = System.Text.Json.Nodes.JsonNode.Parse(dash.BuildSettingsJson())?.AsObject();
-            if (obj == null || !obj.ContainsKey(key)) { Host.Log($"[RynthAi] setSetting unknown key '{key}'"); return; }
+            if (obj == null || !obj.ContainsKey(key)) { RynthLog.Write(LogCat.General, $"[RynthAi] setSetting unknown key '{key}'"); return; }
 
             object applied;
             if (isBool) { obj[key] = boolVal; applied = boolVal; }
@@ -676,9 +687,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 else { obj[key] = v; applied = v; }                                          // float/double field → decimal
             }
             dash.ApplySettingsJson(obj.ToJsonString());
-            Host.Log($"[RynthAi] setSetting {key}={applied}");
+            RynthLog.Write(LogCat.General, $"[RynthAi] setSetting {key}={applied}");
         }
-        catch (Exception ex) { Host.Log($"[RynthAi] setSetting error: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Remote, ex, "setSetting"); }
     }
 
     // ── Full item appraisal (the Assess/Identify data) for equipped gear ──────────────────────────
@@ -964,6 +975,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
     public override void OnTick()
     {
+        RynthLog.Pump(); // drain debug-to-chat echo + flush buffered log writes (pump thread)
         bool diag = ++_tickDiag <= 3;
         try
         {
@@ -992,7 +1004,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             while (_forwardedRemoteCommands.TryDequeue(out var fwd))
             {
                 try { ApplyRemoteCommand(fwd.action, fwd.value); }
-                catch (Exception ex) { Host.Log($"[RynthAi] forwarded remote command '{fwd.action}' failed: {ex.Message}"); }
+                catch (Exception ex) { RynthLog.Exception(LogCat.Remote, ex, $"forwarded remote command '{fwd.action}'"); }
             }
 
             // ── Push settings to engine each tick ──────────────────────
@@ -1007,11 +1019,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // `settings` local declared further down in OnTick.)
             var pushSettings = _dashboard?.Settings;
             if (diag)
-                Host.Log($"[RynthAi] OnTick: settings push entry — settings null? {pushSettings == null}, HasSetRadarSuppressed={Host.HasSetRadarSuppressed}");
+                RynthLog.Write(LogCat.General, $"[RynthAi] OnTick: settings push entry — settings null? {pushSettings == null}, HasSetRadarSuppressed={Host.HasSetRadarSuppressed}");
             if (pushSettings != null)
             {
                 if (diag)
-                    Host.Log($"[RynthAi] OnTick: pushSettings.SuppressRetailRadar={pushSettings.SuppressRetailRadar}, SuppressRetailPowerbar={pushSettings.SuppressRetailPowerbar}");
+                    RynthLog.Write(LogCat.General, $"[RynthAi] OnTick: pushSettings.SuppressRetailRadar={pushSettings.SuppressRetailRadar}, SuppressRetailPowerbar={pushSettings.SuppressRetailPowerbar}");
                 Host.SetFpsLimit(pushSettings.EnableFPSLimit, pushSettings.TargetFPSFocused, pushSettings.TargetFPSBackground);
                 // "Hide UI" (remote): blank the vanilla AC radar/powerbar too. The RynthAi Avalonia
                 // panels are separate windows already excluded by the stream's PrintWindow capture.
@@ -1040,7 +1052,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             }
 
             _objectCache?.Tick();
-            if (diag) Host.Log("[RynthAi] OnTick: after cache tick");
+            if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after cache tick");
 
             // Periodically flush the creature profile store (~ every 5 seconds at 60Hz).
             if (++_creatureSaveTickCounter >= 300)
@@ -1091,13 +1103,13 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 _dashboard?.TickAutoSave();
             }
             _questTracker?.Tick();
-            if (diag) Host.Log("[RynthAi] OnTick: after quest tracker");
+            if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after quest tracker");
             try { _iltHub?.Tick(); }
-            catch (Exception ex) { Host.Log($"[RynthAi] ILT Hub tick error: {ex.Message}"); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "Tick"); }
             DrainGiveQueue();
-            if (diag) Host.Log("[RynthAi] OnTick: after drain give queue");
+            if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after drain give queue");
             _jumper?.Tick();
-            if (diag) Host.Log("[RynthAi] OnTick: after jumper tick");
+            if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after jumper tick");
 
             // ── Affirmative in-world gate ────────────────────────────────
             // _loginComplete is cleared only by the engine's one-shot logout
@@ -1139,7 +1151,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // That is the cause of markers vanishing while the macro runs.
                 try
                 {
-                if (diag) Host.Log("[RynthAi] OnTick: entering loginComplete block");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: entering loginComplete block");
                 if (++_vitalsTickCounter >= 30)
                 {
                     _vitalsTickCounter = 0;
@@ -1155,16 +1167,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     }
                 }
 
-                if (diag) Host.Log("[RynthAi] OnTick: before CheckBusyTimeout");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before CheckBusyTimeout");
                 CheckBusyTimeout();
-                if (diag) Host.Log("[RynthAi] OnTick: before buffManager");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before buffManager");
                 _buffManager?.OnHeartbeat();
-                if (diag) Host.Log("[RynthAi] OnTick: after buffManager");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after buffManager");
 
                 var settings = _dashboard?.Settings;
                 if (settings == null)
                     return;
-                if (diag) Host.Log($"[RynthAi] OnTick: settings ok, macro={settings.IsMacroRunning} action={settings.BotAction}");
+                if (diag) RynthLog.Write(LogCat.General, $"[RynthAi] OnTick: settings ok, macro={settings.IsMacroRunning} action={settings.BotAction}");
 
                 // Macro switched off: combat stops ticking, so a turn it was holding would
                 // stay held and the character spun on its own (2026-09-27). Let go once.
@@ -1193,7 +1205,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // blocked. See ACTIVITY_ARBITER_PLAN.md.
                 try
                 {
-                    _arbiter ??= new ActivityArbiter(m => Host.Log($"[RynthAi] {m}"));
+                    _arbiter ??= new ActivityArbiter(m => RynthLog.Write(LogCat.General, $"[RynthAi] {m}"));
 
                     // The three reasons buffing gets to hold the top slot, which is
                     // what BuffManager's seven scattered string writes encoded:
@@ -1246,7 +1258,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                             if (!_buffComaWarned)
                             {
                                 _buffComaWarned = true;
-                                Host.Log($"[RynthAi] BUFFING COMA: buffing has wanted the tick continuously for {heldMs / 60000:0.0} min with buffs still needed — yielding one tick per ~10s so combat/stance recovery can run. Check for a stance wedge.");
+                                RynthLog.Write(LogCat.General, $"[RynthAi] BUFFING COMA: buffing has wanted the tick continuously for {heldMs / 60000:0.0} min with buffs still needed — yielding one tick per ~10s so combat/stance recovery can run. Check for a stance wedge.");
                                 Host.WriteToChat($"[RynthAi] Buffing has been stuck for {heldMs / 60000:0} min (stance wedge?) — engaging recovery. /ra clearbusy or relog if it persists.", 2);
                             }
                         }
@@ -1378,13 +1390,13 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                         if (sig != _lastCombatTelemetrySig)
                         {
                             _lastCombatTelemetrySig = sig;
-                            Host.Log($"[ScanTele] targets total={sTotal} ring={sRing} possible={sPoss} " +
+                            RynthLog.Write(LogCat.General, $"[ScanTele] targets total={sTotal} ring={sRing} possible={sPoss} " +
                                      $"losBlk={sLos} | atkCasts={atkCasts} sinceKill={sinceKill}");
                         }
                     }
                 }
 
-                if (diag) Host.Log("[RynthAi] OnTick: before salvageManager");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before salvageManager");
 
                 // Combat preempts salvage when a mob is engageable. The old
                 // design deliberately let salvage hold BotAction over Combat
@@ -1405,7 +1417,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // combat over SelectItem; it resumes the moment the threat clears.
                 if (inventorySettled && !combatThreat)
                     _salvageManager?.OnTick(_busyCount);
-                if (diag) Host.Log("[RynthAi] OnTick: before manaStoneManager");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before manaStoneManager");
 
                 // STEP 4: the salvage gap-fill that used to pin/release
                 // "Salvaging" here is GONE. Its whole content — "salvage wants
@@ -1419,7 +1431,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // Mana stone tapping — runs after salvage, independent of looting state.
                 _manaStoneManager?.OnHeartbeat(_busyCount);
                 _petManager?.OnHeartbeat(_busyCount);
-                if (diag) Host.Log("[RynthAi] OnTick: before combatManager");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before combatManager");
 
                 // Missile crafting runs before combat — blocks everything while active.
                 // Gated on the same settle window as InventoryManager: ProcessCrafting
@@ -1471,11 +1483,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 else
                 {
                     _combatManager?.OnHeartbeat();
-                    if (diag) Host.Log("[RynthAi] OnTick: after combatManager.OnHeartbeat");
+                    if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after combatManager.OnHeartbeat");
                     TickCorpseOpening();
                 }
 
-                if (diag) Host.Log("[RynthAi] OnTick: before nav");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before nav");
 
                 if (navOwnsTick || navInPortal)
                 {
@@ -1513,7 +1525,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] OnTick exception: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Exception(LogCat.General, ex, "OnTick");
         }
     }
 
@@ -1576,7 +1588,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // hide their reply lines; hidden lines also stay out of the dashboard chat mirror.
         bool hide = false;
         try { hide = _iltHub?.OnChat(text) == true; }
-        catch (Exception ex) { Host.Log($"[RynthAi] ILT Hub chat error: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "OnChat"); }
         if (_questTracker?.OnChatLine(text) == true) hide = true;
         if (hide) eat = 1;
         else _dashboard?.PushChatLine(text, chatType);
@@ -1607,7 +1619,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         try { _objectCache?.OnCreateObject(objectId); }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] OnCreateObject EXCEPTION on id=0x{objectId:X8}: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Exception(LogCat.WorldCache, ex, $"OnCreateObject id=0x{objectId:X8}");
         }
     }
 
@@ -1621,7 +1633,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] OnDeleteObject EXCEPTION on id=0x{objectId:X8}: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Exception(LogCat.WorldCache, ex, $"OnDeleteObject id=0x{objectId:X8}");
         }
     }
 
@@ -2067,7 +2079,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] CaptureCreatureSample exception: {ex.Message}");
+            RynthLog.Exception(LogCat.Combat, ex, "CaptureCreatureSample");
         }
     }
 
@@ -2152,21 +2164,21 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         try { OnChatBarEnter(text, ref eat); }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] RynthChat OnChatBarEnter threw: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Exception(LogCat.Chat, ex, "RynthChat OnChatBarEnter");
         }
 
         if (eat != 0)
         {
-            Host.Log($"[ChatDiag] '{text}' eaten locally (eat={eat})");
+            RynthLog.Write(LogCat.General, $"[ChatDiag] '{text}' eaten locally (eat={eat})");
             return; // handled locally (/ra, /mt, /ub, etc.)
         }
 
         if (Host.HasInvokeChatParser)
         {
             bool r = Host.InvokeChatParser(text);   // DIAG: does the engine report the send succeeded?
-            Host.Log($"[ChatDiag] InvokeChatParser('{text}') -> {r}");
+            RynthLog.Write(LogCat.General, $"[ChatDiag] InvokeChatParser('{text}') -> {r}");
         }
-        else Host.Log($"[ChatDiag] '{text}': Host.HasInvokeChatParser=FALSE (no send path wired)");
+        else RynthLog.Write(LogCat.General, $"[ChatDiag] '{text}': Host.HasInvokeChatParser=FALSE (no send path wired)");
     }
 
     internal void EnqueueGive(uint itemId, uint targetId, int stackSize)
@@ -2248,6 +2260,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "follow":       HandleFollowCommand(parts); break;
             case "myquests":
             case "refreshquests": _questTracker?.Refresh(); ChatLine("[RynthAi] Quest flag refresh requested."); break;
+            case "debug":        HandleDebugCommand(parts); break;
+            case "trace":        HandleTraceCommand(parts); break;
+            case "logs":         HandleLogsCommand(parts); break;
             case "hub":
             case "quests":
                 // parts: [prefix, verb, args...] — ILT Hub window / quest tracker commands.
@@ -2393,7 +2408,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] OnRender exception: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Exception(LogCat.UI, ex, "OnRender");
         }
         finally
         {

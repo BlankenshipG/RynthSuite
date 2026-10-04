@@ -78,11 +78,17 @@ internal sealed class IltChatCapture
     }
 
     /// <summary>Queues a capture. It is sent from <see cref="Tick"/> once earlier captures finish.</summary>
-    public void Enqueue(IltChatRequest request) => _queue.Enqueue(request);
+    public void Enqueue(IltChatRequest request)
+    {
+        _queue.Enqueue(request);
+        RynthLog.Trace(LogCat.IltChat, $"enqueue '{request.Command}' (queue={_queue.Count}, busy={_active != null})");
+    }
 
     /// <summary>Drops everything (logout / teardown). Pending callbacks are not invoked.</summary>
     public void Clear()
     {
+        if (_active != null || _queue.Count > 0)
+            RynthLog.Trace(LogCat.IltChat, $"clear: dropping active='{_active?.Command}' and {_queue.Count} queued");
         _queue.Clear();
         _active = null;
         _activeResult = null;
@@ -141,6 +147,7 @@ internal sealed class IltChatCapture
         if (!_active.IsResponseLine(text)) return false;
         _activeResult.Lines.Add(text);
         _lastLineAt = NowMs;
+        RynthLog.Trace(LogCat.IltChat, $"line '{_active.Command}'{(_active.Eat ? " [eaten]" : "")}: {text}");
         return _active.Eat;
     }
 
@@ -160,9 +167,10 @@ internal sealed class IltChatCapture
         var result = new IltChatResult();
         if (!_host.HasInvokeChatParser)
         {
+            RynthLog.Trace(LogCat.IltChat, $"not sent '{req.Command}': engine has no InvokeChatParser");
             result.NotSent = true;
             try { req.OnComplete?.Invoke(result); }
-            catch (Exception ex) { _host.Log($"[IltHub] capture callback '{req.Command}' threw: {ex.Message}"); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.IltChat, ex, $"capture callback '{req.Command}'"); }
             return;
         }
 
@@ -171,6 +179,7 @@ internal sealed class IltChatCapture
         _sentAt = now;
         _lastLineAt = now;
         _lastSendAt = now;
+        RynthLog.Trace(LogCat.IltChat, $"send '{req.Command}' (idle={req.IdleEndMs} ms, timeout={req.FirstLineTimeoutMs} ms, eat={req.Eat})");
         _host.InvokeChatParser(req.Command);
     }
 
@@ -181,7 +190,10 @@ internal sealed class IltChatCapture
         _active = null;
         _activeResult = null;
         if (req == null || res == null) return;
+        RynthLog.Trace(LogCat.IltChat,
+            $"complete '{req.Command}' in {NowMs - _sentAt} ms: lines={res.Lines.Count} timedOut={res.TimedOut} " +
+            $"unknown={res.UnknownCommand} terminator={(res.TerminatorLine != null)}");
         try { req.OnComplete?.Invoke(res); }
-        catch (Exception ex) { _host.Log($"[IltHub] capture callback '{req.Command}' threw: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltChat, ex, $"capture callback '{req.Command}'"); }
     }
 }

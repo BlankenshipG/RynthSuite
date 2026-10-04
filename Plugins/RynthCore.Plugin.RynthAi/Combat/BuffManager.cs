@@ -494,8 +494,8 @@ public class BuffManager : IDisposable
         _host.WriteToChat("[RynthAi] Starting Force Rebuff...", 5);
 
         var list = BuildDynamicBuffList();
-        _host.Log($"[FR] buff list ({list.Count}): {string.Join(", ", list)}");
-        _host.Log($"[FR] macroRunning={_settings.IsMacroRunning} liveRefreshed={_liveBuffsRefreshed}");
+        RynthLog.Write(LogCat.Buffing, $"[FR] buff list ({list.Count}): {string.Join(", ", list)}");
+        RynthLog.Write(LogCat.Buffing, $"[FR] macroRunning={_settings.IsMacroRunning} liveRefreshed={_liveBuffsRefreshed}");
     }
 
     public void CancelBuffing()
@@ -611,7 +611,7 @@ public class BuffManager : IDisposable
                     if (stable || timedOut)
                     {
                         _liveBuffsRefreshed = true;
-                        _host.Log($"[BuffDiag] login refresh ready: {n} enchantment(s) (stable={stable} timedOut={timedOut})");
+                        RynthLog.Write(LogCat.Buffing, $"[BuffDiag] login refresh ready: {n} enchantment(s) (stable={stable} timedOut={timedOut})");
                         _host.WriteToChat($"[RynthAi] Live buff timers ready ({n} loaded).", 1);
                     }
                 }
@@ -631,7 +631,7 @@ public class BuffManager : IDisposable
             _lastPeriodicRefreshAt = DateTime.Now;
             int n = RefreshFromLiveMemory();
             if (n >= 0)
-                _host.Log($"[BuffDiag] periodic sync: {n} active enchantment(s) in RAM timers.");
+                RynthLog.Write(LogCat.Buffing, $"[BuffDiag] periodic sync: {n} active enchantment(s) in RAM timers.");
         }
 
         // ── Pending-cast resolution — self-buffs and armor use DIFFERENT signals ──
@@ -690,7 +690,7 @@ public class BuffManager : IDisposable
                             parked = true;
                         }
 
-                        _host.Log($"[BuffDiag] self-buff '{pendingSpell.Name}' (id={_pendingSpellId}, fam={fam}) absent from live registry after {sinceCastMs:0}ms — " +
+                        RynthLog.Write(LogCat.Buffing, $"[BuffDiag] self-buff '{pendingSpell.Name}' (id={_pendingSpellId}, fam={fam}) absent from live registry after {sinceCastMs:0}ms — " +
                                   (cold ? "cold snapshot → blacklisted, tier-down." : "warm snapshot → retry (lag/fizzle).") +
                                   $" noShows={noShowCount}/{SilentNoShowThreshold}" +
                                   (parked ? $" — family parked {SilentNoShowCooldown.TotalMinutes:0}min." : ""));
@@ -750,7 +750,7 @@ public class BuffManager : IDisposable
                         }
                     }
 
-                    _host.Log($"[BuffChat] NO-CHAT TIMEOUT (armor) pending={stuckId} ('{stuck?.Name}') — no chat in " +
+                    RynthLog.Write(LogCat.Buffing, $"[BuffChat] NO-CHAT TIMEOUT (armor) pending={stuckId} ('{stuck?.Name}') — no chat in " +
                               $"{NoChatResolveTimeoutMs:0}ms. confirmedKnown={confirmedKnown}. " +
                               (confirmedKnown ? "Lag/busy — NOT blacklisted." : "Blacklisted → tier-down.") +
                               (fam != 0 ? $" noShows={_silentNoShowCounts[fam]}/{SilentNoShowThreshold}" : "") +
@@ -780,7 +780,7 @@ public class BuffManager : IDisposable
         // CombatManager can't sneak in a peace-mode switch mid-cast") is the
         // arbiter's call now — it reads PendingSpellId / WantsVitalRecharge /
         // NeedsAnyBuff and is the sole writer of the "Buffing" string.
-        if (!CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s)) || BusyCount > 0)
+        if (!CastGateWatchdog.CanCastNow(_host.CanCastNow, s => RynthLog.Write(LogCat.Buffing, s)) || BusyCount > 0)
         {
             LastBuffSkipReason = BusyCount > 0 ? "busy (BusyCount>0)" : "cast gate closed (CanCastNow=false / gesture animating)";
             return;
@@ -819,7 +819,7 @@ public class BuffManager : IDisposable
                 bool wasAutoBatch = _isAutoBatchRebuff;
                 _isForceRebuffing = false;
                 _isAutoBatchRebuff = false;
-                _host.Log($"[FR] complete — cast {_forceRebuffCastFamilies.Count} spell families{(wasAutoBatch ? " (auto batch)" : "")}");
+                RynthLog.Write(LogCat.Buffing, $"[FR] complete — cast {_forceRebuffCastFamilies.Count} spell families{(wasAutoBatch ? " (auto batch)" : "")}");
                 // Order matters: the flag must already be false (IsBuffActive
                 // short-circuits on _forceRebuffCastFamilies while it is set, so
                 // every family would read "active"), and the set must still be
@@ -898,7 +898,7 @@ public class BuffManager : IDisposable
 
             if (strikes < UnsatisfiedStrikeThreshold)
             {
-                _host.Log($"[BuffDiag] batch audit: '{name}' (id={spellId}, fam={family}) was cast this batch but still reads inactive — strike {strikes}/{UnsatisfiedStrikeThreshold}.");
+                RynthLog.Write(LogCat.Buffing, $"[BuffDiag] batch audit: '{name}' (id={spellId}, fam={family}) was cast this batch but still reads inactive — strike {strikes}/{UnsatisfiedStrikeThreshold}.");
                 continue;
             }
 
@@ -914,7 +914,7 @@ public class BuffManager : IDisposable
             string stored = _ramBuffTimers.TryGetValue(family, out RamTimerInfo? t)
                 ? $"stored='{t.SpellName}' lvl={t.SpellLevel} remainSec={(t.IsPermanent ? "permanent" : (t.Expiration - DateTime.Now).TotalSeconds.ToString("F0"))}"
                 : "no timer entry";
-            _host.Log($"[BuffDiag] batch audit: '{name}' (id={spellId}, fam={family}) lands but never reads active after {UnsatisfiedStrikeThreshold} batches — " +
+            RynthLog.Write(LogCat.Buffing, $"[BuffDiag] batch audit: '{name}' (id={spellId}, fam={family}) lands but never reads active after {UnsatisfiedStrikeThreshold} batches — " +
                       $"parking {SilentNoShowCooldown.TotalMinutes:0}min so it can't drive continuous rebuff cycles. " +
                       $"{stored}, rebuffThresholdSec={_settings.RebuffSecondsRemaining}.");
         }
@@ -1087,7 +1087,7 @@ public class BuffManager : IDisposable
             if (!IsSkillUsable(castSkill))
             {
                 LastBuffSkipReason = $"skill not usable: {buffBaseName} ({castSkill})";
-                if (diagnose) _host.Log($"[FR] skip '{buffBaseName}' — skill {castSkill} not usable");
+                if (diagnose) RynthLog.Write(LogCat.Buffing, $"[FR] skip '{buffBaseName}' — skill {castSkill} not usable");
                 continue;
             }
 
@@ -1095,14 +1095,14 @@ public class BuffManager : IDisposable
             if (spellId == 0)
             {
                 LastBuffSkipReason = $"not known / unresolvable: {buffBaseName}";
-                if (diagnose) _host.Log($"[FR] skip '{buffBaseName}' — FindBestSpellId returned 0");
+                if (diagnose) RynthLog.Write(LogCat.Buffing, $"[FR] skip '{buffBaseName}' — FindBestSpellId returned 0");
                 continue;
             }
 
             if (IsBuffActive(spellId))
             {
                 LastBuffSkipReason = $"already active: {buffBaseName} (id={spellId})";
-                if (diagnose) _host.Log($"[FR] skip '{buffBaseName}' (id={spellId}) — already active");
+                if (diagnose) RynthLog.Write(LogCat.Buffing, $"[FR] skip '{buffBaseName}' (id={spellId}) — already active");
                 continue;
             }
 
@@ -1115,7 +1115,7 @@ public class BuffManager : IDisposable
                 && DateTime.Now < coolUntil)
             {
                 LastBuffSkipReason = $"fail-cooldown: {buffBaseName} (fam={buffFamily}, {(coolUntil - DateTime.Now).TotalSeconds:0}s)";
-                if (diagnose) _host.Log($"[FR] skip '{buffBaseName}' (id={spellId}) — hard-fail cooldown {(coolUntil - DateTime.Now).TotalSeconds:0}s");
+                if (diagnose) RynthLog.Write(LogCat.Buffing, $"[FR] skip '{buffBaseName}' (id={spellId}) — hard-fail cooldown {(coolUntil - DateTime.Now).TotalSeconds:0}s");
                 continue;
             }
 
@@ -1132,7 +1132,7 @@ public class BuffManager : IDisposable
                     if (buffFamily != 0)
                         _buffFailCooldownUntil[buffFamily] = DateTime.Now.AddSeconds(BuffFailCooldownSec);
                     LastBuffSkipReason = $"wand-swap exhausted: {buffBaseName} (fam={buffFamily})";
-                    _host.Log($"[WieldGate] wand-swap exhausted for '{buffBaseName}' (fam={buffFamily}) — parking {BuffFailCooldownSec:0}s, fighting unbuffed");
+                    RynthLog.Write(LogCat.Buffing, $"[WieldGate] wand-swap exhausted for '{buffBaseName}' (fam={buffFamily}) — parking {BuffFailCooldownSec:0}s, fighting unbuffed");
                     continue;
                 }
                 LastBuffSkipReason = "magic-mode swap in progress (yielding tick)";
@@ -1156,7 +1156,7 @@ public class BuffManager : IDisposable
             // (e.g. an unknown higher tier), so the bot thought armor was
             // buffed when it wasn't and never retried the known tier.
 
-            if (diagnose) _host.Log($"[FR] CAST '{buffBaseName}' resolvedSpellId={spellId} (pending now set)");
+            if (diagnose) RynthLog.Write(LogCat.Buffing, $"[FR] CAST '{buffBaseName}' resolvedSpellId={spellId} (pending now set)");
             bool castOk = _host.CastSpell((uint)_host.GetPlayerId(), spellId);
             _lastCastAttempt = DateTime.Now;
             if (castOk) NoteCastIssued();
@@ -1168,7 +1168,7 @@ public class BuffManager : IDisposable
                 // record optimistically.)
                 _pendingSpellId = 0;
                 LastBuffSkipReason = $"local CastSpell rejected: {buffBaseName} (id={spellId})";
-                if (diagnose) _host.Log($"[FR] cast '{buffBaseName}' returned false — pending cleared");
+                if (diagnose) RynthLog.Write(LogCat.Buffing, $"[FR] cast '{buffBaseName}' returned false — pending cleared");
             }
             return true;
         }
@@ -1224,7 +1224,7 @@ public class BuffManager : IDisposable
         };
         // Pair with [BuffDiag] armor-recast logs so we can match record vs lookup.
         _lastArmorRecastReason.Remove(spellInfo.Family); // allow next recast to re-log
-        _host.Log($"[BuffDiag] RECORD '{spellInfo.Name}' (id={spellInfo.Id}, fam={spellInfo.Family}, lvl={level}, durSec={duration:F0}, expiresAt={now.AddSeconds(duration):HH:mm:ss})");
+        RynthLog.Write(LogCat.Buffing, $"[BuffDiag] RECORD '{spellInfo.Name}' (id={spellInfo.Id}, fam={spellInfo.Family}, lvl={level}, durSec={duration:F0}, expiresAt={now.AddSeconds(duration):HH:mm:ss})");
         SaveBuffTimers();
 
         if (EnableCastRegistryDiagnostic)
@@ -1244,12 +1244,12 @@ public class BuffManager : IDisposable
                 PreSnapshots = SnapshotRegistries(),
             };
             _pendingDiagnostics.Enqueue(diag);
-            _host.Log($"[BuffTest] PRE-CAST '{spellInfo.Name}' (id={spellInfo.Id}, fam={spellInfo.Family}) " +
+            RynthLog.Write(LogCat.Buffing, $"[BuffTest] PRE-CAST '{spellInfo.Name}' (id={spellInfo.Id}, fam={spellInfo.Family}) " +
                       $"snapshots={diag.PreSnapshots.Count} queued={_pendingDiagnostics.Count}");
         }
         catch (Exception ex)
         {
-            _host.Log($"[BuffTest] Pre-cast snapshot failed: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Write(LogCat.Buffing, $"[BuffTest] Pre-cast snapshot failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -1325,7 +1325,7 @@ public class BuffManager : IDisposable
         try
         {
             var post = SnapshotRegistries();
-            _host.Log($"[BuffTest] === POST-CAST DIFF for '{diag.SpellName}' (id={diag.SpellId}, fam={diag.SpellFamily}) ===");
+            RynthLog.Write(LogCat.Buffing, $"[BuffTest] === POST-CAST DIFF for '{diag.SpellName}' (id={diag.SpellId}, fam={diag.SpellFamily}) ===");
             _host.WriteToChat($"[BuffTest] Post-cast diff captured for '{diag.SpellName}' — see RynthCore.log", 1);
 
             foreach (var pre in diag.PreSnapshots)
@@ -1336,7 +1336,7 @@ public class BuffManager : IDisposable
 
                 if (match == null)
                 {
-                    _host.Log($"[BuffTest]   {pre.OwnerName} (0x{pre.OwnerId:X8}): post-snapshot missing");
+                    RynthLog.Write(LogCat.Buffing, $"[BuffTest]   {pre.OwnerName} (0x{pre.OwnerId:X8}): post-snapshot missing");
                     continue;
                 }
 
@@ -1345,7 +1345,7 @@ public class BuffManager : IDisposable
 
                 int newCount = 0;
                 int matchedTargetSpell = -1;
-                _host.Log($"[BuffTest]   {match.OwnerName} (0x{match.OwnerId:X8}): pre={pre.Count} post={match.Count} serverNow={match.ServerTime:F1}");
+                RynthLog.Write(LogCat.Buffing, $"[BuffTest]   {match.OwnerName} (0x{match.OwnerId:X8}): pre={pre.Count} post={match.Count} serverNow={match.ServerTime:F1}");
 
                 for (int i = 0; i < match.Count; i++)
                 {
@@ -1356,25 +1356,25 @@ public class BuffManager : IDisposable
                     string nm = sp?.Name ?? "?";
                     int fam = sp?.Family ?? -1;
                     double remaining = match.ExpiryTimes[i] - match.ServerTime;
-                    _host.Log($"[BuffTest]     +new spell={sid} ('{nm}') fam={fam} expiry={match.ExpiryTimes[i]:F1} remaining={remaining:F1}s");
+                    RynthLog.Write(LogCat.Buffing, $"[BuffTest]     +new spell={sid} ('{nm}') fam={fam} expiry={match.ExpiryTimes[i]:F1} remaining={remaining:F1}s");
                     if (sid == (uint)diag.SpellId || fam == diag.SpellFamily) matchedTargetSpell = i;
                 }
 
                 if (newCount == 0)
-                    _host.Log($"[BuffTest]     (no new entries)");
+                    RynthLog.Write(LogCat.Buffing, $"[BuffTest]     (no new entries)");
                 else if (matchedTargetSpell >= 0)
                 {
                     double remaining = match.ExpiryTimes[matchedTargetSpell] - match.ServerTime;
                     bool hasDuration = remaining > 0.5 && remaining < (86400 * 365);
-                    _host.Log($"[BuffTest]     >>> TARGET SPELL MATCHED: remaining={remaining:F1}s hasRealDuration={hasDuration}");
+                    RynthLog.Write(LogCat.Buffing, $"[BuffTest]     >>> TARGET SPELL MATCHED: remaining={remaining:F1}s hasRealDuration={hasDuration}");
                 }
             }
 
-            _host.Log("[BuffTest] === END DIFF ===");
+            RynthLog.Write(LogCat.Buffing, "[BuffTest] === END DIFF ===");
         }
         catch (Exception ex)
         {
-            _host.Log($"[BuffTest] Post-cast diff failed: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Write(LogCat.Buffing, $"[BuffTest] Post-cast diff failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -1482,7 +1482,7 @@ public class BuffManager : IDisposable
         if (_lastArmorRecastReason.TryGetValue(targetSpell.Family, out string? prev) && prev == reason)
             return;
         _lastArmorRecastReason[targetSpell.Family] = reason;
-        _host.Log($"[BuffDiag] player-recast '{targetSpell.Name}' (id={targetSpell.Id}, fam={targetSpell.Family}): {reason}");
+        RynthLog.Write(LogCat.Buffing, $"[BuffDiag] player-recast '{targetSpell.Name}' (id={targetSpell.Id}, fam={targetSpell.Family}): {reason}");
     }
 
     /// <summary>
@@ -1505,7 +1505,7 @@ public class BuffManager : IDisposable
         if (_lastArmorRecastReason.TryGetValue(targetSpell.Family, out string? prev) && prev == reason)
             return;
         _lastArmorRecastReason[targetSpell.Family] = reason;
-        _host.Log($"[BuffDiag] armor-recast '{targetSpell.Name}' (id={targetSpell.Id}, fam={targetSpell.Family}): {reason}");
+        RynthLog.Write(LogCat.Buffing, $"[BuffDiag] armor-recast '{targetSpell.Name}' (id={targetSpell.Id}, fam={targetSpell.Family}): {reason}");
     }
 
     private static int GetSpellLevel(SpellInfo spell)
@@ -1567,7 +1567,7 @@ public class BuffManager : IDisposable
 
         augs = Math.Clamp(augs, 0, 5);
         if (augs != _archmageAugs)
-            _host.Log($"[Buff] Archmage's Endurance rank {augs}/5 — enchantment durations x{1.0 + augs * 0.20:0.00}");
+            RynthLog.Write(LogCat.Buffing, $"[Buff] Archmage's Endurance rank {augs}/5 — enchantment durations x{1.0 + augs * 0.20:0.00}");
 
         _archmageAugs       = augs;
         _archmageAugsReadAt = now;
@@ -1623,14 +1623,14 @@ public class BuffManager : IDisposable
             var spellInfo = SpellTableStub.GetById((int)spellIds[i]);
             if (spellInfo == null)
             {
-                _host.Log($"[BuffDiag] refresh DROP: id={spellIds[i]} unresolved by SpellTableStub (no name) — would never re-add to RAM timers");
+                RynthLog.Write(LogCat.Buffing, $"[BuffDiag] refresh DROP: id={spellIds[i]} unresolved by SpellTableStub (no name) — would never re-add to RAM timers");
                 continue;
             }
 
             double remainingSeconds = expiryTimes[i] - serverNow;
             if (remainingSeconds <= 0)
             {
-                _host.Log($"[BuffDiag] refresh DROP: id={spellIds[i]} '{spellInfo.Name}' fam={spellInfo.Family} remainSec={remainingSeconds:F0} (expiry={expiryTimes[i]:F0} serverNow={serverNow:F0}) — treated as expired");
+                RynthLog.Write(LogCat.Buffing, $"[BuffDiag] refresh DROP: id={spellIds[i]} '{spellInfo.Name}' fam={spellInfo.Family} remainSec={remainingSeconds:F0} (expiry={expiryTimes[i]:F0} serverNow={serverNow:F0}) — treated as expired");
                 continue;
             }
 
@@ -1695,7 +1695,7 @@ public class BuffManager : IDisposable
                 RecordAchievedTier(spellInfo.Family, level);
 
             if (isPermanent && _loggedPermanentFamilies.Add(spellInfo.Family))
-                _host.Log($"[BuffDiag] permanent player enchant tracked: id={spellInfo.Id} '{spellInfo.Name}' (fam={spellInfo.Family}, lvl={level}) — presence-only, not persisted" +
+                RynthLog.Write(LogCat.Buffing, $"[BuffDiag] permanent player enchant tracked: id={spellInfo.Id} '{spellInfo.Name}' (fam={spellInfo.Family}, lvl={level}) — presence-only, not persisted" +
                           (keepExisting
                               ? $" — outranked in this family by '{seen!.SpellName}' (lvl={seen.SpellLevel}), which owns the timer"
                               : ""));
@@ -1775,11 +1775,11 @@ public class BuffManager : IDisposable
                 }
             }
 
-            _host.Log($"[RynthAi] Item enchant scan: {equippedCount} equipped, {_itemBuffTimers.Count} timed buffs");
+            RynthLog.Write(LogCat.Buffing, $"[RynthAi] Item enchant scan: {equippedCount} equipped, {_itemBuffTimers.Count} timed buffs");
         }
         catch (Exception ex)
         {
-            _host.Log($"[RynthAi] Item enchant scan failed: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Write(LogCat.Buffing, $"[RynthAi] Item enchant scan failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -2045,7 +2045,7 @@ public class BuffManager : IDisposable
         // Diagnostic: log every chat seen while waiting on a cast confirmation,
         // so we can see what AC is actually emitting and adjust our matchers.
         if (_pendingSpellId != 0)
-            _host.Log($"[BuffChat] pending={_pendingSpellId} type={chatType} text='{text}'");
+            RynthLog.Write(LogCat.Buffing, $"[BuffChat] pending={_pendingSpellId} type={chatType} text='{text}'");
 
         // Real failure phrases. Note: bare "component" was removed — it false-matches
         // the "consumed the following components" line, which fires for both success
@@ -2073,7 +2073,7 @@ public class BuffManager : IDisposable
                     _itemSpellTimers.Remove(pendingSpell.Family);
                     SaveBuffTimers();
                 }
-                _host.Log($"[BuffChat] PARKED pending={_pendingSpellId} — AC too busy (cast gesture in progress); throttle kept, backing off before re-issue.");
+                RynthLog.Write(LogCat.Buffing, $"[BuffChat] PARKED pending={_pendingSpellId} — AC too busy (cast gesture in progress); throttle kept, backing off before re-issue.");
             }
             _pendingSpellId = 0;
 
@@ -2083,7 +2083,7 @@ public class BuffManager : IDisposable
             double backoffMs = Math.Min(BusyBackoffBaseMs * Math.Pow(2, _busyRefusalStreak - 1), BusyBackoffMaxMs);
             _busyBackoffUntil = DateTime.Now.AddMilliseconds(backoffMs);
             if (_busyRefusalStreak == 1 || _busyRefusalStreak % 5 == 0)
-                _host.Log($"[BuffChat] too-busy streak={_busyRefusalStreak} — backing off {backoffMs:0}ms before the next cast attempt.");
+                RynthLog.Write(LogCat.Buffing, $"[BuffChat] too-busy streak={_busyRefusalStreak} — backing off {backoffMs:0}ms before the next cast attempt.");
 
             _onCastResolved?.Invoke("too busy");
             return;
@@ -2123,7 +2123,7 @@ public class BuffManager : IDisposable
                     _host.WriteToChat($"[RynthAi] Skipping {pendingSpell.Name} for {BuffFailCooldownSec / 60:0} min " +
                                       $"({(noComps ? "no components for it" : "the server refused it")}).", 2);
                 }
-                _host.Log($"[BuffChat] CLEARED+COOLED pending={_pendingSpellId} ({BuffFailCooldownSec:0}s) — hard rejection in '{text}'");
+                RynthLog.Write(LogCat.Buffing, $"[BuffChat] CLEARED+COOLED pending={_pendingSpellId} ({BuffFailCooldownSec:0}s) — hard rejection in '{text}'");
             }
             _pendingSpellId = 0;
             _onCastResolved?.Invoke("hard-reject");
@@ -2144,7 +2144,7 @@ public class BuffManager : IDisposable
                     _itemSpellTimers.Remove(pendingSpell.Family);
                     SaveBuffTimers();
                 }
-                _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId} via soft-fail in '{text}'");
+                RynthLog.Write(LogCat.Buffing, $"[BuffChat] CLEARED pending={_pendingSpellId} via soft-fail in '{text}'");
             }
             _lastCastAttempt = DateTime.MinValue;
             _pendingSpellId = 0;
@@ -2196,7 +2196,7 @@ public class BuffManager : IDisposable
                 var ps = SpellTableStub.GetById(_pendingSpellId);
                 if (ps != null) _forceRebuffCastFamilies.Add(ps.Family);
             }
-            _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId} via ou-cast match name='{spellName}' resolvedId={spellId}");
+            RynthLog.Write(LogCat.Buffing, $"[BuffChat] CLEARED pending={_pendingSpellId} via ou-cast match name='{spellName}' resolvedId={spellId}");
         }
         _pendingSpellId = 0;
         _onCastResolved?.Invoke($"cast '{spellName}'");
@@ -2238,7 +2238,7 @@ public class BuffManager : IDisposable
     {
         if (_busyRefusalStreak == 0 && _busyBackoffUntil == DateTime.MinValue) return;
         if (_busyRefusalStreak > 0)
-            _host.Log($"[BuffChat] cast accepted after {_busyRefusalStreak} too-busy refusal(s) — backoff cleared.");
+            RynthLog.Write(LogCat.Buffing, $"[BuffChat] cast accepted after {_busyRefusalStreak} too-busy refusal(s) — backoff cleared.");
         _busyRefusalStreak = 0;
         _busyBackoffUntil  = DateTime.MinValue;
     }
@@ -2369,7 +2369,7 @@ public class BuffManager : IDisposable
                 if ((now - _pendingWieldAt).TotalMilliseconds < WieldResolveTimeoutMs)
                     return false;
 
-                _host.Log($"[WieldGate] UseObject(0x{(uint)_pendingWieldId:X8}) not confirmed in " +
+                RynthLog.Write(LogCat.Buffing, $"[WieldGate] UseObject(0x{(uint)_pendingWieldId:X8}) not confirmed in " +
                           $"{WieldResolveTimeoutMs:0}ms — cooling down {WieldCooldownMs:0}ms");
                 _pendingWieldId = 0;
                 _wieldCooldownUntil = now.AddMilliseconds(WieldCooldownMs);
@@ -2398,7 +2398,7 @@ public class BuffManager : IDisposable
                 if (_host.HasCancelAttack)   _host.CancelAttack();
                 if (_host.HasStopCompletely) _host.StopCompletely();
                 _combatTeardownDoneForCurrentBuffCycle = true;
-                _host.Log($"[BuffPre] CancelAttack+StopCompletely before wand equip (mode was {CurrentCombatMode})");
+                RynthLog.Write(LogCat.Buffing, $"[BuffPre] CancelAttack+StopCompletely before wand equip (mode was {CurrentCombatMode})");
             }
 
             // FIX: stock ACE will NOT auto-dequip the bow for a Held-slot wand
@@ -2420,7 +2420,7 @@ public class BuffManager : IDisposable
                     {
                         // No verified-open pack to receive the bow, or repeated dequip
                         // failures -> the swap provably can't complete now. Degrade.
-                        _host.Log($"[WieldGate] bow 0x{(uint)bowId:X8} dequip blocked (openPack=0x{(uint)openPack:X8}, attempts={_bowDequipAttempts}/{BowDequipMaxAttempts}) — degrading");
+                        RynthLog.Write(LogCat.Buffing, $"[WieldGate] bow 0x{(uint)bowId:X8} dequip blocked (openPack=0x{(uint)openPack:X8}, attempts={_bowDequipAttempts}/{BowDequipMaxAttempts}) — degrading");
                         return SignalSwapFailure(forBuff, bowId, wandId);
                     }
                     _bowDequipAttempts++;
@@ -2428,7 +2428,7 @@ public class BuffManager : IDisposable
                     _bowDequipPendingId = bowId;
                     _bowDequipAt = now;
                     _lastCastAttempt = now;
-                    _host.Log($"[WieldGate] dequip bow 0x{(uint)bowId:X8} -> pack 0x{(uint)openPack:X8} (attempt {_bowDequipAttempts}/{BowDequipMaxAttempts}) before wand equip");
+                    RynthLog.Write(LogCat.Buffing, $"[WieldGate] dequip bow 0x{(uint)bowId:X8} -> pack 0x{(uint)openPack:X8} (attempt {_bowDequipAttempts}/{BowDequipMaxAttempts}) before wand equip");
                     return false; // yield until the bow is out of hand
                 }
                 _bowDequipPendingId = 0; // bow confirmed unwielded — fall through to wield the wand
@@ -2464,7 +2464,7 @@ public class BuffManager : IDisposable
         {
             _buffStanceLastRecoverAt = DateTime.Now;
             _buffStanceReEquips++;
-            _host.Log($"[BuffStance] STUCK {stuckMs:0}ms (wielded, mode={CurrentCombatMode}≠Magic) — re-equip attempt {_buffStanceReEquips}/{BuffStanceReEquipMax} 0x{(uint)wandId:X8}");
+            RynthLog.Write(LogCat.Buffing, $"[BuffStance] STUCK {stuckMs:0}ms (wielded, mode={CurrentCombatMode}≠Magic) — re-equip attempt {_buffStanceReEquips}/{BuffStanceReEquipMax} 0x{(uint)wandId:X8}");
             _host.UseObject((uint)wandId);
             _lastCastAttempt = DateTime.Now;
             return false;
@@ -2494,7 +2494,7 @@ public class BuffManager : IDisposable
             if (_buffStanceConsecutiveFails < 6) _buffStanceConsecutiveFails++;
             // Visible retry line (throttled by the backoff itself): the
             // 2026-06-12 coma produced ZERO log output from this path.
-            _host.Log($"[BuffStance] ChangeCombatMode(Magic) retry #{_buffStanceConsecutiveFails} (stuck {stuckMs / 1000:0}s, next retry in {gateMs / 1000:0}s)");
+            RynthLog.Write(LogCat.Buffing, $"[BuffStance] ChangeCombatMode(Magic) retry #{_buffStanceConsecutiveFails} (stuck {stuckMs / 1000:0}s, next retry in {gateMs / 1000:0}s)");
         }
         return false; // Yield — let stance animation finish
     }

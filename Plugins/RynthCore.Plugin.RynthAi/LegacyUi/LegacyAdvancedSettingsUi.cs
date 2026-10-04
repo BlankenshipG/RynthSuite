@@ -63,6 +63,55 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.End();
     }
 
+    /// <summary>
+    /// Diagnostics tab: global debug-to-chat, daily file log and one trace checkbox per
+    /// RynthAi function (same switches as /ra debug, /ra trace, /ra logs). Toggles persist
+    /// immediately to Logs\Diagnostics\diagnostics.json.
+    /// </summary>
+    private void RenderDiagnostics()
+    {
+        ImGui.Text("Logging & Debugging");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        bool debugToChat = RynthLog.DebugToChat;
+        if (ImGui.Checkbox("Debug to chat##Diag", ref debugToChat)) RynthLog.DebugToChat = debugToChat;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Echo trace lines and errors from the categories ticked below into the chat window.");
+
+        bool fileAll = RynthLog.FileLogAll;
+        if (ImGui.Checkbox("Daily RynthAi log file##Diag", ref fileAll)) RynthLog.FileLogAll = fileAll;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Mirror every RynthAi log line to rynthai_<date>.txt (kept 7 days).");
+
+        ImGui.TextDisabled($"Folder: {RynthLog.Directory}");
+        if (ImGui.Button("All on##Diag")) RynthLog.SetTracingByPrefix(string.Empty, true);
+        ImGui.SameLine();
+        if (ImGui.Button("All off##Diag")) RynthLog.SetTracingByPrefix(string.Empty, false);
+        ImGui.SameLine();
+        if (ImGui.Button("ILT Hub on##Diag")) RynthLog.SetTracingByPrefix("Ilt", true);
+        ImGui.SameLine();
+        if (ImGui.Button("Prune old##Diag")) RynthLog.Prune();
+
+        ImGui.Spacing();
+        ImGui.Text("Trace per function (Trace\\<Category>_<date>.txt):");
+
+        // Three-column grid of category checkboxes.
+        if (ImGui.BeginTable("DiagCats", 3))
+        {
+            foreach (LogCat cat in Enum.GetValues<LogCat>())
+            {
+                ImGui.TableNextColumn();
+                bool on = RynthLog.IsTracing(cat);
+                if (ImGui.Checkbox($"{cat}##DiagCat", ref on)) RynthLog.SetTracing(cat, on);
+            }
+            ImGui.EndTable();
+        }
+
+        ImGui.Spacing();
+        ImGui.TextDisabled("Exceptions always go to exceptions_<date>.txt with full stack traces (throttled).");
+    }
+
     private void RenderVendoring()
     {
         ImGui.Text("AutoVendor (UtilityBelt)");
@@ -747,6 +796,10 @@ internal sealed class LegacyAdvancedSettingsUi
 
             case "Vendoring":
                 RenderVendoring();
+                break;
+
+            case "Diagnostics":
+                RenderDiagnostics();
                 break;
 
             default:

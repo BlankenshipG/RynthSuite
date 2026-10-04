@@ -79,6 +79,7 @@ internal sealed class IltHubController
     public void OnLoginComplete(string charName, PetManager? petManager)
     {
         _ctx.CharName = charName ?? string.Empty;
+        RynthLog.Trace(LogCat.IltHub, $"login: char='{_ctx.CharName}' world='{_ctx.Options.WorldName}'");
         _ctx.Options.OnLoginComplete();
         _ctx.Inventory.Reset();
         Rates.Reset();
@@ -124,8 +125,16 @@ internal sealed class IltHubController
             foreach (var f in _features)
             {
                 try { f.Tick(now); }
-                catch (Exception ex) { _ctx.Host.Log($"[IltHub] {f.GetType().Name}.Tick threw: {ex.Message}"); }
+                catch (Exception ex) { RynthLog.Exception(CategoryOf(f), ex, $"{f.GetType().Name}.Tick"); }
             }
+        }
+
+        // Expire an unanswered chat confirmation so a stale "/ra hub confirm" can't fire it later.
+        if (_pendingAction != null && now - _pendingAt > ConfirmWindowMs)
+        {
+            RynthLog.Trace(LogCat.IltHub, $"confirmation expired: {_pendingLabel}");
+            _ctx.Chat($"[ILT Hub] Confirmation for '{_pendingLabel}' expired.");
+            ClearPending();
         }
 
         if (now - _lastSaveAt >= SaveIntervalMs)
@@ -146,19 +155,35 @@ internal sealed class IltHubController
         foreach (var f in _features)
         {
             try { eat |= f.OnChat(line); }
-            catch (Exception ex) { _ctx.Host.Log($"[IltHub] {f.GetType().Name}.OnChat threw: {ex.Message}"); }
+            catch (Exception ex) { RynthLog.Exception(CategoryOf(f), ex, $"{f.GetType().Name}.OnChat"); }
         }
         return eat;
     }
+
+    /// <summary>Maps a feature module to its diagnostics category so its trace/exception lines land in its own file.</summary>
+    private static LogCat CategoryOf(IIltFeature f) => f switch
+    {
+        IltBanking => LogCat.IltBanking,
+        IltPets => LogCat.IltPets,
+        IltSessionRates => LogCat.IltRates,
+        IltQuests => LogCat.IltQuests,
+        IltProgression => LogCat.IltProgression,
+        IltGear => LogCat.IltGear,
+        IltGames => LogCat.IltGames,
+        _ => LogCat.IltHub,
+    };
 
     public void RecordKill() => Rates.RecordKill();
 
     /// <summary>Logout / teardown: stop automation and flush to disk.</summary>
     public void OnLogout()
     {
+        RynthLog.Trace(LogCat.IltHub, $"logout: stopping features for '{_ctx.CharName}'");
+        ClearPending();
         foreach (var f in _features)
         {
-            try { f.OnLogout(); } catch { /* best effort on the way out */ }
+            try { f.OnLogout(); }
+            catch (Exception ex) { RynthLog.Exception(CategoryOf(f), ex, $"{f.GetType().Name}.OnLogout"); }
         }
         _ctx.Capture.Clear();
         _ctx.Store.SaveStateIfDirty(_ctx.State);
@@ -197,6 +222,7 @@ internal sealed class IltHubController
     /// </summary>
     public bool HandleCommand(string verb, string[] args)
     {
+        RynthLog.Trace(LogCat.IltHub, $"command: /ra {verb} {string.Join(" ", args)}".TrimEnd());
         if (verb.Equals("quests", StringComparison.OrdinalIgnoreCase))
         {
             string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "refresh";
@@ -223,8 +249,13 @@ internal sealed class IltHubController
             case "profile": HandleProfile(args.Skip(1).ToArray()); break;
             case "suit": HandleSuit(args.Skip(1).ToArray()); break;
             case "clap": Gear.ChunkClap.ClapNow(manual: true); break;
+            case "confirm": RunPending(); break;
+            case "cancel":
+                _ctx.Chat(_pendingAction != null ? $"[ILT Hub] Cancelled '{_pendingLabel}'." : "[ILT Hub] Nothing to cancel.");
+                ClearPending();
+                break;
             default:
-                _ctx.Chat("[ILT Hub] /ra hub show|hide|toggle|refresh|bank|status|force on|off|clap");
+                _ctx.Chat("[ILT Hub] /ra hub show|hide|toggle|refresh|bank|status|force on|off|clap|confirm|cancel");
                 _ctx.Chat("[ILT Hub] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
                 _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>]");
                 break;
@@ -262,9 +293,52 @@ internal sealed class IltHubController
         }
         else if (sub == "load")
         {
-            _ctx.Chat(_ctx.Store.LoadProfile(_ctx.State, a[1], out string err)
-                ? $"[ILT Hub] Loaded profile '{a[1]}'." : "[ILT Hub] Load failed: " + err);
+            // Loading replaces the Hub's current settings, so it needs an explicit confirm.
+            string profile = a[1];
+            RequestConfirm($"load Hub profile '{profile}' (replaces current Hub settings)", () =>
+                _ctx.Chat(_ctx.Store.LoadProfile(_ctx.State, profile, out string err)
+                    ? $"[ILT Hub] Loaded profile '{profile}'." : "[ILT Hub] Load failed: " + err));
         }
+    }
+
+    // ── Chat confirmations for destructive commands ─────────────────────────
+
+    /// <summary>How long a "/ra hub confirm" stays valid after the prompt.</summary>
+    private const long ConfirmWindowMs = 20000;
+
+    private string? _pendingLabel;
+    private Action? _pendingAction;
+    private long _pendingAt;
+
+    /// <summary>Arms a single pending action; a newer request replaces an older one.</summary>
+    private void RequestConfirm(string label, Action action)
+    {
+        _pendingLabel = label;
+        _pendingAction = action;
+        _pendingAt = IltHubContext.NowMs;
+        RynthLog.Trace(LogCat.IltHub, $"confirmation requested: {label}");
+        _ctx.Chat($"[ILT Hub] About to {label}. Type /ra hub confirm within {ConfirmWindowMs / 1000} s, or /ra hub cancel.");
+    }
+
+    /// <summary>Runs the pending action if one is armed and still inside its window.</summary>
+    private void RunPending()
+    {
+        var action = _pendingAction;
+        string? label = _pendingLabel;
+        bool fresh = action != null && IltHubContext.NowMs - _pendingAt <= ConfirmWindowMs;
+        ClearPending();
+        if (!fresh || action == null) { _ctx.Chat("[ILT Hub] Nothing to confirm."); return; }
+
+        RynthLog.Trace(LogCat.IltHub, $"confirmed: {label}");
+        try { action(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, $"confirmed action '{label}'"); }
+    }
+
+    private void ClearPending()
+    {
+        _pendingAction = null;
+        _pendingLabel = null;
+        _pendingAt = 0;
     }
 
     private void HandleSuit(string[] a)
@@ -281,7 +355,8 @@ internal sealed class IltHubController
                 foreach (string l in Gear.Suits.Test(name)) _ctx.Chat("[ILT Hub] " + l);
                 break;
             case "load":
-                _ctx.Chat("[ILT Hub] " + Gear.Suits.Load(name));
+                // Equipping a suit swaps gear mid-session, so it needs an explicit confirm.
+                RequestConfirm($"equip suit '{name ?? "(auto)"}'", () => _ctx.Chat("[ILT Hub] " + Gear.Suits.Load(name)));
                 break;
             default:
                 _ctx.Chat("[ILT Hub] Usage: /ra hub suit list|test [name]|load [name]");

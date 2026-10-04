@@ -99,7 +99,7 @@ internal sealed class IltQuests : IIltFeature
                 }
             }
         }
-        catch (Exception ex) { _ctx.Host.Log($"[IltHub] quests.xml load failed: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltQuests, ex, "quests.xml load"); }
         _friendlyNames = map;
     }
 
@@ -108,6 +108,7 @@ internal sealed class IltQuests : IIltFeature
     /// <summary>Quiet /myquests refresh with a 60 s client-side cooldown (server throttle).</summary>
     public string RefreshQuests()
     {
+        RynthLog.Trace(LogCat.IltQuests, $"RefreshQuests()");
         var t = _tracker();
         if (t == null) return "Quest tracker not ready.";
         if (_ctx.Options.IsOff(IltFeature.Quests) || t.Disabled) return "/myquests is disabled on this server.";
@@ -138,6 +139,7 @@ internal sealed class IltQuests : IIltFeature
     /// <summary>Captures "/qb list" (quiet).</summary>
     public string RefreshQb()
     {
+        RynthLog.Trace(LogCat.IltQuests, $"RefreshQb()");
         if (_ctx.Options.IsOff(IltFeature.Qb)) return "/qb is disabled on this server.";
         long now = IltHubContext.NowMs;
         if (now - _lastQbAt < QbCooldownMs)
@@ -212,6 +214,7 @@ internal sealed class IltQuests : IIltFeature
     /// <summary>Login probe tap: "/qb" (no args) prints the count line.</summary>
     public void ApplyQbProbe(List<string> lines)
     {
+        RynthLog.Trace(LogCat.IltQuests, $"ApplyQbProbe(lines={lines.Count})");
         foreach (string line in lines)
             if (line.StartsWith("Your current quest bonus count", StringComparison.OrdinalIgnoreCase))
             {

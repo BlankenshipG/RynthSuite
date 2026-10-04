@@ -194,7 +194,7 @@ public class WorldObjectCache
             {
                 _deleteBeforeClassifyLogCount++;
                 bool seenCreate = _seenCreateObject.Contains(id);
-                _host.Log($"[ReclassifyDiag] 0x{id:X8} DELETE-BEFORE-CLASSIFY seenCreate={(seenCreate ? 1 : 0)}");
+                RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{id:X8} DELETE-BEFORE-CLASSIFY seenCreate={(seenCreate ? 1 : 0)}");
             }
         }
         if (wasInventory)
@@ -234,7 +234,7 @@ public class WorldObjectCache
             bool seenCreate = _seenCreateObject.Contains(id);
             bool inLandscape = _landscape.Contains(sid);
             bool inById = _byId.ContainsKey(sid);
-            _host.Log($"[ReclassifyDiag] 0x{id:X8} HEALTHADD-RESCUE ratio={healthRatio:0.00} seenCreate={(seenCreate ? 1 : 0)} inLandscape={(inLandscape ? 1 : 0)} inById={(inById ? 1 : 0)} wasSkipped={(wasSkipped ? 1 : 0)}");
+            RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{id:X8} HEALTHADD-RESCUE ratio={healthRatio:0.00} seenCreate={(seenCreate ? 1 : 0)} inLandscape={(inLandscape ? 1 : 0)} inById={(inById ? 1 : 0)} wasSkipped={(wasSkipped ? 1 : 0)}");
         }
         else if (_reclassifySkipState.ContainsKey(id))
         {
@@ -314,7 +314,7 @@ public class WorldObjectCache
             _tickDiagCount++;
             int total, landscape, creatures;
             lock (_gate) { total = _byId.Count; landscape = _landscape.Count; creatures = _creatures.Count; }
-            _host.Log($"[RynthAi] Cache.Tick classified {processed} from {pending0} pending, total now {total}, landscape={landscape}, creatures={creatures}");
+            RynthLog.Write(LogCat.WorldCache, $"[RynthAi] Cache.Tick classified {processed} from {pending0} pending, total now {total}, landscape={landscape}, creatures={creatures}");
         }
 
         // Periodically re-check Unknown landscape objects — dynamic creatures whose weenie
@@ -346,13 +346,13 @@ public class WorldObjectCache
                 if (found > 0)
                 {
                     _initialScanDone = true;
-                    _host.Log($"[RynthAi] Inventory scan: discovered {found} item(s), inventory now {_inventory.Count}");
+                    RynthLog.Write(LogCat.WorldCache, $"[RynthAi] Inventory scan: discovered {found} item(s), inventory now {_inventory.Count}");
                 }
                 else if (_initialScanRetries >= MaxInitialScanRetries)
                 {
                     _initialScanDone = true;
                     _inventoryDirty = false;
-                    _host.Log($"[RynthAi] Inventory scan: gave up after {_initialScanRetries} retries (topCount was 0)");
+                    RynthLog.Write(LogCat.WorldCache, $"[RynthAi] Inventory scan: gave up after {_initialScanRetries} retries (topCount was 0)");
                 }
             }
         }
@@ -373,7 +373,7 @@ public class WorldObjectCache
         int atk = -1;
         try { if (_host.HasObjectIsAttackable) atk = _host.ObjectIsAttackable(uid) ? 1 : 0; }
         catch { atk = -2; }
-        _host.Log($"[ClassifyTrace] 0x{uid:X8} name={(hasName ? 1 : 0)} pos={(hasPos ? 1 : 0)} gotType={(gotType ? 1 : 0)} flags=0x{flags:X8} creature={((flags & ItemTypeCreature) != 0 ? 1 : 0)} atk={atk} {note}");
+        RynthLog.Write(LogCat.WorldCache, $"[ClassifyTrace] 0x{uid:X8} name={(hasName ? 1 : 0)} pos={(hasPos ? 1 : 0)} gotType={(gotType ? 1 : 0)} flags=0x{flags:X8} creature={((flags & ItemTypeCreature) != 0 ? 1 : 0)} atk={atk} {note}");
     }
 
     private void TryClassify(uint uid)
@@ -399,7 +399,7 @@ public class WorldObjectCache
             if (uid >= 0x80000000u && _deleteWhilePendingSkipLogCount < MaxDeleteWhilePendingSkipLogLines)
             {
                 _deleteWhilePendingSkipLogCount++;
-                _host.Log($"[ReclassifyDiag] 0x{uid:X8} DELETE-WHILE-PENDING-SKIP");
+                RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} DELETE-WHILE-PENDING-SKIP");
             }
             return;
         }
@@ -448,7 +448,7 @@ public class WorldObjectCache
                     if (_classifyGiveupLogCount < MaxClassifyGiveupLogLines)
                     {
                         _classifyGiveupLogCount++;
-                        _host.Log($"[ReclassifyDiag] 0x{uid:X8} CLASSIFY-GIVEUP retries={retries} (name+pos unreadable across {MaxClassifyRetries} ticks; parked in slow-retry)");
+                        RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} CLASSIFY-GIVEUP retries={retries} (name+pos unreadable across {MaxClassifyRetries} ticks; parked in slow-retry)");
                     }
                 }
             }
@@ -687,7 +687,7 @@ public class WorldObjectCache
                 _inventory.Remove(id);
                 _byId[id] = Make(id, name ?? string.Empty, AcObjectClass.Corpse);
             }
-            _host.Log($"[RynthAi] ReclassifyUnknownDynamics: rescued {toCorpse.Count} stale corpse(s) → Corpse");
+            RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ReclassifyUnknownDynamics: rescued {toCorpse.Count} stale corpse(s) → Corpse");
         }
 
         // DIAG: heartbeat — Unknown landscape candidates checked but nothing promoted
@@ -698,7 +698,7 @@ public class WorldObjectCache
             && _reclassifyDiagSummaryCount < MaxReclassifyDiagSummaries)
         {
             _reclassifyDiagSummaryCount++;
-            _host.Log($"[ReclassifyDiag] pass: {_reclassifySkipState.Count} stuck Unknown landscape candidate(s), 0 promoted");
+            RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] pass: {_reclassifySkipState.Count} stuck Unknown landscape candidate(s), 0 promoted");
         }
 
         if (toPromote == null) return;
@@ -712,7 +712,7 @@ public class WorldObjectCache
             _reclassifySkipState.Remove(uid); // diagnostic state cleared on success
         }
 
-        _host.Log($"[RynthAi] ReclassifyUnknownDynamics: promoted {toPromote.Count} object(s) to Creature");
+        RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ReclassifyUnknownDynamics: promoted {toPromote.Count} object(s) to Creature");
         }
     }
 
@@ -738,7 +738,7 @@ public class WorldObjectCache
             return; // state unchanged — suppress duplicate
         _reclassifySkipState[uid] = state;
         _reclassifyDiagCount++;
-        _host.Log($"[ReclassifyDiag] 0x{uid:X8} skip: {state}");
+        RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} skip: {state}");
     }
 
     // ── WorldFilter API ───────────────────────────────────────────────────
@@ -792,7 +792,7 @@ public class WorldObjectCache
                     {
                         _indexerRescueLogCount++;
                         bool seenCreate = _seenCreateObject.Contains(uid);
-                        _host.Log($"[ReclassifyDiag] 0x{uid:X8} INDEXER-RESCUE name='{name}' flags=0x{typeFlags:X8} seenCreate={(seenCreate ? 1 : 0)}");
+                        RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} INDEXER-RESCUE name='{name}' flags=0x{typeFlags:X8} seenCreate={(seenCreate ? 1 : 0)}");
                     }
                 }
                 else
@@ -1281,7 +1281,7 @@ public class WorldObjectCache
             if (!_hazardCells.Add(cellId)) return false;
             _hazardVersion++;
             DungeonHazardStore.Append(cellId >> 16, cellId);
-            _host.Log($"[Hazard] manually marked cell 0x{cellId:X8}");
+            RynthLog.Write(LogCat.WorldCache, $"[Hazard] manually marked cell 0x{cellId:X8}");
             return true;
         }
     }
@@ -1361,7 +1361,7 @@ public class WorldObjectCache
             if (added > 0)
             {
                 _hazardVersion++;
-                _host.Log($"[Hazard] seeded {added} persisted hazard cell(s) for landblock 0x{landblockKey:X4}");
+                RynthLog.Write(LogCat.WorldCache, $"[Hazard] seeded {added} persisted hazard cell(s) for landblock 0x{landblockKey:X4}");
             }
         }
     }
@@ -1385,7 +1385,7 @@ public class WorldObjectCache
             if (added > 0)
             {
                 _hazardVersion++;
-                _host.Log($"[Hazard] Detector C: {added} EnvCell-surface hazard cell(s) seeded from floor textures");
+                RynthLog.Write(LogCat.WorldCache, $"[Hazard] Detector C: {added} EnvCell-surface hazard cell(s) seeded from floor textures");
             }
         }
     }
@@ -1416,7 +1416,7 @@ public class WorldObjectCache
             // waypoint. Keyed by landblock (cellId >> 16) — hazards are static world
             // geometry, identical for every character.
             DungeonHazardStore.Append(cellId >> 16, cellId);
-            _host.Log($"[Hazard] 0x{uid:X8} '{name}' → cell 0x{cellId:X8} (persisted)");
+            RynthLog.Write(LogCat.WorldCache, $"[Hazard] 0x{uid:X8} '{name}' → cell 0x{cellId:X8} (persisted)");
         }
     }
 
@@ -1446,7 +1446,7 @@ public class WorldObjectCache
 
         // Scan player's direct contents
         int topCount = _host.GetContainerContents(playerId, buf);
-        _host.Log($"[RynthAi] ScanFullInventory: topCount={topCount} for player 0x{playerId:X8}");
+        RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ScanFullInventory: topCount={topCount} for player 0x{playerId:X8}");
         for (int i = 0; i < topCount; i++)
             discovered += EnsureInCache(buf[i]);
 
@@ -1468,7 +1468,7 @@ public class WorldObjectCache
         }
 
         if (discovered > 0)
-            _host.Log($"[RynthAi] ScanFullInventory: discovered {discovered} new item(s) across {packIds.Count + 1} container(s)");
+            RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ScanFullInventory: discovered {discovered} new item(s) across {packIds.Count + 1} container(s)");
 
         return discovered;
         }

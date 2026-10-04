@@ -72,7 +72,7 @@ internal sealed class IltBanking : IIltFeature
             _txDirty = true;
         }
         PublishSnapshot();
-        _ctx.Host.Log($"[IltHub] UB sidecar import: {summary}");
+        RynthLog.Write(LogCat.IltBanking, $"[IltHub] UB sidecar import: {summary}");
     }
 
     // ── Commands ────────────────────────────────────────────────────────────
@@ -80,6 +80,7 @@ internal sealed class IltBanking : IIltFeature
     /// <summary>Queues a /bank balance refresh (eaten when <paramref name="quiet"/>).</summary>
     public void RequestRefresh(bool quiet)
     {
+        RynthLog.Trace(LogCat.IltBanking, $"RequestRefresh(quiet={quiet})");
         if (_ctx.Capture.IsPending("/bank")) return;
         long now = IltHubContext.NowMs;
         if (now - _lastBankCommandAt < BankCommandSpacingMs) return;
@@ -105,11 +106,15 @@ internal sealed class IltBanking : IIltFeature
     /// </summary>
     public string SendTransfer(int currencyIndex, long amount, string target)
     {
+        RynthLog.Trace(LogCat.IltBanking, $"SendTransfer(currency={currencyIndex}, amount={amount}, target='{target}')");
         if (!Enabled) return "Bank is not available on this server.";
         if (currencyIndex < 0 || currencyIndex >= Currencies.Length) return "Pick a currency.";
         if (amount <= 0) return "Amount must be positive.";
         target = (target ?? string.Empty).Trim();
         if (target.Length == 0) return "Enter a recipient.";
+        // The recipient is spliced into a chat command, so only character-name characters are
+        // allowed: no '/', control characters or line breaks that could start a second command.
+        if (!IltParse.CharacterName.IsMatch(target)) return "Recipient must be a character name (letters, spaces, ' and - only).";
         if (target.Equals(_ctx.CharName, StringComparison.OrdinalIgnoreCase)) return "You cannot transfer to yourself.";
         long now = IltHubContext.NowMs;
         if (now - _lastBankCommandAt < BankCommandSpacingMs) return "Bank commands are limited to one every 5 seconds.";
@@ -215,10 +220,14 @@ internal sealed class IltBanking : IIltFeature
     {
         if (!(text.StartsWith("Transferred ", StringComparison.Ordinal) || text.StartsWith("Received ", StringComparison.Ordinal)))
             return;
-        // Channel chatter that merely quotes a transfer must not be logged.
-        if (text.Contains("<Tell:", StringComparison.Ordinal) || text.Contains("[Allegiance]", StringComparison.Ordinal)
-            || text.Contains("[Fellowship]", StringComparison.Ordinal) || text.Contains("[General]", StringComparison.Ordinal))
+        // Only server system lines are logged. Anything another player can author (tells, says,
+        // emotes, any bracketed channel) is rejected so quoted "Transferred ..." text can't
+        // forge entries in the transaction log.
+        if (IsPlayerAuthoredLine(text))
+        {
+            RynthLog.Trace(LogCat.IltBanking, "transaction ignored (player-authored line): " + text);
             return;
+        }
 
         var sent = IltParse.BankSent.Match(text);
         var recv = sent.Success ? System.Text.RegularExpressions.Match.Empty : IltParse.BankReceived.Match(text);
@@ -243,6 +252,24 @@ internal sealed class IltBanking : IIltFeature
             _txDirty = true;
         }
     }
+
+    /// <summary>True for chat another player could have written (tells, says, channel or emote markup).</summary>
+    private static bool IsPlayerAuthoredLine(string text)
+        => text.Contains("<Tell:", StringComparison.Ordinal)
+        || text.Contains(" tells you", StringComparison.Ordinal)
+        || text.Contains(" says, \"", StringComparison.Ordinal)
+        || text.Contains("[Allegiance]", StringComparison.Ordinal)
+        || text.Contains("[Fellowship]", StringComparison.Ordinal)
+        || text.Contains("[General]", StringComparison.Ordinal)
+        || text.Contains("[Trade]", StringComparison.Ordinal)
+        || text.Contains("[LFG]", StringComparison.Ordinal)
+        || text.Contains("[Roleplay]", StringComparison.Ordinal)
+        || text.Contains("[Society]", StringComparison.Ordinal)
+        || text.Contains("[Olthoi]", StringComparison.Ordinal)
+        || text.Contains("[Patron]", StringComparison.Ordinal)
+        || text.Contains("[Vassals]", StringComparison.Ordinal)
+        || text.Contains("[Covassals]", StringComparison.Ordinal)
+        || text.Contains("[Monarch]", StringComparison.Ordinal);
 
     private void PublishSnapshot()
     {

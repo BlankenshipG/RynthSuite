@@ -62,7 +62,7 @@ internal sealed class RadarWallRenderer
     public void Render()
     {
         try { RenderCore(); }
-        catch (Exception ex) { _host.Log($"RadarWalls: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Write(LogCat.Radar, $"RadarWalls: {ex.Message}"); }
     }
 
     private void RenderCore()
@@ -288,7 +288,7 @@ internal sealed class RadarWallRenderer
         }
         catch (Exception ex)
         {
-            _host.Log($"RadarWalls: load {path} failed: {ex.Message}");
+            RynthLog.Write(LogCat.Radar, $"RadarWalls: load {path} failed: {ex.Message}");
         }
     }
 
@@ -309,7 +309,7 @@ internal sealed class RadarWallRenderer
         }
         catch (Exception ex)
         {
-            _host.Log($"RadarWalls: save failed: {ex.Message}");
+            RynthLog.Write(LogCat.Radar, $"RadarWalls: save failed: {ex.Message}");
         }
     }
 

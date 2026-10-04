@@ -148,7 +148,7 @@ public sealed partial class RynthAiPlugin
             if (val != null)
             {
                 _rememberedOptions[optName.ToLower()] = val;
-                Host.Log($"[RynthAi] Remembered {optName} = {val}");
+                RynthLog.Write(LogCat.Commands, $"[RynthAi] Remembered {optName} = {val}");
             }
             return true;
         }
@@ -159,7 +159,7 @@ public sealed partial class RynthAiPlugin
             if (_rememberedOptions.TryGetValue(optName.ToLower(), out string? saved))
             {
                 SetOptionValue(optName, saved);
-                Host.Log($"[RynthAi] Restored {optName} = {saved}");
+                RynthLog.Write(LogCat.Commands, $"[RynthAi] Restored {optName} = {saved}");
             }
             return true;
         }
@@ -437,7 +437,7 @@ public sealed partial class RynthAiPlugin
         }
 
         Host.UseObject(unchecked((uint)best.Id));
-        Host.Log($"[RynthAi] /mt use {type}: {best.Name} (0x{(uint)best.Id:X8}) at {bestDist:F1}m");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt use {type}: {best.Name} (0x{(uint)best.Id:X8}) at {bestDist:F1}m");
         return true;
     }
 
@@ -470,7 +470,7 @@ public sealed partial class RynthAiPlugin
         if (Host.HasGiveObjectTo)
         {
             bool ok = Host.GiveObjectTo(unchecked((uint)item.Id), unchecked((uint)target.Id), 0);
-            Host.Log($"[RynthAi] /mt give: {item.Name} → {target.Name} (give ok={ok})");
+            RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt give: {item.Name} → {target.Name} (give ok={ok})");
         }
         else
         {
@@ -589,7 +589,7 @@ public sealed partial class RynthAiPlugin
 
         Host.SelectItem(found.Value.Id);
         Host.UseObject(found.Value.Id);
-        Host.Log($"[RynthAi] /mt loot (deferred): {found.Value.Name} (0x{found.Value.Id:X8}) from container 0x{(uint)container:X8}");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt loot (deferred): {found.Value.Name} (0x{found.Value.Id:X8}) from container 0x{(uint)container:X8}");
         _pendingMtLootName = null;
     }
 
@@ -610,7 +610,7 @@ public sealed partial class RynthAiPlugin
             {
                 Host.SelectItem(found.Value.Id);
                 Host.UseObject(found.Value.Id);
-                Host.Log($"[RynthAi] /mt loot: {found.Value.Name} (0x{found.Value.Id:X8}) from container 0x{(uint)container:X8}");
+                RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt loot: {found.Value.Name} (0x{found.Value.Id:X8}) from container 0x{(uint)container:X8}");
                 _pendingMtLootName = null;
                 return true;
             }
@@ -632,7 +632,7 @@ public sealed partial class RynthAiPlugin
         _pendingMtLootName = name;
         _pendingMtLootPartial = partial;
         _pendingMtLootExpiryMs = CorpseNowMs + PendingMtLootTimeoutMs;
-        Host.Log($"[RynthAi] /mt loot: '{name}' queued (container=0x{(uint)container:X8})");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt loot: '{name}' queued (container=0x{(uint)container:X8})");
         return true;
     }
 
@@ -651,7 +651,7 @@ public sealed partial class RynthAiPlugin
 
         // Drop = move to the ground (container 0)
         Host.MoveItemExternal(unchecked((uint)item.Id), 0, 0);
-        Host.Log($"[RynthAi] /mt drop: {item.Name} (0x{(uint)item.Id:X8})");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt drop: {item.Name} (0x{(uint)item.Id:X8})");
         return true;
     }
 
@@ -669,7 +669,7 @@ public sealed partial class RynthAiPlugin
         if (item == null) { ChatLine($"[RynthAi] Item not found: '{name}'"); return true; }
 
         Host.UseObject(unchecked((uint)item.Id));
-        Host.Log($"[RynthAi] /mt equip: {item.Name} (0x{(uint)item.Id:X8})");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt equip: {item.Name} (0x{(uint)item.Id:X8})");
         return true;
     }
 
@@ -707,7 +707,7 @@ public sealed partial class RynthAiPlugin
             return true;
         }
         Host.MoveItemInternal(unchecked((uint)found.Id), unchecked((uint)dest), 0, 1);
-        Host.Log($"[RynthAi] /mt dequip: {found.Name} (0x{(uint)found.Id:X8}) → pack 0x{(uint)dest:X8}");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi] /mt dequip: {found.Name} (0x{(uint)found.Id:X8}) → pack 0x{(uint)dest:X8}");
         return true;
     }
 

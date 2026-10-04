@@ -16,10 +16,10 @@
     <AssemblyName>RynthCore.Plugin.RynthAi</AssemblyName>
     <Platforms>x86</Platforms>
     <!-- Keep in sync with RynthAiPlugin.VersionPointer (reported via GetVersion). -->
-    <Version>0.5.1</Version>
-    <AssemblyVersion>0.5.1.0</AssemblyVersion>
-    <FileVersion>0.5.1.0</FileVersion>
-    <InformationalVersion>0.5.1-legacy-ui</InformationalVersion>
+    <Version>0.5.2</Version>
+    <AssemblyVersion>0.5.2.0</AssemblyVersion>
+    <FileVersion>0.5.2.0</FileVersion>
+    <InformationalVersion>0.5.2-legacy-ui</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

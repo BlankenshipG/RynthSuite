@@ -413,7 +413,7 @@ public sealed class LegacyUiSettings
     public readonly string[] AdvancedTabs =
     {
         "Display", "UI", "Misc", "Recharge", "Melee Combat", "Spell Combat",
-        "Ranges", "Navigation", "Buffing", "Crafting", "Looting", "Vendoring"
+        "Ranges", "Navigation", "Buffing", "Crafting", "Looting", "Vendoring", "Diagnostics"
     };
 
     [JsonIgnore]

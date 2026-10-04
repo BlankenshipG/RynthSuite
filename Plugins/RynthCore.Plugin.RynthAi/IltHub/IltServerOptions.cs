@@ -120,7 +120,13 @@ internal sealed class IltServerOptions
     /// <summary>True when the server positively reported the feature as unavailable.</summary>
     public bool IsOff(string key) => Get(key) == IltTri.Off;
 
-    public void Set(string key, IltTri value) => _state.ServerOptions.Bits[key] = (int)value;
+    public void Set(string key, IltTri value)
+    {
+        // Every feature gate reads these bits, so each transition is traced (IltOptions).
+        IltTri old = Get(key);
+        _state.ServerOptions.Bits[key] = (int)value;
+        if (old != value) RynthLog.Trace(LogCat.IltOptions, $"feature '{key}': {old} -> {value}");
+    }
 
     /// <summary>At least one feature bit is On (Hub window shows only then, unless Force is on).</summary>
     public bool AnyFeatureOn => _state.ServerOptions.Bits.Values.Any(v => v == 1);
@@ -167,6 +173,7 @@ internal sealed class IltServerOptions
 
         _refreshInFlight = true;
         _state.ServerOptions.WorldName = WorldName;
+        RynthLog.Trace(LogCat.IltOptions, $"refresh start (manual={manual}, world='{WorldName}')");
         if (manual) _chat("[ILT Hub] Refreshing server options...");
 
         // Step 1: structured dump. Lines start with "=== ILT Custom Features ===".
@@ -197,6 +204,7 @@ internal sealed class IltServerOptions
         }
 
         _state.ServerOptions.Source = fromDump.Count > 0 ? "ilt-features" : "probe";
+        RynthLog.Trace(LogCat.IltOptions, $"feature dump: {fromDump.Count} key(s) (timedOut={r.TimedOut}, unknown={r.UnknownCommand}) → source={_state.ServerOptions.Source}");
         RunProbes(fromDump, manual);
     }
 
@@ -311,7 +319,9 @@ internal sealed class IltServerOptions
                     // Unknown command → Off. Any recognised reply → On. Silence → leave Unknown.
                     if (r.UnknownCommand) Set(probe.Key, IltTri.Off);
                     else if (r.Lines.Count > 0) Set(probe.Key, IltTri.On);
-                    try { ProbeReplyTap?.Invoke(probe.Key, r); } catch { }
+                    RynthLog.Trace(LogCat.IltOptions, $"probe {probe.Command}: lines={r.Lines.Count} unknown={r.UnknownCommand} timedOut={r.TimedOut}");
+                    try { ProbeReplyTap?.Invoke(probe.Key, r); }
+                    catch (Exception ex) { RynthLog.Exception(LogCat.IltOptions, ex, $"probe tap {probe.Key}"); }
                     if (--_probesOutstanding <= 0) CompleteRefresh(manual);
                 },
             });
@@ -322,6 +332,9 @@ internal sealed class IltServerOptions
     {
         _refreshInFlight = false;
         _state.ServerOptions.LastRefreshUtc = DateTime.UtcNow;
+        if (RynthLog.IsTracing(LogCat.IltOptions))
+            RynthLog.Trace(LogCat.IltOptions, $"refresh complete via {Source}: " +
+                string.Join(" ", _state.ServerOptions.Bits.Select(b => $"{b.Key}={b.Value}")));
         if (manual)
         {
             int on = _state.ServerOptions.Bits.Values.Count(v => v == 1);

@@ -116,6 +116,7 @@ internal sealed class IltProgression : IIltFeature
 
     public void RequestAugs()
     {
+        RynthLog.Trace(LogCat.IltProgression, $"RequestAugs()");
         if (_ctx.Options.IsOff(IltFeature.Aug) || _ctx.Capture.IsPending("/aug")) return;
         _augStatus = "loading...";
         _ctx.Capture.Enqueue(new IltChatRequest
@@ -136,6 +137,7 @@ internal sealed class IltProgression : IIltFeature
     /// <summary>Parses "/aug" output (also fed from the login probe).</summary>
     public void ApplyAugLines(List<string> lines)
     {
+        RynthLog.Trace(LogCat.IltProgression, $"ApplyAugLines(lines={lines.Count})");
         int n = 0;
         foreach (string l in lines)
         {
@@ -151,6 +153,7 @@ internal sealed class IltProgression : IIltFeature
 
     public void RequestXpCosts()
     {
+        RynthLog.Trace(LogCat.IltProgression, $"RequestXpCosts()");
         if (_ctx.Options.IsOff(IltFeature.Xp) || _ctx.Capture.IsPending("/xp all")) return;
         _xpStatus = "loading...";
         _ctx.Capture.Enqueue(new IltChatRequest
@@ -179,6 +182,7 @@ internal sealed class IltProgression : IIltFeature
     /// <summary>Sends "/attr abbr n" (n clamped 1..10). Pump thread, after the UI confirm.</summary>
     public void RaiseStat(string abbr, int levels)
     {
+        RynthLog.Trace(LogCat.IltProgression, $"RaiseStat(abbr={abbr}, levels={levels})");
         levels = Math.Clamp(levels, 1, 10);
         if (_ctx.Host.HasInvokeChatParser) _ctx.Host.InvokeChatParser($"/attr {abbr} {levels}");
         // Costs change after a raise — re-read shortly.
@@ -188,6 +192,7 @@ internal sealed class IltProgression : IIltFeature
     /// <summary>Sends "/enl" (server shows the confirmation dialog). Pump thread.</summary>
     public void SendEnlighten(string why)
     {
+        RynthLog.Trace(LogCat.IltProgression, $"SendEnlighten(why='{why}')");
         if (!_ctx.Host.HasInvokeChatParser) return;
         _lastEnlSentAt = IltHubContext.NowMs;
         _ctx.Host.InvokeChatParser("/enl");

@@ -89,11 +89,19 @@ internal sealed class IltPets : IIltFeature
     }
 
     /// <summary>
-    /// PetManager hook: summon from an empty essence only when the player opted in, the
-    /// server hasn't said the refill feature is off, and the refill charm is active.
+    /// PetManager hook: summon from an empty essence (spends banked pyreals) only when the
+    /// player opted in, the refill charm is active, and the server has positively confirmed
+    /// the feature: either /ilt features reported pet_refill on, or the server stamped the
+    /// player's refill bool. An unknown feature state never spends.
     /// </summary>
     public bool AllowSummonOnEmpty()
-        => S.UsePyrealRefillPath && _ctx.Options.IsIltLikeWorld && !_ctx.Options.IsOff(IltFeature.PetRefill) && RefillCharmActive();
+    {
+        if (!S.UsePyrealRefillPath || !_ctx.Options.IsIltLikeWorld || !RefillCharmActive()) return false;
+        bool confirmed = _ctx.Options.IsOn(IltFeature.PetRefill)
+                         || _ctx.Inventory.PlayerBool(IltInventory.BoolPyrealRefillActive);
+        if (!confirmed) RynthLog.Trace(LogCat.IltPets, "summon-on-empty refused: pet_refill not confirmed by the server");
+        return confirmed;
+    }
 
     /// <summary>PetManager hook: hold combat summons while the heal pet cycle is running.</summary>
     public bool HoldCombatSummons() => _heal != HealState.Idle;
@@ -103,6 +111,7 @@ internal sealed class IltPets : IIltFeature
     /// <summary>Captures /pets or /shinies into the state (quiet).</summary>
     public void RequestRoster(bool shinies)
     {
+        RynthLog.Trace(LogCat.IltPets, $"RequestRoster(shinies={shinies})");
         string cmd = shinies ? "/shinies" : "/pets";
         if (_ctx.Capture.IsPending(cmd)) return;
         string header = shinies ? "Your Shiny Log" : "Your Pet Log";
@@ -127,6 +136,7 @@ internal sealed class IltPets : IIltFeature
     /// <summary>Also used by the login probe tap so the roster fills without a second command.</summary>
     public void ApplyRoster(bool shinies, List<string> lines)
     {
+        RynthLog.Trace(LogCat.IltPets, $"ApplyRoster(shinies={shinies}, lines={lines.Count})");
         var list = new List<string>();
         foreach (string l in lines)
         {

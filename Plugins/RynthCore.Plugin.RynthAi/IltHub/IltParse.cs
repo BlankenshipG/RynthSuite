@@ -22,6 +22,9 @@ internal static class IltParse
     /// <summary>Bank-command amount entry: "1.5m", "250,000", "2b".</summary>
     public static readonly Regex AmountInput = new(@"^([\d,.]+)\s*([kmbt]?)$", Opt | RegexOptions.IgnoreCase);
 
+    /// <summary>AC character name: starts with a letter, then letters, spaces, apostrophes or hyphens (max 32).</summary>
+    public static readonly Regex CharacterName = new(@"^[A-Za-z][A-Za-z '\-]{0,31}$", Opt);
+
     /// <summary>A comma-grouped or plain integer as printed by ACE's N0 format.</summary>
     public const string AmountPattern = @"(?:\d{1,3}(?:,\d{3})+|\d+)";
 

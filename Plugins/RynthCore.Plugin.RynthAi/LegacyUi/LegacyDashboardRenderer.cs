@@ -2397,7 +2397,7 @@ internal sealed class LegacyDashboardRenderer
         _settings.CurrentRoute = NavRouteParser.Load(filePath);
         if (_settings.CurrentRoute.LoadWarning != null)
         {
-            _host.Log(_settings.CurrentRoute.LoadWarning);
+            RynthLog.Write(LogCat.UI, _settings.CurrentRoute.LoadWarning);
             _host.WriteToChat($"[RynthAi] {_settings.CurrentRoute.LoadWarning}", 4);
         }
         // Follow and Once routes start from the top so opening Recall/Portal/Chat
@@ -2954,7 +2954,7 @@ internal sealed class LegacyDashboardRenderer
         {
             // Was a silent catch — surface it (§2.8 philosophy) but don't spam:
             // this only fires on an actual directory/IO failure, not per refresh.
-            _host.Log($"[Meta] BuildMetaFileList FAILED for '{MetaFolder}': {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Write(LogCat.UI, $"[Meta] BuildMetaFileList FAILED for '{MetaFolder}': {ex.GetType().Name}: {ex.Message}");
         }
         return result;
     }

@@ -20,6 +20,8 @@ namespace RynthCore.Plugin.RynthAi;
 // ILT Hub (IltHub/): per-character hub state and its bank transaction-log sidecar.
 [JsonSerializable(typeof(IltHubState))]
 [JsonSerializable(typeof(List<IltBankTransaction>), TypeInfoPropertyName = "IltBankTransactionList")]
+// Diagnostics (Diagnostics/RynthLog.cs): persisted debug/trace switches.
+[JsonSerializable(typeof(RynthLogConfig))]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     IncludeFields = true,

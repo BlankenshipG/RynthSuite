@@ -433,7 +433,7 @@ public class CharacterSkills
                 if (!_loggedReadFailure)
                 {
                     _loggedReadFailure = true;
-                    _host.Log($"[RynthAi] CharacterSkills: host returned success+buffed=0 for trained skill {skill} (player=0x{_playerId:X8}, stype={stype}, training={training}) — engine qualities artifact, not a real level. Using capable-stub fallback until a real read lands (NOT collapsing tier).");
+                    RynthLog.Write(LogCat.Combat, $"[RynthAi] CharacterSkills: host returned success+buffed=0 for trained skill {skill} (player=0x{_playerId:X8}, stype={stype}, training={training}) — engine qualities artifact, not a real level. Using capable-stub fallback until a real read lands (NOT collapsing tier).");
                 }
                 return new CharacterSkillInfo(2, 250);
             }
@@ -448,7 +448,7 @@ public class CharacterSkills
             if (!_loggedReadFailure)
             {
                 _loggedReadFailure = true;
-                _host.Log($"[RynthAi] CharacterSkills: host skill read failed (player=0x{_playerId:X8}, skill={skill}, stype={stype}) — engine player-qualities ptr likely not seeded. Using capable-stub fallback until a real read lands.");
+                RynthLog.Write(LogCat.Combat, $"[RynthAi] CharacterSkills: host skill read failed (player=0x{_playerId:X8}, skill={skill}, stype={stype}) — engine player-qualities ptr likely not seeded. Using capable-stub fallback until a real read lands.");
             }
             return new CharacterSkillInfo(2, 250);
         }

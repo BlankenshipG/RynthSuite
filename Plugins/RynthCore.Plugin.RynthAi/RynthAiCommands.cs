@@ -20,11 +20,119 @@ public sealed partial class RynthAiPlugin
         Host.WriteToChat(text, 1);
     }
 
+    // ── Diagnostics: /ra debug | /ra trace | /ra logs (UtilityBelt-style) ─────
+
+    /// <summary>Parses an on/off word; returns null for anything else (caller treats it as status).</summary>
+    private static bool? ParseOnOff(string? word) => word?.ToLowerInvariant() switch
+    {
+        "on" or "true" or "1" or "enable" => true,
+        "off" or "false" or "0" or "disable" => false,
+        _ => null,
+    };
+
+    /// <summary>"/ra debug [on|off|status]" — global switch that echoes trace + exception lines to chat.</summary>
+    private void HandleDebugCommand(string[] parts)
+    {
+        string arg = parts.Length > 2 ? parts[2] : "status";
+        bool? state = arg.Equals("toggle", StringComparison.OrdinalIgnoreCase) ? !RynthLog.DebugToChat : ParseOnOff(arg);
+        if (state.HasValue) RynthLog.DebugToChat = state.Value;
+        ChatLine($"[RynthAi] Debug-to-chat is {(RynthLog.DebugToChat ? "ON" : "off")}."
+                 + (RynthLog.DebugToChat && RynthLog.TracedCategories().Count == 0 ? " (no categories traced — see /ra trace list)" : ""));
+    }
+
+    /// <summary>
+    /// "/ra trace &lt;cat|all|ilt|list&gt; [on|off|status]" — per-function trace files.
+    /// A bare category toggles it; "all" / "ilt" act on every / every ILT Hub category.
+    /// </summary>
+    private void HandleTraceCommand(string[] parts)
+    {
+        string target = parts.Length > 2 ? parts[2] : "status";
+        string? action = parts.Length > 3 ? parts[3] : null;
+
+        if (target.Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (string l in RynthLog.StatusLines()) ChatLine(l);
+            return;
+        }
+
+        if (target.Equals("list", StringComparison.OrdinalIgnoreCase))
+        {
+            var names = new List<string>();
+            foreach (LogCat c in Enum.GetValues<LogCat>())
+                names.Add(RynthLog.IsTracing(c) ? c + "*" : c.ToString());
+            ChatLine("[RynthAi] Trace categories (* = on): " + string.Join(", ", names));
+            return;
+        }
+
+        bool? state = ParseOnOff(action);
+        bool isAll = target.Equals("all", StringComparison.OrdinalIgnoreCase);
+        bool isIlt = target.Equals("ilt", StringComparison.OrdinalIgnoreCase);
+        if (isAll || isIlt)
+        {
+            if (!state.HasValue) { foreach (string l in RynthLog.StatusLines()) ChatLine(l); return; }
+            int n = RynthLog.SetTracingByPrefix(isIlt ? "Ilt" : string.Empty, state.Value);
+            ChatLine($"[RynthAi] Tracing {(state.Value ? "enabled" : "disabled")} for {n} {(isIlt ? "ILT Hub " : "")}categories.");
+            return;
+        }
+
+        if (!RynthLog.TryParseCategory(target, out LogCat cat))
+        {
+            ChatLine($"[RynthAi] Unknown trace category '{target}'. Use /ra trace list.");
+            return;
+        }
+
+        if (action != null && action.Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            ChatLine($"[RynthAi] Trace {cat}: {(RynthLog.IsTracing(cat) ? "ON" : "off")}");
+            return;
+        }
+
+        bool enable = state ?? !RynthLog.IsTracing(cat);
+        RynthLog.SetTracing(cat, enable);
+        ChatLine($"[RynthAi] Trace {cat}: {(enable ? "ON" : "off")} → {RynthLog.TraceDirectory}");
+    }
+
+    /// <summary>"/ra logs [open|prune|flush|file on|off]" — diagnostics folder and housekeeping.</summary>
+    private void HandleLogsCommand(string[] parts)
+    {
+        string sub = parts.Length > 2 ? parts[2].ToLowerInvariant() : "status";
+        switch (sub)
+        {
+            case "open":
+                try
+                {
+                    RynthLog.Flush();
+                    System.IO.Directory.CreateDirectory(RynthLog.Directory);
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{RynthLog.Directory}\"") { UseShellExecute = true });
+                }
+                catch (Exception ex) { RynthLog.Exception(LogCat.Commands, ex, "logs open"); ChatLine($"[RynthAi] Could not open {RynthLog.Directory}: {ex.Message}"); }
+                break;
+            case "prune":
+                ChatLine($"[RynthAi] Pruned {RynthLog.Prune()} old diagnostics file(s).");
+                break;
+            case "flush":
+                RynthLog.Flush();
+                ChatLine("[RynthAi] Diagnostics flushed to disk.");
+                break;
+            case "file":
+                bool? state = ParseOnOff(parts.Length > 3 ? parts[3] : null);
+                if (state.HasValue) RynthLog.FileLogAll = state.Value;
+                ChatLine($"[RynthAi] Daily RynthAi log file is {(RynthLog.FileLogAll ? "ON" : "off")}.");
+                break;
+            default:
+                foreach (string l in RynthLog.StatusLines()) ChatLine(l);
+                break;
+        }
+    }
+
     private void HandleHelpCommand()
     {
         ChatLine("[RynthAi] === Commands ===");
         ChatLine("[RynthAi] /ra fellow       â€” fellowship diagnostics and queries");
         ChatLine("[RynthAi] /ra help          — show this list");
+        ChatLine("[RynthAi] /ra debug [on|off|status]  — echo trace + error lines to chat");
+        ChatLine("[RynthAi] /ra trace <cat|all|ilt|list> [on|off|status] — per-function trace files (Logs\\Diagnostics\\Trace)");
+        ChatLine("[RynthAi] /ra logs [open|prune|flush|file on|off] — diagnostics folder / housekeeping");
         ChatLine("[RynthAi] /ra hub [show|hide|refresh|status|bank|force on|off|profile ...|suit ...] — ILT Hub (ILT worlds)");
         ChatLine("[RynthAi] /ra quests [refresh|check <regex>] — ILT Hub quest tracker");
         ChatLine("[RynthAi] /ra power <0-100|auto> — set attack power (auto = recklessness-aware)");
@@ -1503,7 +1611,7 @@ public sealed partial class RynthAiPlugin
             ChatLine($"[RynthAi] buff: ramTimers={b.RamBuffTimerCount} itemTimers={b.ItemSpellTimerCount} hp={b.HealthPct}% mana={b.ManaPct}% stam={b.StaminaPct}%");
         }
 
-        Host.Log($"[RynthAi combat] macro={s.IsMacroRunning} ec={s.EnableCombat} ba={s.BotAction} " +
+        RynthLog.Write(LogCat.Commands, $"[RynthAi combat] macro={s.IsMacroRunning} ec={s.EnableCombat} ba={s.BotAction} " +
                  $"mode_cached={cachedMode} mode_live={liveMode} desired={desiredMode} " +
                  $"active=0x{(uint)s.ActiveTargetId:X8} locked=0x{(uint)s.LockedTargetId:X8} facing={s.FacingTarget} " +
                  $"scanned={s.ScannedCount} closest=0x{(uint)s.ClosestScannedId:X8} '{s.ClosestScannedName}' @ {s.ClosestScannedDist:F1}yd " +
@@ -1582,7 +1690,7 @@ public sealed partial class RynthAiPlugin
             ChatLine($"[RynthAi] follow: target=0x{n.FollowTargetId:X8}");
         ChatLine($"[RynthAi] status: {n.StatusLine}");
 
-        Host.Log($"[RynthAi navstate] macro={n.IsMacroRunning} enableNav={n.EnableNavigation} ba='{n.BotAction}' "
+        RynthLog.Write(LogCat.Commands, $"[RynthAi navstate] macro={n.IsMacroRunning} enableNav={n.EnableNavigation} ba='{n.BotAction}' "
                  + $"route={n.RouteType} pts={n.PointCount} idx={n.Index}({n.PointType}) dir={n.LinearDir} "
                  + $"dist={n.DistYd:F1} err={n.HeadingErrDeg:F1} sinceSteer={n.MsSinceSteer}ms "
                  + $"moving={n.MovingForward} turning={n.Turning} stopped={n.Stopped} "
@@ -1609,7 +1717,7 @@ public sealed partial class RynthAiPlugin
             ? $"[RynthAi] lastError: '{v.LastError}' ({v.MsSinceLastError / 1000}s ago)"
             : "[RynthAi] lastError: none");
 
-        Host.Log($"[RynthAi salvstate] panelApi={v.HasPanelApi} combine={v.EnableCombine} phase={v.Phase}/{v.PhaseReadyInMs}ms "
+        RynthLog.Write(LogCat.Commands, $"[RynthAi salvstate] panelApi={v.HasPanelApi} combine={v.EnableCombine} phase={v.Phase}/{v.PhaseReadyInMs}ms "
                  + $"queue={v.QueueCount} item=0x{v.CurrentItemId:X8} ust=0x{v.CurrentUstId:X8} "
                  + $"cphase={v.CombinePhase} grp={v.CombineGroupIdx}/{v.CombineGroupCount} add={v.CombineAddIdx} "
                  + $"openAttempts={v.CombineOpenAttempts} pendingScan={v.PendingCombineScan} sinceSweep={v.MsSinceCombineSweep}ms "
@@ -1619,14 +1727,14 @@ public sealed partial class RynthAiPlugin
 
     private void HandleDumpInventoryCommand()
     {
-        Host.Log("[RynthAi dumpinv] ENTRY");
+        RynthLog.Write(LogCat.Commands, "[RynthAi dumpinv] ENTRY");
         if (_objectCache == null) { ChatLine("[RynthAi] Cache not ready."); return; }
         uint playerId = Host.GetPlayerId();
-        Host.Log($"[RynthAi dumpinv] playerId=0x{playerId:X8}");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] playerId=0x{playerId:X8}");
         if (playerId == 0) { ChatLine("[RynthAi] Not logged in."); return; }
 
         // ── Part 1: Cached inventory — NO native ownership calls, just IDs and names ──
-        Host.Log("[RynthAi dumpinv] Starting Part 1 - cache enum");
+        RynthLog.Write(LogCat.Commands, "[RynthAi dumpinv] Starting Part 1 - cache enum");
         ChatLine("[RynthAi] === Cached Inventory ===");
         int cacheCount = 0;
         try
@@ -1644,10 +1752,10 @@ public sealed partial class RynthAiPlugin
             ChatLine($"[RynthAi] Cache enumeration error: {ex.Message}");
         }
         ChatLine($"[RynthAi] Cache total: {cacheCount} item(s)");
-        Host.Log($"[RynthAi dumpinv] Part 1 done, {cacheCount} items");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] Part 1 done, {cacheCount} items");
 
         // ── Part 2: Direct container scan via GetContainerContents ──
-        Host.Log($"[RynthAi dumpinv] HasGetContainerContents={Host.HasGetContainerContents}");
+        RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] HasGetContainerContents={Host.HasGetContainerContents}");
         ChatLine($"[RynthAi] HasGetContainerContents={Host.HasGetContainerContents}");
         if (!Host.HasGetContainerContents)
         {
@@ -1655,14 +1763,14 @@ public sealed partial class RynthAiPlugin
             return;
         }
 
-        Host.Log("[RynthAi dumpinv] Calling GetContainerContents for player...");
+        RynthLog.Write(LogCat.Commands, "[RynthAi dumpinv] Calling GetContainerContents for player...");
         try
         {
             uint[] topBuf = new uint[256];
-            Host.Log("[RynthAi dumpinv] about to call GetContainerContents...");
+            RynthLog.Write(LogCat.Commands, "[RynthAi dumpinv] about to call GetContainerContents...");
             int topCount = Host.GetContainerContents(playerId, topBuf);
-            Host.Log($"[RynthAi dumpinv] GetContainerContents returned {topCount}");
-            Host.Log($"[RynthAi dumpinv] first few IDs: {(topCount > 0 ? $"0x{topBuf[0]:X8}" : "none")} {(topCount > 1 ? $"0x{topBuf[1]:X8}" : "")}");
+            RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] GetContainerContents returned {topCount}");
+            RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] first few IDs: {(topCount > 0 ? $"0x{topBuf[0]:X8}" : "none")} {(topCount > 1 ? $"0x{topBuf[1]:X8}" : "")}");
             ChatLine($"[RynthAi] === Player container: {topCount} item(s) ===");
 
             var packIds = new System.Collections.Generic.List<uint>();
@@ -1697,7 +1805,7 @@ public sealed partial class RynthAiPlugin
         }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi dumpinv] EXCEPTION: {ex}");
+            RynthLog.Write(LogCat.Commands, $"[RynthAi dumpinv] EXCEPTION: {ex}");
             ChatLine($"[RynthAi] Direct scan error: {ex.Message}");
         }
     }
@@ -1847,7 +1955,7 @@ public sealed partial class RynthAiPlugin
             string range = uid >= 0x80000000u ? "dyn" : "sta";
             Host.TryGetItemType(uid, out uint flags);
             string name = wo.Name.Length > 0 ? wo.Name : "(no name)";
-            Host.Log($"[mapdump] 0x{uid:X8} [{range}] flags=0x{flags:X5} cls={wo.ObjectClass} name={name}");
+            RynthLog.Write(LogCat.Commands, $"[mapdump] 0x{uid:X8} [{range}] flags=0x{flags:X5} cls={wo.ObjectClass} name={name}");
             if (shown < 30)
             {
                 ChatLine($"  0x{uid:X8} [{range}] fl=0x{flags:X5} {wo.ObjectClass} \"{name}\"");

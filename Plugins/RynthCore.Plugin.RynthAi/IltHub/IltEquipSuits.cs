@@ -79,7 +79,7 @@ internal sealed class IltEquipSuits : IIltFeature
                     if (!seen.ContainsKey(n)) seen[n] = f;
                 }
             }
-            catch (Exception ex) { _ctx.Host.Log($"[IltHub] equip dir {dir}: {ex.Message}"); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.IltGear, ex, $"equip dir {dir}"); }
         }
         return seen.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase).Select(k => (k.Key, k.Value)).ToList();
     }
@@ -139,6 +139,7 @@ internal sealed class IltEquipSuits : IIltFeature
     /// <summary>Starts loading a suit.</summary>
     public string Load(string? name)
     {
+        RynthLog.Trace(LogCat.IltGear, $"Suits.Load(name='{name}')");
         if (_running) return "A suit load is already running.";
         if (!_ctx.Host.HasMoveItemInternal || !_ctx.Host.HasUseObject) return "Engine lacks MoveItemInternal/UseObject.";
         string? path = ResolveProfile(name);
@@ -164,6 +165,7 @@ internal sealed class IltEquipSuits : IIltFeature
 
     public void Cancel(string why)
     {
+        RynthLog.Trace(LogCat.IltGear, $"Suits.Cancel(why='{why}')");
         _running = false;
         _dequip.Clear();
         _equip.Clear();

@@ -64,6 +64,7 @@ internal sealed class IltGames : IIltFeature
 
     public void RequestPowerballInfo()
     {
+        RynthLog.Trace(LogCat.IltGames, $"RequestPowerballInfo()");
         if (_ctx.Options.IsOff(IltFeature.Powerball) || _ctx.Capture.IsPending("/pb")) return;
         _ctx.Capture.Enqueue(new IltChatRequest
         {
@@ -78,7 +79,9 @@ internal sealed class IltGames : IIltFeature
             OnComplete = r =>
             {
                 if (r.UnknownCommand) { _ctx.Options.Set(IltFeature.Powerball, IltTri.Off); return; }
+                if (r.Lines.Count > 0) _ctx.Options.Set(IltFeature.Powerball, IltTri.On);
                 foreach (string l in r.Lines) ParsePowerball(l);
+                RynthLog.Trace(LogCat.IltGames, $"/pb info: {r.Lines.Count} line(s), timedOut={r.TimedOut}");
                 _pbStatus = r.Lines.Count > 0 ? "updated " + DateTime.Now.ToString("t") : "no reply";
             },
         });
@@ -214,6 +217,13 @@ internal sealed class IltGames : IIltFeature
         if (_pbDraw.Length > 0) ImGui.TextUnformatted(_pbDraw);
         if (_pbJackpot.Length > 0) ImGui.TextUnformatted(_pbJackpot);
         if (_pbPrice.Length > 0) ImGui.TextUnformatted(_pbPrice);
+        // Buying spends banked luminance, so it needs a positive server confirmation of /pb.
+        if (!_ctx.Options.IsOn(IltFeature.Powerball))
+        {
+            ImGui.TextDisabled("Ticket purchases unlock once the server confirms /pb (press Refresh).");
+            if (_pbStatus.Length > 0) ImGui.TextWrapped(_pbStatus);
+            return;
+        }
         int qty = S.PowerballQuantity;
         ImGui.SetNextItemWidth(120);
         if (ImGui.InputInt("Tickets", ref qty)) S.PowerballQuantity = Math.Clamp(qty, 1, 500);

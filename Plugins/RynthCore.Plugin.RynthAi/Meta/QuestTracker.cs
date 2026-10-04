@@ -196,7 +196,7 @@ internal sealed class QuestTracker
             LastRefreshUtc = DateTime.UtcNow;
         }
         try { RefreshCompleted?.Invoke(); }
-        catch (Exception ex) { _host.Log($"[RynthAi] QuestTracker RefreshCompleted handler threw: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Write(LogCat.Quests, $"[RynthAi] QuestTracker RefreshCompleted handler threw: {ex.Message}"); }
     }
 
     /// <summary>Returns true if the key exists in the cached quest flag list.</summary>

@@ -118,7 +118,7 @@ internal sealed class LegacyNavigationUi
         ImGui.SameLine();
         if (ImGui.Button("Add Portal", new Vector2(100, 25)))
         {
-            _host.Log("Compat: Add Portal not yet implemented in RynthCore.");
+            RynthLog.Write(LogCat.Navigation, "Compat: Add Portal not yet implemented in RynthCore.");
         }
 
         ImGui.SameLine();
@@ -158,7 +158,7 @@ internal sealed class LegacyNavigationUi
                                 SpellId = ids[ri]
                             };
                             InsertPoint(newPt);
-                            _host.Log($"Added Recall: {name} ({ids[ri]})");
+                            RynthLog.Write(LogCat.Navigation, $"Added Recall: {name} ({ids[ri]})");
                         }
                     }
                 }
@@ -184,11 +184,11 @@ internal sealed class LegacyNavigationUi
                 try 
                 { 
                     _settings.CurrentRoute.Save(_settings.CurrentNavPath); 
-                    _host.Log("Route saved."); 
+                    RynthLog.Write(LogCat.Navigation, "Route saved."); 
                 } 
                 catch (Exception ex)
                 {
-                    _host.Log($"Failed to save route: {ex.Message}");
+                    RynthLog.Write(LogCat.Navigation, $"Failed to save route: {ex.Message}");
                 }
             }
         }

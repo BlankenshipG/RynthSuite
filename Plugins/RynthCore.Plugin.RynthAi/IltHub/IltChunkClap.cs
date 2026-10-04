@@ -106,6 +106,7 @@ internal sealed class IltChunkClap : IIltFeature
     /// <summary>Runs one chunk pass now (both item kinds) regardless of the auto toggles.</summary>
     public void ChunkNow()
     {
+        RynthLog.Trace(LogCat.IltGear, $"ChunkNow()");
         _manualPass = true;
         _lastChunkAt = 0;
         _chunkStatus = "manual pass started";
@@ -166,6 +167,7 @@ internal sealed class IltChunkClap : IIltFeature
     /// <summary>Sends "/clap all" through the capture queue (reply stays visible).</summary>
     public void ClapNow(bool manual)
     {
+        RynthLog.Trace(LogCat.IltGear, $"ClapNow(manual={manual})");
         if (_ctx.Options.IsOff(IltFeature.Clap)) { _clapStatus = "/clap is not available (server or AutoCraftingEnabled stamp)"; return; }
         if (_ctx.Capture.IsPending("/clap all")) return;
         if (!manual && !HasClapMaterials()) { _clapStatus = "no aetheria materials carried"; return; }
@@ -191,7 +193,8 @@ internal sealed class IltChunkClap : IIltFeature
 
     private void TickClap(long now)
     {
-        if (!G.AutoClap || _ctx.Options.IsOff(IltFeature.Clap)) { _clapWasEnabled = false; return; }
+        // Automation only runs once the server has positively confirmed /clap (unknown = wait).
+        if (!G.AutoClap || !_ctx.Options.IsOn(IltFeature.Clap)) { _clapWasEnabled = false; return; }
         if (!_clapWasEnabled)
         {
             _clapWasEnabled = true;

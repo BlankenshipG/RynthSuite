@@ -75,7 +75,7 @@ internal sealed class NavMarkerRenderer
 
             Render3D(route, winStart, count, px, py, pz, playerNS, playerEW, ringRadius, heightOffset);
         }
-        catch (Exception ex) { _host.Log($"NavMarkers(3D): {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Write(LogCat.Navigation, $"NavMarkers(3D): {ex.Message}"); }
     }
 
     /// <summary>
@@ -95,7 +95,7 @@ internal sealed class NavMarkerRenderer
 
             RenderImGuiFallback(route, winStart, count, px, py, pz, playerNS, playerEW, ringRadius, heightOffset);
         }
-        catch (Exception ex) { _host.Log($"NavMarkers(ImGui): {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Write(LogCat.Navigation, $"NavMarkers(ImGui): {ex.Message}"); }
     }
 
     private bool TryPrepareFrame(out NavRouteParser route, out int winStart, out int count,

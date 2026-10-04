@@ -61,7 +61,7 @@ internal sealed class IltHubStore
                 }
             }
         }
-        catch (Exception ex) { _host.Log($"[IltHub] load {StatePath} failed: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltStore, ex, $"load {StatePath}"); }
         return new IltHubState();
     }
 
@@ -77,7 +77,7 @@ internal sealed class IltHubStore
             WriteAtomic(StatePath, json);
             _lastStateJson = json;
         }
-        catch (Exception ex) { _host.Log($"[IltHub] save {StatePath} failed: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltStore, ex, $"save {StatePath}"); }
     }
 
     /// <summary>Repairs null collections / out-of-range values after deserialization.</summary>
@@ -113,7 +113,7 @@ internal sealed class IltHubStore
                 if (list != null) { _lastTxJson = json; return list; }
             }
         }
-        catch (Exception ex) { _host.Log($"[IltHub] load {TxPath} failed: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltStore, ex, $"load {TxPath}"); }
         return new List<IltBankTransaction>();
     }
 
@@ -130,7 +130,7 @@ internal sealed class IltHubStore
             WriteAtomic(TxPath, json);
             _lastTxJson = json;
         }
-        catch (Exception ex) { _host.Log($"[IltHub] save {TxPath} failed: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltStore, ex, $"save {TxPath}"); }
     }
 
     // ── Profiles ────────────────────────────────────────────────────────────
@@ -146,7 +146,7 @@ internal sealed class IltHubStore
             if (Directory.Exists(SharedProfileDir))
                 names.AddRange(Directory.GetFiles(SharedProfileDir, "*.json").Select(p => "shared:" + Path.GetFileNameWithoutExtension(p)));
         }
-        catch (Exception ex) { _host.Log($"[IltHub] list profiles failed: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltStore, ex, $"list profiles"); }
         names.Sort(StringComparer.OrdinalIgnoreCase);
         return names;
     }
@@ -290,7 +290,7 @@ internal sealed class IltHubStore
                 bank.LastUpdated = dt;
             return true;
         }
-        catch (Exception ex) { _host.Log($"[IltHub] UB balances import failed: {ex.Message}"); return false; }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltStore, ex, $"UB balances import"); return false; }
     }
 
     private int ImportTransactions(string path, List<IltBankTransaction> txLog)
@@ -322,7 +322,7 @@ internal sealed class IltHubStore
             txLog.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
             return added;
         }
-        catch (Exception ex) { _host.Log($"[IltHub] UB transactions import failed: {ex.Message}"); return 0; }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltStore, ex, $"UB transactions import"); return 0; }
     }
 
     private int ImportConversions(string[] paths, List<IltItemConversion> table)
@@ -346,7 +346,7 @@ internal sealed class IltHubStore
                 }
                 return added;
             }
-            catch (Exception ex) { _host.Log($"[IltHub] UB conversions import failed: {ex.Message}"); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.IltStore, ex, $"UB conversions import"); }
         }
         return 0;
     }

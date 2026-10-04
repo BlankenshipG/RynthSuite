@@ -179,7 +179,7 @@ internal sealed class NavigationEngine
         string key = $"macro={_settings.IsMacroRunning} navEnabled={_settings.EnableNavigation} action='{_settings.BotAction}' recovery={_inRecovery} moving={_isMovingForward} turning={_isTurning} idx={_settings.ActiveNavIndex}";
         if (key == _lastNavStateKey) return;
         _lastNavStateKey = key;
-        _host.Log($"Nav: state {key}");
+        RynthLog.Write(LogCat.Navigation, $"Nav: state {key}");
     }
 
     public void Tick()
@@ -260,7 +260,7 @@ internal sealed class NavigationEngine
             _inRecovery     = false;
             _hasGoodHeading = false;
             ResetPortalState();
-            _host.Log($"Nav: route swap detected, {route.Points.Count} pts, startIdx={_settings.ActiveNavIndex}");
+            RynthLog.Write(LogCat.Navigation, $"Nav: route swap detected, {route.Points.Count} pts, startIdx={_settings.ActiveNavIndex}");
         }
 
         // STEP 5: the self-promote from "Default" to "Navigating" is gone. Tick()
@@ -292,7 +292,7 @@ internal sealed class NavigationEngine
 
                 if (Now - _globalSettleStart > (long)PostTeleportMs)
                 {
-                    _host.Log($"Nav: global post-teleport settle done ({PostTeleportMs:F0}ms)");
+                    RynthLog.Write(LogCat.Navigation, $"Nav: global post-teleport settle done ({PostTeleportMs:F0}ms)");
                     if (_host.HasStopCompletely) _host.StopCompletely();
                     if (_host.HasForceResetBusyCount) _host.ForceResetBusyCount();
                     if (_combatManager != null) _combatManager.BusyCount = 0;
@@ -340,7 +340,7 @@ internal sealed class NavigationEngine
                 _globalSettling      = true;
                 _globalSettleStart   = Now;
                 StopMovement();
-                _host.Log($"Nav: teleport detected (portalExit={portalExited} posJump={positionJumped}), settling {PostTeleportMs:F0}ms...");
+                RynthLog.Write(LogCat.Navigation, $"Nav: teleport detected (portalExit={portalExited} posJump={positionJumped}), settling {PostTeleportMs:F0}ms...");
                 return;
             }
         }
@@ -394,7 +394,7 @@ internal sealed class NavigationEngine
         if (CloseStopYards > 0.0 && route.RouteType == NavRouteType.Once
             && PeekNext(idx, route) < 0 && dist < CloseStopYards)
         {
-            _host.Log($"Nav: close-stop at final pt [{idx}] dist={dist:F1}yd ≤ {CloseStopYards:F1}yd");
+            RynthLog.Write(LogCat.Navigation, $"Nav: close-stop at final pt [{idx}] dist={dist:F1}yd ≤ {CloseStopYards:F1}yd");
             StopMovement();
             HandleRouteEnd(route);
             return;
@@ -403,7 +403,7 @@ internal sealed class NavigationEngine
         // Arrival check
         if (dist < ArrivalYards)
         {
-            _host.Log($"Nav: arrived at [{idx}] dist={dist:F1}yd → advancing");
+            RynthLog.Write(LogCat.Navigation, $"Nav: arrived at [{idx}] dist={dist:F1}yd → advancing");
             _prevDist = double.MaxValue;
             UpdateStatusLine(idx, dist, route, 0.0);
             Advance(route);
@@ -414,7 +414,7 @@ internal sealed class NavigationEngine
         // Matches old NavigationManager exactly.
         if (_prevDist < ArrivalYards * SweepMult && dist > _prevDist + 0.3)
         {
-            _host.Log($"Nav: sweep-pass [{idx}] prev={_prevDist:F1} now={dist:F1}yd → advancing");
+            RynthLog.Write(LogCat.Navigation, $"Nav: sweep-pass [{idx}] prev={_prevDist:F1} now={dist:F1}yd → advancing");
             _prevDist = double.MaxValue;
             Advance(route);
             return;
@@ -884,7 +884,7 @@ internal sealed class NavigationEngine
             }
 
             if (skipped > 0)
-                _host.Log($"Nav: skipped {skipped} dense waypoint(s) within {arrival:F1}yd → now on [{_settings.ActiveNavIndex}]");
+                RynthLog.Write(LogCat.Navigation, $"Nav: skipped {skipped} dense waypoint(s) within {arrival:F1}yd → now on [{_settings.ActiveNavIndex}]");
 
             // Straight-line shortcut: bypass waypoints that the straight run from here
             // to a later waypoint already passes close to (straight corridors, recorded
@@ -937,14 +937,14 @@ internal sealed class NavigationEngine
                     if (off > worst) worst = off;
                 }
                 if (count > 0)
-                    _host.Log($"Nav: shortcut past {count} waypoint(s), ≤{worst:F1}yd off route → now on [{_settings.ActiveNavIndex}]");
+                    RynthLog.Write(LogCat.Navigation, $"Nav: shortcut past {count} waypoint(s), ≤{worst:F1}yd off route → now on [{_settings.ActiveNavIndex}]");
             }
         }
 
         if (_settings.ActiveNavIndex != oldIdx && IndexValid(_settings.ActiveNavIndex, route))
         {
             var np = route.Points[_settings.ActiveNavIndex];
-            _host.Log($"Nav: advance [{oldIdx}]→[{_settings.ActiveNavIndex}] type={np.Type} tgt=({np.NS:F3},{np.EW:F3})");
+            RynthLog.Write(LogCat.Navigation, $"Nav: advance [{oldIdx}]→[{_settings.ActiveNavIndex}] type={np.Type} tgt=({np.NS:F3},{np.EW:F3})");
         }
     }
 
@@ -996,7 +996,7 @@ internal sealed class NavigationEngine
     {
         _settings.EnableNavigation = false;
         StopMovement();
-        _host.Log($"Nav: Once route complete ({route.Points.Count} pts) — nav disabled, route retained for re-run");
+        RynthLog.Write(LogCat.Navigation, $"Nav: Once route complete ({route.Points.Count} pts) — nav disabled, route retained for re-run");
     }
 
     private void HandleRouteEnd(NavRouteParser route)
@@ -1015,7 +1015,7 @@ internal sealed class NavigationEngine
             && _settings.ActiveNavIndex >= route.Points.Count
             && route.Points.Count > 0)
         {
-            _host.Log("Nav: Once route re-armed — restarting from point [0]");
+            RynthLog.Write(LogCat.Navigation, "Nav: Once route re-armed — restarting from point [0]");
             _settings.ActiveNavIndex = 0;
             return;
         }
@@ -1082,17 +1082,17 @@ internal sealed class NavigationEngine
         _settings.NavStatusLine = $"Nav: recall spell {pt.SpellId}...";
         if (!_host.HasCastSpell)
         {
-            _host.Log($"Nav: CastSpell not available — cannot fire recall {pt.SpellId}");
+            RynthLog.Write(LogCat.Navigation, $"Nav: CastSpell not available — cannot fire recall {pt.SpellId}");
             return;
         }
         uint target = _playerId != 0 ? _playerId : (uint)_host.GetPlayerId();
         if (target == 0)
         {
-            _host.Log($"Nav: no player id — cannot fire recall {pt.SpellId}");
+            RynthLog.Write(LogCat.Navigation, $"Nav: no player id — cannot fire recall {pt.SpellId}");
             return;
         }
         _host.CastSpell(target, pt.SpellId);
-        _host.Log($"Nav: CastSpell(recall {pt.SpellId}) on player 0x{target:X8}");
+        RynthLog.Write(LogCat.Navigation, $"Nav: CastSpell(recall {pt.SpellId}) on player 0x{target:X8}");
     }
 
     /// <summary>
@@ -1107,7 +1107,7 @@ internal sealed class NavigationEngine
         _settings.NavStatusLine = $"Nav: portal '{pt.TargetName}'...";
         if (_objectCache == null || string.IsNullOrWhiteSpace(pt.TargetName) || !_host.HasUseObject)
         {
-            _host.Log($"Nav: PortalNPC — cache/target/UseObject unavailable for '{pt.TargetName}'");
+            RynthLog.Write(LogCat.Navigation, $"Nav: PortalNPC — cache/target/UseObject unavailable for '{pt.TargetName}'");
             return false;
         }
 
@@ -1243,7 +1243,7 @@ internal sealed class NavigationEngine
             // (low count after a teleport) vs. genuinely missing the object
             // (high count but no name match → route file likely has a typo).
             // fallback{Checked,Hits} report on the all-known-objects rescue.
-            _host.Log($"Nav: PortalNPC — no match for '{target}' (landscapeCount={landscapeCount} refreshedNames={emptyNameRefreshed} stillBlank={emptyNameStillBlank} fallbackChecked={fallbackChecked} fallbackHits={fallbackHits} probeChecked={probeChecked} probeNamed={probeNamed} probeHits={probeHits}) — will retry");
+            RynthLog.Write(LogCat.Navigation, $"Nav: PortalNPC — no match for '{target}' (landscapeCount={landscapeCount} refreshedNames={emptyNameRefreshed} stillBlank={emptyNameStillBlank} fallbackChecked={fallbackChecked} fallbackHits={fallbackHits} probeChecked={probeChecked} probeNamed={probeNamed} probeHits={probeHits}) — will retry");
 
             // ONE-SHOT DEEP DUMP on the first miss: closest 8 landscape items
             // (so we can see what the cache *does* think is around the player)
@@ -1263,7 +1263,7 @@ internal sealed class NavigationEngine
         // Publish the resolved object so the marker renderer can draw a ring +
         // line to the portal's real position (the waypoint coord is a placeholder).
         _settings.ActivePortalObjId = (uint)bestId;
-        _host.Log($"Nav: UseObject portal '{target}' (dist={bestDist:F1}yd src={fallbackSource}) → 0x{bestId:X8}");
+        RynthLog.Write(LogCat.Navigation, $"Nav: UseObject portal '{target}' (dist={bestDist:F1}yd src={fallbackSource}) → 0x{bestId:X8}");
         return true;
     }
 
@@ -1291,11 +1291,11 @@ internal sealed class NavigationEngine
         }
         landscapeByDist.Sort((a, b) => a.d.CompareTo(b.d));
         int take = Math.Min(8, landscapeByDist.Count);
-        _host.Log($"Nav: PortalNPC diag — closest {take} landscape obj(s):");
+        RynthLog.Write(LogCat.Navigation, $"Nav: PortalNPC diag — closest {take} landscape obj(s):");
         for (int i = 0; i < take; i++)
         {
             var (d, id, name) = landscapeByDist[i];
-            _host.Log($"  [{i}] 0x{id:X8} '{name}' dist={d:F1}yd");
+            RynthLog.Write(LogCat.Navigation, $"  [{i}] 0x{id:X8} '{name}' dist={d:F1}yd");
         }
 
         // (b) Any object with "portal" in name across all buckets. Cap output
@@ -1318,15 +1318,15 @@ internal sealed class NavigationEngine
             {
                 if (ls.Id == wo.Id) { inLandscape = true; break; }
             }
-            _host.Log($"Nav: PortalNPC diag — portal-named: 0x{wo.Id:X8} '{wo.Name}' dist={d:F1}yd inLandscape={(inLandscape ? 1 : 0)}");
+            RynthLog.Write(LogCat.Navigation, $"Nav: PortalNPC diag — portal-named: 0x{wo.Id:X8} '{wo.Name}' dist={d:F1}yd inLandscape={(inLandscape ? 1 : 0)}");
         }
         if (portalHits == 0)
         {
-            _host.Log($"Nav: PortalNPC diag — NO object across any bucket has 'portal' in its name (searched for '{searchTarget}'). Portal is missing from cache entirely OR named without the word 'portal'.");
+            RynthLog.Write(LogCat.Navigation, $"Nav: PortalNPC diag — NO object across any bucket has 'portal' in its name (searched for '{searchTarget}'). Portal is missing from cache entirely OR named without the word 'portal'.");
         }
         else if (portalHits > MaxPortalDumpLines)
         {
-            _host.Log($"Nav: PortalNPC diag — {portalHits} portal-named object(s) total (showed first {MaxPortalDumpLines}).");
+            RynthLog.Write(LogCat.Navigation, $"Nav: PortalNPC diag — {portalHits} portal-named object(s) total (showed first {MaxPortalDumpLines}).");
         }
     }
 
@@ -1342,7 +1342,7 @@ internal sealed class NavigationEngine
         {
             if (Now - _portalStateStart > (long)ActionTimeoutMs + (long)PostTeleportMs)
             {
-                _host.Log("Nav: portal/recall global timeout, advancing.");
+                RynthLog.Write(LogCat.Navigation, "Nav: portal/recall global timeout, advancing.");
                 ResetPortalState();
                 Advance(route);
                 return;
@@ -1423,7 +1423,7 @@ internal sealed class NavigationEngine
                 if (portalExited || positionChanged || landblockChanged)
                 {
                     int busyNow = _host.HasGetBusyState ? _host.GetBusyState() : -1;
-                    _host.Log($"Nav: teleport detected (portalExit={portalExited} posChange={positionChanged} lbChange={landblockChanged}) busyState={busyNow}");
+                    RynthLog.Write(LogCat.Navigation, $"Nav: teleport detected (portalExit={portalExited} posChange={positionChanged} lbChange={landblockChanged}) busyState={busyNow}");
                     _portalState      = PortalState.PostTeleportSettle;
                     _portalStateStart = Now;
                     _settings.NavStatusLine = "Nav: teleported, settling...";
@@ -1482,7 +1482,7 @@ internal sealed class NavigationEngine
                 if (Now - _portalStateStart > (long)PostTeleportMs)
                 {
                     int busyAfter = _host.HasGetBusyState ? _host.GetBusyState() : -1;
-                    _host.Log($"Nav: PostTeleportSettle done, busyState={busyAfter}");
+                    RynthLog.Write(LogCat.Navigation, $"Nav: PostTeleportSettle done, busyState={busyAfter}");
                     // Force-clear the client's internal busy count (hourglass cursor)
                     // and our tracked busy count. Portal teleport interrupts actions
                     // without firing the matching DecrementBusyCount callback.
@@ -1644,7 +1644,7 @@ internal sealed class NavigationEngine
             // Nothing shook us loose — the waypoint itself is unreachable from
             // here (wall, closed door, bad route point). Drop it and steer at the
             // next one; a Once route that runs off the end completes normally.
-            _host.Log($"Nav: stuck x{_stuckCount} at [{_settings.ActiveNavIndex}] — skipping this waypoint.");
+            RynthLog.Write(LogCat.Navigation, $"Nav: stuck x{_stuckCount} at [{_settings.ActiveNavIndex}] — skipping this waypoint.");
             _stuckCount   = 0;
             _recoveryKind = RecoveryKind.Jump;
             _inRecovery   = true;
@@ -1675,7 +1675,7 @@ internal sealed class NavigationEngine
         double escapeHeading = curDeg + offset;
         if (escapeHeading >= 360.0) escapeHeading -= 360.0; else if (escapeHeading < 0.0) escapeHeading += 360.0;
 
-        _host.Log($"Nav: stuck x{_stuckCount} — escape burst {offset:+0;-0}° for {RecoveryBurstMs:F0}ms.");
+        RynthLog.Write(LogCat.Navigation, $"Nav: stuck x{_stuckCount} — escape burst {offset:+0;-0}° for {RecoveryBurstMs:F0}ms.");
         _host.TurnToHeading((float)escapeHeading);
         StartForward();
         _recoveryKind  = RecoveryKind.Escape;
