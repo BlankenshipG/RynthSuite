@@ -2,7 +2,7 @@
 //
 // Quest Tracker reuses the meta QuestTracker (the same /myquests cache the meta
 // expression engine reads) — it never runs a second parser. Friendly names come from:
-//   1. an optional user-supplied quests.xml (C:\Games\RynthSuite\RynthAi\quests.xml),
+//   1. an optional user-supplied quests.xml (<SuiteDir>\RynthAi\quests.xml),
 //   2. the description the server prints in /myquests,
 //   3. the raw flag key.
 // UB's bundled quests.xml is NOT embedded (no license on UB content).
@@ -19,13 +19,14 @@ using System.Xml;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Meta;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
 internal sealed class IltQuests : IIltFeature
 {
     /// <summary>Optional user quest-name file (UB-style or simple key/name XML).</summary>
-    public const string QuestsXmlPath = @"C:\Games\RynthSuite\RynthAi\quests.xml";
+    public static readonly string QuestsXmlPath = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"quests.xml");
 
     private static readonly Regex KillTaskRegex = new(@"(killtask|killcount|slayerquest|totalgolem.*dead|(kills$))",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);

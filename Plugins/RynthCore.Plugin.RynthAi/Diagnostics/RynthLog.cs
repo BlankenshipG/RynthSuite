@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using RynthCore.PluginSdk;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -97,7 +98,7 @@ internal sealed class RynthLogConfig
 internal static class RynthLog
 {
     /// <summary>Default diagnostics root (inside the RynthAi data folder the installer creates).</summary>
-    public const string DefaultDirectory = @"C:\Games\RynthSuite\RynthAi\Logs\Diagnostics";
+    public static readonly string DefaultDirectory = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"Logs\Diagnostics");
 
     // ── Exception throttling (same budgets as UB's Logger) ────────────────
     private static readonly TimeSpan ExceptionBurstWindow = TimeSpan.FromSeconds(5);

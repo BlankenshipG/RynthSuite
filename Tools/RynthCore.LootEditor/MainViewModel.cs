@@ -9,15 +9,16 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+using RynthCore.Install;
 
 namespace RynthCore.LootEditor;
 
 public class MainViewModel : INotifyPropertyChanged
 {
-    private const string DefaultFolder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
+    private static readonly string DefaultFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"LootProfiles");
     // RynthAi's AutoVendor reads <Vendor Name>.utl / default.utl from here (and from
     // AutoVendor folders per server and per character, which IsAutoVendorPath also covers).
-    private const string AutoVendorFolder = @"C:\Games\RynthSuite\RynthAi\AutoVendor";
+    private static readonly string AutoVendorFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"AutoVendor");
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)

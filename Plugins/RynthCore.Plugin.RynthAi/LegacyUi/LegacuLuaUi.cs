@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.PluginSdk;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -18,7 +19,7 @@ internal sealed class LegacyLuaUi
     public Action? OnStopRequested;
 
     // Internal State
-    private readonly string _luaFolder = @"C:\Games\RynthSuite\RynthAi\LuaScripts";
+    private readonly string _luaFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"LuaScripts");
     private string _newLuaFileName = "MyScript";
     private int _selectedLuaIdx = 0;
     private readonly List<string> _luaFiles = new();

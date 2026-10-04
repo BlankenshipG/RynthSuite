@@ -17,6 +17,7 @@ using RynthCore.Loot;
 using RynthCore.Loot.VTank;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Loot;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -237,7 +238,7 @@ internal sealed class IltEquipSuits : IIltFeature
         var profiles = _profiles;
         if (profiles.Length == 0)
         {
-            ImGui.TextDisabled(@"No .utl files found (C:\Games\RynthSuite\RynthAi\EquipProfiles or UtilityBelt equip folders).");
+            ImGui.TextDisabled($"No .utl files found ({System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, "EquipProfiles")} or UtilityBelt equip folders).");
         }
         else
         {

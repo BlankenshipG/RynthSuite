@@ -14,6 +14,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using RynthCore.PluginSdk;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -22,8 +23,8 @@ internal sealed class IltHubStore
     /// <summary>Maximum bank transactions kept on disk (oldest dropped first).</summary>
     public const int MaxTransactions = 1000;
 
-    /// <summary>Shared root (C:\Games\RynthSuite\RynthAi) for profiles usable by every character.</summary>
-    public const string SharedRoot = @"C:\Games\RynthSuite\RynthAi";
+    /// <summary>Shared root (<SuiteDir>\RynthAi) for profiles usable by every character.</summary>
+    public static readonly string SharedRoot = RynthInstallPaths.RynthAiDir;
 
     private readonly RynthCoreHost _host;
     private readonly string _charFolder;

@@ -9,6 +9,7 @@ using RynthCore.Plugin.RynthAi.CreatureData;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.Loot.VTank;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.Meta;
 
@@ -59,7 +60,7 @@ internal sealed class ExpressionEngine
     private readonly Dictionary<string, (RynthCore.Loot.LootProfile Profile, DateTime Mtime)> _giveNativeProfileCache
         = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string ItemGiverDir
-        = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "ItemGiver");
+        = Path.Combine(RynthInstallPaths.RynthAiDir, "ItemGiver");
 
     // Stopwatch store: handle → Stopwatch. Persistent (not cleared per eval) — handles are stored in variables.
     private readonly Dictionary<string, System.Diagnostics.Stopwatch> _stopwatches = new(StringComparer.Ordinal);
@@ -100,8 +101,8 @@ internal sealed class ExpressionEngine
     private long _lastVarFlushMs;
     private string? _pvarPathCached;
     private const long VarFlushIntervalMs = 2000;
-    private static readonly string PvarsDir  = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "pvars");
-    private static readonly string GvarsPath = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "gvars.txt");
+    private static readonly string PvarsDir  = Path.Combine(RynthInstallPaths.RynthAiDir, "pvars");
+    private static readonly string GvarsPath = Path.Combine(RynthInstallPaths.RynthAiDir, "gvars.txt");
     private Dictionary<string, (Func<string> Get, Action<string> Set)>? _settingsMap;
 
     public IReadOnlyDictionary<string, string> Variables => _variables;

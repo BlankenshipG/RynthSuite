@@ -9,6 +9,7 @@ using ImGuiNET;
 using RynthCore.PluginSdk;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.Meta;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -63,11 +64,11 @@ internal sealed class LegacyDashboardRenderer
     // escaped the snapshot poll's reverse-P/Invoke boundary it fail-fasted the
     // NativeAOT runtime. Copy-under-lock on read; lock the Clear+AddRange swap.
     private readonly object _profileListsLock = new();
-    private readonly string _navFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
-    private readonly string _lootFolder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
-    private readonly string _metaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
-    private readonly string _settingsRoot = @"C:\Games\RynthSuite\RynthAi\SettingsProfiles\ACEmulator";
-    private readonly string _monstersFolder = @"C:\Games\RynthSuite\RynthAi\MonsterProfiles";
+    private readonly string _navFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"NavProfiles");
+    private readonly string _lootFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"LootProfiles");
+    private readonly string _metaFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
+    private readonly string _settingsRoot = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"SettingsProfiles\ACEmulator");
+    private readonly string _monstersFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MonsterProfiles");
 
     private int _selectedNavIdx;
     private bool _isMinimized;
@@ -2863,7 +2864,7 @@ internal sealed class LegacyDashboardRenderer
 
     // ── Meta bridge ───────────────────────────────────────────────────────────
 
-    private static readonly string MetaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
+    private static readonly string MetaFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
 
     public string BuildMetaJson()
     {

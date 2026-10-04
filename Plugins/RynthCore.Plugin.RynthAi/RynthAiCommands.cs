@@ -7,6 +7,7 @@ using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.Plugin.RynthAi.Meta;
 using RynthCore.Plugin.RynthAi.Raycasting;
 using RynthCore.Loot.VTank;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -2239,7 +2240,7 @@ public sealed partial class RynthAiPlugin
         string playerPart = argStr.Substring(toIdx + 4).Trim();
 
         // Resolve profile path — bare name resolved from ItemGiver dir, .utl extension added if needed
-        const string itemGiverDir = @"C:\Games\RynthSuite\RynthAi\ItemGiver";
+        string itemGiverDir = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"ItemGiver");
         string profilePath = System.IO.Path.IsPathRooted(profileArg)
             ? profileArg
             : System.IO.Path.Combine(itemGiverDir, profileArg);
@@ -2583,7 +2584,7 @@ public sealed partial class RynthAiPlugin
         sb.Append("\"routes\":[");
         try
         {
-            const string navFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
+            string navFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"NavProfiles");
             if (System.IO.Directory.Exists(navFolder))
             {
                 var files = System.IO.Directory.GetFiles(navFolder, "*.nav");

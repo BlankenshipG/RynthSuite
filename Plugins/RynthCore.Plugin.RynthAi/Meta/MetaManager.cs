@@ -7,6 +7,7 @@ using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.CreatureData;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.Meta;
 
@@ -761,7 +762,7 @@ internal sealed class MetaManager
                     }
 
                     // Fallback: a standalone .nav file in NavProfiles.
-                    string navFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
+                    string navFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"NavProfiles");
                     string fullPath = Path.Combine(navFolder, routeName + ".nav");
                     if (File.Exists(fullPath))
                     {
@@ -914,7 +915,7 @@ internal sealed class MetaManager
             parts[2].Equals("load", StringComparison.OrdinalIgnoreCase))
         {
             string name = string.Join(" ", parts, 3, parts.Length - 3);
-            string metaDir = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
+            string metaDir = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
             string afPath = Path.Combine(metaDir, name + ".af");
             string metPath = Path.Combine(metaDir, name + ".met");
 

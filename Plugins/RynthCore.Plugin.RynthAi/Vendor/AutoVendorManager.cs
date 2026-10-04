@@ -10,6 +10,7 @@ using RynthCore.Loot.VTank;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.PluginSdk;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.Vendor;
 
@@ -33,7 +34,7 @@ namespace RynthCore.Plugin.RynthAi.Vendor;
 /// </summary>
 internal sealed class AutoVendorManager
 {
-    public const string MainProfileDir = @"C:\Games\RynthSuite\RynthAi\AutoVendor";
+    public static readonly string MainProfileDir = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"AutoVendor");
     public const string ProfileSubfolder = "AutoVendor";
 
     private const long BailMs = 60_000;          // UB bailTimer
