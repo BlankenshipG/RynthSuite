@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.0-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.1-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -93,6 +93,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private FellowshipTracker? _fellowshipTracker;
     private MetaManager? _metaManager;
     private QuestTracker? _questTracker;
+    /// <summary>ILT Hub (Infinite Leaftide tools window) — one per login session, dormant off-ILT.</summary>
+    private IltHub.IltHubController? _iltHub;
     private InventoryManager? _inventoryManager;
     private SalvageManager? _salvageManager;
     private ManaStoneManager? _manaStoneManager;
@@ -244,6 +246,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _fellowshipTracker?.Dispose();
         _fellowshipTracker = null;
         _metaManager = null;
+        try { _iltHub?.OnLogout(); } catch (Exception ex) { Log($"RynthAi: ILT Hub logout error: {ex.Message}"); }
+        _iltHub = null;
+        if (_dashboard != null) _dashboard.IltHubAvailable = null;
         _questTracker = null;
         _inventoryManager = null;
         _salvageManager = null;
@@ -405,7 +410,20 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _fellowshipTracker = new FellowshipTracker();
 
         _questTracker = new QuestTracker(Host);
-        _questTracker.Refresh(); // auto-populate quest flags on login
+
+        // ILT Hub: per-character state lives next to the combat profile. Created before the
+        // login quest refresh so cached server options can skip /myquests where it is off.
+        if (!string.IsNullOrEmpty(_dashboard.CharFolder))
+        {
+            var dashForHub = _dashboard;
+            _iltHub = new IltHub.IltHubController(Host, _dashboard.CharFolder,
+                () => _objectCache, () => dashForHub?.Settings, () => _questTracker,
+                () => dashForHub?.SaveSettings());
+            _dashboard.IltHubAvailable = () => _iltHub?.Available == true;
+        }
+
+        if (_iltHub?.SkipLoginQuestRefresh != true)
+            _questTracker.Refresh(); // auto-populate quest flags on login
 
         _metaManager = new MetaManager(_dashboard.Settings, Host, _vitals);
         _metaManager.SetPlayerId(_playerId);
@@ -424,6 +442,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             _inventoryManager  = new InventoryManager(Host, _dashboard.Settings, _objectCache);
             _manaStoneManager  = new ManaStoneManager(Host, _dashboard.Settings, _objectCache);
             _petManager        = new PetManager(Host, _dashboard.Settings, _objectCache, _combatManager, _charSkills);
+        }
+
+        if (_iltHub != null)
+        {
+            string hubChar = Host.TryGetObjectName(_playerId, out string hn) ? hn : string.Empty;
+            _iltHub.OnLoginComplete(hubChar, _petManager);
         }
 
         _salvageManager = new SalvageManager(Host, _dashboard.Settings, _objectCache);
@@ -1068,6 +1092,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             }
             _questTracker?.Tick();
             if (diag) Host.Log("[RynthAi] OnTick: after quest tracker");
+            try { _iltHub?.Tick(); }
+            catch (Exception ex) { Host.Log($"[RynthAi] ILT Hub tick error: {ex.Message}"); }
             DrainGiveQueue();
             if (diag) Host.Log("[RynthAi] OnTick: after drain give queue");
             _jumper?.Tick();
@@ -1545,7 +1571,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     public override void OnChatWindowText(string? text, int chatType, ref int eat)
     {
         if (string.IsNullOrEmpty(text)) return;
-        _dashboard?.PushChatLine(text, chatType);
+
+        // ILT Hub captures (quiet /bank, /aug, probes ...) and quiet /myquests refreshes may
+        // hide their reply lines; hidden lines also stay out of the dashboard chat mirror.
+        bool hide = false;
+        try { hide = _iltHub?.OnChat(text) == true; }
+        catch (Exception ex) { Host.Log($"[RynthAi] ILT Hub chat error: {ex.Message}"); }
+        if (_questTracker?.OnChatLine(text) == true) hide = true;
+        if (hide) eat = 1;
+        else _dashboard?.PushChatLine(text, chatType);
+
         _buffManager?.OnChatWindowText(text, chatType);
         _manaStoneManager?.OnChatWindowText(text);
         _petManager?.OnChatWindowText(text);
@@ -1553,7 +1588,6 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager?.HandleChatForDamage(text);
         _missileCraftingManager?.HandleChat(text);
         _metaManager?.HandleChat(text);
-        _questTracker?.OnChatLine(text);
     }
 
     // ACE sends GameEventKillerNotification (0x01AD) to the killer at the
@@ -1565,6 +1599,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (string.IsNullOrEmpty(deathMessage)) return;
         _combatManager?.OnKillNotification(deathMessage);
         _dashboard?.RecordKill();   // feeds the kills/hour session stat
+        _iltHub?.RecordKill();      // ILT Hub session rates
     }
 
     public override void OnCreateObject(uint objectId)
@@ -2213,6 +2248,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "follow":       HandleFollowCommand(parts); break;
             case "myquests":
             case "refreshquests": _questTracker?.Refresh(); ChatLine("[RynthAi] Quest flag refresh requested."); break;
+            case "hub":
+            case "quests":
+                // parts: [prefix, verb, args...] — ILT Hub window / quest tracker commands.
+                if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
+                _iltHub.HandleCommand(cmd, parts.Length > 2 ? parts[2..] : Array.Empty<string>());
+                break;
             case "dunnav":        HandleDungeonNavCommand(parts); break;
             case "dunnav-patrol": HandleDungeonNavPatrolCommand(parts); break;
             case "hazard":        HandleHazardCommand(parts); break;
@@ -2334,6 +2375,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
             // Map renders independently of whether the main dashboard is visible.
             _dashboard?.RenderMapWindow();
+
+            // ILT Hub window / confirm popups / games HUD — independent of the dashboard.
+            _iltHub?.Render();
 
             if (_windowVisible && _dashboard is not null)
             {

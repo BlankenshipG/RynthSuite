@@ -13,6 +13,8 @@ public static class DashWindows
     public static bool ShowWeapons;
     public static bool ShowLua;
     public static bool ShowDungeonMap;
+    /// <summary>ILT Hub window (persisted in ilt-hub.json, not in the combat profile).</summary>
+    public static bool ShowIltHub;
 }
 
 public sealed class LegacyUiSettings

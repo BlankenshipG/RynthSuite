@@ -2253,8 +2253,14 @@ internal sealed class LegacyDashboardRenderer
         ImGui.TableNextRow();
         ImGui.TableNextColumn(); LegacyDashboardDrawing.GridBtn("Dungeon Map", "map", ref DashWindows.ShowDungeonMap);
         ImGui.TableNextColumn();
+        // ILT Hub launcher: only on ACECustom/ILT worlds with at least one server feature on.
+        if (IltHubAvailable?.Invoke() == true)
+            LegacyDashboardDrawing.GridBtn("ILT Hub", "heart", ref DashWindows.ShowIltHub);
         ImGui.EndTable();
     }
+
+    /// <summary>Set by the plugin: true when the ILT Hub should be offered in the launcher grid.</summary>
+    internal Func<bool>? IltHubAvailable { get; set; }
 
     private static void RenderPlaceholderWindow(string title, ref bool open, string message)
     {

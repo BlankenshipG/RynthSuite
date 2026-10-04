@@ -25,6 +25,8 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] === Commands ===");
         ChatLine("[RynthAi] /ra fellow       â€” fellowship diagnostics and queries");
         ChatLine("[RynthAi] /ra help          — show this list");
+        ChatLine("[RynthAi] /ra hub [show|hide|refresh|status|bank|force on|off|profile ...|suit ...] — ILT Hub (ILT worlds)");
+        ChatLine("[RynthAi] /ra quests [refresh|check <regex>] — ILT Hub quest tracker");
         ChatLine("[RynthAi] /ra power <0-100|auto> — set attack power (auto = recklessness-aware)");
         ChatLine("[RynthAi] /ra cast <spellId> — cast spell on current target");
         ChatLine("[RynthAi] /ra buffs         — show active buff timers");

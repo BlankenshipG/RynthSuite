@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using RynthCore.Plugin.RynthAi.CreatureData;
+using RynthCore.Plugin.RynthAi.IltHub;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 
 namespace RynthCore.Plugin.RynthAi;
@@ -16,6 +17,9 @@ namespace RynthCore.Plugin.RynthAi;
 [JsonSerializable(typeof(NavCommand))]
 [JsonSerializable(typeof(MetaRuleDto))]
 [JsonSerializable(typeof(MetaCommand))]
+// ILT Hub (IltHub/): per-character hub state and its bank transaction-log sidecar.
+[JsonSerializable(typeof(IltHubState))]
+[JsonSerializable(typeof(List<IltBankTransaction>), TypeInfoPropertyName = "IltBankTransactionList")]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     IncludeFields = true,
