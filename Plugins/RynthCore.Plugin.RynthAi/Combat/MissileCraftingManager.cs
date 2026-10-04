@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using RynthCore.PluginSdk;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -30,6 +31,12 @@ public class MissileCraftingManager
         _host.HasGetCurrentCombatMode ? _host.GetCurrentCombatMode() : CombatMode.NonCombat;
 
     public void SetObjectCache(WorldObjectCache cache) => _objectCache = cache;
+    /// <summary>
+    /// While this says true, no new ammo check starts: combat is swapping launchers and wields
+    /// the new launcher's ammo itself (CombatManager.AmmoSwapInProgress). Without it, crafting
+    /// could equip ammo for the launcher being swapped away from, or start a craft mid-swap.
+    /// </summary>
+    public Func<bool>? HoldWhile { get; set; }
     public void SetCharacterSkills(CharacterSkills skills) => _charSkills = skills;
 
     public enum CraftState { Idle, Evaluating, Combining, EquippingAmmo }
@@ -134,6 +141,7 @@ public class MissileCraftingManager
     private void ProcessIdle()
     {
         if ((DateTime.Now - _lastAmmoCheck).TotalMilliseconds < AMMO_CHECK_INTERVAL_MS) return;
+        if (HoldWhile?.Invoke() == true) return;
         _lastAmmoCheck = DateTime.Now;
 
         var inv = GetInventory(forceRefresh: true);
@@ -279,7 +287,7 @@ public class MissileCraftingManager
         {
             try
             {
-                if (!_host.UseObjectOn((uint)_headBundleId, (uint)_shaftBundleId))
+                if (!_host.UseOnFor((uint)_headBundleId, (uint)_shaftBundleId, "Crafting", "missile crafting: heads on shafts"))
                 {
                     ChatLog($"UseObjectOn returned false for 0x{_headBundleId:X8} -> 0x{_shaftBundleId:X8}");
                     _lastApplyAttempt = DateTime.Now;
@@ -318,7 +326,7 @@ public class MissileCraftingManager
 
             if (targetId != 0)
             {
-                _host.UseObject((uint)targetId);
+                _host.UseFor((uint)targetId, "Crafting", "missile crafting: wield the new ammo");
                 ChatLog($"Equipped ammo (id=0x{targetId:X8})");
                 Reset($"Done: {_currentRecipe?.OutputName ?? "ammo"}");
             }

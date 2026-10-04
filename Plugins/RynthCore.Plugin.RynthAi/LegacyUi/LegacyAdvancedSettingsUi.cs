@@ -14,7 +14,6 @@ internal sealed class LegacyAdvancedSettingsUi
 
     private static readonly string[] AttackHeights = { "Low", "Medium", "High" };
     private static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
-    private static readonly string[] MovementModes = { "Legacy (Autorun)", "Tier 1 (CM_Movement)", "Tier 2 (MoveToPosition)" };
 
     public LegacyAdvancedSettingsUi(LegacyUiSettings settings)
     {
@@ -25,6 +24,10 @@ internal sealed class LegacyAdvancedSettingsUi
 
     private Func<string>? _autoVendorStatus;
     public void SetAutoVendorStatusProvider(Func<string> status) => _autoVendorStatus = status;
+
+    private Func<string>? _autoTradeStatus;
+    public void SetAutoTradeStatusProvider(Func<string> status) => _autoTradeStatus = status;
+    private string _newAutoAcceptPattern = "";
 
     public string MissileCraftingState  => _missileCraftingManager?.State.ToString() ?? string.Empty;
     public bool   MissileCraftingActive => _missileCraftingManager?.IsCrafting ?? false;
@@ -106,6 +109,78 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.Spacing();
         ImGui.TextDisabled("Never sold: equipped, attuned, bonded, retained, tinkered, imbued,");
         ImGui.TextDisabled("inscribed, rare, zero value, packs, or anything a Keep rule could match.");
+
+        RenderAutoTrade();
+    }
+
+    private void RenderAutoTrade()
+    {
+        ImGui.Spacing();
+        ImGui.Spacing();
+        ImGui.Text("AutoTrade (UtilityBelt)");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        string status = _autoTradeStatus?.Invoke() ?? "Not logged in";
+        ImGui.TextDisabled($"Status: {status}");
+        ImGui.Spacing();
+
+        ImGui.Checkbox("Enabled##AT", ref _settings.AutoTradeEnabled);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("When a trade window opens, add the items that match Keep / Keep # rules in\n" +
+                             "<Partner Name>.utl or default.utl (your character's AutoTrade folder, the\n" +
+                             "server folder, or " + Trade.AutoTradeManager.MainProfileDir + ").");
+        ImGui.Checkbox("Test Mode (only print what it would add)##AT", ref _settings.AutoTradeTestMode);
+        ImGui.Checkbox("Only Trade From Main Pack##AT", ref _settings.AutoTradeOnlyFromMainPack);
+        ImGui.Checkbox("Auto Accept After Adding##AT", ref _settings.AutoTradeAutoAccept);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Accept the trade once every item AutoTrade added shows in the window.\n" +
+                             "Check what the other player offers first: nothing checks their side.");
+        ImGui.Checkbox("Think When Finished##AT", ref _settings.AutoTradeThink);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Send 'AutoTrade finished: <partner>' and 'Trade accepted: <partner>' as a /tell\n" +
+                             "to yourself, so a meta's chat condition can wait for it.");
+
+        ImGui.Spacing();
+        ImGui.Text("Auto-accept trades from (name patterns, .NET regex)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("When one of these players accepts a trade, this character accepts too.\n" +
+                             "The autoAcceptList.json files from /ub autotrade autoaccept add[g|s] count as well.");
+        var list = _settings.AutoTradeAutoAcceptChars;
+        int removeAt = -1;
+        for (int i = 0; i < list.Count; i++)
+        {
+            ImGui.Bullet();
+            ImGui.SameLine();
+            ImGui.TextUnformatted(list[i]);
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Remove##ATaac{i}"))
+                removeAt = i;
+        }
+        if (removeAt >= 0)
+            list.RemoveAt(removeAt);
+        ImGui.SetNextItemWidth(200);
+        ImGui.InputText("##ATnewpattern", ref _newAutoAcceptPattern, 128);
+        ImGui.SameLine();
+        if (ImGui.Button("Add##ATaddpattern"))
+        {
+            string p = _newAutoAcceptPattern.Trim();
+            if (p.Length > 0 && !list.Contains(p) && IsValidRegex(p))
+            {
+                list.Add(p);
+                _newAutoAcceptPattern = "";
+            }
+        }
+
+        ImGui.Spacing();
+        ImGui.TextDisabled("Never added: equipped, attuned, retained, tinkered, imbued, inscribed,");
+        ImGui.TextDisabled("packs, unidentified items, or items on RynthAi's weapon/consumable lists.");
+    }
+
+    private static bool IsValidRegex(string pattern)
+    {
+        try { _ = System.Text.RegularExpressions.Regex.Match(string.Empty, pattern); return true; }
+        catch { return false; }
     }
 
     private void RenderTabContent(int tabIndex)
@@ -129,7 +204,7 @@ internal sealed class LegacyAdvancedSettingsUi
             case "UI":
                 ImGui.Text("Radar");
                 ImGui.Separator();
-                ImGui.Checkbox("Get Rid of Retail Radar", ref _settings.SuppressRetailRadar);
+                ImGui.Checkbox("Hide retail radar", ref _settings.SuppressRetailRadar);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Suppress the game's built-in radar (bezel, compass, coords, blips).");
 
@@ -155,7 +230,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Separator();
                 ImGui.Text("Power Bar");
-                ImGui.Checkbox("Get Rid of Retail Power Bar", ref _settings.SuppressRetailPowerbar);
+                ImGui.Checkbox("Hide retail power bar", ref _settings.SuppressRetailPowerbar);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Hide the vanilla attack/magic power bar that appears under the cursor while charging.\nThe bar's underlying combat state still works — only the on-screen widget is hidden.");
                 break;
@@ -214,8 +289,6 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SetNextItemWidth(150);
                     ImGui.SliderFloat("Atlatl",   ref _settings.AtlatlArcVelocity,   10.0f, 60.0f, "%.1f");
                     ImGui.SetNextItemWidth(150);
-                    ImGui.SliderFloat("Magic Arc", ref _settings.MagicArcVelocity,   10.0f, 60.0f, "%.1f");
-                    ImGui.SetNextItemWidth(150);
                     ImGui.SliderFloat("Arc Clearance (m)", ref _settings.MissileArcClearance, 0.0f, 3.0f, "%.1f");
                     if (ImGui.IsItemHovered())
                         ImGui.SetTooltip("Extra headroom the arc must have at mid-flight. Raise it if shots\n" +
@@ -223,6 +296,13 @@ internal sealed class LegacyAdvancedSettingsUi
                                          "Default 0.5.");
                     ImGui.Unindent();
                 }
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderFloat("Magic Arc", ref _settings.MagicArcVelocity, 10.0f, 60.0f, "%.1f");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Arc spells' horizontal speed (m/s). ACE: 40. Lower = higher arc.\n" +
+                                     "A rule with Arc on casts an arc only when this path reaches the target\n" +
+                                     "(walls, and ceilings in dungeons); otherwise its other shape, or a bolt.\n" +
+                                     "Needs Enable Raycasting. /ra lostest magic shows the arc to the selected mob.");
                 ImGui.Checkbox("LoS Debug Log", ref _settings.LosDebugLog);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Log each in-range mob's LoS verdict ([LOS] lines: straight line or arc,\n" +
@@ -303,6 +383,15 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Text("Self Vitals (%)");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Heal At", ref _settings.HealAt, 0, 100);
+                ImGui.SetNextItemWidth(120);
+                ImGui.SliderInt("Emergency Heal At", ref _settings.EmergencyHealAt, 0, 100);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("At or under this health %, a healing kit goes first out of Magic mode,\nand a kit or potion is used while a cast is pending. 0 = off.");
+                ImGui.SetNextItemWidth(120);
+                ImGui.SliderInt("Stamina To Health At", ref _settings.StaminaToHealthAt, 0, 100);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("At or under this health %, cast Stamina to Health Self ahead of Heal At\n(after a kit out of Magic mode). 0 = never cast it.");
+                ImGui.SetNextItemWidth(120);
+                ImGui.SliderInt("Stamina To Health Min Stamina", ref _settings.StaminaToHealthMinStamina, 0, 100);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Don't cast Stamina to Health unless stamina is over this %.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Re-stam At", ref _settings.RestamAt, 0, 100);
                 ImGui.SetNextItemWidth(120);
@@ -418,6 +507,8 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Text("Ring Spell Override");
                 ImGui.SetNextItemWidth(120);
                 ImGui.InputInt("Min Ring Targets", ref _settings.MinRingTargets);
+                ImGui.InputInt("Blast Range (0 = off)", ref _settings.BlastRange);
+                ImGui.InputInt("Min Blast Targets", ref _settings.MinBlastTargets);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("If this many monsters are within ring range, ring spells are used instead of arc/bolt/streak.");
 
@@ -470,9 +561,10 @@ internal sealed class LegacyAdvancedSettingsUi
             case "Navigation":
                 ImGui.Checkbox("Boost Nav Priority", ref _settings.BoostNavPriority);
                 ImGui.SetNextItemWidth(120);
-                ImGui.InputFloat("Follow/Nav Min", ref _settings.FollowNavMin, 0.1f, 1.0f, "%.1f");
+                ImGui.InputFloat("Nav point reach (yd)", ref _settings.FollowNavMin, 0.1f, 1.0f, "%.1f");
+                _settings.FollowNavMin = LegacyUiSettings.ClampFollowNavMin(_settings.FollowNavMin);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Arrival distance in yards. Also sets the nav marker ring radius.");
+                    ImGui.SetTooltip("How close to get to each nav point before moving on to the next (yards). VTank calls it Follow/Nav Min Distance. Follow stops this close to its leader; the nav marker ring shows it.");
 
                 ImGui.Spacing();
                 ImGui.Text("Nav Marker Display");
@@ -512,15 +604,26 @@ internal sealed class LegacyAdvancedSettingsUi
                 }
 
                 ImGui.Spacing();
-                ImGui.Text("Movement Engine");
-                ImGui.SetNextItemWidth(200);
-                ImGui.Combo("Mode", ref _settings.MovementMode, MovementModes, MovementModes.Length);
+                ImGui.Separator();
+                ImGui.Text("Getting Back On Route");
+
+                ImGui.Checkbox("Find A Way Back When Stuck", ref _settings.NavRecoveryEnabled);
                 if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("When a jump doesn't free a stuck character, or navigation wanders far off the route, plan a way back to the route around walls and obstacles (the dungeon map indoors, RynthNav outdoors) and open doors on the way. Off = only the jump and side-step escapes, as before.");
+
+                if (_settings.NavRecoveryEnabled)
                 {
-                    ImGui.SetTooltip(
-                        "Legacy: SetAutorun + smooth heading servo (TurnToHeading)\n" +
-                        "Tier 1: SetAutorun + CM_Movement turn commands (DoMovement)\n" +
-                        "Tier 2: Client physics MoveToPosition (not built yet — falls back to Legacy)");
+                    ImGui.SetNextItemWidth(80);
+                    ImGui.InputFloat("Off Route Distance (yd)", ref _settings.NavOffTrackYards, 5f, 20f, "%.0f");
+                    _settings.NavOffTrackYards = Math.Clamp(_settings.NavOffTrackYards, 160f, 1000f);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("Navigation counts as off the route only beyond this distance, and only if it got there itself. At least 160: metas can take the character up to about 159 yd away on purpose, and coming back from that is normal.");
+
+                    ImGui.SetNextItemWidth(80);
+                    ImGui.InputInt("Tries Per Waypoint", ref _settings.NavMaxDetourAttempts);
+                    _settings.NavMaxDetourAttempts = Math.Clamp(_settings.NavMaxDetourAttempts, 1, 10);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("How many planned ways back to try for one waypoint before giving up and using only the jump and side-step escapes. Reaching a waypoint resets the count.");
                 }
 
                 ImGui.Spacing();
@@ -554,20 +657,9 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SetTooltip("Within this distance of a waypoint, blend the aim point toward the next one to cut corners smoothly. 0 = off (aim straight at each waypoint).");
 
                 ImGui.SetNextItemWidth(80);
-                ImGui.InputFloat("Shortcut Tolerance (yd)", ref _settings.NavShortcutYards, 0.5f, 1f, "%.1f");
-                _settings.NavShortcutYards = Math.Clamp(_settings.NavShortcutYards, 0f, 10f);
-                if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("On reaching a waypoint, skip ahead only while the straight line to a later waypoint passes within this distance of every waypoint skipped. Lower keeps closer to the route; 0 = visit every waypoint.");
-
-                ImGui.SetNextItemWidth(80);
                 ImGui.InputFloat("Turn Rate (deg/s)", ref _settings.NavTurnRateDegPerSec, 15f, 45f, "%.0f");
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Mode 0 (heading servo) max turn speed. Higher = snappier turns, lower = gentler. Ignored by Tier 1 / Tier 2.");
-
-                ImGui.SetNextItemWidth(80);
-                ImGui.InputFloat("Tier1 Turn Speed", ref _settings.NavTier1TurnSpeed, 0.1f, 0.5f, "%.2f");
-                if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Tier 1 (CM_Movement) DoMovement turn-command speed. Only used when Movement Engine = Tier 1.");
+                    ImGui.SetTooltip("Max turn speed while navigating. Higher = snappier turns, lower = gentler.");
 
                 ImGui.SetNextItemWidth(80);
                 ImGui.InputFloat("Post-Portal Delay (s)", ref _settings.PostPortalDelaySec, 0.25f, 1f, "%.2f");
@@ -651,6 +743,9 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Enable Looting", ref _settings.EnableLooting);
                 ImGui.Checkbox("Boost Loot Priority", ref _settings.BoostLootPriority);
                 ImGui.Checkbox("Loot Only Rare Corpses", ref _settings.LootOnlyRareCorpses);
+                ImGui.Checkbox("Learn Unknown Spells", ref _settings.ReadUnknownScrolls);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Loots scrolls of spells you don't know and can learn (magic school trained or\nspecialized, skill high enough), and reads them when it's safe. Scrolls already\nin your pack are read too.");
                 ImGui.Checkbox("Jump When Looting", ref _settings.LootJumpEnabled);
                 if (_settings.LootJumpEnabled)
                 {

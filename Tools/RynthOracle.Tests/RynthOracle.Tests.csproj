@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Offline checks for RynthOracle: the bundled lists load, /myquests lines parse (ACE's
+    format), the Void tracker reads its chat lines, and every page's display list is accepted
+    by the engine's own parser (RynthCore src/RynthCore.Engine/UI/ScriptWindows/DisplayListParser.cs,
+    compiled in from the sibling RynthCore checkout) within the engine's limits. Clicks are fed
+    back as engine events. Nothing native is loaded: no AC, no ImGui context.
+    Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>RynthOracle.Tests</RootNamespace>
+    <NoWarn>$(NoWarn);CS0649;CS0169;CS0414;CS8618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
+    <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+    <!-- The engine parser's whitelists use ImGui.NET's enums. -->
+    <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\**\*.cs" Exclude="..\..\Plugins\RynthCore.Plugin.RynthOracle\obj\**;..\..\Plugins\RynthCore.Plugin.RynthOracle\bin\**" Link="RynthOracle\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="RynthOracle\Shared\FellowshipTracker.cs" />
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\quests.csv" LogicalName="RynthOracle.quests.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\quests.conquest.csv" LogicalName="RynthOracle.quests.conquest.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\quests.levistras.csv" LogicalName="RynthOracle.quests.levistras.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\quests.aelrynth.csv" LogicalName="RynthOracle.quests.aelrynth.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\augmentations.csv" LogicalName="RynthOracle.augmentations.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\augquests.csv" LogicalName="RynthOracle.augquests.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\society.csv" LogicalName="RynthOracle.society.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\titles.csv" LogicalName="RynthOracle.titles.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\markers.csv" LogicalName="RynthOracle.markers.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\customquests.csv" LogicalName="RynthOracle.customquests.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthOracle.SpellData.txt" />
+  </ItemGroup>
+
+</Project>

@@ -1,40 +1,95 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.Loot;
 
 /// <summary>
 /// Drives the salvage state machine for loot-rule items marked Salvage.
-/// Items are enqueued by CorpseOpenController after pickup confirmation.
 ///
-/// Flow per item:
-///   Idle → call OpenSalvagePanel(ustId), wait OpenDelay
-///        → call AddNewItem(itemId), wait AddDelay
-///        → call Salvage(), wait SalvageDelay
-///        → wait ResultDelay → Idle (next item or CombineSalvage)
+/// Items come from looting: <see cref="NoteLootedForSalvage"/> when the pickup is sent and
+/// <see cref="EnqueueItem"/> when it is confirmed. Every such item is TRACKED until it has
+/// been salvaged or has left the pack, and a sweep every couple of seconds queues tracked
+/// items that are in the pack. Before 2026-10-02 the queue was the only record: a pickup
+/// whose confirm was lost (busy reset, corpse closed), an item salvaged before it reached
+/// the pack, a missing UST, or three failed tries dropped the item for good, and it sat in
+/// the pack.
 ///
-/// First-open delays (400ms/600ms) let the panel animate open and the
-/// gmSalvageUI singleton hook fire before we make thiscall instance calls.
-/// Fast delays (50ms) apply once the panel has been opened at least once.
+/// Flow per batch (up to <see cref="MaxBatchItems"/> items in one panel cycle):
+///   Idle → UseObject(UST), wait OpenDelay
+///        → SalvagePanelAddItem each item (AddDelayFast apart), plus matching under-full bags
+///        → SalvagePanelExecute, wait SalvageDelay
+///        → poll until the items leave the pack (or ResultMaxWaitMs) → one summary log line
+/// Items that are worn, retained, on the Items list or the UST itself are skipped with the
+/// reason in the log; RynthAi never takes off anything the character is wearing.
+///
+/// First-open delays (400ms/600ms) let the panel animate open and the gmSalvageUI singleton
+/// hook fire before we make thiscall instance calls. Fast delays (50ms) apply once the panel
+/// has been opened at least once.
 /// </summary>
 public sealed class SalvageManager
 {
-    private enum Phase { Idle, OpeningPanel, AddingItem, Salvaging, WaitingForResult, CombiningSalvage }
+    private enum Phase { Idle, OpeningPanel, AddingItems, ReadyToExecute, Salvaging, WaitingForResult, CombiningSalvage }
 
     private readonly RynthCoreHost _host;
     private readonly LegacyUiSettings _settings;
     private readonly WorldObjectCache? _cache;
 
+    // ── Single-item salvage: queue, tracking, batch ──────────────────────────
     private readonly Queue<uint> _queue = new();
+    private readonly HashSet<uint> _queued = new();
     private Phase _phase = Phase.Idle;
     private long _phaseReadyAt;
-    private uint _currentItemId;
     private uint _currentUstId;
     private bool _panelEverOpened;
     private bool _firstResultCycle = true;
     private bool _pendingCombineScan;
+
+    /// <summary>Most items added to the panel for one Salvage press.</summary>
+    internal const int MaxBatchItems = 20;
+    /// <summary>A batch starts this long after the last item was queued (or when a full batch is
+    /// waiting), so one corpse's salvage goes in one panel cycle instead of one cycle per item.</summary>
+    internal const long GatherMs = 1_000;
+    private const long SweepIntervalMs = 2_000;
+    /// <summary>A tracked item that never shows up in the pack is forgotten after this.</summary>
+    internal const long ArrivalGraceMs = 60_000;
+    /// <summary>After <see cref="MaxItemRetries"/> failed tries in a row an item rests this long...</summary>
+    internal const long GiveUpCooldownMs = 60_000;
+    /// <summary>...and after this many rests it is left in the pack for good (logged).</summary>
+    internal const int MaxGiveUpRounds = 3;
+    private const long NoUstRetryMs = 10_000;
+
+    private sealed class TrackedItem
+    {
+        public string Name = string.Empty;
+        public long NotedAt;
+        public bool SeenInPack;
+        public long CooldownUntil;
+        public int GiveUps;
+    }
+
+    private readonly Dictionary<uint, TrackedItem> _tracked = new();
+    private long _lastEnqueueAt;
+    private long _lastSweepAt;
+    private long _noUstWarnedAt = long.MinValue / 2;
+
+    // The batch in flight: what we meant to add, what the panel took, and per-batch notes.
+    private readonly List<uint> _batch = new();
+    private readonly List<uint> _batchAdded = new();
+    private readonly Dictionary<uint, string> _batchNames = new();
+    private int _batchAddIdx;
+    private int _batchBagsAdded;
+    private int _batchNumber;
+    private int _batchAddFailures;
+    private readonly SkipNotes _batchSkips = new();
+
+    // Session totals for /ra salvstate.
+    private int _itemsSalvagedThisSession;
+    private int _itemsSkippedThisSession;
+    private int _batchesThisSession;
 
     // Combine-salvage state — process one material group per cycle by opening
     // the salvage panel, adding all under-full bags of that material, and hitting
@@ -68,16 +123,15 @@ public sealed class SalvageManager
     private int _bagsMergedThisSession;
 
     // Per-item retry counter so a failed salvage gets re-queued a few times
-    // before we give up. AC sometimes drops a Salvage execute when the bot is
+    // before it rests. AC sometimes drops a Salvage execute when the bot is
     // busy with other actions; the item stays in the pack and we want to try
     // again when the queue gets back to idle.
     private readonly Dictionary<uint, int> _itemRetryCount = new();
     private const int MaxItemRetries = 3;
 
     // Backoff after a refused panel step. Without it a failed UseObject/AddItem
-    // re-queues the item and TickIdle dequeues it again on the very next tick,
-    // so one busy hiccup burns all three attempts inside ~50ms and the item is
-    // dropped. A second is long enough for the action queue to clear.
+    // re-queues the items and TickIdle dequeues them again on the very next tick,
+    // so one busy hiccup burns all three attempts inside ~50ms.
     private long _idleRetryReadyAt;
     private const long RetryBackoffMs = 1000;
 
@@ -100,7 +154,9 @@ public sealed class SalvageManager
     private long _lastCombineSweepAt;
     private const long CombineSweepIntervalMs = 30_000;
 
-    private static long NowMs => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    /// <summary>Milliseconds clock. Tests replace it to step time; the game uses wall time.</summary>
+    internal Func<long> Clock { get; set; } = () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    private long NowMs => Clock();
 
     /// <summary>
     /// Set by the plugin to point at the currently-loaded loot profile's
@@ -119,6 +175,17 @@ public sealed class SalvageManager
 
     /// <summary>Returns true while a salvage operation is in flight.</summary>
     public bool IsBusy => _phase != Phase.Idle || _queue.Count > 0;
+
+    /// <summary>
+    /// Looting sent the pickup of an item whose rule says Salvage. Tracks it without queueing:
+    /// the sweep queues it once it is in the pack, even if the pickup confirm never comes.
+    /// </summary>
+    public void NoteLootedForSalvage(uint itemId, string? name = null)
+    {
+        if (itemId == 0) return;
+        if (IsSalvageBag(name ?? _cache?[unchecked((int)itemId)]?.Name)) return;
+        Track(itemId, name);
+    }
 
     /// <summary>Enqueue an item to be salvaged. Called by CorpseOpenController after pickup.</summary>
     public void EnqueueItem(uint itemId)
@@ -140,8 +207,40 @@ public sealed class SalvageManager
             return;
         }
 
+        Track(itemId, name);
+        QueueItem(itemId);
+    }
+
+    private void Track(uint itemId, string? name)
+    {
+        long now = NowMs;
+        if (!_tracked.TryGetValue(itemId, out TrackedItem? t))
+        {
+            t = new TrackedItem { NotedAt = now };
+            _tracked[itemId] = t;
+        }
+        if (!string.IsNullOrWhiteSpace(name)) t.Name = name!;
+    }
+
+    private void Untrack(uint itemId)
+    {
+        _tracked.Remove(itemId);
+        _itemRetryCount.Remove(itemId);
+    }
+
+    private void QueueItem(uint itemId)
+    {
+        if (!_queued.Add(itemId)) return;
         _queue.Enqueue(itemId);
+        _lastEnqueueAt = NowMs;
         _pendingCombineScan = false; // reset; will be set again when queue drains
+    }
+
+    private uint DequeueItem()
+    {
+        uint id = _queue.Dequeue();
+        _queued.Remove(id);
+        return id;
     }
 
     /// <summary>Called every game tick from RynthAiPlugin.OnTick.</summary>
@@ -160,10 +259,20 @@ public sealed class SalvageManager
 
             case Phase.OpeningPanel:
                 if (now >= _phaseReadyAt)
-                    BeginAddingItem(now);
+                {
+                    _batchAddIdx = 0;
+                    _phase = Phase.AddingItems;
+                    _phaseReadyAt = now;
+                    TickAddingItems(now);
+                }
                 break;
 
-            case Phase.AddingItem:
+            case Phase.AddingItems:
+                if (now >= _phaseReadyAt)
+                    TickAddingItems(now);
+                break;
+
+            case Phase.ReadyToExecute:
                 if (now >= _phaseReadyAt)
                     BeginSalvaging(now);
                 break;
@@ -175,16 +284,12 @@ public sealed class SalvageManager
 
             case Phase.WaitingForResult:
                 if (now < _phaseReadyAt) break;
-                // Poll: if the item is still in inventory and we're under the
-                // deadline, wait for the next tick. Server delete events for
-                // salvage-consumed items can lag the result delay by 500ms+.
-                if (_currentItemId != 0
-                    && now < _waitingResultDeadline
-                    && IsItemInDirectInventory(_currentItemId))
-                {
+                // Poll: while any added item is still in the pack and we're under the
+                // deadline, wait. Server delete events for salvage-consumed items can
+                // lag the result delay by 500ms+.
+                if (now < _waitingResultDeadline && AnyStillInPack(_batchAdded))
                     break;
-                }
-                OnResultReady(now);
+                OnBatchResult(now);
                 break;
 
             case Phase.CombiningSalvage:
@@ -197,6 +302,8 @@ public sealed class SalvageManager
 
     private void TickIdle(long now, int busyCount)
     {
+        SweepTracked(now);
+
         if (_queue.Count == 0)
         {
             if (_pendingCombineScan && _settings.EnableCombineSalvage)
@@ -229,43 +336,41 @@ public sealed class SalvageManager
         if (now < _idleRetryReadyAt)
             return;
 
-        uint itemId = _queue.Dequeue();
-        if (itemId == 0)
+        // Let a corpse's worth of salvage gather so it goes in one panel cycle.
+        if (_queue.Count < MaxBatchItems && now - _lastEnqueueAt < GatherMs)
             return;
 
-        // Backstop for the EnqueueItem guard: the item's name may not have been
-        // cached at enqueue time. Never run the single-item salvage flow on a
-        // bag — it's already salvage; the combine sweep consolidates it.
-        string? dqName = _cache?[unchecked((int)itemId)]?.Name;
-        if (IsSalvageBag(dqName))
-        {
-            Log($"[Salvage] Dequeued a salvage bag 0x{itemId:X8} ({dqName}) — skipping solo salvage; combine sweep will consolidate it.");
-            if (_settings.EnableCombineSalvage) _pendingCombineScan = true;
+        if (!BuildBatch(now))
             return;
-        }
 
         uint ustId = FindUst();
         if (ustId == 0)
         {
-            _host.WriteToChat("[RynthAi] Salvage: No UST found in inventory — item skipped. Add a Ust to your pack.", 2);
-            NoteError("no UST in inventory — item skipped");
-            Log($"[Salvage] No UST found in inventory — skipping 0x{itemId:X8}.");
+            // Keep the items (they used to be dropped here for good) and look again later.
+            if (now - _noUstWarnedAt >= 5 * 60_000)
+            {
+                _noUstWarnedAt = now;
+                _host.WriteToChat("[RynthAi] Salvage: no UST in your pack — salvage is waiting. Add a Ust to your pack.", 2);
+            }
+            NoteError("no UST in inventory — salvage waiting");
+            Log($"[Salvage] No UST found — {_batch.Count} item(s) wait; trying again in {NoUstRetryMs / 1000}s.");
+            ReturnBatchToQueue();
+            _idleRetryReadyAt = now + NoUstRetryMs;
             return;
         }
 
-        _currentItemId = itemId;
         _currentUstId = ustId;
 
         // UseObject on the UST mimics a double-click — this is the reliable path to
         // trigger gmSalvageUI::OpenSalvagePanel (our hook captures the instance there).
         // SendNotice_OpenSalvagePanel does not reliably call the hooked function.
-        if (!_host.UseObject(_currentUstId))
+        if (!_host.UseFor(_currentUstId, "Salvage", "open the salvage panel (UST)"))
         {
-            Log($"[Salvage] UseObject(UST) failed for 0x{_currentUstId:X8} — re-queuing item.");
+            Log($"[Salvage] UseObject(UST) failed for 0x{_currentUstId:X8} — {_batch.Count} item(s) back in the queue.");
             NoteError($"UseObject(UST) failed for 0x{_currentUstId:X8}");
-            _currentItemId = 0;
             _currentUstId = 0;
-            RequeueOrDrop(itemId, "UseObject(UST) failed");
+            foreach (uint id in _batch) RequeueOrDrop(id, "UseObject(UST) failed");
+            ClearBatch();
             _idleRetryReadyAt = now + RetryBackoffMs;
             return;
         }
@@ -275,38 +380,191 @@ public sealed class SalvageManager
         _phase = Phase.OpeningPanel;
     }
 
-    private void BeginAddingItem(long now)
+    /// <summary>
+    /// Takes up to <see cref="MaxBatchItems"/> items off the queue that can be salvaged now.
+    /// Items not in the pack yet stay tracked (the sweep queues them on arrival); items that
+    /// can't be salvaged are skipped with a reason. False when nothing is left to salvage.
+    /// </summary>
+    private bool BuildBatch(long now)
     {
-        if (!_host.SalvagePanelAddItem(_currentItemId))
+        ClearBatch();
+        if (_cache == null)
         {
-            Log($"[Salvage] SalvagePanelAddItem failed for 0x{_currentItemId:X8} (panel instance not ready — re-queuing).");
-            NoteError($"SalvagePanelAddItem failed for 0x{_currentItemId:X8} (panel not ready)");
-            // Re-queue the item so we retry on the next idle cycle. Reset panel-ever-opened
-            // so the longer first-open delays are applied on retry.
-            uint failedItemId = _currentItemId;
-            _currentItemId = 0;
-            _currentUstId = 0;
-            _panelEverOpened = false;
-            _phase = Phase.Idle;
-            RequeueOrDrop(failedItemId, "SalvagePanelAddItem failed");
-            _idleRetryReadyAt = now + RetryBackoffMs;
+            while (_queue.Count > 0) DequeueItem();
+            return false;
+        }
+
+        var inPack = new Dictionary<uint, WorldObject>();
+        foreach (WorldObject wo in _cache.GetDirectInventory(forceRefresh: true))
+            inPack[unchecked((uint)wo.Id)] = wo;
+
+        int waiting = 0;
+        while (_queue.Count > 0 && _batch.Count < MaxBatchItems)
+        {
+            uint id = DequeueItem();
+            _tracked.TryGetValue(id, out TrackedItem? t);
+
+            if (!inPack.TryGetValue(id, out WorldObject? wo))
+            {
+                string name = t?.Name ?? _cache[unchecked((int)id)]?.Name ?? string.Empty;
+                if (IsWornByPlayer(_cache[unchecked((int)id)]))
+                {
+                    SkipForGood(id, name, SkipWorn);
+                    continue;
+                }
+                if (t != null && !t.SeenInPack && now - t.NotedAt < ArrivalGraceMs)
+                {
+                    waiting++; // still on its way; the sweep queues it when it lands
+                    continue;
+                }
+                // Already gone (salvaged, sold, dropped) or never arrived.
+                Untrack(id);
+                continue;
+            }
+
+            if (t != null) t.SeenInPack = true;
+            string itemName = wo.Name;
+            string? reason = SkipReasonFor(id, wo);
+            if (reason != null)
+            {
+                SkipForGood(id, itemName, reason);
+                continue;
+            }
+
+            _batch.Add(id);
+            _batchNames[id] = itemName;
+        }
+
+        if (_batch.Count == 0)
+        {
+            // Nothing to send: say why once (this runs only when items were queued, and
+            // skipped/waiting items leave the queue, so it can't repeat every tick).
+            if (_batchSkips.Count > 0 || waiting > 0)
+                Log($"[Salvage] Nothing to salvage this round: {_batchSkips.Describe()}"
+                    + (waiting > 0 ? $"{(_batchSkips.Count > 0 ? "; " : "")}{waiting} not in the pack yet (will salvage when they arrive)" : "")
+                    + ".");
+            _batchSkips.Clear();
+            return false;
+        }
+
+        if (waiting > 0)
+            _batchSkips.Add("not in the pack yet (will salvage when they arrive)", $"{waiting} item(s)", countOnly: true, n: waiting);
+        return true;
+    }
+
+    // Skip reasons (also the log wording).
+    internal const string SkipWorn = "worn (RynthAi never takes off what the character is wearing)";
+    internal const string SkipRetained = "retained";
+    internal const string SkipItemsList = "on the Items list";
+    internal const string SkipUst = "it is the UST";
+    internal const string SkipBag = "already a salvage bag (the combine sweep handles bags)";
+    internal const string SkipGaveUp = "salvage failed too often";
+
+    /// <summary>Why <paramref name="wo"/> (in the pack) must not be salvaged, or null.</summary>
+    private string? SkipReasonFor(uint id, WorldObject wo)
+    {
+        if (IsSalvageBag(wo.Name)) return SkipBag;
+        if (IsWornByPlayer(wo)) return SkipWorn;
+        if (wo.ObjectClass == AcObjectClass.Ust || IsUst(wo.Name)
+            || (_host.HasGetObjectWcid && _host.TryGetObjectWcid(id, out uint wcid) && wcid == UstWcid))
+            return SkipUst;
+        int sid = unchecked((int)id);
+        if (_settings.ItemRules.Any(r => r.Id == sid)) return SkipItemsList;
+        // ACE skips a Retained item without a word (Player_Crafting.HandleSalvaging).
+        if (_host.TryGetObjectBoolProperty(id, StypeBoolRetained, out bool retained) && retained) return SkipRetained;
+        return null;
+    }
+
+    private const uint StypeBoolRetained = 91;
+
+    private bool IsWornByPlayer(WorldObject? wo)
+    {
+        if (wo == null) return false;
+        if (wo.WieldedLocation > 0) return true;
+        uint pid = _host.GetPlayerId();
+        if (pid != 0 && wo.Wielder == unchecked((int)pid)) return true;
+        return WorldObjectCache.IsWieldedByPlayer(_host, wo);
+    }
+
+    private void SkipForGood(uint id, string name, string reason)
+    {
+        _batchSkips.Add(reason, string.IsNullOrWhiteSpace(name) ? $"0x{id:X8}" : name);
+        _itemsSkippedThisSession++;
+        Untrack(id);
+        if (reason == SkipWorn)
+            _host.WriteToChat($"[RynthAi] Salvage: left {(string.IsNullOrWhiteSpace(name) ? "an item" : $"'{name}'")} alone — the character is wearing it. Take it off by hand if it should be salvaged.", 2);
+    }
+
+    private void ReturnBatchToQueue()
+    {
+        foreach (uint id in _batch) QueueItem(id);
+        ClearBatch();
+    }
+
+    private void ClearBatch()
+    {
+        _batch.Clear();
+        _batchAdded.Clear();
+        _batchNames.Clear();
+        _batchSkips.Clear();
+        _batchAddIdx = 0;
+        _batchBagsAdded = 0;
+        _batchAddFailures = 0;
+    }
+
+    /// <summary>Adds the batch to the open panel one item per step, then matching bags.</summary>
+    private void TickAddingItems(long now)
+    {
+        bool wasFirstOpen = !_panelEverOpened;
+        if (_batchAddIdx < _batch.Count)
+        {
+            uint id = _batch[_batchAddIdx];
+            if (_host.SalvagePanelAddItem(id))
+            {
+                _batchAdded.Add(id);
+            }
+            else if (_batchAdded.Count == 0 && _batchAddIdx == 0)
+            {
+                // The first add failing means the panel instance isn't ready: put the
+                // whole batch back and retry on the longer first-open delays.
+                Log($"[Salvage] SalvagePanelAddItem failed (panel instance not ready) — {_batch.Count} item(s) back in the queue.");
+                NoteError("SalvagePanelAddItem failed (panel not ready)");
+                foreach (uint b in _batch) RequeueOrDrop(b, "SalvagePanelAddItem failed");
+                ClearBatch();
+                _currentUstId = 0;
+                _panelEverOpened = false;
+                _phase = Phase.Idle;
+                _idleRetryReadyAt = now + RetryBackoffMs;
+                return;
+            }
+            else
+            {
+                _batchAddFailures++;
+                RequeueOrDrop(id, "SalvagePanelAddItem failed");
+            }
+            _batchAddIdx++;
+            _phaseReadyAt = now + _settings.SalvageAddDelayFastMs;
             return;
         }
 
-        // Combine-during-salvage: add ALL under-full bags of the same material
-        // (and workmanship band, if configured) alongside the new item so the
-        // server merges everything in one operation.
-        int extraBags = 0;
-        if (_settings.CombineBagsDuringSalvage)
-            extraBags = AddAllMatchingUnderFullBags(_currentItemId);
+        if (_batchAdded.Count == 0)
+        {
+            _phase = Phase.Idle;
+            ClearBatch();
+            return;
+        }
 
-        bool wasFirstOpen = !_panelEverOpened;
+        // Combine-during-salvage: add ALL under-full bags of the batch's materials
+        // (and workmanship bands, if configured) so the server merges everything in
+        // one operation.
+        if (_settings.CombineBagsDuringSalvage)
+            _batchBagsAdded = AddAllMatchingUnderFullBags(_batchAdded);
+
         _panelEverOpened = true;
-        // Allow 50 ms per extra bag so AC can register each add before Execute fires.
-        int addDelay = (wasFirstOpen ? _settings.SalvageAddDelayFirstMs : _settings.SalvageAddDelayFastMs)
-                       + extraBags * _settings.SalvageAddDelayFastMs;
-        _phaseReadyAt = now + addDelay;
-        _phase = Phase.AddingItem;
+        int settle = (wasFirstOpen ? _settings.SalvageAddDelayFirstMs : _settings.SalvageAddDelayFastMs)
+                     + _batchBagsAdded * _settings.SalvageAddDelayFastMs;
+        _phaseReadyAt = now + settle;
+        _phase = Phase.ReadyToExecute;
     }
 
     // STypes (canonical values from Chorizite STypes.cs — verified against
@@ -323,54 +581,55 @@ public sealed class SalvageManager
 
     /// <summary>
     /// Scans inventory for every under-full salvage bag whose material (and
-    /// workmanship band, if configured) matches <paramref name="itemId"/>, adds
-    /// each one to the open salvage panel, and returns how many were added.
+    /// workmanship band, if configured) matches one of <paramref name="itemIds"/>,
+    /// adds each one to the open salvage panel, and returns how many were added.
     /// Adding them all at once lets the server merge everything in one Salvage
     /// operation instead of leaving partial bags for the periodic sweep.
     /// </summary>
-    private int AddAllMatchingUnderFullBags(uint itemId)
+    private int AddAllMatchingUnderFullBags(IReadOnlyCollection<uint> itemIds)
     {
-        if (_cache == null) return 0;
-        if (!_host.TryGetObjectIntProperty(itemId, StypeMaterialType, out int itemMat) || itemMat == 0)
-            return 0;
+        if (_cache == null || itemIds.Count == 0) return 0;
 
         RynthCore.Loot.SalvageCombineSettings? cfg = CombineConfigProvider?.Invoke();
         bool useBands = cfg != null && cfg.Enabled;
 
-        // The freshly-looted ITEM carries a true 1-10 ItemWorkmanship(#105) —
+        // A freshly-looted ITEM carries a true 1-10 ItemWorkmanship(#105) —
         // unlike a bag, whose #105 is a cumulative sum. So the item's band is
         // read directly here; bag keys come from TryGetBagCombineKey (average).
-        string itemKey;
-        if (useBands)
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (uint itemId in itemIds)
         {
-            if (!_host.TryGetObjectIntProperty(itemId, StypeItemWorkmanship, out int itemWm) || itemWm <= 0)
-                return 0;
-            string? itemBand = cfg!.GetBandKey(itemMat, itemWm);
-            if (itemBand == null) return 0;
-            itemKey = $"{itemMat}|{itemBand}";
+            if (!_host.TryGetObjectIntProperty(itemId, StypeMaterialType, out int itemMat) || itemMat == 0)
+                continue;
+            if (useBands)
+            {
+                if (!_host.TryGetObjectIntProperty(itemId, StypeItemWorkmanship, out int itemWm) || itemWm <= 0)
+                    continue;
+                string? itemBand = cfg!.GetBandKey(itemMat, itemWm);
+                if (itemBand == null) continue;
+                keys.Add($"{itemMat}|{itemBand}");
+            }
+            else
+            {
+                keys.Add(itemMat.ToString());
+            }
         }
-        else
-        {
-            itemKey = itemMat.ToString();
-        }
+        if (keys.Count == 0) return 0;
 
+        var batch = new HashSet<uint>(itemIds);
         int added = 0;
         foreach (WorldObject bag in _cache.GetDirectInventory(forceRefresh: true))
         {
             uint bagId = unchecked((uint)bag.Id);
-            if (bagId == itemId) continue;
+            if (batch.Contains(bagId)) continue;
             if (!IsSalvageBag(bag.Name)) continue;
             if (!IsBagUnderFull(bagId, bag.Name)) continue;
             if (!TryGetBagCombineKey(bagId, bag.Name, cfg, useBands, out string bagKey, out _)) continue;
-            if (bagKey != itemKey) continue;
+            if (!keys.Contains(bagKey)) continue;
 
             if (_host.SalvagePanelAddItem(bagId))
-            {
-                Log($"[Salvage] Combine-during-salvage: added bag {bag.Name} 0x{bagId:X8} ({added + 1}).");
                 added++;
-            }
         }
-
         return added;
     }
 
@@ -378,10 +637,12 @@ public sealed class SalvageManager
     {
         if (!_host.SalvagePanelExecute())
         {
-            Log($"[Salvage] SalvagePanelExecute failed for 0x{_currentItemId:X8} — re-queuing.");
-            RequeueOrDrop(_currentItemId, "execute failed");
-            _currentItemId = 0;
+            Log($"[Salvage] SalvagePanelExecute failed — {_batchAdded.Count} item(s) back in the queue.");
+            NoteError("SalvagePanelExecute failed");
+            foreach (uint id in _batchAdded) RequeueOrDrop(id, "execute failed");
+            ClearBatch();
             _phase = Phase.Idle;
+            _idleRetryReadyAt = now + RetryBackoffMs;
             return;
         }
 
@@ -400,33 +661,48 @@ public sealed class SalvageManager
         _phase = Phase.WaitingForResult;
     }
 
-    private void OnResultReady(long now)
+    private void OnBatchResult(long now)
     {
-        // If the item we tried to salvage is STILL in the player's actual
-        // inventory after the result delay, the salvage didn't consume it
-        // (panel closed mid-execute, bot got busy, AC dropped the request,
-        // etc.). Re-queue so we try again.
-        //
-        // We use GetDirectInventory(forceRefresh: true) — a live walk of the
-        // player's containers — instead of _cache[id] because salvage-consumed
-        // items don't reliably trigger OnDeleteObject in the cache, leading to
-        // false positives where successfully-salvaged items get re-queued.
-        uint itemId = _currentItemId;
-        bool itemStillPresent = itemId != 0 && IsItemInDirectInventory(itemId);
+        // An item still in the player's actual inventory after the result wait wasn't
+        // consumed (panel closed mid-execute, bot got busy, AC dropped the request, ...):
+        // it goes back in the queue. GetDirectInventory(forceRefresh: true) — a live walk
+        // of the player's containers — is the ground truth; salvage-consumed items don't
+        // reliably trigger OnDeleteObject in the cache.
+        var live = SnapshotDirectInventoryIds();
+        var salvagedNames = new List<string>();
+        int stillThere = 0, requeued = 0;
+        foreach (uint id in _batchAdded)
+        {
+            string name = _batchNames.TryGetValue(id, out string? n) ? n : $"0x{id:X8}";
+            if (live.Contains(id))
+            {
+                stillThere++;
+                if (RequeueOrDrop(id, "still in the pack after Salvage")) requeued++;
+            }
+            else
+            {
+                salvagedNames.Add(name);
+                Untrack(id);
+            }
+        }
 
-        _currentItemId = 0;
+        _batchNumber++;
+        _batchesThisSession++;
+        _itemsSalvagedThisSession += salvagedNames.Count;
+
+        string line = $"[Salvage] Batch {_batchNumber}: salvaged {salvagedNames.Count}/{_batchAdded.Count}"
+            + (salvagedNames.Count > 0 ? $" ({SkipNotes.NameList(salvagedNames)})" : "")
+            + (_batchBagsAdded > 0 ? $", +{_batchBagsAdded} bag(s) combined" : "")
+            + (stillThere > 0 ? $"; {stillThere} still in the pack ({requeued} queued again"
+                                 + (stillThere > requeued ? $", {stillThere - requeued} resting or given up, see above" : "") + ")" : "")
+            + (_batchAddFailures > 0 ? $"; panel refused {_batchAddFailures} (queued again)" : "")
+            + (_batchSkips.Count > 0 ? $"; skipped: {_batchSkips.Describe()}" : "")
+            + $". Session: {_itemsSalvagedThisSession} salvaged, {_itemsSkippedThisSession} skipped, {_tracked.Count} still tracked.";
+        Log(line);
+
+        ClearBatch();
+        _currentUstId = 0;
         _phase = Phase.Idle;
-
-        if (itemStillPresent)
-        {
-            Log($"[Salvage] Item 0x{itemId:X8} still in inventory after salvage cycle — re-queuing.");
-            RequeueOrDrop(itemId, "item still present after result");
-        }
-        else
-        {
-            // Successful salvage — clear retry counter for this id.
-            _itemRetryCount.Remove(itemId);
-        }
 
         // Always trigger a combine scan on the next idle tick when the queue
         // drains — both to consolidate any newly-merged bags and so combine
@@ -437,28 +713,127 @@ public sealed class SalvageManager
     }
 
     /// <summary>
-    /// Re-queue an item that failed a salvage step. Counts retries per id and
-    /// drops the item once it's failed MaxItemRetries times in a row, so a
-    /// truly un-salvageable item doesn't trap the queue forever.
+    /// Every <see cref="SweepIntervalMs"/>: queue tracked items that are in the pack, forget
+    /// ones that left it (or never arrived), and skip ones the character is wearing. One log
+    /// line when it queues or skips something; nothing when there's nothing to say.
     /// </summary>
-    private void RequeueOrDrop(uint itemId, string reason)
+    private void SweepTracked(long now)
     {
-        if (itemId == 0) return;
+        if (_tracked.Count == 0 || _cache == null) return;
+        if (now - _lastSweepAt < SweepIntervalMs) return;
+        _lastSweepAt = now;
+
+        var inPack = new Dictionary<uint, WorldObject>();
+        foreach (WorldObject wo in _cache.GetDirectInventory(forceRefresh: true))
+            inPack[unchecked((uint)wo.Id)] = wo;
+
+        int queuedNow = 0, resting = 0;
+        List<uint>? forget = null;
+        List<(uint Id, string Name)>? worn = null;
+        foreach (var kv in _tracked)
+        {
+            uint id = kv.Key;
+            TrackedItem t = kv.Value;
+            if (inPack.TryGetValue(id, out WorldObject? wo))
+            {
+                t.SeenInPack = true;
+                if (string.IsNullOrEmpty(t.Name)) t.Name = wo.Name;
+                if (_queued.Contains(id) || _batch.Contains(id)) continue; // BuildBatch checks it
+                if (IsWornByPlayer(wo)) { (worn ??= new()).Add((id, wo.Name)); continue; }
+                if (now < t.CooldownUntil) { resting++; continue; }
+                QueueItem(id);
+                queuedNow++;
+                continue;
+            }
+
+            if (_queued.Contains(id) || _batch.Contains(id)) continue;
+            WorldObject? cached = _cache[unchecked((int)id)];
+            if (IsWornByPlayer(cached)) { (worn ??= new()).Add((id, cached?.Name ?? t.Name)); continue; }
+            if (t.SeenInPack || now - t.NotedAt >= ArrivalGraceMs)
+                (forget ??= new()).Add(id);
+        }
+
+        if (forget != null)
+            foreach (uint id in forget) Untrack(id);
+        if (worn != null)
+        {
+            foreach (var (id, name) in worn) SkipForGood(id, name, SkipWorn);
+            Log($"[Salvage] Sweep: skipped {_batchSkips.Describe()}.");
+            _batchSkips.Clear();
+        }
+        if (queuedNow > 0)
+            Log($"[Salvage] Sweep: queued {queuedNow} looted-for-salvage item(s) found in the pack"
+                + (resting > 0 ? $", {resting} resting after failures" : "")
+                + $" ({_tracked.Count} tracked).");
+    }
+
+    /// <summary>
+    /// Re-queue an item that failed a salvage step. After MaxItemRetries failures in a row
+    /// the item rests for GiveUpCooldownMs (the sweep queues it again after that); after
+    /// MaxGiveUpRounds rests it is left in the pack for good, with a log line saying so.
+    /// True when the item went straight back in the queue.
+    /// </summary>
+    private bool RequeueOrDrop(uint itemId, string reason)
+    {
+        if (itemId == 0) return false;
 
         int prior = _itemRetryCount.TryGetValue(itemId, out int n) ? n : 0;
         int next = prior + 1;
-        if (next > MaxItemRetries)
+        if (next < MaxItemRetries)
         {
-            _itemRetryCount.Remove(itemId);
-            Log($"[Salvage] Giving up on 0x{itemId:X8} after {MaxItemRetries} attempts ({reason}).");
-            NoteError($"gave up on 0x{itemId:X8} after {MaxItemRetries} attempts ({reason})");
-            // Trigger a combine scan if dropping this item left the queue empty.
-            if (_queue.Count == 0) _pendingCombineScan = true;
-            return;
+            _itemRetryCount[itemId] = next;
+            QueueItem(itemId);
+            return true;
         }
-        _itemRetryCount[itemId] = next;
-        _queue.Enqueue(itemId);
-        Log($"[Salvage] Re-queued 0x{itemId:X8} ({reason}) — attempt {next}/{MaxItemRetries}.");
+
+        _itemRetryCount.Remove(itemId);
+        string name = _tracked.TryGetValue(itemId, out TrackedItem? t) && t.Name.Length > 0 ? t.Name : $"0x{itemId:X8}";
+        if (t != null && t.GiveUps + 1 < MaxGiveUpRounds)
+        {
+            t.GiveUps++;
+            t.CooldownUntil = NowMs + GiveUpCooldownMs;
+            Log($"[Salvage] '{name}' 0x{itemId:X8} failed {MaxItemRetries} times ({reason}) — trying again in {GiveUpCooldownMs / 1000}s (round {t.GiveUps}/{MaxGiveUpRounds}).");
+        }
+        else
+        {
+            Untrack(itemId);
+            _itemsSkippedThisSession++;
+            Log($"[Salvage] Giving up on '{name}' 0x{itemId:X8}: {SkipGaveUp} ({reason}). It stays in the pack.");
+            NoteError($"gave up on 0x{itemId:X8} ({reason})");
+        }
+        // Trigger a combine scan if this left the queue empty.
+        if (_queue.Count == 0) _pendingCombineScan = true;
+        return false;
+    }
+
+    /// <summary>Per-batch skip notes, grouped by reason, for one bounded log line.</summary>
+    private sealed class SkipNotes
+    {
+        private readonly List<(string Reason, List<string> Names, int Extra)> _byReason = new();
+        public int Count { get; private set; }
+
+        public void Add(string reason, string name, bool countOnly = false, int n = 1)
+        {
+            int i = _byReason.FindIndex(e => e.Reason == reason);
+            if (i < 0) { _byReason.Add((reason, new List<string>(), 0)); i = _byReason.Count - 1; }
+            var e = _byReason[i];
+            if (countOnly) _byReason[i] = (e.Reason, e.Names, e.Extra + n);
+            else e.Names.Add(name);
+            Count += n;
+        }
+
+        public void Clear() { _byReason.Clear(); Count = 0; }
+
+        public string Describe()
+            => string.Join("; ", _byReason.Select(e =>
+                e.Names.Count == 0 ? $"{e.Extra} {e.Reason}" : $"{e.Reason}: {NameList(e.Names)}"));
+
+        /// <summary>"A, B x2, C" — at most 8 distinct names, then "+N more".</summary>
+        public static string NameList(List<string> names)
+        {
+            var groups = names.GroupBy(x => x).Select(g => g.Count() > 1 ? $"{g.Key} x{g.Count()}" : g.Key).ToList();
+            return groups.Count <= 8 ? string.Join(", ", groups) : string.Join(", ", groups.Take(8)) + $", +{groups.Count - 8} more";
+        }
     }
 
     // ── Combine salvage bags ──────────────────────────────────────────────────
@@ -553,7 +928,7 @@ public sealed class SalvageManager
                     _phase = Phase.Idle;
                     return;
                 }
-                if (!_host.UseObject(ust))
+                if (!_host.UseFor(ust, "Salvage", "combine salvage: open the salvage panel (UST)"))
                 {
                     _combineOpenAttempts++;
                     if (_combineOpenAttempts < MaxCombineOpenAttempts)
@@ -815,21 +1190,12 @@ public sealed class SalvageManager
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// True if <paramref name="id"/> appears in a fresh walk of the player's
+    /// True if any of <paramref name="ids"/> appears in a fresh walk of the player's
     /// inventory containers. Ground truth for "did the server actually destroy
     /// this item" — the cache's _byId can hold stale entries for salvage-
     /// consumed items because OnDeleteObject doesn't fire on every merge path.
     /// </summary>
-    private bool IsItemInDirectInventory(uint id)
-    {
-        if (_cache == null) return false;
-        var inv = _cache.GetDirectInventory(forceRefresh: true);
-        foreach (var item in inv)
-        {
-            if (unchecked((uint)item.Id) == id) return true;
-        }
-        return false;
-    }
+    private bool AnyStillInPack(List<uint> ids) => ids.Count > 0 && AnySnapshotBagStillInInventory(ids);
 
     /// <summary>
     /// Snapshots the ids currently in the player's direct inventory as a
@@ -1036,7 +1402,7 @@ public sealed class SalvageManager
             Phase              = _phase.ToString(),
             PhaseReadyInMs     = Math.Max(0, _phaseReadyAt - now),
             QueueCount         = _queue.Count,
-            CurrentItemId      = _currentItemId,
+            CurrentItemId      = _batch.Count > 0 ? _batch[0] : 0,
             CurrentUstId       = _currentUstId,
             PanelEverOpened    = _panelEverOpened,
             PendingCombineScan = _pendingCombineScan,
@@ -1053,6 +1419,11 @@ public sealed class SalvageManager
             BagsMerged         = _bagsMergedThisSession,
             LastError          = _lastError,
             MsSinceLastError   = _lastErrorAt == 0 ? -1 : now - _lastErrorAt,
+            TrackedItems       = _tracked.Count,
+            BatchSize          = _batch.Count,
+            Batches            = _batchesThisSession,
+            ItemsSalvaged      = _itemsSalvagedThisSession,
+            ItemsSkipped       = _itemsSkippedThisSession,
         };
     }
 
@@ -1080,5 +1451,10 @@ public sealed class SalvageManager
         public int    BagsMerged;
         public string LastError;
         public long   MsSinceLastError;
+        public int    TrackedItems;
+        public int    BatchSize;
+        public int    Batches;
+        public int    ItemsSalvaged;
+        public int    ItemsSkipped;
     }
 }

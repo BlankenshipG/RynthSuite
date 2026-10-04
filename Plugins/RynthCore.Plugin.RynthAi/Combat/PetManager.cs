@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using RynthCore.Loot;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -42,6 +43,9 @@ internal sealed class PetManager
 
     private PetState _state = PetState.Idle;
     private int  _activeDeviceId;
+    private string _summonElement = "";   // element of the essence last summoned from
+    private long   _petOutCheckedAt;      // CurrentSummon's landscape scan, at most once a second
+    private bool   _petOutCached;
     private int  _activeSpiritId;
     private int  _preActionCharges = -1;  // device charges read just before issuing a summon (-1 = unreadable)
     private long _actionIssuedAt;
@@ -98,6 +102,8 @@ internal sealed class PetManager
             // or the summoned creature is now visible in the cache.
             if (SummonLanded() || IsPetActive())
             {
+                _summonElement = PetChoice.ElementOf(_host, unchecked((uint)_activeDeviceId),
+                    _objectCache[_activeDeviceId]?.Name ?? "");
                 _assumePetActiveUntil = now + AssumeActiveAfterSummonMs;
                 GoIdle();
             }
@@ -187,8 +193,10 @@ internal sealed class PetManager
 
         if (!_host.HasUseObject) return;
 
-        // Use the first usable configured essence (panel order).
-        foreach (int deviceId in EnumeratePetDevices())
+        // Best essence for the monster being fought first (Damage panel pet choice:
+        // a specific essence, an element, or Auto = lowest learned resist), then the
+        // rest in Items-panel order as fallbacks.
+        foreach (int deviceId in OrderDevicesForTarget(EnumeratePetDevices()))
         {
             if (_deviceCooldownUntil.TryGetValue(deviceId, out long until) && now < until)
                 continue;
@@ -232,7 +240,7 @@ internal sealed class PetManager
         _preActionCharges = charges;
         _actionIssuedAt   = NowMs;
         _host.Log($"[RynthAi] Pet: summoning from essence 0x{(uint)deviceId:X8} (charges={charges}).");
-        _host.UseObject(unchecked((uint)deviceId));
+        _host.UseFor(unchecked((uint)deviceId), "Pet", "summon a pet from the essence");
     }
 
     private void IssueRefill(int deviceId, int spiritId)
@@ -244,7 +252,7 @@ internal sealed class PetManager
         _activeSpiritId = spiritId;
         _actionIssuedAt = NowMs;
         _host.Log($"[RynthAi] Pet: refilling essence 0x{(uint)deviceId:X8} with spirit 0x{(uint)spiritId:X8}.");
-        _host.UseObjectOn(unchecked((uint)spiritId), unchecked((uint)deviceId));
+        _host.UseOnFor(unchecked((uint)spiritId), unchecked((uint)deviceId), "Pet", "refill the essence with a spirit");
     }
 
     private void GoIdle()
@@ -310,6 +318,21 @@ internal sealed class PetManager
     /// A combat pet is up if a live creature named "&lt;PlayerName&gt;'s …" exists in
     /// the cache — the server names summoned pets exactly that (Pet.Init).
     /// </summary>
+    /// <summary>
+    /// The summon out now, for the Damage tab's summon stats: null = none, else the element of
+    /// the essence it came from ("" when that isn't known, e.g. summoned by hand).
+    /// </summary>
+    internal string? CurrentSummon()
+    {
+        long now = NowMs;
+        if (now - _petOutCheckedAt > 1000)
+        {
+            _petOutCheckedAt = now;
+            _petOutCached = IsPetActive();
+        }
+        return _petOutCached ? _summonElement : null;
+    }
+
     private bool IsPetActive()
     {
         string me = PlayerName();
@@ -367,6 +390,53 @@ internal sealed class PetManager
                 }
             }
         }
+    }
+
+    private int _lastChoiceTarget;
+    private string _lastChoiceReason = "";
+
+    private List<int> OrderDevicesForTarget(IEnumerable<int> ids)
+    {
+        var raw = new List<(int Id, string Name)>();
+        var seen = new HashSet<int>();
+        foreach (int id in ids)
+            if (seen.Add(id)) raw.Add((id, _objectCache[id]?.Name ?? ""));
+        if (raw.Count <= 1 || _combat == null) return raw.ConvertAll(r => r.Id);
+
+        int target = _combat.activeTargetId;
+        if (target == 0)
+        {
+            double best = double.MaxValue;
+            foreach (var t in _combat.ScannedTargets)
+                if (t.Distance < best) { best = t.Distance; target = t.Id; }
+        }
+        if (target == 0) return raw.ConvertAll(r => r.Id);
+
+        uint wcid = 0;
+        if (_host.HasGetObjectWcid) _host.TryGetObjectWcid(unchecked((uint)target), out wcid);
+        string tname = _objectCache[target]?.Name ?? "";
+        string choice = wcid != 0 ? _combat.DamageStore?.GetManualPet(wcid) ?? "" : "";
+
+        // Monsters-tab rule for this monster: its pet damage (PetDamage) wins over its
+        // weapon damage type. Same name match combat uses.
+        var rule = _settings.MonsterRules.Find(r => r.Name.Length > 0 && !r.Name.Equals("Default", StringComparison.OrdinalIgnoreCase)
+                                                   && tname.IndexOf(r.Name, StringComparison.OrdinalIgnoreCase) >= 0);
+        // No rule of its own, or one left on Auto: the Default row's pet damage, when it names one.
+        var defaultRow = _settings.MonsterRules.Find(r => r.Name.Equals("Default", StringComparison.OrdinalIgnoreCase));
+        if ((rule == null || (PetChoice.NormalizeElement(rule.PetDamage).Length == 0 && PetChoice.NormalizeElement(rule.DamageType).Length == 0))
+            && defaultRow != null && PetChoice.NormalizeElement(defaultRow.PetDamage).Length > 0)
+            rule = defaultRow;
+        string ruleElem = rule == null ? "" :
+            (PetChoice.NormalizeElement(rule.PetDamage).Length > 0 ? rule.PetDamage : rule.DamageType);
+        var weak = _combat.WeaknessFor(wcid, tname, target);
+        var ordered = PetChoice.Order(_host, raw, choice, weak, out string why, ruleElem);
+        if (target != _lastChoiceTarget || why != _lastChoiceReason)
+        {
+            _lastChoiceTarget = target;
+            _lastChoiceReason = why;
+            _host.Log($"[RynthAi] Pet: for {tname}: {why} -> {(ordered.Count > 0 ? ordered[0].Name : "none")}");
+        }
+        return ordered.ConvertAll(d => d.Id);
     }
 
     private int FindEncapsulatedSpirit()

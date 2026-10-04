@@ -42,7 +42,7 @@ internal sealed class DungeonNavNode
     public List<uint> Neighbors = new(); // portal-connected cells only
 }
 
-internal static class DungeonPathfinder
+internal static partial class DungeonPathfinder
 {
     // Angle threshold (degrees) above which a portal edge is classified as a drop.
     // A slope has significant horizontal movement relative to its Z change — its
@@ -89,6 +89,8 @@ internal static class DungeonPathfinder
     {
         _cachedGraph        = null;
         _cachedLandblockKey = 0;
+        _cachedGeometry     = null;
+        _geoLandblock       = 0;
     }
 
     // ── Graph construction ──────────────────────────────────────────────────
@@ -353,9 +355,20 @@ internal static class DungeonPathfinder
     public static NavRouteParser BuildNavRoute(
         List<uint> cellPath,
         Dictionary<uint, DungeonNavNode> graph,
-        double destNS, double destEW)
+        double destNS, double destEW,
+        DungeonGeometry? geo = null, IReadOnlySet<uint>? hazardCells = null,
+        double startNS = double.NaN, double startEW = double.NaN, double startZ = 0, double destZ = 0)
     {
         var route = new NavRouteParser { RouteType = NavRouteType.Once };
+
+        // With the dungeon map geometry: straight on through doorways, straight across rooms.
+        if (geo != null && geo.DoorwayCount > 0 && cellPath.Count > 0 && graph.TryGetValue(cellPath[0], out var s0))
+        {
+            double sNs = double.IsNaN(startNS) ? s0.NS : startNS, sEw = double.IsNaN(startEW) ? s0.EW : startEW;
+            route.Points.AddRange(BuildPathPoints(cellPath, graph, geo, hazardCells, sNs, sEw, startZ, destNS, destEW, destZ, out _));
+            route.Points.Add(new NavPoint { Type = NavPointType.Point, NS = destNS, EW = destEW, Z = destZ / 240.0 });
+            return route;
+        }
 
         for (int i = 0; i + 1 < cellPath.Count; i++)
         {
@@ -409,7 +422,7 @@ internal static class DungeonPathfinder
             changed = false;
             for (int i = 1; i + 1 < route.Points.Count; i++)
             {
-                if (route.Points[i].Type != NavPointType.Point) continue;
+                if (!NavRouteParser.IsPlainWaypoint(route.Points[i].Type)) continue;
                 if (SegDistYards(route.Points[i - 1], route.Points[i + 1], route.Points[i]) < thresholdYards)
                 {
                     route.Points.RemoveAt(i--);
@@ -530,9 +543,18 @@ internal static class DungeonPathfinder
     public static NavRouteParser BuildPatrolRoute(
         Dictionary<uint, DungeonNavNode> graph,
         uint startCell,
-        IReadOnlySet<uint>? hazardCells = null)
+        IReadOnlySet<uint>? hazardCells = null,
+        DungeonGeometry? geo = null)
     {
         var mainRoute = GetMainRouteNodes(graph, startCell, hazardCells);
+
+        // With the dungeon map geometry: the same coverage over rooms instead of cells, rooms
+        // crossed directly, doorways taken straight on (DungeonPathfinder.Rooms.cs).
+        if (geo != null && geo.DoorwayCount > 0)
+        {
+            var byRoom = BuildRoomPatrol(graph, startCell, mainRoute, hazardCells, geo);
+            if (byRoom != null && byRoom.Points.Count > 0) return byRoom;
+        }
 
         // Undirected walkable subgraph over mainRoute (portal-adjacent, non-drop). mainRoute is
         // already hazard-filtered, so membership there implies non-hazard.
@@ -715,7 +737,8 @@ internal static class DungeonPathfinder
         double playerNS, double playerEW, float playerZ,
         double destNS,   double destEW,
         out int nodeCount, out int pathLength,
-        IReadOnlySet<uint>? hazardCells = null)
+        IReadOnlySet<uint>? hazardCells = null,
+        DungeonLOS? los = null)
     {
         nodeCount  = 0;
         pathLength = 0;
@@ -736,6 +759,7 @@ internal static class DungeonPathfinder
         pathLength = path.Count;
         if (pathLength == 0) return null;
 
-        return BuildNavRoute(path, graph, destNS, destEW);
+        var geo = GetGeometry(landblockKey, cellDat, los);
+        return BuildNavRoute(path, graph, destNS, destEW, geo, hazardCells, playerNS, playerEW, playerZ, playerZ);
     }
 }

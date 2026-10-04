@@ -18,11 +18,35 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Interfaces shared with other RynthSuite plugins (RynthLua uses RynthAi.Script, RynthNet RynthAi.Status). -->
+    <Compile Include="..\Shared\RynthAiScriptApi.cs" Link="Shared\RynthAiScriptApi.cs" />
+    <!-- RynthNet reads the bot state through RynthAi.Status. -->
+    <Compile Include="..\Shared\RynthAiStatusApi.cs" Link="Shared\RynthAiStatusApi.cs" />
+    <!-- RynthNav's navmesh path queries (stuck-recovery detours outdoors). -->
+    <Compile Include="..\Shared\RynthNavPathApi.cs" Link="Shared\RynthNavPathApi.cs" />
+    <!-- One logged, guarded way to use an object (who used what, and why). -->
+    <Compile Include="..\Shared\UseAudit.cs" Link="Shared\UseAudit.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Offline tests (Tools\RynthCore.RynthAiHostTests) reach internal types. Test-only; no runtime effect. -->
+    <InternalsVisibleTo Include="RynthCore.RynthAiHostTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="Combat\SpellData.txt" />
+    <!-- Creature weaknesses (ops/rynth-creature-resists.py builds both). -->
+    <EmbeddedResource Include="CreatureData\creature_resists.tsv" />
+    <EmbeddedResource Include="CreatureData\creature_types.txt" />
+    <!-- Creature weakness table (wcid -> damage multipliers) from the world database. Built in,
+         and also copied next to the DLL as Data\creature_weakness.json; a copy in
+         C:\Games\RynthSuite\RynthAi\Data wins over the built-in one. -->
+    <EmbeddedResource Include="Data\creature_weakness.json" />
+    <None Include="Data\creature_weakness.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

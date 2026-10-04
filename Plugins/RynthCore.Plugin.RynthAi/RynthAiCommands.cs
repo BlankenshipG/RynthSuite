@@ -7,6 +7,7 @@ using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.Plugin.RynthAi.Meta;
 using RynthCore.Plugin.RynthAi.Raycasting;
 using RynthCore.Loot.VTank;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -25,6 +26,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] === Commands ===");
         ChatLine("[RynthAi] /ra fellow       â€” fellowship diagnostics and queries");
         ChatLine("[RynthAi] /ra help          — show this list");
+        ChatLine("[RynthAi] /ra version       — RynthAi version and build date, and the engine it runs on");
         ChatLine("[RynthAi] /ra power <0-100|auto> — set attack power (auto = recklessness-aware)");
         ChatLine("[RynthAi] /ra cast <spellId> — cast spell on current target");
         ChatLine("[RynthAi] /ra buffs         — show active buff timers");
@@ -33,7 +35,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra cache2        — show raw object cache IDs");
         ChatLine("[RynthAi] /ra attackable    — check if target is attackable");
         ChatLine("[RynthAi] /ra wielded       — show wielded items");
-        ChatLine("[RynthAi] /ra dumpprops     — dump player properties");
+        ChatLine("[RynthAi] /ra dumpprops [0xId] — every property of the selection (else yourself)");
         ChatLine("[RynthAi] /ra mexec <expr>  — evaluate meta expression");
         ChatLine("[RynthAi] /ra listvars      — show session variables");
         ChatLine("[RynthAi] /ra listpvars     — show persistent variables");
@@ -55,6 +57,12 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra buildinfo     — nearby geometry info");
         ChatLine("[RynthAi] /ra navdebug      — show nav coordinate/debug info");
         ChatLine("[RynthAi] /ra addnavpt      — append a waypoint at current location to loaded nav");
+        ChatLine("[RynthAi] /ra nav save [name] — save the route; a name saves it as <name>.nav");
+        ChatLine("[RynthAi] /ra nav load <name> — load a nav from NavProfiles");
+        ChatLine("[RynthAi] /ra nav list        — list the navs in NavProfiles");
+        ChatLine("[RynthAi] /ra lua run <name>  — run a RynthLua script (same as /lua run; also stop, list, exec <code>)");
+        ChatLine("[RynthAi] /ra items fill      — add weapons, healing kits, lockpicks and pet essences from your pack");
+        ChatLine("[RynthAi] /ra offhand [auto|shield|weapon|none] [rule] — the off hand (shield / dual wield), global or for a Monsters rule; dual on|off");
         ChatLine("[RynthAi] /ra dunnav <NS> <EW>  — navigate to NS/EW coords through dungeon (no nav file needed)");
         ChatLine("[RynthAi] /ra dunnav-patrol      — circular hunt patrol through the whole dungeon (no nav file needed)");
         ChatLine("[RynthAi] /ra hazard add|del|list|near — mark current cell as lava/acid so patrol avoids it");
@@ -71,6 +79,10 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra why           — one-glance diagnosis of why the bot is idle/attacking");
         ChatLine("[RynthAi] /ra start | stop   — start/stop the macro from chat");
         ChatLine("[RynthAi] /ra pause [sec]    — stop the macro, auto-resume after sec (default 60)");
+        ChatLine("[RynthAi] /ra vtankyield [on|off] — with Decal: stop when VTank starts (one bot per client)");
+        ChatLine("[RynthAi] /ra metamgr on|off|status — Meta Manager: load a meta when a timer or a /myquests quest timer runs out (Meta panel, Schedule)");
+        ChatLine("[RynthAi] /ra metamgr poll [min] — check /myquests now, or set how often it checks (default 5 min)");
+        ChatLine("[RynthAi] /ra metamgr start <#> [min] | stop <#> | reset <#|all> — run a countdown rule, stop it, re-arm a rule");
         ChatLine("[RynthAi] /ra navstate      — dump navigation state machine snapshot");
         ChatLine("[RynthAi] /ra salvstate     — dump salvage state machine snapshot");
         ChatLine("[RynthAi] /ra clearbusy     — force-clear busy state (hourglass cursor)");
@@ -82,6 +94,72 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra settings loadchar <name> — load named settings profile (create from current if new)");
         ChatLine("[RynthAi] /ub autovendor [profile.utl|cancel] — run AutoVendor at the open vendor (TestMode on by default)");
         ChatLine("[RynthAi] /ub vendor open[p] <name|id|selected> | opencancel | addbuy[p]/addsell[p] [n] <item> | buyall | sellall | clearbuy | clearsell");
+    }
+
+    /// <summary>
+    /// /ra offhand: the off hand (the Shield slot). Without arguments it shows the settings;
+    /// "/ra offhand auto|shield|weapon|none" sets the global one; with a Monsters rule's name
+    /// after it, that rule's ("default" hands the rule back to the global one);
+    /// "/ra offhand dual on|off" makes Auto prefer dual wield over a shield.
+    /// </summary>
+    private void HandleOffhandCommand(string[] parts)
+    {
+        var settings = _dashboard?.Settings;
+        if (settings == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+
+        if (parts.Length < 3)
+        {
+            var global = OffhandRules.Parse(settings.OffhandDefault, OffhandMode.Auto);
+            ChatLine($"[RynthAi] Offhand: {OffhandRules.Label(global)}; Auto prefers dual wield: {(settings.PreferDualWield ? "on" : "off")}");
+            foreach (var r in settings.MonsterRules)
+            {
+                if (r.OffhandId == OffhandRules.RuleDefault) continue;
+                string what = OffhandRules.RuleMode(r.OffhandId) is OffhandMode m
+                    ? OffhandRules.Label(m)
+                    : $"item 0x{(uint)r.OffhandId:X8} '{_objectCache?[r.OffhandId]?.Name ?? "?"}'";
+                ChatLine($"[RynthAi]   rule '{r.Name}': {what}");
+            }
+            int shields = settings.ItemRules.Count(WeaponList.IsShieldRule);
+            ChatLine($"[RynthAi] {shields} shield(s) in the Items list (Add Selected Weapon adds a shield too).");
+            ChatLine("[RynthAi] Usage: /ra offhand auto|shield|weapon|none [rule name] — /ra offhand default <rule name> — /ra offhand dual on|off");
+            return;
+        }
+
+        string arg = parts[2];
+        if (arg.Equals("dual", StringComparison.OrdinalIgnoreCase))
+        {
+            bool on = parts.Length < 4 || parts[3].Equals("on", StringComparison.OrdinalIgnoreCase) || parts[3] == "1";
+            settings.PreferDualWield = on;
+            _dashboard!.SaveSettings();
+            ChatLine($"[RynthAi] Auto now prefers {(on ? "dual wield (with the Dual Wield skill and a second listed one-handed weapon)" : "a shield")}.");
+            return;
+        }
+
+        bool toDefault = arg.Equals("default", StringComparison.OrdinalIgnoreCase);
+        if (!toDefault && !OffhandRules.TryParse(arg, out _))
+        {
+            ChatLine("[RynthAi] Usage: /ra offhand auto|shield|weapon|none [rule name] — /ra offhand default <rule name> — /ra offhand dual on|off");
+            return;
+        }
+        var mode = toDefault ? OffhandMode.Auto : OffhandRules.Parse(arg, OffhandMode.Auto);
+
+        if (parts.Length == 3)
+        {
+            if (toDefault) { ChatLine("[RynthAi] Usage: /ra offhand default <rule name>"); return; }
+            settings.OffhandDefault = OffhandRules.SettingValue(mode);
+            _dashboard!.SaveSettings();
+            ChatLine($"[RynthAi] Offhand set to {OffhandRules.Label(mode)} (for every Monsters rule that doesn't choose its own).");
+            return;
+        }
+
+        string ruleName = string.Join(" ", parts.Skip(3));
+        var rule = settings.MonsterRules.FirstOrDefault(r => r.Name.Equals(ruleName, StringComparison.OrdinalIgnoreCase));
+        if (rule == null) { ChatLine($"[RynthAi] No Monsters rule named '{ruleName}'."); return; }
+        rule.OffhandId = toDefault ? OffhandRules.RuleDefault : OffhandRules.RuleValue(mode);
+        _dashboard!.SaveMonsterRules();
+        ChatLine(toDefault
+            ? $"[RynthAi] Rule '{rule.Name}' uses the global Offhand setting again."
+            : $"[RynthAi] Rule '{rule.Name}': Offhand {OffhandRules.Label(mode)}.");
     }
 
     private void HandlePowerCommand(string[] parts)
@@ -216,6 +294,14 @@ public sealed partial class RynthAiPlugin
 
         ChatLine($"[RynthAi] Raycast: {(_raycast.IsInitialized ? "READY" : "NOT LOADED")}");
         ChatLine($"[RynthAi]   Status: {_raycast.StatusMessage}");
+        // What combat itself uses: READY above said nothing about it, and for a day combat had
+        // no raycast at all while this line (and /ra lostest) worked (see WireRaycastIntoCombat).
+        if (_combatManager == null)
+            ChatLine("[RynthAi]   Combat: no combat manager");
+        else
+            ChatLine($"[RynthAi]   Combat LOS: {(_combatManager.RaycastInitialized ? "wired" : "NOT WIRED")}, " +
+                     $"{(_dashboard?.Settings.EnableRaycasting == true ? "on" : "off")}, " +
+                     $"checks {_combatManager.RaycastCheckCount}, blocked {_combatManager.RaycastBlockCount}");
     }
 
     private void HandleLosTestCommand(string[] parts)
@@ -245,7 +331,7 @@ public sealed partial class RynthAiPlugin
             case "bow":      isArc = true;  arcVelocity = settings?.BowArcVelocity      ?? 25.0f; modeLabel = $"Bow arc (v={arcVelocity:F1})"; break;
             case "crossbow": isArc = true;  arcVelocity = settings?.CrossbowArcVelocity ?? 40.0f; modeLabel = $"Crossbow arc (v={arcVelocity:F1})"; break;
             case "atlatl":   isArc = true;  arcVelocity = settings?.AtlatlArcVelocity   ?? 22.0f; modeLabel = $"Atlatl arc (v={arcVelocity:F1})"; break;
-            case "magic":    isArc = true;  arcVelocity = settings?.MagicArcVelocity    ?? 25.0f; modeLabel = $"Magic arc (v={arcVelocity:F1})"; break;
+            case "magic":    isArc = true;  arcVelocity = settings?.MagicArcVelocity    ?? 40.0f; modeLabel = $"Magic arc (horizontal v={arcVelocity:F1}, from head height)"; break;
             default:
                 ChatLine($"[RynthAi LOS] Unknown mode '{modeArg}'. Use: linear | bow | crossbow | atlatl | magic");
                 return;
@@ -330,7 +416,17 @@ public sealed partial class RynthAiPlugin
                 // arc the missile flies plus the clearance headroom (ceilings indoors).
                 float clearance = settings?.MissileArcClearance ?? 0.5f;
                 bool lineBlocked = RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
-                bool arcBlocked = RaycastEngine.IsBallisticArcBlocked(origin, targetPos, arcVelocity, clearance, geometry, out var arc);
+                // Arc spells: ACE's fixed horizontal speed from the caster's head (what combat's
+                // Arc-when-clear tests before each arc); missiles: the weapon's launch speed.
+                bool arcBlocked;
+                RaycastEngine.ArcLosResult arc;
+                if (modeArg == "magic")
+                {
+                    var magicPath = TargetingFSM.MagicArcPath(origin, targetPos, arcVelocity, out var launch);
+                    arcBlocked = RaycastEngine.IsBallisticArcBlocked(launch, targetPos, in magicPath, clearance, geometry, out arc);
+                }
+                else
+                    arcBlocked = RaycastEngine.IsBallisticArcBlocked(origin, targetPos, arcVelocity, clearance, geometry, out arc);
                 staticBlocked = lineBlocked || arcBlocked;
                 ChatLine($"[RynthAi LOS] Straight line ({(isDungeon ? "multi-ray" : "single-ray")}): {(lineBlocked ? "BLOCKED" : "clear")}");
                 ChatLine($"[RynthAi LOS] Arc: rises {arc.Sag:F2}m above the line, apex {arc.Apex:F2}m above launch, clearance {clearance:F1}m");
@@ -658,14 +754,27 @@ public sealed partial class RynthAiPlugin
             ChatLine($"[RynthAi]   {kv.Key} = {kv.Value}");
     }
 
-    private void HandleDumpPropsCommand()
+    /// <summary>
+    /// /ra dumpprops [0xId] (and /ub propertydump): every property of the given object, else
+    /// the selected one, else the character - as UB's propertydump does. It was always the
+    /// character, whatever was selected.
+    /// </summary>
+    private void HandleDumpPropsCommand(string[] parts)
     {
-        uint playerId = Host.GetPlayerId();
-        if (playerId == 0)
+        uint me = Host.GetPlayerId();
+        if (me == 0)
         {
             ChatLine("[RynthAi] Not logged in.");
             return;
         }
+        uint playerId = me;   // the object dumped (the name below predates the target choice)
+        if (parts.Length >= 3 && uint.TryParse(parts[2].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? parts[2][2..] : parts[2],
+                System.Globalization.NumberStyles.HexNumber, null, out uint given) && given != 0)
+            playerId = given;
+        else if (_currentTargetId != 0)
+            playerId = _currentTargetId;
+        string label = Host.TryGetObjectName(playerId, out string nm) && nm.Length > 0 ? nm : "?";
+        ChatLine($"[RynthAi] === Properties of {label} (0x{playerId:X8}){(playerId == me ? " - nothing selected, your character" : "")} ===");
 
         // Int properties 0-400
         int intCount = 0;
@@ -727,7 +836,42 @@ public sealed partial class RynthAiPlugin
         }
         else ChatLine("[RynthAi] String property API not available.");
 
-        ChatLine($"[RynthAi] Total: {intCount} int, {boolCount} bool, {strCount} string.");
+        // Int64 (0-12: experience, luminance, item XP), float (0-400), data id (0-80) and
+        // instance id (0-50) properties, unnamed. Data ids and instance ids print in hex.
+        int quadCount = 0, floatCount = 0, didCount = 0, iidCount = 0;
+        if (Host.HasGetObjectQuadProperty)
+            for (uint i = 0; i <= 12; i++)
+                if (Host.TryGetObjectQuadProperty(playerId, i, out long q))
+                {
+                    ChatLine($"[RynthAi]   Int64Prop[{i}] = {q}");
+                    quadCount++;
+                }
+        for (uint i = 0; i <= 400; i++)
+            if (Host.TryGetObjectDoubleProperty(playerId, i, out double d))
+            {
+                ChatLine($"[RynthAi]   FloatProp[{i}] = {d.ToString("0.#####", System.Globalization.CultureInfo.InvariantCulture)}");
+                floatCount++;
+            }
+        if (Host.HasGetObjectDataIdProperty)
+            for (uint i = 0; i <= 80; i++)
+                if (Host.TryGetObjectDataIdProperty(playerId, i, out uint did))
+                {
+                    ChatLine($"[RynthAi]   DataIdProp[{i}] = 0x{did:X8}");
+                    didCount++;
+                }
+        if (Host.HasGetObjectInstanceIdProperty)
+            for (uint i = 0; i <= 50; i++)
+                if (Host.TryGetObjectInstanceIdProperty(playerId, i, out uint iid))
+                {
+                    string who = Host.TryGetObjectName(iid, out string wn) && wn.Length > 0 ? $" ({wn})" : "";
+                    ChatLine($"[RynthAi]   InstanceIdProp[{i}] = 0x{iid:X8}{who}");
+                    iidCount++;
+                }
+
+        ChatLine($"[RynthAi] Total: {intCount} int, {boolCount} bool, {strCount} string, {quadCount} int64, {floatCount} float, " +
+                 $"{didCount} data id, {iidCount} instance id.");
+        if (playerId != me && intCount + boolCount + strCount + quadCount + floatCount < 5)
+            ChatLine("[RynthAi] Few properties: the item may not be identified yet - run it again in a moment.");
     }
 
     private void HandleWieldedCommand()
@@ -909,7 +1053,7 @@ public sealed partial class RynthAiPlugin
         for (int i = 0; i < settings.CurrentRoute.Points.Count; i++)
         {
             var point = settings.CurrentRoute.Points[i];
-            if (point.Type != LegacyUi.NavPointType.Point)
+            if (!LegacyUi.NavRouteParser.IsPlainWaypoint(point.Type))
                 continue;
 
             double d = Math.Sqrt(Math.Pow(point.NS - basisNS, 2) + Math.Pow(point.EW - basisEW, 2));
@@ -1011,6 +1155,7 @@ public sealed partial class RynthAiPlugin
         {
             case "on":
             case "leader":
+                settings.FollowNamedTargetId = 0;
                 settings.FollowMode = true;
                 settings.EnableNavigation = true;   // follow is a nav activity
                 ChatLine(settings.IsMacroRunning
@@ -1020,6 +1165,7 @@ public sealed partial class RynthAiPlugin
             case "off":
                 settings.FollowMode = false;
                 settings.FollowTargetId = 0;
+                settings.FollowNamedTargetId = 0;
                 ChatLine("[RynthAi] Follow OFF.");
                 break;
             case "status":
@@ -1029,8 +1175,26 @@ public sealed partial class RynthAiPlugin
                          $"isLeader={(_fellowshipTracker?.IsLeader ?? false)}");
                 break;
             default:
-                ChatLine("[RynthAi] Usage: /ra follow [on|off|status]");
+            {
+                // /ra follow <name>: follow that character (exact name, else partial).
+                string name = string.Join(" ", parts, 2, parts.Length - 2).Trim();
+                WorldObject? who = null;
+                if (_objectCache != null)
+                {
+                    foreach (var wo in _objectCache.GetLandscapeObjects())
+                        if (wo.Id != unchecked((int)_playerId) && string.Equals(wo.Name, name, StringComparison.OrdinalIgnoreCase)) { who = wo; break; }
+                    if (who == null)
+                        foreach (var wo in _objectCache.GetLandscapeObjects())
+                            if (wo.Id != unchecked((int)_playerId) && wo.ObjectClass != RynthCore.Loot.AcObjectClass.Corpse
+                                && wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0) { who = wo; break; }
+                }
+                if (who == null) { ChatLine($"[RynthAi] Follow: no one named '{name}' nearby. Usage: /ra follow [on|off|status|<name>]"); break; }
+                settings.FollowNamedTargetId = unchecked((uint)who.Id);
+                settings.FollowMode = true;
+                settings.EnableNavigation = true;
+                ChatLine($"[RynthAi] Follow ON — following {who.Name}.");
                 break;
+            }
         }
     }
 
@@ -1059,21 +1223,41 @@ public sealed partial class RynthAiPlugin
             return;
         }
 
-        var newPt = new NavPoint { NS = ns, EW = ew, Z = z };
+        var newPt = new NavPoint { NS = ns, EW = ew, Z = z / 240.0 };   // nav units, like NS/EW
         settings.CurrentRoute.Points.Add(newPt);
 
         string navName = string.IsNullOrEmpty(settings.CurrentNavPath)
             ? "(unsaved)"
             : System.IO.Path.GetFileName(settings.CurrentNavPath);
 
-        if (!string.IsNullOrEmpty(settings.CurrentNavPath))
-        {
-            try { settings.CurrentRoute.Save(settings.CurrentNavPath); }
-            catch (Exception ex) { ChatLine($"[RynthAi] Added point but save failed: {ex.Message}"); }
-        }
+        _dashboard?.AutoSaveRoute();
 
         int idx = settings.CurrentRoute.Points.Count - 1;
-        ChatLine($"[RynthAi] Added waypoint [{idx}] NS={ns:F3} EW={ew:F3} Z={z:F2} to {navName}.");
+        ChatLine($"[RynthAi] Added waypoint [{idx}] NS={ns:F3} EW={ew:F3} Z={z / 240.0:F4} to {navName}.");
+    }
+
+    private void HandleNavCommand(string[] parts)
+    {
+        if (_dashboard == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        string sub = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
+        string rest = parts.Length > 3 ? string.Join(" ", parts, 3, parts.Length - 3) : "";
+        switch (sub)
+        {
+            case "save":
+                ChatLine(_dashboard.SaveRoute(rest.Length > 0 ? rest : null));
+                break;
+            case "load":
+                if (rest.Length == 0) { ChatLine("[RynthAi] Usage: /ra nav load <name>"); break; }
+                ChatLine(_dashboard.LoadNavByName(rest));
+                break;
+            case "list":
+                var names = _dashboard.NavFileNames();
+                ChatLine(names.Count == 0 ? "[RynthAi] No navs in NavProfiles." : $"[RynthAi] Navs ({names.Count}): {string.Join(", ", names)}");
+                break;
+            default:
+                ChatLine("[RynthAi] /ra nav save [name] | /ra nav load <name> | /ra nav list");
+                break;
+        }
     }
 
     private void HandleScanCommand()
@@ -1315,6 +1499,45 @@ public sealed partial class RynthAiPlugin
         }
     }
 
+    // ── Loot Editor (engine ImGui panel) ────────────────────────────────────
+
+    private LootEditorBridge? _lootEditor;
+
+    /// <summary>The in-game Loot Editor's bridge (PluginExports). Created on first use.</summary>
+    internal LootEditorBridge LootEditor => _lootEditor ??= new LootEditorBridge(
+        () => _dashboard?.Settings?.CurrentLootPath ?? string.Empty,
+        OnLootProfileEdited,
+        Vendor.AutoVendorManager.MainProfileDir);
+
+    /// <summary>
+    /// The Loot Editor saved <paramref name="path"/>: drop the cached copies and,
+    /// when it is the loot profile in use, load it again now (its chat line says so).
+    /// Plugin pump thread (the editor's export), the same thread as the tick.
+    /// </summary>
+    private void OnLootProfileEdited(string path)
+    {
+        bool Same(string a) => RynthCore.Loot.Editing.LootEditSession.SamePath(a, path);
+        if (Same(_loadedLootProfilePath))
+        {
+            _loadedLootProfile = null;
+            _loadedLootProfileTime = DateTime.MinValue;
+        }
+        if (Same(_nativeLootProfilePath))
+        {
+            _nativeLootProfile = null;
+            _nativeLootProfileTime = DateTime.MinValue;
+        }
+        string name = System.IO.Path.GetFileName(path);
+        if (!Same(_dashboard?.Settings?.CurrentLootPath ?? string.Empty))
+        {
+            ChatLine($"[RynthAi] Loot Editor saved {name}.");
+            return;
+        }
+        ChatLine($"[RynthAi] Loot Editor saved {name}; reloading it.");
+        if (path.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) TryLoadNativeLootProfile(out _, out _);
+        else TryLoadLootProfile(string.Empty, out _, out _);
+    }
+
     private bool TryLoadNativeLootProfile(out RynthCore.Loot.LootProfile profile, out string loadedPath)
     {
         string candidatePath = (_dashboard?.Settings?.CurrentLootPath ?? string.Empty).Trim().Trim('"');
@@ -1383,6 +1606,8 @@ public sealed partial class RynthAiPlugin
                  + (_buffManager != null ? $"  buffSkip='{_buffManager.GetStateSnapshot().LastBuffSkipReason}'" : ""));
         if (s.ScannedCount > 0)
             ChatLine($"[RynthAi] closest: '{s.ClosestScannedName}' @ {s.ClosestScannedDist:0.0}yd");
+        ChatLine($"[RynthAi] melee/missile: lastSwing={_combatManager.LastSwingEvidenceDescription}  attackRebinds={_combatManager.AttackRebinds}  "
+                 + $"stallWatch episodes={_combatManager.StallEpisodes} recovered={_combatManager.StallRecoveries}");
 
         // Nav and salvage each own a piece of the "standing there" class, so name
         // what they're holding rather than leaving it to /ra navstate + /ra salvstate.
@@ -1390,6 +1615,8 @@ public sealed partial class RynthAiPlugin
         {
             var n = _navigationEngine.GetStateSnapshot();
             string navHold = !n.EnableNavigation ? "nav disabled"
+                           : n.Recovery.StartsWith("area hold", StringComparison.Ordinal) ? n.Recovery
+                           : n.Recovery.StartsWith("detour", StringComparison.Ordinal) ? $"recovering: {n.Recovery}"
                            : n.InRecovery        ? $"STUCK-recovery {n.RecoveryKind} ({n.RecoveryRemainMs}ms, x{n.StuckCount})"
                            : n.InPause           ? $"route pause ({n.PauseRemainMs}ms)"
                            : n.PortalState != "None" ? $"portal/recall {n.PortalState}"
@@ -1453,7 +1680,7 @@ public sealed partial class RynthAiPlugin
         ChatLine($"[RynthAi] mode cached={cachedMode}  live={liveMode}  desired={desiredMode}");
         ChatLine($"[RynthAi] activeTargetId=0x{(uint)s.ActiveTargetId:X8}  lockedTargetId=0x{(uint)s.LockedTargetId:X8}  facing={s.FacingTarget}");
         ChatLine($"[RynthAi] scanned={s.ScannedCount}  closest=0x{(uint)s.ClosestScannedId:X8} '{s.ClosestScannedName}' @ {s.ClosestScannedDist:F1}yd");
-        ChatLine($"[RynthAi] weapon=0x{(uint)s.PickedWeaponId:X8} '{s.PickedWeaponName}' wieldLoc={s.PickedWeaponWieldLoc} ammoWielded={s.HasWieldedAmmoFlag}");
+        ChatLine($"[RynthAi] weapon=0x{(uint)s.PickedWeaponId:X8} '{s.PickedWeaponName}' ({s.PickedWeaponWhy}) wieldLoc={s.PickedWeaponWieldLoc} ammoWielded={s.HasWieldedAmmoFlag}");
         ChatLine($"[RynthAi] busy={s.BusyCount}  sinceAtk={sinceAttackS:F1}s sinceStance={sinceStanceS:F1}s sinceEquip={sinceEquipS:F1}s sinceLost={sinceLostS:F1}s");
 
         // Dump every cache-known object that's wielded — using Host.TryGetObjectWielderInfo
@@ -1528,6 +1755,7 @@ public sealed partial class RynthAiPlugin
             case "resume":
                 _macroResumeAt = 0;
                 if (running) { ChatLine("[RynthAi] Macro already RUNNING."); return; }
+                if (RefuseMacroStartForVTank()) return;   // one bot per client (Decal bridge)
                 dash.TogglePanelMacro();
                 ChatLine("[RynthAi] Macro STARTED.");
                 return;
@@ -1576,6 +1804,7 @@ public sealed partial class RynthAiPlugin
         ChatLine($"[RynthAi] moving={n.MovingForward} turning={n.Turning} stopped={n.Stopped}");
         ChatLine($"[RynthAi] pause={n.InPause} ({n.PauseRemainMs}ms)  portal={n.PortalState}");
         ChatLine($"[RynthAi] recovery={n.InRecovery} kind={n.RecoveryKind} remain={n.RecoveryRemainMs}ms  stuckCount={n.StuckCount}");
+        ChatLine($"[RynthAi] way back: {n.Recovery}  (tries at this waypoint: {n.DetourAttempts})");
         if (n.FollowMode)
             ChatLine($"[RynthAi] follow: target=0x{n.FollowTargetId:X8}");
         ChatLine($"[RynthAi] status: {n.StatusLine}");
@@ -1585,7 +1814,8 @@ public sealed partial class RynthAiPlugin
                  + $"dist={n.DistYd:F1} err={n.HeadingErrDeg:F1} sinceSteer={n.MsSinceSteer}ms "
                  + $"moving={n.MovingForward} turning={n.Turning} stopped={n.Stopped} "
                  + $"pause={n.InPause}/{n.PauseRemainMs}ms portal={n.PortalState} "
-                 + $"recovery={n.InRecovery}/{n.RecoveryKind}/{n.RecoveryRemainMs}ms stuck={n.StuckCount}");
+                 + $"recovery={n.InRecovery}/{n.RecoveryKind}/{n.RecoveryRemainMs}ms stuck={n.StuckCount} "
+                 + $"wayBack='{n.Recovery}' tries={n.DetourAttempts}");
     }
 
     /// <summary>/ra salvstate — dump the salvage FSM snapshot: which phase, what's queued,
@@ -1598,7 +1828,8 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] === Salvage State ===");
         ChatLine($"[RynthAi] panelApi={v.HasPanelApi}  combineEnabled={v.EnableCombine}");
         ChatLine($"[RynthAi] phase={v.Phase} readyIn={v.PhaseReadyInMs}ms  queue={v.QueueCount}  panelEverOpened={v.PanelEverOpened}");
-        ChatLine($"[RynthAi] item=0x{v.CurrentItemId:X8}  ust=0x{v.CurrentUstId:X8}");
+        ChatLine($"[RynthAi] batch={v.BatchSize} first=0x{v.CurrentItemId:X8}  ust=0x{v.CurrentUstId:X8}  tracked={v.TrackedItems}");
+        ChatLine($"[RynthAi] items: {v.ItemsSalvaged} salvaged in {v.Batches} batch(es), {v.ItemsSkipped} skipped (reasons in the log)");
         ChatLine($"[RynthAi] combine: phase={v.CombinePhase} grp={v.CombineGroupIdx + 1}/{v.CombineGroupCount} addIdx={v.CombineAddIdx} openAttempts={v.CombineOpenAttempts}");
         ChatLine($"[RynthAi] combine: pendingScan={v.PendingCombineScan} sinceSweep={(v.MsSinceCombineSweep < 0 ? "never" : (v.MsSinceCombineSweep / 1000) + "s")}");
         ChatLine($"[RynthAi] retries: tracked={v.RetryTrackedItems} backoffIn={v.RetryBackoffInMs}ms");
@@ -1608,7 +1839,7 @@ public sealed partial class RynthAiPlugin
             : "[RynthAi] lastError: none");
 
         Host.Log($"[RynthAi salvstate] panelApi={v.HasPanelApi} combine={v.EnableCombine} phase={v.Phase}/{v.PhaseReadyInMs}ms "
-                 + $"queue={v.QueueCount} item=0x{v.CurrentItemId:X8} ust=0x{v.CurrentUstId:X8} "
+                 + $"queue={v.QueueCount} batch={v.BatchSize} item=0x{v.CurrentItemId:X8} ust=0x{v.CurrentUstId:X8} tracked={v.TrackedItems} salvaged={v.ItemsSalvaged} skipped={v.ItemsSkipped} "
                  + $"cphase={v.CombinePhase} grp={v.CombineGroupIdx}/{v.CombineGroupCount} add={v.CombineAddIdx} "
                  + $"openAttempts={v.CombineOpenAttempts} pendingScan={v.PendingCombineScan} sinceSweep={v.MsSinceCombineSweep}ms "
                  + $"retries={v.RetryTrackedItems} backoff={v.RetryBackoffInMs}ms ok={v.GroupsSucceeded} fail={v.GroupsFailed} "
@@ -1759,9 +1990,10 @@ public sealed partial class RynthAiPlugin
     }
 
     // Broader reset for the "AC wedged with item-action notice" failure mode
-    // that /ra clearbusy can't fix — the orphan attack from a missing
-    // CancelAttack at the Combat→Buffing handoff lives outside the
-    // CommandInterpreter / m_cBusy state that clearbusy targets.
+    // that /ra clearbusy can't fix. The notice comes from two client globals
+    // outside the CommandInterpreter / m_cBusy state that clearbusy targets:
+    // AC's pending-item-request slot ("one item at a time") and its attacking
+    // flag ("while attacking"); /rc unlockactions (engine) clears both.
     private void HandlePanicCommand()
     {
         int before = Host.HasGetBusyState ? Host.GetBusyState() : -1;
@@ -1771,6 +2003,11 @@ public sealed partial class RynthAiPlugin
         if (Host.HasChangeCombatMode)  Host.ChangeCombatMode(CombatMode.NonCombat);
         if (Host.HasStopCompletely)    Host.StopCompletely();
         if (Host.HasForceResetBusyCount) Host.ForceResetBusyCount();
+        // The item-action lock itself is not the busy count: AC refuses every use,
+        // equip and move while its pending-item-request slot or attacking flag is
+        // set, and nothing above touches those. The engine opens them (its
+        // /rc unlockactions; an older engine just logs the unknown command).
+        if (Host.HasInvokeChatParser)  Host.InvokeChatParser("/rc unlockactions");
 
         _busyCount = 0;
         _busyCountLastIncrementAt = 0;
@@ -1779,19 +2016,19 @@ public sealed partial class RynthAiPlugin
         if (_buffManager != null)   _buffManager.BusyCount = 0;
 
         int after = Host.HasGetBusyState ? Host.GetBusyState() : -1;
-        ChatLine($"[RynthAi] Panic complete (busy {before} → {after}). If still stuck, relog.");
+        ChatLine($"[RynthAi] Panic complete (busy {before} → {after}). If items still won't use or equip, /rc actionstate shows why.");
     }
 
     private void HandleForceBuff()
     {
         if (_buffManager == null) { ChatLine("[RynthAi] Buff manager not ready."); return; }
-        _buffManager.ForceFullRebuff();
+        _buffManager.RequestForceFullRebuff();   // chat commands run on AC's thread; applied on the pump
     }
 
     private void HandleCancelForceBuff()
     {
         if (_buffManager == null) { ChatLine("[RynthAi] Buff manager not ready."); return; }
-        _buffManager.CancelBuffing();
+        _buffManager.RequestCancelBuffing();
     }
 
     private void HandleBusyInfoCommand()
@@ -1979,7 +2216,7 @@ public sealed partial class RynthAiPlugin
             var tgt = FindObject(tgtName, inv, land, partial);
             if (src == null) { ChatLine($"[RynthAi] Not found: '{srcName}'"); return; }
             if (tgt == null) { ChatLine($"[RynthAi] Not found: '{tgtName}'"); return; }
-            Host.UseObjectOn((uint)src.Id, (uint)tgt.Id);
+            Host.UseOnFor((uint)src.Id, (uint)tgt.Id, "Command", "/ra use X on Y", UseKind.Asked);
             ChatLine($"[RynthAi] UseObjectOn: {src.Name} (0x{src.Id:X}) → {tgt.Name} (0x{tgt.Id:X})");
             return;
         }
@@ -1991,7 +2228,7 @@ public sealed partial class RynthAiPlugin
             if (!partial) SuggestPartialMatches(argStr.Trim(), inv, land, parts[1].ToLowerInvariant());
             return;
         }
-        Host.UseObject((uint)obj.Id);
+        Host.UseFor((uint)obj.Id, "Command", "/ra use", UseKind.Asked);
         ChatLine($"[RynthAi] UseObject: {obj.Name} (0x{obj.Id:X})");
     }
 
@@ -2055,10 +2292,12 @@ public sealed partial class RynthAiPlugin
 
         // allItems: give every matching stack; otherwise honour optional leading count (default 1)
         int maxCount = allItems ? int.MaxValue : 1;
+        bool countGiven = false;
         string[] itemTokens = itemPart.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
         if (!allItems && itemTokens.Length >= 2 && int.TryParse(itemTokens[0], out int parsedCount) && parsedCount > 0)
         {
             maxCount = parsedCount;
+            countGiven = true;
             itemPart = itemTokens[1].Trim();
         }
 
@@ -2085,6 +2324,8 @@ public sealed partial class RynthAiPlugin
         var matches = new List<WorldObject>();
         foreach (var wo in _objectCache.GetDirectInventory(forceRefresh: true))
         {
+            // GetDirectInventory includes worn and wielded gear; never give that away.
+            if (WorldObjectCache.IsWieldedByPlayer(Host, wo)) continue;
             bool hit = itemMatch switch
             {
                 GiveItemMatch.Exact   => string.Equals(wo.Name, itemPart, StringComparison.OrdinalIgnoreCase),
@@ -2107,6 +2348,34 @@ public sealed partial class RynthAiPlugin
             }
             ChatLine($"[RynthAi] Queued {matches.Count} stack(s) matching '{itemPart}' → {target.Name}");
         }
+        else if (countGiven)
+        {
+            // The count is how many items to give. It used to cap only how many stacks
+            // were collected, and then the whole first stack went: "/ra give 5 Pyreal
+            // to X" handed over the entire pile. Give min(count, stack) from each stack
+            // until the count is met (the give carries the amount; the server splits).
+            int remaining = maxCount;
+            var gives = new List<(WorldObject Item, int Amount)>();
+            foreach (var item in matches)
+            {
+                if (remaining <= 0) break;
+                int stackSize = Math.Max(1, item.Values(LongValueKey.StackCount, 1));
+                int amount = Math.Min(stackSize, remaining);
+                gives.Add((item, amount));
+                remaining -= amount;
+            }
+            if (gives.Count == 1)
+            {
+                Host.MoveItemExternal((uint)gives[0].Item.Id, (uint)target.Id, gives[0].Amount);
+                ChatLine($"[RynthAi] Giving {gives[0].Amount} x '{gives[0].Item.Name}' to {target.Name}");
+            }
+            else
+            {
+                foreach (var (item, amount) in gives)
+                    EnqueueGive((uint)item.Id, (uint)target.Id, amount);
+                ChatLine($"[RynthAi] Queued {maxCount - remaining} item(s) from {gives.Count} stack(s) matching '{itemPart}' → {target.Name}");
+            }
+        }
         else
         {
             var item = matches[0];
@@ -2114,6 +2383,21 @@ public sealed partial class RynthAiPlugin
             Host.MoveItemExternal((uint)item.Id, (uint)target.Id, stackSize);
             ChatLine($"[RynthAi] Giving '{item.Name}' to {target.Name}");
         }
+    }
+
+    /// <summary>
+    /// Items a profile give must skip: GetDirectInventory includes worn and wielded
+    /// gear, and a broad Keep rule (by object class) would hand over the character's
+    /// armor, its weapon in hand, or a Weapons-tab weapon waiting in the pack.
+    /// </summary>
+    private bool IsGiveProfileExempt(WorldObject item)
+    {
+        if (WorldObjectCache.IsWieldedByPlayer(Host, item)) return true;
+        var rules = _dashboard?.Settings?.ItemRules;
+        if (rules != null)
+            foreach (var rule in rules)
+                if (rule.Id == item.Id) return true;
+        return false;
     }
 
     private void HandleGiveProfileCommand(string[] parts, bool partialPlayer)
@@ -2159,6 +2443,7 @@ public sealed partial class RynthAiPlugin
             var nativeProfile = RynthCore.Loot.LootProfile.Load(profilePath);
             foreach (var item in _objectCache.GetDirectInventory(forceRefresh: true))
             {
+                if (IsGiveProfileExempt(item)) continue;
                 var (action, _) = Loot.LootEvaluator.Classify(nativeProfile, item, null);
                 if (action != RynthCore.Loot.LootAction.Keep) continue;
                 int stackSize = Math.Max(1, item.Values(LongValueKey.StackCount, 1));
@@ -2172,6 +2457,7 @@ public sealed partial class RynthAiPlugin
             var lootCtx   = new VTankLootContext(Host, Host.GetPlayerId()) { Cache = _objectCache };
             foreach (var item in _objectCache.GetDirectInventory(forceRefresh: true))
             {
+                if (IsGiveProfileExempt(item)) continue;
                 VTankLootRule? matched = null;
                 foreach (var rule in vtProfile.Rules)
                     if (VTankLootEvaluator.Match(rule, item, lootCtx)) { matched = rule; break; }
@@ -2238,7 +2524,8 @@ public sealed partial class RynthAiPlugin
             landblockKey, cellDat,
             playerNS, playerEW, playerWZ,
             destNS,   destEW,
-            out int nodeCount, out int pathLength);
+            out int nodeCount, out int pathLength,
+            los: _raycast?.GeometryLoader?.DungeonLOS);
 
         if (route == null)
         {
@@ -2246,6 +2533,7 @@ public sealed partial class RynthAiPlugin
             return;
         }
 
+        if (!settings.IsMacroRunning && RefuseMacroStartForVTank()) return;   // one bot per client (Decal bridge)
         settings.IsMacroRunning   = true;
         settings.CurrentRoute     = route;
         settings.ActiveNavIndex   = 0;
@@ -2351,7 +2639,10 @@ public sealed partial class RynthAiPlugin
             }
         }
 
-        var route = DungeonPathfinder.BuildPatrolRoute(graph, startCell, hazards);
+        // The dungeon map geometry (doorways, floors, walls): doorways taken straight on and
+        // big rooms crossed directly. Null (old cell walk) until DungeonLOS is up.
+        var geometry = DungeonPathfinder.GetGeometry(landblockKey, cellDat, _raycast?.GeometryLoader?.DungeonLOS);
+        var route = DungeonPathfinder.BuildPatrolRoute(graph, startCell, hazards, geometry);
 
         // Lead the bot out of the hazard first.
         if (evacuate)
@@ -2376,7 +2667,14 @@ public sealed partial class RynthAiPlugin
         int startIdx = FindFirstLineOfSightWaypoint(route, playerCell, playerLocalX, playerLocalY, patrolWZ);
 
         if (!isRebuild)
+        {
+            if (!settings.IsMacroRunning && RefuseMacroStartForVTank())   // one bot per client (Decal bridge)
+            {
+                _dunPatrolActive = false;
+                return;
+            }
             settings.IsMacroRunning = true;
+        }
         settings.CurrentNavPath   = string.Empty;
         settings.CurrentRoute     = route;
         settings.ActiveNavIndex   = startIdx;
@@ -2398,7 +2696,12 @@ public sealed partial class RynthAiPlugin
         else
         {
             string skipNote = startIdx > 0 ? $", skipped {startIdx} blocked waypoint(s)" : "";
-            ChatLine($"[RynthAi] DunNav-Patrol: {graph.Count} cells, {route.Points.Count} waypoints → circular patrol started{skipNote}{hazardNote}");
+            int doorwayPts = 0;
+            foreach (var p in route.Points) if (p.Doorway) doorwayPts++;
+            string layout = geometry != null && doorwayPts > 0
+                ? $", {doorwayPts} of them lined up on doorways"
+                : geometry == null ? " (dungeon map not loaded yet: cell-centre route)" : "";
+            ChatLine($"[RynthAi] DunNav-Patrol: {graph.Count} cells, {route.Points.Count} waypoints{layout} → circular patrol started{skipNote}{hazardNote}");
         }
     }
 
@@ -2778,7 +3081,7 @@ public sealed partial class RynthAiPlugin
         for (int i = 0; i < route.Points.Count; i++)
         {
             var p = route.Points[i];
-            if (p.Type != NavPointType.Point) continue; // skip pause/chat/portal-action nodes
+            if (!NavRouteParser.IsPlainWaypoint(p.Type)) continue; // skip pause/chat/portal-action nodes
 
             // NavPoint NS/EW use the same basis as NavCoordinateHelper; invert to world:
             //   globalX = (EW * 10 + 1019.5) * 24

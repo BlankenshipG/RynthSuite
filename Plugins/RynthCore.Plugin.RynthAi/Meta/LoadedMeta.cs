@@ -22,4 +22,22 @@ internal sealed class LoadedMeta
     /// silently producing zero or partial rules.
     /// </summary>
     public List<string> Warnings { get; } = new();
+
+    /// <summary>
+    /// The state a freshly loaded meta starts in. VTank always starts a meta in
+    /// "Default"; RynthAi used the first rule's state, and its writer sorts
+    /// states by name, so a saved meta began mid-sequence (e.g. ApostateFinal
+    /// in '1.0 To Sparkling Apostate Shard'). Falls back to the first rule's
+    /// state when there is no Default.
+    /// </summary>
+    public string StartState
+    {
+        get
+        {
+            foreach (var r in Rules)
+                if (string.Equals(r.State, "Default", StringComparison.OrdinalIgnoreCase))
+                    return r.State;
+            return Rules.Count > 0 ? Rules[0].State : "Default";
+        }
+    }
 }

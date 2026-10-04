@@ -46,14 +46,23 @@ public class WorldObjectCache
 
     // OnCreateObject IDs pending classification
     private readonly Queue<uint> _pending = new();
-    private const int MaxClassifyPerTick = 30;
+    // Classification work per tick: up to MaxClassifyPerTick ids, and no more than
+    // ClassifyBudgetMs of the plugin tick once at least MinClassifyPerTick are done. Was a flat
+    // 30, so a 1000-create flood (2026-10-02) took 34+ ticks, longer when the tick slowed.
+    private const int MaxClassifyPerTick = 250;
+    private const int MinClassifyPerTick = 30;
+    private const double ClassifyBudgetMs = 3.0;
+    // Fast retries wait for the next tick: the engine's name/position snapshots only change
+    // between ticks, so the old same-tick re-queue spent all 8 retries in ~10 ms on the same
+    // answer (and logged each one) before parking the id in the 2 s slow-retry.
+    private readonly Queue<uint> _retryNext = new();
 
     // Retry tracking for 0x8000xxxx objects that have no weenie yet (e.g. spawning corpses)
     private readonly Dictionary<uint, int> _classifyRetry = new();
     private const int MaxClassifyRetries = 8;
 
-    // Slow-retry rescue. When the 8-tick fast-retry burst exhausts (all attempts
-    // within ~10 ms because Tick processes 30 pending entries per pass), the uid
+    // Slow-retry rescue. When the 8-tick fast-retry burst exhausts (one attempt per
+    // tick since 2026-10-02, ~250 ms; before that all 8 ran within ~10 ms), the uid
     // moves here instead of being abandoned. Every ReclassifyIntervalSec the
     // entries are flushed back into _pending so the engine has fresh chances to
     // populate name+position. Successful classification evicts the uid at the
@@ -76,7 +85,7 @@ public class WorldObjectCache
     private readonly Dictionary<uint, string> _reclassifySkipState = new();
     private int _reclassifyDiagCount;
     private int _reclassifyDiagSummaryCount;
-    private const int MaxReclassifyDiagLines = 500;
+    private const int MaxReclassifyDiagLines = 40;
     private const int MaxReclassifyDiagSummaries = 60;
 
     // Diagnostic — track every uid OnCreateObject ever saw. Lets HEALTHADD-RESCUE
@@ -85,16 +94,21 @@ public class WorldObjectCache
     // hook never fired for this respawn — the suspected bug). No eviction: a delete +
     // recreate of the same id MUST keep showing seenCreate=1 to be diagnostic-correct.
     private readonly HashSet<uint> _seenCreateObject = new();
-    private int _healthAddLogCount;
-    private int _indexerRescueLogCount;
-    private int _classifyGiveupLogCount;
-    private int _deleteWhilePendingSkipLogCount;
-    private int _deleteBeforeClassifyLogCount;
-    private const int MaxHealthAddDiagLines = 200;
-    private const int MaxIndexerRescueDiagLines = 200;
-    private const int MaxClassifyGiveupLogLines = 200;
-    private const int MaxDeleteWhilePendingSkipLogLines = 200;
-    private const int MaxDeleteBeforeClassifyLogLines = 200;
+
+    // [ClassifyTrace] / [ReclassifyDiag]: a few full lines per kind per session, then counts
+    // and sample ids in one summary line every ReclassifyIntervalSec (see ObjectDiagLog). Was
+    // one line per object per attempt (caps 200-5000), ~950 lines for the 2026-10-02 flood.
+    private readonly ObjectDiagLog _diag;
+    private const string DeleteBeforeClassify = "DELETE-BEFORE-CLASSIFY";
+    private const string HealthAddRescue = "HEALTHADD-RESCUE";
+    private const string DeleteWhilePendingSkip = "DELETE-WHILE-PENDING-SKIP";
+    private const string ClassifyGiveup = "CLASSIFY-GIVEUP";
+    private const string IndexerRescue = "INDEXER-RESCUE";
+    private static readonly string[] TraceNotes =
+    {
+        "noNamePos", "nopos-creature", "nopos-item", "nopos-retry", "nopos-giveup",
+        "pos", "attackable->creature", "healthAdd->creature",
+    };
 
     // ItemType flag constants (AC ITEM_TYPE bitmask)
     private const uint ItemTypeMeleeWeapon              = 0x00000001;
@@ -131,7 +145,18 @@ public class WorldObjectCache
     public WorldObjectCache(RynthCoreHost host)
     {
         _host = host;
+        _diag = new ObjectDiagLog(line => _host.Log(line));
+        _diag.Define(DeleteBeforeClassify, "[ReclassifyDiag]", 10, "seenCreate");
+        _diag.Define(HealthAddRescue, "[ReclassifyDiag]", 10, "seenCreate", "inLandscape", "inById", "wasSkipped");
+        _diag.Define(DeleteWhilePendingSkip, "[ReclassifyDiag]", 10);
+        _diag.Define(ClassifyGiveup, "[ReclassifyDiag]", 10);
+        _diag.Define(IndexerRescue, "[ReclassifyDiag]", 20, "seenCreate");
+        foreach (string note in TraceNotes)
+            _diag.Define(note, "[ClassifyTrace]", 0);   // detail lines: TraceClassify's own per-uid rule
     }
+
+    /// <summary>Summary lines the bounded diagnostics wrote (tests).</summary>
+    internal int DiagSummaryLines => _diag.SummaryLines;
 
     public void SetPlayerId(uint playerId)
     {
@@ -190,11 +215,11 @@ public class WorldObjectCache
             // the object. If a respawn never re-fires OnCreateObject (which would
             // clear this mark), the plugin loses awareness of the uid until the
             // indexer's lazy lookup is forced (typically by a user click).
-            if (id >= 0x80000000u && _deleteBeforeClassifyLogCount < MaxDeleteBeforeClassifyLogLines)
+            if (id >= 0x80000000u)
             {
-                _deleteBeforeClassifyLogCount++;
                 bool seenCreate = _seenCreateObject.Contains(id);
-                _host.Log($"[ReclassifyDiag] 0x{id:X8} DELETE-BEFORE-CLASSIFY seenCreate={(seenCreate ? 1 : 0)}");
+                if (_diag.Note(DeleteBeforeClassify, id, seenCreate ? 1 : 0))
+                    _host.Log($"[ReclassifyDiag] 0x{id:X8} DELETE-BEFORE-CLASSIFY seenCreate={(seenCreate ? 1 : 0)}");
             }
         }
         if (wasInventory)
@@ -227,26 +252,22 @@ public class WorldObjectCache
         // engine's CreateObject hook never fired for this respawn, yet the server is
         // sending vitals for it, meaning the mob exists for AC but was invisible to the
         // plugin until something poked it (typically a user click → QueryHealth response).
-        if (id >= 0x80000000u && _healthAddLogCount < MaxHealthAddDiagLines)
+        bool wasSkipped = _reclassifySkipState.Remove(id); // skip state cleared either way
+        if (id >= 0x80000000u)
         {
-            _healthAddLogCount++;
-            bool wasSkipped = _reclassifySkipState.Remove(id);
             bool seenCreate = _seenCreateObject.Contains(id);
             bool inLandscape = _landscape.Contains(sid);
             bool inById = _byId.ContainsKey(sid);
-            _host.Log($"[ReclassifyDiag] 0x{id:X8} HEALTHADD-RESCUE ratio={healthRatio:0.00} seenCreate={(seenCreate ? 1 : 0)} inLandscape={(inLandscape ? 1 : 0)} inById={(inById ? 1 : 0)} wasSkipped={(wasSkipped ? 1 : 0)}");
-        }
-        else if (_reclassifySkipState.ContainsKey(id))
-        {
-            // Past the log cap — still clean up skip state so the dict doesn't grow unbounded.
-            _reclassifySkipState.Remove(id);
+            int flags = (seenCreate ? 1 : 0) | (inLandscape ? 2 : 0) | (inById ? 4 : 0) | (wasSkipped ? 8 : 0);
+            if (_diag.Note(HealthAddRescue, id, flags))
+                _host.Log($"[ReclassifyDiag] 0x{id:X8} HEALTHADD-RESCUE ratio={healthRatio:0.00} seenCreate={(seenCreate ? 1 : 0)} inLandscape={(inLandscape ? 1 : 0)} inById={(inById ? 1 : 0)} wasSkipped={(wasSkipped ? 1 : 0)}");
         }
 
         // DIAG: a creature first learned via server health update (the
         // "aggressive mob self-rescues" path) — NOT via TryClassify. Lets us
         // correlate a manually-selected mob's id to how/when it entered
         // _creatures vs. why classification missed it earlier.
-        TraceClassify(id, true, true, false, 0u, $"healthAdd->creature hr={healthRatio:0.00}");
+        TraceClassify(id, true, true, false, 0u, "healthAdd->creature", healthRatio: healthRatio);
 
         // If the object was already classified as a Corpse, don't promote it back to Monster.
         // AC fires health=0 events during the creature→corpse transition; if TryClassify already
@@ -295,11 +316,22 @@ public class WorldObjectCache
     public void Tick()
     {
         int pending0;
-        lock (_gate) pending0 = _pending.Count;
+        lock (_gate)
+        {
+            // Last tick's fast retries get their next attempt now.
+            while (_retryNext.Count > 0)
+                _pending.Enqueue(_retryNext.Dequeue());
+            pending0 = _pending.Count;
+        }
 
         int processed = 0;
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        long budget = (long)(System.Diagnostics.Stopwatch.Frequency * ClassifyBudgetMs / 1000.0);
         while (processed < MaxClassifyPerTick)
         {
+            if (processed >= MinClassifyPerTick
+                && System.Diagnostics.Stopwatch.GetTimestamp() - start > budget)
+                break;
             uint uid;
             lock (_gate)
             {
@@ -327,6 +359,7 @@ public class WorldObjectCache
             _lastReclassifyTime = DateTime.Now;
             FlushSlowRetry();
             ReclassifyUnknownDynamics();
+            lock (_gate) _diag.Flush("2 s");
         }
 
         // Full container scan disabled — causes delayed crash when 160+ items in cache
@@ -362,18 +395,33 @@ public class WorldObjectCache
     // already-computed hasName/hasPos/TryGetItemType). Bounded so one login is
     // conclusive without flooding. Dynamic (0x8000+) only — that's the
     // creature/NPC/equipped range the login-mob bug lives in.
-    private int _classifyTrace;
-    // Bumped from 500 while the missing-respawn investigation needs coverage of late
-    // OnCreateObject events (login-burst alone blows the 500 cap in <2s, leaving the
-    // session blind to anything that spawned later).
-    private void TraceClassify(uint uid, bool hasName, bool hasPos, bool gotType, uint flags, string note)
+    // Full trace lines for the first TraceDetailUids dynamic ids of the session, at most
+    // TraceLinesPerUid each (their first attempt and the next distinct step), so a login still
+    // shows how individual objects classified. Every attempt is counted by note in the 2 s
+    // [ClassifyTrace] summary. Was every attempt of every object up to 5000 lines: a create
+    // flood logged each object up to 10 times (8 same-tick retries), 600 lines in seconds.
+    private const int TraceDetailUids = 25;
+    private const int TraceLinesPerUid = 2;
+    private readonly Dictionary<uint, (int Lines, string LastNote)> _traceDetail = new();
+
+    private void TraceClassify(uint uid, bool hasName, bool hasPos, bool gotType, uint flags, string note,
+                               int retry = -1, float healthRatio = -1f)
     {
-        if (_classifyTrace >= 5000 || uid < 0x80000000u) return;
-        _classifyTrace++;
+        if (uid < 0x80000000u) return;
+        _diag.Note(note, uid);
+        if (_traceDetail.TryGetValue(uid, out var seen))
+        {
+            if (seen.Lines >= TraceLinesPerUid || seen.LastNote == note) return;
+        }
+        else if (_traceDetail.Count >= TraceDetailUids)
+            return;
+        _traceDetail[uid] = (seen.Lines + 1, note);
+
         int atk = -1;
         try { if (_host.HasObjectIsAttackable) atk = _host.ObjectIsAttackable(uid) ? 1 : 0; }
         catch { atk = -2; }
-        _host.Log($"[ClassifyTrace] 0x{uid:X8} name={(hasName ? 1 : 0)} pos={(hasPos ? 1 : 0)} gotType={(gotType ? 1 : 0)} flags=0x{flags:X8} creature={((flags & ItemTypeCreature) != 0 ? 1 : 0)} atk={atk} {note}");
+        string extra = retry >= 0 ? $" r={retry}" : healthRatio >= 0f ? $" hr={healthRatio:0.00}" : "";
+        _host.Log($"[ClassifyTrace] 0x{uid:X8} name={(hasName ? 1 : 0)} pos={(hasPos ? 1 : 0)} gotType={(gotType ? 1 : 0)} flags=0x{flags:X8} creature={((flags & ItemTypeCreature) != 0 ? 1 : 0)} atk={atk} {note}{extra}");
     }
 
     private void TryClassify(uint uid)
@@ -396,11 +444,8 @@ public class WorldObjectCache
             // the entity, the delete fired spuriously, or the create-delete-recreate
             // sequence dropped one create), it sits invisible to the plugin until
             // an indexer access rescues it. Pairs with DELETE-BEFORE-CLASSIFY.
-            if (uid >= 0x80000000u && _deleteWhilePendingSkipLogCount < MaxDeleteWhilePendingSkipLogLines)
-            {
-                _deleteWhilePendingSkipLogCount++;
+            if (uid >= 0x80000000u && _diag.Note(DeleteWhilePendingSkip, uid))
                 _host.Log($"[ReclassifyDiag] 0x{uid:X8} DELETE-WHILE-PENDING-SKIP");
-            }
             return;
         }
 
@@ -421,35 +466,50 @@ public class WorldObjectCache
 
         bool hasName = _host.TryGetObjectName(uid, out string name);
         bool hasPos  = _host.TryGetObjectPosition(uid, out _, out _, out _, out _);
-        bool looksLikeCorpse = hasPos && IsCorpseName(name);
 
-        // Object not accessible yet — retry for any dynamic object (weenie may not be ready)
+        // A corpse is a corpse whether or not its position is readable yet. This used to
+        // need hasPos, and a fresh corpse whose name and type (Container) were in the
+        // engine's identity snapshot before its position was fell to the "nopos-item"
+        // branch below: filed as an inventory Container, off the landscape, and never
+        // looked at again (ReclassifyUnknownDynamics only walks the landscape). Your own
+        // fresh kills hit that most (created next to you, classified at once), so looting
+        // never saw them while older corpses of other players' kills were found
+        // (2026-10-03, Dargoth Hera: "Loot All" didn't loot either). Nothing carried
+        // in a pack is named "Corpse of X", and the weenie's corpse flag says so too.
+        bool looksLikeCorpse = IsCorpseName(name) || HasCorpseFlag(uid);
+        if (looksLikeCorpse)
+        {
+            FileAsCorpse(id, uid, name);
+            return;
+        }
+
+        // Object not accessible yet — retry (weenie may not be ready). Names and
+        // positions come from the engine's snapshots, so an object created between two
+        // snapshots reads as neither. That includes static world objects: a portal
+        // (0x7xxxxxxx) used to be dropped here for good, so it was missing from the
+        // radar and "/ub usel <portal>" until a click looked it up (2026-09-29).
         if (!hasName && !hasPos)
         {
             TraceClassify(uid, hasName, hasPos, false, 0u, "noNamePos");
-            if (uid >= 0x80000000u)
             {
                 int retries = _classifyRetry.TryGetValue(uid, out int r) ? r : 0;
                 if (retries < MaxClassifyRetries)
                 {
                     _classifyRetry[uid] = retries + 1;
-                    _pending.Enqueue(uid);
+                    _retryNext.Enqueue(uid); // retry next tick
                 }
                 else
                 {
-                    // Fast-retry burst exhausted (8 ticks ≈ 10 ms because Tick drains
-                    // 30 pending per pass). Hand off to slow-retry: reset the fast
+                    // Fast-retry burst exhausted (8 ticks, one attempt each). Hand off
+                    // to slow-retry: reset the fast
                     // counter so the next attempt gets a fresh 8 ticks, and park the
                     // uid in _slowRetry. FlushSlowRetry re-enqueues it every
                     // ReclassifyIntervalSec until the engine populates name/position.
                     _classifyRetry.Remove(uid);
                     _slowRetry.Add(uid);
 
-                    if (_classifyGiveupLogCount < MaxClassifyGiveupLogLines)
-                    {
-                        _classifyGiveupLogCount++;
+                    if (_diag.Note(ClassifyGiveup, uid))
                         _host.Log($"[ReclassifyDiag] 0x{uid:X8} CLASSIFY-GIVEUP retries={retries} (name+pos unreadable across {MaxClassifyRetries} ticks; parked in slow-retry)");
-                    }
                 }
             }
             return;
@@ -465,13 +525,9 @@ public class WorldObjectCache
         AcObjectClass cls;
         if (isPackItemGuid || !hasPos)
         {
-            if (looksLikeCorpse)
-            {
-                cls = AcObjectClass.Corpse;
-            }
             // Could be pack item, equipped item on 0x8000 range, or spawning dynamic object
             // Check item type flags first
-            else if (_host.TryGetItemType(uid, out uint typeFlags))
+            if (_host.TryGetItemType(uid, out uint typeFlags))
             {
                 if ((typeFlags & ItemTypeCreature) != 0)
                 {
@@ -485,17 +541,17 @@ public class WorldObjectCache
                 }
 
                 TraceClassify(uid, hasName, hasPos, true, typeFlags, "nopos-item");
-                cls = ClassifyByItemType(typeFlags);
+                cls = ClassifyItem(uid, typeFlags);
             }
             else
             {
                 // No weenie/item-type accessible yet — retry for a few ticks
                 int retries = _classifyRetry.TryGetValue(uid, out int r) ? r : 0;
-                TraceClassify(uid, hasName, hasPos, false, 0u, retries < MaxClassifyRetries ? $"nopos-retry r={retries}" : "nopos-giveup");
+                TraceClassify(uid, hasName, hasPos, false, 0u, retries < MaxClassifyRetries ? "nopos-retry" : "nopos-giveup", retry: retries);
                 if (retries < MaxClassifyRetries)
                 {
                     _classifyRetry[uid] = retries + 1;
-                    _pending.Enqueue(uid); // re-queue
+                    _retryNext.Enqueue(uid); // retry next tick
                     return;
                 }
                 // Gave up retrying — fall through to name heuristics
@@ -503,7 +559,10 @@ public class WorldObjectCache
                 cls = ClassifyInventoryItem(name);
             }
 
-            if (cls == AcObjectClass.Corpse)
+            // Portals are world objects: one created before its position is known
+            // was filed as inventory here, so nothing searching the landscape (e.g.
+            // /ub closestportal) could find it (2026-09-28).
+            if (cls == AcObjectClass.Corpse || cls == AcObjectClass.Portal)
             {
                 _creatures.Remove(id);
                 _inventory.Remove(id);
@@ -517,16 +576,6 @@ public class WorldObjectCache
         }
         else
         {
-            if (looksLikeCorpse)
-            {
-                _classifyRetry.Remove(uid);
-                _creatures.Remove(id);
-                _inventory.Remove(id);
-                _landscape.Add(id);
-                _byId[id] = Make(id, name, AcObjectClass.Corpse);
-                return;
-            }
-
             // Has a position — check if it's actually a creature type (equipped items have 0x8000 GUIDs with positions)
             bool gotType = _host.TryGetItemType(uid, out uint typeFlags);
             TraceClassify(uid, hasName, hasPos, gotType, gotType ? typeFlags : 0u, "pos");
@@ -540,12 +589,24 @@ public class WorldObjectCache
                     return;
                 }
 
+                // Portals were left as Unknown landscape below, so nothing looking
+                // for ObjectClass.Portal (/ub closestportal, Lua UsePortal) ever
+                // found one standing in front of it (2026-09-28).
+                if ((typeFlags & ItemTypePortal) != 0)
+                {
+                    _classifyRetry.Remove(uid);
+                    _inventory.Remove(id);
+                    _landscape.Add(id);
+                    _byId[id] = Make(id, name, AcObjectClass.Portal);
+                    return;
+                }
+
                 // Non-creature with a position — could be equipped item on 0x8000 range
                 // or static world object; classify by type flags
                 if ((typeFlags & (ItemTypeMeleeWeapon | ItemTypeMissileWeapon | ItemTypeCaster | ItemTypeArmor | ItemTypeContainer)) != 0)
                 {
                     // Item with a world position = equipped or ground-dropped
-                    cls = ClassifyByItemType(typeFlags);
+                    cls = ClassifyItem(uid, typeFlags);
                     _inventory.Add(id);
                     _landscape.Remove(id);
                     _byId[id] = Make(id, name, cls);
@@ -560,7 +621,7 @@ public class WorldObjectCache
                 if (retries < MaxClassifyRetries)
                 {
                     _classifyRetry[uid] = retries + 1;
-                    _pending.Enqueue(uid);
+                    _retryNext.Enqueue(uid); // retry next tick
                     return;
                 }
                 _classifyRetry.Remove(uid);
@@ -599,6 +660,38 @@ public class WorldObjectCache
         }
     }
 
+    // PublicWeenieDesc._bitfield BF_CORPSE (ObjectDescriptionFlag.Corpse).
+    private const uint BfCorpse = 0x2000;
+
+    /// <summary>The weenie's corpse flag (dynamic objects only; false when the engine can't say).</summary>
+    private bool HasCorpseFlag(uint uid)
+        => uid >= 0x80000000u
+           && _host.HasGetObjectBitfield
+           && _host.TryGetObjectBitfield(uid, out uint bf)
+           && (bf & BfCorpse) != 0;
+
+    /// <summary>Files <paramref name="id"/> as a landscape Corpse (caller holds _gate).</summary>
+    private void FileAsCorpse(int id, uint uid, string? name)
+    {
+        _classifyRetry.Remove(uid);
+        _creatures.Remove(id);
+        if (_inventory.Remove(id)) _inventoryDirty = true;
+        _landscape.Add(id);
+        _byId[id] = Make(id, name ?? string.Empty, AcObjectClass.Corpse);
+    }
+
+    // Bounded log for corpses found filed as something else and moved to Corpse.
+    private int _corpseRescueLogLines;
+    private const int MaxCorpseRescueLogLines = 20;
+
+    private void LogCorpseRescue(uint uid, string name, AcObjectClass was, string where)
+    {
+        if (_corpseRescueLogLines >= MaxCorpseRescueLogLines) return;
+        _corpseRescueLogLines++;
+        _host.Log($"[RynthAi] Corpse 0x{uid:X8} '{name}' was filed as {was} ({where}); now a Corpse"
+                  + (_corpseRescueLogLines == MaxCorpseRescueLogLines ? " (further rescues counted only)" : ""));
+    }
+
     /// <summary>
     /// Re-enqueue every uid that's currently parked in <see cref="_slowRetry"/>. Pairs
     /// with the give-up branch of <see cref="TryClassify"/>: when an OnCreateObject-then-
@@ -622,16 +715,33 @@ public class WorldObjectCache
     /// any that are now recognised as TYPE_CREATURE. Runs every ~2 seconds from Tick().
     /// This rescues creatures whose weenie data wasn't available when they were first classified.
     /// </summary>
+    // PublicWeenieDesc._bitfield flags (as ExpressionEngine's BF_PLAYER / BF_ATTACKABLE).
+    private const uint BfPlayer = 0x8, BfAttackable = 0x10;
+
     private void ReclassifyUnknownDynamics()
     {
         lock (_gate)
         {
         List<int>? toPromote = null;
         List<int>? toCorpse  = null;
+        List<(int id, string name, AcObjectClass cls)>? statics = null;
         foreach (int id in _landscape)
         {
             uint uid = unchecked((uint)id);
-            if (uid < 0x80000000u) continue; // static objects never become creatures/corpses
+            if (uid < 0x80000000u)
+            {
+                // Static objects never become creatures/corpses, but one classified before
+                // its name or type was readable is fixed up here: the name filled in, and
+                // a portal that read as Unknown becomes a Portal (radar, /ub closestportal).
+                if (!_byId.TryGetValue(id, out var so) || so.ObjectClass != AcObjectClass.Unknown) continue;
+                string sName = so.Name;
+                if (sName.Length == 0 && _host.TryGetObjectName(uid, out string n2) && n2.Length > 0) sName = n2;
+                AcObjectClass sCls = _host.TryGetItemType(uid, out uint sType) && (sType & ItemTypePortal) != 0
+                    ? AcObjectClass.Portal : AcObjectClass.Unknown;
+                if (sName != so.Name || sCls != so.ObjectClass)
+                    (statics ??= new()).Add((id, sName, sCls));
+                continue;
+            }
             if (!_byId.TryGetValue(id, out var wo)) continue;
             if (wo.ObjectClass == AcObjectClass.Corpse) continue; // already correct
 
@@ -645,8 +755,8 @@ public class WorldObjectCache
             // item each pass; IsCorpseName is specific ("X corpse"/"Corpse of X")
             // so a live mob cannot be misread as a corpse.
             if ((wo.ObjectClass == AcObjectClass.Monster || wo.ObjectClass == AcObjectClass.Unknown)
-                && _host.TryGetObjectName(uid, out string maybeCorpse)
-                && IsCorpseName(maybeCorpse))
+                && ((_host.TryGetObjectName(uid, out string maybeCorpse) && IsCorpseName(maybeCorpse))
+                    || HasCorpseFlag(uid)))
             {
                 toCorpse ??= new List<int>();
                 toCorpse.Add(id);
@@ -677,6 +787,38 @@ public class WorldObjectCache
             toPromote.Add(id);
         }
 
+        // Corpses filed as inventory. Before 2026-10-03 a corpse classified while its
+        // position wasn't readable went to the inventory as a Container (its ItemType) and
+        // stayed there: invisible to looting for good. TryClassify no longer does that, but
+        // an object filed before its name or flag was readable still can, so the bags in the
+        // inventory list (a handful) are re-checked here. Packs we carry aren't corpses.
+        List<(int id, AcObjectClass was)>? invCorpses = null;
+        foreach (int id in _inventory)
+        {
+            uint uid = unchecked((uint)id);
+            if (uid < 0x80000000u) continue;
+            if (!_byId.TryGetValue(id, out var wo)) continue;
+            if (wo.ObjectClass != AcObjectClass.Container && wo.ObjectClass != AcObjectClass.Unknown) continue;
+            if (IsCorpseName(wo.Name)
+                || (_host.TryGetObjectName(uid, out string invName) && IsCorpseName(invName))
+                || HasCorpseFlag(uid))
+                (invCorpses ??= new()).Add((id, wo.ObjectClass));
+        }
+        if (invCorpses != null)
+        {
+            foreach (var (id, was) in invCorpses)
+            {
+                uint uid = unchecked((uint)id);
+                string n = _host.TryGetObjectName(uid, out string nn) && nn.Length > 0 ? nn : _byId[id].Name;
+                FileAsCorpse(id, uid, n);
+                LogCorpseRescue(uid, n, was, "inventory, no position when classified");
+            }
+        }
+
+        if (statics != null)
+            foreach (var (id, name, cls) in statics)
+                _byId[id] = Make(id, name, cls);
+
         if (toCorpse != null)
         {
             foreach (int id in toCorpse)
@@ -703,12 +845,25 @@ public class WorldObjectCache
 
         if (toPromote == null) return;
 
+        uint selfId = _host.GetPlayerId();
         foreach (int id in toPromote)
         {
             uint uid = unchecked((uint)id);
             _host.TryGetObjectName(uid, out string name);
-            _creatures.Add(id);
-            _byId[id] = Make(id, name ?? string.Empty, AcObjectClass.Monster);
+            // Players are creatures too: under the Decal bridge more objects arrive before their
+            // type is readable and come through here, and the character and other players were
+            // promoted to Monster (Lucy listed herself in the Monsters tab, 2026-10-01). The
+            // weenie bitfield says player (0x8) or not attackable (0x10 clear = NPC).
+            AcObjectClass cls = AcObjectClass.Monster;
+            if (uid == selfId)
+                cls = AcObjectClass.Player;
+            else if (_host.HasGetObjectBitfield && _host.TryGetObjectBitfield(uid, out uint bf))
+            {
+                if ((bf & BfPlayer) != 0) cls = AcObjectClass.Player;
+                else if ((bf & BfAttackable) == 0) cls = AcObjectClass.Npc;
+            }
+            if (cls == AcObjectClass.Monster) _creatures.Add(id);
+            _byId[id] = Make(id, name ?? string.Empty, cls);
             _reclassifySkipState.Remove(uid); // diagnostic state cleared on success
         }
 
@@ -754,6 +909,14 @@ public class WorldObjectCache
                 // Patch empty name on access
                 if (wo.Name.Length == 0 && _host.TryGetObjectName(unchecked((uint)id), out string n) && n.Length > 0)
                 {
+                    // A corpse stored before its name was readable becomes a Corpse here.
+                    if (wo.ObjectClass != AcObjectClass.Corpse && IsCorpseName(n))
+                    {
+                        AcObjectClass was = wo.ObjectClass;
+                        FileAsCorpse(id, unchecked((uint)id), n);
+                        LogCorpseRescue(unchecked((uint)id), n, was, "named late");
+                        return _byId[id];
+                    }
                     wo = Make(id, n, wo.ObjectClass);
                     _byId[id] = wo;
                 }
@@ -768,7 +931,7 @@ public class WorldObjectCache
                 return null;
 
             bool isPackItemGuid = uid >= 0xC0000000u;
-            bool looksLikeCorpse = hasPos && IsCorpseName(name);
+            bool looksLikeCorpse = IsCorpseName(name) || HasCorpseFlag(uid); // position not needed (see TryClassify)
             AcObjectClass cls;
             if (looksLikeCorpse)
             {
@@ -788,15 +951,15 @@ public class WorldObjectCache
                     // queries qualities → TYPE_CREATURE finally readable → bot sees the
                     // mob" path. seenCreate=0 here is the strongest signal that the
                     // engine's CreateObject hook missed this respawn entirely.
-                    if (uid >= 0x80000000u && _indexerRescueLogCount < MaxIndexerRescueDiagLines)
+                    if (uid >= 0x80000000u)
                     {
-                        _indexerRescueLogCount++;
                         bool seenCreate = _seenCreateObject.Contains(uid);
-                        _host.Log($"[ReclassifyDiag] 0x{uid:X8} INDEXER-RESCUE name='{name}' flags=0x{typeFlags:X8} seenCreate={(seenCreate ? 1 : 0)}");
+                        if (_diag.Note(IndexerRescue, uid, seenCreate ? 1 : 0))
+                            _host.Log($"[ReclassifyDiag] 0x{uid:X8} INDEXER-RESCUE name='{name}' flags=0x{typeFlags:X8} seenCreate={(seenCreate ? 1 : 0)}");
                     }
                 }
                 else
-                    cls = ClassifyByItemType(typeFlags);
+                    cls = ClassifyItem(uid, typeFlags);
             }
             else if (isPackItemGuid || !hasPos)
                 cls = ClassifyInventoryItem(name);
@@ -830,6 +993,16 @@ public class WorldObjectCache
         if (!_host.HasGetObjectIntProperty) return defaultValue;
         uint uid = unchecked((uint)id);
         return _host.TryGetObjectIntProperty(uid, stype, out int v) ? v : defaultValue;
+    }
+
+    /// <summary>
+    /// Read an STypeDID property (e.g. a scroll's Spell 28 from its CreateObject header).
+    /// 0 if the API is unavailable or the property is not set.
+    /// </summary>
+    public uint GetDataIdProperty(int id, uint stype)
+    {
+        try { return _host.TryGetObjectDataIdProperty(unchecked((uint)id), stype, out uint v) ? v : 0; }
+        catch { return 0; }
     }
 
     /// <summary>
@@ -907,6 +1080,31 @@ public class WorldObjectCache
         // A garbage position read (NaN/∞) must read as out of range. NaN fails every
         // "dist > limit" test, so it passed both the scan's range gate and Think's
         // disengage drop, and a target could be kept at any real distance.
+        return double.IsFinite(d) ? d : double.MaxValue;
+    }
+
+    /// <summary>
+    /// <see cref="Distance"/> from a position the caller already read (cell + landblock-local
+    /// x/y/z, e.g. the player's, once per scan) to object <paramref name="id2"/>, with the same
+    /// math and the same MaxValue for an unreadable or non-finite position.
+    /// <paramref name="hasPos"/>/<paramref name="x2"/>/<paramref name="y2"/> return the object's
+    /// position as read (landblock-local) so the caller needn't read it again.
+    /// </summary>
+    public double DistanceFrom(uint cell1, float x1, float y1, float z1, int id2, out bool hasPos, out float x2, out float y2)
+    {
+        hasPos = _host.TryGetObjectPosition(unchecked((uint)id2), out uint cell2, out x2, out y2, out float z2);
+        if (!hasPos)
+            return double.MaxValue;
+
+        float gx1 = ((cell1 >> 24) & 0xFF) * 192f + x1;
+        float gy1 = ((cell1 >> 16) & 0xFF) * 192f + y1;
+        float gx2 = ((cell2 >> 24) & 0xFF) * 192f + x2;
+        float gy2 = ((cell2 >> 16) & 0xFF) * 192f + y2;
+
+        float dx = gx1 - gx2;
+        float dy = gy1 - gy2;
+        float dz = z1 - z2;
+        double d = Math.Sqrt(dx * dx + dy * dy + dz * dz);
         return double.IsFinite(d) ? d : double.MaxValue;
     }
 
@@ -1060,13 +1258,100 @@ public class WorldObjectCache
         // forceRefresh — the dequip paths gate an AV-risky move, so must not read a
         // stale cache before the move.
         var inv = cache.GetDirectInventory(forceRefresh: true);
-        return FindPackFor(inv, playerId, includeMainPack, requireFree);
+        return FindPackFor(inv, playerId, includeMainPack, requireFree, host);
     }
+
+    /// <summary>
+    /// The player is wielding <paramref name="wo"/>. The cached CurrentWieldedLocation /
+    /// EquippedSlots can read 0 for a wielded weapon (2026-09-28: a Longbow in hand read
+    /// 0, so the wand swap never stowed it and retried forever with a full pack), so a
+    /// 0 falls back to the live wielder info.
+    /// </summary>
+    public static bool IsWieldedByPlayer(RynthCoreHost host, WorldObject wo)
+    {
+        if (wo.Values(LongValueKey.CurrentWieldedLocation, 0) > 0) return true;
+        if (wo.Values(LongValueKey.EquippedSlots, 0) != 0) return true;
+        if (!host.HasGetObjectWielderInfo) return false;
+        uint pid = host.GetPlayerId();
+        return pid != 0
+            && host.TryGetObjectWielderInfo(unchecked((uint)wo.Id), out uint wielder, out _)
+            && wielder == pid;
+    }
+
+    /// <summary>
+    /// Arrows, quarrels and darts. AC files ammo as a missile weapon, so the "put the bow
+    /// away before the wand" lookups picked the wielded arrows when they came first and
+    /// took them off instead of the bow (2026-09-29). Slot bits when known, else the name.
+    /// </summary>
+    public static bool IsAmmo(WorldObject wo)
+    {
+        const int MissileAmmoSlot = 0x00800000;
+        if ((wo.Values(LongValueKey.Locations, 0) & MissileAmmoSlot) != 0) return true;
+        if ((wo.Values(LongValueKey.CurrentWieldedLocation, 0) & MissileAmmoSlot) != 0) return true;
+        // Never a launcher: a weapon whose name happens to say "bolt" must still be put away.
+        string n = wo.Name ?? "";
+        if (n.IndexOf("crossbow", StringComparison.OrdinalIgnoreCase) >= 0
+            || n.TrimEnd().EndsWith("bow", StringComparison.OrdinalIgnoreCase)) return false;
+        return AmmoRecipes.IsLooseAmmoName(n, WeaponCategory.Bow)
+            || AmmoRecipes.IsLooseAmmoName(n, WeaponCategory.Crossbow)
+            || AmmoRecipes.IsLooseAmmoName(n, WeaponCategory.Atlatl);
+    }
+
+    private static bool IsWieldable(WorldObject wo) =>
+        wo.ObjectClass == AcObjectClass.MeleeWeapon
+        || wo.ObjectClass == AcObjectClass.MissileWeapon
+        || wo.ObjectClass == AcObjectClass.WandStaffOrb;
+
+    /// <summary>
+    /// Free item slots the player has: the main pack (102) plus every side pack. -1 when a
+    /// side pack's capacity isn't known yet (callers then don't act on a guess).
+    /// </summary>
+    public static int CountFreeItemSlots(RynthCoreHost host, WorldObjectCache? cache)
+    {
+        if (cache == null) return -1;
+        int playerId = unchecked((int)host.GetPlayerId());
+        if (playerId == 0) return -1;
+        var inv = cache.GetDirectInventory(forceRefresh: false);
+        int mainUsed = 0, sideFree = 0;
+        foreach (var p in inv)
+        {
+            if (p.Container != playerId) continue;
+            if (p.ObjectClass == AcObjectClass.Foci) continue;
+            if (p.ObjectClass != AcObjectClass.Container)
+            {
+                if (p.Values(LongValueKey.EquippedSlots, 0) != 0) continue;
+                if (IsWieldable(p) && IsWieldedByPlayer(host, p)) continue;
+                mainUsed++;
+                continue;
+            }
+            if (!string.IsNullOrEmpty(p.Name) && p.Name.IndexOf("Foci", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+            int capacity = p.Values(LongValueKey.ItemsCapacity, 0);
+            if (capacity <= 0) return -1;
+            int used = 0;
+            foreach (var it in inv)
+                if (it.Container == p.Id && it.ObjectClass != AcObjectClass.Container) used++;
+            sideFree += Math.Max(0, capacity - used);
+        }
+        return Math.Max(0, 102 - mainUsed) + sideFree;
+    }
+
+    private static DateTime _packFullWarnedAt = DateTime.MinValue;
+
+    /// <summary>A chat warning that a full pack blocks something, at most once every 5 minutes.</summary>
+    public static void WarnPackFull(RynthCoreHost host, string what)
+    {
+        if ((DateTime.Now - _packFullWarnedAt).TotalMinutes < 5) return;
+        _packFullWarnedAt = DateTime.Now;
+        host.WriteToChat($"[RynthAi] Pack full: {what}. Free a slot (salvage, sell or drop); looting keeps {LootReserveFreeSlots} slots free.", 2);
+    }
+
+    /// <summary>The looter stops picking items up below this many free slots, so weapon swaps always have room.</summary>
+    public const int LootReserveFreeSlots = 2;
 
     // Snapshot overload — caller supplies an already-built inventory list (AutoCram
     // reuses its single per-tick GetDirectInventory snapshot here; do NOT re-refresh).
     public static int FindPackFor(IReadOnlyList<WorldObject> inv, int playerId,
-                                  bool includeMainPack, int requireFree)
+                                  bool includeMainPack, int requireFree, RynthCoreHost? host = null)
     {
         if (inv == null || playerId == 0) return 0;
         if (requireFree < 1) requireFree = 1;
@@ -1080,7 +1365,8 @@ public class WorldObjectCache
             // NOT the 102 item slots, so they're excluded from this count.
             if (p.ObjectClass != AcObjectClass.Container
                 && p.ObjectClass != AcObjectClass.Foci
-                && p.Values(LongValueKey.EquippedSlots, 0) == 0)
+                && p.Values(LongValueKey.EquippedSlots, 0) == 0
+                && !(host.HasValue && IsWieldable(p) && IsWieldedByPlayer(host.Value, p)))
                 mainUsed++;
             if (p.ObjectClass != AcObjectClass.Container) continue;
             // Skip foci — technically containers but reserved for spell components.
@@ -1109,6 +1395,30 @@ public class WorldObjectCache
     }
 
     /// <summary>
+    /// Where a looted item goes: the main pack while it has a free slot, else the side pack
+    /// with the most room, 0 when nothing has room. The pickup used to be a UseObject, which
+    /// let the client pick the spot, but a use on a wearable item lying in a corpse is a
+    /// get-and-wield: jewellery for an empty slot went straight onto the character
+    /// (2026-10-02). A move needs an explicit target, and the engine refuses a move into a
+    /// full pack of ours, so this finds one with room.
+    /// </summary>
+    public static int FindLootDestination(IReadOnlyList<WorldObject> inv, int playerId, RynthCoreHost? host = null)
+    {
+        if (inv == null || playerId == 0) return 0;
+        int mainUsed = 0; // same tally as FindPackFor
+        foreach (var p in inv)
+        {
+            if (p.Container != playerId) continue;
+            if (p.ObjectClass == AcObjectClass.Container || p.ObjectClass == AcObjectClass.Foci) continue;
+            if (p.Values(LongValueKey.EquippedSlots, 0) != 0) continue;
+            if (host.HasValue && IsWieldable(p) && IsWieldedByPlayer(host.Value, p)) continue;
+            mainUsed++;
+        }
+        if (102 - mainUsed > 0) return playerId;
+        return FindPackFor(inv, playerId, includeMainPack: false, requireFree: 1, host);
+    }
+
+    /// <summary>
     /// Re-reads the name and item type of an object stored with a blank name or an Unknown
     /// class, and replaces its entry when either improved. Corpse items are usually created
     /// before the engine's off-thread identity snapshot (refreshed every ~0.5 s) has them,
@@ -1131,7 +1441,7 @@ public class WorldObjectCache
         if (needClass)
         {
             if (_host.TryGetItemType(uid, out uint flags) && (flags & ItemTypeCreature) == 0)
-                cls = ClassifyByItemType(flags);
+                cls = ClassifyItem(uid, flags);
             if (cls == AcObjectClass.Unknown && name.Length > 0)
                 cls = ClassifyInventoryItem(name);
         }
@@ -1148,6 +1458,93 @@ public class WorldObjectCache
             _byId[wo.Id] = fresh;
             return fresh;
         }
+    }
+
+    /// <summary>
+    /// Re-reads the item type of <paramref name="id"/> and replaces its entry when the type
+    /// gives a different class. An object first seen before its type was known is classed by
+    /// its name, and RefreshIdentity only revisits Unknown ones, so a guess stuck: a quest
+    /// axe without "Axe" in its name (Silifi, Tungi, Ono...) was "not a weapon" when added to
+    /// the Items list (2026-10-03). Returns the entry to use (null when not cached).
+    /// </summary>
+    public WorldObject? ReclassifyFromItemType(int id)
+    {
+        WorldObject? wo;
+        lock (_gate) _byId.TryGetValue(id, out wo);
+        if (wo == null) return null;
+        bool typed = _host.TryGetItemType(unchecked((uint)id), out uint flags);
+        if (typed && (flags & ItemTypeCreature) != 0)
+            return wo;
+        AcObjectClass cls = typed ? ClassifyByItemType(flags) : AcObjectClass.Unknown;
+        // Custom content can carry a non-weapon item type on something wielded as a weapon
+        // (a Driftwarden Greataxe, 2026-10-03): its weapon slot or weapon skill decides.
+        if (cls != AcObjectClass.MeleeWeapon && cls != AcObjectClass.MissileWeapon && cls != AcObjectClass.WandStaffOrb)
+        {
+            AcObjectClass bySlot = WeaponClassFromSlot(unchecked((uint)id));
+            if (bySlot != AcObjectClass.Unknown) cls = bySlot;
+        }
+        if (cls == AcObjectClass.Unknown || cls == wo.ObjectClass)
+            return wo;
+
+        lock (_gate)
+        {
+            if (!_byId.TryGetValue(id, out var current) || !ReferenceEquals(current, wo))
+                return current ?? wo;
+            var fresh = Make(id, wo.Name, cls);
+            fresh._wieldedLocationDirect = wo._wieldedLocationDirect;
+            fresh._directContainerId = wo._directContainerId;
+            fresh._directSlot = wo._directSlot;
+            fresh.Overlay = wo.Overlay;
+            _byId[id] = fresh;
+            return fresh;
+        }
+    }
+
+    // ValidLocations (STypeInt 9) weapon slots and WeaponSkill (STypeInt 48).
+    private const int ValidLocationsInt = 9, WeaponSkillInt = 48;
+    private const uint SlotMeleeWeapon = 0x00100000, SlotMissileWeapon = 0x00400000, SlotTwoHanded = 0x02000000;
+
+    /// <summary>ClassifyByItemType, except that an item typed Misc (or nothing) which fits a
+    /// weapon slot is a weapon: custom content does this (see ReclassifyFromItemType).</summary>
+    private AcObjectClass ClassifyItem(uint uid, uint flags)
+    {
+        AcObjectClass cls = ClassifyByItemType(flags);
+        // A writable that carries a spell (data id 28) or is named "Scroll ..." is a Scroll, as in
+        // Decal/VTank, so metas, AutoVendor and loot rules all see "Scroll" (owner, 2026-10-04).
+        // Other writables (books, notes, journals) stay Book.
+        if (cls == AcObjectClass.Book && IsSpellScroll(uid)) return AcObjectClass.Scroll;
+        if (cls == AcObjectClass.Misc || cls == AcObjectClass.Unknown)
+        {
+            AcObjectClass bySlot = WeaponClassFromSlot(uid);
+            if (bySlot != AcObjectClass.Unknown) return bySlot;
+        }
+        return cls;
+    }
+
+    private const uint DataIdSpell = 28;
+
+    private bool IsSpellScroll(uint uid)
+    {
+        if (_host.TryGetObjectDataIdProperty(uid, DataIdSpell, out uint spell) && spell != 0) return true;
+        return _host.TryGetObjectName(uid, out string name)
+            && name.StartsWith("Scroll", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The weapon class an item's equip slot implies (Unknown when it has no weapon slot).
+    /// A weapon skill with no slot known reads as melee.</summary>
+    private AcObjectClass WeaponClassFromSlot(uint id)
+    {
+        if (!_host.HasGetObjectIntProperty) return AcObjectClass.Unknown;
+        if (_host.TryGetObjectIntProperty(id, ValidLocationsInt, out int slots) && slots != 0)
+        {
+            uint s = unchecked((uint)slots);
+            if ((s & SlotMissileWeapon) != 0) return AcObjectClass.MissileWeapon;
+            if ((s & (SlotMeleeWeapon | SlotTwoHanded)) != 0) return AcObjectClass.MeleeWeapon;
+            return AcObjectClass.Unknown;
+        }
+        if (_host.TryGetObjectIntProperty(id, WeaponSkillInt, out int skill) && skill > 0)
+            return AcObjectClass.MeleeWeapon;
+        return AcObjectClass.Unknown;
     }
 
     public IEnumerable<WorldObject> GetContainedItems(int containerId)
@@ -1523,7 +1920,7 @@ public class WorldObjectCache
         if (_host.TryGetItemType(uid, out uint flags))
         {
             isContainer = (flags & ItemTypeContainer) != 0;
-            cls = ClassifyByItemType(flags);
+            cls = ClassifyItem(uid, flags);
         }
 
         if (cls == AcObjectClass.Unknown)
@@ -1579,7 +1976,7 @@ public class WorldObjectCache
     public (int Total, int Creatures, int Inventory, int Landscape, int Pending) GetStats()
     {
         lock (_gate)
-            return (_byId.Count, _creatures.Count, _inventory.Count, _landscape.Count, _pending.Count);
+            return (_byId.Count, _creatures.Count, _inventory.Count, _landscape.Count, _pending.Count + _retryNext.Count);
     }
 
     // ── Factory ───────────────────────────────────────────────────────────
@@ -1654,7 +2051,13 @@ public class WorldObjectCache
         ContainsAny(name, "Sword", "Falchion", "Axe", "Mace", "Spear",
                     "Dagger", "Katar", "Claw", "Club", "Hammer", "Blade",
                     "Knife", "Lance", "Rapier", "Scimitar", "Estoc", "Cleaver",
-                    "Flail", "Maul", "Glaive", "Halberd", "Pike", "Trident");
+                    "Flail", "Maul", "Glaive", "Halberd", "Pike", "Trident",
+                    // retail names without one of the words above (quest weapons often use these)
+                    "Hatchet", "Silifi", "Tungi", "Shou-ono", "Dolabra", "Lugian Hammer", "Kasrullah",
+                    "Nabut", "Jitte", "Yaoji", "Tachi", "Takuba", "Shamshir", "Kaskara",
+                    "Flamberge", "Jambiya", "Khanjar", "Kukri", "Poniard", "Stiletto", "Cestus",
+                    "Nekode", "Bastone", "Tofun", "Morning Star", "Partizan", "Spadone", "Yari",
+                    "Budiaq", "Naginata", "Quarterstaff", "Bardiche", "Assagai");
 
     private static bool IsClothing(string name) =>
         ContainsAny(name, "Coat", "Shirt", "Smock", "Pants", "Pantaloons", "Trousers",

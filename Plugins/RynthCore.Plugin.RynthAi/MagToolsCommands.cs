@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -194,6 +195,7 @@ public sealed partial class RynthAiPlugin
         // set via /ub opt / /mt opt resolve the same as /vt opt set).
         ["autocram"]                  = "EnableAutocram",
         ["autostack"]                 = "EnableAutostack",
+        ["readunknownscrolls"]        = "ReadUnknownScrolls",      // VTank: loots and reads unknown scrolls
         ["usedispelitems"]            = "UseDispelItems",
         ["castdispelself"]            = "CastDispelSelf",
         ["opendoorrange"]             = "OpenDoorRange",
@@ -209,6 +211,7 @@ public sealed partial class RynthAiPlugin
         ["manastonelootcount"]        = "ManaStoneKeepCount",
         ["rebuftimeremainingseconds"] = "RebuffSecondsRemaining",
         ["navclosestoprange"]         = "NavCloseStopRange",
+        ["follownavmin"]              = "FollowNavMin",
         // UtilityBelt AutoVendor options (/ub opt set AutoVendor.TestMode true)
         ["autovendor.enabled"]          = "AutoVendorEnabled",
         ["autovendor.enablebuying"]     = "AutoVendorEnableBuying",
@@ -219,6 +222,12 @@ public sealed partial class RynthAiPlugin
         ["autovendor.onlyfrommainpack"] = "AutoVendorOnlyFromMainPack",
         ["autovendor.tries"]            = "AutoVendorTries",
         ["autovendor.triestime"]        = "AutoVendorTriesTime",
+        // UtilityBelt AutoTrade options (/ub opt set AutoTrade.AutoAccept true)
+        ["autotrade.enabled"]           = "AutoTradeEnabled",
+        ["autotrade.testmode"]          = "AutoTradeTestMode",
+        ["autotrade.think"]             = "AutoTradeThink",
+        ["autotrade.onlyfrommainpack"]  = "AutoTradeOnlyFromMainPack",
+        ["autotrade.autoaccept"]        = "AutoTradeAutoAccept",
     };
 
     private string? GetOptionValue(string optName)
@@ -386,7 +395,12 @@ public sealed partial class RynthAiPlugin
 
         // Special targets: closestnpc, closestvendor, closestportal
         string lower = argStr.ToLower();
-        if (lower == "closestnpc" || lower == "closestvendor" || lower == "closestportal")
+        if (lower == "closestportal")
+        {
+            UseClosestPortal();
+            return true;
+        }
+        if (lower == "closestnpc" || lower == "closestvendor")
         {
             return HandleMtUseClosest(lower);
         }
@@ -436,7 +450,7 @@ public sealed partial class RynthAiPlugin
             return true;
         }
 
-        Host.UseObject(unchecked((uint)best.Id));
+        Host.UseFor(unchecked((uint)best.Id), "Command", $"/mt use {type}", UseKind.Asked);
         Host.Log($"[RynthAi] /mt use {type}: {best.Name} (0x{(uint)best.Id:X8}) at {bestDist:F1}m");
         return true;
     }
@@ -588,7 +602,7 @@ public sealed partial class RynthAiPlugin
         if (found == null) return; // items may not be available yet — try again next tick
 
         Host.SelectItem(found.Value.Id);
-        Host.UseObject(found.Value.Id);
+        Host.UseFor(found.Value.Id, "Command", "/mt loot (waited for the container)", UseKind.Asked);
         Host.Log($"[RynthAi] /mt loot (deferred): {found.Value.Name} (0x{found.Value.Id:X8}) from container 0x{(uint)container:X8}");
         _pendingMtLootName = null;
     }
@@ -609,7 +623,7 @@ public sealed partial class RynthAiPlugin
             if (found != null)
             {
                 Host.SelectItem(found.Value.Id);
-                Host.UseObject(found.Value.Id);
+                Host.UseFor(found.Value.Id, "Command", "/mt loot", UseKind.Asked);
                 Host.Log($"[RynthAi] /mt loot: {found.Value.Name} (0x{found.Value.Id:X8}) from container 0x{(uint)container:X8}");
                 _pendingMtLootName = null;
                 return true;
@@ -668,7 +682,7 @@ public sealed partial class RynthAiPlugin
         var item = FindObject(name, inv: true, land: false, partial: partial);
         if (item == null) { ChatLine($"[RynthAi] Item not found: '{name}'"); return true; }
 
-        Host.UseObject(unchecked((uint)item.Id));
+        Host.UseFor(unchecked((uint)item.Id), "Command", "/mt use item", UseKind.Asked);
         Host.Log($"[RynthAi] /mt equip: {item.Name} (0x{(uint)item.Id:X8})");
         return true;
     }

@@ -104,6 +104,22 @@ public static class SpellDatabase
         return map;
     }
 
+    /// <summary>
+    /// Every id per name. Some names have several ids (Missile Weapon Mastery Self VI is
+    /// 472/496/544, Light Weapon Mastery has five per tier), and BuildNameToIdMap keeps
+    /// only the last, which a character may not know.
+    /// </summary>
+    public static Dictionary<string, List<int>> BuildNameToIdsMap()
+    {
+        var map = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kvp in _spellNames)
+        {
+            if (!map.TryGetValue(kvp.Value, out var ids)) map[kvp.Value] = ids = new List<int>();
+            ids.Add(kvp.Key);
+        }
+        return map;
+    }
+
     /// <summary>Looks up a spell ID by exact name (case-insensitive).</summary>
     public static int GetIdByName(string name)
     {

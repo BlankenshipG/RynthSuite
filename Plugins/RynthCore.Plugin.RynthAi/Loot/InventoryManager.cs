@@ -70,9 +70,24 @@ public sealed class InventoryManager
     // 500 ms after an action, so external "dirty" signals aren't needed.
     public void MarkDirty() { }
 
+    // /ub autostack and /ub autocram: run that pass for up to a minute even with
+    // the macro stopped or the setting off; ends as soon as there's nothing to do.
+    private DateTime _manualCramUntil = DateTime.MinValue;
+    private DateTime _manualStackUntil = DateTime.MinValue;
+
+    public void RunManual(bool cram, bool stack)
+    {
+        if (cram)  _manualCramUntil  = DateTime.Now.AddSeconds(60);
+        if (stack) _manualStackUntil = DateTime.Now.AddSeconds(60);
+        _nextInventoryActionTime = DateTime.MinValue;
+    }
+
+    private bool ManualCram  => DateTime.Now < _manualCramUntil;
+    private bool ManualStack => DateTime.Now < _manualStackUntil;
+
     public void OnHeartbeat(int busyCount)
     {
-        if (!_settings.IsMacroRunning) return;
+        if (!_settings.IsMacroRunning && !ManualCram && !ManualStack) return;
         if (busyCount != 0) return; // don't move items while the client is busy (casting, crafting, etc.)
 
         // Age-prune the per-entry backoff/pending maps (replaces the old wholesale
@@ -108,7 +123,8 @@ public sealed class InventoryManager
             return;
         }
 
-        // Nothing to do — back off re-scan for a bit.
+        // Nothing to do — back off re-scan for a bit, and end a manual run.
+        _manualCramUntil = _manualStackUntil = DateTime.MinValue;
         _nextInventoryActionTime = DateTime.Now.AddMilliseconds(2000);
     }
 
@@ -116,7 +132,7 @@ public sealed class InventoryManager
 
     private bool ProcessAutoCram(List<WorldObject> inv, int playerId)
     {
-        if (!_settings.EnableAutocram) return false;
+        if (!_settings.EnableAutocram && !ManualCram) return false;
 
         int crammable = 0;
         foreach (var item in inv)
@@ -227,7 +243,7 @@ public sealed class InventoryManager
 
     private bool ProcessAutoStack(List<WorldObject> inv, int playerId)
     {
-        if (!_settings.EnableAutostack) return false;
+        if (!_settings.EnableAutostack && !ManualStack) return false;
 
         // Build candidate list — items belonging to the player (directly or in a sub-pack).
         var playerItems = new List<WorldObject>();

@@ -10,6 +10,7 @@ using RynthCore.Loot.VTank;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.PluginSdk;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.Vendor;
 
@@ -944,7 +945,7 @@ internal sealed class AutoVendorManager
                 _host.Log("[RynthAi] AutoVendor: vendor open timed out, trying again");
             _openAttempts++;
             _openNextAt = now + Math.Clamp(_settings.AutoVendorTriesTime, 500, 30_000);
-            if (_host.HasUseObject) _host.UseObject(_openTarget);
+            if (_host.HasUseObject) _host.UseFor(_openTarget, "Vendor", "AutoVendor: open the vendor", UseKind.Asked);
             _openHoldUntil = now + 500 + Math.Clamp(_settings.AutoVendorTriesTime, 500, 30_000);
             return;
         }

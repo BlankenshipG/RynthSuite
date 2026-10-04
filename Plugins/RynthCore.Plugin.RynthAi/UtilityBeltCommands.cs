@@ -1,4 +1,5 @@
 using System;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -8,6 +9,73 @@ namespace RynthCore.Plugin.RynthAi;
 /// </summary>
 public sealed partial class RynthAiPlugin
 {
+    /// <summary>
+    /// Portal by class, or, for objects the cache classified before their type was
+    /// known (they stay Unknown), by the live item type, or by a name ending in
+    /// "Portal" when the type isn't available.
+    /// </summary>
+    internal bool IsPortalObject(WorldObject wo)
+    {
+        if (wo.ObjectClass == RynthCore.Loot.AcObjectClass.Portal) return true;
+        if (wo.ObjectClass is RynthCore.Loot.AcObjectClass.Monster or RynthCore.Loot.AcObjectClass.Player
+            or RynthCore.Loot.AcObjectClass.Corpse or RynthCore.Loot.AcObjectClass.Npc) return false;
+        // The cached class can be a name guess; the live item type is the truth.
+        if (Host.TryGetItemType(unchecked((uint)wo.Id), out uint t) && t != 0)
+            return (t & 0x00010000u) != 0;
+        return wo.Name.IndexOf("Portal", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    /// <summary>
+    /// Nearest object with a position matching <paramref name="accept"/>. Looks at
+    /// every known object, not only the landscape set: a portal filed as inventory
+    /// (created before its position arrived) was invisible to closestportal.
+    /// </summary>
+    internal WorldObject? FindNearestPositioned(Func<WorldObject, bool> accept, out double distance)
+    {
+        distance = double.MaxValue;
+        if (_objectCache == null || _playerId == 0) return null;
+        int me = unchecked((int)_playerId);
+        WorldObject? best = null;
+        foreach (var wo in _objectCache.AllKnownObjects())
+        {
+            if (wo == null || wo.Id == me || !accept(wo)) continue;
+            double d = _objectCache.Distance(me, wo.Id);
+            if (d == double.MaxValue) continue;   // no position (in a pack)
+            if (d < distance) { distance = d; best = wo; }
+        }
+        return best;
+    }
+
+    /// <summary>After a miss: log the nearest object whose name mentions Portal, with its class and type.</summary>
+    private void LogPortalMiss(string what)
+    {
+        var near = FindNearestPositioned(w => w.Name.IndexOf("Portal", StringComparison.OrdinalIgnoreCase) >= 0, out double d);
+        if (near == null) { Log($"[RynthAi] {what}: no object named like a portal in range either."); return; }
+        uint t = Host.TryGetItemType(unchecked((uint)near.Id), out uint tt) ? tt : 0;
+        Log($"[RynthAi] {what}: nearest '*Portal*' object was {near.Name} 0x{(uint)near.Id:X8} at {d:F1} m, class={near.ObjectClass}, itemType=0x{t:X8}.");
+    }
+
+    private void UseClosestPortal()
+    {
+        if (_objectCache == null || _playerId == 0) { ChatLine("[RynthAi] Not logged in."); return; }
+        var best = FindNearestPositioned(IsPortalObject, out double bestD);
+        if (best == null) { ChatLine("[RynthAi] No portal nearby."); LogPortalMiss("closestportal"); return; }
+        ChatLine($"[RynthAi] Using {best.Name} ({bestD:F1} m).");
+        Host.UseFor(unchecked((uint)best.Id), "Command", "/ub closestportal", UseKind.Asked);
+    }
+
+    /// <summary>
+    /// UtilityBelt's network commands (/ub bc, /ub bct, /ub netclients) go to the RynthNet
+    /// plugin as ("ub", "bc ...") through the host broker; RynthNet runs them on its own tick.
+    /// </summary>
+    private void ForwardNetCommand(string fullCommand)
+    {
+        string rest = fullCommand.Length > 3 ? fullCommand.Substring(3).Trim() : "";
+        if (Host.HasSendPluginCommand && Host.SendPluginCommand("RynthNet", "ub", rest))
+            return;
+        ChatLine("[RynthAi] /ub bc, /ub bct and /ub netclients need the RynthNet plugin (the launcher's Plugins tab).");
+    }
+
     /// <summary>
     /// Handle a /ub command. Returns true if recognized and handled.
     /// </summary>
@@ -25,8 +93,19 @@ public sealed partial class RynthAiPlugin
             return true;
         }
 
+        // /ub bc, /ub bct, /ub netclients (UtilityBelt's networking) belong to the RynthNet plugin.
+        if (cmd is "bc" or "bct" or "netclients")
+        {
+            ForwardNetCommand(fullCommand);
+            return true;
+        }
+
         // /ub autovendor ... and /ub vendor ... (UtilityBelt AutoVendor) — Vendor/AutoVendorCommands.cs
         if (TryHandleAutoVendorCommand(cmd, fullCommand))
+            return true;
+
+        // /ub autotrade ... (UtilityBelt AutoTrade) — Trade/AutoTradeCommands.cs
+        if (TryHandleAutoTradeCommand(cmd, fullCommand))
             return true;
 
         // Most remaining /ub verbs (use / usep / uselp / useip / face / give /
@@ -41,9 +120,24 @@ public sealed partial class RynthAiPlugin
         // Verbs /mt doesn't implement but /ra does — route to the /ra dispatcher
         // (VTank-meta migration). "/ub follow X" → "/ra follow X"; myquests → /ra
         // quest-flag refresh.
-        if (sp > 0 && cmd is "follow" or "ig" or "mexec" or "myquests")
+        if (sp > 0 && cmd is "follow" or "ig" or "mexec" or "myquests"
+            or "igp" or "giver" or "listvars" or "listgvars" or "listpvars"
+            or "selecti" or "selectl" or "selectip" or "selectpi" or "selectlp" or "selectpl")
         {
             HandleRaCommand("/ra" + fullCommand.Substring(sp));
+            return true;
+        }
+
+        // Same commands under UB's names: /ub propertydump = /ra dumpprops,
+        // /ub followp <partial name> = /ra follow (which matches partial names).
+        if (cmd == "propertydump")
+        {
+            HandleRaCommand("/ra dumpprops" + (fullCommand.Length > sp + cmd.Length + 1 ? fullCommand.Substring(sp + cmd.Length + 1) : ""));
+            return true;
+        }
+        if (cmd == "followp")
+        {
+            HandleRaCommand("/ra follow" + (fullCommand.Length > sp + cmd.Length + 1 ? fullCommand.Substring(sp + cmd.Length + 1) : ""));
             return true;
         }
 
@@ -52,6 +146,17 @@ public sealed partial class RynthAiPlugin
         if (cmd == "clearbugged")
         {
             HandleRaCommand("/ra clearbusy");
+            return true;
+        }
+
+        // Commands added in the 2026-09-28 parity pass (UtilityBeltExtraCommands.cs).
+        if (TryHandleUbExtra(cmd, fullCommand))
+            return true;
+
+        // /ub closestportal: use the nearest portal (UtilityBelt's command).
+        if (cmd == "closestportal")
+        {
+            UseClosestPortal();
             return true;
         }
 

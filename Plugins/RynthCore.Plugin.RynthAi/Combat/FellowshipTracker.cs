@@ -102,7 +102,9 @@ public class FellowshipTracker : IDisposable
     private const int OFF_ENTRY_LEVEL    = 0x0C;
     private const int OFF_ENTRY_NEXT     = 0x34;
 
-    private Dictionary<int, string> _memberCache = new();
+    // Replaced whole on each refresh, never changed in place: the radar snapshot (engine pump
+    // thread) reads it while RynthAi's own thread may be refreshing it.
+    private volatile Dictionary<int, string> _memberCache = new();
     private DateTime _lastRefresh = DateTime.MinValue;
     private const double REFRESH_INTERVAL_MS = 2000;
 
@@ -278,7 +280,7 @@ public class FellowshipTracker : IDisposable
     {
         if ((DateTime.Now - _lastRefresh).TotalMilliseconds < REFRESH_INTERVAL_MS) return;
         _lastRefresh = DateTime.Now;
-        _memberCache.Clear();
+        var members = new Dictionary<int, string>();
         try
         {
             IntPtr fel = GetFellowshipPtr();
@@ -329,12 +331,13 @@ public class FellowshipTracker : IDisposable
                     int memberId = Marshal.ReadInt32(keyAddr);
                     string name = ReadPString(nameFieldAddr);
                     if (memberId != 0 && !string.IsNullOrEmpty(name))
-                    { _memberCache[memberId] = name; found++; }
+                    { members[memberId] = name; found++; }
                     entryPtr = Marshal.ReadInt32(nextAddr);
                 }
             }
         }
         catch { }
+        finally { _memberCache = members; } // also on the early returns (no fellowship: empty)
     }
 
     private string ReadPString(IntPtr addr)

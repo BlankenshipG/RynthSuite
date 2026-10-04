@@ -6,11 +6,17 @@
 //  locked (UseObject fails to open it).
 //
 //  State machine: None → Opening → CheckingResult → Unlocking → RetryOpen → Cooldown
+//
+//  Two ways in: the proximity scan (OpenDoors setting, nearest closed door in
+//  range), and a requested door (RequestDoorOpen): the nav engine's recovery
+//  detour asks for the closed door on its next leg. A requested door is opened
+//  even with OpenDoors off, since the detour was planned through that doorway.
 // ============================================================================
 
 using System;
 using System.Linq;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -22,11 +28,14 @@ public sealed partial class RynthAiPlugin
     private bool _doorPausedNav;
     private DoorState _doorState = DoorState.None;
     private long _doorLastDiagAt;
+    private int _doorRequestedId;        // asked for by the nav recovery detour; taken on the next idle tick
+    private bool _doorTargetRequested;   // the current target came from a request
 
     // Doors we've already opened — skip for 60s so we don't re-target them
     private readonly System.Collections.Generic.Dictionary<int, long> _doorOpenedRecently = new();
 
     private const long DoorBusyTimeoutMs = 3000;
+    private const long DoorResultSettleMs = 1200;   // a use is not judged "didn't open" sooner (below DoorBusyTimeoutMs)
     private const long DoorCooldownMs = 5000;
     private const long DoorOpenedSkipMs = 60000;
     private const int DoorMaxAttempts = 3;
@@ -49,9 +58,11 @@ public sealed partial class RynthAiPlugin
     private bool TickDoorInteraction()
     {
         var settings = _dashboard?.Settings;
-        if (settings == null || !settings.IsMacroRunning || !settings.OpenDoors)
+        bool requested = _doorRequestedId != 0 || _doorTargetRequested;
+        if (settings == null || !settings.IsMacroRunning || (!settings.OpenDoors && !requested))
         {
             ResetDoorState();
+            _doorRequestedId = 0;
             return false;
         }
 
@@ -70,10 +81,23 @@ public sealed partial class RynthAiPlugin
         // ── Idle: scan for a nearby closed door ─────────────────────────────
         if (_doorState == DoorState.None)
         {
-            int doorId = FindNearestClosedDoor(settings.OpenDoorRange, now);
+            int doorId = 0;
+            if (_doorRequestedId != 0)
+            {
+                int req = _doorRequestedId;
+                _doorRequestedId = 0;
+                if (!IsDoorOpen(req))
+                {
+                    doorId = req;
+                    _doorTargetRequested = true;
+                }
+            }
+            if (doorId == 0 && settings.OpenDoors)
+                doorId = FindNearestClosedDoor(settings.OpenDoorRange, now);
             if (doorId == 0) return false;
 
-            Host.Log($"[RynthAi] Door: targeting 0x{(uint)doorId:X8} (state={GetDoorStateDebug(doorId)}, busy={_busyCount})");
+            string why = _doorTargetRequested ? " (asked for by the nav detour)" : "";
+            Host.Log($"[RynthAi] Door: targeting 0x{(uint)doorId:X8}{why} (state={GetDoorStateDebug(doorId)}, busy={_busyCount})");
             _doorTargetId = doorId;
             _doorState = DoorState.Opening;
             _doorAttempts = 0;
@@ -83,7 +107,8 @@ public sealed partial class RynthAiPlugin
             if (Host.HasStopCompletely) Host.StopCompletely();
             _doorPausedNav = true;
 
-            Host.UseObject(unchecked((uint)doorId));
+            Host.UseFor(unchecked((uint)doorId), "Door",
+                _doorTargetRequested ? "the nav detour asked to open this door" : $"Open Doors: closed door within {settings.OpenDoorRange:0} yd");
             return true;
         }
 
@@ -110,7 +135,7 @@ public sealed partial class RynthAiPlugin
             Host.Log($"[RynthAi] Door: timeout in {_doorState}, retry #{_doorAttempts} for 0x{(uint)_doorTargetId:X8} (busy={_busyCount})");
             _doorState = DoorState.Opening;
             _doorActionAt = now;
-            Host.UseObject(unchecked((uint)_doorTargetId));
+            Host.UseFor(unchecked((uint)_doorTargetId), "Door", $"retry #{_doorAttempts}: the door didn't open in {DoorBusyTimeoutMs} ms");
             return true;
         }
 
@@ -124,6 +149,10 @@ public sealed partial class RynthAiPlugin
                     MarkDoorOpenedAndReset(now);
                     return false;
                 }
+                // The use is queued for AC's main thread and the server answers later: the
+                // busy count was still 0 when this read "not open" ~45 ms after the use
+                // (2026-10-02 logs), every time. Give the door time to swing first.
+                if (now - _doorActionAt < DoorResultSettleMs) return true;
                 Host.Log($"[RynthAi] Door: 0x{(uint)_doorTargetId:X8} not open after use ({GetDoorStateDebug(_doorTargetId)}), checking result");
                 _doorState = DoorState.CheckingResult;
                 _doorActionAt = now;
@@ -148,7 +177,7 @@ public sealed partial class RynthAiPlugin
                 Host.Log($"[RynthAi] Door: using lockpick {lockpick.Name} on 0x{(uint)_doorTargetId:X8}");
                 _doorState = DoorState.Unlocking;
                 _doorActionAt = now;
-                Host.UseObjectOn(unchecked((uint)lockpick.Id), unchecked((uint)_doorTargetId));
+                Host.UseOnFor(unchecked((uint)lockpick.Id), unchecked((uint)_doorTargetId), "Door", "Auto Unlock Doors: lockpick on a door that didn't open");
                 return true;
 
             case DoorState.Unlocking:
@@ -156,7 +185,7 @@ public sealed partial class RynthAiPlugin
                 Host.Log($"[RynthAi] Door: unlock done, retrying open 0x{(uint)_doorTargetId:X8}");
                 _doorState = DoorState.RetryOpen;
                 _doorActionAt = now;
-                Host.UseObject(unchecked((uint)_doorTargetId));
+                Host.UseFor(unchecked((uint)_doorTargetId), "Door", "open again after the lockpick");
                 return true;
 
             case DoorState.RetryOpen:
@@ -167,6 +196,7 @@ public sealed partial class RynthAiPlugin
                     MarkDoorOpenedAndReset(now);
                     return false;
                 }
+                if (now - _doorActionAt < DoorResultSettleMs) return true;
                 _doorAttempts++;
                 if (_doorAttempts >= DoorMaxAttempts)
                 {
@@ -178,7 +208,7 @@ public sealed partial class RynthAiPlugin
                 {
                     _doorState = DoorState.Opening;
                     _doorActionAt = now;
-                    Host.UseObject(unchecked((uint)_doorTargetId));
+                    Host.UseFor(unchecked((uint)_doorTargetId), "Door", $"still closed after the lockpick, try {_doorAttempts + 1}");
                 }
                 return true;
 
@@ -206,6 +236,58 @@ public sealed partial class RynthAiPlugin
         _doorState = DoorState.None;
         _doorAttempts = 0;
         _doorPausedNav = false;
+        _doorTargetRequested = false;
+    }
+
+    /// <summary>
+    /// Nav recovery: open this door on the next tick, whether or not OpenDoors is on.
+    /// Ignored while another door is being handled (the detour asks again later).
+    /// </summary>
+    private void RequestDoorOpen(int doorId)
+    {
+        if (doorId != 0 && _doorState == DoorState.None) _doorRequestedId = doorId;
+    }
+
+    /// <summary>
+    /// Nav recovery: the closed door nearest the start of the leg (ax, ay) to (bx, by), in
+    /// world units, within <paramref name="corridor"/> of it and about the same height as
+    /// <paramref name="z"/>; 0 when there is none. Doors are static objects with BF_DOOR
+    /// (or a door-like name when the bitfield isn't available).
+    /// </summary>
+    private int FindClosedDoorOnLeg(double ax, double ay, double bx, double by, double z, double corridor)
+    {
+        if (_objectCache == null || !Host.HasGetObjectPosition) return 0;
+        bool hasBitfield = Host.HasGetObjectBitfield;
+        double dx = bx - ax, dy = by - ay;
+        double len2 = dx * dx + dy * dy;
+
+        int bestId = 0;
+        double bestT = double.MaxValue;
+        foreach (var wo in _objectCache.GetLandscapeObjects())
+        {
+            uint uid = unchecked((uint)wo.Id);
+            if (uid >= 0x80000000u) continue;
+            if (hasBitfield)
+            {
+                if (!Host.TryGetObjectBitfield(uid, out uint bf) || (bf & 0x1000u) == 0) continue;
+            }
+            else
+            {
+                string nl = (wo.Name ?? string.Empty).ToLowerInvariant();
+                if (!nl.Contains("door") && !nl.Contains("gate") && !nl.Contains("hatch") && !nl.Contains("portcullis")) continue;
+            }
+            if (IsDoorOpen(wo.Id)) continue;
+            if (!Host.TryGetObjectPosition(uid, out uint cell, out float x, out float y, out float oz)) continue;
+            if (Math.Abs(oz - z) > 4.0) continue;
+
+            double px = ((cell >> 24) & 0xFF) * 192.0 + x;
+            double py = ((cell >> 16) & 0xFF) * 192.0 + y;
+            double t = len2 < 1e-6 ? 0.0 : Math.Clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0.0, 1.0);
+            double cx = ax + dx * t - px, cy = ay + dy * t - py;
+            if (cx * cx + cy * cy > corridor * corridor) continue;
+            if (t < bestT) { bestT = t; bestId = wo.Id; }
+        }
+        return bestId;
     }
 
     private int FindNearestClosedDoor(float rangeYards, long now)

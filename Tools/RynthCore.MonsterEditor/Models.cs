@@ -12,7 +12,7 @@ public class MonsterRule : INotifyPropertyChanged
     private string _damageType = "Auto";
     private int _weaponId;
     private bool _fester, _broadside, _gravityWell, _imperil, _yield, _vuln;
-    private bool _useArc, _useBolt = true, _useRing, _useStreak;
+    private bool _useArc, _useBolt = true, _useRing, _useStreak, _useBlast;
     private string _exVuln = "None";
     private int _offhandId;
     private string _petDamage = "PAuto";
@@ -31,6 +31,7 @@ public class MonsterRule : INotifyPropertyChanged
     public bool   UseBolt     { get => _useBolt;     set { _useBolt     = value; OnPropertyChanged(); } }
     public bool   UseRing     { get => _useRing;     set { _useRing     = value; OnPropertyChanged(); } }
     public bool   UseStreak   { get => _useStreak;   set { _useStreak   = value; OnPropertyChanged(); } }
+    public bool   UseBlast    { get => _useBlast;    set { _useBlast    = value; OnPropertyChanged(); } }
     public string ExVuln      { get => _exVuln;      set { _exVuln      = value; OnPropertyChanged(); } }
     public int    OffhandId   { get => _offhandId;   set { _offhandId   = value; OnPropertyChanged(); } }
     public string PetDamage   { get => _petDamage;   set { _petDamage   = value; OnPropertyChanged(); } }

@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    RynthOracle: a RynthCore port of the Decal plugin "Oracle of Dereth" by Advis Eveldan
+    (GitHub: advis61), MIT. See THIRD_PARTY_NOTICES.md in this folder.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <OutputType>Library</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+    <StripSymbols>false</StripSymbols>
+    <RootNamespace>RynthCore.Plugin.RynthOracle</RootNamespace>
+    <AssemblyName>RynthCore.Plugin.RynthOracle</AssemblyName>
+    <Platforms>x86</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
+    <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Oracle of Dereth's curated lists (MIT, by Advis Eveldan / advis61), bundled so the plugin works offline. -->
+    <EmbeddedResource Include="Resources\quests.csv" LogicalName="RynthOracle.quests.csv" />
+    <!-- Server quest packs (RynthOracle.quests.<tag>.csv): loaded only on their own server. -->
+    <EmbeddedResource Include="Resources\quests.conquest.csv" LogicalName="RynthOracle.quests.conquest.csv" />
+    <EmbeddedResource Include="Resources\quests.levistras.csv" LogicalName="RynthOracle.quests.levistras.csv" />
+    <!-- Generated from Aelrynth's world-database backup by Tools\RynthOracle.QuestPackGen. -->
+    <EmbeddedResource Include="Resources\quests.aelrynth.csv" LogicalName="RynthOracle.quests.aelrynth.csv" />
+    <EmbeddedResource Include="Resources\augmentations.csv" LogicalName="RynthOracle.augmentations.csv" />
+    <EmbeddedResource Include="Resources\augquests.csv" LogicalName="RynthOracle.augquests.csv" />
+    <EmbeddedResource Include="Resources\society.csv" LogicalName="RynthOracle.society.csv" />
+    <EmbeddedResource Include="Resources\titles.csv" LogicalName="RynthOracle.titles.csv" />
+    <EmbeddedResource Include="Resources\markers.csv" LogicalName="RynthOracle.markers.csv" />
+    <EmbeddedResource Include="Resources\customquests.csv" LogicalName="RynthOracle.customquests.csv" />
+    <!-- Spell names and durations: RynthAi's spell table, shared rather than copied. -->
+    <EmbeddedResource Include="..\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthOracle.SpellData.txt" Link="Shared\SpellData.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Fellowship reader (client memory, VirtualQuery-guarded), shared source with RynthAi. -->
+    <Compile Include="..\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="Shared\FellowshipTracker.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="THIRD_PARTY_NOTICES.md" CopyToPublishDirectory="PreserveNewest" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

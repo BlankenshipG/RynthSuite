@@ -196,4 +196,6 @@ public enum AcSkillType
     Salvaging, Run, Jump, Loyalty, Leadership, Deception,
     Healing, Lockpick, Cooking, Fletching, Alchemy, ManaConversion,
     AssessCreature, AssessPerson, Summoning,
+    // Appended, not inserted: the members above keep their values.
+    MissileWeapons,
 }

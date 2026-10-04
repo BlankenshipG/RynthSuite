@@ -116,6 +116,14 @@
                     </DataTemplate></DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
 
+                <DataGridTemplateColumn Header="Bs" Width="26" CanUserResize="False" CanUserSort="False">
+                    <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                        <ToggleButton Classes="light" Content="Bs"
+                                      IsChecked="{Binding UseBlast, Mode=TwoWay}"
+                                      ToolTip.Tip="Blast — War/Void blast spells (a spread of projectiles; wins over Bolt)"/>
+                    </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+
                 <!-- Name -->
                 <DataGridTemplateColumn Header="Name" Width="*" MinWidth="100">
                     <DataGridTemplateColumn.CellTemplate><DataTemplate>

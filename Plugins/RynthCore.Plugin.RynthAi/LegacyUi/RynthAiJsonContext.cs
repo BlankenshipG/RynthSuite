@@ -16,6 +16,7 @@ namespace RynthCore.Plugin.RynthAi;
 [JsonSerializable(typeof(NavCommand))]
 [JsonSerializable(typeof(MetaRuleDto))]
 [JsonSerializable(typeof(MetaCommand))]
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Meta.MetaScheduleConfig))]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     IncludeFields = true,

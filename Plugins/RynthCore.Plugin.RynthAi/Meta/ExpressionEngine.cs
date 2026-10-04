@@ -9,6 +9,7 @@ using RynthCore.Plugin.RynthAi.CreatureData;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.Loot.VTank;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.Meta;
 
@@ -58,8 +59,14 @@ internal sealed class ExpressionEngine
         = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (RynthCore.Loot.LootProfile Profile, DateTime Mtime)> _giveNativeProfileCache
         = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly string ItemGiverDir
+    // The three data paths are settable only so offline tests can point them at a scratch
+    // folder before anything reads or writes them; the plugin never changes them.
+    internal static string ItemGiverDir { get; set; }
         = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "ItemGiver");
+
+    /// <summary>Millisecond tick for delayexec and the var-flush throttle. Tests swap it for a
+    /// fake clock; the plugin never changes it.</summary>
+    internal Func<long> TickMs { get; set; } = static () => Environment.TickCount64;
 
     // Stopwatch store: handle → Stopwatch. Persistent (not cleared per eval) — handles are stored in variables.
     private readonly Dictionary<string, System.Diagnostics.Stopwatch> _stopwatches = new(StringComparer.Ordinal);
@@ -100,8 +107,8 @@ internal sealed class ExpressionEngine
     private long _lastVarFlushMs;
     private string? _pvarPathCached;
     private const long VarFlushIntervalMs = 2000;
-    private static readonly string PvarsDir  = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "pvars");
-    private static readonly string GvarsPath = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "gvars.txt");
+    internal static string PvarsDir  { get; set; } = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "pvars");
+    internal static string GvarsPath { get; set; } = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "gvars.txt");
     private Dictionary<string, (Func<string> Get, Action<string> Set)>? _settingsMap;
 
     public IReadOnlyDictionary<string, string> Variables => _variables;
@@ -416,9 +423,9 @@ internal sealed class ExpressionEngine
             "cstrf"    => EvalCstrf(A(0), Tmpl(1)),
             "cnumber"  => ToDouble(A(0)).ToString("G", CultureInfo.InvariantCulture),
             "strlen"   => A(0).Length.ToString(CultureInfo.InvariantCulture),
-            "floor"    => Math.Floor(ToDouble(A(0))).ToString("G", CultureInfo.InvariantCulture),
-            "ceiling"  => Math.Ceiling(ToDouble(A(0))).ToString("G", CultureInfo.InvariantCulture),
-            "round"    => Math.Round(ToDouble(A(0)), MidpointRounding.AwayFromZero).ToString("G", CultureInfo.InvariantCulture),
+            "floor"    => Fmt(Math.Floor(ToDouble(A(0)))),
+            "ceiling"  => Fmt(Math.Ceiling(ToDouble(A(0)))),
+            "round"    => Fmt(Math.Round(ToDouble(A(0)), MidpointRounding.AwayFromZero)),
             "abs"      => Math.Abs(ToDouble(A(0))).ToString("G", CultureInfo.InvariantCulture),
             "ord"      => EvalOrd(A(0)),
             "chr"      => EvalChr(A(0)),
@@ -485,7 +492,10 @@ internal sealed class ExpressionEngine
 
             // ── RynthAi settings / meta state (VTank-compatible names) ────────
             "rasetmetastate" or "vtsetmetastate" or "setmetastate" => EvalVtSetMetaState(Tmpl(0)),
-            "ragetmetastate" => _settings?.CurrentState ?? "",
+            "ragetmetastate" or "vtgetmetastate" or "getmetastate" => _settings?.CurrentState ?? "",
+            // UB vtgetmeta[]: the loaded meta's name (file name without extension).
+            "vtgetmeta" or "ragetmeta" => string.IsNullOrEmpty(_settings?.CurrentMetaPath)
+                ? "" : Path.GetFileNameWithoutExtension(_settings!.CurrentMetaPath),
             "rasetsetting" or "vtsetsetting"     => EvalVtSetSetting(Tmpl(0), A(1)),
             "ragetsetting" or "vtgetsetting" or "vtankgetsetting" => EvalVtGetSetting(Tmpl(0)),
 
@@ -649,7 +659,7 @@ internal sealed class ExpressionEngine
     public void FlushVars(bool force = false)
     {
         if (!_pvarsDirty && !_gvarsDirty) return;
-        long now = Environment.TickCount64;
+        long now = TickMs();
         if (!force && now - _lastVarFlushMs < VarFlushIntervalMs) return;
         if (_pvarsDirty && _pvars != null) { SaveVarFile(GetPvarPath(), _pvars); _pvarsDirty = false; }
         if (_gvarsDirty && _gvars != null) { SaveVarFile(GvarsPath, _gvars);     _gvarsDirty = false; }
@@ -1314,7 +1324,9 @@ internal sealed class ExpressionEngine
 
     private string EvalVitae()
     {
-        if (!_host.HasGetVitae || _playerId == 0) return "100";
+        // Unreadable (no engine call, or before login): no known penalty. It returned
+        // 100, a full penalty, while a real "no vitae" reading is 0.
+        if (!_host.HasGetVitae || _playerId == 0) return "0";
         float v = _host.GetVitae(_playerId);
         // Convert multiplier to penalty: 1.0 → 0 (no penalty), 0.95 → 5 (5% penalty).
         int penalty = 100 - (int)Math.Round(v * 100.0f);
@@ -2044,10 +2056,40 @@ internal sealed class ExpressionEngine
         return free < 0 ? "0" : free.ToString(CultureInfo.InvariantCulture);
     }
 
+    // Last automatic ID request per object (TickCount64), see EnsureIdentified.
+    private readonly Dictionary<uint, long> _autoIdAt = new();
+
+    /// <summary>
+    /// Asks the server to identify an object a meta or script reads properties
+    /// from, if it hasn't been identified this session. Many properties (uses
+    /// left on a pet essence, workmanship, spells ...) only arrive with an ID:
+    /// before this, a meta reading them got 0 until the item was identified by
+    /// hand, e.g. endlessly "refilling" a full essence. At most once per 10 s
+    /// per object; the value is right on the next read once the ID lands.
+    /// </summary>
+    private void EnsureIdentified(uint uid)
+    {
+        if (uid == 0 || !_host.HasHasAppraisalData || !_host.HasRequestId) return;
+        // Used (or used on) since its last identify: the identified values may be
+        // stale, e.g. an essence's uses after a summon or refill. Re-identify.
+        bool stale = ObjectChangeTracker.IsStale(uid, _host.HasGetLastIdTime ? _host.GetLastIdTime(uid) : 0);
+        if (!stale && _host.HasAppraisalData(uid)) return;
+        long now = Environment.TickCount64;
+        long gap = stale ? 2_000 : 10_000;
+        lock (_autoIdAt)
+        {
+            if (_autoIdAt.TryGetValue(uid, out long last) && now - last < gap) return;
+            if (_autoIdAt.Count > 500) _autoIdAt.Clear();
+            _autoIdAt[uid] = now;
+        }
+        _host.RequestId(uid);
+    }
+
     private string EvalWobjectGetIntProp(string objArg, string propArg)
     {
         if (!TryParseWobjectHandle(objArg, out uint uid, out _)) return "0";
         if (!uint.TryParse(propArg.Trim(), out uint prop)) return "0";
+        EnsureIdentified(uid);
 
         // UB extended property 218103808 (0xD000000) = TEMPLATE_TYPE → reads WCID from PublicWeenieDesc
         if (prop == 218103808u)
@@ -2066,6 +2108,7 @@ internal sealed class ExpressionEngine
     {
         if (!TryParseWobjectHandle(objArg, out uint uid, out _)) return "0";
         if (!uint.TryParse(propArg.Trim(), out uint prop)) return "0";
+        EnsureIdentified(uid);
 
         // UB extended double property constants use their own index, not AC STypeFloat values.
         // Map each known UB extended constant to the correct AC STypeFloat (or special path).
@@ -2085,6 +2128,7 @@ internal sealed class ExpressionEngine
     {
         if (!TryParseWobjectHandle(objArg, out uint uid, out _)) return "0";
         if (!uint.TryParse(propArg.Trim(), out uint prop)) return "0";
+        EnsureIdentified(uid);
         if (!_host.HasGetObjectBoolProperty) return "0";
         return _host.TryGetObjectBoolProperty(uid, prop, out bool value) ? (value ? "1" : "0") : "0";
     }
@@ -2093,6 +2137,7 @@ internal sealed class ExpressionEngine
     {
         if (!TryParseWobjectHandle(objArg, out uint uid, out _)) return "";
         if (!uint.TryParse(propArg.Trim(), out uint prop)) return "";
+        EnsureIdentified(uid);
         if (!_host.HasGetObjectStringProperty) return "";
         return _host.TryGetObjectStringProperty(uid, prop, out string? value) ? value ?? "" : "";
     }
@@ -2160,31 +2205,52 @@ internal sealed class ExpressionEngine
             : "0";
     }
 
-    private string EvalCreatureGetResist(string arg, string typeArg)
+    // Resists come from CreatureWeakness (the shipped server table, else the creature
+    // type's average): ACE never sends them on appraisal, so the profile's were all 1.0
+    // and creaturegetweakest always said "slash" (2026-09-29). Values are damage taken.
+    private CreatureWeakness.Ranking? ResolveWeakness(string arg)
     {
-        var p = ResolveCreatureProfile(arg);
-        if (p == null) return "1";
-        string t = (typeArg ?? "").Trim().ToLowerInvariant();
-        double v = t switch
+        uint wcid = 0;
+        string? name = null;
+        if (TryParseWobjectHandle(arg, out uint uid, out _) && uid != 0)
         {
-            "slash" or "sl"           => p.ResistSlash,
-            "pierce" or "pi"          => p.ResistPierce,
-            "bludgeon" or "bl" or "b" => p.ResistBludgeon,
-            "fire" or "fi" or "f"     => p.ResistFire,
-            "cold" or "co" or "c"     => p.ResistCold,
-            "acid" or "ac" or "a"     => p.ResistAcid,
-            "electric" or "lightning" or "el" or "li" => p.ResistElectric,
-            _ => 1.0,
-        };
-        return v.ToString("G", CultureInfo.InvariantCulture);
+            if (_host.HasGetObjectName && _host.TryGetObjectName(uid, out string n)) name = n;
+            if (_host.HasGetObjectWcid) _host.TryGetObjectWcid(uid, out wcid);
+        }
+        if (string.IsNullOrEmpty(name)) name = arg;
+        int ctype = ResolveCreatureProfile(arg)?.CreatureType ?? 0;
+        return CreatureWeakness.Rank(wcid, name, ctype, null);
     }
 
+    private string EvalCreatureGetResist(string arg, string typeArg)
+    {
+        string t = (typeArg ?? "").Trim().ToLowerInvariant();
+        string element = t switch
+        {
+            "slash" or "sl"           => "Slash",
+            "pierce" or "pi"          => "Pierce",
+            "bludgeon" or "bl" or "b" => "Bludgeon",
+            "fire" or "fi" or "f"     => "Fire",
+            "cold" or "co" or "c"     => "Cold",
+            "acid" or "ac" or "a"     => "Acid",
+            "electric" or "lightning" or "el" or "li" => "Lightning",
+            "nether" or "ne" or "n"   => "Nether",
+            _ => "",
+        };
+        var r = ResolveWeakness(arg);
+        if (r != null && element.Length > 0)
+            foreach (var (e, m) in r.Order)
+                if (e == element && !double.IsNaN(m)) return m.ToString("G", CultureInfo.InvariantCulture);
+        return "1";
+    }
+
+    /// <summary>The element the creature takes most damage from, spelled as before ("electric" for lightning); "" when unknown.</summary>
     private string EvalCreatureGetWeakest(string arg)
     {
-        var p = ResolveCreatureProfile(arg);
-        if (p == null) return "";
-        var (type, _) = CreatureProfileStore.GetWeakest(p);
-        return type;
+        var r = ResolveWeakness(arg);
+        if (r == null || r.Order.Count == 0) return "";
+        string e = r.Order[0].Element.ToLowerInvariant();
+        return e == "lightning" ? "electric" : e;
     }
 
     private string EvalCreatureGetArmor(string arg)
@@ -2354,7 +2420,7 @@ internal sealed class ExpressionEngine
     {
         if (!TryParseWobjectHandle(arg, out uint uid, out _) || uid == 0) return "0";
         if (!_host.HasUseObject) return "0";
-        _host.UseObject(uid);
+        _host.UseFor(uid, "Meta", "actiontryuseitem", UseKind.Asked);
         return "0";
     }
 
@@ -2363,7 +2429,7 @@ internal sealed class ExpressionEngine
         if (!TryParseWobjectHandle(useArg, out uint useId, out _) || useId == 0) return "0";
         if (!TryParseWobjectHandle(onArg, out uint onId, out _) || onId == 0) return "0";
         if (!_host.HasUseObjectOn) return "0";
-        return _host.UseObjectOn(useId, onId) ? "1" : "0";
+        return _host.UseOnFor(useId, onId, "Meta", "actiontryapplyitem", UseKind.Asked) ? "1" : "0";
     }
 
     private string EvalActionTryCastByIdOnTarget(string spellArg, string targetArg)
@@ -2512,7 +2578,7 @@ internal sealed class ExpressionEngine
                 _castBowDequipPendingId = 0; // bow confirmed unwielded — fall through to wield the wand
             }
 
-            _host.UseObject((uint)wandId);
+            _host.UseFor((uint)wandId, "Meta", "meta cast: wield the wand", UseKind.Asked);
             _castWieldPendingId = wandId;
             _castWieldPendingAt = now;
             return false; // yield — let the server equip the wand
@@ -2539,7 +2605,7 @@ internal sealed class ExpressionEngine
             _castStanceLastRecoverAt = now;
             _castStanceReEquips++;
             _host.Log($"[MetaCast] stance STUCK {stuckMs:0}ms (wielded, mode≠Magic) — re-equip {_castStanceReEquips}/{CastStanceReEquipMax} 0x{(uint)wandId:X8}");
-            _host.UseObject((uint)wandId);
+            _host.UseFor((uint)wandId, "Meta", "meta cast: stance stuck, wield the wand again", UseKind.Asked);
             return false;
         }
 
@@ -2566,7 +2632,7 @@ internal sealed class ExpressionEngine
         }
         else if (bowId != 0 && !IsCastWielded(bowId) && _host.HasUseObject)
         {
-            _host.UseObject((uint)bowId); // re-wield the bow we dequipped
+            _host.UseFor((uint)bowId, "Meta", "meta cast done: wield the bow again", UseKind.Asked); // re-wield the bow we dequipped
         }
         _castWieldPendingId = 0;
         _castBowDequipPendingId = 0;
@@ -2593,7 +2659,7 @@ internal sealed class ExpressionEngine
         if (id == 0 || _worldObjectCache == null) return false;
         foreach (var wo in _worldObjectCache.GetDirectInventory(forceRefresh: true))
             if (wo.Id == id)
-                return wo.Values(LongValueKey.CurrentWieldedLocation, 0) > 0;
+                return WorldObjectCache.IsWieldedByPlayer(_host, wo);
         if (_host.HasGetObjectWielderInfo)
         {
             uint pid = _host.GetPlayerId();
@@ -2611,9 +2677,10 @@ internal sealed class ExpressionEngine
         {
             if (wo.Id == wandId) continue;
             if (IsCastWandObject(wo)) continue;
-            if (wo.Values(LongValueKey.CurrentWieldedLocation, 0) > 0
-                && (wo.ObjectClass == AcObjectClass.MeleeWeapon
-                 || wo.ObjectClass == AcObjectClass.MissileWeapon))
+            if (WorldObjectCache.IsAmmo(wo)) continue;   // arrows stay on; only the bow blocks the wand
+            if ((wo.ObjectClass == AcObjectClass.MeleeWeapon
+                 || wo.ObjectClass == AcObjectClass.MissileWeapon)
+                && WorldObjectCache.IsWieldedByPlayer(_host, wo))
                 return wo.Id;
         }
         return 0;
@@ -2668,7 +2735,7 @@ internal sealed class ExpressionEngine
         }
 
         if (unequipped != null)
-            _host.UseObject(unchecked((uint)unequipped.Id));
+            _host.UseFor(unchecked((uint)unequipped.Id), "Meta", "actiontryequipanywand", UseKind.Asked);
 
         return "0";
     }
@@ -2955,7 +3022,7 @@ internal sealed class ExpressionEngine
         {
             if (string.Equals(item.Name, "Ust", StringComparison.OrdinalIgnoreCase))
             {
-                _host.UseObject((uint)item.Id);
+                _host.UseFor((uint)item.Id, "Meta", "ustopen", UseKind.Asked);
                 return "1";
             }
         }
@@ -3173,6 +3240,8 @@ internal sealed class ExpressionEngine
         if (_settings == null || string.IsNullOrEmpty(name)) return "";
         var map = BuildSettingsMap();
         if (map.TryGetValue(name, out var entry)) return entry.Get();
+        // VTank option names (EnableNav, NavPriorityBoost, Recharge-Norm-Hitp...) → RynthAi setting.
+        if (MetaManager.TryMapVtOption(name, out string raName) && map.TryGetValue(raName, out entry)) return entry.Get();
         return _options.TryGetValue(name, out string? v) ? v : "";
     }
 
@@ -3180,7 +3249,14 @@ internal sealed class ExpressionEngine
     {
         if (_settings == null || string.IsNullOrEmpty(name)) return "0";
         var map = BuildSettingsMap();
-        if (map.TryGetValue(name, out var entry)) { entry.Set(value); return "1"; }
+        // VTank option names map to RynthAi settings, and bool text (True/false/on/off)
+        // becomes 1/0: the bool setters read a number, so 'True' used to switch it OFF.
+        if (map.TryGetValue(name, out var entry)
+            || (MetaManager.TryMapVtOption(name, out string raName) && map.TryGetValue(raName, out entry)))
+        {
+            entry.Set(MetaManager.NormalizeVtValue(value));
+            return "1";
+        }
         _options[name] = value;
         return "1";
     }
@@ -3213,9 +3289,23 @@ internal sealed class ExpressionEngine
             ["MissileArcClearance"] = (() => F(s.MissileArcClearance), v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && float.IsFinite(f)) s.MissileArcClearance = Math.Clamp(f, 0f, 3f); }),
             ["EnableAutostack"]     = (() => B(s.EnableAutostack),     v => s.EnableAutostack     = ToDouble(v) != 0),
             ["EnableAutocram"]      = (() => B(s.EnableAutocram),      v => s.EnableAutocram      = ToDouble(v) != 0),
+            ["ReadUnknownScrolls"]  = (() => B(s.ReadUnknownScrolls),  v => s.ReadUnknownScrolls  = ToDouble(v) != 0),
             ["EnableCombineSalvage"]= (() => B(s.EnableCombineSalvage),v => s.EnableCombineSalvage= ToDouble(v) != 0),
             ["PeaceModeWhenIdle"]   = (() => B(s.PeaceModeWhenIdle),   v => s.PeaceModeWhenIdle   = ToDouble(v) != 0),
             ["RebuffWhenIdle"]      = (() => B(s.RebuffWhenIdle),      v => s.RebuffWhenIdle      = ToDouble(v) != 0),
+            ["UsePotions"] = (() => B(s.UsePotions), v => s.UsePotions = ToDouble(v) != 0),
+            ["UseBuffItems"] = (() => B(s.UseBuffItems), v => s.UseBuffItems = ToDouble(v) != 0),
+            ["MakeRationsBelow"] = (() => s.MakeRationsBelow.ToString(CultureInfo.InvariantCulture), v => s.MakeRationsBelow = Math.Clamp((int)ToDouble(v), 0, 100)),
+            ["UseKitsInMagicMode"] = (() => B(s.UseKitsInMagicMode), v => s.UseKitsInMagicMode = ToDouble(v) != 0),
+            ["PeaceModeForKits"] = (() => B(s.PeaceModeForKits), v => s.PeaceModeForKits = ToDouble(v) != 0),
+            ["KitMinSuccessPct"] = (() => s.KitMinSuccessPct.ToString(CultureInfo.InvariantCulture), v => s.KitMinSuccessPct = Math.Clamp((int)ToDouble(v), 0, 100)),
+            ["EmergencyHealAt"] = (() => s.EmergencyHealAt.ToString(CultureInfo.InvariantCulture), v => s.EmergencyHealAt = Math.Clamp((int)ToDouble(v), 0, 100)),
+            ["StaminaToHealthAt"] = (() => s.StaminaToHealthAt.ToString(CultureInfo.InvariantCulture), v => s.StaminaToHealthAt = Math.Clamp((int)ToDouble(v), 0, 100)),
+            ["StaminaToHealthMinStamina"] = (() => s.StaminaToHealthMinStamina.ToString(CultureInfo.InvariantCulture), v => s.StaminaToHealthMinStamina = Math.Clamp((int)ToDouble(v), 0, 100)),
+            ["StopMacroOnDeath"] = (() => B(s.StopMacroOnDeath), v => s.StopMacroOnDeath = ToDouble(v) != 0),
+            ["StopMacroOnNoComponents"] = (() => B(s.StopMacroOnNoComponents), v => s.StopMacroOnNoComponents = ToDouble(v) != 0),
+            ["StopLootingWhenPackFull"] = (() => B(s.StopLootingWhenPackFull), v => s.StopLootingWhenPackFull = ToDouble(v) != 0),
+            ["StopMacroWhenPackFull"] = (() => B(s.StopMacroWhenPackFull), v => s.StopMacroWhenPackFull = ToDouble(v) != 0),
             ["SummonPets"]          = (() => B(s.SummonPets),          v => s.SummonPets          = ToDouble(v) != 0),
             ["MineOnly"]            = (() => B(s.MineOnly),            v => s.MineOnly            = ToDouble(v) != 0),
             ["UseDispelItems"]      = (() => B(s.UseDispelItems),      v => s.UseDispelItems      = ToDouble(v) != 0),
@@ -3223,10 +3313,16 @@ internal sealed class ExpressionEngine
             ["AutoFellowMgmt"]      = (() => B(s.AutoFellowMgmt),      v => s.AutoFellowMgmt      = ToDouble(v) != 0),
             ["UseRecklessness"]     = (() => B(s.UseRecklessness),     v => s.UseRecklessness     = ToDouble(v) != 0),
             ["UseNativeAttack"]     = (() => B(s.UseNativeAttack),     v => s.UseNativeAttack     = ToDouble(v) != 0),
+            ["WieldUnlistedWandWhenNoneListed"] = (() => B(s.WieldUnlistedWandWhenNoneListed), v => s.WieldUnlistedWandWhenNoneListed = ToDouble(v) != 0),
+            // The off hand when a monster rule doesn't choose: Auto, Shield, Weapon or None (or 0-3).
+            ["OffhandDefault"]      = (() => s.OffhandDefault,         v => { if (OffhandRules.TryParse(v, out var m)) s.OffhandDefault = OffhandRules.SettingValue(m); }),
+            ["PreferDualWield"]     = (() => B(s.PreferDualWield),     v => s.PreferDualWield     = ToDouble(v) != 0),
             ["MonsterRange"]        = (() => I(s.MonsterRange),        v => { if (int.TryParse(v, out int i)) s.MonsterRange     = i; }),
             ["RingRange"]           = (() => I(s.RingRange),           v => { if (int.TryParse(v, out int i)) s.RingRange        = i; }),
             ["ApproachRange"]       = (() => I(s.ApproachRange),       v => { if (int.TryParse(v, out int i)) s.ApproachRange    = i; }),
             ["MinRingTargets"]      = (() => I(s.MinRingTargets),      v => { if (int.TryParse(v, out int i)) s.MinRingTargets   = i; }),
+            ["BlastRange"]          = (() => I(s.BlastRange),      v => { if (int.TryParse(v, out int i)) s.BlastRange   = i; }),
+            ["MinBlastTargets"]     = (() => I(s.MinBlastTargets),      v => { if (int.TryParse(v, out int i)) s.MinBlastTargets   = i; }),
             ["HealAt"]              = (() => I(s.HealAt),              v => { if (int.TryParse(v, out int i)) s.HealAt           = i; }),
             ["RestamAt"]            = (() => I(s.RestamAt),            v => { if (int.TryParse(v, out int i)) s.RestamAt         = i; }),
             ["GetManaAt"]           = (() => I(s.GetManaAt),           v => { if (int.TryParse(v, out int i)) s.GetManaAt        = i; }),
@@ -3254,7 +3350,20 @@ internal sealed class ExpressionEngine
             ["AutoVendorOnlyFromMainPack"] = (() => B(s.AutoVendorOnlyFromMainPack), v => s.AutoVendorOnlyFromMainPack = ToDouble(v) != 0),
             ["AutoVendorTries"]            = (() => I(s.AutoVendorTries),            v => { if (int.TryParse(v, out int i)) s.AutoVendorTries = Math.Clamp(i, 1, 20); }),
             ["AutoVendorTriesTime"]        = (() => I(s.AutoVendorTriesTime),        v => { if (int.TryParse(v, out int i)) s.AutoVendorTriesTime = Math.Clamp(i, 500, 30000); }),
-            ["NavCloseStopRange"]      = (() => F(s.NavCloseStopRange),      v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.NavCloseStopRange = f; }),
+            // AutoTrade (UB names map here through /ub opt: AutoTrade.Enabled -> AutoTradeEnabled, ...)
+            ["AutoTradeEnabled"]           = (() => B(s.AutoTradeEnabled),           v => s.AutoTradeEnabled           = ToDouble(v) != 0),
+            ["AutoTradeTestMode"]          = (() => B(s.AutoTradeTestMode),          v => s.AutoTradeTestMode          = ToDouble(v) != 0),
+            ["AutoTradeThink"]             = (() => B(s.AutoTradeThink),             v => s.AutoTradeThink             = ToDouble(v) != 0),
+            ["AutoTradeOnlyFromMainPack"]  = (() => B(s.AutoTradeOnlyFromMainPack),  v => s.AutoTradeOnlyFromMainPack  = ToDouble(v) != 0),
+            ["AutoTradeAutoAccept"]        = (() => B(s.AutoTradeAutoAccept),        v => s.AutoTradeAutoAccept        = ToDouble(v) != 0),
+            // Nav point reach: how close nav gets to each nav point before moving on (yards).
+            ["FollowNavMin"]           = (() => F(s.FollowNavMin),           v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.FollowNavMin = LegacyUiSettings.ClampFollowNavMin(f); }),
+            // VTank's NavCloseStopRange IS its "Follow/Nav Min Distance" box (the box shows it x240
+            // in yards; utank2-i.dll fills txtWPRange from it). It used to be read here as a
+            // separate "stop short of a Once route's last point" range, so a meta's
+            // navclosestoprange never changed how close nav got to each point. Same setting now,
+            // in VTank's landblock units: 0.00625 = 1.5 yd.
+            ["NavCloseStopRange"]      = (() => F(s.FollowNavMin / 240f),    v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f) && f > 0f) s.FollowNavMin = LegacyUiSettings.ClampFollowNavMin(f * 240f); }),
             ["NavShortcutYards"]       = (() => F(s.NavShortcutYards),       v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.NavShortcutYards = Math.Clamp(f, 0f, 10f); }),
             ["MaxMonRange"]         = (() => D(s.MaxMonRange),         v => { if (double.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out double d)) s.MaxMonRange = d; }),
             ["NavRingThickness"]    = (() => F(s.NavRingThickness),    v => { if (float.TryParse(v,  System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f))  s.NavRingThickness = f; }),
@@ -3263,6 +3372,9 @@ internal sealed class ExpressionEngine
             ["CurrentLootPath"]     = (() => s.CurrentLootPath,        v => s.CurrentLootPath = v),
             ["CurrentMetaPath"]     = (() => s.CurrentMetaPath,        v => s.CurrentMetaPath = v),
             ["OpenDoors"]           = (() => B(s.OpenDoors),           v => s.OpenDoors       = ToDouble(v) != 0),
+            ["NavRecoveryEnabled"]  = (() => B(s.NavRecoveryEnabled),  v => s.NavRecoveryEnabled = ToDouble(v) != 0),
+            ["NavOffTrackYards"]    = (() => F(s.NavOffTrackYards),    v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.NavOffTrackYards = Math.Clamp(f, 160f, 1000f); }),
+            ["NavMaxDetourAttempts"] = (() => I(s.NavMaxDetourAttempts), v => { if (int.TryParse(v, out int i)) s.NavMaxDetourAttempts = Math.Clamp(i, 1, 10); }),
             ["OpenDoorRange"]       = (() => F(s.OpenDoorRange),       v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.OpenDoorRange = f; }),
             ["BoostNavPriority"]    = (() => B(s.BoostNavPriority),    v => s.BoostNavPriority  = ToDouble(v) != 0),
             ["BoostLootPriority"]   = (() => B(s.BoostLootPriority),   v => s.BoostLootPriority = ToDouble(v) != 0),
@@ -3278,7 +3390,7 @@ internal sealed class ExpressionEngine
                 CultureInfo.InvariantCulture, out double delayMs))
             delayMs = 0;
         long ms = (long)Math.Max(0, delayMs);
-        _delayedExecs.Add((Environment.TickCount64 + ms, exprArg));
+        _delayedExecs.Add((TickMs() + ms, exprArg));
         return "1";
     }
 
@@ -3292,7 +3404,7 @@ internal sealed class ExpressionEngine
     public void PumpDelayedExecs()
     {
         if (_delayedExecs.Count == 0) return;
-        long now = Environment.TickCount64;
+        long now = TickMs();
         List<string>? due = null;
         for (int i = _delayedExecs.Count - 1; i >= 0; i--)
         {
@@ -3419,7 +3531,7 @@ internal sealed class ExpressionEngine
 
     /// <summary>"0" and "" are false; everything else is true.</summary>
     internal static bool ToBool(string s)
-        => s.Length > 0 && s != "0"
+        => s.Length > 0 && s != "0" && s != "-0"
            && !string.Equals(s, "false", StringComparison.OrdinalIgnoreCase)
            // An evaluation error / depth-guard sentinel is never "true" — keeps
            // if[]/iif[]/&&/|| on a broken sub-expression failing closed too.
@@ -3434,7 +3546,8 @@ internal sealed class ExpressionEngine
         return (long)ToDouble(s);
     }
 
-    private static string Fmt(double d) => d.ToString("G", CultureInfo.InvariantCulture);
+    // -0 (ceiling[-0.5], round[-0.4], 0*-1) printed "-0", and "-0" counted as true.
+    private static string Fmt(double d) => (d == 0 ? 0.0 : d).ToString("G", CultureInfo.InvariantCulture);
     private static string Fmt(long l)   => l.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>Equality: numeric if both sides parse as numbers, otherwise case-INSENSITIVE
@@ -3682,11 +3795,58 @@ internal sealed class ExpressionEngine
             Ws();
             while (Try("#"))
             {
-                var pattern = ParseUnary();
+                var pattern = ParseRegexOperand();
                 l = RegexCache.IsMatch(l, pattern, RegexOptions.IgnoreCase) ? "1" : "0";
                 Ws();
             }
             return l;
+        }
+
+        /// <summary>
+        /// The right side of #. A backtick string, $var, (group), function call, number or
+        /// plain word is parsed as before. Anything else is taken as raw pattern text, as
+        /// the reference documents (getcharstringprop[1] # ^Virindi,
+        /// getvar[lastchat] # killed.*olthoi): up to whitespace, a ',' or an unmatched
+        /// ')' / ']', or ==, !=, &amp;&amp;, ||. Only the unquoted pattern read as an expression
+        /// before (^ as XOR, * as multiply), so it never matched.
+        /// </summary>
+        private string ParseRegexOperand()
+        {
+            Ws();
+            if (_p >= _s.Length) return "";
+            char c = _s[_p];
+            if (c is '`' or '$' or '(' or '~' or '-') return ParseUnary();
+
+            int wordEnd = _p;
+            while (wordEnd < _s.Length && (char.IsLetterOrDigit(_s[wordEnd]) || _s[wordEnd] == '_' || _s[wordEnd] == '.'))
+                wordEnd++;
+            if (wordEnd > _p && wordEnd < _s.Length && _s[wordEnd] == '[') return ParseUnary(); // function call
+
+            int start = _p, q = _p, depth = 0;
+            while (q < _s.Length)
+            {
+                char ch = _s[q];
+                if (ch is ' ' or '\t' or '\r' or '\n') break;
+                if (ch == '\\' && q + 1 < _s.Length) { q += 2; continue; }   // escaped char stays in the pattern
+                if (ch is '[' or '(') depth++;
+                else if (ch is ']' or ')') { if (depth == 0) break; depth--; }
+                else if (depth == 0)
+                {
+                    if (ch == ',') break;
+                    if (q + 1 < _s.Length)
+                    {
+                        char n = _s[q + 1];
+                        if ((ch == '=' && n == '=') || (ch == '!' && n == '=')
+                            || (ch == '&' && n == '&') || (ch == '|' && n == '|')) break;
+                    }
+                }
+                q++;
+            }
+
+            // A plain word (or number) reads exactly as before.
+            if (q <= wordEnd) return ParseUnary();
+            _p = q;
+            return _s.Substring(start, q - start);
         }
 
         // Priority 12: unary ~  (also unary - on non-digit expressions)
@@ -3760,7 +3920,9 @@ internal sealed class ExpressionEngine
                 while (_p < _s.Length && (char.IsLetterOrDigit(_s[_p]) || _s[_p] == '_'))
                     _p++;
                 string varName = _s.Substring(vs, _p - vs);
-                return _eng._variables.TryGetValue(varName, out string? vv) ? vv ?? "" : "";
+                // Same as getvar[name]: an unset variable reads "0" (it read "", so
+                // '$kills == 0' was false until kills was first set).
+                return _eng._variables.TryGetValue(varName, out string? vv) ? vv ?? "" : "0";
             }
 
             // Hex literal: 0x / 0X (positive or negative)

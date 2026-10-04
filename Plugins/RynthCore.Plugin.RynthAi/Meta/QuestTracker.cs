@@ -59,11 +59,24 @@ internal sealed class QuestTracker
     {
         if (_refreshing || !_host.HasInvokeChatParser)
             return;
+        ExpectReply();
+        RefreshSent?.Invoke();
+        _host.InvokeChatParser("/myquests");
+    }
+
+    /// <summary>Set by the plugin: told whenever Refresh sends /myquests (the Meta Manager shows that reply).</summary>
+    public Action? RefreshSent;
+
+    /// <summary>
+    /// Someone else (the Meta Manager's poll) just sent /myquests: read the reply into the
+    /// cache as if Refresh had sent it, so quest expressions stay fresh.
+    /// </summary>
+    public void ExpectReply()
+    {
         _refreshing = true;
         _gotFirstQuest = false;
         _lastLineTime = DateTime.UtcNow;
         _refreshStarted = DateTime.UtcNow;
-        _host.InvokeChatParser("/myquests");
     }
 
     /// <summary>

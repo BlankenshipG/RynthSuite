@@ -5,7 +5,6 @@ using System.Runtime.InteropServices;
 using System.Linq;
 using System.Numerics;
 using System.Text.Json;
-using ImGuiNET;
 using RynthCore.PluginSdk;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.Meta;
@@ -43,11 +42,8 @@ internal sealed class LegacyDashboardRenderer
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _metaCmdQueue = new();
     private readonly LegacyAdvancedSettingsUi _advancedSettingsUi;
     private readonly LegacyNavigationUi _navigationUi;
-    private readonly LegacyLuaUi _luaUi;
     private readonly LegacyWeaponsUi _weaponsUi;
     private readonly LegacyMetaUi _metaUi;
-    private readonly LegacyMonstersUi _monstersUi;
-    public LegacyMonstersUi MonstersUi => _monstersUi;
     private readonly DungeonMapUi _dungeonMapUi;
     private readonly RynthRadarUi _rynthRadarUi;
     private readonly RynthChatUi _rynthChatUi;
@@ -66,16 +62,22 @@ internal sealed class LegacyDashboardRenderer
     private readonly string _navFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
     private readonly string _lootFolder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
     private readonly string _metaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
-    private readonly string _settingsRoot = @"C:\Games\RynthSuite\RynthAi\SettingsProfiles\ACEmulator";
-    private readonly string _monstersFolder = @"C:\Games\RynthSuite\RynthAi\MonsterProfiles";
+    // Profiles are kept per server: SettingsProfiles\<server>\<character> and
+    // MonsterProfiles\<server>\<character>.json, the server being the world name
+    // the server sends at login. Before 2026-09-28 every server shared
+    // SettingsProfiles\ACEmulator, so the same character name on two servers
+    // shared one profile; that folder is still used when no name is known.
+    private const string ProfilesBase       = @"C:\Games\RynthSuite\RynthAi\SettingsProfiles";
+    private const string MonstersBase       = @"C:\Games\RynthSuite\RynthAi\MonsterProfiles";
+    private const string LegacyServerFolder = "ACEmulator";
+    private string _serverFolder = LegacyServerFolder;
+    private string _settingsRoot   => Path.Combine(ProfilesBase, _serverFolder);
+    private string _monstersFolder => _serverFolder == LegacyServerFolder ? MonstersBase : Path.Combine(MonstersBase, _serverFolder);
 
     private int _selectedNavIdx;
     private bool _isMinimized;
     private bool _isLocked;
-    private bool _wasMinimized;
     private float _bgOpacity = 0.95f;
-
-    public bool CloseRequested { get; internal set; }
 
     /// <summary>Wired by RynthAiPlugin to forward force-rebuff / cancel requests to BuffManager.</summary>
     public Action? OnForceRebuffRequested { get; set; }
@@ -85,12 +87,7 @@ internal sealed class LegacyDashboardRenderer
     private string _charFolder = string.Empty;
     private string _settingsFilePath = string.Empty;
     private string _lastSavedJson = string.Empty;
-    private int _saveCheckCounter;
-    private const int SaveCheckIntervalFrames = 1; // check every frame for immediate save
 
-    private Vector2 _lastWindowPos = new(-1, -1);
-    private bool _windowPosRestored;
-    private bool _windowSizeRestored;
     private Vector2 _expandedSize = new(430, 452);
     private string _targetLabel = "NO TARGET";
     private float _targetHealthPercent;
@@ -246,22 +243,12 @@ internal sealed class LegacyDashboardRenderer
         _host = host;
         _advancedSettingsUi = new LegacyAdvancedSettingsUi(_settings);
         _navigationUi = new LegacyNavigationUi(_settings, host);
-        _luaUi = new LegacyLuaUi(_settings, host);
         _weaponsUi = new LegacyWeaponsUi(_settings, host);
         _metaUi = new LegacyMetaUi(_settings, _navFiles);
-        _monstersUi = new LegacyMonstersUi(
-            _settings,
-            host,
-            onMonstersChanged: SaveMonstersFile,
-            onLaunchExternalEditor: LaunchMonsterEditor,
-            getCurrentTarget: GetCurrentTargetForMonsterAdd);
-        _dungeonMapUi = new DungeonMapUi(host, _settings);
-        _dungeonMapUi.OnSettingChanged = SaveSettings;
+        _dungeonMapUi = new DungeonMapUi();
         _rynthRadarUi = new RynthRadarUi(host, _settings);
-        _rynthRadarUi.OnSettingChanged = SaveSettings;
         _rynthRadarUi.SetMapData(_dungeonMapUi);
         _rynthChatUi = new RynthChatUi(host, _settings);
-        _rynthChatUi.OnSettingChanged = SaveSettings;
         RefreshAllLists();
     }
 
@@ -277,10 +264,25 @@ internal sealed class LegacyDashboardRenderer
     /// </summary>
     public string CharFolder => _charFolder;
 
-    public void SetWorldFilter(WorldObjectCache cache) => _weaponsUi.SetWorldFilter(cache);
+    public void SetWorldFilter(WorldObjectCache cache)
+    {
+        _weaponsUi.SetWorldFilter(cache);
+        _weaponCache = cache;
+    }
+
+    private WorldObjectCache? _weaponCache;
+
+    /// <summary>A listed weapon's full name for the panels: "Silver Wand", and with
+    /// <paramref name="withElement"/> "Silver Wand (Fire)". Display only; rules are keyed by id.</summary>
+    internal string WeaponDisplayName(ItemRule r, bool withElement)
+    {
+        string name = WeaponNames.For(_host, _weaponCache, r.Id, r.Name);
+        return withElement ? WeaponNames.WithElement(name, r.Element) : name;
+    }
 
     public void SetMissileCraftingManager(MissileCraftingManager mgr) => _advancedSettingsUi.SetMissileCraftingManager(mgr);
     public void SetAutoVendorStatusProvider(Func<string> status) => _advancedSettingsUi.SetAutoVendorStatusProvider(status);
+    public void SetAutoTradeStatusProvider(Func<string> status) => _advancedSettingsUi.SetAutoTradeStatusProvider(status);
 
     // The open vendor's AutoVendor profile path (null when no vendor is open), for the
     // dashboard snapshot's vendorProfilePath.
@@ -290,7 +292,6 @@ internal sealed class LegacyDashboardRenderer
     public void SetRaycast(Raycasting.MainLogic raycast)
     {
         _dungeonMapUi.SetRaycast(raycast);
-        _rynthRadarUi.SetRaycast(raycast);
     }
 
     public void PushChatLine(string? text, int chatType) => _rynthChatUi.Push(text, chatType);
@@ -305,8 +306,14 @@ internal sealed class LegacyDashboardRenderer
     }
     public void SetWorldObjectCache(WorldObjectCache cache)
     {
-        _dungeonMapUi.SetWorldObjectCache(cache);
         _rynthRadarUi.SetWorldObjectCache(cache);
+    }
+
+    /// <summary>Fellowship membership for the radar's fellow and your-corpse markers.</summary>
+    public void SetFellowshipTracker(FellowshipTracker? tracker)
+    {
+        _rynthRadarUi.IsFellowId = tracker == null ? null : tracker.IsMember;
+        _rynthRadarUi.IsFellowName = tracker == null ? null : tracker.IsMember;
     }
 
     // ── Settings persistence ─────────────────────────────────────────────────
@@ -316,7 +323,9 @@ internal sealed class LegacyDashboardRenderer
         if (string.IsNullOrWhiteSpace(charName)) return;
 
         string safeChar = SanitizeFileName(charName);
+        _serverFolder = ResolveServerFolder();
         _charFolder = Path.Combine(_settingsRoot, safeChar);
+        MigrateToServerFolder(safeChar);
 
         // Migrate legacy settings.json → Default.json if needed
         string legacyPath = Path.Combine(_charFolder, "settings.json");
@@ -337,7 +346,17 @@ internal sealed class LegacyDashboardRenderer
             _settingsFilePath = GetProfileFilePath(activeProfile);
         }
 
-        if (File.Exists(_settingsFilePath))
+        // A character with no profile yet starts from defaults, like VTank. The
+        // settings object lives for the whole client session, so without this a
+        // new character kept the previous character's weapons and consumables,
+        // and autosave then wrote them into its Default.json.
+        bool freshProfile = !File.Exists(_settingsFilePath);
+        if (freshProfile)
+        {
+            CopySettings(new LegacyUiSettings(), _settings);
+            _lastSavedJson = string.Empty;
+        }
+        else
         {
             try
             {
@@ -351,6 +370,10 @@ internal sealed class LegacyDashboardRenderer
             }
             catch { }
         }
+        _packSetup = freshProfile ? PackSetup.FillNew
+                   : _settings.ProfileItemsChecked ? PackSetup.None : PackSetup.CheckExisting;
+        _packSetupStart = 0;
+        _packLastCount = -1;
 
         _settings.SelectedProfile = activeProfile;
         ApplyUiStateFromSettings();
@@ -394,8 +417,6 @@ internal sealed class LegacyDashboardRenderer
             catch { }
         }
 
-        _windowPosRestored = false; // will apply saved position on next render
-        _windowSizeRestored = false; // force size restore on first render after load
         RefreshAllLists();
 
         // Load MonsterRules from monsters.json (overrides what was in the profile)
@@ -406,6 +427,22 @@ internal sealed class LegacyDashboardRenderer
         // combat system has no fallback weapon/damage selection for unmatched mobs.
         _settings.EnsureDefaultRule();
         SetupMonsterWatcher();
+    }
+
+    /// <summary>
+    /// Logout: the settings in memory stop belonging to the character that just left.
+    /// Nothing is saved until the next character's LoadSettings, and an empty CharFolder
+    /// lets the plugin's late settings retry run if that character's name can't be read
+    /// at login. Before, the next character ran (and autosaved over) this one's profile.
+    /// </summary>
+    public void ResetCharacterSession()
+    {
+        _charFolder       = string.Empty;
+        _settingsFilePath = string.Empty;
+        _lastSavedJson    = string.Empty;
+        _settings.IsMacroRunning = false;
+        _settings.CurrentState   = "Default";
+        _settings.BotAction      = "Default";
     }
 
     public void SaveSettings()
@@ -478,6 +515,127 @@ internal sealed class LegacyDashboardRenderer
             }
         }
         catch { }
+    }
+
+    // ── Profile items from the pack ──────────────────────────────────────────
+
+    private enum PackSetup { None, FillNew, CheckExisting }
+    private PackSetup _packSetup;
+    private long _packSetupStart, _packStableSince, _packNextPoll;
+    private int _packLastCount = -1;
+
+    /// <summary>
+    /// Once per login, after the inventory has stopped arriving: fills a new
+    /// profile's weapons and consumables from the pack, or (once per older
+    /// profile) removes entries for items this character doesn't have, copied
+    /// from another character, filling from the pack if nothing is left.
+    /// Driven from the plugin tick.
+    /// </summary>
+    public void TickPackSetup(WorldObjectCache? cache, uint playerId)
+    {
+        if (_packSetup == PackSetup.None || cache == null || playerId == 0) return;
+        long now = Environment.TickCount64;
+        if (now < _packNextPoll) return;
+        _packNextPoll = now + 500;
+        if (_packSetupStart == 0) _packSetupStart = now;
+
+        // Owned items only: main pack, side packs and wielded gear. The cache's
+        // general inventory set also holds ground items and open corpse contents.
+        var inv = cache.GetDirectInventory(forceRefresh: true).ToList();
+        if (inv.Count != _packLastCount) { _packLastCount = inv.Count; _packStableSince = now; return; }
+        bool waited = now - _packSetupStart >= 5000 && now - _packStableSince >= 3000;
+        bool unclassified = inv.Any(w => w.ObjectClass == AcObjectClass.Unknown);
+        if (!waited || (unclassified && now - _packSetupStart < 30000)) return;
+        if (inv.Count == 0 && now - _packSetupStart < 60000) return;
+
+        string who = Path.GetFileName(_charFolder);
+        if (_packSetup == PackSetup.FillNew)
+        {
+            var (w, c) = _weaponsUi.FillFromPack(inv, playerId);
+            _host.WriteToChat($"[RynthAi] New {_settings.SelectedProfile} profile for {who}: added {w} weapon(s) and {c} consumable(s) from your pack.", 1);
+        }
+        else
+        {
+            var removed = _weaponsUi.PruneNotOwned(inv);
+            if (removed.Count > 0)
+                _host.WriteToChat($"[RynthAi] Removed {removed.Count} item(s) {who} doesn't have from the {_settings.SelectedProfile} profile (copied from another character): {string.Join(", ", removed)}", 1);
+            if (_settings.ItemRules.Count == 0 && _settings.ConsumableRules.Count == 0)
+            {
+                var (w, c) = _weaponsUi.FillFromPack(inv, playerId);
+                if (w + c > 0)
+                    _host.WriteToChat($"[RynthAi] Filled the {_settings.SelectedProfile} profile from your pack: {w} weapon(s), {c} consumable(s).", 1);
+            }
+        }
+        _settings.ProfileItemsChecked = true;
+        _packSetup = PackSetup.None;
+        SaveSettings();
+    }
+
+    /// <summary>/ra items fill: add anything in the pack that isn't listed yet.</summary>
+    public string FillItemsFromPack(WorldObjectCache? cache, uint playerId)
+    {
+        if (cache == null || playerId == 0) return "[RynthAi] Not logged in.";
+        var (w, c) = _weaponsUi.FillFromPack(cache.GetDirectInventory(forceRefresh: true).ToList(), playerId);
+        SaveSettings();
+        return $"[RynthAi] Added {w} weapon(s) and {c} consumable(s) from your pack.";
+    }
+
+    // ── Per-server profile folders ───────────────────────────────────────────
+
+    private string ResolveServerFolder()
+    {
+        try
+        {
+            if (_host.HasGetWorldName && _host.TryGetWorldName(out string world) && !string.IsNullOrWhiteSpace(world))
+            {
+                string safe = SanitizeFileName(world.Trim());
+                if (safe.Length > 0) return safe;
+            }
+        }
+        catch { }
+        return LegacyServerFolder;
+    }
+
+    /// <summary>
+    /// First login of a character on a server after profiles went per server:
+    /// copy (not move) its shared ACEmulator profile and monster rules into the
+    /// server's folder, so it keeps its settings. A copy, because the same name
+    /// on another server may still be using the shared one.
+    /// </summary>
+    private void MigrateToServerFolder(string safeChar)
+    {
+        if (_serverFolder == LegacyServerFolder) return;
+        try
+        {
+            string legacyChar = Path.Combine(ProfilesBase, LegacyServerFolder, safeChar);
+            if (!Directory.Exists(_charFolder) && Directory.Exists(legacyChar))
+            {
+                CopyDirectory(legacyChar, _charFolder);
+                _host.Log($"[RynthAi] Profiles: copied {safeChar}'s profile from {LegacyServerFolder} to {_serverFolder}.");
+                _host.WriteToChat($"[RynthAi] Settings are now kept per server: copied {safeChar}'s existing settings into the {_serverFolder} folder.", 1);
+            }
+
+            string legacyMonsters = Path.Combine(MonstersBase, safeChar + ".json");
+            string serverMonsters = Path.Combine(_monstersFolder, safeChar + ".json");
+            if (!File.Exists(serverMonsters) && File.Exists(legacyMonsters))
+            {
+                Directory.CreateDirectory(_monstersFolder);
+                File.Copy(legacyMonsters, serverMonsters);
+            }
+        }
+        catch (Exception ex)
+        {
+            _host.Log($"[RynthAi] Profiles: copying {safeChar} into {_serverFolder} failed: {ex.Message}");
+        }
+    }
+
+    private static void CopyDirectory(string from, string to)
+    {
+        Directory.CreateDirectory(to);
+        foreach (string file in Directory.GetFiles(from))
+            File.Copy(file, Path.Combine(to, Path.GetFileName(file)), overwrite: false);
+        foreach (string dir in Directory.GetDirectories(from))
+            CopyDirectory(dir, Path.Combine(to, Path.GetFileName(dir)));
     }
 
     // ── monsters.json support ────────────────────────────────────────────────
@@ -567,7 +725,7 @@ internal sealed class LegacyDashboardRenderer
     }
 
     /// <summary>
-    /// Call once per render frame. Hot-reloads MonsterRules when the external editor saves.
+    /// Called every plugin tick (RynthAiPlugin.OnTick, pump thread). Hot-reloads MonsterRules when the external editor saves.
     /// </summary>
     public void TickMonsterReload()
     {
@@ -575,6 +733,9 @@ internal sealed class LegacyDashboardRenderer
         _monsterFileChanged = false;
         LoadMonstersFromFile();
     }
+
+    /// <summary>Saves the Monsters rules after a change made outside the panel (a chat command).</summary>
+    public void SaveMonsterRules() => SaveMonstersFile();
 
     /// <summary>Writes the in-memory MonsterRules to monsters.json so the external editor sees them.</summary>
     private void SaveMonstersFile()
@@ -624,8 +785,9 @@ internal sealed class LegacyDashboardRenderer
             var payload = new MonstersBridgePayload
             {
                 Rules = _settings.MonsterRules ?? new List<MonsterRule>(),
+                // Full names with the element ("Silver Wand (Fire)"); saved choices are by id.
                 Items = (_settings.ItemRules ?? new List<ItemRule>())
-                    .Select(r => new MonsterBridgeItem { Id = r.Id, Name = r.Name }).ToList(),
+                    .Select(r => new MonsterBridgeItem { Id = r.Id, Name = WeaponDisplayName(r, withElement: true) }).ToList(),
                 CurrentTargetName = _currentTargetId != 0 ? (_targetLabel ?? string.Empty) : string.Empty,
             };
 
@@ -672,7 +834,7 @@ internal sealed class LegacyDashboardRenderer
             {
                 if (!first) sb.Append(',');
                 first = false;
-                sb.Append("{\"id\":").Append(it.Id).Append(",\"name\":").Append(JsonString(it.Name)).Append('}');
+                sb.Append("{\"id\":").Append(it.Id).Append(",\"name\":").Append(JsonString(WeaponDisplayName(it, withElement: true))).Append('}');
             }
             sb.Append(']');
             return sb.ToString();
@@ -766,6 +928,7 @@ internal sealed class LegacyDashboardRenderer
                 PeaceModeWhenIdle          = s.PeaceModeWhenIdle,
                 StartMacroOnLogin          = s.StartMacroOnLogin,
                 PatrolOnLogin              = s.PatrolOnLogin,
+                YieldToVTank               = s.YieldToVTank,
                 EnableRaycasting           = s.EnableRaycasting,
                 UseArcs                    = s.UseArcs,
                 BowArcVelocity             = s.BowArcVelocity,
@@ -781,6 +944,19 @@ internal sealed class LegacyDashboardRenderer
                 GiveQueueIntervalMs        = s.GiveQueueIntervalMs,
                 // Recharge
                 HealAt                     = s.HealAt,
+                UsePotions                 = s.UsePotions,
+                UseBuffItems               = s.UseBuffItems,
+                MakeRationsBelow           = s.MakeRationsBelow,
+                UseKitsInMagicMode         = s.UseKitsInMagicMode,
+                PeaceModeForKits           = s.PeaceModeForKits,
+                KitMinSuccessPct           = s.KitMinSuccessPct,
+                EmergencyHealAt            = s.EmergencyHealAt,
+                StaminaToHealthAt          = s.StaminaToHealthAt,
+                StaminaToHealthMinStamina  = s.StaminaToHealthMinStamina,
+                StopMacroOnDeath           = s.StopMacroOnDeath,
+                StopMacroOnNoComponents    = s.StopMacroOnNoComponents,
+                StopLootingWhenPackFull    = s.StopLootingWhenPackFull,
+                StopMacroWhenPackFull      = s.StopMacroWhenPackFull,
                 RestamAt                   = s.RestamAt,
                 GetManaAt                  = s.GetManaAt,
                 TopOffHP                   = s.TopOffHP,
@@ -803,6 +979,8 @@ internal sealed class LegacyDashboardRenderer
                 AttackSpellIntervalMs      = s.AttackSpellIntervalMs,
                 CastDispelSelf             = s.CastDispelSelf,
                 MinRingTargets             = s.MinRingTargets,
+                BlastRange                 = s.BlastRange,
+                MinBlastTargets            = s.MinBlastTargets,
                 MinSkillLevelTier1         = s.MinSkillLevelTier1,
                 MinSkillLevelTier2         = s.MinSkillLevelTier2,
                 MinSkillLevelTier3         = s.MinSkillLevelTier3,
@@ -871,6 +1049,7 @@ internal sealed class LegacyDashboardRenderer
                 LootJumpHeight             = s.LootJumpHeight,
                 LootOwnership              = s.LootOwnership,
                 EnableAutostack            = s.EnableAutostack,
+                ReadUnknownScrolls         = s.ReadUnknownScrolls,
                 EnableCombineSalvage       = s.EnableCombineSalvage,
                 CombineBagsDuringSalvage   = s.CombineBagsDuringSalvage,
                 LootInterItemDelayMs       = s.LootInterItemDelayMs,
@@ -898,6 +1077,8 @@ internal sealed class LegacyDashboardRenderer
                 AutoVendorOnlyFromMainPack = s.AutoVendorOnlyFromMainPack,
                 AutoVendorTries            = s.AutoVendorTries,
                 AutoVendorTriesTime        = s.AutoVendorTriesTime,
+                OffhandDefault             = s.OffhandDefault,
+                PreferDualWield            = s.PreferDualWield,
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.SettingsBridgePayload);
         }
@@ -945,12 +1126,13 @@ internal sealed class LegacyDashboardRenderer
             s.PeaceModeWhenIdle          = p.PeaceModeWhenIdle;
             s.StartMacroOnLogin          = p.StartMacroOnLogin;
             s.PatrolOnLogin              = p.PatrolOnLogin;
+            s.YieldToVTank               = p.YieldToVTank;
             s.EnableRaycasting           = p.EnableRaycasting;
             s.UseArcs                    = p.UseArcs;
             s.BowArcVelocity             = p.BowArcVelocity;
             s.CrossbowArcVelocity        = p.CrossbowArcVelocity;
             s.AtlatlArcVelocity          = p.AtlatlArcVelocity;
-            s.MagicArcVelocity           = p.MagicArcVelocity;
+            if (p.MagicArcVelocity > 0f) s.MagicArcVelocity = p.MagicArcVelocity;
             if (p.MissileArcClearance >= 0f) s.MissileArcClearance = Math.Min(p.MissileArcClearance, 3f);
             s.LosDebugLog                = p.LosDebugLog;
             s.BlacklistAttempts          = p.BlacklistAttempts;
@@ -962,6 +1144,19 @@ internal sealed class LegacyDashboardRenderer
             s.GiveQueueIntervalMs        = p.GiveQueueIntervalMs;
             // Recharge
             s.HealAt                     = p.HealAt;
+            s.UsePotions                 = p.UsePotions;
+            s.UseBuffItems               = p.UseBuffItems;
+            s.MakeRationsBelow           = Math.Clamp(p.MakeRationsBelow, 0, 100);
+            s.UseKitsInMagicMode         = p.UseKitsInMagicMode;
+            s.PeaceModeForKits           = p.PeaceModeForKits;
+            s.KitMinSuccessPct           = Math.Clamp(p.KitMinSuccessPct, 0, 100);
+            s.EmergencyHealAt            = Math.Clamp(p.EmergencyHealAt, 0, 100);
+            s.StaminaToHealthAt          = Math.Clamp(p.StaminaToHealthAt, 0, 100);
+            s.StaminaToHealthMinStamina  = Math.Clamp(p.StaminaToHealthMinStamina, 0, 100);
+            s.StopMacroOnDeath           = p.StopMacroOnDeath;
+            s.StopMacroOnNoComponents    = p.StopMacroOnNoComponents;
+            s.StopLootingWhenPackFull    = p.StopLootingWhenPackFull;
+            s.StopMacroWhenPackFull      = p.StopMacroWhenPackFull;
             s.RestamAt                   = p.RestamAt;
             s.GetManaAt                  = p.GetManaAt;
             s.TopOffHP                   = p.TopOffHP;
@@ -984,6 +1179,8 @@ internal sealed class LegacyDashboardRenderer
             s.AttackSpellIntervalMs      = p.AttackSpellIntervalMs;
             s.CastDispelSelf             = p.CastDispelSelf;
             s.MinRingTargets             = p.MinRingTargets;
+            s.BlastRange                 = p.BlastRange;
+            s.MinBlastTargets            = p.MinBlastTargets;
             s.MinSkillLevelTier1         = p.MinSkillLevelTier1;
             s.MinSkillLevelTier2         = p.MinSkillLevelTier2;
             s.MinSkillLevelTier3         = p.MinSkillLevelTier3;
@@ -1010,7 +1207,7 @@ internal sealed class LegacyDashboardRenderer
             s.OpenDoors                  = p.OpenDoors;
             s.OpenDoorRange              = p.OpenDoorRange;
             s.AutoUnlockDoors            = p.AutoUnlockDoors;
-            s.MovementMode               = p.MovementMode;
+            s.MovementMode               = p.MovementMode is 1 or 2 ? 0 : p.MovementMode;   // Tier 1/2 off for now
             s.NavStopTurnAngle           = p.NavStopTurnAngle;
             s.NavResumeTurnAngle         = p.NavResumeTurnAngle;
             s.NavDeadZone                = p.NavDeadZone;
@@ -1049,6 +1246,7 @@ internal sealed class LegacyDashboardRenderer
             s.LootJumpHeight             = p.LootJumpHeight;
             s.LootOwnership              = p.LootOwnership;
             s.EnableAutostack            = p.EnableAutostack;
+            s.ReadUnknownScrolls         = p.ReadUnknownScrolls;
             s.EnableCombineSalvage       = p.EnableCombineSalvage;
             s.CombineBagsDuringSalvage   = p.CombineBagsDuringSalvage;
             s.LootInterItemDelayMs       = p.LootInterItemDelayMs;
@@ -1076,6 +1274,9 @@ internal sealed class LegacyDashboardRenderer
             if (p.AutoVendorOnlyFromMainPack is bool avMain)  s.AutoVendorOnlyFromMainPack = avMain;
             if (p.AutoVendorTries            is int avTries)  s.AutoVendorTries            = Math.Clamp(avTries, 1, 20);
             if (p.AutoVendorTriesTime        is int avTime)   s.AutoVendorTriesTime        = Math.Clamp(avTime, 500, 30000);
+            // Off hand: only fields the sender actually included (the engine face doesn't draw them yet)
+            if (p.OffhandDefault is string od && OffhandRules.TryParse(od, out var odMode)) s.OffhandDefault = OffhandRules.SettingValue(odMode);
+            if (p.PreferDualWield            is bool pdw)     s.PreferDualWield            = pdw;
             SaveSettings();
         }
         catch { }
@@ -1089,7 +1290,8 @@ internal sealed class LegacyDashboardRenderer
         {
             var payload = new ItemsBridgePayload
             {
-                Weapons           = _settings.ItemRules ?? new List<ItemRule>(),
+                // Copies: the full name, and "Unknown" for an element not known yet (ApplyItemsJson maps them back by id).
+                Weapons           = WeaponList.ForDisplay(_settings.ItemRules ?? new List<ItemRule>(), r => WeaponDisplayName(r, withElement: false)),
                 Consumables       = _settings.ConsumableRules ?? new List<ConsumableRule>(),
                 EnableManaTapping = _settings.EnableManaTapping,
                 ManaTapMinMana    = _settings.ManaTapMinMana,
@@ -1111,7 +1313,7 @@ internal sealed class LegacyDashboardRenderer
         {
             var p = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.ItemsBridgePayload);
             if (p == null) return;
-            _settings.ItemRules          = p.Weapons;
+            _settings.ItemRules          = WeaponList.MergeEdited(_settings.ItemRules ?? new List<ItemRule>(), p.Weapons ?? new List<ItemRule>());
             _settings.ConsumableRules    = p.Consumables;
             _settings.EnableManaTapping  = p.EnableManaTapping;
             _settings.ManaTapMinMana     = p.ManaTapMinMana;
@@ -1124,17 +1326,10 @@ internal sealed class LegacyDashboardRenderer
     public void AddSelectedWeapon()     { _weaponsUi.AddSelectedWeapon();     SaveSettings(); }
     public void AddSelectedConsumable() { _weaponsUi.AddSelectedConsumable(); SaveSettings(); }
 
-    private (uint Id, string Name)? GetCurrentTargetForMonsterAdd()
-    {
-        if (_currentTargetId == 0) return null;
-        string name = _targetLabel;
-        if (_host.HasGetObjectName && _host.TryGetObjectName(_currentTargetId, out string resolved) && !string.IsNullOrWhiteSpace(resolved))
-            name = resolved;
-        if (string.IsNullOrWhiteSpace(name) || name == "NO TARGET") return null;
-        return (_currentTargetId, name);
-    }
-
     /// <summary>Launches the standalone Monster Rules editor for the current char folder.</summary>
+    /// <remarks>No button calls this since the plugin-drawn Monsters window went: the
+    /// engine's MonstersFace has no "external editor" button yet. Kept as the handler for
+    /// one. Saves the editor makes are picked up by TickMonsterReload.</remarks>
     private void LaunchMonsterEditor()
     {
         if (string.IsNullOrEmpty(_charFolder))
@@ -1313,8 +1508,6 @@ internal sealed class LegacyDashboardRenderer
             catch { _settings.CurrentNavPath = string.Empty; }
         }
 
-        _windowPosRestored = false;
-        _windowSizeRestored = false;
         RefreshAllLists();
     }
 
@@ -1345,7 +1538,9 @@ internal sealed class LegacyDashboardRenderer
         dst.EnableLooting            = tmp.EnableLooting;
         dst.EnableMeta               = tmp.EnableMeta;
         dst.EnableRaycasting         = tmp.EnableRaycasting;
-        dst.MovementMode             = tmp.MovementMode;
+        // Only Legacy movement works for now: a saved Tier 1 or 2 pick becomes
+        // Legacy. Nothing else in the saved settings is changed.
+        dst.MovementMode             = tmp.MovementMode is 1 or 2 ? 0 : tmp.MovementMode;
         dst.NavStopTurnAngle         = tmp.NavStopTurnAngle;
         dst.NavResumeTurnAngle       = tmp.NavResumeTurnAngle;
         dst.NavDeadZone              = tmp.NavDeadZone;
@@ -1355,6 +1550,9 @@ internal sealed class LegacyDashboardRenderer
         dst.NavTurnRateDegPerSec     = tmp.NavTurnRateDegPerSec;
         dst.NavTier1TurnSpeed        = tmp.NavTier1TurnSpeed;
         dst.PostPortalDelaySec       = tmp.PostPortalDelaySec;
+        dst.NavRecoveryEnabled       = tmp.NavRecoveryEnabled;
+        dst.NavOffTrackYards         = Math.Max(160f, tmp.NavOffTrackYards);
+        dst.NavMaxDetourAttempts     = Math.Clamp(tmp.NavMaxDetourAttempts, 1, 10);
         dst.T2Speed                  = tmp.T2Speed;
         dst.T2DistanceTo             = tmp.T2DistanceTo;
         dst.T2ReissueMs              = tmp.T2ReissueMs;
@@ -1370,6 +1568,7 @@ internal sealed class LegacyDashboardRenderer
         dst.MetaProfileIdx           = tmp.MetaProfileIdx;
         dst.EnableAutostack          = tmp.EnableAutostack;
         dst.EnableAutocram           = tmp.EnableAutocram;
+        dst.ReadUnknownScrolls       = tmp.ReadUnknownScrolls;
         dst.EnableCombineSalvage     = tmp.EnableCombineSalvage;
         dst.CombineBagsDuringSalvage = tmp.CombineBagsDuringSalvage;
         dst.ShowTargetStaminaMana    = tmp.ShowTargetStaminaMana;
@@ -1397,6 +1596,19 @@ internal sealed class LegacyDashboardRenderer
         dst.AutoFellowMgmt           = tmp.AutoFellowMgmt;
         dst.MChargesWhenOff          = tmp.MChargesWhenOff;
         dst.HealAt                   = tmp.HealAt;
+        dst.UsePotions               = tmp.UsePotions;
+        dst.UseBuffItems             = tmp.UseBuffItems;
+        dst.MakeRationsBelow         = tmp.MakeRationsBelow;
+        dst.UseKitsInMagicMode       = tmp.UseKitsInMagicMode;
+        dst.PeaceModeForKits         = tmp.PeaceModeForKits;
+        dst.KitMinSuccessPct         = tmp.KitMinSuccessPct;
+        dst.EmergencyHealAt          = tmp.EmergencyHealAt;
+        dst.StaminaToHealthAt        = tmp.StaminaToHealthAt;
+        dst.StaminaToHealthMinStamina= tmp.StaminaToHealthMinStamina;
+        dst.StopMacroOnDeath         = tmp.StopMacroOnDeath;
+        dst.StopMacroOnNoComponents  = tmp.StopMacroOnNoComponents;
+        dst.StopLootingWhenPackFull  = tmp.StopLootingWhenPackFull;
+        dst.StopMacroWhenPackFull    = tmp.StopMacroWhenPackFull;
         dst.RestamAt                 = tmp.RestamAt;
         dst.GetManaAt                = tmp.GetManaAt;
         dst.TopOffHP                 = tmp.TopOffHP;
@@ -1410,6 +1622,8 @@ internal sealed class LegacyDashboardRenderer
         dst.RingRange                = tmp.RingRange;
         dst.ApproachRange            = tmp.ApproachRange;
         dst.MinRingTargets           = tmp.MinRingTargets;
+        dst.BlastRange               = tmp.BlastRange;
+        dst.MinBlastTargets          = tmp.MinBlastTargets;
         dst.FollowNavMin             = tmp.FollowNavMin;
         dst.NavRingThickness         = tmp.NavRingThickness;
         dst.NavLineThickness         = tmp.NavLineThickness;
@@ -1445,13 +1659,16 @@ internal sealed class LegacyDashboardRenderer
         dst.MissileAttackPower       = tmp.MissileAttackPower;
         dst.UseRecklessness          = tmp.UseRecklessness;
         dst.UseNativeAttack          = tmp.UseNativeAttack;
+        dst.WieldUnlistedWandWhenNoneListed = tmp.WieldUnlistedWandWhenNoneListed;
+        dst.OffhandDefault           = OffhandRules.SettingValue(OffhandRules.Parse(tmp.OffhandDefault, OffhandMode.Auto));
+        dst.PreferDualWield          = tmp.PreferDualWield;
         dst.MeleeAttackHeight        = tmp.MeleeAttackHeight;
         dst.MissileAttackHeight      = tmp.MissileAttackHeight;
         dst.UseArcs                  = tmp.UseArcs;
         dst.BowArcVelocity           = tmp.BowArcVelocity;
         dst.CrossbowArcVelocity      = tmp.CrossbowArcVelocity;
         dst.AtlatlArcVelocity        = tmp.AtlatlArcVelocity;
-        dst.MagicArcVelocity         = tmp.MagicArcVelocity;
+        dst.MagicArcVelocity         = LegacyUiSettings.MigrateMagicArcVelocity(tmp.MagicArcVelocity);
         dst.MissileArcClearance      = tmp.MissileArcClearance >= 0f ? Math.Min(tmp.MissileArcClearance, 3f) : 0.5f;
         dst.LosDebugLog              = tmp.LosDebugLog;
         dst.EnableFPSLimit           = tmp.EnableFPSLimit;
@@ -1463,7 +1680,7 @@ internal sealed class LegacyDashboardRenderer
         dst.ConsumableRules          = tmp.ConsumableRules;
         dst.BuffRules                = tmp.BuffRules;
         dst.MetaRules                = tmp.MetaRules;
-        dst.LuaScript                = tmp.LuaScript;
+        dst.ProfileItemsChecked      = tmp.ProfileItemsChecked;
         dst.SelectedProfile          = tmp.SelectedProfile;
         dst.ActiveNavIndex           = tmp.ActiveNavIndex;
         dst.ShowAdvancedWindow       = tmp.ShowAdvancedWindow;
@@ -1517,9 +1734,16 @@ internal sealed class LegacyDashboardRenderer
         dst.AutoVendorOnlyFromMainPack = tmp.AutoVendorOnlyFromMainPack;
         dst.AutoVendorTries            = tmp.AutoVendorTries;
         dst.AutoVendorTriesTime        = tmp.AutoVendorTriesTime;
+        dst.AutoTradeEnabled           = tmp.AutoTradeEnabled;
+        dst.AutoTradeTestMode          = tmp.AutoTradeTestMode;
+        dst.AutoTradeThink             = tmp.AutoTradeThink;
+        dst.AutoTradeOnlyFromMainPack  = tmp.AutoTradeOnlyFromMainPack;
+        dst.AutoTradeAutoAccept        = tmp.AutoTradeAutoAccept;
+        dst.AutoTradeAutoAcceptChars   = tmp.AutoTradeAutoAcceptChars ?? new();
         dst.MetaDebug                = tmp.MetaDebug;
         dst.StartMacroOnLogin        = tmp.StartMacroOnLogin;
         dst.PatrolOnLogin            = tmp.PatrolOnLogin;
+        dst.YieldToVTank             = tmp.YieldToVTank;
         dst.ShowTerrainPassability   = tmp.ShowTerrainPassability;
         dst.GiveQueueIntervalMs      = tmp.GiveQueueIntervalMs;
         dst.SpellCastIntervalMs      = tmp.SpellCastIntervalMs;
@@ -1624,434 +1848,6 @@ internal sealed class LegacyDashboardRenderer
             _targetMana = mn;
             _targetMaxMana = maxMn;
         }
-    }
-
-    public void Render()
-    {
-        RefreshPlayerVitals();
-
-        // Periodic dirty-check: serialize settings every ~2s; save if changed
-        if (++_saveCheckCounter >= SaveCheckIntervalFrames)
-        {
-            _saveCheckCounter = 0;
-            CheckAndSave();
-        }
-
-        // Plugin-wide style overrides: muted slate-blue accents instead of the
-        // previous vivid sky-blue, which was overpowering in the macro tab.
-        ImGui.PushStyleColor(ImGuiCol.FrameBg,         new Vector4(0.18f, 0.22f, 0.28f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered,  new Vector4(0.24f, 0.30f, 0.38f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgActive,   new Vector4(0.30f, 0.38f, 0.48f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.CheckMark,       new Vector4(0.85f, 0.90f, 1.00f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.PopupBg,         new Vector4(0.10f, 0.14f, 0.20f, 0.98f));
-        ImGui.PushStyleColor(ImGuiCol.Header,          new Vector4(0.20f, 0.28f, 0.36f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.HeaderHovered,   new Vector4(0.26f, 0.36f, 0.46f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.HeaderActive,    new Vector4(0.32f, 0.44f, 0.58f, 1.00f));
-        // Title bars — same slate-blue family. TitleBgActive replaces ImGui's
-        // default vivid yellow that's especially jarring on detached viewports.
-        ImGui.PushStyleColor(ImGuiCol.TitleBg,         new Vector4(0.14f, 0.18f, 0.24f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.TitleBgActive,   new Vector4(0.22f, 0.30f, 0.40f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.TitleBgCollapsed,new Vector4(0.10f, 0.14f, 0.20f, 0.85f));
-
-        try
-        {
-            RenderDashboard();
-
-            _metaUi.Render();
-            TickMonsterReload();
-            _monstersUi.Render();
-            _weaponsUi.Render();
-
-            // Hooked up the new Lua UI here
-            _luaUi.Render();
-
-            if (DashWindows.ShowNavigation) _navigationUi.Render();
-            if (_settings.ShowAdvancedWindow) _advancedSettingsUi.Render();
-        }
-        finally
-        {
-            ImGui.PopStyleColor(11);
-        }
-    }
-
-    // Rendered every frame regardless of whether the main dashboard is visible.
-    public void RenderMapWindow()
-    {
-        ImGui.PushStyleColor(ImGuiCol.FrameBg,        new Vector4(0.15f, 0.55f, 0.95f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(0.22f, 0.62f, 1.00f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgActive,  new Vector4(0.10f, 0.45f, 0.82f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.CheckMark,      new Vector4(0.00f, 0.00f, 0.00f, 1.00f));
-        try
-        {
-            if (DashWindows.ShowDungeonMap || _dungeonMapUi.IsAutoHidden)
-                _dungeonMapUi.Render();
-            _rynthRadarUi.Render();
-            _rynthChatUi.Render();
-        }
-        finally
-        {
-            ImGui.PopStyleColor(4);
-        }
-    }
-
-    private void RenderDashboard()
-    {
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(10, 10));
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 8.0f);
-        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6.0f);
-        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0.04f, 0.06f, 0.08f, _bgOpacity));
-        ImGuiWindowFlags flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoCollapse;
-        if (_isMinimized) { flags |= ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoResize; _wasMinimized = true; }
-        else if (_isLocked) flags |= ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove;
-        // Restore saved window position on first render after login. Sanity-
-        // check it against the current main viewport size — if the dashboard
-        // was dragged partly off-screen on a previous session, or the AC
-        // client window shrank since, the saved coords would render the
-        // dashboard somewhere invisible. Snap back to (50, 50) in that case.
-        if (!_windowPosRestored)
-        {
-            Vector2 vpSize = ImGui.GetMainViewport().Size;
-            float maxX = vpSize.X > 0 ? vpSize.X - 100 : 8000;
-            float maxY = vpSize.Y > 0 ? vpSize.Y - 100 : 6000;
-            float posX = _settings.WindowPosX;
-            float posY = _settings.WindowPosY;
-            bool inBounds =
-                posX >= 0 && posX <= maxX &&
-                posY >= 0 && posY <= maxY;
-            if (!inBounds)
-            {
-                posX = 50;
-                posY = 50;
-                _settings.WindowPosX = posX;
-                _settings.WindowPosY = posY;
-            }
-            ImGui.SetNextWindowPos(new Vector2(posX, posY), ImGuiCond.Always);
-            _windowPosRestored = true;
-        }
-
-        ImGui.SetNextWindowSizeConstraints(new Vector2(400, 0), new Vector2(1200, 2000));
-        if (!_isMinimized && !_isLocked)
-        {
-            // Force-apply the saved expanded size on the first frame after login —
-            // imgui.ini may have a stale tiny size from a previous session.
-            if (!_windowSizeRestored)
-            {
-                ImGui.SetNextWindowSize(_expandedSize, ImGuiCond.Always);
-                ImGui.SetNextWindowCollapsed(false, ImGuiCond.Always);
-                _windowSizeRestored = true;
-            }
-            else if (_wasMinimized) { ImGui.SetNextWindowSize(_expandedSize, ImGuiCond.Always); _wasMinimized = false; }
-            else ImGui.SetNextWindowSize(_expandedSize, ImGuiCond.FirstUseEver);
-        }
-        else if (_isMinimized && !_windowSizeRestored)
-        {
-            // Even in minimized mode, defensively un-collapse so an old imgui.ini
-            // Collapsed=1 entry can't keep the window iconified.
-            ImGui.SetNextWindowCollapsed(false, ImGuiCond.Always);
-            _windowSizeRestored = true;
-        }
-        if (ImGui.Begin("RynthAi Dashboard##Main", flags))
-        {
-            if (!_isMinimized && !_isLocked) _expandedSize = ImGui.GetWindowSize();
-            RenderDashHeader();
-            ImGui.PushStyleColor(ImGuiCol.ChildBg, ColPanelBg);
-            ImGui.PushStyleColor(ImGuiCol.Border, ColBtnBord);
-            ImGui.PushStyleVar(ImGuiStyleVar.ChildBorderSize, 1.0f);
-            if (ImGui.BeginChild("CombatPanel", new Vector2(-1, 200), ImGuiChildFlags.Borders, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)) { RenderCombatPanel(); ImGui.Dummy(new Vector2(0, 2)); }
-            ImGui.EndChild();
-            ImGui.PopStyleVar();
-            ImGui.PopStyleColor(2);
-            if (!_isMinimized) { ImGui.Spacing(); ImGui.Spacing(); RenderLauncherGrid(); }
-        }
-        // Capture window position for persistence
-        Vector2 curPos = ImGui.GetWindowPos();
-        if (curPos != _lastWindowPos)
-        {
-            _settings.WindowPosX = curPos.X;
-            _settings.WindowPosY = curPos.Y;
-            _lastWindowPos = curPos;
-        }
-
-        ImGui.End();
-        ImGui.PopStyleColor(1);
-        ImGui.PopStyleVar(3);
-    }
-
-    private void RenderDashHeader()
-    {
-        float width = ImGui.GetContentRegionAvail().X;
-        float startY = ImGui.GetCursorPosY();
-        ImGui.SetWindowFontScale(1.4f);
-        ImGui.TextColored(ColTeal, "R");
-        ImGui.SameLine(0, 2);
-        ImGui.TextColored(new Vector4(1, 1, 1, 1), "YNTHAI DASHBOARD");
-        ImGui.SetWindowFontScale(1.0f);
-        ImGui.SameLine();
-        ImGui.SetCursorPosY(startY + 5);
-        ImGui.TextColored(ColTextMute, "v4.0");
-        ImGui.SameLine(width - 130);
-        ImGui.SetCursorPosY(startY + 2);
-        if (ImGui.SmallButton(_isLocked ? "Unlk" : "Lock")) _isLocked = !_isLocked;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip(_isLocked ? "Unlock Window" : "Lock Window");
-        ImGui.SameLine();
-        if (ImGui.SmallButton("-")) _bgOpacity = Math.Max(0.1f, _bgOpacity - 0.1f);
-        ImGui.SameLine();
-        if (ImGui.SmallButton("+")) _bgOpacity = Math.Min(1.0f, _bgOpacity + 0.1f);
-        ImGui.SameLine();
-        if (ImGui.SmallButton(_isMinimized ? "^" : "_")) { _isMinimized = !_isMinimized; SaveSettings(); }
-        ImGui.SameLine();
-        if (ImGui.SmallButton("X")) CloseRequested = true;
-        ImGui.Dummy(new Vector2(0, 2));
-        if (_isMinimized) return;
-        if (!ImGui.BeginTable("HeaderGrid", 2)) return;
-
-        ImGui.TableSetupColumn("Left", ImGuiTableColumnFlags.WidthFixed, width * 0.40f);
-        ImGui.TableSetupColumn("Right", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableNextRow();
-
-        // ── Left column: macro button + status ──────────────────────────
-        ImGui.TableNextColumn();
-
-        var btnColor = _settings.IsMacroRunning
-            ? new Vector4(0.10f, 0.35f, 0.15f, 1.00f)
-            : new Vector4(0.25f, 0.12f, 0.12f, 1.00f);
-        var btnHover = _settings.IsMacroRunning
-            ? new Vector4(0.15f, 0.50f, 0.22f, 1.00f)
-            : new Vector4(0.40f, 0.18f, 0.18f, 1.00f);
-        var btnActive = _settings.IsMacroRunning
-            ? new Vector4(0.08f, 0.28f, 0.12f, 1.00f)
-            : new Vector4(0.20f, 0.10f, 0.10f, 1.00f);
-
-        ImGui.PushStyleColor(ImGuiCol.Button, btnColor);
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, btnHover);
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, btnActive);
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4.0f);
-        ImGui.SetWindowFontScale(1.2f);
-
-        Vector2 pos = ImGui.GetCursorScreenPos();
-        string macroLabel = _settings.IsMacroRunning ? "RUNNING##ToggleMacro" : "STOPPED##ToggleMacro";
-        if (ImGui.Button(macroLabel, new Vector2(120, 28)))
-            _settings.IsMacroRunning = !_settings.IsMacroRunning;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Click to Start / Stop Macro");
-
-        ImGui.SetWindowFontScale(1.0f);
-        ImGui.PopStyleVar();
-        ImGui.PopStyleColor(3);
-
-        // Status circle beside the button
-        ImDrawListPtr dl = ImGui.GetWindowDrawList();
-        uint circleColor = _settings.IsMacroRunning ? ImGui.ColorConvertFloat4ToU32(ColGreen) : ImGui.ColorConvertFloat4ToU32(ColTextMute);
-        Vector2 circlePos = pos + new Vector2(138, 14);
-        dl.AddCircleFilled(circlePos, 5, circleColor);
-        if (_settings.IsMacroRunning) dl.AddCircle(circlePos, 8, circleColor, 12, 1.5f);
-
-        ImGui.Spacing();
-        ImGui.TextColored(ColTextMute, "Meta State:");
-        ImGui.SameLine(0, 8);
-        ImGui.TextColored(ColAmber, _settings.CurrentState);
-        ImGui.TextColored(ColTextMute, "Bot Activity:");
-        ImGui.SameLine(0, 8);
-        string botDisplay = string.IsNullOrEmpty(_settings.BotAction) || _settings.BotAction == "Default" ? "Idle" : _settings.BotAction;
-        ImGui.TextColored(ColAmber, botDisplay);
-
-        // ── Right column: file dropdowns (independent vertical layout) ──
-        ImGui.TableNextColumn();
-
-        ImGui.TextColored(ColTextMute, "Profile:");
-        ImGui.SameLine(60);
-        ImGui.SetNextItemWidth(-1);
-        if (ImGui.BeginCombo("##ProfCombo", TruncateName(_settings.SelectedProfile, 16)))
-        {
-            string? pendingSwitch = null;
-            foreach (string profile in _profiles)
-                if (ImGui.Selectable(profile, profile == _settings.SelectedProfile))
-                    pendingSwitch = profile;
-            ImGui.EndCombo();
-            if (pendingSwitch != null) SwitchProfile(pendingSwitch);
-        }
-
-        ImGui.TextColored(ColTextMute, "Nav:");
-        ImGui.SameLine(60);
-        ImGui.SetNextItemWidth(-1);
-        string navName = string.IsNullOrEmpty(_settings.CurrentNavPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentNavPath);
-        if (ImGui.BeginCombo("##NavCombo", TruncateName(navName, 16)))
-        {
-            for (int i = 0; i < _navFiles.Count; i++)
-                if (ImGui.Selectable(_navFiles[i], _selectedNavIdx == i)) { _selectedNavIdx = i; LoadSelectedNav(); }
-            ImGui.EndCombo();
-        }
-
-        ImGui.TextColored(ColTextMute, "Loot:");
-        ImGui.SameLine(60);
-        ImGui.SetNextItemWidth(-1);
-        string lootName = string.IsNullOrEmpty(_settings.CurrentLootPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentLootPath);
-        if (ImGui.BeginCombo("##LootCombo", TruncateName(lootName, 16)))
-        {
-            for (int i = 0; i < _lootFiles.Count; i++)
-                if (ImGui.Selectable(_lootFiles[i], _settings.LootProfileIdx == i))
-                {
-                    _settings.LootProfileIdx = i;
-                    _settings.CurrentLootPath = i == 0 ? string.Empty : Path.Combine(_lootFolder, _lootFiles[i]);
-                    SaveSettings();
-                }
-            ImGui.EndCombo();
-        }
-
-        ImGui.TextColored(ColTextMute, "Meta:");
-        ImGui.SameLine(60);
-        ImGui.SetNextItemWidth(-1);
-        string metaName = string.IsNullOrEmpty(_settings.CurrentMetaPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentMetaPath);
-        if (ImGui.BeginCombo("##MetaCombo", TruncateName(metaName, 16)))
-        {
-            for (int i = 0; i < _metaFiles.Count; i++)
-                if (ImGui.Selectable(_metaFiles[i], _settings.MetaProfileIdx == i))
-                {
-                    _settings.MetaProfileIdx = i;
-                    string path = i == 0 ? string.Empty : Path.Combine(_metaFolder, _metaFiles[i]);
-                    _metaUi.LoadMacroFile(path);
-                }
-            ImGui.EndCombo();
-        }
-
-        ImGui.EndTable();
-        ImGui.Spacing();
-    }
-
-    private void RenderMinimizedMacroButton()
-    {
-        var btnColor = _settings.IsMacroRunning
-            ? new Vector4(0.10f, 0.35f, 0.15f, 1.00f)
-            : new Vector4(0.25f, 0.12f, 0.12f, 1.00f);
-        var btnHover = _settings.IsMacroRunning
-            ? new Vector4(0.15f, 0.50f, 0.22f, 1.00f)
-            : new Vector4(0.40f, 0.18f, 0.18f, 1.00f);
-        var btnActive = _settings.IsMacroRunning
-            ? new Vector4(0.08f, 0.28f, 0.12f, 1.00f)
-            : new Vector4(0.20f, 0.10f, 0.10f, 1.00f);
-
-        ImGui.PushStyleColor(ImGuiCol.Button, btnColor);
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, btnHover);
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, btnActive);
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 3.0f);
-
-        string label = _settings.IsMacroRunning ? "Running##MinMacro" : "Stopped##MinMacro";
-        if (ImGui.SmallButton(label))
-            _settings.IsMacroRunning = !_settings.IsMacroRunning;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Click to Start / Stop Macro");
-
-        ImGui.PopStyleVar();
-        ImGui.PopStyleColor(3);
-    }
-
-    private void RenderCombatPanel()
-    {
-        if (!ImGui.BeginTable("CombatInnerTable", 2, ImGuiTableFlags.None)) return;
-        ImGui.TableSetupColumn("Toggles", ImGuiTableColumnFlags.WidthFixed, 68);
-        ImGui.TableSetupColumn("Vitals", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableNextRow();
-        ImGui.TableNextColumn();
-        if (_isMinimized)
-        {
-            var btnColor = _settings.IsMacroRunning
-                ? new Vector4(0.10f, 0.35f, 0.15f, 1.00f)
-                : new Vector4(0.25f, 0.12f, 0.12f, 1.00f);
-            var btnHover = _settings.IsMacroRunning
-                ? new Vector4(0.15f, 0.50f, 0.22f, 1.00f)
-                : new Vector4(0.40f, 0.18f, 0.18f, 1.00f);
-            var btnActive = _settings.IsMacroRunning
-                ? new Vector4(0.08f, 0.28f, 0.12f, 1.00f)
-                : new Vector4(0.20f, 0.10f, 0.10f, 1.00f);
-            ImGui.PushStyleColor(ImGuiCol.Button, btnColor);
-            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, btnHover);
-            ImGui.PushStyleColor(ImGuiCol.ButtonActive, btnActive);
-            ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 3.0f);
-            string mLabel = _settings.IsMacroRunning ? "ON##MinMacro" : "OFF##MinMacro";
-            if (ImGui.Button(mLabel, new Vector2(64, 20)))
-                _settings.IsMacroRunning = !_settings.IsMacroRunning;
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip(_settings.IsMacroRunning ? "Macro Running - Click to Stop" : "Macro Stopped - Click to Start");
-            ImGui.PopStyleVar();
-            ImGui.PopStyleColor(3);
-        }
-        Vector2 togglePos = ImGui.GetCursorScreenPos() + new Vector2(2, _isMinimized ? 6 : 28);
-
-        // Right-click on each main toggle opens the matching settings window/tab —
-        // a quick shortcut so users don't have to hunt through Advanced Settings.
-        LegacyDashboardDrawing.DrawSquareToggle("sword", ref _settings.EnableCombat, togglePos, "CombatTgl");
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Right)) OpenAdvancedTab("Melee Combat");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Combat — left-click to toggle, right-click for settings");
-
-        LegacyDashboardDrawing.DrawSquareToggle("buff", ref _settings.EnableBuffing, togglePos + new Vector2(34, 0), "BuffTgl");
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Right)) OpenAdvancedTab("Buffing");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Buffing — left-click to toggle, right-click for settings");
-
-        LegacyDashboardDrawing.DrawSquareToggle("shoe", ref _settings.EnableNavigation, togglePos + new Vector2(0, 34), "NavTgl");
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Right)) DashWindows.ShowNavigation = true;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Navigation — left-click to toggle, right-click for routes");
-
-        LegacyDashboardDrawing.DrawSquareToggle("bag", ref _settings.EnableLooting, togglePos + new Vector2(34, 34), "LootTgl");
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Right)) OpenAdvancedTab("Looting");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Looting — left-click to toggle, right-click for settings");
-
-        LegacyDashboardDrawing.DrawWideToggle("MACRO", "gear", ref _settings.EnableMeta, togglePos + new Vector2(0, 68), "MetaTgl", 64f, 20f);
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Right)) DashWindows.ShowMacroRules = true;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Macro/Meta — left-click to toggle, right-click for rules");
-
-        // FR (Force Rebuff) — small button, below MACRO toggle
-        Vector2 frPos = togglePos + new Vector2(0, 92);
-        ImGui.SetCursorScreenPos(frPos);
-        ImGui.PushStyleColor(ImGuiCol.Button,        new Vector4(0.28f, 0.20f, 0.04f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.46f, 0.33f, 0.06f, 1.00f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive,  new Vector4(0.20f, 0.14f, 0.03f, 1.00f));
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 3.0f);
-        if (ImGui.Button("FR##ForceRebuff", new Vector2(64, 16)))
-            OnForceRebuffRequested?.Invoke();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Force-recast all buffs.\nRight-click to cancel.");
-        if (ImGui.BeginPopupContextItem("##FRCtx"))
-        {
-            if (ImGui.MenuItem("Cancel Force Rebuff"))
-                OnCancelForceRebuffRequested?.Invoke();
-            ImGui.EndPopup();
-        }
-        ImGui.PopStyleVar();
-        ImGui.PopStyleColor(3);
-
-        ImGui.TableNextColumn();
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 4);
-        ImGui.TextColored(ColTextDim, TruncateName(_targetLabel, 32).ToUpperInvariant());
-        ImGui.SameLine();
-        float targetValueWidth = ImGui.CalcTextSize(_targetHealthDisplay).X;
-        float targetLineX = ImGui.GetCursorPosX();
-        float targetRegionWidth = ImGui.GetContentRegionAvail().X;
-        ImGui.SetCursorPosX(targetLineX + Math.Max(0, targetRegionWidth - targetValueWidth));
-        ImGui.TextColored(new Vector4(1, 1, 1, 1), _targetHealthDisplay);
-        LegacyDashboardDrawing.DrawSegmentedBar(_targetHealthPercent, ImGui.GetContentRegionAvail().X - 4);
-        if (_settings.ShowTargetStaminaMana && _targetMaxStamina > 0)
-        {
-            float barWidth = ImGui.GetContentRegionAvail().X - 4;
-            LegacyDashboardDrawing.DrawCompactVitalBar("ST", ToRatio(_targetStamina, _targetMaxStamina), ColGreen, FormatVital(_targetStamina, _targetMaxStamina), barWidth);
-            LegacyDashboardDrawing.DrawCompactVitalBar("MN", ToRatio(_targetMana, _targetMaxMana), ColMana, FormatVital(_targetMana, _targetMaxMana), barWidth);
-        }
-        ImGui.Dummy(new Vector2(0, 2));
-        ImGui.TextColored(ColTextMute, "PLAYER VITALS");
-        LegacyDashboardDrawing.DrawVitalRow("heart", "HP", ToRatio(_playerHealth, _playerMaxHealth), ColHp, FormatVital(_playerHealth, _playerMaxHealth));
-        LegacyDashboardDrawing.DrawVitalRow("run", "ST", ToRatio(_playerStamina, _playerMaxStamina), ColGreen, FormatVital(_playerStamina, _playerMaxStamina));
-        LegacyDashboardDrawing.DrawVitalRow("drop", "MN", ToRatio(_playerMana, _playerMaxMana), ColMana, FormatVital(_playerMana, _playerMaxMana));
-        ImGui.EndTable();
-    }
-
-    private void OpenAdvancedTab(string tabName)
-    {
-        for (int i = 0; i < _settings.AdvancedTabs.Length; i++)
-        {
-            if (string.Equals(_settings.AdvancedTabs[i], tabName, StringComparison.OrdinalIgnoreCase))
-            {
-                _settings.SelectedAdvancedTab = i;
-                _settings.ShowAdvancedWindow = true;
-                return;
-            }
-        }
-        // Tab not found — at least open the window so the user lands somewhere useful.
-        _settings.ShowAdvancedWindow = true;
     }
 
     private void RefreshPlayerVitals()
@@ -2222,48 +2018,6 @@ internal sealed class LegacyDashboardRenderer
         _killsPerHour = hours > 1.0 / 3600.0 ? System.Threading.Interlocked.Read(ref _sessionKills) / hours : 0;
     }
 
-    private static float ToRatio(uint value, uint maxValue)
-    {
-        if (maxValue == 0)
-            return 0f;
-
-        return Math.Clamp((float)value / maxValue, 0f, 1f);
-    }
-
-    private static string FormatVital(uint value, uint maxValue)
-    {
-        if (maxValue == 0)
-            return value == 0 ? "--/--" : $"{value}/--";
-
-        return $"{value}/{maxValue}";
-    }
-
-    private void RenderLauncherGrid()
-    {
-        if (!ImGui.BeginTable("LauncherGridTable", 3, ImGuiTableFlags.SizingStretchSame)) return;
-        ImGui.TableNextRow();
-        ImGui.TableNextColumn(); LegacyDashboardDrawing.GridBtn("Macro Rules", "gear", ref DashWindows.ShowMacroRules);
-        ImGui.TableNextColumn();
-        LegacyDashboardDrawing.GridBtn("Monsters", "target", ref DashWindows.ShowMonsters);
-        ImGui.TableNextColumn(); LegacyDashboardDrawing.GridBtn("Settings", "wrench", ref _settings.ShowAdvancedWindow);
-        ImGui.TableNextRow();
-        ImGui.TableNextColumn(); LegacyDashboardDrawing.GridBtn("Navigation", "map", ref DashWindows.ShowNavigation);
-        ImGui.TableNextColumn(); LegacyDashboardDrawing.GridBtn("Items", "shield", ref DashWindows.ShowWeapons);
-        ImGui.TableNextColumn(); LegacyDashboardDrawing.GridBtn("Lua Scripts", "code", ref DashWindows.ShowLua);
-        ImGui.TableNextRow();
-        ImGui.TableNextColumn(); LegacyDashboardDrawing.GridBtn("Dungeon Map", "map", ref DashWindows.ShowDungeonMap);
-        ImGui.TableNextColumn();
-        ImGui.EndTable();
-    }
-
-    private static void RenderPlaceholderWindow(string title, ref bool open, string message)
-    {
-        ImGui.SetNextWindowSize(new Vector2(420, 260), ImGuiCond.FirstUseEver);
-        if (!ImGui.Begin(title, ref open)) { ImGui.End(); return; }
-        ImGui.TextWrapped(message);
-        ImGui.End();
-    }
-
     private void RefreshAllLists()
     {
         RefreshProfilesList();
@@ -2285,6 +2039,7 @@ internal sealed class LegacyDashboardRenderer
                     if (name.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
                     if (name.Equals("Default", StringComparison.OrdinalIgnoreCase)) continue;
                     if (name.Equals("monsters", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (name.Equals("metamanager", StringComparison.OrdinalIgnoreCase)) continue;   // the Meta Manager's rules
                     if (!list.Contains(name, StringComparer.OrdinalIgnoreCase))
                         list.Add(name);
                 }
@@ -2316,6 +2071,42 @@ internal sealed class LegacyDashboardRenderer
             }
         lock (_profileListsLock) { _navFiles.Clear(); _navFiles.AddRange(list); }
         _selectedNavIdx = sel;
+    }
+
+    /// <summary>Save button and /ra nav save [name]. Returns the chat line.</summary>
+    public string SaveRoute(string? name)
+    {
+        string msg = _navigationUi.SaveRoute(name);
+        RefreshNavFiles();
+        SaveSettings();
+        return msg;
+    }
+
+    /// <summary>Writes an edited route back to its file (or the meta's embedded nav).</summary>
+    public void AutoSaveRoute() => _navigationUi.TryAutoSaveNav();
+
+    /// <summary>/ra nav load &lt;name&gt;. Returns the chat line.</summary>
+    public string LoadNavByName(string name)
+    {
+        RefreshNavFiles();
+        string want = name.Trim();
+        if (want.EndsWith(".nav", StringComparison.OrdinalIgnoreCase)) want = want[..^4].TrimEnd();
+        int idx;
+        lock (_profileListsLock)
+            idx = _navFiles.FindIndex(f => f != "None" && f.Equals(want, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0) return $"[RynthAi] No nav named '{want}' in NavProfiles. /ra nav list shows them.";
+        _selectedNavIdx = idx;
+        LoadSelectedNav();
+        SaveSettings();
+        return $"[RynthAi] Loaded {want} ({_settings.CurrentRoute.Points.Count} waypoints).";
+    }
+
+    /// <summary>/ra nav list: the .nav files in NavProfiles.</summary>
+    public List<string> NavFileNames()
+    {
+        RefreshNavFiles();
+        lock (_profileListsLock)
+            return _navFiles.FindAll(f => f != "None");
     }
 
     private void RefreshLootFiles()
@@ -2365,6 +2156,50 @@ internal sealed class LegacyDashboardRenderer
         lock (_profileListsLock) { _metaFiles.Clear(); _metaFiles.AddRange(list); }
         _settings.MetaProfileIdx = idx;
     }
+
+    /// <summary>
+    /// The Meta Manager's load (plugin tick): <paramref name="name"/> is a file in MetaFiles
+    /// (farm.met / farm.af; without an extension .af is tried, then .met). The same load as
+    /// picking it in the Meta panel. Returns null when loaded, else why not.
+    /// </summary>
+    public string? LoadMetaForSchedule(string name)
+    {
+        string want = (name ?? string.Empty).Trim();
+        if (want.Length == 0) return "no meta named";
+        string? path = null;
+        try
+        {
+            string direct = Path.Combine(_metaFolder, Path.GetFileName(want));
+            string ext = Path.GetExtension(want);
+            if ((ext.Equals(".met", StringComparison.OrdinalIgnoreCase) || ext.Equals(".af", StringComparison.OrdinalIgnoreCase))
+                && File.Exists(direct))
+                path = direct;
+            else
+            {
+                string stem = ext.Equals(".met", StringComparison.OrdinalIgnoreCase) || ext.Equals(".af", StringComparison.OrdinalIgnoreCase)
+                    ? Path.GetFileNameWithoutExtension(want) : Path.GetFileName(want);
+                foreach (string e in new[] { ".af", ".met" })
+                {
+                    string candidate = Path.Combine(_metaFolder, stem + e);
+                    if (File.Exists(candidate)) { path = candidate; break; }
+                }
+            }
+        }
+        catch (Exception ex) { return ex.Message; }
+        if (path == null) return "not found in MetaFiles";
+
+        if (!_metaUi.LoadMacroFile(path))
+            return _metaUi.LastLoadStatus.Length > 0 ? _metaUi.LastLoadStatus : "no rules loaded";
+        RefreshMetaFiles();   // MetaProfileIdx follows the loaded file
+        SaveSettings();
+        return null;
+    }
+
+    /// <summary>The Meta Manager's "mm_*" ops from the engine panel, run on the plugin tick (set by the plugin).</summary>
+    public Action<MetaCommand>? ScheduleCommandHandler;
+
+    /// <summary>The Meta Manager's snapshot JSON for BuildMetaJson (set by the plugin; built on the tick).</summary>
+    public Func<string>? ScheduleJsonProvider;
 
     private void LoadSelectedNav()
     {
@@ -2419,6 +2254,7 @@ internal sealed class LegacyDashboardRenderer
                     Idx  = i,
                     Type = p.Type.ToString(),
                     Desc = p.ToString(),
+                    Text = p.Type == NavPointType.Chat ? p.ChatCommand ?? string.Empty : string.Empty,
                     NS   = p.NS,
                     EW   = p.EW,
                     Z    = p.Z,
@@ -2435,9 +2271,13 @@ internal sealed class LegacyDashboardRenderer
 
             var payload = new NavBridgePayload
             {
+                // No extension: the panel matches this against NavFiles (names
+                // without .nav) to show the loaded file in its Nav picker.
                 ActiveNavName     = string.IsNullOrEmpty(_settings.CurrentNavPath)
                                         ? "None (Unsaved)"
-                                        : Path.GetFileName(_settings.CurrentNavPath),
+                                        : _settings.CurrentNavPath.StartsWith("<embedded:", StringComparison.Ordinal)
+                                            ? _settings.CurrentNavPath.Substring(10).TrimEnd('>') + " (in meta)"
+                                            : Path.GetFileNameWithoutExtension(_settings.CurrentNavPath),
                 NavStatusLine     = _settings.NavStatusLine ?? string.Empty,
                 NavIsStuck        = _settings.NavIsStuck,
                 MacroRunning      = _settings.IsMacroRunning,
@@ -2482,7 +2322,7 @@ internal sealed class LegacyDashboardRenderer
                         _host.TryGetPlayerPose(out _, out float wx, out float wy, out float wz, out _, out _, out _, out _) &&
                         NavCoordinateHelper.TryGetNavCoords(_host, out double wNS, out double wEW))
                     {
-                        InsertNavPoint(new NavPoint { NS = wNS, EW = wEW, Z = wz }, cmd.AddMode, cmd.InsertAt);
+                        InsertNavPoint(new NavPoint { NS = wNS, EW = wEW, Z = wz / 240.0 }, cmd.AddMode, cmd.InsertAt);
                     }
                     break;
 
@@ -2491,7 +2331,28 @@ internal sealed class LegacyDashboardRenderer
                         _host.TryGetPlayerPose(out _, out float rx, out float ry, out float rz, out _, out _, out _, out _) &&
                         NavCoordinateHelper.TryGetNavCoords(_host, out double rNS, out double rEW))
                     {
-                        InsertNavPoint(new NavPoint { Type = NavPointType.Recall, NS = rNS, EW = rEW, Z = rz, SpellId = cmd.SpellId }, cmd.AddMode, cmd.InsertAt);
+                        InsertNavPoint(new NavPoint { Type = NavPointType.Recall, NS = rNS, EW = rEW, Z = rz / 240.0, SpellId = cmd.SpellId }, cmd.AddMode, cmd.InsertAt);
+                    }
+                    break;
+
+                case "addChat":
+                    if (!string.IsNullOrWhiteSpace(cmd.Text) &&
+                        _host.HasGetPlayerPose &&
+                        _host.TryGetPlayerPose(out _, out _, out _, out float cz, out _, out _, out _, out _) &&
+                        NavCoordinateHelper.TryGetNavCoords(_host, out double cNS, out double cEW))
+                    {
+                        InsertNavPoint(new NavPoint { Type = NavPointType.Chat, NS = cNS, EW = cEW, Z = cz / 240.0, ChatCommand = cmd.Text.Trim() }, cmd.AddMode, cmd.InsertAt);
+                    }
+                    break;
+
+                case "editChat":
+                    // Change the text of an existing chat waypoint (Nav panel: select it, edit, Update).
+                    if (cmd.Index >= 0 && cmd.Index < _settings.CurrentRoute.Points.Count
+                        && _settings.CurrentRoute.Points[cmd.Index].Type == NavPointType.Chat
+                        && !string.IsNullOrWhiteSpace(cmd.Text))
+                    {
+                        _settings.CurrentRoute.Points[cmd.Index].ChatCommand = cmd.Text.Trim();
+                        _navigationUi.TryAutoSaveNav();
                     }
                     break;
 
@@ -2500,8 +2361,7 @@ internal sealed class LegacyDashboardRenderer
                     if (di >= 0 && di < _settings.CurrentRoute.Points.Count)
                     {
                         _settings.CurrentRoute.Points.RemoveAt(di);
-                        if (_settings.ActiveNavIndex == di) _settings.ActiveNavIndex = 0;
-                        else if (_settings.ActiveNavIndex > di) _settings.ActiveNavIndex--;
+                        _settings.ActiveNavIndex = LegacyNavigationUi.IndexAfterDelete(_settings.ActiveNavIndex, di, _settings.CurrentRoute.Points.Count);
                         _navigationUi.TryAutoSaveNav();
                     }
                     break;
@@ -2513,10 +2373,7 @@ internal sealed class LegacyDashboardRenderer
                     break;
 
                 case "saveRoute":
-                    if (!string.IsNullOrEmpty(_settings.CurrentNavPath))
-                    {
-                        try { _settings.CurrentRoute.Save(_settings.CurrentNavPath); } catch { }
-                    }
+                    _host.WriteToChat(SaveRoute(string.IsNullOrWhiteSpace(cmd.NavName) ? null : cmd.NavName), 1);
                     break;
 
                 case "setRouteType":
@@ -2544,7 +2401,7 @@ internal sealed class LegacyDashboardRenderer
         if (addMode == 0 || _settings.CurrentRoute.Points.Count == 0 || insertAt < 0)
             _settings.CurrentRoute.Points.Add(pt);
         else if (addMode == 1)
-            _settings.CurrentRoute.Points.Insert(insertAt, pt);
+            _settings.CurrentRoute.Points.Insert(Math.Min(insertAt, _settings.CurrentRoute.Points.Count), pt);
         else
             _settings.CurrentRoute.Points.Insert(Math.Min(insertAt + 1, _settings.CurrentRoute.Points.Count), pt);
 
@@ -2559,7 +2416,7 @@ internal sealed class LegacyDashboardRenderer
         for (int i = 0; i < route.Points.Count; i++)
         {
             NavPoint point = route.Points[i];
-            if (point.Type != NavPointType.Point) continue;
+            if (!NavRouteParser.IsPlainWaypoint(point.Type)) continue;
             double distance = Math.Sqrt(Math.Pow(point.NS - ns, 2) + Math.Pow(point.EW - ew, 2));
             if (distance < bestDistance) { bestDistance = distance; best = i; }
         }
@@ -2859,6 +2716,19 @@ internal sealed class LegacyDashboardRenderer
 
     private static readonly string MetaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
 
+    // Result of the last set_source, reported in BuildMetaJson (under MetaRulesLock).
+    private long _metaApplySeq;
+    private bool _metaApplyOk;
+    private string _metaApplyText = "";
+
+    private void ReportMetaApply(bool ok, string text)
+    {
+        _metaApplySeq++;
+        _metaApplyOk = ok;
+        _metaApplyText = text;
+        _host.WriteToChat("[RynthAi] " + text, 1);
+    }
+
     public string BuildMetaJson()
     {
         // Avalonia dispatcher thread — MetaManager.Think enumerates MetaRules on
@@ -2896,6 +2766,18 @@ internal sealed class LegacyDashboardRenderer
         string sourceText = "";
         try { sourceText = AfFileWriter.SaveToString(_settings.MetaRules, _settings.EmbeddedNavs); } catch { }
         AppendString(sb, "sourceText", sourceText);
+
+        // The last Source "Apply" (set_source): the engine shows this instead
+        // of assuming success. Seq 0 = nothing applied yet this session.
+        sb.Append(",\"applyResult\":{\"seq\":").Append(_metaApplySeq).Append(',');
+        AppendBool(sb, "ok", _metaApplyOk); sb.Append(',');
+        AppendString(sb, "text", _metaApplyText);
+        sb.Append('}');
+
+        // The Meta Manager's rules and timers (built on the plugin tick; see MetaScheduler).
+        string? schedule = ScheduleJsonProvider?.Invoke();
+        if (!string.IsNullOrEmpty(schedule))
+            sb.Append(",\"schedule\":").Append(schedule);
 
         var snap = MetaSnapshotProvider?.Invoke();
         if (snap != null)
@@ -3004,6 +2886,13 @@ internal sealed class LegacyDashboardRenderer
             var cmd = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.MetaCommand);
             if (cmd == null) return;
 
+            // The Meta Manager (schedule) owns its own state; not the meta's rules.
+            if (cmd.Op.StartsWith("mm_", System.StringComparison.Ordinal))
+            {
+                ScheduleCommandHandler?.Invoke(cmd);
+                return;
+            }
+
             // Avalonia dispatcher thread — every mutating case races
             // MetaManager.Think on the plugin-tick thread.
             lock (_settings.MetaRulesLock)
@@ -3047,31 +2936,33 @@ internal sealed class LegacyDashboardRenderer
                     break;
 
                 case "set_source":
-                    if (!string.IsNullOrEmpty(cmd.Text))
+                    if (string.IsNullOrEmpty(cmd.Text))
                     {
-                        try
+                        ReportMetaApply(false, "Source not applied: the source is empty");
+                        break;
+                    }
+                    try
+                    {
+                        var loaded = AfFileParser.LoadFromText(cmd.Text);
+                        string w = loaded.Warnings.Count > 0
+                            ? $" — {loaded.Warnings.Count} warning(s): {loaded.Warnings[0]}" : "";
+                        if (loaded.Rules.Count > 0)
                         {
-                            var loaded = AfFileParser.LoadFromText(cmd.Text);
-                            string w = loaded.Warnings.Count > 0
-                                ? $" — {loaded.Warnings.Count} warning(s): {loaded.Warnings[0]}" : "";
-                            if (loaded.Rules.Count > 0)
-                            {
-                                _settings.MetaRules = loaded.Rules;
-                                _settings.EmbeddedNavs.Clear();
-                                foreach (var kvp in loaded.EmbeddedNavs) _settings.EmbeddedNavs[kvp.Key] = kvp.Value;
-                                _settings.ForceStateReset = true;
-                                TryAutoSaveMetaCmd();
-                                _host.WriteToChat($"[RynthAi] Applied source: {loaded.Rules.Count} rules{w}", 1);
-                            }
-                            else
-                            {
-                                _host.WriteToChat($"[RynthAi] Source not applied: 0 rules parsed{(w.Length > 0 ? w : " — check syntax")}", 1);
-                            }
+                            _settings.MetaRules = loaded.Rules;
+                            _settings.EmbeddedNavs.Clear();
+                            foreach (var kvp in loaded.EmbeddedNavs) _settings.EmbeddedNavs[kvp.Key] = kvp.Value;
+                            _settings.ForceStateReset = true;
+                            TryAutoSaveMetaCmd();
+                            ReportMetaApply(true, $"Applied source: {loaded.Rules.Count} rules{w}");
                         }
-                        catch (System.Exception ex)
+                        else
                         {
-                            _host.WriteToChat($"[RynthAi] Source apply error: {ex.Message}", 1);
+                            ReportMetaApply(false, $"Source not applied: 0 rules parsed{(w.Length > 0 ? w : " — check syntax")}");
                         }
+                    }
+                    catch (System.Exception ex)
+                    {
+                        ReportMetaApply(false, $"Source apply error: {ex.Message}");
                     }
                     break;
 
@@ -3100,22 +2991,19 @@ internal sealed class LegacyDashboardRenderer
                     break;
 
                 case "move_up":
-                    if (cmd.Index > 0 && cmd.Index < _settings.MetaRules.Count)
-                    {
-                        var tmp = _settings.MetaRules[cmd.Index - 1];
-                        _settings.MetaRules[cmd.Index - 1] = _settings.MetaRules[cmd.Index];
-                        _settings.MetaRules[cmd.Index] = tmp;
-                        TryAutoSaveMetaCmd();
-                    }
-                    break;
-
                 case "move_down":
-                    if (cmd.Index >= 0 && cmd.Index < _settings.MetaRules.Count - 1)
+                    // Within the rule's state: the panels list rules grouped by
+                    // state, so "up" is the previous rule of the SAME state, not
+                    // the previous list entry (which may belong to another state).
                     {
-                        var tmp = _settings.MetaRules[cmd.Index + 1];
-                        _settings.MetaRules[cmd.Index + 1] = _settings.MetaRules[cmd.Index];
-                        _settings.MetaRules[cmd.Index] = tmp;
-                        TryAutoSaveMetaCmd();
+                        int other = SameStateNeighbour(cmd.Index, cmd.Op == "move_up" ? -1 : 1);
+                        if (other >= 0)
+                        {
+                            var tmp = _settings.MetaRules[other];
+                            _settings.MetaRules[other] = _settings.MetaRules[cmd.Index];
+                            _settings.MetaRules[cmd.Index] = tmp;
+                            TryAutoSaveMetaCmd();
+                        }
                     }
                     break;
 
@@ -3138,6 +3026,18 @@ internal sealed class LegacyDashboardRenderer
             }
         }
         catch { }
+    }
+
+    /// <summary>The nearest rule before (-1) or after (+1) <paramref name="index"/> in the same state, or -1.</summary>
+    private int SameStateNeighbour(int index, int direction)
+    {
+        var rules = _settings.MetaRules;
+        if (index < 0 || index >= rules.Count) return -1;
+        string state = rules[index].State ?? "Default";
+        for (int j = index + direction; j >= 0 && j < rules.Count; j += direction)
+            if (string.Equals(rules[j].State ?? "Default", state, System.StringComparison.Ordinal))
+                return j;
+        return -1;
     }
 
     private void TryAutoSaveMetaCmd()
