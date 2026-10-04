@@ -80,7 +80,7 @@ internal sealed class IltHubController
     public void OnLoginComplete(string charName, PetManager? petManager)
     {
         _ctx.CharName = charName ?? string.Empty;
-        RynthLog.Trace(LogCat.IltHub, $"login: char='{_ctx.CharName}' world='{_ctx.Options.WorldName}'");
+        RynthLog.Event(LogEvents.IltLogin, $"login: char='{_ctx.CharName}' world='{_ctx.Options.WorldName}'");
         _ctx.Options.OnLoginComplete();
         _ctx.Inventory.Reset();
         Rates.Reset();
@@ -142,7 +142,7 @@ internal sealed class IltHubController
         // Expire an unanswered chat confirmation so a stale "/ra hub confirm" can't fire it later.
         if (_pendingAction != null && now - _pendingAt > ConfirmWindowMs)
         {
-            RynthLog.Trace(LogCat.IltHub, $"confirmation expired: {_pendingLabel}");
+            RynthLog.Event(LogEvents.IltConfirmation, $"confirmation expired: {_pendingLabel}");
             _ctx.Chat($"[ILT Hub] Confirmation for '{_pendingLabel}' expired.");
             ClearPending();
         }
@@ -188,7 +188,7 @@ internal sealed class IltHubController
     /// <summary>Logout / teardown: stop automation and flush to disk.</summary>
     public void OnLogout()
     {
-        RynthLog.Trace(LogCat.IltHub, $"logout: stopping features for '{_ctx.CharName}'");
+        RynthLog.Event(LogEvents.IltLogout, $"logout: stopping features for '{_ctx.CharName}'");
         ClearPending();
         foreach (var f in _features)
         {
@@ -232,7 +232,7 @@ internal sealed class IltHubController
     /// </summary>
     public bool HandleCommand(string verb, string[] args)
     {
-        RynthLog.Trace(LogCat.IltHub, $"command: /ra {verb} {string.Join(" ", args)}".TrimEnd());
+        RynthLog.Event(LogEvents.IltCommand, $"command: /ra {verb} {string.Join(" ", args)}".TrimEnd());
         if (verb.Equals("quests", StringComparison.OrdinalIgnoreCase))
         {
             string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "refresh";
@@ -326,7 +326,7 @@ internal sealed class IltHubController
         _pendingLabel = label;
         _pendingAction = action;
         _pendingAt = IltHubContext.NowMs;
-        RynthLog.Trace(LogCat.IltHub, $"confirmation requested: {label}");
+        RynthLog.Event(LogEvents.IltConfirmation, $"confirmation requested: {label}");
         _ctx.Chat($"[ILT Hub] About to {label}. Type /ra hub confirm within {ConfirmWindowMs / 1000} s, or /ra hub cancel.");
     }
 
@@ -339,7 +339,7 @@ internal sealed class IltHubController
         ClearPending();
         if (!fresh || action == null) { _ctx.Chat("[ILT Hub] Nothing to confirm."); return; }
 
-        RynthLog.Trace(LogCat.IltHub, $"confirmed: {label}");
+        RynthLog.Event(LogEvents.IltConfirmation, $"confirmed: {label}");
         try { action(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, $"confirmed action '{label}'"); }
     }

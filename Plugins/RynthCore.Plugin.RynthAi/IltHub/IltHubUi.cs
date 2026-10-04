@@ -24,6 +24,7 @@ internal sealed class IltHubUi
     private bool _profileShared;
     private string[] _profileList = Array.Empty<string>();
     private int _profileIdx;
+    private bool _wasDrawn; // last frame's window state, for the shown/hidden log events
 
     public IltHubUi(IltHubController hub, IltHubContext ctx)
     {
@@ -37,7 +38,19 @@ internal sealed class IltHubUi
         if (DashWindows.ShowIltHub != _ctx.State.WindowVisible)
             _ctx.State.WindowVisible = DashWindows.ShowIltHub;
 
-        if (_ctx.State.WindowVisible) RenderWindow();
+        bool drawn = _ctx.State.WindowVisible;
+        if (drawn != _wasDrawn)
+        {
+            // Logged on the first frame the window is (or stops being) drawn, so the line also
+            // proves the overlay is actually rendering it.
+            _wasDrawn = drawn;
+            if (drawn)
+                RynthLog.Event(LogEvents.IltWindowShown, $"window shown (world='{_ctx.Options.WorldName}', available={_hub.Available})");
+            else
+                RynthLog.Event(LogEvents.IltWindowHidden, "window hidden");
+        }
+
+        if (drawn) RenderWindow();
         _hub.Games.RenderHud();
         RenderConfirm();
     }

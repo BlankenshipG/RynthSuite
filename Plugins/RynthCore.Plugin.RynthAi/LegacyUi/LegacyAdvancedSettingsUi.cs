@@ -113,10 +113,13 @@ internal sealed class LegacyAdvancedSettingsUi
             {
                 ImGui.TableNextColumn();
                 bool on = RynthLog.IsTracing(cat);
-                if (ImGui.Checkbox($"{cat}##DiagCat", ref on)) RynthLog.SetTracing(cat, on);
+                // "+log" marks categories at Info: their trace lines also go to the normal log.
+                string label = RynthLog.GetCategoryLevel(cat) == LogEventLevel.Info ? $"{cat} +log" : cat.ToString();
+                if (ImGui.Checkbox($"{label}##DiagCat{cat}", ref on)) RynthLog.SetTracing(cat, on);
             }
             ImGui.EndTable();
         }
+        ImGui.TextDisabled("Launcher > Logging sets each category to Off, Trace or Info (+log = also in the normal log).");
 
         ImGui.Spacing();
         ImGui.TextDisabled("Exceptions always go to exceptions_<date>.txt with full stack traces (throttled).");

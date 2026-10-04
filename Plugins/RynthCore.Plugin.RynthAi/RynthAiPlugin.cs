@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.17-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.18-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -629,6 +629,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "hideui":       _hideUi = on; dash.SetUiHidden(on); break;  // applied each tick in OnTick
             case "sendchat":     if (!string.IsNullOrEmpty(value)) HandleRynthChatSubmit(value); break;
             case "setsetting":   ApplyRemoteSetting(value); break;   // one advanced setting from the phone (clamped + persisted)
+            case "hub":
+                // "/ra hub <args>" from the Avalonia panel's ILT Hub button (value e.g. "show").
+                if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
+                _iltHub.HandleCommand("hub", value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+                break;
             // movestart/movestop are applied DIRECTLY by the RynthRemote plugin (pure Host.SetAutoRun/
             // SetMotion + its own dead-man watchdog) and are never forwarded here.
         }

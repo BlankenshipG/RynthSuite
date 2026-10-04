@@ -165,6 +165,8 @@ internal sealed class IltServerOptions
         if (IsIltLikeWorld)
         {
             _loginRefreshDone = true;
+            RynthLog.Event(LogEvents.IltWorldCheck,
+                $"world check: '{WorldName}' is ILT-like (force={_state.ForceLeaftideFeatures}) - refreshing server options");
             Refresh(manual: false);
             return;
         }
@@ -174,8 +176,8 @@ internal sealed class IltServerOptions
             return;
 
         _loginRefreshDone = true;
-        RynthLog.Trace(LogCat.IltOptions,
-            $"login refresh skipped: world='{WorldName}' is not ILT-like (waited {sinceLogin / 1000}s)");
+        RynthLog.Event(LogEvents.IltWorldCheck,
+            $"world check: '{WorldName}' is not ILT-like - login refresh skipped (waited {sinceLogin / 1000}s)");
     }
 
     /// <summary>
@@ -197,7 +199,7 @@ internal sealed class IltServerOptions
 
         _refreshInFlight = true;
         _state.ServerOptions.WorldName = WorldName;
-        RynthLog.Trace(LogCat.IltOptions, $"refresh start (manual={manual}, world='{WorldName}')");
+        RynthLog.Event(LogEvents.IltOptionsRefreshStart, $"refresh start (manual={manual}, world='{WorldName}')");
         if (manual) _chat("[ILT Hub] Refreshing server options...");
 
         // Step 1: structured dump. Lines start with "=== ILT Custom Features ===".
@@ -356,15 +358,14 @@ internal sealed class IltServerOptions
     {
         _refreshInFlight = false;
         _state.ServerOptions.LastRefreshUtc = DateTime.UtcNow;
-        if (RynthLog.IsTracing(LogCat.IltOptions))
-            RynthLog.Trace(LogCat.IltOptions, $"refresh complete via {Source}: " +
+        int on = _state.ServerOptions.Bits.Values.Count(v => v == 1);
+        int off = _state.ServerOptions.Bits.Values.Count(v => v == 0);
+        // Building the per-bit list is skipped unless the event is actually going to be recorded.
+        if (RynthLog.IsEventEnabled(LogEvents.IltOptionsRefreshed))
+            RynthLog.Event(LogEvents.IltOptionsRefreshed, $"options refreshed via {Source} (manual={manual}): {on} on, {off} off - " +
                 string.Join(" ", _state.ServerOptions.Bits.Select(b => $"{b.Key}={b.Value}")));
         if (manual)
-        {
-            int on = _state.ServerOptions.Bits.Values.Count(v => v == 1);
-            int off = _state.ServerOptions.Bits.Values.Count(v => v == 0);
             _chat($"[ILT Hub] Server options refreshed via {Source}: {on} on, {off} off.");
-        }
     }
 
     // ── Passive refusals ────────────────────────────────────────────────────

@@ -69,8 +69,18 @@ internal sealed class RynthLogConfig
     /// <summary>Mirror every <see cref="RynthLog.Write"/> line into the daily RynthAi log file.</summary>
     public bool FileLogAll = true;
 
-    /// <summary>Category names (see <see cref="LogCat"/>) with tracing enabled.</summary>
+    /// <summary>
+    /// Category names (see <see cref="LogCat"/>) with tracing enabled. Kept in sync with
+    /// <see cref="Categories"/> (every category at Trace or Info); only read when
+    /// <see cref="Categories"/> is empty (diagnostics.json written by an older RynthAi).
+    /// </summary>
     public List<string> Traces = new();
+
+    /// <summary>
+    /// Per-category trace level (Off / Trace / Info) for every <see cref="LogCat"/>. Rewritten on
+    /// every load with the full category list and descriptions so the launcher can edit it.
+    /// </summary>
+    public List<LogCategorySetting> Categories = new();
 
     /// <summary>Delete diagnostics files older than this many days.</summary>
     public int RetainDays = 7;
@@ -80,6 +90,140 @@ internal sealed class RynthLogConfig
 
     /// <summary>Keep at most this many files per diagnostics folder (oldest pruned first).</summary>
     public int MaxFiles = 30;
+
+    /// <summary>
+    /// Per-event log levels for the named key events in <see cref="LogEvents"/>. Rewritten on every
+    /// load with the full catalog (new events at their defaults, fresh descriptions), so the launcher
+    /// can list and edit every event without its own copy of the catalog.
+    /// </summary>
+    public List<LogEventSetting> Events = new();
+}
+
+/// <summary>Where a named key event is written (see <see cref="RynthLog.Event"/>).</summary>
+internal enum LogEventLevel
+{
+    /// <summary>Not recorded at all.</summary>
+    Off = 0,
+    /// <summary>Only in the category trace file, and only while that category is traced.</summary>
+    Trace = 1,
+    /// <summary>Normal log: engine log + daily RynthAi file (+ trace file when traced).</summary>
+    Info = 2,
+}
+
+/// <summary>
+/// One persisted key-event switch in <c>diagnostics.json</c>. Only <see cref="Level"/> is read back;
+/// the other fields are informational for the launcher and are refreshed from the catalog on load.
+/// </summary>
+internal sealed class LogEventSetting
+{
+    /// <summary>Stable event id, e.g. "IltHub.Login".</summary>
+    public string Key = string.Empty;
+
+    /// <summary>"Info", "Trace" or "Off" (case-insensitive; anything else falls back to the default).</summary>
+    public string Level = nameof(LogEventLevel.Info);
+
+    /// <summary>Default level for this event (informational).</summary>
+    public string Default = nameof(LogEventLevel.Info);
+
+    /// <summary>Owning <see cref="LogCat"/> name (informational; picks the trace file).</summary>
+    public string Category = string.Empty;
+
+    /// <summary>Human-readable description shown by the launcher.</summary>
+    public string Description = string.Empty;
+}
+
+/// <summary>
+/// One persisted category trace switch in <c>diagnostics.json</c>. <see cref="Level"/> decides where
+/// the category's <see cref="RynthLog.Trace"/> lines go: Off → dropped, Trace → the category trace
+/// file, Info → the trace file AND the normal log. Normal <see cref="RynthLog.Write"/> lines are
+/// unaffected. Only <see cref="Level"/> is read back.
+/// </summary>
+internal sealed class LogCategorySetting
+{
+    /// <summary><see cref="LogCat"/> name, e.g. "Combat".</summary>
+    public string Name = string.Empty;
+
+    /// <summary>"Off", "Trace" or "Info" (case-insensitive; anything else reads as Off).</summary>
+    public string Level = nameof(LogEventLevel.Off);
+
+    /// <summary>Human-readable description shown by the launcher.</summary>
+    public string Description = string.Empty;
+}
+
+/// <summary>
+/// Catalog of named key events. Each one has its own configurable level, so a milestone like
+/// "Hub login" can show in the normal log while the surrounding detail stays trace-only.
+/// Add new events here; the launcher picks them up from <c>diagnostics.json</c> automatically.
+/// </summary>
+internal static class LogEvents
+{
+    // ── ILT Hub ────────────────────────────────────────────────────────────
+    public const string IltLogin = "IltHub.Login";
+    public const string IltWorldCheck = "IltHub.WorldCheck";
+    public const string IltOptionsRefreshStart = "IltHub.OptionsRefreshStart";
+    public const string IltOptionsRefreshed = "IltHub.OptionsRefreshed";
+    public const string IltWindowShown = "IltHub.WindowShown";
+    public const string IltWindowHidden = "IltHub.WindowHidden";
+    public const string IltCommand = "IltHub.Command";
+    public const string IltConfirmation = "IltHub.Confirmation";
+    public const string IltLogout = "IltHub.Logout";
+
+    /// <summary>Catalog entry: key, owning category, default level, launcher description.</summary>
+    internal readonly record struct Definition(string Key, LogCat Category, LogEventLevel Default, string Description);
+
+    /// <summary>Every known event, in launcher display order.</summary>
+    internal static readonly Definition[] Catalog =
+    {
+        new(IltLogin,               LogCat.IltHub,     LogEventLevel.Info,  "ILT Hub: character logged in (character and world)."),
+        new(IltWorldCheck,          LogCat.IltOptions, LogEventLevel.Info,  "ILT Hub: login world check (ILT-like world or skipped)."),
+        new(IltOptionsRefreshStart, LogCat.IltOptions, LogEventLevel.Trace, "ILT Hub: server options refresh started."),
+        new(IltOptionsRefreshed,    LogCat.IltOptions, LogEventLevel.Info,  "ILT Hub: server options refreshed (source and on/off counts)."),
+        new(IltWindowShown,         LogCat.IltHub,     LogEventLevel.Info,  "ILT Hub: Hub window shown."),
+        new(IltWindowHidden,        LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: Hub window hidden."),
+        new(IltCommand,             LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: /ra hub and /ra quests commands."),
+        new(IltConfirmation,        LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: chat confirmations requested, confirmed or expired."),
+        new(IltLogout,              LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: logout (features stopped)."),
+    };
+
+    /// <summary>Launcher description for each trace category.</summary>
+    internal static string DescribeCategory(LogCat cat) => cat switch
+    {
+        LogCat.General => "Uncategorised RynthAi lines.",
+        LogCat.Commands => "/ra chat commands and remote commands.",
+        LogCat.Combat => "Combat: targeting, attacks, spells, wield gates.",
+        LogCat.Buffing => "Buffing: buff timers, rebuff decisions, casts.",
+        LogCat.Pets => "Pet summoning and upkeep.",
+        LogCat.WorldCache => "World object cache: classification and ownership.",
+        LogCat.Navigation => "Navigation: routes, waypoints, movement state.",
+        LogCat.Doors => "Door detection and opening.",
+        LogCat.Jumper => "Jump commands.",
+        LogCat.Looting => "Corpse looting and loot rules.",
+        LogCat.Inventory => "Inventory: AutoStack, AutoCram, equip.",
+        LogCat.Salvage => "Salvage combining and use.",
+        LogCat.Vendor => "AutoVendor buy/sell.",
+        LogCat.ManaStones => "Mana stone use and recharging.",
+        LogCat.Meta => "Meta (VTank-style) state machine and actions.",
+        LogCat.Expressions => "Meta expression evaluation.",
+        LogCat.Quests => "Quest tracking.",
+        LogCat.Crafting => "Missile ammo crafting.",
+        LogCat.Raycast => "Line-of-sight raycasts and geometry loading.",
+        LogCat.Radar => "Radar window.",
+        LogCat.UI => "RynthAi UI windows and panels.",
+        LogCat.Remote => "Remote control (launcher/Avalonia commands).",
+        LogCat.Chat => "Chat parsing and chat diagnostics.",
+        LogCat.IltHub => "ILT Hub: window, login/logout, commands.",
+        LogCat.IltOptions => "ILT Hub: server options.",
+        LogCat.IltChat => "ILT Hub: chat parsing.",
+        LogCat.IltStore => "ILT Hub: store.",
+        LogCat.IltBanking => "ILT Hub: banking.",
+        LogCat.IltPets => "ILT Hub: pets.",
+        LogCat.IltQuests => "ILT Hub: quests.",
+        LogCat.IltProgression => "ILT Hub: progression.",
+        LogCat.IltRates => "ILT Hub: rates.",
+        LogCat.IltGear => "ILT Hub: gear.",
+        LogCat.IltGames => "ILT Hub: games.",
+        _ => cat.ToString(),
+    };
 }
 
 /// <summary>
@@ -118,8 +262,20 @@ internal static class RynthLog
     private static readonly Dictionary<string, (DateTime lastAt, int count)> ExceptionSignatures = new();
     private static readonly ConcurrentQueue<string> ChatQueue = new();
 
-    // Indexed by (int)LogCat; volatile reads are enough — toggles are rare, reads are hot.
-    private static readonly bool[] Tracing = new bool[Enum.GetValues<LogCat>().Length];
+    // Per-category trace level as (int)LogEventLevel, indexed by (int)LogCat. Volatile reads are
+    // enough — changes are rare, reads are hot. Off = not traced, Trace = trace file, Info = trace
+    // file + normal log.
+    private static readonly int[] CategoryLevels = new int[Enum.GetValues<LogCat>().Length];
+
+    // Key-event levels and categories. Replaced wholesale on load (never mutated after publish),
+    // so hot-path readers on any thread can use them without a lock.
+    private static volatile Dictionary<string, LogEventLevel> _eventLevels = BuildDefaultEventLevels();
+    private static readonly Dictionary<string, LogCat> EventCategories = BuildEventCategories();
+
+    /// <summary>How often <see cref="Pump"/> checks diagnostics.json for edits made by the launcher.</summary>
+    private const long ConfigPollIntervalMs = 2000;
+    private static long _nextConfigPollAt;
+    private static DateTime _configStampUtc = DateTime.MinValue;
 
     private static RynthCoreHost? _host;
     private static RynthLogConfig _config = new();
@@ -139,14 +295,14 @@ internal static class RynthLog
     public static bool DebugToChat
     {
         get => _config.DebugToChat;
-        set { _config.DebugToChat = value; SaveConfig(); }
+        set { lock (ConfigLock) { SyncFromDiskIfChanged(); _config.DebugToChat = value; SaveConfig(); } }
     }
 
     /// <summary>When true, every <see cref="Write"/> line is mirrored to the daily RynthAi log file.</summary>
     public static bool FileLogAll
     {
         get => _config.FileLogAll;
-        set { _config.FileLogAll = value; SaveConfig(); }
+        set { lock (ConfigLock) { SyncFromDiskIfChanged(); _config.FileLogAll = value; SaveConfig(); } }
     }
 
     /// <summary>
@@ -165,7 +321,8 @@ internal static class RynthLog
         }
         catch { /* folder is created lazily on first write as a fallback */ }
 
-        LoadConfig();
+        // Write the merged catalog back when it changed so the launcher can list every event.
+        if (LoadConfig()) SaveConfig();
         Prune();
         RegisterGlobalHandlers();
     }
@@ -196,12 +353,20 @@ internal static class RynthLog
     /// <summary>
     /// Verbose diagnostic line. Recorded only when <paramref name="cat"/> is traced, so call
     /// sites can trace freely; guard expensive message building with <see cref="IsTracing"/>.
+    /// When the category's level is Info the line is also promoted to the normal log
+    /// (engine log + daily RynthAi file).
     /// </summary>
     public static void Trace(LogCat cat, string message)
     {
         if (!IsTracing(cat) || string.IsNullOrEmpty(message)) return;
 
         AppendLine(DailyPath(TraceDirectory, cat.ToString()), "TRACE " + message);
+        if (GetCategoryLevel(cat) == LogEventLevel.Info)
+        {
+            try { _host?.Log($"[RynthAi:{cat}] {message}"); } catch { /* host gone during unload */ }
+            if (_config.FileLogAll)
+                AppendLine(DailyPath(_directory, "rynthai"), $"[{cat}] TRACE {message}");
+        }
         if (_config.DebugToChat) QueueChat($"[RynthAi:{cat}] {message}");
     }
 
@@ -232,34 +397,105 @@ internal static class RynthLog
         if (_config.DebugToChat) QueueChat(summary);
     }
 
-    /// <summary>True when the category is currently being traced (cheap; safe on hot paths).</summary>
-    public static bool IsTracing(LogCat cat)
+    /// <summary>
+    /// Named key event (see <see cref="LogEvents"/>). Its configured level decides where it goes:
+    /// Info → <see cref="Write"/> (normal log), Trace → <see cref="Trace"/>, Off → dropped.
+    /// Levels are set per event in <c>diagnostics.json</c>, editable from the launcher.
+    /// </summary>
+    public static void Event(string eventKey, string message)
     {
-        int i = (int)cat;
-        return (uint)i < (uint)Tracing.Length && System.Threading.Volatile.Read(ref Tracing[i]);
+        if (string.IsNullOrEmpty(message)) return;
+        LogCat cat = EventCategories.TryGetValue(eventKey, out LogCat c) ? c : LogCat.General;
+        string line = $"[{eventKey}] {message}";
+        switch (GetEventLevel(eventKey))
+        {
+            case LogEventLevel.Info: Write(cat, line); break;
+            case LogEventLevel.Trace: Trace(cat, line); break;
+        }
     }
 
-    /// <summary>Enables/disables tracing for a single category and persists the change.</summary>
+    /// <summary>Configured level for an event; unknown keys default to Info so nothing is silently lost.</summary>
+    public static LogEventLevel GetEventLevel(string eventKey)
+        => _eventLevels.TryGetValue(eventKey, out LogEventLevel l) ? l : LogEventLevel.Info;
+
+    /// <summary>
+    /// True when <see cref="Event"/> would record anything for this key right now. Use it to skip
+    /// building an expensive message.
+    /// </summary>
+    public static bool IsEventEnabled(string eventKey)
+    {
+        LogEventLevel level = GetEventLevel(eventKey);
+        if (level == LogEventLevel.Info) return true;
+        return level == LogEventLevel.Trace
+            && EventCategories.TryGetValue(eventKey, out LogCat cat) && IsTracing(cat);
+    }
+
+    /// <summary>True when the category is currently being traced (level Trace or Info; cheap; safe on hot paths).</summary>
+    public static bool IsTracing(LogCat cat) => GetCategoryLevel(cat) != LogEventLevel.Off;
+
+    /// <summary>Current trace level of a category (Off, Trace or Info).</summary>
+    public static LogEventLevel GetCategoryLevel(LogCat cat)
+    {
+        int i = (int)cat;
+        return (uint)i < (uint)CategoryLevels.Length
+            ? (LogEventLevel)System.Threading.Volatile.Read(ref CategoryLevels[i])
+            : LogEventLevel.Off;
+    }
+
+    /// <summary>Sets a category's trace level and persists the change.</summary>
+    public static void SetCategoryLevel(LogCat cat, LogEventLevel level)
+    {
+        int i = (int)cat;
+        if ((uint)i >= (uint)CategoryLevels.Length) return;
+        lock (ConfigLock)
+        {
+            SyncFromDiskIfChanged();
+            System.Threading.Volatile.Write(ref CategoryLevels[i], (int)level);
+            SaveConfig();
+        }
+    }
+
+    /// <summary>
+    /// Enables/disables tracing for a single category and persists the change. Enabling keeps a
+    /// category that is already at Info (promoted to the normal log) at Info.
+    /// </summary>
     public static void SetTracing(LogCat cat, bool enabled)
     {
         int i = (int)cat;
-        if ((uint)i >= (uint)Tracing.Length) return;
-        System.Threading.Volatile.Write(ref Tracing[i], enabled);
-        SaveConfig();
+        if ((uint)i >= (uint)CategoryLevels.Length) return;
+        lock (ConfigLock)
+        {
+            SyncFromDiskIfChanged();
+            ApplyTracing(i, enabled);
+            SaveConfig();
+        }
     }
 
     /// <summary>Enables/disables tracing for every category whose name starts with <paramref name="prefix"/> (empty = all).</summary>
     public static int SetTracingByPrefix(string prefix, bool enabled)
     {
         int changed = 0;
-        foreach (LogCat cat in Enum.GetValues<LogCat>())
+        lock (ConfigLock)
         {
-            if (prefix.Length > 0 && !cat.ToString().StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
-            System.Threading.Volatile.Write(ref Tracing[(int)cat], enabled);
-            changed++;
+            SyncFromDiskIfChanged();
+            foreach (LogCat cat in Enum.GetValues<LogCat>())
+            {
+                if (prefix.Length > 0 && !cat.ToString().StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                ApplyTracing((int)cat, enabled);
+                changed++;
+            }
+            SaveConfig();
         }
-        SaveConfig();
         return changed;
+    }
+
+    /// <summary>On → Trace unless already traced; off → Off.</summary>
+    private static void ApplyTracing(int index, bool enabled)
+    {
+        int current = System.Threading.Volatile.Read(ref CategoryLevels[index]);
+        int next = !enabled ? (int)LogEventLevel.Off
+            : current == (int)LogEventLevel.Off ? (int)LogEventLevel.Trace : current;
+        System.Threading.Volatile.Write(ref CategoryLevels[index], next);
     }
 
     /// <summary>Parses a category name case-insensitively (e.g. "ilthub", "Combat").</summary>
@@ -295,6 +531,33 @@ internal static class RynthLog
         }
 
         if (_dirty) Flush();
+
+        // Pick up event-level / trace edits the launcher wrote while the game is running.
+        long now = Environment.TickCount64;
+        if (now >= _nextConfigPollAt)
+        {
+            _nextConfigPollAt = now + ConfigPollIntervalMs;
+            ReloadConfigIfChangedOnDisk();
+        }
+    }
+
+    /// <summary>Reloads diagnostics.json when its timestamp differs from our last load/save.</summary>
+    private static void ReloadConfigIfChangedOnDisk()
+    {
+        try
+        {
+            if (!File.Exists(ConfigPath)) return;
+            if (File.GetLastWriteTimeUtc(ConfigPath) == _configStampUtc) return;
+            lock (ConfigLock)
+            {
+                if (LoadConfig()) SaveConfig();
+            }
+            try { _host?.Log("[RynthAi] diagnostics.json changed on disk - category and event log levels reloaded."); } catch { }
+        }
+        catch
+        {
+            // A half-written file is retried on the next poll.
+        }
     }
 
     /// <summary>Flushes every open log writer to disk.</summary>
@@ -539,29 +802,158 @@ internal static class RynthLog
 
     private static string ConfigPath => Path.Combine(_directory, "diagnostics.json");
 
-    /// <summary>Loads persisted switches; missing or corrupt files fall back to defaults.</summary>
-    private static void LoadConfig()
+    /// <summary>
+    /// Loads persisted switches; missing or corrupt files fall back to defaults. Merges the event
+    /// catalog into <see cref="RynthLogConfig.Events"/> and returns true when that changed the
+    /// config (new events, refreshed descriptions, dropped stale keys), so the caller can save it.
+    /// </summary>
+    private static bool LoadConfig()
     {
-        try
+        lock (ConfigLock)
         {
-            if (File.Exists(ConfigPath))
+            try
             {
-                string json = File.ReadAllText(ConfigPath);
-                _config = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.RynthLogConfig) ?? new RynthLogConfig();
+                if (File.Exists(ConfigPath))
+                {
+                    _configStampUtc = File.GetLastWriteTimeUtc(ConfigPath);
+                    string json = File.ReadAllText(ConfigPath);
+                    _config = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.RynthLogConfig) ?? new RynthLogConfig();
+                }
             }
-        }
-        catch
-        {
-            _config = new RynthLogConfig();
-        }
+            catch
+            {
+                _config = new RynthLogConfig();
+            }
 
-        _config.Traces ??= new List<string>();
-        for (int i = 0; i < Tracing.Length; i++) Tracing[i] = false;
-        foreach (string name in _config.Traces)
-            if (TryParseCategory(name, out LogCat cat)) Tracing[(int)cat] = true;
+            _config.Traces ??= new List<string>();
+            bool categoriesChanged = MergeCategoryLevels();
+            bool eventsChanged = MergeEventCatalog();
+            return categoriesChanged || eventsChanged;
+        }
     }
 
-    /// <summary>Persists the current switches (trace set is rebuilt from the live flags).</summary>
+    /// <summary>
+    /// Publishes the per-category levels from <see cref="RynthLogConfig.Categories"/> (or, for a file
+    /// from an older RynthAi with no Categories list, from <see cref="RynthLogConfig.Traces"/>) and
+    /// rebuilds the Categories list in enum order with fresh descriptions. Returns true when the
+    /// persisted list needs rewriting. Caller holds <see cref="ConfigLock"/>.
+    /// </summary>
+    private static bool MergeCategoryLevels()
+    {
+        var levels = new int[CategoryLevels.Length];
+        bool fromCategories = _config.Categories != null && _config.Categories.Count > 0;
+
+        if (fromCategories)
+        {
+            foreach (LogCategorySetting s in _config.Categories!)
+            {
+                if (s == null || !TryParseCategory(s.Name, out LogCat cat)) continue;
+                if (Enum.TryParse(s.Level, ignoreCase: true, out LogEventLevel lvl) && Enum.IsDefined(lvl))
+                    levels[(int)cat] = (int)lvl;
+            }
+        }
+        else
+        {
+            foreach (string name in _config.Traces)
+                if (TryParseCategory(name, out LogCat cat)) levels[(int)cat] = (int)LogEventLevel.Trace;
+        }
+
+        for (int i = 0; i < levels.Length; i++)
+            System.Threading.Volatile.Write(ref CategoryLevels[i], levels[i]);
+
+        List<LogCategorySetting> rows = BuildCategoryRows();
+        bool changed = !fromCategories || _config.Categories!.Count != rows.Count;
+        for (int i = 0; !changed && i < rows.Count; i++)
+        {
+            LogCategorySetting? old = _config.Categories![i];
+            if (old == null || old.Name != rows[i].Name || old.Level != rows[i].Level || old.Description != rows[i].Description)
+                changed = true;
+        }
+        _config.Categories = rows;
+        return changed;
+    }
+
+    /// <summary>Snapshot of the live category levels as persisted rows, in enum order.</summary>
+    private static List<LogCategorySetting> BuildCategoryRows()
+    {
+        var rows = new List<LogCategorySetting>(CategoryLevels.Length);
+        foreach (LogCat cat in Enum.GetValues<LogCat>())
+        {
+            rows.Add(new LogCategorySetting
+            {
+                Name = cat.ToString(),
+                Level = GetCategoryLevel(cat).ToString(),
+                Description = LogEvents.DescribeCategory(cat),
+            });
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// Rebuilds <see cref="RynthLogConfig.Events"/> in catalog order, keeping each saved level and
+    /// publishing the live level table. Returns true when the persisted list needs rewriting.
+    /// </summary>
+    private static bool MergeEventCatalog()
+    {
+        var saved = new Dictionary<string, LogEventSetting>(StringComparer.OrdinalIgnoreCase);
+        foreach (LogEventSetting e in _config.Events ?? new List<LogEventSetting>())
+            if (e != null && !string.IsNullOrEmpty(e.Key)) saved[e.Key] = e;
+
+        bool changed = (_config.Events?.Count ?? 0) != LogEvents.Catalog.Length;
+        var merged = new List<LogEventSetting>(LogEvents.Catalog.Length);
+        var levels = new Dictionary<string, LogEventLevel>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (LogEvents.Definition def in LogEvents.Catalog)
+        {
+            LogEventLevel level = def.Default;
+            if (saved.TryGetValue(def.Key, out LogEventSetting? s)
+                && Enum.TryParse(s.Level, ignoreCase: true, out LogEventLevel parsed) && Enum.IsDefined(parsed))
+                level = parsed;
+            else
+                changed = true; // new event, or an unreadable level reset to its default
+
+            var row = new LogEventSetting
+            {
+                Key = def.Key,
+                Level = level.ToString(),
+                Default = def.Default.ToString(),
+                Category = def.Category.ToString(),
+                Description = def.Description,
+            };
+            if (s == null || s.Level != row.Level || s.Default != row.Default
+                || s.Category != row.Category || s.Description != row.Description)
+                changed = true;
+
+            merged.Add(row);
+            levels[def.Key] = level;
+        }
+
+        _config.Events = merged;
+        _eventLevels = levels;
+        return changed;
+    }
+
+    /// <summary>Default level table, used until diagnostics.json has been loaded.</summary>
+    private static Dictionary<string, LogEventLevel> BuildDefaultEventLevels()
+    {
+        var d = new Dictionary<string, LogEventLevel>(StringComparer.OrdinalIgnoreCase);
+        foreach (LogEvents.Definition def in LogEvents.Catalog) d[def.Key] = def.Default;
+        return d;
+    }
+
+    /// <summary>Event key → owning category (fixed by the catalog).</summary>
+    private static Dictionary<string, LogCat> BuildEventCategories()
+    {
+        var d = new Dictionary<string, LogCat>(StringComparer.OrdinalIgnoreCase);
+        foreach (LogEvents.Definition def in LogEvents.Catalog) d[def.Key] = def.Category;
+        return d;
+    }
+
+    /// <summary>
+    /// Persists the current switches (trace set and category rows are rebuilt from the live levels).
+    /// Mutators call <see cref="SyncFromDiskIfChanged"/> first, so a launcher edit made since our
+    /// last load is adopted before this write rather than silently reverted.
+    /// </summary>
     private static void SaveConfig()
     {
         // Toggles come from both the pump thread (/ra trace) and the render thread (Diagnostics tab).
@@ -570,10 +962,29 @@ internal static class RynthLog
             try
             {
                 _config.Traces = TracedCategories().ConvertAll(c => c.ToString());
+                _config.Categories = BuildCategoryRows();
                 System.IO.Directory.CreateDirectory(_directory);
                 File.WriteAllText(ConfigPath, JsonSerializer.Serialize(_config, RynthAiJsonContext.Default.RynthLogConfig));
+                _configStampUtc = File.GetLastWriteTimeUtc(ConfigPath);
             }
             catch { }
+        }
+    }
+
+    /// <summary>
+    /// Reloads diagnostics.json when the launcher has written it since our last load/save, so the
+    /// mutation that follows starts from the launcher's values. Caller holds <see cref="ConfigLock"/>.
+    /// </summary>
+    private static void SyncFromDiskIfChanged()
+    {
+        try
+        {
+            if (File.Exists(ConfigPath) && File.GetLastWriteTimeUtc(ConfigPath) != _configStampUtc)
+                LoadConfig();
+        }
+        catch
+        {
+            // Unreadable file: keep our in-memory switches.
         }
     }
 }
