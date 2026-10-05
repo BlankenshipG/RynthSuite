@@ -264,6 +264,9 @@ public sealed partial class RynthAiPlugin
     /// <summary>Skills panel Progression tab snapshot (RynthPluginGetProgressionJson). Pump thread.</summary>
     internal string BuildProgressionJson() => _iltHub?.BuildProgressionJson() ?? "{\"available\":false}";
 
+    /// <summary>Settings panel Charms Tracking tab snapshot (RynthPluginGetCharmsJson). Pump thread.</summary>
+    internal string BuildCharmsJson() => _iltHub?.BuildCharmsJson() ?? "{\"available\":false}";
+
     /// <summary>"prog ..." remote command from the Skills panel's Progression tab. Pump thread.</summary>
     private void HandleProgressionRemote(string value)
     {

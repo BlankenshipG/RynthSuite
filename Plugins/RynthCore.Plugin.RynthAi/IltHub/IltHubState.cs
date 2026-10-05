@@ -189,6 +189,20 @@ public sealed class IltCharacterState
     public bool GearWindowOpen;
     /// <summary>The "Games" window is open.</summary>
     public bool GamesWindowOpen;
+
+    /// <summary>
+    /// Registry charms this character has carried, keyed by charm name. Lets the Charms Tracking
+    /// tab report "acquired" for charms that are now in storage (the client only sees carried items).
+    /// </summary>
+    public Dictionary<string, IltCharmSeen> CharmsSeen = new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>Last time a charm was seen in the character's possession, with its best tier.</summary>
+public sealed class IltCharmSeen
+{
+    public int Tier;
+    public int MaxTier;
+    public DateTime LastSeenUtc;
 }
 
 public sealed class IltItemConversion

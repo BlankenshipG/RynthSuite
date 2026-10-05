@@ -37,6 +37,8 @@ internal sealed class IltHubController
     public IltProgression Progression { get; }
     public IltGear Gear { get; }
     public IltGames Games { get; }
+    /// <summary>Registry charm acquired / active / server state (Charms Tracking tab).</summary>
+    public IltCharmTracker Charms { get; }
 
     public IltHubController(RynthCoreHost host, string charFolder, Func<WorldObjectCache?> cache,
                             Func<LegacyUiSettings?> settings, Func<QuestTracker?> quests, Action saveCombatSettings)
@@ -58,6 +60,7 @@ internal sealed class IltHubController
         Progression = new IltProgression(_ctx);
         Gear = new IltGear(_ctx);
         Games = new IltGames(_ctx);
+        Charms = new IltCharmTracker(_ctx);
         _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Games });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
@@ -251,6 +254,9 @@ internal sealed class IltHubController
         sb.Append('}');
         return sb.ToString();
     }
+
+    /// <summary>JSON for the engine Settings panel's Charms Tracking tab (RynthPluginGetCharmsJson). Pump thread.</summary>
+    public string BuildCharmsJson() => Charms.BuildJson();
 
     /// <summary>Render thread: section windows, confirm popups, games HUD.</summary>
     public void Render() => _ui.Render();

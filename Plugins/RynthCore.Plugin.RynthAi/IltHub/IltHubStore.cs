@@ -101,6 +101,7 @@ internal sealed class IltHubStore
         s.Character.QuestFavorites ??= new();
         s.Character.QuestFavorites.RemoveAll(string.IsNullOrWhiteSpace);
         s.Character.AugTargets = new Dictionary<string, int>(s.Character.AugTargets ?? new(), StringComparer.OrdinalIgnoreCase);
+        s.Character.CharmsSeen = new Dictionary<string, IltCharmSeen>(s.Character.CharmsSeen ?? new(), StringComparer.OrdinalIgnoreCase);
         s.Gear ??= new IltGearState();
         s.Gear.DispelInclusions ??= new();
         s.Gear.DispelExclusions ??= new();
