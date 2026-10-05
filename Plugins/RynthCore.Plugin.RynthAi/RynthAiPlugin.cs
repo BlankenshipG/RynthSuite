@@ -201,9 +201,6 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         long t0 = Environment.TickCount64;
         try { _dashboard?.SaveSettings(); } catch { }
-        // Release the Monster Editor process handle (if the toggle button
-        // launched one) rather than leaking it on plugin unload/hot-reload.
-        try { _dashboard?.ReleaseMonsterEditorHandle(); } catch { }
         long tAfterSettings = Environment.TickCount64;
         TeardownSession();
         long tAfterTeardown = Environment.TickCount64;
@@ -614,13 +611,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             _autoVendor = new AutoVendorManager(Host, _dashboard.Settings, _objectCache, _playerId,
                 () => dashForAv?.CharFolder ?? string.Empty);
             var avForUi = _autoVendor;
-            _dashboard.SetAutoVendorStatusProvider(() => avForUi.Status);
             _dashboard.SetVendorProfilePathProvider(() => avForUi.OpenVendorProfilePath);
 
             _autoTrade = new Trade.AutoTradeManager(Host, _dashboard.Settings, _objectCache, _playerId,
                 () => dashForAv?.CharFolder ?? string.Empty);
-            var atForUi = _autoTrade;
-            _dashboard.SetAutoTradeStatusProvider(() => atForUi.Status);
         }
 
         Log("RynthAi: login complete, legacy ImGui dashboard ready.");

@@ -40,7 +40,7 @@ internal sealed partial class LegacyDashboardRenderer
     // plugin-tick thread (DrainMetaCommands) so mutation is serialised with
     // MetaManager.Think instead of racing it.
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _metaCmdQueue = new();
-    private readonly LegacyAdvancedSettingsUi _advancedSettingsUi;
+    private MissileCraftingManager? _missileCraftingManager;
     private readonly LegacyNavigationUi _navigationUi;
     private readonly LegacyWeaponsUi _weaponsUi;
     private readonly LegacyMetaUi _metaUi;
@@ -142,109 +142,16 @@ internal sealed partial class LegacyDashboardRenderer
     private volatile InventoryContainerSnapshot[] _invContainers = System.Array.Empty<InventoryContainerSnapshot>();
     private int _inventoryVersion;   // Interlocked: bumped on write, read in BuildInventoryJson
 
-    // ── Monster editor (external process) ────────────────────────────────────
-    // Deep-audit finding #10 (2026-06-18): System.Diagnostics.Process is the
-    // documented H6 hazard — HasExited/CloseMainWindow/Process.Start's
-    // handle-touching accessors silently AV this host under NativeAOT in
-    // injected x86 acclient.exe (the engine already abandoned this API for
-    // OpenProcess/GetExitCodeProcess in PluginLoader.IsPidAliveWin32 for the
-    // identical reason). Runs synchronously on the ImGui/game thread from the
-    // "External Editor" button. Replaced with ShellExecuteExW (retaining the
-    // process handle via SEE_MASK_NOCLOSEPROCESS) + Win32 liveness/close.
+    // ── Monster rules file watch (reloads edits made outside the game; TickMonsterReload) ──
     private FileSystemWatcher? _monsterWatcher;
     private volatile bool _monsterFileChanged;
-    private IntPtr _monsterEditorProcessHandle = IntPtr.Zero;
-    private int _monsterEditorPid;
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct SHELLEXECUTEINFOW
-    {
-        public int cbSize;
-        public uint fMask;
-        public IntPtr hwnd;
-        public string? lpVerb;
-        public string? lpFile;
-        public string? lpParameters;
-        public string? lpDirectory;
-        public int nShow;
-        public IntPtr hInstApp;
-        public IntPtr lpIDList;
-        public string? lpClass;
-        public IntPtr hkeyClass;
-        public uint dwHotKey;
-        public IntPtr hIconOrMonitor;
-        public IntPtr hProcess;
-    }
-
-    private const uint SeeMaskNoCloseProcess = 0x00000040;
-    private const int SwShowNormal = 1;
-    private const uint WaitTimeout = 0x00000102;
-    private const uint WmClose = 0x0010;
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool ShellExecuteExW(ref SHELLEXECUTEINFOW lpExecInfo);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CloseHandle(IntPtr hObject);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
-
-    [DllImport("user32.dll")]
-    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-    [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    /// <summary>Finds the first visible top-level window owned by the given PID (mirrors what
-    /// Process.CloseMainWindow does internally) so WM_CLOSE can be posted without touching
-    /// System.Diagnostics.Process.</summary>
-    private static IntPtr FindMainWindowForPid(int pid)
-    {
-        IntPtr found = IntPtr.Zero;
-        EnumWindows((hWnd, _) =>
-        {
-            GetWindowThreadProcessId(hWnd, out uint wndPid);
-            if (wndPid == (uint)pid && IsWindowVisible(hWnd))
-            {
-                found = hWnd;
-                return false; // stop enumerating
-            }
-            return true;
-        }, IntPtr.Zero);
-        return found;
-    }
-
-    /// <summary>Releases the tracked Monster Editor process handle, if any. Call on plugin
-    /// Shutdown so the handle isn't leaked if the editor is still open when RynthAi unloads.</summary>
-    public void ReleaseMonsterEditorHandle()
-    {
-        if (_monsterEditorProcessHandle != IntPtr.Zero)
-        {
-            CloseHandle(_monsterEditorProcessHandle);
-            _monsterEditorProcessHandle = IntPtr.Zero;
-            _monsterEditorPid = 0;
-        }
-    }
 
     public LegacyDashboardRenderer(RynthCoreHost host)
     {
         _host = host;
-        _advancedSettingsUi = new LegacyAdvancedSettingsUi(_settings);
         _navigationUi = new LegacyNavigationUi(_settings, host);
         _weaponsUi = new LegacyWeaponsUi(_settings, host);
-        _metaUi = new LegacyMetaUi(_settings, _navFiles);
+        _metaUi = new LegacyMetaUi(_settings);
         _dungeonMapUi = new DungeonMapUi();
         _rynthRadarUi = new RynthRadarUi(host, _settings);
         _rynthRadarUi.SetMapData(_dungeonMapUi);
@@ -280,9 +187,8 @@ internal sealed partial class LegacyDashboardRenderer
         return withElement ? WeaponNames.WithElement(name, r.Element) : name;
     }
 
-    public void SetMissileCraftingManager(MissileCraftingManager mgr) => _advancedSettingsUi.SetMissileCraftingManager(mgr);
-    public void SetAutoVendorStatusProvider(Func<string> status) => _advancedSettingsUi.SetAutoVendorStatusProvider(status);
-    public void SetAutoTradeStatusProvider(Func<string> status) => _advancedSettingsUi.SetAutoTradeStatusProvider(status);
+    /// <summary>Missile crafting, for the dashboard snapshot's crafting state / status.</summary>
+    public void SetMissileCraftingManager(MissileCraftingManager mgr) => _missileCraftingManager = mgr;
 
     // The open vendor's AutoVendor profile path (null when no vendor is open), for the
     // dashboard snapshot's vendorProfilePath.
@@ -1038,9 +944,9 @@ internal sealed partial class LegacyDashboardRenderer
                 BuffMinSkillLevelTier8     = s.BuffMinSkillLevelTier8,
                 // Crafting
                 EnableMissileCrafting      = s.EnableMissileCrafting,
-                MissileCraftingState       = _advancedSettingsUi.MissileCraftingState,
-                MissileCraftingActive      = _advancedSettingsUi.MissileCraftingActive,
-                MissileCraftingStatus      = _advancedSettingsUi.MissileCraftingStatus,
+                MissileCraftingState       = _missileCraftingManager?.State.ToString() ?? string.Empty,
+                MissileCraftingActive      = _missileCraftingManager?.IsCrafting ?? false,
+                MissileCraftingStatus      = _missileCraftingManager?.StatusMessage ?? string.Empty,
                 // Looting
                 EnableLooting              = s.EnableLooting,
                 BoostLootPriority          = s.BoostLootPriority,
@@ -1339,67 +1245,6 @@ internal sealed partial class LegacyDashboardRenderer
     public void AddSelectedWeapon()     { _weaponsUi.AddSelectedWeapon();     SaveSettings(); }
     public void AddSelectedConsumable() { _weaponsUi.AddSelectedConsumable(); SaveSettings(); }
 
-    /// <summary>Launches the standalone Monster Rules editor for the current char folder.</summary>
-    /// <remarks>No button calls this since the plugin-drawn Monsters window went: the
-    /// engine's MonstersFace has no "external editor" button yet. Kept as the handler for
-    /// one. Saves the editor makes are picked up by TickMonsterReload.</remarks>
-    private void LaunchMonsterEditor()
-    {
-        if (string.IsNullOrEmpty(_charFolder))
-        {
-            _host.WriteToChat("[RynthAi] No character loaded — cannot open Monster Editor.", 4);
-            return;
-        }
-
-        // Toggle: if the editor is already running, close it.
-        if (_monsterEditorProcessHandle != IntPtr.Zero)
-        {
-            uint wait = WaitForSingleObject(_monsterEditorProcessHandle, 0);
-            if (wait == WaitTimeout) // still running
-            {
-                IntPtr hwnd = FindMainWindowForPid(_monsterEditorPid);
-                if (hwnd != IntPtr.Zero)
-                    PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
-                else
-                    TerminateProcess(_monsterEditorProcessHandle, 0); // no window found — fall back to a hard kill
-            }
-            ReleaseMonsterEditorHandle();
-            return;
-        }
-
-        // Editor lives at: <RynthAi root>\MonsterEditor\RynthCore.MonsterEditor.exe
-        string rynthAiRoot = Path.GetDirectoryName(Path.GetDirectoryName(_settingsRoot)!)!;
-        string editorExe   = Path.Combine(rynthAiRoot, "MonsterEditor", "RynthCore.MonsterEditor.exe");
-
-        if (!File.Exists(editorExe))
-        {
-            _host.WriteToChat($"[RynthAi] Monster Editor not found: {editorExe}", 4);
-            return;
-        }
-
-        var info = new SHELLEXECUTEINFOW
-        {
-            cbSize       = Marshal.SizeOf<SHELLEXECUTEINFOW>(),
-            fMask        = SeeMaskNoCloseProcess,   // retain hProcess instead of closing it internally
-            lpVerb       = "open",
-            lpFile       = editorExe,
-            lpParameters = $"\"{_charFolder}\"",
-            nShow        = SwShowNormal,
-        };
-
-        if (!ShellExecuteExW(ref info) || info.hProcess == IntPtr.Zero)
-        {
-            _host.WriteToChat("[RynthAi] Failed to launch Monster Editor.", 4);
-            return;
-        }
-
-        _monsterEditorProcessHandle = info.hProcess;
-        _monsterEditorPid = (int)GetProcessId(info.hProcess); // needed to find the main window for WM_CLOSE later
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint GetProcessId(IntPtr hProcess);
-
     private void CaptureTransientUiState()
     {
         _settings.WindowLocked       = _isLocked;
@@ -1407,12 +1252,6 @@ internal sealed partial class LegacyDashboardRenderer
         _settings.WindowSizeX        = _expandedSize.X;
         _settings.WindowSizeY        = _expandedSize.Y;
         _settings.BgOpacity          = _bgOpacity;
-        _settings.DashShowWeapons    = DashWindows.ShowWeapons;
-        _settings.DashShowLua        = DashWindows.ShowLua;
-        _settings.DashShowNavigation = DashWindows.ShowNavigation;
-        _settings.DashShowMacroRules = DashWindows.ShowMacroRules;
-        _settings.DashShowMonsters   = DashWindows.ShowMonsters;
-        _settings.DashShowDungeonMap = DashWindows.ShowDungeonMap;
     }
 
     private void ApplyUiStateFromSettings()
@@ -1421,12 +1260,6 @@ internal sealed partial class LegacyDashboardRenderer
         _isMinimized  = _settings.DashboardMinimized;
         _expandedSize = new Vector2(_settings.WindowSizeX, _settings.WindowSizeY);
         _bgOpacity    = _settings.BgOpacity;
-        DashWindows.ShowWeapons     = _settings.DashShowWeapons;
-        DashWindows.ShowLua         = _settings.DashShowLua;
-        DashWindows.ShowNavigation  = _settings.DashShowNavigation;
-        DashWindows.ShowMacroRules  = _settings.DashShowMacroRules;
-        DashWindows.ShowMonsters    = _settings.DashShowMonsters;
-        DashWindows.ShowDungeonMap = _settings.DashShowDungeonMap;
     }
 
     private string GetProfileFilePath(string profileName)
@@ -1696,8 +1529,6 @@ internal sealed partial class LegacyDashboardRenderer
         dst.ProfileItemsChecked      = tmp.ProfileItemsChecked;
         dst.SelectedProfile          = tmp.SelectedProfile;
         dst.ActiveNavIndex           = tmp.ActiveNavIndex;
-        dst.ShowAdvancedWindow       = tmp.ShowAdvancedWindow;
-        dst.SelectedAdvancedTab      = tmp.SelectedAdvancedTab;
         dst.WindowPosX               = tmp.WindowPosX;
         dst.WindowPosY               = tmp.WindowPosY;
         dst.WindowLocked             = tmp.WindowLocked;
@@ -1706,12 +1537,6 @@ internal sealed partial class LegacyDashboardRenderer
         dst.WindowSizeX              = tmp.WindowSizeX;
         dst.WindowSizeY              = tmp.WindowSizeY;
         dst.BgOpacity                = tmp.BgOpacity;
-        dst.DashShowWeapons          = tmp.DashShowWeapons;
-        dst.DashShowLua              = tmp.DashShowLua;
-        dst.DashShowNavigation       = tmp.DashShowNavigation;
-        dst.DashShowMacroRules       = tmp.DashShowMacroRules;
-        dst.DashShowMonsters         = tmp.DashShowMonsters;
-        dst.DashShowDungeonMap       = tmp.DashShowDungeonMap;
         dst.MapShowDoors             = tmp.MapShowDoors;
         dst.MapShowCreatures         = tmp.MapShowCreatures;
         dst.MapShowToolbar           = tmp.MapShowToolbar;
@@ -2458,8 +2283,6 @@ internal sealed partial class LegacyDashboardRenderer
         }
         return best;
     }
-    private static string TruncateName(string? value, int max) => string.IsNullOrEmpty(value) ? string.Empty : value.Length > max ? value[..(max - 1)] + "..." : value;
-
     // ── Snapshot bridge (read by the engine-side Avalonia RynthAi panel) ────
     // The Avalonia panel mirrors this dashboard. It pulls a JSON snapshot via
     // RynthPluginGetSnapshotJson every ~33ms and renders the same fields.

@@ -7,12 +7,6 @@ namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
 public static class DashWindows
 {
-    public static bool ShowMacroRules;
-    public static bool ShowMonsters;
-    public static bool ShowNavigation;
-    public static bool ShowWeapons;
-    public static bool ShowLua;
-    public static bool ShowDungeonMap;
     /// <summary>ILT Hub window (persisted in ilt-hub.json, not in the combat profile).</summary>
     public static bool ShowIltHub;
 }
@@ -449,9 +443,6 @@ public sealed class LegacyUiSettings
     [JsonIgnore] public NavRouteParser CurrentRoute { get; set; } = new();
     public int ActiveNavIndex;
 
-    public bool ShowAdvancedWindow;
-    public int SelectedAdvancedTab;
-
     // ── Persisted window/UI state ───────────────────────────────────────────
     public float WindowPosX = -1f;
     public float WindowPosY = -1f;
@@ -461,12 +452,6 @@ public sealed class LegacyUiSettings
     public bool DashboardVisible = true;
     public bool DashboardMinimized;
     public float BgOpacity = 0.95f;
-    public bool DashShowWeapons;
-    public bool DashShowLua;
-    public bool DashShowNavigation;
-    public bool DashShowMacroRules;
-    public bool DashShowMonsters;
-    public bool DashShowDungeonMap;
     public bool  MapShowDoors         = true;
     public bool  MapShowCreatures     = true;
     public bool  MapShowToolbar       = true;
@@ -511,13 +496,6 @@ public sealed class LegacyUiSettings
     public float RadarPosY             = -1f;
     public float RadarSizeX            = 260f;
     public float RadarSizeY            = 284f;
-
-    [JsonIgnore]
-    public readonly string[] AdvancedTabs =
-    {
-        "Display", "UI", "Misc", "Recharge", "Melee Combat", "Spell Combat",
-        "Ranges", "Navigation", "Buffing", "Crafting", "Looting", "Vendoring"
-    };
 
     [JsonIgnore]
     public bool ForceStateReset { get; set; }
