@@ -43,6 +43,17 @@ internal sealed class IltSessionRates : IIltFeature
     private volatile RateRow[] _rows = Array.Empty<RateRow>();
     private sealed record RateRow(string Label, string Total, string PerHour);
 
+    /// <summary>Per-hour figures for the Mini Remote HUD (rebuilt every sample).</summary>
+    public sealed record RateSummary(double XpPerHour, double LumPerHour, double KillsPerHour,
+                                     double CoinsPerHour, double PyrealsPerHour, long Xp, int Kills);
+    private static readonly RateSummary EmptySummary = new(0, 0, 0, 0, 0, 0, 0);
+    private volatile RateSummary _summary = EmptySummary;
+
+    /// <summary>Latest per-hour summary (safe from the render thread).</summary>
+    public RateSummary Summary => _summary;
+    /// <summary>When the current session (or the last Reset) started.</summary>
+    public DateTime SessionStartUtc => _start;
+
     public IltSessionRates(IltHubContext ctx) => _ctx = ctx;
 
     /// <summary>Banking hook: bank balance changed (pump thread).</summary>
@@ -70,6 +81,7 @@ internal sealed class IltSessionRates : IIltFeature
         _lastItemCounts.Clear();
         _itemGains.Clear();
         _lastSampleAt = 0;
+        _summary = EmptySummary;
     }
 
     // ── IIltFeature ─────────────────────────────────────────────────────────
@@ -127,6 +139,7 @@ internal sealed class IltSessionRates : IIltFeature
     private void BuildRows()
     {
         double hours = Math.Max((DateTime.UtcNow - _start).TotalHours, 1.0 / 3600);
+        _summary = new RateSummary(_xp / hours, _lum / hours, _kills / hours, _coins / hours, _pyreals / hours, _xp, _kills);
         var rows = new List<RateRow>
         {
             Row("XP", _xp, hours),

@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.22-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.23-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -95,6 +95,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private QuestTracker? _questTracker;
     /// <summary>ILT Hub (Infinite Leaftide tools window) — one per login session, dormant off-ILT.</summary>
     private IltHub.IltHubController? _iltHub;
+    // Floating HUD windows (item counts, Mini Remote) for the logged-in character, and the
+    // icon textures they draw (kept across sessions).
+    private Huds.HudController? _huds;
+    private Huds.HudIconCache? _hudIcons;
     private InventoryManager? _inventoryManager;
     private SalvageManager? _salvageManager;
     private ManaStoneManager? _manaStoneManager;
@@ -268,6 +272,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _metaManager = null;
         try { _iltHub?.OnLogout(); } catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "logout"); }
         _iltHub = null;
+        try { _huds?.OnLogout(); } catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "logout"); }
+        _huds = null;
         if (_dashboard != null) _dashboard.IltHubAvailable = null;
         _questTracker = null;
         _inventoryManager = null;
@@ -319,6 +325,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             () => _objectCache, () => dashForHub?.Settings, () => _questTracker,
             () => dashForHub?.SaveSettings());
         _dashboard.IltHubAvailable = () => _iltHub?.Available == true;
+
+        // The HUDs share the per-character folder, so they are created alongside the Hub.
+        _hudIcons ??= new Huds.HudIconCache(Host, () => _raycast?.GeometryLoader?.PortalDat);
+        _huds = new Huds.HudController(Host, _dashboard.CharFolder, () => _objectCache, _dashboard, () => _iltHub, _hudIcons);
+        _dashboard.SetInventoryHudLauncher(() => { if (_huds != null) _huds.State.ShowSetup = true; });
     }
 
     public override void OnLoginComplete()
@@ -638,6 +649,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "lua":
                 // Avalonia panel's Map / Lua buttons (value "toggle"); same as "/ra map|lua".
                 HandleWindowCommand(action.ToLowerInvariant(), value);
+                break;
+            case "huds":
+            case "itemhud":
+            case "remote":
+                // Avalonia Settings > Inventory Management "Inventory HUDs" button; same as "/ra huds".
+                HandleHudCommand(action.ToLowerInvariant(), value);
                 break;
             // movestart/movestop are applied DIRECTLY by the RynthRemote plugin (pure Host.SetAutoRun/
             // SetMotion + its own dead-man watchdog) and are never forwarded here.
@@ -1161,6 +1178,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after quest tracker");
             try { _iltHub?.Tick(); }
             catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "Tick"); }
+            try { _huds?.Tick(); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "Tick"); }
             DrainGiveQueue();
             if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after drain give queue");
             _jumper?.Tick();
@@ -2336,6 +2355,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 break;
             case "map":
             case "lua":          HandleWindowCommand(cmd, parts.Length > 2 ? parts[2] : string.Empty); break;
+            case "huds":
+            case "itemhud":
+            case "remote":
+            case "miniremote":   HandleHudCommand(cmd, parts.Length > 2 ? parts[2] : string.Empty); break;
             case "dunnav":        HandleDungeonNavCommand(parts); break;
             case "dunnav-patrol": HandleDungeonNavPatrolCommand(parts); break;
             case "hazard":        HandleHazardCommand(parts); break;
@@ -2463,6 +2486,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // ILT Hub window / confirm popups / games HUD — independent of the dashboard.
             _iltHub?.Render();
 
+            // Floating HUDs (item counts, Mini Remote, setup window).
+            _huds?.Render();
+
             if (_windowVisible && _dashboard is not null)
             {
                 _dashboard.Render();
@@ -2524,6 +2550,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // Dungeon map only: the Avalonia Radar panel and RynthChat already cover radar/chat.
             _dashboard?.RenderMapWindow(includeRadarAndChat: false);
 
+            // Floating HUDs have no Avalonia counterpart either.
+            _huds?.Render();
+
             _dashboard?.RenderOverlayWindows();
         }
         catch (Exception ex)
@@ -2561,6 +2590,13 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             bool shown = dash.SetLuaWindowVisible(mode);
             ChatLine(shown ? "[RynthAi] Lua Scripts window shown." : "[RynthAi] Lua Scripts window hidden.");
         }
+    }
+
+    /// <summary>"/ra huds|itemhud|remote [show|hide|toggle]" and the matching remote commands (pump thread).</summary>
+    private void HandleHudCommand(string which, string mode)
+    {
+        if (_huds == null) { ChatLine("[RynthAi] HUDs not ready (log in first)."); return; }
+        ChatLine("[RynthAi] " + _huds.HandleCommand(which, mode));
     }
 
     // One-time OnRenderOverlay diagnostics (render thread only).

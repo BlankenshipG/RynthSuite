@@ -57,6 +57,13 @@ internal sealed class IltPets : IIltFeature
     private long _cosmeticNextAt;
     private volatile string _uiActivePet = string.Empty;
     private volatile string _cosmeticStatus = "off";
+    private volatile string _hudPetName = string.Empty;
+    private volatile string _hudPetStatus = string.Empty;
+
+    /// <summary>Mini Remote pet line: the pet that is out, else the first combat essence in priority order.</summary>
+    public string HudPetName => _hudPetName;
+    /// <summary>Mini Remote pet status: "Out", "Ready", "Empty" or "Healing" (empty when there is no pet).</summary>
+    public string HudPetStatus => _hudPetStatus;
 
     // Charm / supply status cached for the render thread.
     private volatile bool _uiRefillActive;
@@ -248,7 +255,23 @@ internal sealed class IltPets : IIltFeature
             var pet = FindOwnPet();
             _uiActivePet = pet?.Name ?? string.Empty;
             TickCosmetic(nowMs, pet);
+            UpdateHudPetLine(pet);
         }
+    }
+
+    /// <summary>Refreshes the Mini Remote's pet name / status pair (pump thread).</summary>
+    private void UpdateHudPetLine(WorldObject? pet)
+    {
+        if (pet != null)
+        {
+            _hudPetName = ResolveActiveEssence(pet)?.Name ?? pet.Name;
+            _hudPetStatus = _heal != HealState.Idle ? "Healing" : "Out";
+            return;
+        }
+        var next = ChosenEssence(IltPetKind.Combat);
+        if (next == null) { _hudPetName = string.Empty; _hudPetStatus = string.Empty; return; }
+        _hudPetName = next.Name;
+        _hudPetStatus = _ctx.Inventory.Uses(next) == 0 && !AllowSummonOnEmpty() ? "Empty" : "Ready";
     }
 
     public bool OnChat(string text)

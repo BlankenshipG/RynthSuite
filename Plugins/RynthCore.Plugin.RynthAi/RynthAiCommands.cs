@@ -137,6 +137,10 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra hub [show|hide|refresh|status|bank|force on|off|profile ...|suit ...] — ILT Hub (ILT worlds)");
         ChatLine("[RynthAi] /ra map [show|hide]  — toggle the dungeon map window (shows indoors only)");
         ChatLine("[RynthAi] /ra lua [show|hide]  — toggle the Lua Scripts editor window");
+        ChatLine("[RynthAi] /ra huds [show|hide]  — Inventory HUDs setup (item count HUD + Mini Remote slots)");
+        ChatLine("[RynthAi] /ra itemhud [show|hide]  — toggle the floating pack item count HUD");
+        ChatLine("[RynthAi] /ra remote [show|hide]  — toggle the floating Mini Remote");
+        ChatLine("[RynthAi] /ra quests window|favhud [show|hide]  — undocked quest tracker / quest favorites HUD");
         ChatLine("[RynthAi] /ra quests [refresh|check <regex>] — ILT Hub quest tracker");
         ChatLine("[RynthAi] /ra power <0-100|auto> — set attack power (auto = recklessness-aware)");
         ChatLine("[RynthAi] /ra cast <spellId> — cast spell on current target");

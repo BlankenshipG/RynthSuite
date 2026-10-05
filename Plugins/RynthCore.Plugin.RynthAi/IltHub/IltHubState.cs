@@ -164,6 +164,16 @@ public sealed class IltCharacterState
     /// <summary>Quest Tracker search box contents.</summary>
     public string QuestFilter = string.Empty;
     public string QbFilter = string.Empty;
+
+    /// <summary>Starred quest flag keys (lowercase), shown on the floating favorites HUD.</summary>
+    public List<string> QuestFavorites = new();
+    /// <summary>Quest tracker lists starred quests only.</summary>
+    public bool QuestFavoritesOnly;
+    /// <summary>Floating quest favorites HUD is shown.</summary>
+    public bool ShowQuestFavoritesHud;
+    public bool QuestFavoritesHudLocked;
+    /// <summary>The quest tracker is undocked from the Hub into its own "Quests" window.</summary>
+    public bool QuestTrackerPoppedOut;
 }
 
 public sealed class IltItemConversion

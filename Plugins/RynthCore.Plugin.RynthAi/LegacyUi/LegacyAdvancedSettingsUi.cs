@@ -28,6 +28,10 @@ internal sealed class LegacyAdvancedSettingsUi
 
     private Action? _openLootEditor;
     private Action? _openMonsterEditor;
+    private Action? _openInventoryHuds;
+
+    /// <summary>Wires the Inventory Management "Inventory HUDs..." button.</summary>
+    public void SetInventoryHudLauncher(Action open) => _openInventoryHuds = open;
 
     /// <summary>Wires the "Tools" row at the top of the Looting page (Loot Editor / Monster Editor buttons).</summary>
     public void SetToolLaunchers(Action openLootEditor, Action openMonsterEditor)
@@ -805,6 +809,11 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Combine Bags During Salvage", ref _settings.CombineBagsDuringSalvage);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("When salvaging an item, also add any under-full salvage bag of the same material to the salvage panel — the salvage operation merges them into a single bag.");
+                ImGui.BeginDisabled(_openInventoryHuds == null);
+                if (ImGui.Button("Inventory HUDs...")) _openInventoryHuds?.Invoke();
+                ImGui.EndDisabled();
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    ImGui.SetTooltip("Floating pack item count HUD and Mini Remote (/ra huds).");
 
                 ImGui.Spacing();
                 ImGui.Separator();

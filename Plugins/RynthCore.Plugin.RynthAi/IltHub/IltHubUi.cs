@@ -54,6 +54,7 @@ internal sealed class IltHubUi
 
         if (drawn) RenderWindow();
         _hub.Games.RenderHud();
+        _hub.Quests.RenderFloatingWindows();
         RenderConfirm();
     }
 
@@ -219,7 +220,17 @@ internal sealed class IltHubUi
         {
             case 0:
                 if (ImGui.CollapsingHeader("Session rates", ImGuiTreeNodeFlags.DefaultOpen)) _hub.Rates.Render();
-                if (ImGui.CollapsingHeader("Quest tracker")) _hub.Quests.RenderQuestTracker();
+                if (ImGui.CollapsingHeader("Quest tracker"))
+                {
+                    var cs = _ctx.State.Character;
+                    if (cs.QuestTrackerPoppedOut)
+                    {
+                        ImGui.TextDisabled("The quest tracker is open in its own window.");
+                        ImGui.SameLine();
+                        if (ImGui.SmallButton("Dock back##quests")) cs.QuestTrackerPoppedOut = false;
+                    }
+                    else _hub.Quests.RenderQuestTracker();
+                }
                 if (ImGui.CollapsingHeader("Quest bonus (/qb)")) _hub.Quests.RenderQb();
                 if (ImGui.CollapsingHeader("XP calculator")) _hub.Progression.RenderXp();
                 if (ImGui.CollapsingHeader("Augmentations")) _hub.Progression.RenderAugs();

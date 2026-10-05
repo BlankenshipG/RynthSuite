@@ -98,6 +98,8 @@ internal sealed class IltHubStore
         s.Pet.CosmeticRespawnSeconds = Math.Clamp(s.Pet.CosmeticRespawnSeconds, 5, 600);
         s.Character ??= new IltCharacterState();
         s.Character.ItemConversions ??= new();
+        s.Character.QuestFavorites ??= new();
+        s.Character.QuestFavorites.RemoveAll(string.IsNullOrWhiteSpace);
         s.Character.AugTargets = new Dictionary<string, int>(s.Character.AugTargets ?? new(), StringComparer.OrdinalIgnoreCase);
         s.Gear ??= new IltGearState();
         s.Gear.DispelInclusions ??= new();

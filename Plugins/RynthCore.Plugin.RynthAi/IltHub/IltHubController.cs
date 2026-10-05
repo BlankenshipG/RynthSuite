@@ -229,7 +229,7 @@ internal sealed class IltHubController
 
     /// <summary>
     /// "/ra hub [show|hide|toggle|refresh|bank|status|force on|off|profile save|load|list ...|suit list|test|load ...]"
-    /// and "/ra quests [refresh|check &lt;regex&gt;]". Pump thread. Returns false if not handled.
+    /// and "/ra quests [refresh|check &lt;regex&gt;|window|favhud]". Pump thread. Returns false if not handled.
     /// </summary>
     public bool HandleCommand(string verb, string[] args)
     {
@@ -237,8 +237,27 @@ internal sealed class IltHubController
         if (verb.Equals("quests", StringComparison.OrdinalIgnoreCase))
         {
             string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "refresh";
-            if (sub == "check" && args.Length > 1) Quests.CheckCommand(string.Join(" ", args.Skip(1)));
-            else _ctx.Chat("[ILT Hub] " + Quests.RefreshQuests());
+            string mode = args.Length > 1 ? args[1].ToLowerInvariant() : "toggle";
+            var cs = _ctx.State.Character;
+            switch (sub)
+            {
+                case "check" when args.Length > 1:
+                    Quests.CheckCommand(string.Join(" ", args.Skip(1)));
+                    break;
+                case "window":
+                    // Undocked "Quests" window (closing it docks the tracker back into the Hub).
+                    cs.QuestTrackerPoppedOut = ResolveToggle(mode, cs.QuestTrackerPoppedOut);
+                    _ctx.Chat(cs.QuestTrackerPoppedOut ? "[ILT Hub] Quests window shown." : "[ILT Hub] Quest tracker docked back into the Hub.");
+                    break;
+                case "favhud":
+                case "favorites":
+                    cs.ShowQuestFavoritesHud = ResolveToggle(mode, cs.ShowQuestFavoritesHud);
+                    _ctx.Chat(cs.ShowQuestFavoritesHud ? "[ILT Hub] Quest favorites HUD shown." : "[ILT Hub] Quest favorites HUD hidden.");
+                    break;
+                default:
+                    _ctx.Chat("[ILT Hub] " + Quests.RefreshQuests());
+                    break;
+            }
             return true;
         }
         if (!verb.Equals("hub", StringComparison.OrdinalIgnoreCase)) return false;
@@ -268,11 +287,19 @@ internal sealed class IltHubController
             default:
                 _ctx.Chat("[ILT Hub] /ra hub show|hide|toggle|refresh|bank|status|force on|off|clap|confirm|cancel");
                 _ctx.Chat("[ILT Hub] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
-                _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>]");
+                _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]");
                 break;
         }
         return true;
     }
+
+    /// <summary>"show"/"on" → true, "hide"/"off" → false, anything else flips <paramref name="current"/>.</summary>
+    private static bool ResolveToggle(string mode, bool current) => mode switch
+    {
+        "show" or "on" or "true" or "1" => true,
+        "hide" or "off" or "false" or "0" => false,
+        _ => !current,
+    };
 
     private void PrintStatus()
     {

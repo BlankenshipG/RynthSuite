@@ -41,6 +41,7 @@ internal enum LogCat
     UI,
     Remote,
     Chat,
+    Huds,
 
     // ── ILT Hub (IltHub/) ──────────────────────────────────────────────────
     IltHub,
@@ -211,6 +212,7 @@ internal static class LogEvents
         LogCat.UI => "RynthAi UI windows and panels.",
         LogCat.Remote => "Remote control (launcher/Avalonia commands).",
         LogCat.Chat => "Chat parsing and chat diagnostics.",
+        LogCat.Huds => "Floating HUDs: item counts, Mini Remote, icons.",
         LogCat.IltHub => "ILT Hub: window, login/logout, commands.",
         LogCat.IltOptions => "ILT Hub: server options.",
         LogCat.IltChat => "ILT Hub: chat parsing.",

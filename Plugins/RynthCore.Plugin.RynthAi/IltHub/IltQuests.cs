@@ -238,7 +238,11 @@ internal sealed class IltQuests : IIltFeature
 
     // ── UI (render thread) ──────────────────────────────────────────────────
 
-    public void RenderQuestTracker()
+    /// <summary>
+    /// Quest tracker body. Drawn inside the Hub's Character tab, or filling the standalone
+    /// "Quests" window when <paramref name="poppedOut"/> (the table then uses the full height).
+    /// </summary>
+    public void RenderQuestTracker(bool poppedOut = false)
     {
         var t = _tracker();
         if (t == null) { ImGui.TextDisabled("Quest tracker not ready."); return; }
@@ -247,36 +251,50 @@ internal sealed class IltQuests : IIltFeature
             ImGui.TextColored(LegacyDashboardRenderer.ColTextMute, "/myquests is disabled on this server.");
             return;
         }
+        var cs = _ctx.State.Character;
 
         if (ImGui.SmallButton("Refresh##quests")) _ctx.Post(() => _ctx.Chat("[ILT Hub] " + RefreshQuests()));
         ImGui.SameLine();
         if (ImGui.SmallButton("Reload quests.xml")) _ctx.Post(LoadFriendlyNames);
         ImGui.SameLine();
+        if (!poppedOut && ImGui.SmallButton("Pop out##quests")) cs.QuestTrackerPoppedOut = true;
+        if (!poppedOut && ImGui.IsItemHovered()) ImGui.SetTooltip("Undock the quest tracker into its own window.");
+        if (!poppedOut) ImGui.SameLine();
         ImGui.TextDisabled(t.IsRefreshing ? "refreshing..." : t.LastStatus
             + (t.LastRefreshUtc == DateTime.MinValue ? "" : " @ " + t.LastRefreshUtc.ToLocalTime().ToString("t")));
 
-        string filter = _ctx.State.Character.QuestFilter;
+        string filter = cs.QuestFilter;
         ImGui.SetNextItemWidth(220);
         if (ImGui.InputTextWithHint("##qfilter", "filter by name or key", ref filter, 64u))
-            _ctx.State.Character.QuestFilter = filter;
+            cs.QuestFilter = filter;
         ImGui.SameLine();
         ImGui.RadioButton("Timed", ref _questView, 0); ImGui.SameLine();
         ImGui.RadioButton("Kill tasks", ref _questView, 1); ImGui.SameLine();
         ImGui.RadioButton("Once", ref _questView, 2); ImGui.SameLine();
         ImGui.RadioButton("All", ref _questView, 3);
 
+        bool favOnly = cs.QuestFavoritesOnly;
+        if (ImGui.Checkbox("Favorites only", ref favOnly)) cs.QuestFavoritesOnly = favOnly;
+        ImGui.SameLine();
+        bool favHud = cs.ShowQuestFavoritesHud;
+        if (ImGui.Checkbox("Show floating favorites HUD", ref favHud)) cs.ShowQuestFavoritesHud = favHud;
+        ImGui.SameLine();
+        ImGui.TextDisabled("(click * to star a quest)");
+
+        var favorites = FavoriteSet();
         var rows = t.Snapshot()
-            .Where(r => _questView == 3 || (int)Classify(r) == ViewToKind(_questView))
+            .Where(r => favOnly ? favorites.Contains(r.Key) : _questView == 3 || (int)Classify(r) == ViewToKind(_questView))
             .Where(r => filter.Length == 0 || r.Key.Contains(filter, StringComparison.OrdinalIgnoreCase)
                         || FriendlyName(r).Contains(filter, StringComparison.OrdinalIgnoreCase))
             .OrderBy(r => r.TimeUntilReady())
             .ThenBy(r => FriendlyName(r), StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        if (ImGui.BeginTable("##iltquests", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.Resizable,
-                new Vector2(0, 260)))
+        if (ImGui.BeginTable("##iltquests", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.Resizable,
+                new Vector2(0, poppedOut ? -1 : 260)))
         {
             ImGui.TableSetupScrollFreeze(0, 1);
+            ImGui.TableSetupColumn("*", ImGuiTableColumnFlags.WidthFixed, 18);
             ImGui.TableSetupColumn("Quest");
             ImGui.TableSetupColumn("Solves", ImGuiTableColumnFlags.WidthFixed, 70);
             ImGui.TableSetupColumn("Ready", ImGuiTableColumnFlags.WidthFixed, 110);
@@ -285,6 +303,16 @@ internal sealed class IltQuests : IIltFeature
             foreach (var r in rows)
             {
                 ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                bool starred = favorites.Contains(r.Key);
+                ImGui.PushStyleColor(ImGuiCol.Text, starred ? FavStarOn : FavStarOff);
+                if (ImGui.Selectable($"*##fav{r.Key}", false))
+                {
+                    string key = r.Key;
+                    _ctx.Post(() => ToggleFavorite(key));
+                }
+                ImGui.PopStyleColor();
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip(starred ? "Remove from favorites" : "Add to favorites");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(FriendlyName(r));
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.MaxSolves > 0 ? $"{r.Solves}/{r.MaxSolves}" : r.Solves.ToString());
                 ImGui.TableNextColumn();
@@ -299,6 +327,96 @@ internal sealed class IltQuests : IIltFeature
     }
 
     private static int ViewToKind(int view) => view switch { 0 => (int)QuestKind.Timed, 1 => (int)QuestKind.KillTask, _ => (int)QuestKind.Once };
+
+    // ── Favorites / floating windows ────────────────────────────────────────
+
+    private static readonly Vector4 FavStarOn = new(1.00f, 0.82f, 0.25f, 1f);
+    private static readonly Vector4 FavStarOff = new(0.45f, 0.48f, 0.52f, 1f);
+    private const string FavHudPopup = "##questfavhudopts";
+
+    /// <summary>Starred keys as a set (render thread; the list itself is only edited on the pump thread).</summary>
+    private HashSet<string> FavoriteSet()
+        => new(_ctx.State.Character.QuestFavorites.ToArray(), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Stars / unstars a quest flag (pump thread).</summary>
+    private void ToggleFavorite(string key)
+    {
+        var list = _ctx.State.Character.QuestFavorites;
+        if (list.RemoveAll(k => k.Equals(key, StringComparison.OrdinalIgnoreCase)) == 0)
+            list.Add(key.ToLowerInvariant());
+    }
+
+    /// <summary>
+    /// Windows that live outside the Hub window: the undocked "Quests" tracker and the
+    /// floating favorites HUD. Called every frame whether or not the Hub window is open.
+    /// </summary>
+    public void RenderFloatingWindows()
+    {
+        var cs = _ctx.State.Character;
+        if (cs.QuestTrackerPoppedOut) RenderPoppedOutTracker(cs);
+        if (cs.ShowQuestFavoritesHud) RenderFavoritesHud(cs);
+    }
+
+    private void RenderPoppedOutTracker(IltCharacterState cs)
+    {
+        ImGui.SetNextWindowSize(new Vector2(700, 520), ImGuiCond.FirstUseEver);
+        bool open = true;
+        if (ImGui.Begin("Quests##iltquestswin", ref open)) RenderQuestTracker(poppedOut: true);
+        ImGui.End();
+        // Closing the window docks the tracker back into the Hub's Character tab.
+        if (!open) cs.QuestTrackerPoppedOut = false;
+    }
+
+    /// <summary>Compact always-on list of starred quests and when each is ready.</summary>
+    private void RenderFavoritesHud(IltCharacterState cs)
+    {
+        var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoScrollbar
+                    | ImGuiWindowFlags.NoFocusOnAppearing | ImGuiWindowFlags.NoNav;
+        if (cs.QuestFavoritesHudLocked) flags |= ImGuiWindowFlags.NoMove;
+        ImGui.SetNextWindowPos(new Vector2(260, 120), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowBgAlpha(0.55f);
+        if (!ImGui.Begin("Quest favorites##iltquestfavhud", flags)) { ImGui.End(); return; }
+
+        ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Quest favorites");
+        var t = _tracker();
+        var favorites = FavoriteSet();
+        if (t == null || favorites.Count == 0)
+        {
+            ImGui.TextDisabled(t == null ? "Quest tracker not ready." : "No favorites yet - star quests in the tracker.");
+        }
+        else
+        {
+            var rows = t.Snapshot().Where(r => favorites.Contains(r.Key))
+                        .OrderBy(r => r.TimeUntilReady()).ThenBy(r => FriendlyName(r), StringComparer.OrdinalIgnoreCase).ToArray();
+            if (rows.Length == 0) ImGui.TextDisabled("Starred quests not in /myquests yet.");
+            if (ImGui.BeginTable("##questfavrows", 2, ImGuiTableFlags.SizingFixedFit))
+            {
+                foreach (var r in rows)
+                {
+                    ImGui.TableNextRow();
+                    ImGui.TableNextColumn(); ImGui.TextUnformatted(FriendlyName(r));
+                    ImGui.TableNextColumn();
+                    var left = r.TimeUntilReady();
+                    if (Classify(r) == QuestKind.Once) ImGui.TextDisabled("done");
+                    else if (left <= TimeSpan.Zero) ImGui.TextColored(LegacyDashboardRenderer.ColGreen, "ready");
+                    else ImGui.TextUnformatted(IltParse.Duration(left));
+                }
+                ImGui.EndTable();
+            }
+        }
+
+        if (ImGui.IsWindowHovered() && ImGui.IsMouseReleased(ImGuiMouseButton.Right)) ImGui.OpenPopup(FavHudPopup);
+        if (ImGui.BeginPopup(FavHudPopup))
+        {
+            bool locked = cs.QuestFavoritesHudLocked;
+            if (ImGui.Checkbox("Lock position", ref locked)) cs.QuestFavoritesHudLocked = locked;
+            if (ImGui.MenuItem("Open quest tracker")) cs.QuestTrackerPoppedOut = true;
+            if (ImGui.MenuItem("Refresh /myquests")) _ctx.Post(() => _ctx.Chat("[ILT Hub] " + RefreshQuests()));
+            if (ImGui.MenuItem("Hide favorites HUD")) cs.ShowQuestFavoritesHud = false;
+            ImGui.EndPopup();
+        }
+        ImGui.End();
+    }
 
     public void RenderQb()
     {
