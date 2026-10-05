@@ -7,6 +7,7 @@ using System.Text;
 using DotRecast.Core.Numerics;
 using DotRecast.Detour;
 using DotRecast.Detour.Io;
+using RynthCore.Install;
 using RynthCore.PluginCore;
 using RynthNav.Routing;
 
@@ -25,9 +26,10 @@ namespace RynthCore.Plugin.RynthNav;
 public sealed class RynthNavPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthNav");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.4");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.5");
 
-    private const string NavDataDir = @"C:\Games\RynthCore\NavData";
+    // Baked tiles + portals.tsv live under the user-chosen RynthCore folder (RynthNav.Baker's default --out).
+    private static readonly string NavDataDir = Path.Combine(RynthInstallPaths.CoreDir, "NavData");
     private const int VertsPerPoly = 6;
     private const int WindowRadius = 2;        // load a 5x5 window around the player
     private const int KeepRadius = 4;          // evict tiles beyond a 9x9 window
@@ -106,7 +108,7 @@ public sealed class RynthNavPlugin : RynthPluginBase
     public override int Initialize()
     {
         _status = "initialized";
-        Host.Log($"[RynthNav] Initialized v0.5.4 (tiled streaming + long-range goto + portal routing). Panel: RynthNav. Tiles: {NavDataDir}");
+        Host.Log($"[RynthNav] Initialized v0.5.5 (tiled streaming + long-range goto + portal routing). Panel: RynthNav. Tiles: {NavDataDir}");
         return 0;
     }
 

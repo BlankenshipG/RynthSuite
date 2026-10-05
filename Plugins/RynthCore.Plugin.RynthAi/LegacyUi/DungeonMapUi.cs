@@ -152,6 +152,11 @@ internal sealed class DungeonMapUi
             DashWindows.ShowDungeonMap = true;
         }
 
+        // The title-bar X clears _open (and ShowDungeonMap below). When something turns
+        // ShowDungeonMap back on (dashboard button, "/ra map", Avalonia Map button), reopen
+        // the window — otherwise the stale _open=false closes it again on the same frame.
+        if (DashWindows.ShowDungeonMap) _open = true;
+
         // Snapshot map-specific settings so we can detect changes and save immediately.
         bool  snapDoors     = _settings.MapShowDoors;
         bool  snapCreatures = _settings.MapShowCreatures;

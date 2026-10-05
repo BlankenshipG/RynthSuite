@@ -9,6 +9,8 @@ using ImGuiNET;
 using RynthCore.PluginSdk;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.Meta;
+using RynthCore.Plugin.RynthAi.ProfileImport;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -41,7 +43,11 @@ internal sealed class LegacyDashboardRenderer
     // plugin-tick thread (DrainMetaCommands) so mutation is serialised with
     // MetaManager.Think instead of racing it.
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _metaCmdQueue = new();
+
+    /// <summary>Invoked after VirindiTank file import so the plugin can drop cached loot profiles (same effect as re-selecting loot).</summary>
+    public Action? AfterVirindiTankImport { get; set; }
     private readonly LegacyAdvancedSettingsUi _advancedSettingsUi;
+    private readonly LegacyItemInfoUi _itemInfoUi;
     private readonly LegacyNavigationUi _navigationUi;
     private readonly LegacyLuaUi _luaUi;
     private readonly LegacyWeaponsUi _weaponsUi;
@@ -63,11 +69,11 @@ internal sealed class LegacyDashboardRenderer
     // escaped the snapshot poll's reverse-P/Invoke boundary it fail-fasted the
     // NativeAOT runtime. Copy-under-lock on read; lock the Clear+AddRange swap.
     private readonly object _profileListsLock = new();
-    private readonly string _navFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
-    private readonly string _lootFolder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
-    private readonly string _metaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
-    private readonly string _settingsRoot = @"C:\Games\RynthSuite\RynthAi\SettingsProfiles\ACEmulator";
-    private readonly string _monstersFolder = @"C:\Games\RynthSuite\RynthAi\MonsterProfiles";
+    private readonly string _navFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"NavProfiles");
+    private readonly string _lootFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"LootProfiles");
+    private readonly string _metaFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
+    private readonly string _settingsRoot = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"SettingsProfiles\ACEmulator");
+    private readonly string _monstersFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MonsterProfiles");
 
     private int _selectedNavIdx;
     private bool _isMinimized;
@@ -83,6 +89,9 @@ internal sealed class LegacyDashboardRenderer
 
     // ── Per-character settings persistence ───────────────────────────────────
     private string _charFolder = string.Empty;
+    private string _profileFolder = string.Empty;
+    private string _profileFolderInput = string.Empty;
+    private bool _showProfileFolderSelector;
     private string _settingsFilePath = string.Empty;
     private string _lastSavedJson = string.Empty;
     private int _saveCheckCounter;
@@ -145,100 +154,20 @@ internal sealed class LegacyDashboardRenderer
     private volatile InventoryContainerSnapshot[] _invContainers = System.Array.Empty<InventoryContainerSnapshot>();
     private int _inventoryVersion;   // Interlocked: bumped on write, read in BuildInventoryJson
 
-    // ── Monster editor (external process) ────────────────────────────────────
-    // Deep-audit finding #10 (2026-06-18): System.Diagnostics.Process is the
-    // documented H6 hazard — HasExited/CloseMainWindow/Process.Start's
-    // handle-touching accessors silently AV this host under NativeAOT in
-    // injected x86 acclient.exe (the engine already abandoned this API for
-    // OpenProcess/GetExitCodeProcess in PluginLoader.IsPidAliveWin32 for the
-    // identical reason). Runs synchronously on the ImGui/game thread from the
-    // "External Editor" button. Replaced with ShellExecuteExW (retaining the
-    // process handle via SEE_MASK_NOCLOSEPROCESS) + Win32 liveness/close.
+    // ── External tools (Loot Editor, Monster Editor) ───────────────────────────
+    // Launched from the Monsters window ("External Editor"), the Items window and the Looting settings page.
+    // ExternalTool wraps the AOT-safe ShellExecuteExW / WaitForSingleObject / WM_CLOSE handling.
     private FileSystemWatcher? _monsterWatcher;
     private volatile bool _monsterFileChanged;
-    private IntPtr _monsterEditorProcessHandle = IntPtr.Zero;
-    private int _monsterEditorPid;
+    private readonly ExternalTool _monsterEditor = new("Monster Editor");
+    private readonly ExternalTool _lootEditor = new("Loot Editor");
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct SHELLEXECUTEINFOW
+    /// <summary>Releases the tracked editor process handles (the editors keep running). Call on plugin
+    /// Shutdown so the handles aren't leaked if an editor is still open when RynthAi unloads.</summary>
+    public void ReleaseExternalToolHandles()
     {
-        public int cbSize;
-        public uint fMask;
-        public IntPtr hwnd;
-        public string? lpVerb;
-        public string? lpFile;
-        public string? lpParameters;
-        public string? lpDirectory;
-        public int nShow;
-        public IntPtr hInstApp;
-        public IntPtr lpIDList;
-        public string? lpClass;
-        public IntPtr hkeyClass;
-        public uint dwHotKey;
-        public IntPtr hIconOrMonitor;
-        public IntPtr hProcess;
-    }
-
-    private const uint SeeMaskNoCloseProcess = 0x00000040;
-    private const int SwShowNormal = 1;
-    private const uint WaitTimeout = 0x00000102;
-    private const uint WmClose = 0x0010;
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool ShellExecuteExW(ref SHELLEXECUTEINFOW lpExecInfo);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CloseHandle(IntPtr hObject);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
-
-    [DllImport("user32.dll")]
-    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-    [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    /// <summary>Finds the first visible top-level window owned by the given PID (mirrors what
-    /// Process.CloseMainWindow does internally) so WM_CLOSE can be posted without touching
-    /// System.Diagnostics.Process.</summary>
-    private static IntPtr FindMainWindowForPid(int pid)
-    {
-        IntPtr found = IntPtr.Zero;
-        EnumWindows((hWnd, _) =>
-        {
-            GetWindowThreadProcessId(hWnd, out uint wndPid);
-            if (wndPid == (uint)pid && IsWindowVisible(hWnd))
-            {
-                found = hWnd;
-                return false; // stop enumerating
-            }
-            return true;
-        }, IntPtr.Zero);
-        return found;
-    }
-
-    /// <summary>Releases the tracked Monster Editor process handle, if any. Call on plugin
-    /// Shutdown so the handle isn't leaked if the editor is still open when RynthAi unloads.</summary>
-    public void ReleaseMonsterEditorHandle()
-    {
-        if (_monsterEditorProcessHandle != IntPtr.Zero)
-        {
-            CloseHandle(_monsterEditorProcessHandle);
-            _monsterEditorProcessHandle = IntPtr.Zero;
-            _monsterEditorPid = 0;
-        }
+        _monsterEditor.Release();
+        _lootEditor.Release();
     }
 
     public LegacyDashboardRenderer(RynthCoreHost host)
@@ -257,13 +186,26 @@ internal sealed class LegacyDashboardRenderer
             getCurrentTarget: GetCurrentTargetForMonsterAdd);
         _dungeonMapUi = new DungeonMapUi(host, _settings);
         _dungeonMapUi.OnSettingChanged = SaveSettings;
+        _navigationUi.NavFolder = _navFolder;
+        _navigationUi.OnSettingsChanged = SaveSettings;
+        _navigationUi.OnNavFilesChanged = RefreshNavFiles;
+        _navigationUi.FindNearestWaypoint = () => FindNearestWaypoint(_settings.CurrentRoute);
         _rynthRadarUi = new RynthRadarUi(host, _settings);
         _rynthRadarUi.OnSettingChanged = SaveSettings;
         _rynthRadarUi.SetMapData(_dungeonMapUi);
         _rynthChatUi = new RynthChatUi(host, _settings);
         _rynthChatUi.OnSettingChanged = SaveSettings;
+        // "Tools" buttons on the Items window and the Looting settings page.
+        _weaponsUi.SetToolLaunchers(OpenLootEditor, OpenMonsterEditor);
+        _weaponsUi.OnMonstersChanged = SaveMonstersFile;
+        _advancedSettingsUi.SetToolLaunchers(OpenLootEditor, OpenMonsterEditor);
+        _itemInfoUi = new LegacyItemInfoUi(_settings);
         RefreshAllLists();
     }
+
+    /// <summary>Wires the Item Info window's preview / print / chat-test buttons (RynthAiPlugin owns the host reads).</summary>
+    public void SetItemInfoHooks(Func<string?> describeSelected, Action printSelected, Action<int> testChatType) =>
+        _itemInfoUi.SetHooks(describeSelected, printSelected, testChatType);
 
     public void OnLoginComplete()
     {
@@ -277,7 +219,11 @@ internal sealed class LegacyDashboardRenderer
     /// </summary>
     public string CharFolder => _charFolder;
 
-    public void SetWorldFilter(WorldObjectCache cache) => _weaponsUi.SetWorldFilter(cache);
+    public void SetWorldFilter(WorldObjectCache cache)
+    {
+        _weaponsUi.SetWorldFilter(cache);
+        _monstersUi.SetWorldFilter(cache);
+    }
 
     public void SetMissileCraftingManager(MissileCraftingManager mgr) => _advancedSettingsUi.SetMissileCraftingManager(mgr);
     public void SetAutoVendorStatusProvider(Func<string> status) => _advancedSettingsUi.SetAutoVendorStatusProvider(status);
@@ -317,6 +263,8 @@ internal sealed class LegacyDashboardRenderer
 
         string safeChar = SanitizeFileName(charName);
         _charFolder = Path.Combine(_settingsRoot, safeChar);
+        _profileFolder = _charFolder;
+        _profileFolderInput = _profileFolder;
 
         // Migrate legacy settings.json → Default.json if needed
         string legacyPath = Path.Combine(_charFolder, "settings.json");
@@ -425,11 +373,11 @@ internal sealed class LegacyDashboardRenderer
 
     public string SaveAsProfile(string name)
     {
-        if (string.IsNullOrEmpty(_charFolder)) return "Not logged in.";
+        if (string.IsNullOrEmpty(_profileFolder)) return "Not logged in.";
         try
         {
             CaptureTransientUiState();
-            Directory.CreateDirectory(_charFolder);
+            Directory.CreateDirectory(_profileFolder);
             string json = JsonSerializer.Serialize(_settings, RynthAiJsonContext.Default.LegacyUiSettings);
             string path = GetProfileFilePath(name);
             File.WriteAllText(path, json);
@@ -445,7 +393,7 @@ internal sealed class LegacyDashboardRenderer
 
     public string LoadProfile(string name)
     {
-        if (string.IsNullOrEmpty(_charFolder)) return "Not logged in.";
+        if (string.IsNullOrEmpty(_profileFolder)) return "Not logged in.";
         string path = GetProfileFilePath(name);
         if (!File.Exists(path))
             return SaveAsProfile(name);
@@ -624,8 +572,9 @@ internal sealed class LegacyDashboardRenderer
             var payload = new MonstersBridgePayload
             {
                 Rules = _settings.MonsterRules ?? new List<MonsterRule>(),
+                // Shields are tagged so the engine-side pickers can tell them from weapons.
                 Items = (_settings.ItemRules ?? new List<ItemRule>())
-                    .Select(r => new MonsterBridgeItem { Id = r.Id, Name = r.Name }).ToList(),
+                    .Select(r => new MonsterBridgeItem { Id = r.Id, Name = r.IsShield() ? r.Name + " [Shield]" : r.Name }).ToList(),
                 CurrentTargetName = _currentTargetId != 0 ? (_targetLabel ?? string.Empty) : string.Empty,
             };
 
@@ -672,7 +621,10 @@ internal sealed class LegacyDashboardRenderer
             {
                 if (!first) sb.Append(',');
                 first = false;
-                sb.Append("{\"id\":").Append(it.Id).Append(",\"name\":").Append(JsonString(it.Name)).Append('}');
+                // One list feeds both Damage-panel pickers: tag shields (off-hand only; combat
+                // ignores a shield chosen as the weapon).
+                string label = it.IsShield() ? it.Name + " [Shield]" : it.Name;
+                sb.Append("{\"id\":").Append(it.Id).Append(",\"name\":").Append(JsonString(label)).Append('}');
             }
             sb.Append(']');
             return sb.ToString();
@@ -867,6 +819,7 @@ internal sealed class LegacyDashboardRenderer
                 EnableLooting              = s.EnableLooting,
                 BoostLootPriority          = s.BoostLootPriority,
                 LootOnlyRareCorpses        = s.LootOnlyRareCorpses,
+                EnableGroundLoot           = s.EnableGroundLoot,
                 LootJumpEnabled            = s.LootJumpEnabled,
                 LootJumpHeight             = s.LootJumpHeight,
                 LootOwnership              = s.LootOwnership,
@@ -1045,6 +998,7 @@ internal sealed class LegacyDashboardRenderer
             s.EnableLooting              = p.EnableLooting;
             s.BoostLootPriority          = p.BoostLootPriority;
             s.LootOnlyRareCorpses        = p.LootOnlyRareCorpses;
+            s.EnableGroundLoot           = p.EnableGroundLoot;
             s.LootJumpEnabled            = p.LootJumpEnabled;
             s.LootJumpHeight             = p.LootJumpHeight;
             s.LootOwnership              = p.LootOwnership;
@@ -1095,6 +1049,7 @@ internal sealed class LegacyDashboardRenderer
                 ManaTapMinMana    = _settings.ManaTapMinMana,
                 ManaStoneKeepCount = _settings.ManaStoneKeepCount,
                 CurrentTargetName = _currentTargetId != 0 ? (_targetLabel ?? string.Empty) : string.Empty,
+                AutoEquipShield   = _settings.AutoEquipShield,
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.ItemsBridgePayload);
         }
@@ -1111,17 +1066,91 @@ internal sealed class LegacyDashboardRenderer
         {
             var p = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.ItemsBridgePayload);
             if (p == null) return;
+            // The engine Items panel can't edit Action or KeepBuffed: keep both from the
+            // current list for existing entries (Weapon vs off-hand Shield is decided
+            // only by AddSelectedWeapon / AddSelectedShield).
+            var previous = new Dictionary<int, ItemRule>();
+            foreach (var r in _settings.ItemRules ?? new List<ItemRule>())
+                previous.TryAdd(r.Id, r); // tolerate duplicate ids in old settings files
+            var keptIds = new HashSet<int>();
+            foreach (var w in p.Weapons)
+            {
+                keptIds.Add(w.Id);
+                if (previous.TryGetValue(w.Id, out var old))
+                {
+                    w.Action     = old.Action;
+                    w.KeepBuffed = old.KeepBuffed;
+                }
+                else if (!w.IsShield())
+                {
+                    w.Action = ItemRule.WeaponAction; // older panels send no Action ("Loot")
+                }
+            }
+
+            // A shield deleted in the engine panel must not stay referenced as a
+            // per-monster off-hand (same cleanup the ImGui Shields "Del" does).
+            bool monstersChanged = false;
+            foreach (var removed in previous.Values)
+            {
+                if (!removed.IsShield() || keptIds.Contains(removed.Id)) continue;
+                foreach (var mr in _settings.MonsterRules)
+                    if (mr.OffhandId == removed.Id) { mr.OffhandId = 0; monstersChanged = true; }
+            }
+
             _settings.ItemRules          = p.Weapons;
             _settings.ConsumableRules    = p.Consumables;
             _settings.EnableManaTapping  = p.EnableManaTapping;
             _settings.ManaTapMinMana     = p.ManaTapMinMana;
             _settings.ManaStoneKeepCount = p.ManaStoneKeepCount;
+            if (p.AutoEquipShield is bool autoShield) _settings.AutoEquipShield = autoShield;
             SaveSettings();
+            if (monstersChanged) SaveMonstersFile();
         }
         catch { }
     }
 
     public void AddSelectedWeapon()     { _weaponsUi.AddSelectedWeapon();     SaveSettings(); }
+    /// <summary>True when the dungeon map is waiting for the player to go indoors (outdoors/portal space).</summary>
+    public bool IsDungeonMapAutoHidden => _dungeonMapUi.IsAutoHidden;
+
+    /// <summary>
+    /// Shows, hides or toggles the dungeon map ("/ra map", Avalonia Map button) and persists it.
+    /// <paramref name="mode"/>: show|on|1|true, hide|off|0|false, anything else (incl. empty) toggles.
+    /// Returns the new visibility.
+    /// </summary>
+    public bool SetDungeonMapVisible(string mode)
+    {
+        DashWindows.ShowDungeonMap = ResolveVisibility(mode, DashWindows.ShowDungeonMap);
+        SaveSettings();
+        return DashWindows.ShowDungeonMap;
+    }
+
+    /// <summary>
+    /// Shows, hides or toggles the Lua Scripts editor ("/ra lua", Avalonia Lua button) and persists it.
+    /// Same <paramref name="mode"/> values as <see cref="SetDungeonMapVisible"/>. Returns the new visibility.
+    /// </summary>
+    public bool SetLuaWindowVisible(string mode)
+    {
+        bool show = ResolveVisibility(mode, DashWindows.ShowLua);
+        if (show && !DashWindows.ShowLua)
+            _luaUi.RefreshLuaFiles(); // pick up scripts added on disk since the last open
+        DashWindows.ShowLua = show;
+        SaveSettings();
+        return show;
+    }
+
+    private static bool ResolveVisibility(string mode, bool current)
+    {
+        switch ((mode ?? string.Empty).Trim().ToLowerInvariant())
+        {
+            case "show": case "on": case "1": case "true":   return true;
+            case "hide": case "off": case "0": case "false": return false;
+            default:                                         return !current;
+        }
+    }
+
+    /// <summary>Adds the inventory-selected shield as an off-hand entry (engine Items panel).</summary>
+    public void AddSelectedShield()     { _weaponsUi.AddSelectedShield();     SaveSettings(); }
     public void AddSelectedConsumable() { _weaponsUi.AddSelectedConsumable(); SaveSettings(); }
 
     private (uint Id, string Name)? GetCurrentTargetForMonsterAdd()
@@ -1134,63 +1163,85 @@ internal sealed class LegacyDashboardRenderer
         return (_currentTargetId, name);
     }
 
-    /// <summary>Launches the standalone Monster Rules editor for the current char folder.</summary>
+    /// <summary>Monsters window "External Editor" button: toggles the Monster Editor (opens it, or closes it
+    /// when it is already open) for the current character folder.</summary>
     private void LaunchMonsterEditor()
+    {
+        if (_monsterEditor.IsRunning)
+        {
+            _monsterEditor.Close();
+            return;
+        }
+        OpenMonsterEditor();
+    }
+
+    /// <summary>Items / Looting "Monster Editor" button: opens the Monster Editor for the current character,
+    /// or brings it to the front if it is already open.</summary>
+    internal void OpenMonsterEditor()
     {
         if (string.IsNullOrEmpty(_charFolder))
         {
-            _host.WriteToChat("[RynthAi] No character loaded — cannot open Monster Editor.", 4);
+            _host.WriteToChat("[RynthAi] No character loaded - cannot open Monster Editor.", 4);
             return;
         }
-
-        // Toggle: if the editor is already running, close it.
-        if (_monsterEditorProcessHandle != IntPtr.Zero)
+        // Arg1 = per-character settings folder (weapon ids). Arg2 = MonsterProfiles\<char>.json, the same
+        // file the plugin reads, so editor saves land where RynthAi looks.
+        string monstersPath = MonstersFilePath;
+        string args = $"\"{_charFolder}\"";
+        if (!string.IsNullOrEmpty(monstersPath))
         {
-            uint wait = WaitForSingleObject(_monsterEditorProcessHandle, 0);
-            if (wait == WaitTimeout) // still running
-            {
-                IntPtr hwnd = FindMainWindowForPid(_monsterEditorPid);
-                if (hwnd != IntPtr.Zero)
-                    PostMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
-                else
-                    TerminateProcess(_monsterEditorProcessHandle, 0); // no window found — fall back to a hard kill
-            }
-            ReleaseMonsterEditorHandle();
-            return;
+            try { Directory.CreateDirectory(Path.GetDirectoryName(monstersPath)!); }
+            catch { /* editor can still open without the folder */ }
+            args += $" \"{monstersPath}\"";
         }
 
-        // Editor lives at: <RynthAi root>\MonsterEditor\RynthCore.MonsterEditor.exe
-        string rynthAiRoot = Path.GetDirectoryName(Path.GetDirectoryName(_settingsRoot)!)!;
-        string editorExe   = Path.Combine(rynthAiRoot, "MonsterEditor", "RynthCore.MonsterEditor.exe");
-
-        if (!File.Exists(editorExe))
-        {
-            _host.WriteToChat($"[RynthAi] Monster Editor not found: {editorExe}", 4);
-            return;
-        }
-
-        var info = new SHELLEXECUTEINFOW
-        {
-            cbSize       = Marshal.SizeOf<SHELLEXECUTEINFOW>(),
-            fMask        = SeeMaskNoCloseProcess,   // retain hProcess instead of closing it internally
-            lpVerb       = "open",
-            lpFile       = editorExe,
-            lpParameters = $"\"{_charFolder}\"",
-            nShow        = SwShowNormal,
-        };
-
-        if (!ShellExecuteExW(ref info) || info.hProcess == IntPtr.Zero)
-        {
-            _host.WriteToChat("[RynthAi] Failed to launch Monster Editor.", 4);
-            return;
-        }
-
-        _monsterEditorProcessHandle = info.hProcess;
-        _monsterEditorPid = (int)GetProcessId(info.hProcess); // needed to find the main window for WM_CLOSE later
+        string exe = ResolveToolExe(ExternalTool.MonsterEditorExe, "MonsterEditor", "RynthCore.MonsterEditor.exe");
+        string? error = _monsterEditor.OpenOrFocus(exe, args);
+        if (error != null) _host.WriteToChat("[RynthAi] " + error, 4);
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint GetProcessId(IntPtr hProcess);
+    /// <summary>Items / Looting "Loot Editor" button: opens the Loot Editor on the loot profiles folder (plus the
+    /// active .json profile so Save targets the file RynthAi loads), or brings it to the front if already open.</summary>
+    internal void OpenLootEditor()
+    {
+        string profile = _settings.CurrentLootPath?.Trim().Trim('"') ?? string.Empty;
+
+        // Arg1 = profiles folder (the profile's own folder when one is selected). Arg2 = active native .json.
+        string folder = !string.IsNullOrEmpty(profile) ? (Path.GetDirectoryName(profile) ?? _lootFolder) : _lootFolder;
+        try { Directory.CreateDirectory(folder); }
+        catch { /* best-effort */ }
+        string args = $"\"{folder}\"";
+        if (profile.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            args += $" \"{profile}\"";
+
+        string exe = ResolveToolExe(ExternalTool.LootEditorExe, "LootEditor", "RynthCore.LootEditor.exe");
+        string? error = _lootEditor.OpenOrFocus(exe, args);
+        if (error != null) _host.WriteToChat("[RynthAi] " + error, 4);
+    }
+
+    /// <summary>Looting tab "Loot Editor" toggle: closes the Loot Editor when it is open, otherwise opens it.</summary>
+    private void LaunchLootEditor()
+    {
+        if (_lootEditor.IsRunning)
+        {
+            _lootEditor.Close();
+            return;
+        }
+        OpenLootEditor();
+    }
+
+    /// <summary>
+    /// Returns the installer location of a suite tool when it exists, otherwise falls back to the
+    /// legacy search (SuiteToolPaths: RynthAi\Tools, side-by-side bundle layouts). When neither exists
+    /// the installer path is returned so ExternalTool reports the expected location.
+    /// </summary>
+    private string ResolveToolExe(string installedExe, string toolFolder, string exeName)
+    {
+        if (File.Exists(installedExe))
+            return installedExe;
+        string rynthAiRoot = SuiteToolPaths.GetRynthAiRootFromSettingsRoot(_settingsRoot);
+        return SuiteToolPaths.FindPublishedTool(rynthAiRoot, toolFolder, exeName) ?? installedExe;
+    }
 
     private void CaptureTransientUiState()
     {
@@ -1223,14 +1274,14 @@ internal sealed class LegacyDashboardRenderer
 
     private string GetProfileFilePath(string profileName)
     {
-        if (string.IsNullOrEmpty(_charFolder)) return string.Empty;
-        return Path.Combine(_charFolder, profileName + ".json");
+        if (string.IsNullOrEmpty(_profileFolder)) return string.Empty;
+        return Path.Combine(_profileFolder, profileName + ".json");
     }
 
     private string GetActiveProfileMarkerPath()
     {
-        if (string.IsNullOrEmpty(_charFolder)) return string.Empty;
-        return Path.Combine(_charFolder, "active_profile.txt");
+        if (string.IsNullOrEmpty(_profileFolder)) return string.Empty;
+        return Path.Combine(_profileFolder, "active_profile.txt");
     }
 
     private string ReadActiveProfile()
@@ -1254,7 +1305,7 @@ internal sealed class LegacyDashboardRenderer
         if (string.IsNullOrEmpty(markerPath)) return;
         try
         {
-            Directory.CreateDirectory(_charFolder);
+            Directory.CreateDirectory(_profileFolder);
             File.WriteAllText(markerPath, profileName);
         }
         catch { }
@@ -1373,6 +1424,8 @@ internal sealed class LegacyDashboardRenderer
         dst.EnableCombineSalvage     = tmp.EnableCombineSalvage;
         dst.CombineBagsDuringSalvage = tmp.CombineBagsDuringSalvage;
         dst.ShowTargetStaminaMana    = tmp.ShowTargetStaminaMana;
+        dst.ItemInfoSettings         = tmp.ItemInfoSettings ?? new RynthCore.Plugin.RynthAi.ItemInfo.MagItemInfoSettings();
+        dst.ItemInfoSettings.Sanitize();
         dst.EnableMissileCrafting    = tmp.EnableMissileCrafting;
         dst.MissileCraftAmmoThreshold= tmp.MissileCraftAmmoThreshold;
         dst.LootInterItemDelayMs     = tmp.LootInterItemDelayMs;
@@ -1415,6 +1468,8 @@ internal sealed class LegacyDashboardRenderer
         dst.NavLineThickness         = tmp.NavLineThickness;
         dst.NavHeightOffset          = tmp.NavHeightOffset;
         dst.NavSlopeSink             = tmp.NavSlopeSink;
+        dst.NavOverlay               = tmp.NavOverlay ?? new NavOverlaySettings();
+        dst.NavOverlay.Sanitize();
         dst.MaxMonRange              = tmp.MaxMonRange;
         dst.SummonPets               = tmp.SummonPets;
         dst.CustomPetRange           = tmp.CustomPetRange;
@@ -1431,6 +1486,7 @@ internal sealed class LegacyDashboardRenderer
         dst.AutoUnlockDoors          = tmp.AutoUnlockDoors;
         dst.LootOwnership            = tmp.LootOwnership;
         dst.LootOnlyRareCorpses      = tmp.LootOnlyRareCorpses;
+        dst.EnableGroundLoot         = tmp.EnableGroundLoot;
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;
@@ -1461,6 +1517,8 @@ internal sealed class LegacyDashboardRenderer
         dst.MonsterRules             = tmp.MonsterRules;
         dst.ItemRules                = tmp.ItemRules;
         dst.ConsumableRules          = tmp.ConsumableRules;
+        dst.AmmoRules                = tmp.AmmoRules;
+        dst.MissileAmmoInventoryRulesOnly = tmp.MissileAmmoInventoryRulesOnly;
         dst.BuffRules                = tmp.BuffRules;
         dst.MetaRules                = tmp.MetaRules;
         dst.LuaScript                = tmp.LuaScript;
@@ -1637,6 +1695,53 @@ internal sealed class LegacyDashboardRenderer
             CheckAndSave();
         }
 
+        int pushedColors = PushDashboardStyle();
+
+        try
+        {
+            RenderDashboard();
+            RenderProfileFolderSelectorWindow();
+
+            _metaUi.Render();
+            TickMonsterReload();
+            _monstersUi.Render();
+            _weaponsUi.Render();
+
+            // Hooked up the new Lua UI here
+            _luaUi.Render();
+
+            if (DashWindows.ShowNavigation) _navigationUi.Render();
+            if (_settings.ShowAdvancedWindow) _advancedSettingsUi.Render();
+            _itemInfoUi.Render(); // no-op unless ItemInfoSettings.ShowWindow
+        }
+        finally
+        {
+            ImGui.PopStyleColor(pushedColors);
+        }
+    }
+
+    /// <summary>
+    /// Avalonia-mode (ImGui shell off) extras: only windows with no Avalonia panel, drawn as
+    /// separate windows beside the Avalonia RynthAi panel: the Lua Scripts editor and the
+    /// Item Info window. (The ILT Hub and the dungeon map are drawn by RynthAiPlugin.OnRenderOverlay.)
+    /// </summary>
+    public void RenderOverlayWindows()
+    {
+        int pushedColors = PushDashboardStyle();
+        try
+        {
+            _luaUi.Render();      // no-op unless DashWindows.ShowLua
+            _itemInfoUi.Render(); // no-op unless ItemInfoSettings.ShowWindow
+        }
+        finally
+        {
+            ImGui.PopStyleColor(pushedColors);
+        }
+    }
+
+    /// <summary>Pushes RynthAi's window colours; returns the count for PopStyleColor.</summary>
+    internal static int PushDashboardStyle()
+    {
         // Plugin-wide style overrides: muted slate-blue accents instead of the
         // previous vivid sky-blue, which was overpowering in the macro tab.
         ImGui.PushStyleColor(ImGuiCol.FrameBg,         new Vector4(0.18f, 0.22f, 0.28f, 1.00f));
@@ -1652,30 +1757,15 @@ internal sealed class LegacyDashboardRenderer
         ImGui.PushStyleColor(ImGuiCol.TitleBg,         new Vector4(0.14f, 0.18f, 0.24f, 1.00f));
         ImGui.PushStyleColor(ImGuiCol.TitleBgActive,   new Vector4(0.22f, 0.30f, 0.40f, 1.00f));
         ImGui.PushStyleColor(ImGuiCol.TitleBgCollapsed,new Vector4(0.10f, 0.14f, 0.20f, 0.85f));
-
-        try
-        {
-            RenderDashboard();
-
-            _metaUi.Render();
-            TickMonsterReload();
-            _monstersUi.Render();
-            _weaponsUi.Render();
-
-            // Hooked up the new Lua UI here
-            _luaUi.Render();
-
-            if (DashWindows.ShowNavigation) _navigationUi.Render();
-            if (_settings.ShowAdvancedWindow) _advancedSettingsUi.Render();
-        }
-        finally
-        {
-            ImGui.PopStyleColor(11);
-        }
+        return 11;
     }
 
-    // Rendered every frame regardless of whether the main dashboard is visible.
-    public void RenderMapWindow()
+    /// <summary>
+    /// Rendered every frame regardless of whether the main dashboard is visible.
+    /// <paramref name="includeRadarAndChat"/> is false in Avalonia mode, where the Radar
+    /// panel and RynthChat already exist — drawing the ImGui copies too would duplicate them.
+    /// </summary>
+    public void RenderMapWindow(bool includeRadarAndChat = true)
     {
         ImGui.PushStyleColor(ImGuiCol.FrameBg,        new Vector4(0.15f, 0.55f, 0.95f, 1.00f));
         ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(0.22f, 0.62f, 1.00f, 1.00f));
@@ -1685,8 +1775,11 @@ internal sealed class LegacyDashboardRenderer
         {
             if (DashWindows.ShowDungeonMap || _dungeonMapUi.IsAutoHidden)
                 _dungeonMapUi.Render();
-            _rynthRadarUi.Render();
-            _rynthChatUi.Render();
+            if (includeRadarAndChat)
+            {
+                _rynthRadarUi.Render();
+                _rynthChatUi.Render();
+            }
         }
         finally
         {
@@ -1859,7 +1952,11 @@ internal sealed class LegacyDashboardRenderer
 
         ImGui.TextColored(ColTextMute, "Profile:");
         ImGui.SameLine(60);
-        ImGui.SetNextItemWidth(-1);
+        float profileRowStartX = ImGui.GetCursorPosX();
+        float profileButtonWidth = 56f;
+        float profileSpacing = 6f;
+        float profileComboWidth = Math.Max(140f, ImGui.GetContentRegionAvail().X - (profileButtonWidth + profileSpacing));
+        ImGui.SetNextItemWidth(profileComboWidth);
         if (ImGui.BeginCombo("##ProfCombo", TruncateName(_settings.SelectedProfile, 16)))
         {
             string? pendingSwitch = null;
@@ -1869,6 +1966,14 @@ internal sealed class LegacyDashboardRenderer
             ImGui.EndCombo();
             if (pendingSwitch != null) SwitchProfile(pendingSwitch);
         }
+        ImGui.SameLine(profileRowStartX + profileComboWidth + profileSpacing);
+        if (ImGui.Button("Folder##ProfileFolder", new Vector2(profileButtonWidth, 0)))
+        {
+            _profileFolderInput = string.IsNullOrWhiteSpace(_profileFolder) ? _charFolder : _profileFolder;
+            _showProfileFolderSelector = true;
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Select profile folder for loading/saving profiles.");
 
         ImGui.TextColored(ColTextMute, "Nav:");
         ImGui.SameLine(60);
@@ -1896,6 +2001,18 @@ internal sealed class LegacyDashboardRenderer
                 }
             ImGui.EndCombo();
         }
+
+        if (ImGui.Button("Import VirindiTank profiles##VtImport", new Vector2(-1, 22)))
+            ImportVirindiTankProfiles();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Copies .utl loot profiles from common VirindiTank folders into LootProfiles and activates the last copied file.\n" +
+                "Merges monsters: Rynth monsters.json, plus text .usd MyMonsters (SQLite .usd: use Monster Editor). Same merge as external Monster Editor import.");
+
+        if (ImGui.Button("Open Loot Editor##LootEd", new Vector2(-1, 22)))
+            LaunchLootEditor();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Opens RynthCore.LootEditor.exe with your LootProfiles folder (same search paths as Monster Editor).");
 
         ImGui.TextColored(ColTextMute, "Meta:");
         ImGui.SameLine(60);
@@ -2253,8 +2370,99 @@ internal sealed class LegacyDashboardRenderer
         ImGui.TableNextRow();
         ImGui.TableNextColumn(); LegacyDashboardDrawing.GridBtn("Dungeon Map", "map", ref DashWindows.ShowDungeonMap);
         ImGui.TableNextColumn();
+        // "Char" opens the ILT Hub: only on ACECustom/ILT worlds with at least one server feature on.
+        if (IltHubAvailable?.Invoke() == true)
+            LegacyDashboardDrawing.GridBtn("Char", "heart", ref DashWindows.ShowIltHub);
+        ImGui.TableNextColumn();
+        // "Hub" toggles the Mini Remote; its visibility lives in the per-character HUD state.
+        if (MiniRemoteVisible != null && SetMiniRemoteVisible != null)
+        {
+            bool shown = MiniRemoteVisible();
+            bool before = shown;
+            LegacyDashboardDrawing.GridBtn("Hub", "bag", ref shown);
+            if (shown != before) SetMiniRemoteVisible(shown);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Show/hide the Mini Remote (/ra remote). Setup: /ra huds.");
+        }
         ImGui.EndTable();
     }
+
+    /// <summary>
+    /// Profile-folder picker used by the Profile row. This controls where
+    /// load/save profile JSON files are resolved.
+    /// </summary>
+    private void RenderProfileFolderSelectorWindow()
+    {
+        if (!_showProfileFolderSelector)
+            return;
+
+        ImGui.SetNextWindowSize(new Vector2(620, 420), ImGuiCond.FirstUseEver);
+        bool open = _showProfileFolderSelector;
+        if (!ImGui.Begin("Profile Folder Selector##ProfileFolderSelector", ref open))
+        {
+            ImGui.End();
+            _showProfileFolderSelector = open;
+            return;
+        }
+
+        ImGui.TextWrapped("Choose the folder that contains profile .json files to load/save.");
+        ImGui.TextDisabled($"Character default: {_charFolder}");
+        ImGui.TextDisabled($"Active profile folder: {(_profileFolder.Length == 0 ? "(none)" : _profileFolder)}");
+        ImGui.Separator();
+
+        ImGui.Text("Folder path:");
+        ImGui.InputText("##ProfileFolderPath", ref _profileFolderInput, 1024);
+
+        if (ImGui.Button("Use This Folder##UseProfileFolder"))
+        {
+            string candidate = (_profileFolderInput ?? string.Empty).Trim().Trim('"');
+            if (Directory.Exists(candidate))
+            {
+                SetProfileFolder(candidate);
+                _showProfileFolderSelector = false;
+            }
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Use Character Default##UseCharDefault"))
+        {
+            SetProfileFolder(_charFolder);
+            _showProfileFolderSelector = false;
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel##CancelProfileFolder"))
+        {
+            _showProfileFolderSelector = false;
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Text("Known profile folders under SettingsProfiles:");
+        if (ImGui.BeginChild("##KnownProfileFolders", new Vector2(0, 220), ImGuiChildFlags.Borders))
+        {
+            if (Directory.Exists(_settingsRoot))
+            {
+                foreach (string dir in Directory.GetDirectories(_settingsRoot))
+                {
+                    string label = Path.GetFileName(dir);
+                    bool selected = string.Equals(_profileFolder, dir, StringComparison.OrdinalIgnoreCase);
+                    if (ImGui.Selectable($"{label}##{dir}", selected))
+                    {
+                        _profileFolderInput = dir;
+                    }
+                }
+            }
+        }
+        ImGui.EndChild();
+
+        ImGui.End();
+        _showProfileFolderSelector = open && _showProfileFolderSelector;
+    }
+
+    /// <summary>Set by the plugin: true when the ILT Hub should be offered in the launcher grid.</summary>
+    internal Func<bool>? IltHubAvailable { get; set; }
+
+    /// <summary>Reads / sets Mini Remote visibility for the dashboard's "Hub" button; null hides the button.</summary>
+    internal Func<bool>? MiniRemoteVisible { get; set; }
+    internal Action<bool>? SetMiniRemoteVisible { get; set; }
 
     private static void RenderPlaceholderWindow(string title, ref bool open, string message)
     {
@@ -2262,6 +2470,31 @@ internal sealed class LegacyDashboardRenderer
         if (!ImGui.Begin(title, ref open)) { ImGui.End(); return; }
         ImGui.TextWrapped(message);
         ImGui.End();
+    }
+
+    /// <summary>Pulls VirindiTank .utl loot files and optional Rynth monster JSON from standard install paths.</summary>
+    private void ImportVirindiTankProfiles()
+    {
+        try
+        {
+            var result = VirindiTankProfileImporter.Import(_lootFolder, _settings, mergeMonsterRules: true);
+            foreach (string line in result.LogLines)
+                _host.WriteToChat($"[RynthAi] {line}", 1);
+
+            _settings.EnsureDefaultRule();
+            SaveMonstersFile();
+            LoadMonstersFromFile();
+            // Activate the newest copied loot file so VT rules load for the current character (mirrors picking a profile in the combo).
+            if (result.CopiedLootDestPaths.Count > 0)
+                _settings.CurrentLootPath = result.CopiedLootDestPaths[^1];
+            SaveSettings();
+            RefreshAllLists();
+            AfterVirindiTankImport?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            _host.WriteToChat($"[RynthAi] VirindiTank import failed: {ex.Message}", 4);
+        }
     }
 
     private void RefreshAllLists()
@@ -2272,14 +2505,34 @@ internal sealed class LegacyDashboardRenderer
         RefreshMetaFiles();
     }
 
+    private void SetProfileFolder(string folderPath)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath))
+            return;
+
+        string candidate = folderPath.Trim().Trim('"');
+        if (!Directory.Exists(candidate))
+            return;
+
+        _profileFolder = candidate;
+        _profileFolderInput = candidate;
+        RefreshProfilesList();
+
+        // Keep current selection if available; otherwise fall back to Default.
+        if (!_profiles.Contains(_settings.SelectedProfile, StringComparer.OrdinalIgnoreCase))
+            _settings.SelectedProfile = "Default";
+
+        _settingsFilePath = GetProfileFilePath(_settings.SelectedProfile);
+    }
+
     private void RefreshProfilesList()
     {
         var list = new List<string> { "Default" };
         try
         {
-            if (!string.IsNullOrEmpty(_charFolder) && Directory.Exists(_charFolder))
+            if (!string.IsNullOrEmpty(_profileFolder) && Directory.Exists(_profileFolder))
             {
-                foreach (string file in Directory.GetFiles(_charFolder, "*.json"))
+                foreach (string file in Directory.GetFiles(_profileFolder, "*.json"))
                 {
                     string name = Path.GetFileNameWithoutExtension(file);
                     if (name.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
@@ -2303,6 +2556,9 @@ internal sealed class LegacyDashboardRenderer
                 _settings.SelectedProfile = _profiles[0];
         }
     }
+
+    /// <summary>Breadcrumb tracker for the Navigation window (trail export / clear, record count); null on teardown.</summary>
+    public void AttachNavBreadcrumbs(NavBreadcrumbTracker? tracker) => _navigationUi.Breadcrumbs = tracker;
 
     private void RefreshNavFiles()
     {
@@ -2391,7 +2647,7 @@ internal sealed class LegacyDashboardRenderer
         _settings.CurrentRoute = NavRouteParser.Load(filePath);
         if (_settings.CurrentRoute.LoadWarning != null)
         {
-            _host.Log(_settings.CurrentRoute.LoadWarning);
+            RynthLog.Write(LogCat.UI, _settings.CurrentRoute.LoadWarning);
             _host.WriteToChat($"[RynthAi] {_settings.CurrentRoute.LoadWarning}", 4);
         }
         // Follow and Once routes start from the top so opening Recall/Portal/Chat
@@ -2482,7 +2738,7 @@ internal sealed class LegacyDashboardRenderer
                         _host.TryGetPlayerPose(out _, out float wx, out float wy, out float wz, out _, out _, out _, out _) &&
                         NavCoordinateHelper.TryGetNavCoords(_host, out double wNS, out double wEW))
                     {
-                        InsertNavPoint(new NavPoint { NS = wNS, EW = wEW, Z = wz }, cmd.AddMode, cmd.InsertAt);
+                        InsertNavPoint(new NavPoint { NS = wNS, EW = wEW, Z = wz / NavCoordinateHelper.NavZScale }, cmd.AddMode, cmd.InsertAt);
                     }
                     break;
 
@@ -2491,7 +2747,7 @@ internal sealed class LegacyDashboardRenderer
                         _host.TryGetPlayerPose(out _, out float rx, out float ry, out float rz, out _, out _, out _, out _) &&
                         NavCoordinateHelper.TryGetNavCoords(_host, out double rNS, out double rEW))
                     {
-                        InsertNavPoint(new NavPoint { Type = NavPointType.Recall, NS = rNS, EW = rEW, Z = rz, SpellId = cmd.SpellId }, cmd.AddMode, cmd.InsertAt);
+                        InsertNavPoint(new NavPoint { Type = NavPointType.Recall, NS = rNS, EW = rEW, Z = rz / NavCoordinateHelper.NavZScale, SpellId = cmd.SpellId }, cmd.AddMode, cmd.InsertAt);
                     }
                     break;
 
@@ -2789,6 +3045,9 @@ internal sealed class LegacyDashboardRenderer
         }
     }
 
+    /// <summary>Wires the Inventory Management "Inventory HUDs..." button to the HUD setup window.</summary>
+    public void SetInventoryHudLauncher(Action open) => _advancedSettingsUi.SetInventoryHudLauncher(open);
+
     public void RequestForceRebuff() => OnForceRebuffRequested?.Invoke();
     public void RequestCancelForceRebuff() => OnCancelForceRebuffRequested?.Invoke();
     public void AdjustOpacity(float delta) => _bgOpacity = Math.Clamp(_bgOpacity + delta, 0.1f, 1f);
@@ -2857,7 +3116,7 @@ internal sealed class LegacyDashboardRenderer
 
     // ── Meta bridge ───────────────────────────────────────────────────────────
 
-    private static readonly string MetaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
+    private static readonly string MetaFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
 
     public string BuildMetaJson()
     {
@@ -2948,7 +3207,7 @@ internal sealed class LegacyDashboardRenderer
         {
             // Was a silent catch — surface it (§2.8 philosophy) but don't spam:
             // this only fires on an actual directory/IO failure, not per refresh.
-            _host.Log($"[Meta] BuildMetaFileList FAILED for '{MetaFolder}': {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Write(LogCat.UI, $"[Meta] BuildMetaFileList FAILED for '{MetaFolder}': {ex.GetType().Name}: {ex.Message}");
         }
         return result;
     }

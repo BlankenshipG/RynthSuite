@@ -39,6 +39,16 @@ public partial class MainWindow : Window
         InitializeComponent();
         DataContext = this;
 
+        // Explicit save for users who expect Ctrl+S (in addition to auto-save on edit).
+        KeyDown += (_, e) =>
+        {
+            if (e.KeyModifiers == KeyModifiers.Control && e.Key == Key.S)
+            {
+                Save();
+                e.Handled = true;
+            }
+        };
+
         Opened += MainWindow_Opened;
     }
 
@@ -50,8 +60,10 @@ public partial class MainWindow : Window
         _initialized = true;
 
         string[] args = Environment.GetCommandLineArgs();
-        if (args.Length > 1)
-            OpenCharFolder(args[1].Trim('"'));
+        if (args.Length > 2)
+            OpenCharFolder(args[1].Trim('"'), args[2].Trim('"'));
+        else if (args.Length > 1)
+            OpenCharFolder(args[1].Trim('"'), null);
         else
             await PromptOpenFileAsync();
     }
@@ -83,17 +95,168 @@ public partial class MainWindow : Window
 
         string? path = file.TryGetLocalPath();
         if (!string.IsNullOrEmpty(path))
-            OpenCharFolder(Path.GetDirectoryName(path)!);
+            OpenCharFolder(Path.GetDirectoryName(path)!, null);
     }
 
-    private void OpenCharFolder(string charFolder)
+    /// <param name="settingsCharFolder">Per-character folder under SettingsProfiles (weapon ids from profile JSON).</param>
+    /// <param name="monsterJsonPath">Full path to MonsterProfiles JSON when launched from RynthAi; null derives MonsterProfiles from the settings folder layout or falls back to monsters.json.</param>
+    private void OpenCharFolder(string settingsCharFolder, string? monsterJsonPath)
     {
-        _charFolder   = charFolder;
-        _monstersPath = Path.Combine(charFolder, "monsters.json");
-        Title = $"RynthAi — Monster Rules — {Path.GetFileName(charFolder)}";
+        _charFolder = settingsCharFolder;
+        if (!string.IsNullOrEmpty(monsterJsonPath))
+        {
+            _monstersPath = monsterJsonPath;
+        }
+        else
+        {
+            // RynthAi layout: ...\RynthAi\SettingsProfiles\ACEmulator\<Char> → MonsterProfiles\<Char>.json
+            try
+            {
+                string key = Path.GetFileName(settingsCharFolder.TrimEnd(Path.DirectorySeparatorChar));
+                string rynthAiRoot = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(settingsCharFolder)! )! )!;
+                _monstersPath = Path.Combine(rynthAiRoot, "MonsterProfiles", key + ".json");
+            }
+            catch
+            {
+                _monstersPath = Path.Combine(settingsCharFolder, "monsters.json");
+            }
+        }
+
+        Title = $"RynthAi — Monster Rules — {Path.GetFileName(settingsCharFolder)}";
 
         LoadWeaponOptions();
         LoadRules();
+    }
+
+    // Saves monsters.json / MonsterProfiles file (same as auto-save on edit).
+    private void SaveToolbar_Click(object? sender, RoutedEventArgs e) => Save();
+
+    /// <summary>Merge rules from a Virindi Tank <c>.usd</c> user settings file (see <see cref="VirindiTankUsdImport"/>).</summary>
+    private async void ImportVirindiUsd_Click(object? sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_monstersPath))
+        {
+            SetStatus("Open or create a character monster profile first.", error: true);
+            return;
+        }
+
+        var sp = StorageProvider;
+        if (sp == null) return;
+
+        var files = await sp.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Import Virindi Tank user profile (.usd)",
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("Virindi user settings") { Patterns = ["*.usd", "*.USD"] },
+                new FilePickerFileType("All") { Patterns = ["*"] }
+            ],
+        });
+        var f = files.FirstOrDefault();
+        if (f == null) { SetStatus("Import cancelled.", error: true); return; }
+        string? local = f.Path.LocalPath;
+        if (string.IsNullOrEmpty(local)) { SetStatus("No local path for file.", error: true); return; }
+
+        VirindiTankUsdImport.Result r = VirindiTankUsdImport.TryImport(local);
+        if (!r.Ok || r.Rules.Count == 0)
+        {
+            SetStatus(r.Message, error: true);
+            return;
+        }
+
+        MergeVirindiImportedRows(r.Rules, out int added, out int mergedDefault);
+        EnsureDefault();
+        Save();
+        string tail = added > 0
+            ? $" Merged: +{added} new row(s).{(mergedDefault > 0 ? " Default row combat settings were updated from VT default." : "")}"
+            : (mergedDefault > 0 ? " Default row was updated from VT; no new named rows (duplicates skipped). " : " No new rows (duplicates skipped). ");
+        SetStatus(r.Message + tail, error: false);
+    }
+
+    /// <summary>
+    /// Builds the RynthAi damage-type seed from UtilityBelt's damage insights
+    /// (see <see cref="UbMobSeedImport"/>). Uses UB's InfiniteLeaftide folder when it has
+    /// databases, otherwise asks for the UB server folder. Monster rules are not modified.
+    /// </summary>
+    private async void ImportUbInsights_Click(object? sender, RoutedEventArgs e)
+    {
+        string folder = UbMobSeedImport.DefaultServerFolder;
+        if (UbMobSeedImport.FindDatabases(folder).Count == 0)
+        {
+            var sp = StorageProvider;
+            if (sp == null) return;
+            var picked = await sp.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = "Select the UtilityBelt server folder (contains mob_damage_insights.ldb)",
+                AllowMultiple = false,
+            });
+            string? local = picked.FirstOrDefault()?.TryGetLocalPath();
+            if (string.IsNullOrEmpty(local)) { SetStatus("UB import cancelled.", error: true); return; }
+            folder = local;
+        }
+
+        SetStatus($"Reading UB damage insights from {folder} …");
+        string output = UbMobSeedImport.DefaultOutputPath;
+        UbMobSeedImport.Result r;
+        try
+        {
+            // LiteDB reads are synchronous; keep the UI responsive while snapshots are copied and parsed.
+            r = await System.Threading.Tasks.Task.Run(() => UbMobSeedImport.Run(folder, output));
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"UB import failed: {ex.Message}", error: true);
+            return;
+        }
+        SetStatus(r.Message, error: !r.Ok);
+    }
+
+    private void MergeVirindiImportedRows(IReadOnlyList<MonsterRule> src, out int added, out int mergedDefault)
+    {
+        added         = 0;
+        mergedDefault = 0;
+
+        MonsterRule? srcDefault = src.FirstOrDefault(x => x.IsDefault);
+        if (srcDefault != null && Rules.Count > 0 && Rules[0].IsDefault)
+        {
+            Rules[0].CopyCombatSettingsFrom(srcDefault);
+            mergedDefault = 1;
+        }
+
+        var nameSet = new HashSet<string>(Rules.Select(x => x.Name), StringComparer.OrdinalIgnoreCase);
+        var exprSet = new HashSet<string>(
+            Rules.Where(x => !string.IsNullOrWhiteSpace(x.MatchExpression)).Select(x => x.MatchExpression), StringComparer.Ordinal);
+        foreach (var row in src)
+        {
+            if (row.IsDefault) continue;
+            if (!string.IsNullOrEmpty(row.Name))
+            {
+                if (nameSet.Contains(row.Name)) continue;
+            }
+            else if (!string.IsNullOrEmpty(row.MatchExpression))
+            {
+                if (exprSet.Contains(row.MatchExpression)) continue;
+            }
+            else
+            {
+                continue;
+            }
+
+            var c = row.Clone();
+            if (string.IsNullOrEmpty(c.Name) && !string.IsNullOrEmpty(c.MatchExpression))
+            {
+                // Row shows blank name but expression; keep empty so RynthAi does expression-only (see CombatManager.GetRuleForTarget).
+            }
+            else
+            {
+                if (!nameSet.Add(c.Name)) continue;
+            }
+
+            if (!string.IsNullOrEmpty(c.MatchExpression)) exprSet.Add(c.MatchExpression);
+            AddRule(c);
+            added++;
+        }
     }
 
     private void LoadWeaponOptions()
@@ -163,7 +326,17 @@ public partial class MainWindow : Window
         if (existing > 0)
             Rules.Move(existing, 0);
         else
-            Rules.Insert(0, new MonsterRule { Name = "Default", Priority = 1 });
+        {
+            // RynthAi CombatManager falls back to Name == "Default" when no other row matches the target.
+            Rules.Insert(0, new MonsterRule
+            {
+                Name = "Default",
+                Priority   = 1,
+                DamageType = "Auto",
+                Category   = string.Empty,
+                MatchExpression = string.Empty,
+            });
+        }
 
         Rules[0].PropertyChanged -= Rule_Changed;
         Rules[0].PropertyChanged += Rule_Changed;
@@ -207,6 +380,14 @@ public partial class MainWindow : Window
 
         string name = (nameBox.Text ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(name)) return;
+
+        // RynthAi reserves this name for the single catch-all row (GetRuleForTarget / weapon equip).
+        if (name.Equals("Default", StringComparison.OrdinalIgnoreCase) &&
+            Rules.Any(r => r.IsDefault))
+        {
+            SetStatus("A 'Default' row already exists. That row is the fallback when no other rule matches.", error: true);
+            return;
+        }
 
         var rule = new MonsterRule { Name = name };
         AddRule(rule);

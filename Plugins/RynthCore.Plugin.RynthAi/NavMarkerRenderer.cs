@@ -16,16 +16,8 @@ namespace RynthCore.Plugin.RynthAi;
 /// </summary>
 internal sealed class NavMarkerRenderer
 {
-    // Colors — ARGB format for D3D9 (0xAARRGGBB)
-    private const uint ColorCyan3D   = 0xFF00FFFF;
-    private const uint ColorRed3D    = 0xFFFF4444;
-    private const uint ColorLine3D   = 0xFF0088FF;
+    // Ring / active ring / line colours come from LegacyUiSettings.NavOverlay (ARGB).
     private const uint ColorPortal3D = 0xFFFF44FF;  // magenta — live portal target
-
-    // Colors — ABGR format for ImGui fallback
-    private const uint ColorCyanImGui = 0xFFFFFF00;
-    private const uint ColorRedImGui  = 0xFF4444FF;
-    private const uint ColorLineImGui = 0xFFFF8800;
 
     // Ring geometry for ImGui fallback
     private const int RingSegments = 32;
@@ -75,7 +67,7 @@ internal sealed class NavMarkerRenderer
 
             Render3D(route, winStart, count, px, py, pz, playerNS, playerEW, ringRadius, heightOffset);
         }
-        catch (Exception ex) { _host.Log($"NavMarkers(3D): {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Write(LogCat.Navigation, $"NavMarkers(3D): {ex.Message}"); }
     }
 
     /// <summary>
@@ -95,7 +87,7 @@ internal sealed class NavMarkerRenderer
 
             RenderImGuiFallback(route, winStart, count, px, py, pz, playerNS, playerEW, ringRadius, heightOffset);
         }
-        catch (Exception ex) { _host.Log($"NavMarkers(ImGui): {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Write(LogCat.Navigation, $"NavMarkers(ImGui): {ex.Message}"); }
     }
 
     private bool TryPrepareFrame(out NavRouteParser route, out int winStart, out int count,
@@ -108,6 +100,9 @@ internal sealed class NavMarkerRenderer
         px = py = pz = 0f;
         playerNS = playerEW = 0.0;
         ringRadius = 0f; heightOffset = 0f;
+
+        if (!_settings.NavOverlay.ShowRouteMarkers)
+            return false;
 
         var r = _settings.CurrentRoute;
         if (r?.Points == null || r.Points.Count == 0)
@@ -140,7 +135,7 @@ internal sealed class NavMarkerRenderer
         // 300+ waypoint dungeon route — ordered by DFS, so visually patchy —
         // with no markers at all.)
         int n = r.Points.Count;
-        count = Math.Min(n, MaxMarkers);
+        count = Math.Min(n, Math.Clamp(_settings.NavOverlay.MaxRouteMarkers, 8, MaxMarkers));
         if (n <= count)
         {
             winStart = 0;
@@ -217,7 +212,7 @@ internal sealed class NavMarkerRenderer
             validArr[k] = true;
 
             bool isActive = (i == _settings.ActiveNavIndex);
-            uint color = isActive ? ColorRed3D : ColorCyan3D;
+            uint color = isActive ? _settings.NavOverlay.ColorActiveRing : _settings.NavOverlay.ColorRing;
             float thick = isActive ? ringThick * 1.3f : ringThick;
 
             _host.Nav3DAddRing(wx, wy, wz, ringRadius, thick, color);
@@ -239,7 +234,7 @@ internal sealed class NavMarkerRenderer
 
             _host.Nav3DAddLine(wxArr[k], wyArr[k], wzArr[k],
                                wxArr[nk], wyArr[nk], wzArr[nk],
-                               lineThick, ColorLine3D);
+                               lineThick, _settings.NavOverlay.ColorLine);
         }
 
         // ── Pass 3: live portal marker + line ────────────────────────
@@ -347,7 +342,7 @@ internal sealed class NavMarkerRenderer
 
             float avgD = (_centerDepth[k] + _centerDepth[nk]) * 0.5f;
             float thick = Math.Clamp(baseLineThick * 60f / Math.Max(avgD, 1f), baseLineThick * 0.5f, baseLineThick * 2f);
-            drawList.AddLine(_centerScreen[k], _centerScreen[nk], ColorLineImGui, thick);
+            drawList.AddLine(_centerScreen[k], _centerScreen[nk], NavOverlaySettings.ArgbToImGui(_settings.NavOverlay.ColorLine), thick);
         }
 
         // ── Pass 3: 3D ground rings at each waypoint ────────────────
@@ -384,7 +379,7 @@ internal sealed class NavMarkerRenderer
             if (visCount < 2) continue;
 
             bool isActive = (i == _settings.ActiveNavIndex);
-            uint color = isActive ? ColorRedImGui : ColorCyanImGui;
+            uint color = NavOverlaySettings.ArgbToImGui(isActive ? _settings.NavOverlay.ColorActiveRing : _settings.NavOverlay.ColorRing);
             float ringThick = isActive ? baseRingThick * 1.3f : baseRingThick;
 
             for (int s = 0; s < RingSegments; s++)

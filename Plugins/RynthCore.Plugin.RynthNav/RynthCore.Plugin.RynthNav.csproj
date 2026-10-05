@@ -15,6 +15,11 @@
     <RootNamespace>RynthCore.Plugin.RynthNav</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthNav</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Keep in step with VersionPointer in RynthNavPlugin.cs. -->
+    <Version>0.5.5</Version>
+    <AssemblyVersion>0.5.5.0</AssemblyVersion>
+    <FileVersion>0.5.5.0</FileVersion>
+    <InformationalVersion>0.5.5-experimental</InformationalVersion>
     <!-- Publish straight to the launcher-registered home (mirrors RynthVision). -->
     <PublishDir>C:\Games\RynthSuite\RynthNav\</PublishDir>
   </PropertyGroup>
@@ -39,6 +44,11 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Install-folder resolver shared with RynthCore (Software\Rynth CoreDir/SuiteDir). -->
+    <Compile Include="..\..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
   </ItemGroup>
 
 </Project>

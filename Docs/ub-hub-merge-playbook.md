@@ -1,8 +1,12 @@
 # UB Hub → RynthCore / RynthSuite — Implementation Playbook
 
 **Audience:** George Blankenship  
-**Purpose:** Working checklist for the ILT Hub merge — what landed, what is still open.  
-**Tracking copy:** Suite `Docs/ub-hub-merge-playbook.md` (this file) mirrored to Core `docs/ub-hub-merge-playbook.md`. Hub code: `Plugins/RynthCore.Plugin.RynthAi/IltHub/`. Full assessment lives in the Cursor project store (`ub-hub-merge-plan.md`).  
+**Purpose:** Working checklist for the ILT Hub merge — what landed, what is still open. Assessment detail lives in the Cursor project store (`ub-hub-merge-plan.md`, `repo-remote-sync.md`).  
+**Code lives in RynthSuite.**  
+**Repo tracking homes (keep uniform):**  
+- Suite: `Docs/ub-hub-merge-playbook.md` on **`feat/ilt-hub`** and **`SK-local`**  
+- Core: `docs/ub-hub-merge-playbook.md` on **`SK-local`** (Core has no `feat/ilt-hub`)  
+Do **not** put the playbook only on a docs-only PR branch — keep it with the Hub / SK worktrees.  
 **This doc does not implement more product code.**
 
 ---
@@ -11,17 +15,18 @@
 
 | Track | State |
 |-------|--------|
-| Assessment + playbook | **Done** — [ub-hub-merge-plan.md](./ub-hub-merge-plan.md) (Pet scope updated: SummonPets mechanics + breeding) |
-| Remotes / aelrynth overlay | **Done on `main`** — Core [#1](https://github.com/BlankenshipG/RynthCore/pull/1) `eda3cdf`, Suite [#1](https://github.com/BlankenshipG/RynthSuite/pull/1) `2a8571a` |
-| ILT Hub P0–P2 | **Coded on `feat/ilt-hub`**, not on `main` — commit `ad61194` (RynthAi **0.5.1**). **No GitHub PR yet.** |
-| Pet: SummonPets mechanics / breeding | **Partial on branch** (picker + charms + HealingBuddy + rosters). **Still open:** deepen PetManager mechanics; bond/potency UI; **breeding panel** gated on `pet_breeding_enabled` |
-| ACECustom `/ilt features` dump | **Not done** — server still “Coming Soon”; client falls back to login probes |
-| In-AC smoke on InfiniteLeaftide | **Not done in this project** |
-| AutoXp / AutoTinker | **Out of scope** (unchanged) |
+| Assessment + playbook | **Done** — plan + this playbook (Pet: SummonPets mechanics + breeding) |
+| Remotes / aelrynth overlay | **Done on `main`** — Core [#1](https://github.com/BlankenshipG/RynthCore/pull/1), Suite [#1](https://github.com/BlankenshipG/RynthSuite/pull/1) |
+| ILT Hub P0–P2 | **On Suite `feat/ilt-hub`** — `ad61194` (0.5.1 Hub) + `18b4579` (0.5.2 diagnostics/security). **Not on `main`. No Hub PR yet.** |
+| SK-local unified (2026-10-04) | **Done** — Core + Suite `SK-local` contain `main`, `feat/full-installer`, `feat/ilt-hub`, `SK`, PR #2. RynthAi **0.6.10** fixes Hub creation on late settings load and the world-name wait in the login probe. ub-Rythai 3.1.10 is an optional installer component. |
+| Pet: SummonPets / breeding | **Partial** — picker/charms/HealingBuddy/rosters + hardened empty-summon. **Still open:** deepen PetManager; bond/potency UI; **breeding** if `pet_breeding_enabled` |
+| ACECustom `/ilt features` | **Not done** — still “Coming Soon” |
+| In-AC smoke | **Not done in this project** |
+| AutoXp / AutoTinker | **Out of scope** |
 
-**Next:** open Suite PR `feat/ilt-hub` → `main`, smoke, then Pet follow-on (SummonPets hardening + breeding when server supports it).
+**Next:** PR Suite `feat/ilt-hub` → `main`, smoke, then Pet follow-on (SummonPets + breeding). Keep this file current on **`feat/ilt-hub`** and **`SK-local`**.
 
-**Home:** RynthSuite `Plugins/RynthCore.Plugin.RynthAi/IltHub/` + `Combat/PetManager.cs`. Core host APIs already on `main`. UB `ILT_Customizations` read-only. ACECustom breeding docs: `PET_BREEDING_PLAYER_GUIDE.md` / `PET_BREEDING_REFERENCE.md`.
+**Home:** Suite `Plugins/RynthCore.Plugin.RynthAi/IltHub/` + `Combat/PetManager.cs`. ACECustom breeding: `PET_BREEDING_PLAYER_GUIDE.md` / `PET_BREEDING_REFERENCE.md`.
 
 ---
 
@@ -29,98 +34,84 @@
 
 **Use when** reviewing, merging, or finishing leftover Hub work.
 
-**Desired result:** ImGui **ILT Hub** with Character · Pet · Banking · Gear · Games, gated by ACECustom server options, per-character Hub state. Pet tab **updates** Rynth `SummonPets` / pet mechanics (one summon loop) and adds **breeding only when `pet_breeding_enabled`**.
+**Desired result:** ImGui **ILT Hub** (Character · Pet · Banking · Gear · Games), server-option gated, per-char Hub state. Pet tab **updates** `SummonPets` / pet mechanics and adds **breeding only when `pet_breeding_enabled`**.
 
 ---
 
-## Prerequisites (locked — complete)
+## Prerequisites (locked)
 
-| Repo | `origin` | `upstream` | Hub notes |
-|------|----------|------------|-----------|
-| **RynthCore** | `BlankenshipG/RynthCore` | aelrynth git | Overlay on `main`. Do **not** force-replace. |
-| **RynthSuite** | `BlankenshipG/RynthSuite` | aelrynth git | Overlay on `main`. Hub branch: **`feat/ilt-hub`**. |
-| **UB** | `BlankenshipG/UB` | GitLab `utilitybelt/utilitybelt.gitlab.io` | Source: **`ILT_Customizations`**. |
-| **ACECustom** | `BlankenshipG/ACECustom` | `rkroska/ACECustom` | `/ilt features`, bond, potency, **`pet_breeding_*`**. |
+| Repo | Branches for this playbook | Notes |
+|------|----------------------------|--------|
+| **RynthSuite** | **`feat/ilt-hub`**, **`SK-local`** | Hub code + `Docs/ub-hub-merge-playbook.md` |
+| **RynthCore** | **`SK-local`** | Tracking copy only (`docs/…`); no Hub product code |
+| **UB** | `ILT_Customizations` (source) | Read-only for Hub |
+| **ACECustom** | — | `/ilt features`, bond, potency, `pet_breeding_*` |
 
-**Locked decisions:** ImGui not Avalonia/VVS; `IltServerOptions` per feature; Hub state ≠ `/ra settings`; Games greenfield; Pet = **update SummonPets mechanics** + picker + item-check + **breeding if server on**; Guardian Hand on Gear; AutoVendor not a Hub tab.
+**Locked decisions:** ImGui not Avalonia/VVS; `IltServerOptions` per feature; Hub state ≠ `/ra settings`; Games greenfield; Pet = update SummonPets + picker + item-check + breeding if server on; Guardian Hand on Gear.
 
 ---
 
-## Done vs remaining (phase order)
+## Done vs remaining
 
-### Phase 1 — Hub shell + state + IltServerOptions (P0) — **coded**
+### Phase 1 — Shell + state + IltServerOptions — **coded** (PR + `/ilt features` dump open)
+
+### Phase 2 — Banking — **coded** (smoke open)
+
+### Phase 3 — Pet — **partial**
 
 | | |
 |--|--|
-| **Still to do** | PR to `main`. ACECustom `/ilt features` dump must include **`pet_breeding`**, `pet_bond`, `pet_potency`, `pet_refill`. |
+| **Landed** | Essence picker → Pet rules; SummonPets / min-mobs / spirit refill; refill + mastery charms; hardened `AllowSummonOnEmpty`; HoldSummons; HealingBuddy; `/pets` `/shinies` |
+| **Still to do** | Deepen PetManager (range UI, mastery usability, bond/potency columns); breeding panel iff `pet_breeding_enabled` (appraisal readiness, annex hint, dance QoL — no client litter math); smoke |
 
-### Phase 2 — Banking (P0) — **coded** (smoke open)
+### Phases 4–6 — Character / Gear / Games — **coded** (smoke, Guardian Hand WCID, quests.xml open)
 
-### Phase 3 — Pet (P0 → P1) — **partial**
-
-| | |
-|--|--|
-| **Landed on `feat/ilt-hub`** | `IltPets` + `IltInventory`: essence picker → Pet consumable rules; `SummonPets` / min-mobs / spirit refill checkboxes; refill + mastery charms; `AllowSummonOnEmpty` / `HoldSummons`; HealingBuddy; `/pets` + `/shinies` rosters. |
-| **Still to do — SummonPets / mechanics** | Deepen one PetManager loop: clearer priority UI, CustomPetRange on Pet tab, mastery/off-mastery usability, cooldown/chat handling, bond/potency columns on essence rows when flags On. Do **not** fork a second summoner. |
-| **Still to do — Bond / potency** | Status UI when `pet_bond_enabled` / `pet_potency_enabled`; warn if breeding On but bond Off (min-bond gate). |
-| **Still to do — Breeding** | Pet-tab subsection **iff `pet_breeding_enabled`**: readiness from sex/charges/cooldown/shiny/juvenile appraisal lines; annex location hint; optional dance QoL. **No client litter/mutation math.** Hide when Off/Unknown. Refs: ACECustom Seedy Motel / `PetDevice_Breeding.cs`. |
-| **Still to do — Smoke** | Empty-essence summon blocked unless refill confirmed; breeding hidden on shards with breeding Off. |
-
-### Phases 4–6 — Character / Gear / Games — **coded** (smoke + Guardian Hand WCID + quests.xml open)
-
-### Phase 7 — Hardening — **mostly coded; ship/verify open**
+### Phase 7 — Hardening — **0.5.2 on branch** (diagnostics + security); ship/verify open
 
 ---
 
-## Remaining work (do in this order)
+## Remaining work
 
-1. **PR** — `feat/ilt-hub` → `main` (Suite).
-2. **In-game smoke** — Hub gates, bank confirm, pet empty-essence, quests, clap, games.
-3. **Pet follow-on (George)** — update SummonPets/PetManager mechanics; bond/potency UI; **breeding panel when `pet_breeding_enabled`**.
-4. **ACECustom `/ilt features`** — include pet_breeding / bond / potency / refill / charms.
-5. **Guardian Hand WCID** when published.
-6. **Optional** — `quests.xml`; UB Hub `settings.json` import; USD smoke.
-7. **Later** — AutoXp, AutoTinker; aelrynth 2026.10.4.3 overlay if git catches up.
-8. **Sync playbooks** — store + Suite [#2](https://github.com/BlankenshipG/RynthSuite/pull/2) + Core [#2](https://github.com/BlankenshipG/RynthCore/pull/2).
+1. PR Suite **`feat/ilt-hub`** → `main`
+2. In-AC smoke on ILT
+3. Pet follow-on: SummonPets mechanics + breeding when enabled → bump **0.5.3**
+4. ACECustom `/ilt features` (include pet_breeding / bond / potency / refill)
+5. Guardian Hand WCID when published
+6. Optional: quests.xml, UB settings import, USD smoke
+7. Keep playbook identical on Suite `feat/ilt-hub` + `SK-local` and Core `SK-local`
 
 ---
 
 ## Explicit non-goals
 
-- Replace Rynth combat/nav/loot/meta (or a **second** pet summon system — update `SummonPets` / PetManager instead)
-- Client-side breeding / litter / mutation simulation when `pet_breeding_enabled` is false
-- Port VVS XML; UB AutoVendor under Hub; AutoXp / AutoTinker on this track
-- Avalonia `RynthAiPanel` / Core Decal-era `Plugins/RynthAi/`
-- Force-replace GitHub `main` with aelrynth git
+- Second pet summon system (update PetManager instead)
+- Client breeding math when `pet_breeding_enabled` is false
+- VVS XML / AutoXp / AutoTinker / Avalonia RynthAiPanel / force-replace `main`
 
 ---
 
 ## Version / changelog
 
-Next Pet follow-on wave: comment gates, bump RynthAi **0.5.2**, add `Changelog/` note. Do not bump Core API version unless host APIs change.
+- **0.5.1** — Hub landing · **0.5.2** — diagnostics + Hub security (on `feat/ilt-hub`)
+- Next Pet wave: **0.5.3** + `Changelog/` note. Don’t bump Core API unless host APIs change.
 
 ---
 
-## Quick gate cheat sheet
+## Gate cheat sheet
 
 | Surface | Enable when | Keep off when |
 |---------|-------------|----------------|
-| Whole Hub | ILT-like or Force **and** ≥1 feature bit | Retail / unknown, Force off |
-| Banking | `/bank` responds | Unknown |
-| Pet breeding panel | `pet_breeding_enabled` | Off / Unknown |
-| Pet bond / potency rows | `pet_bond_enabled` / `pet_potency_enabled` | Flags false |
-| Pet refill empty-summon | Charm + confirmed `pet_refill` (or player bool) | Not confirmed |
-| Games → Powerball | `powerball_enabled` / `/pb` | Flag false |
-| Quest Tracker | `quest_info_enabled` | Flag false |
-| Auto-Clap | `/clap` + `AutoCraftingEnabled` | Stamp/clap missing |
-| Guardian Hand | Charm registered + enabled | Off / unpublished |
-| USD / `.utl` / Hub state | Client-side | Not server-gated |
+| Whole Hub | ILT-like or Force **and** ≥1 bit | Retail, Force off |
+| Pet breeding | `pet_breeding_enabled` | Off / Unknown |
+| Pet bond / potency | `pet_bond_enabled` / `pet_potency_enabled` | Flags false |
+| Pet empty-summon | Charm + confirmed `pet_refill` | Not confirmed |
+| Banking / Powerball / Quests / Clap | Per existing IltServerOptions rules | Unknown / Off |
 
 ---
 
 ## Pointers
 
-- Plan (project store): `ub-hub-merge-plan.md`  
-- Sibling: RynthCore `docs/ub-hub-merge-playbook.md`  
-- Branch: Suite **`feat/ilt-hub`** @ `ad61194` · `Changelog/RynthAi-0.5.1-ilt-hub.md`  
-- ACECustom: `pet_breeding_enabled`, `PET_BREEDING_*` docs, `PetDevice_Breeding.cs`
+- Plan/remotes (project store): `ub-hub-merge-plan.md`, `repo-remote-sync.md`
+- Suite Hub branch: **`feat/ilt-hub`** @ `18b4579` (0.5.2) · also **`SK-local`**
+- Changelogs: `Changelog/RynthAi-0.5.1-ilt-hub.md`, `Changelog/RynthAi-0.5.2-diagnostics-security.md`
+- ACECustom: `pet_breeding_enabled`, `PetDevice_Breeding.cs`

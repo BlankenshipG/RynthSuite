@@ -55,7 +55,7 @@ internal sealed class MonsterDamageStore
         public int    HpSamples;
         public double HpManual;   // 0 = unset; user-entered HP override (UI), authoritative when > 0
         public uint   WeaponManual;  // 0 = unset; user-picked weapon override for this wcid (Damage panel)
-        public uint   OffhandManual; // 0 = unset; user-picked offhand override for this wcid (Damage panel; stored only)
+        public uint   OffhandManual; // 0 = unset; user-picked offhand override for this wcid (Damage panel; combat equips it when it is a shield)
         public int    LastTier = NoTier; // most-recent cast tier (negative = ring); NoTier = unset this session
         // key = "weaponId|element|tier"
         public readonly Dictionary<string, CastStat> Casts =
@@ -158,7 +158,7 @@ internal sealed class MonsterDamageStore
                     }
                     else if (f.Length >= 4 && f[0] == "O")
                     {
-                        // O|wcid|name|offhandId  — per-monster offhand override (Damage panel; stored only)
+                        // O|wcid|name|offhandId  — per-monster offhand override (Damage panel; shields are equipped by combat)
                         if (uint.TryParse(f[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out uint ow)
                             && uint.TryParse(f[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out uint oid))
                         {
@@ -446,7 +446,8 @@ internal sealed class MonsterDamageStore
         }
     }
 
-    /// <summary>User-picked offhand override for this wcid (0 = none). Stored only — combat does not equip it.</summary>
+    /// <summary>User-picked offhand override for this wcid (0 = none). Combat equips it in the
+    /// off hand when it is a shield and the main weapon is one-handed melee (CombatManager.TryEquipOffhandShield).</summary>
     public uint GetManualOffhand(uint wcid)
     {
         if (wcid == 0) return 0;

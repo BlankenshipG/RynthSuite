@@ -46,6 +46,15 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginRender", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void Render() => Runtime.OnRender();
 
+    /// <summary>Engine calls this instead of RynthPluginRender while its ImGui shell is off
+    /// (Avalonia UI): ILT Hub + Item Info windows only. Never lets an exception escape.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderOverlay", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void RenderOverlay()
+    {
+        try { Runtime.Plugin?.OnRenderOverlay(); }
+        catch { /* an exception crossing UnmanagedCallersOnly would fail-fast the client */ }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnChatBarEnter", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnChatBarEnter(IntPtr textUtf16, IntPtr eatFlag) => Runtime.OnChatBarEnter(textUtf16, eatFlag);
 
@@ -339,7 +348,7 @@ public static unsafe class PluginExports
         try { Runtime.Plugin?.SetMonsterWeapon(wcid, weaponId); } catch { }
     }
 
-    // Per-monster offhand override from the Damage panel (offhandId == 0 clears). Stored only.
+    // Per-monster offhand override from the Damage panel (offhandId == 0 clears). Shields are equipped by combat.
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetMonsterOffhand", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void SetMonsterOffhand(uint wcid, uint offhandId)
     {
@@ -569,6 +578,14 @@ public static unsafe class PluginExports
     public static void AddSelectedWeapon()
     {
         try { Runtime.Plugin?.DashboardRenderer?.AddSelectedWeapon(); }
+        catch { }
+    }
+
+    // Engine Items panel "Add Selected Shield" (off-hand entry, ItemRule Action="Shield").
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginAddSelectedShield", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void AddSelectedShield()
+    {
+        try { Runtime.Plugin?.DashboardRenderer?.AddSelectedShield(); }
         catch { }
     }
 

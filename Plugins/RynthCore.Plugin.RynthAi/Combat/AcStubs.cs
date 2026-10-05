@@ -134,7 +134,12 @@ public class WorldObject
             if (o.Strings.TryGetValue((uint)key, out string? v)) return v;
             if (!o.LiveFallback) return defaultValue;
         }
-        return Cache?.GetStringProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+        string live = Cache?.GetStringProperty(Id, (uint)key, string.Empty) ?? string.Empty;
+        if (live.Length > 0) return live;
+        // Name isn't an assessment property, so appraisal data never carries it and the
+        // off-main-thread live read comes back empty; the network snapshot name is authoritative.
+        if (key == StringValueKey.Name && Name.Length > 0) return Name;
+        return defaultValue;
     }
 
     public double Values(DoubleValueKey key, double defaultValue)
@@ -433,7 +438,7 @@ public class CharacterSkills
                 if (!_loggedReadFailure)
                 {
                     _loggedReadFailure = true;
-                    _host.Log($"[RynthAi] CharacterSkills: host returned success+buffed=0 for trained skill {skill} (player=0x{_playerId:X8}, stype={stype}, training={training}) — engine qualities artifact, not a real level. Using capable-stub fallback until a real read lands (NOT collapsing tier).");
+                    RynthLog.Write(LogCat.Combat, $"[RynthAi] CharacterSkills: host returned success+buffed=0 for trained skill {skill} (player=0x{_playerId:X8}, stype={stype}, training={training}) — engine qualities artifact, not a real level. Using capable-stub fallback until a real read lands (NOT collapsing tier).");
                 }
                 return new CharacterSkillInfo(2, 250);
             }
@@ -448,7 +453,7 @@ public class CharacterSkills
             if (!_loggedReadFailure)
             {
                 _loggedReadFailure = true;
-                _host.Log($"[RynthAi] CharacterSkills: host skill read failed (player=0x{_playerId:X8}, skill={skill}, stype={stype}) — engine player-qualities ptr likely not seeded. Using capable-stub fallback until a real read lands.");
+                RynthLog.Write(LogCat.Combat, $"[RynthAi] CharacterSkills: host skill read failed (player=0x{_playerId:X8}, skill={skill}, stype={stype}) — engine player-qualities ptr likely not seeded. Using capable-stub fallback until a real read lands.");
             }
             return new CharacterSkillInfo(2, 250);
         }

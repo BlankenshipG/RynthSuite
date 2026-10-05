@@ -6,6 +6,15 @@ RynthCore-based plugins and tools for Asheron's Call. Requires [RynthCore](https
 
 ## Plugins
 
+### ub-Rythai (3.x)
+
+Lives in the **sibling repo** `ub-Rythai/` (not under `RynthSuite/`). Built as **`net10.0-windows`** NativeAOT for RynthCore — **not** .NET Framework **net48** (that is Decal Utility Belt in `UB/` / `ub-IT/`). See `../ub-Rythai/README.md` and `../ub-Rythai/Changelog/`.
+
+```bash
+cd ../ub-Rythai/RynthCore.Plugin.UbRythai
+dotnet publish -c Release
+```
+
 ### RynthAi
 
 A combat and navigation assistant for Asheron's Call, ported from the legacy NexTank/NexSuite codebase. Runs as an ImGui overlay inside the AC client via RynthCore. (Project history: originally named NexSuite.)
@@ -106,6 +115,8 @@ RynthSuite/
 │   └── RynthCore.MonsterEditor/          Avalonia monster profile editor
 └── Docs/                                 Code reviews + Chorizite gap analysis
 ```
+
+**ub-Rythai** (3.x, net10): sibling folder `ub-Rythai/RynthCore.Plugin.UbRythai/`.
 
 ## License
 

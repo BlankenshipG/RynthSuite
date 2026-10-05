@@ -9,6 +9,7 @@ using RynthCore.Plugin.RynthAi.CreatureData;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.Loot.VTank;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.Meta;
 
@@ -59,7 +60,7 @@ internal sealed class ExpressionEngine
     private readonly Dictionary<string, (RynthCore.Loot.LootProfile Profile, DateTime Mtime)> _giveNativeProfileCache
         = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string ItemGiverDir
-        = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "ItemGiver");
+        = Path.Combine(RynthInstallPaths.RynthAiDir, "ItemGiver");
 
     // Stopwatch store: handle → Stopwatch. Persistent (not cleared per eval) — handles are stored in variables.
     private readonly Dictionary<string, System.Diagnostics.Stopwatch> _stopwatches = new(StringComparer.Ordinal);
@@ -100,8 +101,8 @@ internal sealed class ExpressionEngine
     private long _lastVarFlushMs;
     private string? _pvarPathCached;
     private const long VarFlushIntervalMs = 2000;
-    private static readonly string PvarsDir  = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "pvars");
-    private static readonly string GvarsPath = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "gvars.txt");
+    private static readonly string PvarsDir  = Path.Combine(RynthInstallPaths.RynthAiDir, "pvars");
+    private static readonly string GvarsPath = Path.Combine(RynthInstallPaths.RynthAiDir, "gvars.txt");
     private Dictionary<string, (Func<string> Get, Action<string> Set)>? _settingsMap;
 
     public IReadOnlyDictionary<string, string> Variables => _variables;
@@ -520,7 +521,7 @@ internal sealed class ExpressionEngine
     private string EvalUnknownFunction(string funcName)
     {
         if (!string.IsNullOrEmpty(funcName) && _loggedUnknownFns.Add(funcName))
-            _host.Log($"[Meta] unknown expression function '{funcName}[...]' — evaluates to empty; " +
+            RynthLog.Write(LogCat.Expressions, $"[Meta] unknown expression function '{funcName}[...]' — evaluates to empty; " +
                       "check spelling / supported verbs. (logged once per name)");
         return "";
     }
@@ -2458,7 +2459,7 @@ internal sealed class ExpressionEngine
             {
                 if ((now - _castWieldPendingAt).TotalMilliseconds < CastWieldResolveTimeoutMs)
                     return false;
-                _host.Log($"[MetaCast] wand 0x{(uint)_castWieldPendingId:X8} wield not confirmed in " +
+                RynthLog.Write(LogCat.Expressions, $"[MetaCast] wand 0x{(uint)_castWieldPendingId:X8} wield not confirmed in " +
                           $"{CastWieldResolveTimeoutMs:0}ms — cooling down {CastWieldCooldownMs:0}ms");
                 _castWieldPendingId = 0;
                 _castWieldCooldownUntil = now.AddMilliseconds(CastWieldCooldownMs);
@@ -2479,7 +2480,7 @@ internal sealed class ExpressionEngine
                 if (_host.HasCancelAttack)   _host.CancelAttack();
                 if (_host.HasStopCompletely) _host.StopCompletely();
                 _castCombatTornDown = true;
-                _host.Log($"[MetaCast] CancelAttack+StopCompletely before wand equip (mode was {mode})");
+                RynthLog.Write(LogCat.Expressions, $"[MetaCast] CancelAttack+StopCompletely before wand equip (mode was {mode})");
             }
 
             // Stock ACE won't auto-dequip the bow for a Held-slot wand: stow the wielded
@@ -2497,7 +2498,7 @@ internal sealed class ExpressionEngine
                     int openPack = WorldObjectCache.FindPackFor(_host, _worldObjectCache, includeMainPack: true, requireFree: 1);
                     if (openPack == 0 || _castBowDequipAttempts >= CastBowDequipMaxAttempts)
                     {
-                        _host.Log($"[MetaCast] bow 0x{(uint)bowId:X8} dequip blocked (openPack=0x{(uint)openPack:X8}, " +
+                        RynthLog.Write(LogCat.Expressions, $"[MetaCast] bow 0x{(uint)bowId:X8} dequip blocked (openPack=0x{(uint)openPack:X8}, " +
                                   $"attempts={_castBowDequipAttempts}/{CastBowDequipMaxAttempts}) — degrading");
                         return CastSwapDegrade(wandId, bowId);
                     }
@@ -2505,7 +2506,7 @@ internal sealed class ExpressionEngine
                     _host.MoveItemInternal((uint)bowId, (uint)openPack, 0, 1); // amount>=1 (engine rejects 0)
                     _castBowDequipPendingId = bowId;
                     _castBowDequipAt = now;
-                    _host.Log($"[MetaCast] dequip bow 0x{(uint)bowId:X8} -> pack 0x{(uint)openPack:X8} " +
+                    RynthLog.Write(LogCat.Expressions, $"[MetaCast] dequip bow 0x{(uint)bowId:X8} -> pack 0x{(uint)openPack:X8} " +
                               $"(attempt {_castBowDequipAttempts}/{CastBowDequipMaxAttempts}) before wand equip");
                     return false; // yield until the bow is out of hand
                 }
@@ -2538,7 +2539,7 @@ internal sealed class ExpressionEngine
         {
             _castStanceLastRecoverAt = now;
             _castStanceReEquips++;
-            _host.Log($"[MetaCast] stance STUCK {stuckMs:0}ms (wielded, mode≠Magic) — re-equip {_castStanceReEquips}/{CastStanceReEquipMax} 0x{(uint)wandId:X8}");
+            RynthLog.Write(LogCat.Expressions, $"[MetaCast] stance STUCK {stuckMs:0}ms (wielded, mode≠Magic) — re-equip {_castStanceReEquips}/{CastStanceReEquipMax} 0x{(uint)wandId:X8}");
             _host.UseObject((uint)wandId);
             return false;
         }
@@ -3026,7 +3027,7 @@ internal sealed class ExpressionEngine
             if (!_loggedGameClockNotInWorld)
             {
                 _loggedGameClockNotInWorld = true;
-                _host.Log("[Meta] getgame* evaluated before world entry — game clock unreadable, returning 0 (not faulting).");
+                RynthLog.Write(LogCat.Expressions, "[Meta] getgame* evaluated before world entry — game clock unreadable, returning 0 (not faulting).");
             }
             return 0;
         }

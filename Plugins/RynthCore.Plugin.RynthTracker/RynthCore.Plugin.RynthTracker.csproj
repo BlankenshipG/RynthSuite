@@ -15,6 +15,11 @@
     <RootNamespace>RynthCore.Plugin.RynthTracker</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthTracker</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Keep in step with VersionPointer in RynthTrackerPlugin.cs. -->
+    <Version>0.1.1</Version>
+    <AssemblyVersion>0.1.1.0</AssemblyVersion>
+    <FileVersion>0.1.1.0</FileVersion>
+    <InformationalVersion>0.1.1-experimental</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

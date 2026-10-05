@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.5.0-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.31-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -80,6 +80,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     internal LegacyDashboardRenderer? DashboardRenderer => _dashboard;
     private NavigationEngine? _navigationEngine;
     private NavMarkerRenderer? _navMarkerRenderer;
+    private NavBreadcrumbTracker? _navBreadcrumbs;   // breadcrumb trail + nav route recording
+    private NavOverlayRenderer? _navOverlay;         // waypoint HUD / labels / guide line / trail drawing
     private RadarWallRenderer? _radarWallRenderer;
     private TerrainPassabilityOverlay? _terrainOverlay;
     private MainLogic? _raycast;
@@ -93,6 +95,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private FellowshipTracker? _fellowshipTracker;
     private MetaManager? _metaManager;
     private QuestTracker? _questTracker;
+    /// <summary>ILT Hub (Infinite Leaftide tools window) — one per login session, dormant off-ILT.</summary>
+    private IltHub.IltHubController? _iltHub;
+    // Floating HUD windows (item counts, Mini Remote) for the logged-in character, and the
+    // icon textures they draw (kept across sessions).
+    private Huds.HudController? _huds;
+    private Huds.HudIconCache? _hudIcons;
     private InventoryManager? _inventoryManager;
     private SalvageManager? _salvageManager;
     private ManaStoneManager? _manaStoneManager;
@@ -138,6 +146,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     // Per-character learned combat damage (avg damage by wcid/element/tier +
     // learned HP-to-kill), used by CombatManager for kill-shot prediction.
     private CreatureData.MonsterDamageStore? _damageStore;
+    // Shared read-only UB damage-type seed (Monster Editor import); "Auto" element fallback.
+    private CreatureData.UbMobSeedStore? _mobSeedStore;
     // wcids appraised this session (AutoId of nearby mobs). Surfaced as bare rows in the
     // Damage table so monsters populate as you encounter them, before you've fought them.
     private readonly HashSet<uint> _seenMonstersThisSession = new();
@@ -145,8 +155,17 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private int _settingsSaveTickCounter;
     private int _settingsLoadRetryCounter;
 
+    /// <summary>
+    /// Hides <c>RynthPluginBase.Log</c> so every plugin log line also flows through
+    /// <see cref="RynthLog"/> (daily file, per-category trace, "[Prefix]" routing).
+    /// </summary>
+    private new void Log(string message) => RynthLog.Write(LogCat.General, message);
+
     public override int Initialize()
     {
+        // Diagnostics first, so everything below (and any init exception) is captured.
+        RynthLog.Init(Host);
+
         // ImGuiContext is null when the engine is in Decal coexistence mode
         // (no EndScene hook, no ImGui). The legacy ImGui dashboard's
         // constructor is pure object setup — it doesn't call any ImGui
@@ -162,10 +181,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         ComponentDatabase.SetLog(msg => Log(msg));
         _dashboard = new LegacyDashboardRenderer(Host);
+        _dashboard.AfterVirindiTankImport = InvalidateLootProfileCaches;
+        _dashboard.SetItemInfoHooks(DescribeSelectedItemForPreview, PrintSelectedItemInfo, TestItemInfoChatType);
         _objectCache = new WorldObjectCache(Host); // must exist before CreateObject events fire during login
         _creatureStore = new CreatureData.CreatureProfileStore();
         try { _creatureStore.Load(); } catch { }
         _damageStore = new CreatureData.MonsterDamageStore();
+        _mobSeedStore = new CreatureData.UbMobSeedStore();
+        try { _mobSeedStore.Load(); } catch { }
+        if (_mobSeedStore.Count > 0)
+            Log($"RynthAi: UB damage-type seed loaded ({_mobSeedStore.Count} monsters).");
         Func<string, CreatureData.CreatureProfile?> lookup = ruleName =>
         {
             if (_creatureStore == null || string.IsNullOrEmpty(ruleName)) return null;
@@ -192,7 +217,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         try { _dashboard?.SaveSettings(); } catch { }
         // Release the Monster Editor process handle (if the toggle button
         // launched one) rather than leaking it on plugin unload/hot-reload.
-        try { _dashboard?.ReleaseMonsterEditorHandle(); } catch { }
+        try { _dashboard?.ReleaseExternalToolHandles(); } catch { }
         long tAfterSettings = Environment.TickCount64;
         TeardownSession();
         long tAfterTeardown = Environment.TickCount64;
@@ -201,10 +226,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         long tAfterStore = Environment.TickCount64;
         _creatureStore = null;
         _damageStore = null;
+        _mobSeedStore = null;
         _objectCache = null;
         _initialized = false;
         _dashboard = null;
         Log($"RynthAi: Shutdown done — SaveSettings={tAfterSettings - t0} ms, TeardownSession={tAfterTeardown - tAfterSettings} ms, SaveCreatureStore={tAfterStore - tAfterTeardown} ms, total={tAfterStore - t0} ms");
+        RynthLog.Shutdown(); // flush + close diagnostics files last so the line above is kept
     }
 
     /// <summary>
@@ -218,6 +245,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         Log("RynthAi: logout — tearing down session.");
         try { _dashboard?.SaveSettings(); } catch { }
         TeardownSession();
+        RynthLog.Flush();
     }
 
     /// <summary>
@@ -226,9 +254,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     /// </summary>
     private void TeardownSession()
     {
+        ResetGroundLoot(clearCaches: true);
         _navigationEngine?.Stop();
         _navigationEngine = null;
         _navMarkerRenderer = null;
+        try { _navBreadcrumbs?.Shutdown(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Navigation, ex, "nav recorder shutdown"); }
+        if (_dashboard != null) _dashboard.Settings.IsRecordingNav = false;
+        _navOverlay = null;
+        _navBreadcrumbs = null;
+        _dashboard?.AttachNavBreadcrumbs(null);
         long tFlush0 = Environment.TickCount64;
         _radarWallRenderer?.Flush();
         long tFlushMs = Environment.TickCount64 - tFlush0;
@@ -244,6 +279,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _fellowshipTracker?.Dispose();
         _fellowshipTracker = null;
         _metaManager = null;
+        try { _iltHub?.OnLogout(); } catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "logout"); }
+        _iltHub = null;
+        try { _huds?.OnLogout(); } catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "logout"); }
+        _huds = null;
+        if (_dashboard != null)
+        {
+            _dashboard.IltHubAvailable = null;
+            _dashboard.MiniRemoteVisible = null;
+            _dashboard.SetMiniRemoteVisible = null;
+        }
         _questTracker = null;
         _inventoryManager = null;
         _salvageManager = null;
@@ -261,9 +306,48 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _loginComplete = false;
         _windowVisible = false;
         _pendingGives.Clear();
+        if (_dashboard != null)
+            _dashboard.AfterVirindiTankImport = null;
+        _dashboard = null;
     }
 
     private DateTime _loginCompletedAt = DateTime.MinValue;
+
+    /// <summary>Clears cached loot so the next loot tick/command reloads from <see cref="LegacyUiSettings.CurrentLootPath"/>.</summary>
+    private void InvalidateLootProfileCaches()
+    {
+        _loadedLootProfile = null;
+        _loadedLootProfilePath = string.Empty;
+        _loadedLootProfileTime = DateTime.MinValue;
+        _nativeLootProfile = null;
+        _nativeLootProfilePath = string.Empty;
+        _nativeLootProfileTime = DateTime.MinValue;
+    }
+
+    /// <summary>
+    /// Creates the ILT Hub for the loaded character and wires the dashboard's launcher tile to it.
+    /// No-op until the per-character folder is established (the Hub persists its state there),
+    /// so it is called both from OnLoginComplete and from the deferred settings load in OnTick.
+    /// </summary>
+    private void CreateIltHub()
+    {
+        if (_dashboard == null || string.IsNullOrEmpty(_dashboard.CharFolder))
+            return;
+
+        var dashForHub = _dashboard;
+        _iltHub = new IltHub.IltHubController(Host, _dashboard.CharFolder,
+            () => _objectCache, () => dashForHub?.Settings, () => _questTracker,
+            () => dashForHub?.SaveSettings());
+        _dashboard.IltHubAvailable = () => _iltHub?.Available == true;
+
+        // The HUDs share the per-character folder, so they are created alongside the Hub.
+        _hudIcons ??= new Huds.HudIconCache(Host, () => _raycast?.GeometryLoader?.PortalDat);
+        _huds = new Huds.HudController(Host, _dashboard.CharFolder, () => _objectCache, _dashboard, () => _iltHub, _hudIcons,
+            () => _combatManager?.activeTargetId ?? 0);
+        _dashboard.SetInventoryHudLauncher(() => { if (_huds != null) _huds.State.ShowSetup = true; });
+        _dashboard.MiniRemoteVisible = () => _huds?.State.ShowMiniRemote == true;
+        _dashboard.SetMiniRemoteVisible = v => { if (_huds != null) _huds.State.ShowMiniRemote = v; };
+    }
 
     public override void OnLoginComplete()
     {
@@ -277,6 +361,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _navigationEngine = new NavigationEngine(Host, _dashboard.Settings);
         if (_objectCache != null) _navigationEngine.SetWorldObjectCache(_objectCache);
         _navMarkerRenderer = new NavMarkerRenderer(Host, _dashboard.Settings);
+        _navBreadcrumbs = new NavBreadcrumbTracker(Host, _dashboard.Settings, DescribeNavPortal, ChatLine);
+        _navOverlay = new NavOverlayRenderer(Host, _dashboard.Settings, _navBreadcrumbs);
+        _dashboard.AttachNavBreadcrumbs(_navBreadcrumbs);
         _radarWallRenderer = new RadarWallRenderer(Host, _dashboard.Settings);
         _terrainOverlay = new TerrainPassabilityOverlay(Host);
         Log($"RynthAi: NavMarkerRenderer created, HasNav3D={Host.HasNav3D}, version={Host.Version}");
@@ -318,7 +405,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             }
             catch (Exception ex)
             {
-                Log($"RynthAi: raycast init error: {ex.Message}");
+                RynthLog.Exception(LogCat.Raycast, ex, "raycast init");
             }
         });
 
@@ -390,6 +477,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager.SetCharacterSkills(_charSkills);
         _combatManager.SetPlayerId(_playerId);
         _combatManager.SetDamageStores(_creatureStore, _damageStore);
+        _combatManager.SetMobSeedStore(_mobSeedStore);
         _navigationEngine?.SetCombatManager(_combatManager);
         // BuffManager.CheckVitals consults CombatManager.HasCloseThreat to pick
         // between in-combat and idle top-off recharge thresholds. Wire here
@@ -405,7 +493,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _fellowshipTracker = new FellowshipTracker();
 
         _questTracker = new QuestTracker(Host);
-        _questTracker.Refresh(); // auto-populate quest flags on login
+
+        // ILT Hub: per-character state lives next to the combat profile. Created before the
+        // login quest refresh so cached server options can skip /myquests where it is off.
+        // When CharFolder is still empty here, the deferred settings load in OnTick creates it.
+        CreateIltHub();
+
+        if (_iltHub?.SkipLoginQuestRefresh != true)
+            _questTracker.Refresh(); // auto-populate quest flags on login
 
         _metaManager = new MetaManager(_dashboard.Settings, Host, _vitals);
         _metaManager.SetPlayerId(_playerId);
@@ -424,6 +519,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             _inventoryManager  = new InventoryManager(Host, _dashboard.Settings, _objectCache);
             _manaStoneManager  = new ManaStoneManager(Host, _dashboard.Settings, _objectCache);
             _petManager        = new PetManager(Host, _dashboard.Settings, _objectCache, _combatManager, _charSkills);
+        }
+
+        if (_iltHub != null)
+        {
+            string hubChar = Host.TryGetObjectName(_playerId, out string hn) ? hn : string.Empty;
+            _iltHub.OnLoginComplete(hubChar, _petManager);
         }
 
         _salvageManager = new SalvageManager(Host, _dashboard.Settings, _objectCache);
@@ -559,10 +660,26 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "hideui":       _hideUi = on; dash.SetUiHidden(on); break;  // applied each tick in OnTick
             case "sendchat":     if (!string.IsNullOrEmpty(value)) HandleRynthChatSubmit(value); break;
             case "setsetting":   ApplyRemoteSetting(value); break;   // one advanced setting from the phone (clamped + persisted)
+            case "hub":
+                // "/ra hub <args>" from the Avalonia panel's ILT Hub button (value e.g. "show").
+                if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
+                _iltHub.HandleCommand("hub", value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+                break;
+            case "map":
+            case "lua":
+                // Avalonia panel's Map / Lua buttons (value "toggle"); same as "/ra map|lua".
+                HandleWindowCommand(action.ToLowerInvariant(), value);
+                break;
+            case "huds":
+            case "itemhud":
+            case "remote":
+                // Avalonia Settings > Inventory Management "Inventory HUDs" button; same as "/ra huds".
+                HandleHudCommand(action.ToLowerInvariant(), value);
+                break;
             // movestart/movestop are applied DIRECTLY by the RynthRemote plugin (pure Host.SetAutoRun/
             // SetMotion + its own dead-man watchdog) and are never forwarded here.
         }
-        Host.Log($"[RynthAi] applied remote command: {action}={value}");
+        RynthLog.Write(LogCat.General, $"[RynthAi] applied remote command: {action}={value}");
     }
 
     // Settings the phone must never write (engine-populated read-only status).
@@ -636,12 +753,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     default: return;   // no writable string/null settings
                 }
             }
-            if (ReadOnlySettingKeys.Contains(key)) { Host.Log($"[RynthAi] setSetting rejected read-only '{key}'"); return; }
+            if (ReadOnlySettingKeys.Contains(key)) { RynthLog.Write(LogCat.General, $"[RynthAi] setSetting rejected read-only '{key}'"); return; }
             if (key.Equals("EnableBuffing", StringComparison.OrdinalIgnoreCase) && isBool && !boolVal)
-            { Host.Log("[RynthAi] setSetting BLOCKED: EnableBuffing OFF from remote (turn off in-game)"); return; }
+            { RynthLog.Write(LogCat.General, "[RynthAi] setSetting BLOCKED: EnableBuffing OFF from remote (turn off in-game)"); return; }
 
             var obj = System.Text.Json.Nodes.JsonNode.Parse(dash.BuildSettingsJson())?.AsObject();
-            if (obj == null || !obj.ContainsKey(key)) { Host.Log($"[RynthAi] setSetting unknown key '{key}'"); return; }
+            if (obj == null || !obj.ContainsKey(key)) { RynthLog.Write(LogCat.General, $"[RynthAi] setSetting unknown key '{key}'"); return; }
 
             object applied;
             if (isBool) { obj[key] = boolVal; applied = boolVal; }
@@ -652,9 +769,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 else { obj[key] = v; applied = v; }                                          // float/double field → decimal
             }
             dash.ApplySettingsJson(obj.ToJsonString());
-            Host.Log($"[RynthAi] setSetting {key}={applied}");
+            RynthLog.Write(LogCat.General, $"[RynthAi] setSetting {key}={applied}");
         }
-        catch (Exception ex) { Host.Log($"[RynthAi] setSetting error: {ex.Message}"); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Remote, ex, "setSetting"); }
     }
 
     // ── Full item appraisal (the Assess/Identify data) for equipped gear ──────────────────────────
@@ -940,6 +1057,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
     public override void OnTick()
     {
+        RynthLog.Pump(); // drain debug-to-chat echo + flush buffered log writes (pump thread)
         bool diag = ++_tickDiag <= 3;
         try
         {
@@ -958,6 +1076,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 }
             }
 
+            TickItemInfo(); // /ra iteminfo: print once the requested appraisal lands (or times out)
+
             // Remote control: apply any phone-issued commands. ~50ms cadence so the movement d-pad
             // feels responsive (press→move latency); a tiny dir glob is cheap. No-op when empty.
             // Monotonic clock (TickCount64) — a wall-clock step must never stall this safety-critical poll.
@@ -968,7 +1088,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             while (_forwardedRemoteCommands.TryDequeue(out var fwd))
             {
                 try { ApplyRemoteCommand(fwd.action, fwd.value); }
-                catch (Exception ex) { Host.Log($"[RynthAi] forwarded remote command '{fwd.action}' failed: {ex.Message}"); }
+                catch (Exception ex) { RynthLog.Exception(LogCat.Remote, ex, $"forwarded remote command '{fwd.action}'"); }
             }
 
             // ── Push settings to engine each tick ──────────────────────
@@ -983,11 +1103,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // `settings` local declared further down in OnTick.)
             var pushSettings = _dashboard?.Settings;
             if (diag)
-                Host.Log($"[RynthAi] OnTick: settings push entry — settings null? {pushSettings == null}, HasSetRadarSuppressed={Host.HasSetRadarSuppressed}");
+                RynthLog.Write(LogCat.General, $"[RynthAi] OnTick: settings push entry — settings null? {pushSettings == null}, HasSetRadarSuppressed={Host.HasSetRadarSuppressed}");
             if (pushSettings != null)
             {
                 if (diag)
-                    Host.Log($"[RynthAi] OnTick: pushSettings.SuppressRetailRadar={pushSettings.SuppressRetailRadar}, SuppressRetailPowerbar={pushSettings.SuppressRetailPowerbar}");
+                    RynthLog.Write(LogCat.General, $"[RynthAi] OnTick: pushSettings.SuppressRetailRadar={pushSettings.SuppressRetailRadar}, SuppressRetailPowerbar={pushSettings.SuppressRetailPowerbar}");
                 Host.SetFpsLimit(pushSettings.EnableFPSLimit, pushSettings.TargetFPSFocused, pushSettings.TargetFPSBackground);
                 // "Hide UI" (remote): blank the vanilla AC radar/powerbar too. The RynthAi Avalonia
                 // panels are separate windows already excluded by the stream's PrintWindow capture.
@@ -1016,7 +1136,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             }
 
             _objectCache?.Tick();
-            if (diag) Host.Log("[RynthAi] OnTick: after cache tick");
+            if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after cache tick");
 
             // Periodically flush the creature profile store (~ every 5 seconds at 60Hz).
             if (++_creatureSaveTickCounter >= 300)
@@ -1052,6 +1172,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                         _damageStore?.SetCharacter(_dashboard.CharFolder);
                         _patrolOnLoginPending = _dashboard.Settings.PatrolOnLogin;
                         Log($"RynthAi: per-character settings established late for '{lateName}' (early OnLoginComplete read had failed).");
+
+                        // The Hub needs CharFolder for its state file, so the early login path
+                        // skipped it; create it now so /ra hub and the launcher tile work this session.
+                        if (_iltHub == null)
+                        {
+                            CreateIltHub();
+                            _iltHub?.OnLoginComplete(lateName, _petManager);
+                        }
                     }
                 }
             }
@@ -1067,11 +1195,15 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 _dashboard?.TickAutoSave();
             }
             _questTracker?.Tick();
-            if (diag) Host.Log("[RynthAi] OnTick: after quest tracker");
+            if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after quest tracker");
+            try { _iltHub?.Tick(); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "Tick"); }
+            try { _huds?.Tick(); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "Tick"); }
             DrainGiveQueue();
-            if (diag) Host.Log("[RynthAi] OnTick: after drain give queue");
+            if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after drain give queue");
             _jumper?.Tick();
-            if (diag) Host.Log("[RynthAi] OnTick: after jumper tick");
+            if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after jumper tick");
 
             // ── Affirmative in-world gate ────────────────────────────────
             // _loginComplete is cleared only by the engine's one-shot logout
@@ -1113,7 +1245,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // That is the cause of markers vanishing while the macro runs.
                 try
                 {
-                if (diag) Host.Log("[RynthAi] OnTick: entering loginComplete block");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: entering loginComplete block");
                 if (++_vitalsTickCounter >= 30)
                 {
                     _vitalsTickCounter = 0;
@@ -1129,16 +1261,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     }
                 }
 
-                if (diag) Host.Log("[RynthAi] OnTick: before CheckBusyTimeout");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before CheckBusyTimeout");
                 CheckBusyTimeout();
-                if (diag) Host.Log("[RynthAi] OnTick: before buffManager");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before buffManager");
                 _buffManager?.OnHeartbeat();
-                if (diag) Host.Log("[RynthAi] OnTick: after buffManager");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after buffManager");
 
                 var settings = _dashboard?.Settings;
                 if (settings == null)
                     return;
-                if (diag) Host.Log($"[RynthAi] OnTick: settings ok, macro={settings.IsMacroRunning} action={settings.BotAction}");
+                if (diag) RynthLog.Write(LogCat.General, $"[RynthAi] OnTick: settings ok, macro={settings.IsMacroRunning} action={settings.BotAction}");
 
                 // Macro switched off: combat stops ticking, so a turn it was holding would
                 // stay held and the character spun on its own (2026-09-27). Let go once.
@@ -1167,7 +1299,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // blocked. See ACTIVITY_ARBITER_PLAN.md.
                 try
                 {
-                    _arbiter ??= new ActivityArbiter(m => Host.Log($"[RynthAi] {m}"));
+                    _arbiter ??= new ActivityArbiter(m => RynthLog.Write(LogCat.General, $"[RynthAi] {m}"));
 
                     // The three reasons buffing gets to hold the top slot, which is
                     // what BuffManager's seven scattered string writes encoded:
@@ -1220,7 +1352,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                             if (!_buffComaWarned)
                             {
                                 _buffComaWarned = true;
-                                Host.Log($"[RynthAi] BUFFING COMA: buffing has wanted the tick continuously for {heldMs / 60000:0.0} min with buffs still needed — yielding one tick per ~10s so combat/stance recovery can run. Check for a stance wedge.");
+                                RynthLog.Write(LogCat.General, $"[RynthAi] BUFFING COMA: buffing has wanted the tick continuously for {heldMs / 60000:0.0} min with buffs still needed — yielding one tick per ~10s so combat/stance recovery can run. Check for a stance wedge.");
                                 Host.WriteToChat($"[RynthAi] Buffing has been stuck for {heldMs / 60000:0} min (stance wedge?) — engaging recovery. /ra clearbusy or relog if it persists.", 2);
                             }
                         }
@@ -1352,13 +1484,13 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                         if (sig != _lastCombatTelemetrySig)
                         {
                             _lastCombatTelemetrySig = sig;
-                            Host.Log($"[ScanTele] targets total={sTotal} ring={sRing} possible={sPoss} " +
+                            RynthLog.Write(LogCat.General, $"[ScanTele] targets total={sTotal} ring={sRing} possible={sPoss} " +
                                      $"losBlk={sLos} | atkCasts={atkCasts} sinceKill={sinceKill}");
                         }
                     }
                 }
 
-                if (diag) Host.Log("[RynthAi] OnTick: before salvageManager");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before salvageManager");
 
                 // Combat preempts salvage when a mob is engageable. The old
                 // design deliberately let salvage hold BotAction over Combat
@@ -1379,7 +1511,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // combat over SelectItem; it resumes the moment the threat clears.
                 if (inventorySettled && !combatThreat)
                     _salvageManager?.OnTick(_busyCount);
-                if (diag) Host.Log("[RynthAi] OnTick: before manaStoneManager");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before manaStoneManager");
 
                 // STEP 4: the salvage gap-fill that used to pin/release
                 // "Salvaging" here is GONE. Its whole content — "salvage wants
@@ -1393,7 +1525,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // Mana stone tapping — runs after salvage, independent of looting state.
                 _manaStoneManager?.OnHeartbeat(_busyCount);
                 _petManager?.OnHeartbeat(_busyCount);
-                if (diag) Host.Log("[RynthAi] OnTick: before combatManager");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before combatManager");
 
                 // Missile crafting runs before combat — blocks everything while active.
                 // Gated on the same settle window as InventoryManager: ProcessCrafting
@@ -1445,11 +1577,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 else
                 {
                     _combatManager?.OnHeartbeat();
-                    if (diag) Host.Log("[RynthAi] OnTick: after combatManager.OnHeartbeat");
+                    if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after combatManager.OnHeartbeat");
                     TickCorpseOpening();
                 }
 
-                if (diag) Host.Log("[RynthAi] OnTick: before nav");
+                if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: before nav");
 
                 if (navOwnsTick || navInPortal)
                 {
@@ -1482,12 +1614,20 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     // (Buffing / missile-crafting / BoostNavPriority branches).
                     if (Host.HasNav3D)
                         _navMarkerRenderer?.SubmitNav3D();
+
+                    // Breadcrumb sampling + route recording, then trail / guide line geometry.
+                    try
+                    {
+                        _navBreadcrumbs?.Tick();
+                        if (Host.HasNav3D) _navOverlay?.SubmitNav3D();
+                    }
+                    catch (Exception ex) { RynthLog.Exception(LogCat.Navigation, ex, "nav breadcrumbs/overlay tick"); }
                 }
             }
         }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] OnTick exception: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Exception(LogCat.General, ex, "OnTick");
         }
     }
 
@@ -1527,6 +1667,24 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             if (obj != null && IsLootableClass(obj.ObjectClass))
                 InspectLootRuleForItem(sid, quiet: true);
         }
+
+        // Mag-style item info on select. RequestId was already sent above, so just queue it.
+        var itemInfo = _dashboard?.Settings.ItemInfoSettings;
+        if (currentTargetId != 0 && itemInfo?.OnSelect == true)
+        {
+            int sid = unchecked((int)currentTargetId);
+            WorldObject? obj = _objectCache?[sid];
+            if (obj != null && IsLootableClass(obj.ObjectClass) && ItemInfoWantsClass(itemInfo, obj.ObjectClass))
+                QueueAutoItemInfo(sid, requestId: false);
+        }
+    }
+
+    /// <summary>Nav recorder hook: (name, Decal object class) when <paramref name="id"/> is a portal.</summary>
+    private (string Name, int ObjectClass)? DescribeNavPortal(uint id)
+    {
+        WorldObject? wo = _objectCache?[unchecked((int)id)];
+        if (wo == null || wo.ObjectClass != AcObjectClass.Portal || string.IsNullOrEmpty(wo.Name)) return null;
+        return (wo.Name, (int)AcObjectClass.Portal);
     }
 
     private static bool IsLootableClass(AcObjectClass cls) => cls is not (
@@ -1545,7 +1703,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     public override void OnChatWindowText(string? text, int chatType, ref int eat)
     {
         if (string.IsNullOrEmpty(text)) return;
-        _dashboard?.PushChatLine(text, chatType);
+
+        // ILT Hub captures (quiet /bank, /aug, probes ...) and quiet /myquests refreshes may
+        // hide their reply lines; hidden lines also stay out of the dashboard chat mirror.
+        bool hide = false;
+        try { hide = _iltHub?.OnChat(text) == true; }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "OnChat"); }
+        if (_questTracker?.OnChatLine(text) == true) hide = true;
+        if (hide) eat = 1;
+        else _dashboard?.PushChatLine(text, chatType);
+
         _buffManager?.OnChatWindowText(text, chatType);
         _manaStoneManager?.OnChatWindowText(text);
         _petManager?.OnChatWindowText(text);
@@ -1553,7 +1720,6 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager?.HandleChatForDamage(text);
         _missileCraftingManager?.HandleChat(text);
         _metaManager?.HandleChat(text);
-        _questTracker?.OnChatLine(text);
     }
 
     // ACE sends GameEventKillerNotification (0x01AD) to the killer at the
@@ -1565,6 +1731,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (string.IsNullOrEmpty(deathMessage)) return;
         _combatManager?.OnKillNotification(deathMessage);
         _dashboard?.RecordKill();   // feeds the kills/hour session stat
+        _iltHub?.RecordKill();      // ILT Hub session rates
     }
 
     public override void OnCreateObject(uint objectId)
@@ -1572,7 +1739,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         try { _objectCache?.OnCreateObject(objectId); }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] OnCreateObject EXCEPTION on id=0x{objectId:X8}: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Exception(LogCat.WorldCache, ex, $"OnCreateObject id=0x{objectId:X8}");
         }
     }
 
@@ -1586,7 +1753,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] OnDeleteObject EXCEPTION on id=0x{objectId:X8}: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Exception(LogCat.WorldCache, ex, $"OnDeleteObject id=0x{objectId:X8}");
         }
     }
 
@@ -2032,7 +2199,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] CaptureCreatureSample exception: {ex.Message}");
+            RynthLog.Exception(LogCat.Combat, ex, "CaptureCreatureSample");
         }
     }
 
@@ -2117,21 +2284,21 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         try { OnChatBarEnter(text, ref eat); }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] RynthChat OnChatBarEnter threw: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Exception(LogCat.Chat, ex, "RynthChat OnChatBarEnter");
         }
 
         if (eat != 0)
         {
-            Host.Log($"[ChatDiag] '{text}' eaten locally (eat={eat})");
+            RynthLog.Write(LogCat.General, $"[ChatDiag] '{text}' eaten locally (eat={eat})");
             return; // handled locally (/ra, /mt, /ub, etc.)
         }
 
         if (Host.HasInvokeChatParser)
         {
             bool r = Host.InvokeChatParser(text);   // DIAG: does the engine report the send succeeded?
-            Host.Log($"[ChatDiag] InvokeChatParser('{text}') -> {r}");
+            RynthLog.Write(LogCat.General, $"[ChatDiag] InvokeChatParser('{text}') -> {r}");
         }
-        else Host.Log($"[ChatDiag] '{text}': Host.HasInvokeChatParser=FALSE (no send path wired)");
+        else RynthLog.Write(LogCat.General, $"[ChatDiag] '{text}': Host.HasInvokeChatParser=FALSE (no send path wired)");
     }
 
     internal void EnqueueGive(uint itemId, uint targetId, int stackSize)
@@ -2210,18 +2377,39 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "buildinfo":    HandleBuildInfoCommand(); break;
             case "navdebug":     HandleNavDebugCommand(); break;
             case "addnavpt":     HandleAddNavPointCommand(); break;
+            case "navrec":       HandleNavRecordCommand(parts); break;
+            case "navhud":       HandleNavHudCommand(parts); break;
+            case "navtrail":     HandleNavTrailCommand(parts); break;
             case "follow":       HandleFollowCommand(parts); break;
             case "myquests":
             case "refreshquests": _questTracker?.Refresh(); ChatLine("[RynthAi] Quest flag refresh requested."); break;
+            case "debug":        HandleDebugCommand(parts); break;
+            case "trace":        HandleTraceCommand(parts); break;
+            case "logs":         HandleLogsCommand(parts); break;
+            case "hub":
+            case "quests":
+                // parts: [prefix, verb, args...] — ILT Hub window / quest tracker commands.
+                if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
+                _iltHub.HandleCommand(cmd, parts.Length > 2 ? parts[2..] : Array.Empty<string>());
+                break;
+            case "map":
+            case "lua":          HandleWindowCommand(cmd, parts.Length > 2 ? parts[2] : string.Empty); break;
+            case "huds":
+            case "itemhud":
+            case "remote":
+            case "miniremote":   HandleHudCommand(cmd, parts.Length > 2 ? parts[2] : string.Empty); break;
             case "dunnav":        HandleDungeonNavCommand(parts); break;
             case "dunnav-patrol": HandleDungeonNavPatrolCommand(parts); break;
             case "hazard":        HandleHazardCommand(parts); break;
             case "lootparse":    HandleLootParseCommand(trimmed); break;
             case "lootcheckinv": HandleLootCheckInventoryCommand(trimmed); break;
             case "lootcheck":    HandleLootCheckSelectedCommand(parts); break;
+            case "iteminfo":
+            case "ii":           HandleItemInfoCommand(parts); break;
             case "corpseinfo":   HandleCorpseInfoCommand(); break;
             case "corpsecheck":  HandleCorpseCheckCommand(parts); break;
             case "corpseopen":   HandleCorpseOpenCommand(); break;
+            case "groundloot":   HandleGroundLootCommand(parts); break;
             case "fellow":
             case "fellowship":   HandleFellowshipCommand(parts); break;
             case "fellowinfo":   HandleFellowshipInfoCommand(); break;
@@ -2322,18 +2510,27 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ImGui.SetCurrentContext(Host.ImGuiContext);
         try
         {
+            DetectItemInfoClick(); // /ra iteminfo click left|right
+
             // Nav3D: in 3D mode, geometry is submitted from OnTick (so it
             // survives EnableImGuiShell=false). The clear+submit for nav
             // markers happens there. Here we only need to handle the ImGui
             // fallback (engines without HasNav3D) and any submitters that
             // still live in OnRender.
             _navMarkerRenderer?.RenderImGuiFallback();
+            _navOverlay?.Render(); // waypoint HUD + labels (+ trail/guide fallback without Nav3D)
             _radarWallRenderer?.Render();
             if (_dashboard?.Settings.ShowTerrainPassability == true)
                 _terrainOverlay?.Render();
 
             // Map renders independently of whether the main dashboard is visible.
             _dashboard?.RenderMapWindow();
+
+            // ILT Hub window / confirm popups / games HUD — independent of the dashboard.
+            _iltHub?.Render();
+
+            // Floating HUDs (item counts, Mini Remote, setup window).
+            _huds?.Render();
 
             if (_windowVisible && _dashboard is not null)
             {
@@ -2349,13 +2546,110 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
         catch (Exception ex)
         {
-            Host.Log($"[RynthAi] OnRender exception: {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Exception(LogCat.UI, ex, "OnRender");
         }
         finally
         {
             ImGui.SetCurrentContext(previousContext);
         }
     }
+
+    /// <summary>
+    /// RynthPluginRenderOverlay: called instead of <see cref="OnRender"/> when the engine's ImGui
+    /// shell is off (Avalonia UI). Draws only the windows the Avalonia RynthAi panel doesn't
+    /// have: the ILT Hub (+ its confirm popups and games HUD), the dungeon map, the Lua Scripts
+    /// editor and the Item Info settings window.
+    /// They are separate windows that add to the Avalonia panel; macro/automation never depends
+    /// on them, and any exception is swallowed here so it can't reach the engine.
+    /// </summary>
+    public void OnRenderOverlay()
+    {
+        if (!_initialized || !_loginComplete || Host.ImGuiContext == IntPtr.Zero)
+        {
+            // Logged once per distinct reason so a Hub that never appears can be traced to this gate.
+            string reason = !_initialized ? "not initialized" : !_loginComplete ? "login not complete" : "no ImGui context";
+            if (reason != _overlaySkipReasonLogged)
+            {
+                _overlaySkipReasonLogged = reason;
+                RynthLog.Write(LogCat.UI, $"[Overlay] OnRenderOverlay skipped: {reason}.");
+            }
+            return;
+        }
+
+        if (!_overlayEnteredLogged)
+        {
+            _overlayEnteredLogged = true;
+            RynthLog.Write(LogCat.UI, $"[Overlay] OnRenderOverlay drawing (iltHub={(_iltHub != null ? "ready" : "null")}).");
+        }
+
+        IntPtr previousContext = ImGui.GetCurrentContext();
+        ImGui.SetCurrentContext(Host.ImGuiContext);
+        try
+        {
+            DetectItemInfoClick(); // /ra iteminfo click left|right
+
+            int pushedColors = LegacyDashboardRenderer.PushDashboardStyle();
+            try { _iltHub?.Render(); }
+            finally { ImGui.PopStyleColor(pushedColors); }
+
+            // Dungeon map only: the Avalonia Radar panel and RynthChat already cover radar/chat.
+            _dashboard?.RenderMapWindow(includeRadarAndChat: false);
+
+            // Floating HUDs have no Avalonia counterpart either.
+            _huds?.Render();
+
+            // Nav waypoint HUD / labels are ImGui-only too.
+            _navOverlay?.Render();
+
+            _dashboard?.RenderOverlayWindows();
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Exception(LogCat.UI, ex, "OnRenderOverlay");
+        }
+        finally
+        {
+            ImGui.SetCurrentContext(previousContext);
+        }
+    }
+
+    /// <summary>
+    /// "/ra map|lua [show|hide|toggle]" and the matching remote commands from the Avalonia
+    /// panel's Map / Lua buttons. Both windows are ImGui windows drawn by OnRender (ImGui shell)
+    /// or OnRenderOverlay (Avalonia UI), so this only flips and persists their visibility.
+    /// </summary>
+    private void HandleWindowCommand(string which, string mode)
+    {
+        var dash = _dashboard;
+        if (dash == null) { ChatLine("[RynthAi] Dashboard not ready (log in first)."); return; }
+
+        if (which == "map")
+        {
+            bool shown = dash.SetDungeonMapVisible(mode);
+            if (!shown)
+                ChatLine("[RynthAi] Dungeon map hidden.");
+            else if (dash.IsDungeonMapAutoHidden)
+                ChatLine("[RynthAi] Dungeon map on — it appears when you are indoors.");
+            else
+                ChatLine("[RynthAi] Dungeon map shown.");
+        }
+        else
+        {
+            bool shown = dash.SetLuaWindowVisible(mode);
+            ChatLine(shown ? "[RynthAi] Lua Scripts window shown." : "[RynthAi] Lua Scripts window hidden.");
+        }
+    }
+
+    /// <summary>"/ra huds|itemhud|remote [show|hide|toggle]" and the matching remote commands (pump thread).</summary>
+    private void HandleHudCommand(string which, string mode)
+    {
+        if (_huds == null) { ChatLine("[RynthAi] HUDs not ready (log in first)."); return; }
+        ChatLine("[RynthAi] " + _huds.HandleCommand(which, mode));
+    }
+
+    // One-time OnRenderOverlay diagnostics (render thread only).
+    private string? _overlaySkipReasonLogged;
+    private bool _overlayEnteredLogged;
 
     private void EnsureImGuiResolver()
     {

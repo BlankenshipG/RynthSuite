@@ -61,6 +61,9 @@ public class WorldObjectCache
     // Roots out the "respawned monster invisible until clicked" bug where AC's
     // weenie data lagged behind OnCreateObject by more than 10 ms.
     private readonly HashSet<uint> _slowRetry = new();
+    // Uids that already exhausted one fast-retry burst; the CLASSIFY-GIVEUP diagnostic is
+    // only written on the second give-up so the login burst doesn't flood the log.
+    private readonly HashSet<uint> _giveupOnce = new();
 
     // Objects deleted while still pending classification — skip to avoid stale-pointer AV
     private readonly HashSet<uint> _deletedWhilePending = new();
@@ -176,6 +179,7 @@ public class WorldObjectCache
         _healthRatios.Remove(sid);
         _classifyRetry.Remove(id);
         _slowRetry.Remove(id);
+        _giveupOnce.Remove(id);
         _reclassifySkipState.Remove(id);
         // Only mark as "deleted while pending" when the object was never classified —
         // i.e. it might still be sitting in _pending and TryClassify must skip it to
@@ -194,7 +198,7 @@ public class WorldObjectCache
             {
                 _deleteBeforeClassifyLogCount++;
                 bool seenCreate = _seenCreateObject.Contains(id);
-                _host.Log($"[ReclassifyDiag] 0x{id:X8} DELETE-BEFORE-CLASSIFY seenCreate={(seenCreate ? 1 : 0)}");
+                RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{id:X8} DELETE-BEFORE-CLASSIFY seenCreate={(seenCreate ? 1 : 0)}");
             }
         }
         if (wasInventory)
@@ -234,7 +238,7 @@ public class WorldObjectCache
             bool seenCreate = _seenCreateObject.Contains(id);
             bool inLandscape = _landscape.Contains(sid);
             bool inById = _byId.ContainsKey(sid);
-            _host.Log($"[ReclassifyDiag] 0x{id:X8} HEALTHADD-RESCUE ratio={healthRatio:0.00} seenCreate={(seenCreate ? 1 : 0)} inLandscape={(inLandscape ? 1 : 0)} inById={(inById ? 1 : 0)} wasSkipped={(wasSkipped ? 1 : 0)}");
+            RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{id:X8} HEALTHADD-RESCUE ratio={healthRatio:0.00} seenCreate={(seenCreate ? 1 : 0)} inLandscape={(inLandscape ? 1 : 0)} inById={(inById ? 1 : 0)} wasSkipped={(wasSkipped ? 1 : 0)}");
         }
         else if (_reclassifySkipState.ContainsKey(id))
         {
@@ -314,7 +318,7 @@ public class WorldObjectCache
             _tickDiagCount++;
             int total, landscape, creatures;
             lock (_gate) { total = _byId.Count; landscape = _landscape.Count; creatures = _creatures.Count; }
-            _host.Log($"[RynthAi] Cache.Tick classified {processed} from {pending0} pending, total now {total}, landscape={landscape}, creatures={creatures}");
+            RynthLog.Write(LogCat.WorldCache, $"[RynthAi] Cache.Tick classified {processed} from {pending0} pending, total now {total}, landscape={landscape}, creatures={creatures}");
         }
 
         // Periodically re-check Unknown landscape objects — dynamic creatures whose weenie
@@ -346,13 +350,13 @@ public class WorldObjectCache
                 if (found > 0)
                 {
                     _initialScanDone = true;
-                    _host.Log($"[RynthAi] Inventory scan: discovered {found} item(s), inventory now {_inventory.Count}");
+                    RynthLog.Write(LogCat.WorldCache, $"[RynthAi] Inventory scan: discovered {found} item(s), inventory now {_inventory.Count}");
                 }
                 else if (_initialScanRetries >= MaxInitialScanRetries)
                 {
                     _initialScanDone = true;
                     _inventoryDirty = false;
-                    _host.Log($"[RynthAi] Inventory scan: gave up after {_initialScanRetries} retries (topCount was 0)");
+                    RynthLog.Write(LogCat.WorldCache, $"[RynthAi] Inventory scan: gave up after {_initialScanRetries} retries (topCount was 0)");
                 }
             }
         }
@@ -373,7 +377,7 @@ public class WorldObjectCache
         int atk = -1;
         try { if (_host.HasObjectIsAttackable) atk = _host.ObjectIsAttackable(uid) ? 1 : 0; }
         catch { atk = -2; }
-        _host.Log($"[ClassifyTrace] 0x{uid:X8} name={(hasName ? 1 : 0)} pos={(hasPos ? 1 : 0)} gotType={(gotType ? 1 : 0)} flags=0x{flags:X8} creature={((flags & ItemTypeCreature) != 0 ? 1 : 0)} atk={atk} {note}");
+        RynthLog.Write(LogCat.WorldCache, $"[ClassifyTrace] 0x{uid:X8} name={(hasName ? 1 : 0)} pos={(hasPos ? 1 : 0)} gotType={(gotType ? 1 : 0)} flags=0x{flags:X8} creature={((flags & ItemTypeCreature) != 0 ? 1 : 0)} atk={atk} {note}");
     }
 
     private void TryClassify(uint uid)
@@ -399,7 +403,7 @@ public class WorldObjectCache
             if (uid >= 0x80000000u && _deleteWhilePendingSkipLogCount < MaxDeleteWhilePendingSkipLogLines)
             {
                 _deleteWhilePendingSkipLogCount++;
-                _host.Log($"[ReclassifyDiag] 0x{uid:X8} DELETE-WHILE-PENDING-SKIP");
+                RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} DELETE-WHILE-PENDING-SKIP");
             }
             return;
         }
@@ -445,15 +449,20 @@ public class WorldObjectCache
                     _classifyRetry.Remove(uid);
                     _slowRetry.Add(uid);
 
-                    if (_classifyGiveupLogCount < MaxClassifyGiveupLogLines)
+                    // The first burst (~10 ms) is shorter than the engine's 500 ms identity
+                    // snapshot, so a first give-up is expected noise. Only log once the uid
+                    // has also failed a full slow-retry pass (≥ ReclassifyIntervalSec later).
+                    bool firstGiveup = _giveupOnce.Add(uid);
+                    if (!firstGiveup && _classifyGiveupLogCount < MaxClassifyGiveupLogLines)
                     {
                         _classifyGiveupLogCount++;
-                        _host.Log($"[ReclassifyDiag] 0x{uid:X8} CLASSIFY-GIVEUP retries={retries} (name+pos unreadable across {MaxClassifyRetries} ticks; parked in slow-retry)");
+                        RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} CLASSIFY-GIVEUP retries={retries} (name+pos unreadable across {MaxClassifyRetries} ticks; parked in slow-retry)");
                     }
                 }
             }
             return;
         }
+        _giveupOnce.Remove(uid); // readable now — give-up bookkeeping no longer needed
 
         // AC GUID ranges:
         // 0xC0000000–0xFFFFFFFF = pack/ground items (dynamic items)
@@ -540,17 +549,13 @@ public class WorldObjectCache
                     return;
                 }
 
-                // Non-creature with a position — could be equipped item on 0x8000 range
-                // or static world object; classify by type flags
-                if ((typeFlags & (ItemTypeMeleeWeapon | ItemTypeMissileWeapon | ItemTypeCaster | ItemTypeArmor | ItemTypeContainer)) != 0)
-                {
-                    // Item with a world position = equipped or ground-dropped
-                    cls = ClassifyByItemType(typeFlags);
-                    _inventory.Add(id);
-                    _landscape.Remove(id);
-                    _byId[id] = Make(id, name, cls);
+                // Non-creature with a known type: classify it by its ItemType flags. Previously
+                // only weapons/armor/casters/containers were accepted here, so keys, gems,
+                // spell components, food, misc and portals fell through to Unknown landscape
+                // and ReclassifyUnknownDynamics re-probed them every 2 s forever.
+                AcObjectClass typedCls = ClassifyByItemType(typeFlags);
+                if (typedCls != AcObjectClass.Unknown && PlaceTypedObject(uid, id, name, typedCls, typeFlags))
                     return;
-                }
             }
             else if (uid >= 0x80000000u)
             {
@@ -600,6 +605,84 @@ public class WorldObjectCache
     }
 
     /// <summary>
+    /// Places a positioned, non-creature object whose ItemType resolved to a real class.
+    /// Must be called under <see cref="_gate"/> from <see cref="TryClassify"/>.
+    /// <list type="bullet">
+    /// <item>Portals / lifestones → landscape with their real class (so "closestportal" works).</item>
+    /// <item>Dynamic objects owned by the player (wielded, in the main pack, or in a side pack) → inventory.</item>
+    /// <item>Other dynamic objects (ground drops, corpse / chest contents) → landscape with the item class.</item>
+    /// <item>Ownership unreadable → legacy rule: gear-like types go to inventory, the rest to landscape.</item>
+    /// <item>Static non-fixture objects (doors, signs, chests) → returns false; caller keeps them Unknown scenery.</item>
+    /// </list>
+    /// Returns true when the object was placed and recorded in <see cref="_byId"/>.
+    /// </summary>
+    private bool PlaceTypedObject(uint uid, int id, string name, AcObjectClass cls, uint typeFlags)
+    {
+        bool isFixture = cls is AcObjectClass.Portal or AcObjectClass.Lifestone;
+        bool isDynamic = uid >= 0x80000000u;
+
+        bool toInventory;
+        if (isFixture)
+        {
+            toInventory = false;
+        }
+        else if (!isDynamic)
+        {
+            // Static world objects keep the original Unknown-scenery behaviour except
+            // containers, which were always accepted (chests are static containers).
+            if ((typeFlags & ItemTypeContainer) == 0)
+                return false;
+            toInventory = false;
+        }
+        else
+        {
+            bool owned = IsOwnedByPlayer(id, out bool ownershipKnown);
+            toInventory = ownershipKnown
+                ? owned
+                : (typeFlags & (ItemTypeMeleeWeapon | ItemTypeMissileWeapon | ItemTypeCaster | ItemTypeArmor | ItemTypeContainer)) != 0;
+        }
+
+        _classifyRetry.Remove(uid);
+        _reclassifySkipState.Remove(uid);
+        if (toInventory)
+        {
+            _inventory.Add(id);
+            _landscape.Remove(id);
+        }
+        else
+        {
+            _inventory.Remove(id);
+            _landscape.Add(id);
+        }
+        _byId[id] = Make(id, name, cls);
+        TraceClassify(uid, name.Length > 0, true, true, typeFlags, toInventory ? $"typed->{cls}(inv)" : $"typed->{cls}(land)");
+        return true;
+    }
+
+    /// <summary>
+    /// True when the object is wielded by the player, sits in the player's main pack, or
+    /// sits in a side pack whose container is the player. <paramref name="known"/> is false
+    /// when the player id isn't set yet or the ownership read failed.
+    /// </summary>
+    private bool IsOwnedByPlayer(int id, out bool known)
+    {
+        known = false;
+        if (_playerId == 0 || !TryGetOwnership(id, out int containerId, out int wielderId, out _))
+            return false;
+
+        known = true;
+        uint container = unchecked((uint)containerId);
+        uint wielder = unchecked((uint)wielderId);
+        if (wielder == _playerId || container == _playerId)
+            return true;
+
+        // One level of nesting covers side packs (AC doesn't allow packs inside packs).
+        return container != 0
+            && TryGetOwnership(containerId, out int outer, out _, out _)
+            && unchecked((uint)outer) == _playerId;
+    }
+
+    /// <summary>
     /// Re-enqueue every uid that's currently parked in <see cref="_slowRetry"/>. Pairs
     /// with the give-up branch of <see cref="TryClassify"/>: when an OnCreateObject-then-
     /// fast-retry burst exhausts in &lt;10 ms before AC populates the weenie, the uid
@@ -628,6 +711,7 @@ public class WorldObjectCache
         {
         List<int>? toPromote = null;
         List<int>? toCorpse  = null;
+        List<(int Id, uint Flags)>? toType = null; // Unknowns whose ItemType is now a real item class
         foreach (int id in _landscape)
         {
             uint uid = unchecked((uint)id);
@@ -661,14 +745,22 @@ public class WorldObjectCache
             // immediate signal that doesn't wait on qualities/appraisal). This
             // second path is what rescues a login mob within 2s if it slipped
             // to Unknown before its weenie/combat-state was readable.
-            bool isCreature = _host.TryGetItemType(uid, out uint typeFlags)
-                              && (typeFlags & ItemTypeCreature) != 0;
+            bool gotType = _host.TryGetItemType(uid, out uint typeFlags);
+            bool isCreature = gotType && (typeFlags & ItemTypeCreature) != 0;
             if (!isCreature
                 && _host.HasObjectIsAttackable
                 && _host.ObjectIsAttackable(uid))
                 isCreature = true;
             if (!isCreature)
             {
+                // Type resolved since first classify (e.g. a key / gem / food whose type
+                // arrived late): promote to a real item class instead of re-probing forever.
+                if (gotType && typeFlags != 0 && ClassifyByItemType(typeFlags) != AcObjectClass.Unknown)
+                {
+                    toType ??= new List<(int, uint)>();
+                    toType.Add((id, typeFlags));
+                    continue;
+                }
                 DiagLogReclassifySkip(uid, wo.Name);
                 continue;
             }
@@ -687,18 +779,32 @@ public class WorldObjectCache
                 _inventory.Remove(id);
                 _byId[id] = Make(id, name ?? string.Empty, AcObjectClass.Corpse);
             }
-            _host.Log($"[RynthAi] ReclassifyUnknownDynamics: rescued {toCorpse.Count} stale corpse(s) → Corpse");
+            RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ReclassifyUnknownDynamics: rescued {toCorpse.Count} stale corpse(s) → Corpse");
+        }
+
+        // Applied after the enumeration: PlaceTypedObject mutates _landscape / _inventory.
+        if (toType != null)
+        {
+            int placed = 0;
+            foreach (var (id, flags) in toType)
+            {
+                if (!_byId.TryGetValue(id, out var wo)) continue;
+                if (PlaceTypedObject(unchecked((uint)id), id, wo.Name ?? string.Empty, ClassifyByItemType(flags), flags))
+                    placed++;
+            }
+            RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ReclassifyUnknownDynamics: typed {placed} Unknown object(s) as items");
         }
 
         // DIAG: heartbeat — Unknown landscape candidates checked but nothing promoted
         // this pass. Confirms ReclassifyUnknownDynamics is running and engine signals
         // keep failing for the stuck uids (vs. them never reaching _landscape at all).
         if (toPromote == null
+            && toType == null
             && _reclassifySkipState.Count > 0
             && _reclassifyDiagSummaryCount < MaxReclassifyDiagSummaries)
         {
             _reclassifyDiagSummaryCount++;
-            _host.Log($"[ReclassifyDiag] pass: {_reclassifySkipState.Count} stuck Unknown landscape candidate(s), 0 promoted");
+            RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] pass: {_reclassifySkipState.Count} stuck Unknown landscape candidate(s), 0 promoted");
         }
 
         if (toPromote == null) return;
@@ -712,7 +818,7 @@ public class WorldObjectCache
             _reclassifySkipState.Remove(uid); // diagnostic state cleared on success
         }
 
-        _host.Log($"[RynthAi] ReclassifyUnknownDynamics: promoted {toPromote.Count} object(s) to Creature");
+        RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ReclassifyUnknownDynamics: promoted {toPromote.Count} object(s) to Creature");
         }
     }
 
@@ -738,7 +844,7 @@ public class WorldObjectCache
             return; // state unchanged — suppress duplicate
         _reclassifySkipState[uid] = state;
         _reclassifyDiagCount++;
-        _host.Log($"[ReclassifyDiag] 0x{uid:X8} skip: {state}");
+        RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} skip: {state}");
     }
 
     // ── WorldFilter API ───────────────────────────────────────────────────
@@ -792,7 +898,7 @@ public class WorldObjectCache
                     {
                         _indexerRescueLogCount++;
                         bool seenCreate = _seenCreateObject.Contains(uid);
-                        _host.Log($"[ReclassifyDiag] 0x{uid:X8} INDEXER-RESCUE name='{name}' flags=0x{typeFlags:X8} seenCreate={(seenCreate ? 1 : 0)}");
+                        RynthLog.Write(LogCat.WorldCache, $"[ReclassifyDiag] 0x{uid:X8} INDEXER-RESCUE name='{name}' flags=0x{typeFlags:X8} seenCreate={(seenCreate ? 1 : 0)}");
                     }
                 }
                 else
@@ -855,6 +961,14 @@ public class WorldObjectCache
             ? v
             : defaultValue;
     }
+
+    /// <summary>
+    /// True when the object's ownership is readable and it has neither a container nor a
+    /// wielder — i.e. it lies loose in the world. Unreadable ownership reads as false, so a
+    /// pack item whose snapshot is missing is never mistaken for a ground drop.
+    /// </summary>
+    public bool IsOnGround(int id)
+        => TryGetOwnership(id, out int containerId, out int wielderId, out _) && containerId == 0 && wielderId == 0;
 
     public int GetContainerId(int id)
     {
@@ -1281,7 +1395,7 @@ public class WorldObjectCache
             if (!_hazardCells.Add(cellId)) return false;
             _hazardVersion++;
             DungeonHazardStore.Append(cellId >> 16, cellId);
-            _host.Log($"[Hazard] manually marked cell 0x{cellId:X8}");
+            RynthLog.Write(LogCat.WorldCache, $"[Hazard] manually marked cell 0x{cellId:X8}");
             return true;
         }
     }
@@ -1361,7 +1475,7 @@ public class WorldObjectCache
             if (added > 0)
             {
                 _hazardVersion++;
-                _host.Log($"[Hazard] seeded {added} persisted hazard cell(s) for landblock 0x{landblockKey:X4}");
+                RynthLog.Write(LogCat.WorldCache, $"[Hazard] seeded {added} persisted hazard cell(s) for landblock 0x{landblockKey:X4}");
             }
         }
     }
@@ -1385,7 +1499,7 @@ public class WorldObjectCache
             if (added > 0)
             {
                 _hazardVersion++;
-                _host.Log($"[Hazard] Detector C: {added} EnvCell-surface hazard cell(s) seeded from floor textures");
+                RynthLog.Write(LogCat.WorldCache, $"[Hazard] Detector C: {added} EnvCell-surface hazard cell(s) seeded from floor textures");
             }
         }
     }
@@ -1416,7 +1530,7 @@ public class WorldObjectCache
             // waypoint. Keyed by landblock (cellId >> 16) — hazards are static world
             // geometry, identical for every character.
             DungeonHazardStore.Append(cellId >> 16, cellId);
-            _host.Log($"[Hazard] 0x{uid:X8} '{name}' → cell 0x{cellId:X8} (persisted)");
+            RynthLog.Write(LogCat.WorldCache, $"[Hazard] 0x{uid:X8} '{name}' → cell 0x{cellId:X8} (persisted)");
         }
     }
 
@@ -1446,7 +1560,7 @@ public class WorldObjectCache
 
         // Scan player's direct contents
         int topCount = _host.GetContainerContents(playerId, buf);
-        _host.Log($"[RynthAi] ScanFullInventory: topCount={topCount} for player 0x{playerId:X8}");
+        RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ScanFullInventory: topCount={topCount} for player 0x{playerId:X8}");
         for (int i = 0; i < topCount; i++)
             discovered += EnsureInCache(buf[i]);
 
@@ -1468,7 +1582,7 @@ public class WorldObjectCache
         }
 
         if (discovered > 0)
-            _host.Log($"[RynthAi] ScanFullInventory: discovered {discovered} new item(s) across {packIds.Count + 1} container(s)");
+            RynthLog.Write(LogCat.WorldCache, $"[RynthAi] ScanFullInventory: discovered {discovered} new item(s) across {packIds.Count + 1} container(s)");
 
         return discovered;
         }

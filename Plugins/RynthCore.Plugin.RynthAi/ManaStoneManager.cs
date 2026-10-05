@@ -95,7 +95,7 @@ internal sealed class ManaStoneManager
             bool stoneGone = _activeStoneId != 0 && _objectCache[_activeStoneId] == null;
             if (itemGone || stoneGone)
             {
-                _host.Log($"[RynthAi] ManaStone: tap completion detected (itemGone={itemGone} stoneGone={stoneGone}).");
+                RynthLog.Write(LogCat.ManaStones, $"[RynthAi] ManaStone: tap completion detected (itemGone={itemGone} stoneGone={stoneGone}).");
                 GoIdle();
             }
         }
@@ -103,7 +103,7 @@ internal sealed class ManaStoneManager
         {
             if (_activeStoneId != 0 && _objectCache[_activeStoneId] == null)
             {
-                _host.Log($"[RynthAi] ManaStone: use-on-player completion detected (stone destroyed).");
+                RynthLog.Write(LogCat.ManaStones, $"[RynthAi] ManaStone: use-on-player completion detected (stone destroyed).");
                 Reset();
             }
         }
@@ -114,7 +114,7 @@ internal sealed class ManaStoneManager
         // blocks the entire mana stone subsystem indefinitely.
         if (_state != TapState.Idle && now - _actionIssuedAt > ActionTimeoutMs)
         {
-            _host.Log($"[RynthAi] ManaStone: action timeout in state {_state} after {now - _actionIssuedAt}ms (stone=0x{(uint)_activeStoneId:X8} item=0x{(uint)_activeItemId:X8}), resetting.");
+            RynthLog.Write(LogCat.ManaStones, $"[RynthAi] ManaStone: action timeout in state {_state} after {now - _actionIssuedAt}ms (stone=0x{(uint)_activeStoneId:X8} item=0x{(uint)_activeItemId:X8}), resetting.");
 
             // If a use-on-player keeps timing out with the same stone, blacklist
             // the stone so subsequent ticks don't pick it again. Otherwise we'd
@@ -122,7 +122,7 @@ internal sealed class ManaStoneManager
             if (_state == TapState.UsingOnPlayer && _activeStoneId != 0)
             {
                 _stoneUseOnPlayerCooldownUntil[_activeStoneId] = now + StoneUseOnPlayerCooldownMs;
-                _host.Log($"[RynthAi] ManaStone: blacklisting stone 0x{(uint)_activeStoneId:X8} for use-on-player ({StoneUseOnPlayerCooldownMs / 1000}s cooldown).");
+                RynthLog.Write(LogCat.ManaStones, $"[RynthAi] ManaStone: blacklisting stone 0x{(uint)_activeStoneId:X8} for use-on-player ({StoneUseOnPlayerCooldownMs / 1000}s cooldown).");
             }
             // For the tap path, the STONE is the more likely culprit when an
             // action silently fails — AC won't drain into a charged stone, so
@@ -131,7 +131,7 @@ internal sealed class ManaStoneManager
             if (_state == TapState.TappingItem && _activeStoneId != 0)
             {
                 _stoneTapCooldownUntil[_activeStoneId] = now + StoneTapCooldownMs;
-                _host.Log($"[RynthAi] ManaStone: blacklisting stone 0x{(uint)_activeStoneId:X8} for tap ({StoneTapCooldownMs / 1000}s cooldown).");
+                RynthLog.Write(LogCat.ManaStones, $"[RynthAi] ManaStone: blacklisting stone 0x{(uint)_activeStoneId:X8} for tap ({StoneTapCooldownMs / 1000}s cooldown).");
             }
             // ALSO shelve the TARGET item. A target that never completes a drain
             // (server can't resolve the stone guid, item is retained/undrainable,
@@ -145,7 +145,7 @@ internal sealed class ManaStoneManager
             if (_state == TapState.TappingItem && _activeItemId != 0)
             {
                 _tapTargetCooldownUntil[_activeItemId] = now + TapTargetCooldownMs;
-                _host.Log($"[RynthAi] ManaStone: shelving tap target 0x{(uint)_activeItemId:X8} for {TapTargetCooldownMs / 1000}s (drain never completed).");
+                RynthLog.Write(LogCat.ManaStones, $"[RynthAi] ManaStone: shelving tap target 0x{(uint)_activeItemId:X8} for {TapTargetCooldownMs / 1000}s (drain never completed).");
             }
             Reset();
             return; // let things settle before starting a new action this tick
@@ -186,7 +186,7 @@ internal sealed class ManaStoneManager
             {
                 _stoneKnownCharged.Add(_activeStoneId);
                 _stoneTapCooldownUntil.Remove(_activeStoneId); // supersede cooldown
-                _host.Log($"[RynthAi] ManaStone: stone 0x{(uint)_activeStoneId:X8} is actually charged (server: 'already full') — marking known-charged.");
+                RynthLog.Write(LogCat.ManaStones, $"[RynthAi] ManaStone: stone 0x{(uint)_activeStoneId:X8} is actually charged (server: 'already full') — marking known-charged.");
                 GoIdle();
                 return;
             }
@@ -226,7 +226,7 @@ internal sealed class ManaStoneManager
         {
             _activeStoneId = stoneId;
             _activeItemId  = targetId;
-            _host.Log($"[RynthAi] ManaStone: draining 0x{(uint)targetId:X8} with stone 0x{(uint)stoneId:X8}");
+            RynthLog.Write(LogCat.ManaStones, $"[RynthAi] ManaStone: draining 0x{(uint)targetId:X8} with stone 0x{(uint)stoneId:X8}");
             IssueTapItem(stoneId, targetId);
             return;
         }
@@ -262,7 +262,7 @@ internal sealed class ManaStoneManager
         // Confirm the stone still exists in inventory
         if (_objectCache[_activeStoneId] == null) { Reset(); return; }
 
-        _host.Log($"[RynthAi] ManaStone: using charged stone 0x{(uint)_activeStoneId:X8} on player");
+        RynthLog.Write(LogCat.ManaStones, $"[RynthAi] ManaStone: using charged stone 0x{(uint)_activeStoneId:X8} on player");
         _state          = TapState.UsingOnPlayer;
         _actionIssuedAt = NowMs;
         _host.UseObjectOn(unchecked((uint)_activeStoneId), playerId);

@@ -50,7 +50,7 @@ public class CombatManager : IDisposable
         if (_stanceFlipAttempts == 16 && !_stanceFlipWarned)
         {
             _stanceFlipWarned = true;
-            _host.Log($"[EquipDiag] WARNING: {_stanceFlipAttempts} consecutive ChangeCombatMode sends without reaching the stance — wedge persists despite recovery; backing off to {StanceRetryDelayMs() / 1000:0}s retries.");
+            RynthLog.Write(LogCat.Combat, $"[EquipDiag] WARNING: {_stanceFlipAttempts} consecutive ChangeCombatMode sends without reaching the stance — wedge persists despite recovery; backing off to {StanceRetryDelayMs() / 1000:0}s retries.");
         }
     }
 
@@ -117,6 +117,22 @@ public class CombatManager : IDisposable
     private bool _combatSwapTeardownDone;
     private const int CombatBowDequipMaxAttempts = 3;
     private const double WandSwapWieldResolveMs = 4000;
+
+    // ── Off-hand shield equip state ──────────────────────────────────────
+    // Best effort: once the main weapon is wielded and Melee stance reached, a
+    // configured shield is UseObject-ed into the off hand. Same pacing rules as
+    // the wand gate — one attempt in flight, resolve timeout, cooldown after a
+    // miss, and a per-shield failure cap so a shield that can't be wielded
+    // (skill/level requirement, two-hander) never jams the item queue.
+    private int      _shieldPendingId;
+    private DateTime _shieldPendingAt      = DateTime.MinValue;
+    private DateTime _shieldCooldownUntil  = DateTime.MinValue;
+    private readonly Dictionary<int, int> _shieldFailCounts = new();
+    private readonly HashSet<int> _shieldGiveUpWarned = new();
+    private DateTime _lastShieldDiagAt     = DateTime.MinValue;
+    private const double ShieldWieldResolveMs  = 3000;
+    private const double ShieldWieldCooldownMs = 15000;
+    private const int    ShieldWieldFailMax    = 3;
 
     // Clear all stance-deadlock episode state. Called wherever the stance is
     // reached or the target drops, so the next episode starts fresh.
@@ -347,6 +363,12 @@ public class CombatManager : IDisposable
         _damageStore = damage;
     }
 
+    // Shared read-only UB damage-type seed: ranked elements per wcid/name, used by
+    // GetPreferredElement only when the monster has no appraised resists.
+    private UbMobSeedStore? _mobSeedStore;
+
+    internal void SetMobSeedStore(UbMobSeedStore? seed) => _mobSeedStore = seed;
+
     public int RaycastBlockCount { get; private set; }
     public int RaycastCheckCount { get; private set; }
 
@@ -522,7 +544,8 @@ public class CombatManager : IDisposable
                 pickedWeaponId = (int)deff;
             else
             {
-                var bestWeapon = _settings.ItemRules.FirstOrDefault();
+                // Same filter as EquipWeaponAndSetStance — shields are off-hand only.
+                var bestWeapon = _settings.ItemRules.FirstOrDefault(i => IsUsableCombatWeapon(i.Id));
                 if (bestWeapon != null) pickedWeaponId = bestWeapon.Id;
             }
             if (pickedWeaponId == 0) pickedWeaponId = FindWandInItems();
@@ -629,7 +652,7 @@ public class CombatManager : IDisposable
             _lastAttackedTargetId = 0;
             _targetLockedAt = DateTime.MinValue;
             _lastDamageDealtAt = DateTime.MinValue;
-            _host.Log("[RynthAi] Raycast ready — combat clean slate (blacklist cleared, target timers reset).");
+            RynthLog.Write(LogCat.Combat, "[RynthAi] Raycast ready — combat clean slate (blacklist cleared, target timers reset).");
         }
 
         // Drop expired kill-suppression entries so the set can't grow unbounded
@@ -776,7 +799,7 @@ public class CombatManager : IDisposable
         _spellManager = spellManager;
         // Diagnostic: surface every blacklist (any path) with id + reason so a
         // single login test is conclusive instead of another guess.
-        _blacklistManager.Log = m => _host.Log($"[Blacklist] {m}");
+        _blacklistManager.Log = m => RynthLog.Write(LogCat.Combat, $"[Blacklist] {m}");
     }
 
     public void SetSpellManager(SpellManager spellManager) => _spellManager = spellManager;
@@ -993,7 +1016,7 @@ public class CombatManager : IDisposable
         if (_dmgDbgCount < 15)
         {
             _dmgDbgCount++;
-            _host.Log($"[DmgDbg] amt={amount} crit={crit} wcid={wcid} mode={CurrentCombatMode} text='{text}'");
+            RynthLog.Write(LogCat.Combat, $"[DmgDbg] amt={amount} crit={crit} wcid={wcid} mode={CurrentCombatMode} text='{text}'");
         }
 
         // MAGIC-ONLY: melee/missile get the structured 0x01B1 event (OnCombatDamage),
@@ -1112,7 +1135,7 @@ public class CombatManager : IDisposable
                 lo.Contains("have all the components for this spell"))
             {
                 _spellManager?.MarkSpellUnresolvable(_pendingOffensiveSpellId);
-                _host.Log($"[CombatCast] NO-COMPONENTS id={_pendingOffensiveSpellId} " +
+                RynthLog.Write(LogCat.Combat, $"[CombatCast] NO-COMPONENTS id={_pendingOffensiveSpellId} " +
                           $"'{SpellTableStub.GetById(_pendingOffensiveSpellId)?.Name}' — '{text.Trim()}'. " +
                           $"Marked unresolvable → tiering down to an alternative.");
                 _pendingOffensiveSpellId = 0;
@@ -1337,7 +1360,7 @@ public class CombatManager : IDisposable
     private void DropTarget(string reason)
     {
         if (activeTargetId != 0)
-            _host.Log($"[RynthAi] DropTarget 0x{activeTargetId:X8}: {reason} [{DescribeTargetPos(activeTargetId)}]");
+            RynthLog.Write(LogCat.Combat, $"[RynthAi] DropTarget 0x{activeTargetId:X8}: {reason} [{DescribeTargetPos(activeTargetId)}]");
         activeTargetId = 0;
         _lockedTargetId = 0;
         // A turn held toward the dropped target must be let go, or the character keeps
@@ -1402,7 +1425,7 @@ public class CombatManager : IDisposable
                 _lastCastWeaponId, _lastCastElement, _lastCastTier, _fightDamage,
                 DateTime.Now.AddSeconds(5)));
         }
-        _host.Log($"[RynthAi] Predicted kill shot 0x{swapId:X8} '{_worldFilter[swapId]?.Name}' (cast#{_fightCastCount} hp~{_fightTargetMaxHp:0} dealt~{_fightDamage:0}) — confirmed accepted, swapping to next target.");
+        RynthLog.Write(LogCat.Combat, $"[RynthAi] Predicted kill shot 0x{swapId:X8} '{_worldFilter[swapId]?.Name}' (cast#{_fightCastCount} hp~{_fightTargetMaxHp:0} dealt~{_fightDamage:0}) — confirmed accepted, swapping to next target.");
         // The pending-offensive judge state belongs to the mob being dropped —
         // clearing it stops JudgePendingOffensiveCast from recording this cast
         // against the dead target on the next attack block.
@@ -1525,7 +1548,7 @@ public class CombatManager : IDisposable
         if (_killDbgCount < 1000)
         {
             _killDbgCount++;
-            _host.Log($"[KillDbg] how={how} curMatch={curMatches} tid=0x{(uint)tid:X8} fightWcid={_fightTargetWcid} cnt={_fightCastCount} lastWcid={_lastFightWcid} pend={_predictedKillPending.Count} msg='{deathMessage}'");
+            RynthLog.Write(LogCat.Combat, $"[KillDbg] how={how} curMatch={curMatches} tid=0x{(uint)tid:X8} fightWcid={_fightTargetWcid} cnt={_fightCastCount} lastWcid={_lastFightWcid} pend={_predictedKillPending.Count} msg='{deathMessage}'");
         }
 
         // Drop the current target only if IT is the one that died.
@@ -1819,7 +1842,7 @@ public class CombatManager : IDisposable
         }
 
         // Update the pre-scanned target list (distance, attackable, LOS — no selection)
-        try { ScanNearbyTargets(); } catch (Exception ex) { _host.Log($"[RynthAi] ScanNearbyTargets crashed: {ex.Message}"); }
+        try { ScanNearbyTargets(); } catch (Exception ex) { RynthLog.Write(LogCat.Combat, $"[RynthAi] ScanNearbyTargets crashed: {ex.Message}"); }
 
         // Validate current target — restore from lock first so transient world-filter nulls
         // don't cause HandleCombatTrigger to pick a different mob on the same tick.
@@ -2071,10 +2094,10 @@ public class CombatManager : IDisposable
                 // bounds retries. Melee/missile (AttackTarget, below) is
                 // deliberately NOT gated on this — a weapon swing isn't a spell
                 // cast and AC paces the swing animation itself.
-                if (!CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s)))
+                if (!CastGateWatchdog.CanCastNow(_host.CanCastNow, s => RynthLog.Write(LogCat.Combat, s)))
                 {
                     if ((DateTime.Now - lastAttackCmd).TotalMilliseconds > 5000)
-                        _host.Log($"[CombatCast] CanCastNow=false — gesture gate blocking cast (last attack {(DateTime.Now - lastAttackCmd).TotalMilliseconds:0}ms ago, target=0x{activeTargetId:X8})");
+                        RynthLog.Write(LogCat.Combat, $"[CombatCast] CanCastNow=false — gesture gate blocking cast (last attack {(DateTime.Now - lastAttackCmd).TotalMilliseconds:0}ms ago, target=0x{activeTargetId:X8})");
                     LastCombatSkipReason = "cast-gate"; // D4 record-only (CanCastNow=false)
                     return true;
                 }
@@ -2185,7 +2208,7 @@ public class CombatManager : IDisposable
         string key = $"enableCombat={_settings.EnableCombat} scanned={_scannedTargets.Count} active=0x{activeTargetId:X8} busy={BusyCount} mode={CurrentCombatMode} attack={attackBucket} action='{_settings.BotAction}'";
         if (key == _lastCombatStateKey) return;
         _lastCombatStateKey = key;
-        _host.Log($"Combat: state {key} (msSinceAttack={msSinceAttack})");
+        RynthLog.Write(LogCat.Combat, $"Combat: state {key} (msSinceAttack={msSinceAttack})");
     }
 
     public void OnHeartbeat()
@@ -2214,7 +2237,7 @@ public class CombatManager : IDisposable
         if (_settings.EnableCombat)
         {
             try { ScanNearbyTargets(); }
-            catch (Exception ex) { _host.Log($"[RynthAi] ScanNearbyTargets CRASH: {ex.Message}"); }
+            catch (Exception ex) { RynthLog.Write(LogCat.Combat, $"[RynthAi] ScanNearbyTargets CRASH: {ex.Message}"); }
 
             // Only hold the "Combat" BotAction lock while actively engaging.
             // "Actively engaging" = an attack command was issued recently.
@@ -2247,7 +2270,7 @@ public class CombatManager : IDisposable
         if (_settings.EnableCombat)
         {
             try { Think(); }
-            catch (Exception ex) { _host.Log($"[RynthAi] Think CRASH: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}"); }
+            catch (Exception ex) { RynthLog.Write(LogCat.Combat, $"[RynthAi] Think CRASH: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}"); }
 
             // BotAction no longer written post-Think either — the arbiter
             // recomputes from HasEngageableTarget every tick (33ms lag, picks
@@ -2361,10 +2384,10 @@ public class CombatManager : IDisposable
         // up) — if this floods the log, selection is thrashing again and the two
         // scores say by how much.
         if (_lockedTargetId != 0)
-            _host.Log($"[CombatTarget] switch 0x{_lockedTargetId:X8} '{_worldFilter[_lockedTargetId]?.Name}' (score={(heldScore == double.MinValue ? "gone" : heldScore.ToString("0.0"))}, {DescribeTargetPos(_lockedTargetId)}) " +
+            RynthLog.Write(LogCat.Combat, $"[CombatTarget] switch 0x{_lockedTargetId:X8} '{_worldFilter[_lockedTargetId]?.Name}' (score={(heldScore == double.MinValue ? "gone" : heldScore.ToString("0.0"))}, {DescribeTargetPos(_lockedTargetId)}) " +
                       $"-> 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' (score={bestScore:0.0}, {DescribeTargetPos(bestId)})");
         else
-            _host.Log($"[CombatTarget] lock 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' (score={bestScore:0.0}, {DescribeTargetPos(bestId)})");
+            RynthLog.Write(LogCat.Combat, $"[CombatTarget] lock 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' (score={bestScore:0.0}, {DescribeTargetPos(bestId)})");
 
         activeTargetId      = bestId;
         _lockedTargetId     = bestId;
@@ -2441,7 +2464,17 @@ public class CombatManager : IDisposable
 
     private DateTime _lastEquipTime = DateTime.MinValue;
     private DateTime _lastStanceTime = DateTime.MinValue;
+    // Throttles the [EquipDiag] log lines to one every 5 s.
     private DateTime _lastEquipDiagAt = DateTime.MinValue;
+    private DateTime _lastMissileAmmoEquipAttempt = DateTime.MinValue;
+
+    // HasWieldedAmmo's all-objects probe makes native reads per missile-class object, so its
+    // answer is reused for this long; the diag line is throttled separately.
+    private const int AmmoProbeIntervalMs = 750;
+    private const int AmmoDiagIntervalMs  = 15000;
+    private DateTime _ammoProbeAt = DateTime.MinValue;
+    private bool     _ammoProbeResult;
+    private DateTime _lastAmmoDiagAt = DateTime.MinValue;
 
     // Returns true when the correct weapon is wielded and combat mode matches — safe to attack.
     // Returns false when a weapon swap or stance change is in progress — caller should skip this tick.
@@ -2491,7 +2524,7 @@ public class CombatManager : IDisposable
             if ((DateTime.Now - _lastEquipDiagAt).TotalSeconds > 5)
             {
                 _lastEquipDiagAt = DateTime.Now;
-                _host.Log($"[EquipDiag] no weapon found (source=none, desired='{desired}', ItemRules={_settings.ItemRules.Count}, MonsterRule='{rule?.Name ?? "null"}') — proceeding unarmed");
+                RynthLog.Write(LogCat.Combat, $"[EquipDiag] no weapon found (source=none, desired='{desired}', ItemRules={_settings.ItemRules.Count}, MonsterRule='{rule?.Name ?? "null"}') — proceeding unarmed");
             }
             return true;
         }
@@ -2502,7 +2535,7 @@ public class CombatManager : IDisposable
             if ((DateTime.Now - _lastEquipDiagAt).TotalSeconds > 5)
             {
                 _lastEquipDiagAt = DateTime.Now;
-                _host.Log($"[EquipDiag] weapon 0x{targetWeaponId:X8} not in WorldFilter (source={weaponSource}) — proceeding unarmed");
+                RynthLog.Write(LogCat.Combat, $"[EquipDiag] weapon 0x{targetWeaponId:X8} not in WorldFilter (source={weaponSource}) — proceeding unarmed");
             }
             return true;
         }
@@ -2550,16 +2583,20 @@ public class CombatManager : IDisposable
                 if (diagNow)
                 {
                     _lastEquipDiagAt = DateTime.Now;
-                    _host.Log($"[EquipDiag] wielded via wielder-info fallback (CurrentWieldedLocation read 0) 0x{targetWeaponId:X8} '{weaponObj.Name}'");
+                    RynthLog.Write(LogCat.Combat, $"[EquipDiag] wielded via wielder-info fallback (CurrentWieldedLocation read 0) 0x{targetWeaponId:X8} '{weaponObj.Name}'");
                 }
             }
         }
 
         if (alreadyWielded)
         {
-            // Don't enter missile mode without ammo — AC rejects it and cycles stance
-            if (desiredMode == CombatMode.Missile && !HasWieldedAmmo())
-                return false;
+            if (desiredMode == CombatMode.Missile)
+            {
+                if (!TryEnsureMissileAmmoForCombat(rule))
+                    return false;
+                if (!HasWieldedAmmo())
+                    return false;
+            }
 
             // The wand read as wielded, so whatever UseObject we had in flight landed.
             // Clear the gate here (not only on reaching the stance) so a slow stance
@@ -2569,6 +2606,7 @@ public class CombatManager : IDisposable
             if (CurrentCombatMode == desiredMode)
             {
                 ResetStanceRecovery(); // reached the stance — clear the whole episode
+                TryEquipOffhandShield(weaponObj, rule, targetWcid); // best effort, never blocks
                 return true;
             }
 
@@ -2596,7 +2634,7 @@ public class CombatManager : IDisposable
             {
                 _lastStanceRecoverAt = DateTime.Now;
                 _stanceReEquipAttempts++;
-                _host.Log($"[EquipDiag] STANCE STUCK {stuckMs:0}ms mode={CurrentCombatMode}≠{desiredMode} (wielded reads true) — re-equip attempt {_stanceReEquipAttempts}/{StanceReEquipMaxAttempts} 0x{targetWeaponId:X8}");
+                RynthLog.Write(LogCat.Combat, $"[EquipDiag] STANCE STUCK {stuckMs:0}ms mode={CurrentCombatMode}≠{desiredMode} (wielded reads true) — re-equip attempt {_stanceReEquipAttempts}/{StanceReEquipMaxAttempts} 0x{targetWeaponId:X8}");
                 if (_host.HasForceResetBusyCount) _host.ForceResetBusyCount();
                 _host.UseObject((uint)targetWeaponId);
                 _lastEquipTime = DateTime.Now;
@@ -2616,7 +2654,7 @@ public class CombatManager : IDisposable
 
             if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
             {
-                if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=true mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource}) — sending ChangeCombatMode"); }
+                if (diagNow) { _lastEquipDiagAt = DateTime.Now; RynthLog.Write(LogCat.Combat, $"[EquipDiag] wielded=true mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource}) — sending ChangeCombatMode"); }
                 _host.ChangeCombatMode(desiredMode);
                 lastStanceAttempt = DateTime.Now;
                 NoteStanceFlipSent();
@@ -2624,7 +2662,7 @@ public class CombatManager : IDisposable
             else if (diagNow)
             {
                 _lastEquipDiagAt = DateTime.Now;
-                _host.Log($"[EquipDiag] wielded=true mode={CurrentCombatMode}≠{desiredMode} throttled (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}') — waiting for mode change");
+                RynthLog.Write(LogCat.Combat, $"[EquipDiag] wielded=true mode={CurrentCombatMode}≠{desiredMode} throttled (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}') — waiting for mode change");
             }
             return false;
         }
@@ -2638,6 +2676,7 @@ public class CombatManager : IDisposable
         {
             _stanceStuckSince = DateTime.MinValue; ResetWandSwapState(); ResetStanceFlipBackoff(); // reached the stance — clear stuck timer + swap + flip backoff
             ResetCombatWandWieldGate();
+            TryEquipOffhandShield(weaponObj, rule, targetWcid); // best effort, never blocks
             return true;
         }
 
@@ -2663,7 +2702,7 @@ public class CombatManager : IDisposable
                 if (_host.HasCancelAttack)   _host.CancelAttack();
                 if (_host.HasStopCompletely) _host.StopCompletely();
                 _combatSwapTeardownDone = true;
-                _host.Log($"[EquipDiag] CancelAttack+StopCompletely before wand equip (mode was {CurrentCombatMode})");
+                RynthLog.Write(LogCat.Combat, $"[EquipDiag] CancelAttack+StopCompletely before wand equip (mode was {CurrentCombatMode})");
             }
 
             // Clear the main hand. Yields (false) while a dequip is in flight or blocked;
@@ -2681,7 +2720,7 @@ public class CombatManager : IDisposable
             // which has always sent both.
             if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
             {
-                if (diagNow) _host.Log($"[EquipDiag] hand clear — ChangeCombatMode({desiredMode}) alongside wand equip (mode={CurrentCombatMode})");
+                if (diagNow) RynthLog.Write(LogCat.Combat, $"[EquipDiag] hand clear — ChangeCombatMode({desiredMode}) alongside wand equip (mode={CurrentCombatMode})");
                 _host.ChangeCombatMode(desiredMode);
                 lastStanceAttempt = DateTime.Now;
                 NoteStanceFlipSent();
@@ -2704,7 +2743,7 @@ public class CombatManager : IDisposable
                     return false; // still resolving — give the server time, send nothing
 
                 _wandWieldFailCount++;
-                _host.Log($"[EquipDiag] wand UseObject(0x{_wandPendingWieldId:X8}) not confirmed in {WandWieldResolveTimeoutMs:0}ms — " +
+                RynthLog.Write(LogCat.Combat, $"[EquipDiag] wand UseObject(0x{_wandPendingWieldId:X8}) not confirmed in {WandWieldResolveTimeoutMs:0}ms — " +
                           $"cooling down {WandWieldCooldownMs:0}ms (fail {_wandWieldFailCount}/{WandWieldFailMax})");
                 _wandPendingWieldId     = 0;
                 _wandWieldCooldownUntil = wnow.AddMilliseconds(WandWieldCooldownMs);
@@ -2715,14 +2754,14 @@ public class CombatManager : IDisposable
                 if (_wandWieldFailCount >= WandWieldFailMax && !_wandWieldWedgeWarned)
                 {
                     _wandWieldWedgeWarned = true;
-                    _host.Log($"[EquipDiag] WAND WIELD WEDGED: 0x{targetWeaponId:X8} '{weaponObj.Name}' would not wield after {WandWieldFailMax} attempts " +
+                    RynthLog.Write(LogCat.Combat, $"[EquipDiag] WAND WIELD WEDGED: 0x{targetWeaponId:X8} '{weaponObj.Name}' would not wield after {WandWieldFailMax} attempts " +
                               $"(mode={CurrentCombatMode}, busy={BusyCount}) — combat cannot enter Magic. Retrying on the cooldown cadence.");
                     _host.WriteToChat($"[RynthAi] Can't wield '{weaponObj.Name}' — combat is stuck out of Magic mode. Check the wand is reachable (not in a closed pack) or re-equip it manually.", 2);
                 }
                 return false;
             }
 
-            if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] hand clear — UseObject(0x{targetWeaponId:X8} '{weaponObj.Name}') wand equip"); }
+            if (diagNow) { _lastEquipDiagAt = DateTime.Now; RynthLog.Write(LogCat.Combat, $"[EquipDiag] hand clear — UseObject(0x{targetWeaponId:X8} '{weaponObj.Name}') wand equip"); }
             _host.UseObject((uint)targetWeaponId);
             _wandPendingWieldId = targetWeaponId;
             _wandPendingWieldAt = wnow;
@@ -2737,7 +2776,7 @@ public class CombatManager : IDisposable
         //    succeeds if already wielded (fixes hot-reload next tick); UseObject equips it if not.
         if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
         {
-            if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=FALSE mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource} class={weaponObj.ObjectClass}) — ChangeCombatMode"); }
+            if (diagNow) { _lastEquipDiagAt = DateTime.Now; RynthLog.Write(LogCat.Combat, $"[EquipDiag] wielded=FALSE mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource} class={weaponObj.ObjectClass}) — ChangeCombatMode"); }
             _host.ChangeCombatMode(desiredMode);
             lastStanceAttempt = DateTime.Now;
             NoteStanceFlipSent();
@@ -2745,7 +2784,7 @@ public class CombatManager : IDisposable
         if ((DateTime.Now - _lastEquipTime).TotalMilliseconds > 2000
             && (_weaponSwapGate == null || _weaponSwapGate.TryBeginSwap("combat-equip")))
         {
-            if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=FALSE UseObject(0x{targetWeaponId:X8} '{weaponObj.Name}') — equip attempt"); }
+            if (diagNow) { _lastEquipDiagAt = DateTime.Now; RynthLog.Write(LogCat.Combat, $"[EquipDiag] wielded=FALSE UseObject(0x{targetWeaponId:X8} '{weaponObj.Name}') — equip attempt"); }
             _host.UseObject((uint)targetWeaponId);
             _lastEquipTime = DateTime.Now;
         }
@@ -2778,7 +2817,7 @@ public class CombatManager : IDisposable
                 if (diagNow)
                 {
                     _lastEquipDiagAt = now;
-                    _host.Log($"[EquipDiag] bow 0x{(uint)bowId:X8} dequip blocked (openPack=0x{(uint)openPack:X8}, attempts={_combatBowDequipAttempts}/{CombatBowDequipMaxAttempts}) — cannot swap to wand yet");
+                    RynthLog.Write(LogCat.Combat, $"[EquipDiag] bow 0x{(uint)bowId:X8} dequip blocked (openPack=0x{(uint)openPack:X8}, attempts={_combatBowDequipAttempts}/{CombatBowDequipMaxAttempts}) — cannot swap to wand yet");
                 }
                 _combatBowDequipPendingId = 0;
                 _combatBowDequipAttempts = 0;
@@ -2788,7 +2827,7 @@ public class CombatManager : IDisposable
             _host.MoveItemInternal((uint)bowId, (uint)openPack, 0, 1); // amount>=1 (engine rejects 0)
             _combatBowDequipPendingId = bowId;
             _combatBowDequipAt = now;
-            _host.Log($"[EquipDiag] dequip bow 0x{(uint)bowId:X8} -> pack 0x{(uint)openPack:X8} (attempt {_combatBowDequipAttempts}/{CombatBowDequipMaxAttempts}) before wand equip");
+            RynthLog.Write(LogCat.Combat, $"[EquipDiag] dequip bow 0x{(uint)bowId:X8} -> pack 0x{(uint)openPack:X8} (attempt {_combatBowDequipAttempts}/{CombatBowDequipMaxAttempts}) before wand equip");
             return false; // yield until the bow is out of hand
         }
 
@@ -2966,7 +3005,7 @@ public class CombatManager : IDisposable
         string arcInfo = det.Velocity > 0
             ? $" v={det.Velocity:0.0} rise={det.Arc.Sag:0.00} apex={det.Arc.Apex:0.00} clr={_settings.MissileArcClearance:0.0}{(det.ArcChecked ? "" : " (flat: line only)")}"
             : "";
-        _host.Log($"[LOS] 0x{(uint)wo.Id:X8} '{wo.Name}' {verdict} | {det.Type}{(det.Dungeon ? " dungeon" : "")}{arcInfo} | {DescribeTargetPos(wo.Id)}");
+        RynthLog.Write(LogCat.Combat, $"[LOS] 0x{(uint)wo.Id:X8} '{wo.Name}' {verdict} | {det.Type}{(det.Dungeon ? " dungeon" : "")}{arcInfo} | {DescribeTargetPos(wo.Id)}");
     }
 
     /// <summary>LOS debug: once per missile weapon, what the client knows of its launch speed.</summary>
@@ -2980,7 +3019,7 @@ public class CombatManager : IDisposable
         double maxVel = _worldFilter.GetDoubleProperty(wid, (uint)DoubleValueKey.MaximumVelocity, 0);
         var type = DetermineAttackTypeForLOS();
         float setting = _raycastSystem?.TargetingFSM?.VelocityFor(type) ?? 0f;
-        _host.Log($"[LOS] missile weapon 0x{(uint)wid:X8} '{weapon.Name}': MaximumVelocity={(maxVel > 0 ? maxVel.ToString("0.0") : "unknown (not appraised)")}, " +
+        RynthLog.Write(LogCat.Combat, $"[LOS] missile weapon 0x{(uint)wid:X8} '{weapon.Name}': MaximumVelocity={(maxVel > 0 ? maxVel.ToString("0.0") : "unknown (not appraised)")}, " +
                   $"LOS uses {type} v={setting:0.0}");
     }
 
@@ -3114,65 +3153,126 @@ public class CombatManager : IDisposable
 
     private bool HasWieldedAmmo()
     {
-        int playerId = unchecked((int)_playerId);
-
-        // Walk via GetDirectInventory(forceRefresh:true). This is the same path
-        // MissileCraftingManager uses successfully — it triggers per-item
-        // wielder-info lookups on the cache, which populates Wielder /
-        // WieldedLocation. AllKnownObjects() doesn't trigger those probes, so
-        // arrows that arrived via OnCreateObject keep WieldedLocation=0 and
-        // never match. The forced refresh adds ~one InqInt call per pack item
-        // but is cheap and fixes detection definitively.
-        foreach (var item in _worldFilter.GetDirectInventory(forceRefresh: true))
-            if (LooksLikeWieldedAmmo(item, playerId)) return true;
-
-        return false;
-    }
-
-    // EquipMask bit for the ammunition slot. Items wielded in this slot are ammo
-    // by definition — far more reliable than name or ItemType inspection because
-    // some servers type their arrows as MissileWeapon (0x100) rather than the
-    // MissileAmmo bit (0x400) that AC's vanilla data has.
-    private const int AmmunitionSlot = 0x00800000;
-
-    private bool LooksLikeWieldedAmmo(WorldObject item, int playerId)
-    {
-        if (item == null) return false;
-
-        // Authoritative: ask AC's runtime for the wielder + slot directly.
-        // The cached WieldedLocation/Wielder fields can be 0 forever if the
-        // item arrived via OnCreateObject and never went through the
-        // GetDirectInventory walk that probes wielder info. Querying the
-        // host API per-candidate side-steps that.
-        int loc = 0;
-        bool slotKnown = false;
-        if (_host.HasGetObjectWielderInfo &&
-            _host.TryGetObjectWielderInfo(unchecked((uint)item.Id), out uint wielder, out uint locFromApi))
-        {
-            if (playerId != 0 && wielder != 0 && wielder != (uint)playerId) return false;
-            if (locFromApi > 0) { loc = unchecked((int)locFromApi); slotKnown = true; }
-        }
-
-        // Fall back to InqInt and the cache field if the wielder API didn't answer.
-        if (!slotKnown)
-        {
-            int locInq   = item.Values(LongValueKey.CurrentWieldedLocation, 0);
-            int locCache = item.WieldedLocation;
-            loc = locInq > 0 ? locInq : locCache;
-            if (loc <= 0) return false;
-            if (playerId != 0 && item.Wielder != 0 && item.Wielder != playerId) return false;
-        }
-
-        // Authoritative: ammunition slot bit.
-        if ((loc & AmmunitionSlot) != 0)
+        var inv = _worldFilter.GetDirectInventory(false).ToList();
+        if (MissileAmmoHelper.HasWieldedAmmoMatchingKind(inv, _playerId, out _))
             return true;
 
-        // Name-based fallback for items in non-ammo slots that still match
-        // ammo names (rare server-custom configurations).
-        string n = item.Name;
-        if (string.IsNullOrEmpty(n)) return false;
-        if (n.Contains("Bundle") || n.Contains("Wrapped")) return false;
-        return n.Contains("Arrow") || n.Contains("Quarrel") || n.Contains("Bolt") || n.Contains("Dart");
+        // The direct snapshot only merges wielded gear the cache already filed as inventory with
+        // a readable wield slot, so ammo equipped before login can be missing from it.
+        if ((DateTime.Now - _ammoProbeAt).TotalMilliseconds < AmmoProbeIntervalMs)
+            return _ammoProbeResult;
+        _ammoProbeAt = DateTime.Now;
+
+        var found = FindWieldedAmmoInAllObjects(out var seen);
+        _ammoProbeResult = found != null;
+
+        if ((DateTime.Now - _lastAmmoDiagAt).TotalMilliseconds >= AmmoDiagIntervalMs)
+        {
+            _lastAmmoDiagAt = DateTime.Now;
+            bool launcher = MissileAmmoHelper.TryGetWieldedMissileKind(inv, _playerId, out var kind);
+            string head = found != null
+                ? $"[AmmoDiag] wielded ammo found outside the inventory snapshot: 0x{(uint)found.Id:X8} '{found.Name}'"
+                : $"[AmmoDiag] no wielded ammo (launcher={(launcher ? kind.ToString() : "none")})";
+            RynthLog.Write(LogCat.Combat, $"{head} | wielded missile-class: {(seen.Count == 0 ? "none" : string.Join("; ", seen))}");
+        }
+        return _ammoProbeResult;
+    }
+
+    /// <summary>
+    /// Scans every cache-known missile-class or ammo-named object and returns the first one the
+    /// player wields in the ammo slot (or wields with an ammo name), reading the wield slot through
+    /// the host. <paramref name="seen"/> describes each wielded candidate for the diag line.
+    /// </summary>
+    private WorldObject? FindWieldedAmmoInAllObjects(out List<string> seen)
+    {
+        seen = new List<string>();
+        uint pid = _playerId != 0 ? _playerId : _host.GetPlayerId();
+        if (pid == 0) return null;
+
+        var launcherKind = MissileWeaponKind.Bow;
+        if (_worldFilter[_equippedWeaponId] is { } weapon && MissileAmmoHelper.LooksLikeMissileWeapon(weapon))
+            launcherKind = MissileAmmoHelper.GetKindFromMissileWeapon(weapon);
+
+        WorldObject? found = null;
+        foreach (var item in _worldFilter.AllKnownObjects())
+        {
+            if (item.ObjectClass != AcObjectClass.MissileWeapon && MissileAmmoHelper.GetAmmoKindFromName(item.Name) == null)
+                continue;
+
+            int loc = ReadPlayerWieldLocation(item, pid);
+            if (loc <= 0) continue;
+
+            if (seen.Count < 8)
+                seen.Add($"0x{(uint)item.Id:X8} '{item.Name}' loc=0x{loc:X} use={item.Values(MissileAmmoHelper.IntCombatUse, 0)} ammoType=0x{item.Values(MissileAmmoHelper.IntAmmoType, 0):X}");
+
+            if (found == null && item.Id != _equippedWeaponId
+                && MissileAmmoHelper.IsWieldedAmmoForKind(item, loc, launcherKind))
+                found = item;
+        }
+        return found;
+    }
+
+    /// <summary>Player wield slot of an object from every source the host offers, else 0.</summary>
+    private int ReadPlayerWieldLocation(WorldObject item, uint pid)
+    {
+        uint uid = unchecked((uint)item.Id);
+        if (_host.HasGetObjectWielderInfo && _host.TryGetObjectWielderInfo(uid, out uint w1, out uint l1)
+            && w1 == pid && l1 > 0)
+            return unchecked((int)l1);
+        if (_host.HasGetObjectOwnershipInfo && _host.TryGetObjectOwnershipInfo(uid, out _, out uint w2, out uint l2)
+            && w2 == pid && l2 > 0)
+            return unchecked((int)l2);
+        return MissileAmmoHelper.PlayerWieldLocation(item, pid);
+    }
+
+    /// <summary>
+    /// Equips loose ammo compatible with the wielded missile launcher (bow/crossbow/atlatl),
+    /// honoring per-monster <see cref="MonsterRule.PreferredAmmoItemId"/> and optional ammo rules list.
+    /// </summary>
+    /// <returns>False when an equip was issued or we must wait (throttled); true when nothing to do or already correct.</returns>
+    private bool TryEnsureMissileAmmoForCombat(MonsterRule? rule)
+    {
+        var inv = _worldFilter.GetDirectInventory(true).ToList();
+        if (!MissileAmmoHelper.TryGetWieldedMissileKind(inv, _playerId, out var kind))
+            return true;
+
+        if (HasWieldedAmmo())
+            return true;
+
+        if ((DateTime.Now - _lastMissileAmmoEquipAttempt).TotalMilliseconds < 1200)
+            return false;
+
+        WorldObject? pick = null;
+        if (rule != null && rule.PreferredAmmoItemId != 0)
+        {
+            var o = _worldFilter[rule.PreferredAmmoItemId];
+            if (o != null && MissileAmmoHelper.IsLooseAmmoForKind(o, kind))
+                pick = o;
+        }
+
+        if (pick == null && _settings.MissileAmmoInventoryRulesOnly)
+        {
+            foreach (var ar in _settings.AmmoRules)
+            {
+                if (!MissileAmmoHelper.AmmoRuleMatchesKind(ar.Category, kind)) continue;
+                var o = _worldFilter[ar.Id];
+                if (o != null && MissileAmmoHelper.IsLooseAmmoForKind(o, kind))
+                {
+                    pick = o;
+                    break;
+                }
+            }
+        }
+        else if (pick == null)
+            pick = MissileAmmoHelper.FindBestLooseAmmo(inv, kind);
+
+        if (pick == null)
+            return false;
+
+        _lastMissileAmmoEquipAttempt = DateTime.Now;
+        try { _host.UseObject((uint)pick.Id); }
+        catch { return false; }
+        return false;
     }
 
     private void AttackTarget()
@@ -3287,7 +3387,7 @@ public class CombatManager : IDisposable
         // as wielded yet. _lastEquipTime is set whenever UseObject is called for a wand swap.
         if ((DateTime.Now - _lastEquipTime).TotalMilliseconds < 3000)
         {
-            _host.Log($"[CombatCast] equip-gate: wand equip in progress ({(DateTime.Now - _lastEquipTime).TotalMilliseconds:0}ms < 3000ms), skipping cast");
+            RynthLog.Write(LogCat.Combat, $"[CombatCast] equip-gate: wand equip in progress ({(DateTime.Now - _lastEquipTime).TotalMilliseconds:0}ms < 3000ms), skipping cast");
             LastCombatSkipReason = "equip-gate"; // D4 record-only
             return;
         }
@@ -3355,7 +3455,7 @@ public class CombatManager : IDisposable
 
         if (rule != null && !rule.UseArc && !rule.UseRing && !rule.UseStreak && !rule.UseBolt)
         {
-            _host.Log($"[CombatCast] rule '{rule.Name}' has no attack shapes enabled (UseArc/Ring/Streak/Bolt all false) — no offensive cast");
+            RynthLog.Write(LogCat.Combat, $"[CombatCast] rule '{rule.Name}' has no attack shapes enabled (UseArc/Ring/Streak/Bolt all false) — no offensive cast");
             LastCombatSkipReason = "no-attack-shapes"; // D4 record-only
             return;
         }
@@ -3368,7 +3468,7 @@ public class CombatManager : IDisposable
             LastCombatSkipReason = "cast"; // D4 record-only: offensive cast issued this tick
             // Visibility: log exactly what war/void spell we're about to cast
             // (id + resolved name + element/tier/target). Diagnostic only.
-            _host.Log($"[CombatCast] offensive id={offensiveSpellId} " +
+            RynthLog.Write(LogCat.Combat, $"[CombatCast] offensive id={offensiveSpellId} " +
                       $"'{SpellTableStub.GetById(offensiveSpellId)?.Name}' elem={element} " +
                       $"ring={isRing} warTier={warTier} voidTier={voidTier} target='{target.Name}'");
             try
@@ -3425,7 +3525,7 @@ public class CombatManager : IDisposable
         {
             bool snapWarm = _spellManager?.IsKnownSnapshotWarm == true;
             _host.WriteToChat($"[RynthAi] No spell found: elem={element} warTier={warTier} voidTier={voidTier} snapshotWarm={snapWarm} pid={_playerId}", 2);
-            _host.Log($"[CombatCast] no offensive spell: elem={element} warTier={warTier} voidTier={voidTier} snapshotWarm={snapWarm} rule={rule?.Name ?? "null"} target='{target.Name}'");
+            RynthLog.Write(LogCat.Combat, $"[CombatCast] no offensive spell: elem={element} warTier={warTier} voidTier={voidTier} snapshotWarm={snapWarm} rule={rule?.Name ?? "null"} target='{target.Name}'");
             LastCombatSkipReason = "no-offensive-spell"; // D4 record-only (FindBestShapedSpell==0)
             _lastSpellCast = DateTime.Now; // suppress repeated spam
         }
@@ -3456,16 +3556,42 @@ public class CombatManager : IDisposable
                 var (weakType, resist) = CreatureProfileStore.GetWeakest(prof);
                 if (resist < 1.0 && !string.IsNullOrEmpty(weakType))
                 {
-                    string elem = char.ToUpperInvariant(weakType[0]) + weakType.Substring(1);
+                    // Resists name it "electric"; the spell tables key that element as "Lightning".
+                    string elem = weakType.Equals("electric", StringComparison.OrdinalIgnoreCase)
+                        ? "Lightning"
+                        : char.ToUpperInvariant(weakType[0]) + weakType.Substring(1);
                     if (FindBestShapedSpell(elem, rule, out _) != 0)
                     {
                         if (_autoElemDiagCount < 20)
                         {
                             _autoElemDiagCount++;
-                            _host.Log($"[CombatCast] auto-element '{target.Name}': learned weakest={elem} (resist {resist:0.00})");
+                            RynthLog.Write(LogCat.Combat, $"[CombatCast] auto-element '{target.Name}': learned weakest={elem} (resist {resist:0.00})");
                         }
                         return elem;
                     }
+                }
+            }
+        }
+
+        // UB damage-insights seed: damage types ranked by what players landed on this
+        // monster. Take the best-ranked one this character can actually cast with the
+        // rule's shapes (e.g. Nether only when Void spells resolve).
+        if (target != null && rule != null && _mobSeedStore != null && !string.IsNullOrEmpty(target.Name))
+        {
+            uint wcid = _fightTargetWcid != 0 && target.Id == _fightTargetId ? _fightTargetWcid : 0;
+            if (wcid == 0 && _host.HasGetObjectWcid && _host.TryGetObjectWcid((uint)target.Id, out uint tw)) wcid = tw;
+
+            if (_mobSeedStore.TryGetRanked(wcid, target.Name, out var ranked))
+            {
+                foreach (var seeded in ranked)
+                {
+                    if (FindBestShapedSpell(seeded.Element, rule, out _) == 0) continue;
+                    if (_autoElemDiagCount < 20)
+                    {
+                        _autoElemDiagCount++;
+                        RynthLog.Write(LogCat.Combat, $"[CombatCast] auto-element '{target.Name}': UB seed {seeded.Element} (score {seeded.Score:0.00}, {seeded.Hits} hits, wcid {wcid})");
+                    }
+                    return seeded.Element;
                 }
             }
         }
@@ -3486,6 +3612,7 @@ public class CombatManager : IDisposable
         // Prefer explicitly configured wand from item rules
         foreach (var item in _settings.ItemRules)
         {
+            if (item.IsShield()) continue; // off-hand entries are never casters
             var wo = _worldFilter[item.Id];
             if (wo != null && IsWandObject(wo)) return item.Id;
         }
@@ -3509,12 +3636,121 @@ public class CombatManager : IDisposable
 
     /// <summary>A weapon combat may fight with: anything but a caster when the character
     /// has no attack magic. An id missing from the world cache stays a candidate — the
-    /// caller already handles that. Debuff casting picks its wand separately.</summary>
+    /// caller already handles that. Debuff casting picks its wand separately.
+    /// Shields (tagged in Items, or recognised by their equip mask) are never a main-hand
+    /// weapon — they are equipped into the off hand by <see cref="TryEquipOffhandShield"/>.</summary>
     private bool IsUsableCombatWeapon(int id)
     {
+        if (IsShieldItem(id)) return false;
         if (CanAttackWithMagic) return true;
         var wo = _worldFilter[id];
         return wo == null || !IsWandObject(wo);
+    }
+
+    /// <summary>True when <paramref name="id"/> is a shield: tagged Shield in Items, or the
+    /// world object's equip mask / name says so (older settings tagged shields as weapons).</summary>
+    private bool IsShieldItem(int id)
+    {
+        if (id == 0) return false;
+        foreach (var r in _settings.ItemRules)
+            if (r.Id == id && r.IsShield()) return true;
+        return ShieldHelper.IsShieldObject(_worldFilter[id]);
+    }
+
+    /// <summary>A shield still listed in Items (removing it there stops combat equipping it).</summary>
+    private bool IsListedShield(int id)
+    {
+        if (id == 0 || !IsShieldItem(id)) return false;
+        foreach (var r in _settings.ItemRules)
+            if (r.Id == id) return true;
+        return false;
+    }
+
+    /// <summary>Shield to carry against this target, or 0. Priority: Damage-panel per-wcid
+    /// offhand → Monsters-tab rule Offhand → (AutoEquipShield) first shield in Items that is
+    /// in the world cache. Non-shield picks, and picks no longer listed in Items, are ignored.</summary>
+    private int ResolveOffhandShield(MonsterRule? rule, uint targetWcid)
+    {
+        if (targetWcid != 0 && _damageStore != null)
+        {
+            int manual = (int)_damageStore.GetManualOffhand(targetWcid);
+            if (IsListedShield(manual)) return manual;
+        }
+        if (rule != null && IsListedShield(rule.OffhandId))
+            return rule.OffhandId;
+        if (!_settings.AutoEquipShield) return 0;
+        foreach (var r in _settings.ItemRules)
+            if (r.IsShield() && _worldFilter[r.Id] != null) return r.Id;
+        return 0;
+    }
+
+    /// <summary>Wielded by us: CurrentWieldedLocation, with the wielder-info fallback for a
+    /// stale property read (same two checks EquipWeaponAndSetStance uses for the weapon).</summary>
+    private bool IsWieldedByPlayer(WorldObject wo)
+    {
+        if (wo.Values(LongValueKey.CurrentWieldedLocation, 0) > 0) return true;
+        if (!_host.HasGetObjectWielderInfo) return false;
+        uint pid = _host.GetPlayerId();
+        return pid != 0
+            && _host.TryGetObjectWielderInfo((uint)wo.Id, out uint wielder, out _)
+            && wielder == pid;
+    }
+
+    /// <summary>Equip the off-hand shield once the main weapon is wielded and Melee stance is
+    /// reached. Never blocks combat: every early-out simply leaves the off hand as it is.
+    /// Only for one-handed melee weapons — bows, casters and two-handers have no free off hand.</summary>
+    private void TryEquipOffhandShield(WorldObject weaponObj, MonsterRule? rule, uint targetWcid)
+    {
+        if (CurrentCombatMode != CombatMode.Melee || !ShieldHelper.AllowsShield(weaponObj)) return;
+
+        int shieldId = ResolveOffhandShield(rule, targetWcid);
+        if (shieldId == 0) return;
+        var shield = _worldFilter[shieldId];
+        if (shield == null) return; // not carried (or not cached yet)
+
+        DateTime now = DateTime.Now;
+        if (IsWieldedByPlayer(shield))
+        {
+            // Landed (or was already on) — clear the episode for this shield.
+            if (_shieldPendingId == shieldId) _shieldPendingId = 0;
+            _shieldFailCounts.Remove(shieldId);
+            _shieldGiveUpWarned.Remove(shieldId);
+            return;
+        }
+
+        // An attempt is in flight: wait for it to resolve, then count a miss.
+        if (_shieldPendingId != 0)
+        {
+            if ((now - _shieldPendingAt).TotalMilliseconds < ShieldWieldResolveMs) return;
+            _shieldFailCounts.TryGetValue(_shieldPendingId, out int fails);
+            _shieldFailCounts[_shieldPendingId] = ++fails;
+            RynthLog.Write(LogCat.Combat, $"[ShieldDiag] shield 0x{_shieldPendingId:X8} not wielded {ShieldWieldResolveMs:0}ms after UseObject (miss {fails}/{ShieldWieldFailMax})");
+            _shieldPendingId = 0;
+            _shieldCooldownUntil = now.AddMilliseconds(ShieldWieldCooldownMs);
+            return;
+        }
+
+        if (now < _shieldCooldownUntil) return;
+
+        if (_shieldFailCounts.TryGetValue(shieldId, out int failed) && failed >= ShieldWieldFailMax)
+        {
+            if (_shieldGiveUpWarned.Add(shieldId))
+                _host.WriteToChat($"[RynthAi] Could not wield shield '{shield.Name}' after {ShieldWieldFailMax} tries — skipping it (check wield requirements or the weapon is two-handed).", 2);
+            return;
+        }
+
+        // Equips share the swap gate with weapon/wand swaps; on refusal retry next tick.
+        if (_weaponSwapGate != null && !_weaponSwapGate.TryBeginSwap("combat-shield")) return;
+
+        if ((now - _lastShieldDiagAt).TotalSeconds > 5)
+        {
+            _lastShieldDiagAt = now;
+            RynthLog.Write(LogCat.Combat, $"[ShieldDiag] UseObject(0x{shieldId:X8} '{shield.Name}') off hand, weapon=0x{weaponObj.Id:X8} '{weaponObj.Name}'");
+        }
+        _host.UseObject((uint)shieldId);
+        _shieldPendingId = shieldId;
+        _shieldPendingAt = now;
+        _lastEquipTime   = now;
     }
 
     private static bool IsWandName(string name)
@@ -3618,7 +3854,7 @@ public class CombatManager : IDisposable
             if (!ComponentDatabase.HasRequiredScarab(id, _invNamesLower))
             {
                 if (_compSkipLogged.Add(id))
-                    _host.Log($"[CombatCast] NO-SCARAB id={id} " +
+                    RynthLog.Write(LogCat.Combat, $"[CombatCast] NO-SCARAB id={id} " +
                               $"'{SpellTableStub.GetById(id)?.Name}' — required scarab " +
                               $"not in inventory; tiering down.");
                 return 0;

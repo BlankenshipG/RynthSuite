@@ -13,6 +13,8 @@ public static class DashWindows
     public static bool ShowWeapons;
     public static bool ShowLua;
     public static bool ShowDungeonMap;
+    /// <summary>ILT Hub window (persisted in ilt-hub.json, not in the combat profile).</summary>
+    public static bool ShowIltHub;
 }
 
 public sealed class LegacyUiSettings
@@ -66,6 +68,10 @@ public sealed class LegacyUiSettings
     public bool CombineBagsDuringSalvage = true;
 
     public bool ShowTargetStaminaMana;
+
+    /// <summary>Mag-style item info (/ra iteminfo): on-select, per-field visibility, chat type, prefix.
+    /// Edited in the "RynthAi Item Info" window.</summary>
+    public RynthCore.Plugin.RynthAi.ItemInfo.MagItemInfoSettings ItemInfoSettings = new();
 
     public bool EnableMissileCrafting = true;
     public int MissileCraftAmmoThreshold = 1000;
@@ -122,6 +128,8 @@ public sealed class LegacyUiSettings
     public float NavLineThickness = 6.0f;
     public float NavHeightOffset = 0.05f;
     public float NavSlopeSink = 1.5f;
+    /// <summary>Marker colours, waypoint HUD / labels, breadcrumb trail and recording options.</summary>
+    public NavOverlaySettings NavOverlay = new();
     public bool  ShowTerrainPassability = true;
     public double MaxMonRange = 12.0;
     public bool SummonPets;
@@ -141,6 +149,8 @@ public sealed class LegacyUiSettings
     public bool AutoUnlockDoors;
     public int LootOwnership;
     public bool LootOnlyRareCorpses;
+    /// <summary>Also pick up loose ground items that match the loot profile, within the corpse max range.</summary>
+    public bool EnableGroundLoot;
     public bool PeaceModeWhenIdle = true;
     public bool RebuffWhenIdle;
     /// <summary>
@@ -199,6 +209,14 @@ public sealed class LegacyUiSettings
 
     public int MeleeAttackPower = -1;
     public int MissileAttackPower = -1;
+    /// <summary>When true, only ammo stacks listed under Items → Missile ammunition are considered for auto-equip (besides per-monster override).</summary>
+    public bool MissileAmmoInventoryRulesOnly;
+    /// <summary>
+    /// When true (default), melee combat with a one-handed weapon equips the first shield listed
+    /// under Items → Shields whenever no off-hand is set for the monster (Damage panel override or
+    /// Monsters rule Offhand). Explicit per-monster off-hands are used regardless.
+    /// </summary>
+    public bool AutoEquipShield = true;
     /// <summary>
     /// Physical-attack path. FALSE (default since 2026-09-04) = the direct
     /// explicit-target path: Event_TargetedMelee/MissileAttack take the target
@@ -298,6 +316,8 @@ public sealed class LegacyUiSettings
     public List<MonsterRule> MonsterRules { get; set; } = new();
     public List<ItemRule> ItemRules { get; set; } = new();
     public List<ConsumableRule> ConsumableRules { get; set; } = new();
+    /// <summary>Optional missile ammo stacks (arrows / quarrels / darts) with launcher category for manual prioritization.</summary>
+    public List<AmmoRule> AmmoRules { get; set; } = new();
     public List<BuffRule> BuffRules { get; set; } = new();
     public List<MetaRule> MetaRules { get; set; } = new();
 
@@ -410,8 +430,8 @@ public sealed class LegacyUiSettings
     [JsonIgnore]
     public readonly string[] AdvancedTabs =
     {
-        "Display", "UI", "Misc", "Recharge", "Melee Combat", "Spell Combat",
-        "Ranges", "Navigation", "Buffing", "Crafting", "Looting", "Vendoring"
+        "Display", "UI", "Misc", "Recharge", "Melee Combat", "Missile Combat", "Spell Combat",
+        "Ranges", "Navigation", "Buffing", "Crafting", "Looting", "Vendoring", "Diagnostics"
     };
 
     [JsonIgnore]
@@ -483,7 +503,17 @@ public sealed class MonsterRule
     public bool UseBolt { get; set; } = true;
     public string ExVuln { get; set; } = "None";
     public int OffhandId { get; set; }
+    /// <summary>When non-zero, prefer equipping this loose ammo stack for missile combat while this rule matches (must match launcher: bow/crossbow/atlatl).</summary>
+    public int PreferredAmmoItemId { get; set; }
     public string PetDamage { get; set; } = "PAuto";
+}
+
+public sealed class AmmoRule
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Bow, Crossbow, Atlatl, or Auto (match any launcher).</summary>
+    public string Category { get; set; } = "Auto";
 }
 
 public sealed class BuffRule
@@ -495,11 +525,22 @@ public sealed class BuffRule
 
 public sealed class ItemRule
 {
+    /// <summary><see cref="Action"/> value for a weapon (main hand).</summary>
+    public const string WeaponAction = "Weapon";
+
+    /// <summary><see cref="Action"/> value for a shield carried in the secondary (off) hand.</summary>
+    public const string ShieldAction = "Shield";
+
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
+    /// <summary>"Weapon" (main hand) or "Shield" (off hand); older files may hold "Loot".</summary>
     public string Action { get; set; } = "Loot";
+    /// <summary>Damage element (weapons only; ignored for shields).</summary>
     public string Element { get; set; } = "Slash";
     public bool KeepBuffed { get; set; } = true;
+
+    /// <summary>True for an off-hand shield entry. Shields are never chosen as the main weapon.</summary>
+    public bool IsShield() => string.Equals(Action, ShieldAction, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>JSON wire-format types used by the engine-side Avalonia MonstersPanel.</summary>
@@ -543,6 +584,9 @@ public sealed class ItemsBridgePayload
     public int                  ManaTapMinMana    { get; set; }
     public int                  ManaStoneKeepCount { get; set; }
     public string               CurrentTargetName { get; set; } = string.Empty;
+    /// <summary>Mirrors <see cref="LegacyUiSettings.AutoEquipShield"/>. Null when sent by an
+    /// older engine panel that has no Shields section — leave the setting unchanged then.</summary>
+    public bool?                AutoEquipShield   { get; set; }
 }
 
 // ── Nav bridge types ─────────────────────────────────────────────────────────
@@ -715,6 +759,7 @@ public sealed class SettingsBridgePayload
     public bool EnableLooting { get; set; }
     public bool BoostLootPriority { get; set; }
     public bool LootOnlyRareCorpses { get; set; }
+    public bool EnableGroundLoot { get; set; }
     public bool LootJumpEnabled { get; set; }
     public int LootJumpHeight { get; set; }
     public int LootOwnership { get; set; }
