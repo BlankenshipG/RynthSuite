@@ -94,7 +94,10 @@ internal sealed class NavBreadcrumbTracker
 
         if (teleported) _breakNext = true;
 
+        // While tracking is off, keep a break pending so the trail resumes as a new segment
+        // instead of joining across the untracked stretch.
         if (o.TrackBreadcrumbs) SampleCrumb(ns, ew, z, o);
+        else _breakNext = true;
         TickRecording(ns, ew, z, o, teleported && hadLast, preNS, preEW, preZ);
     }
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace RynthCore.Plugin.RynthAi.CreatureData;
 
@@ -16,7 +17,16 @@ public sealed class CreatureProfile
 
     public int CreatureType { get; set; }
 
+    /// <summary>Max health at Aelrynth difficulty tier 0 (real Dereth; every tier on other servers).</summary>
     public uint MaxHealth { get; set; }
+
+    /// <summary>
+    /// Max health at Aelrynth difficulty tiers above 0 (awakened worlds, scaled copies: +5% a
+    /// tier), tier -> highest seen. Null until one is seen, and then left out of the file
+    /// on every other server. Resists, armour, spells and type are the same at every tier.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<int, uint>? TierMaxHealth { get; set; }
     public uint MaxStamina { get; set; }
     public uint MaxMana { get; set; }
 

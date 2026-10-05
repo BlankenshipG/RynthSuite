@@ -16,8 +16,12 @@ public sealed class IltHubState
     public int SchemaVersion = 1;
 
     // ── Window / shell ──────────────────────────────────────────────────────
+    /// <summary>
+    /// Hub UI on screen: the Mini Remote or any ILT section window (IltHubController.Tick keeps it
+    /// current). Bank auto-refresh and the gear / split-arrow scans run only while it is true.
+    /// </summary>
     public bool WindowVisible;
-    /// <summary>Tab order: 0 Character, 1 Pet, 2 Banking, 3 Gear, 4 Games.</summary>
+    /// <summary>Unused since the tabbed Hub window was retired; kept so old files still load.</summary>
     public int SelectedTab;
     public bool GamesHudVisible = true;
 
@@ -39,6 +43,7 @@ public sealed class IltHubState
     public IltCharacterState Character = new();
     public IltGearState Gear = new();
     public IltGamesState Games = new();
+    public IltGuardianState Guardian = new();
 }
 
 /// <summary>Cached result of the server-options check (see IltServerOptions).</summary>
@@ -172,8 +177,35 @@ public sealed class IltCharacterState
     /// <summary>Floating quest favorites HUD is shown.</summary>
     public bool ShowQuestFavoritesHud;
     public bool QuestFavoritesHudLocked;
-    /// <summary>The quest tracker is undocked from the Hub into its own "Quests" window.</summary>
+    // ILT section windows, opened from the Mini Remote's Options (IltSections).
+    /// <summary>The "Quests" window (tracker + quest bonus) is open.</summary>
     public bool QuestTrackerPoppedOut;
+    /// <summary>The "Pets" window is open.</summary>
+    public bool PetsWindowOpen;
+    /// <summary>The "ILT Character" window (world status, session rates) is open.</summary>
+    public bool CharacterWindowOpen;
+    /// <summary>The "Banking" window is open.</summary>
+    public bool BankingWindowOpen;
+    /// <summary>The "Gear" window is open.</summary>
+    public bool GearWindowOpen;
+    /// <summary>The "Games" window is open.</summary>
+    public bool GamesWindowOpen;
+    /// <summary>The "Guardian" window (riddle translator, attribute tracker) is open.</summary>
+    public bool GuardianWindowOpen;
+
+    /// <summary>
+    /// Registry charms this character has carried, keyed by charm name. Lets the Charms Tracking
+    /// tab report "acquired" for charms that are now in storage (the client only sees carried items).
+    /// </summary>
+    public Dictionary<string, IltCharmSeen> CharmsSeen = new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>Last time a charm was seen in the character's possession, with its best tier.</summary>
+public sealed class IltCharmSeen
+{
+    public int Tier;
+    public int MaxTier;
+    public DateTime LastSeenUtc;
 }
 
 public sealed class IltItemConversion
@@ -231,4 +263,23 @@ public sealed class IltGamesState
     public long BlackjackBet = 1_000_000;
     public long FellowshipBlackjackBet = 1_000_000;
     public int PowerballQuantity = 1;
+}
+
+// ── Guardian (Temple of Enlightenment) ──────────────────────────────────────
+
+public sealed class IltGuardianState
+{
+    /// <summary>Translate incoming guardian tells and show the answer (Guardian window + Mini Remote).</summary>
+    public bool AutoDetectFromChat = true;
+    /// <summary>After a chat answer, give the item to the guardian automatically.</summary>
+    public bool AutoHandIn;
+    /// <summary>Temple guardian only: buy one of the item from the nearest vendor when none is carried.</summary>
+    public bool BuyMissingFromVendor = true;
+
+    /// <summary>Assumed attribute turn-in cooldown when only /qb wait stamps are known (hours).</summary>
+    public int CooldownHoursAssumed = 20;
+    /// <summary>Turn-ins counted from /qb wait-stamp transitions, keyed by attribute (fallback when /myquests lacks the flag).</summary>
+    public Dictionary<string, int> TurnInCounts = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Estimated end of each attribute's cooldown (UTC), keyed by attribute (same fallback).</summary>
+    public Dictionary<string, DateTime> CooldownUntilUtc = new(StringComparer.OrdinalIgnoreCase);
 }

@@ -132,15 +132,17 @@ public class WorldObject
         if (o != null)
         {
             if (o.Strings.TryGetValue((uint)key, out string? v)) return v;
-            if (!o.LiveFallback) return defaultValue;
+            if (!o.LiveFallback) return NameOr(key, defaultValue);
         }
-        string live = Cache?.GetStringProperty(Id, (uint)key, string.Empty) ?? string.Empty;
-        if (live.Length > 0) return live;
-        // Name isn't an assessment property, so appraisal data never carries it and the
-        // off-main-thread live read comes back empty; the network snapshot name is authoritative.
-        if (key == StringValueKey.Name && Name.Length > 0) return Name;
-        return defaultValue;
+        string s = Cache?.GetStringProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+        return string.IsNullOrEmpty(s) ? NameOr(key, defaultValue) : s;
     }
+
+    // The server doesn't put the name in the appraisal's string properties, so a
+    // StringValue(Name) loot condition compared against "" and every name rule failed
+    // (healing-kit Keep # rules never looted; 2026-09-28). Fall back to the object's name.
+    private string NameOr(StringValueKey key, string defaultValue)
+        => key == StringValueKey.Name && !string.IsNullOrEmpty(Name) ? Name : defaultValue;
 
     public double Values(DoubleValueKey key, double defaultValue)
     {
@@ -241,7 +243,9 @@ public class SpellInfo
         { "Jibril's Blessing", "Armor Tinkering Expertise" },
         { "Yoshi's Blessing", "Item Tinkering Expertise" },
         { "Koga's Blessing", "Weapon Tinkering Expertise" },
-        { "Nuhmidira's Blessing", "Mana Conversion Mastery" },
+        { "Nuhmudira's Blessing", "Mana Conversion Mastery" },
+        { "Blessing of T'ing", "Two Handed Combat Mastery" },
+        { "Celdiseth's Blessing", "Magic Item Tinkering Expertise" },
         { "Saladur's Blessing", "Sprint" },
         { "Jahannan's Blessing", "Jumping Mastery" },
         { "Odif's Blessing", "Fealty" }, { "Odif's Boon", "Fealty" },
@@ -327,6 +331,11 @@ public class SpellInfo
             if (n.StartsWith("Aura of ", StringComparison.OrdinalIgnoreCase))
             { n = n[8..].Trim(); changed = true; }
         }
+
+        // 3b. The spell data spells tiers 1-6 and 8 of the bludgeon bane "Bludgeon Bane";
+        //     tier 7 (Tusker's Bane) maps to "Bludgeoning Bane". One family for all.
+        if (n.Equals("Bludgeon Bane", StringComparison.OrdinalIgnoreCase))
+            n = "Bludgeoning Bane";
 
         // 4. Strip " Self" / " Other" target suffixes, then lowercase
         n = n.Replace(" Self", "").Replace(" Other", "").Trim().ToLowerInvariant();
@@ -438,7 +447,7 @@ public class CharacterSkills
                 if (!_loggedReadFailure)
                 {
                     _loggedReadFailure = true;
-                    RynthLog.Write(LogCat.Combat, $"[RynthAi] CharacterSkills: host returned success+buffed=0 for trained skill {skill} (player=0x{_playerId:X8}, stype={stype}, training={training}) — engine qualities artifact, not a real level. Using capable-stub fallback until a real read lands (NOT collapsing tier).");
+                    _host.Log($"[RynthAi] CharacterSkills: host returned success+buffed=0 for trained skill {skill} (player=0x{_playerId:X8}, stype={stype}, training={training}) — engine qualities artifact, not a real level. Using capable-stub fallback until a real read lands (NOT collapsing tier).");
                 }
                 return new CharacterSkillInfo(2, 250);
             }
@@ -453,7 +462,7 @@ public class CharacterSkills
             if (!_loggedReadFailure)
             {
                 _loggedReadFailure = true;
-                RynthLog.Write(LogCat.Combat, $"[RynthAi] CharacterSkills: host skill read failed (player=0x{_playerId:X8}, skill={skill}, stype={stype}) — engine player-qualities ptr likely not seeded. Using capable-stub fallback until a real read lands.");
+                _host.Log($"[RynthAi] CharacterSkills: host skill read failed (player=0x{_playerId:X8}, skill={skill}, stype={stype}) — engine player-qualities ptr likely not seeded. Using capable-stub fallback until a real read lands.");
             }
             return new CharacterSkillInfo(2, 250);
         }
@@ -476,6 +485,7 @@ public class CharacterSkills
         AcSkillType.HeavyWeapons         => 44,
         AcSkillType.LightWeapons         => 45,
         AcSkillType.FinesseWeapons       => 46,
+        AcSkillType.MissileWeapons       => 47,
         AcSkillType.TwoHandedCombat      => 41,
         AcSkillType.Shield               => 48,
         AcSkillType.DualWield            => 49,

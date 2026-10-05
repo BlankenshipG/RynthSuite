@@ -1,15 +1,23 @@
 // MiniRemoteHud.cs — Floating Mini Remote (UtilityBelt-style) for RynthAi. Render thread only.
 //
-// Sections (each can be hidden from the right-click menu):
+// The Mini Remote is the ILT Hub's main window: its Options menu (the Options button or a
+// right-click) opens the Hub's section windows (Character, Quests, Pets, Banking, Gear, Games,
+// Guardian).
+// The V/H button stacks the sections (vertical) or lays them out in three columns (horizontal).
+//
+// Sections (each can be hidden from the Options menu):
 //   Stats    session time and per-hour XP / luminance / kills / coins / pyreals (ILT Hub rates)
 //   Target   the creature combat is attacking: name, health bar, distance
 //   Pet      the summon that is out (health bar, time left), else the next combat essence and
 //            whether it is ready
-//   Slots    5 × 6 quick-use item grid; click uses the item, right-click assigns / clears
+//   Slots    5 × 6 quick-use item grid; click uses the item (an empty slot takes the selected
+//            pack item), right-click assigns / clears, and items dragged from the game's
+//            inventory or the RynthCore Inventory window drop straight into a slot
 //   Toggles  macro and subsystem switches (same as the dashboard buttons)
 //   Bank     ILT bank balances (pyreals, luminance, keys, coins)
 //   Rebuff   force rebuff / cancel rebuff
 //   Translate chat translator on/off and the receive <-> send language swap
+//   Guardian the last Temple guardian answer with a Give button (only while it is recent)
 // All game actions are posted to the pump thread.
 using System;
 using System.Linq;
@@ -25,6 +33,11 @@ internal sealed class MiniRemoteHud
     private const string OptionsPopup = "##miniremoteopts";
     private const string SlotPopup = "##miniremoteslot";
     private const float SlotSize = 28f;
+    /// <summary>Slot button edge including its 1 px frame padding on each side.</summary>
+    private const float SlotButtonSize = SlotSize + 2f;
+    /// <summary>Narrowest horizontal-layout column (fits the stat lines and the translate row).</summary>
+    private const float MinColumnWidth = 190f;
+    private const float HeaderButtonWidth = 80f;
 
     private static readonly Vector4 ColLabel = new(0.80f, 0.84f, 0.90f, 1f);
     private static readonly Vector4 ColReady = new(0.40f, 0.95f, 0.45f, 1f);
@@ -34,8 +47,13 @@ internal sealed class MiniRemoteHud
 
     private readonly HudController _hud;
     private int _slotMenuIndex = -1;
+    private bool _rescueChecked; // off-screen check done for the current show
+    private bool _columnOpen; // horizontal layout: a column was already started this frame (next one goes SameLine)
 
     public MiniRemoteHud(HudController hud) => _hud = hud;
+
+    /// <summary>The remote was not drawn this frame: check its position again on the next show.</summary>
+    public void OnHidden() => _rescueChecked = false;
 
     public void Render()
     {
@@ -44,7 +62,8 @@ internal sealed class MiniRemoteHud
                     | ImGuiWindowFlags.NoFocusOnAppearing;
         if (s.MiniRemoteLocked) flags |= ImGuiWindowFlags.NoMove;
 
-        ImGui.SetNextWindowPos(new Vector2(20, 120), ImGuiCond.FirstUseEver);
+        // Left of and above centre, mirroring the Item HUD's first spot.
+        UiPlacement.CenterFirstUse(new Vector2(-220, -160));
         ImGui.SetNextWindowBgAlpha(0.70f);
         bool open = true;
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
@@ -52,20 +71,12 @@ internal sealed class MiniRemoteHud
         ImGui.PopStyleVar();
         if (!open) s.ShowMiniRemote = false;
         if (!visible) { ImGui.End(); return; }
+        UiPlacement.RescueOncePerShow(ref _rescueChecked);
 
         var hub = _hud.Hub();
-        var settings = _hud.Dashboard.Settings;
-
-        if (s.MiniShowStats) RenderStats(hub);
-        var combat = _hud.Combat;
-        if (s.MiniShowTarget) RenderTarget(combat);
-        if (s.MiniShowPet) RenderPet(hub, combat);
-        if (s.MiniShowStats) RenderStatButtons(hub);
-        if (s.MiniShowGems) RenderSlots(s);
-        if (s.MiniShowToggles) RenderToggles(settings);
-        if (s.MiniShowBank) RenderBank(hub);
-        if (s.MiniShowRebuff) RenderRebuff();
-        if (s.MiniShowTranslate && _hud.Translate is { } translate) translate.RenderHubSection();
+        RenderHeaderRow(s);
+        if (s.MiniRemoteHorizontal) RenderHorizontal(s, hub);
+        else RenderVertical(s, hub);
 
         // Right-click on the window body opens the options, unless a slot's own menu is open.
         if (_slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
@@ -73,6 +84,96 @@ internal sealed class MiniRemoteHud
         RenderOptions(s);
         _slotMenuIndex = -1;
         ImGui.End();
+    }
+
+    // ── Layout ──────────────────────────────────────────────────────────────
+
+    /// <summary>[V/H] and [Options] buttons. Fixed widths so the auto-resizing window can't grow from them.</summary>
+    private static void RenderHeaderRow(HudState s)
+    {
+        if (ImGui.Button((s.MiniRemoteHorizontal ? "H" : "V") + "##mrlayout", new Vector2(HeaderButtonWidth, 0)))
+            s.MiniRemoteHorizontal = !s.MiniRemoteHorizontal;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(s.MiniRemoteHorizontal ? "Horizontal: sections in columns. Click to stack them." : "Vertical: sections stacked. Click to lay them out in columns.");
+        ImGui.SameLine();
+        if (ImGui.Button("Options##mropts", new Vector2(HeaderButtonWidth, 0))) ImGui.OpenPopup(OptionsPopup);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("ILT Hub windows and Mini Remote settings (or right-click the remote).");
+    }
+
+    private void RenderVertical(HudState s, IltHubController? hub)
+    {
+        RenderStatusSections(s, hub);
+        RenderActionSections(s);
+        RenderEconomySections(s, hub);
+    }
+
+    /// <summary>
+    /// Three side-by-side columns: status (stats, target, pet), actions (slots, toggles) and
+    /// economy (bank, rebuff, translate). Each column is a fixed-width child that grows only in
+    /// height; widgets sized from the available width would otherwise make the auto-resizing
+    /// window grow every frame.
+    /// </summary>
+    private void RenderHorizontal(HudState s, IltHubController? hub)
+    {
+        float colW = ColumnWidth();
+        _columnOpen = false;
+        if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet)
+        {
+            BeginColumn("##mrcolstatus", colW);
+            RenderStatusSections(s, hub);
+            ImGui.EndChild();
+        }
+        if (s.MiniShowGems || s.MiniShowToggles)
+        {
+            BeginColumn("##mrcolactions", colW);
+            RenderActionSections(s);
+            ImGui.EndChild();
+        }
+        if (s.MiniShowBank || s.MiniShowRebuff || s.MiniShowTranslate || s.MiniShowGuardian)
+        {
+            BeginColumn("##mrcoleconomy", colW);
+            RenderEconomySections(s, hub);
+            ImGui.EndChild();
+        }
+    }
+
+    /// <summary>Starts a column child (caller always calls EndChild, whatever BeginChild returned).</summary>
+    private void BeginColumn(string id, float width)
+    {
+        if (_columnOpen) ImGui.SameLine();
+        _columnOpen = true;
+        ImGui.BeginChild(id, new Vector2(width, 0), ImGuiChildFlags.AutoResizeY, ImGuiWindowFlags.NoScrollbar);
+    }
+
+    /// <summary>Wide enough for the slot grid, and never narrower than MinColumnWidth.</summary>
+    private static float ColumnWidth()
+    {
+        int cols = HudState.MiniRemoteColumns;
+        float grid = cols * SlotButtonSize + (cols - 1) * ImGui.GetStyle().ItemSpacing.X;
+        return Math.Max(MinColumnWidth, grid);
+    }
+
+    private void RenderStatusSections(HudState s, IltHubController? hub)
+    {
+        var combat = _hud.Combat;
+        if (s.MiniShowStats) RenderStats(hub);
+        if (s.MiniShowTarget) RenderTarget(combat);
+        if (s.MiniShowPet) RenderPet(hub, combat);
+        if (s.MiniShowStats) RenderStatButtons(hub);
+    }
+
+    private void RenderActionSections(HudState s)
+    {
+        if (s.MiniShowGems) RenderSlots(s);
+        if (s.MiniShowToggles) RenderToggles(_hud.Dashboard.Settings);
+    }
+
+    private void RenderEconomySections(HudState s, IltHubController? hub)
+    {
+        if (s.MiniShowBank) RenderBank(hub);
+        if (s.MiniShowRebuff) RenderRebuff();
+        if (s.MiniShowTranslate && _hud.Translate is { } translate) translate.RenderHubSection();
+        if (s.MiniShowGuardian && IltActive(hub)) hub!.Guardian.RenderRemoteLine();
     }
 
     // ── Sections ────────────────────────────────────────────────────────────
@@ -237,13 +338,19 @@ internal sealed class MiniRemoteHud
                 if (e.IsEmpty) ImGui.PopStyleColor();
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(e.IsEmpty ? $"Slot {i + 1:00}: empty\nRight-click to assign the selected item."
-                                           : $"{e.Name}\n{count:N0} carried\nClick to use, right-click for options.");
-            if (clicked && !e.IsEmpty)
+                ImGui.SetTooltip(e.IsEmpty ? EmptySlotTip(i) : $"{e.Name}\n{count:N0} carried\nClick to use, right-click for options.");
+            int slotIndex = i;
+            if (clicked)
             {
-                var entry = e;
-                _hud.Post(() => _hud.UseItem(entry));
+                // Empty slot: click assigns the selected (or last selected) pack item.
+                if (e.IsEmpty) _hud.Post(() => _hud.SetSlotFromSelection(slotIndex));
+                else
+                {
+                    var entry = e;
+                    _hud.Post(() => _hud.UseItem(entry));
+                }
             }
+            AcceptItemDrop(slotIndex, e.IsEmpty);
             if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
             {
                 _slotMenuIndex = i;
@@ -255,13 +362,54 @@ internal sealed class MiniRemoteHud
         ImGui.PopStyleVar();
     }
 
+    /// <summary>
+    /// ImGui drag-and-drop payload type for one inventory item (uint object id). Must match
+    /// InventoryFace.ItemPayloadType in RynthCore.Engine, which publishes it while dragging.
+    /// </summary>
+    private const string ItemPayloadType = "RYNTH_INV_ITEM";
+
+    /// <summary>
+    /// Payload type for an AC-inventory drag whose item the engine guessed from the game selection
+    /// (uint object id); engines that hook AC's drag start send the real item as ItemPayloadType
+    /// instead. Must match ItemDragBridge.NativePayloadType in RynthCore.Engine. A guess can be the
+    /// wrong item, so it is taken by empty slots only and never replaces an assigned one.
+    /// </summary>
+    private const string GameItemPayloadType = "RYNTH_GAME_ITEM";
+
+    /// <summary>
+    /// Makes the last slot button a drop target: RynthCore Inventory drags on any slot, game
+    /// inventory drags on <paramref name="empty"/> slots.
+    /// </summary>
+    private unsafe void AcceptItemDrop(int slot, bool empty)
+    {
+        if (!ImGui.BeginDragDropTarget()) return;
+        ImGuiPayloadPtr payload = ImGui.AcceptDragDropPayload(ItemPayloadType);
+        if (payload.NativePtr == null && empty) payload = ImGui.AcceptDragDropPayload(GameItemPayloadType);
+        if (payload.NativePtr != null && payload.Data != IntPtr.Zero && payload.DataSize >= sizeof(uint))
+        {
+            uint objectId = *(uint*)payload.Data;
+            _hud.Post(() => _hud.SetSlotFromItemId(slot, objectId));
+        }
+        ImGui.EndDragDropTarget();
+    }
+
+    private string EmptySlotTip(int index)
+    {
+        string candidate = _hud.AssignCandidate;
+        return candidate.Length > 0
+            ? $"Slot {index + 1:00}: empty\nClick to assign {candidate}.\nOr drag an item here from the game inventory or the RynthCore Inventory."
+            : $"Slot {index + 1:00}: empty\nClick an item in your pack, then click here to assign it.\nOr drag an item here from the game inventory or the RynthCore Inventory.";
+    }
+
     /// <summary>Per-slot right-click menu (opened inside the slot's ID scope).</summary>
     private void RenderSlotMenu(int index, HudItemEntry e)
     {
         if (!ImGui.BeginPopup(SlotPopup)) return;
         _slotMenuIndex = index;
         ImGui.TextDisabled(e.IsEmpty ? $"Slot {index + 1:00}" : $"Slot {index + 1:00}: {e.Name}");
-        if (ImGui.MenuItem("Assign selected item")) _hud.Post(() => _hud.SetSlotFromSelection(index));
+        string candidate = _hud.AssignCandidate;
+        if (ImGui.MenuItem(candidate.Length > 0 ? $"Assign {candidate}" : "Assign selected item"))
+            _hud.Post(() => _hud.SetSlotFromSelection(index));
         if (!e.IsEmpty && ImGui.MenuItem("Clear slot")) _hud.Post(() => _hud.ClearSlot(index));
         ImGui.EndPopup();
     }
@@ -292,7 +440,7 @@ internal sealed class MiniRemoteHud
     {
         if (!IltActive(hub) || hub!.Options.IsOff(IltFeature.Bank)) return;
         var b = hub.State.Bank;
-        if (b.LastUpdated == DateTime.MinValue) { ImGui.TextDisabled("Bank: not loaded (ILT Hub > Banking)"); return; }
+        if (b.LastUpdated == DateTime.MinValue) { ImGui.TextDisabled("Bank: not loaded (Options > Banking)"); return; }
         Stat("P:", HudDraw.Compact(b.Pyreals));
         Stat("Lum:", HudDraw.Compact(b.Luminance));
         if (!ImGui.BeginTable("##mrbank", 2, ImGuiTableFlags.SizingStretchSame)) return;
@@ -319,6 +467,8 @@ internal sealed class MiniRemoteHud
     private void RenderOptions(HudState s)
     {
         if (!ImGui.BeginPopup(OptionsPopup)) return;
+        RenderHubMenu(_hud.Hub());
+        ImGui.Separator();
         ImGui.TextDisabled("Mini Remote sections");
         Flag("Session stats", ref s.MiniShowStats);
         Flag("Attack target", ref s.MiniShowTarget);
@@ -328,11 +478,43 @@ internal sealed class MiniRemoteHud
         Flag("Bank", ref s.MiniShowBank);
         Flag("Rebuff", ref s.MiniShowRebuff);
         Flag("Translate", ref s.MiniShowTranslate);
+        Flag("Guardian answer", ref s.MiniShowGuardian);
         ImGui.Separator();
+        Flag("Horizontal layout", ref s.MiniRemoteHorizontal);
         Flag("Lock position", ref s.MiniRemoteLocked);
         if (ImGui.MenuItem("Inventory HUDs setup...")) s.ShowSetup = true;
         if (ImGui.MenuItem("Hide Mini Remote")) s.ShowMiniRemote = false;
         ImGui.EndPopup();
+    }
+
+    /// <summary>
+    /// ILT Hub group of the Options menu: one item per section window (checked when open, greyed
+    /// out until the server reports the feature). Off ILT worlds it also offers the Force-ILT
+    /// override and a server-options refresh.
+    /// </summary>
+    private static void RenderHubMenu(IltHubController? hub)
+    {
+        ImGui.TextDisabled("ILT Hub");
+        if (hub == null) { ImGui.TextDisabled("Available after login."); return; }
+
+        foreach (IltSection section in IltSections.All)
+        {
+            bool open = hub.IsSectionOpen(section);
+            if (ImGui.MenuItem(IltSections.Label(section) + "##mrsec", string.Empty, open, hub.SectionAvailable(section)))
+                hub.SetSectionOpen(section, !open);
+        }
+        ImGui.TextDisabled("Progression: Skills panel (Char right-click)");
+
+        if (hub.Available) return;
+        var o = hub.Options;
+        ImGui.TextDisabled(!o.IsIltLikeWorld ? "Not an ILT world."
+            : o.IsRefreshing || o.LastRefreshUtc == DateTime.MinValue ? "Checking server features..."
+            : "No ILT features reported.");
+        bool force = hub.ForceIltWorld;
+        if (ImGui.Checkbox("Treat this world as ILT##mrforce", ref force)) hub.ForceIltWorld = force;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("World-identity override only: the Hub asks the server which features exist.\nIt never turns a feature on by itself.");
+        if (ImGui.MenuItem("Refresh server features##mrrefresh")) hub.RequestOptionsRefresh();
     }
 
     private static void Flag(string label, ref bool value)

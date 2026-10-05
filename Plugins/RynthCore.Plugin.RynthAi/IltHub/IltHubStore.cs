@@ -101,10 +101,15 @@ internal sealed class IltHubStore
         s.Character.QuestFavorites ??= new();
         s.Character.QuestFavorites.RemoveAll(string.IsNullOrWhiteSpace);
         s.Character.AugTargets = new Dictionary<string, int>(s.Character.AugTargets ?? new(), StringComparer.OrdinalIgnoreCase);
+        s.Character.CharmsSeen = new Dictionary<string, IltCharmSeen>(s.Character.CharmsSeen ?? new(), StringComparer.OrdinalIgnoreCase);
         s.Gear ??= new IltGearState();
         s.Gear.DispelInclusions ??= new();
         s.Gear.DispelExclusions ??= new();
         s.Games ??= new IltGamesState();
+        s.Guardian ??= new IltGuardianState();
+        s.Guardian.TurnInCounts = new Dictionary<string, int>(s.Guardian.TurnInCounts ?? new(), StringComparer.OrdinalIgnoreCase);
+        s.Guardian.CooldownUntilUtc = new Dictionary<string, DateTime>(s.Guardian.CooldownUntilUtc ?? new(), StringComparer.OrdinalIgnoreCase);
+        s.Guardian.CooldownHoursAssumed = Math.Clamp(s.Guardian.CooldownHoursAssumed, 1, 72);
         s.SelectedTab = Math.Clamp(s.SelectedTab, 0, 4);
         s.Gear.SplitArrowTarget = Math.Clamp(s.Gear.SplitArrowTarget, 0, 10);
     }

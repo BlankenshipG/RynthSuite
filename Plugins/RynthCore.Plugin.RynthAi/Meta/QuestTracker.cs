@@ -9,7 +9,7 @@ namespace RynthCore.Plugin.RynthAi.Meta;
 internal sealed class QuestRecord
 {
     public string Key = "";
-    /// <summary>Server-supplied description from /myquests (may be empty on older servers).</summary>
+    /// <summary>Server-supplied description from /myquests (may be empty).</summary>
     public string Description = "";
     public int Solves;
     public int MaxSolves;
@@ -38,8 +38,7 @@ internal sealed class QuestRecord
 
 /// <summary>
 /// Fires /myquests, parses the resulting chat lines into a per-session quest flag cache,
-/// and exposes UB-compatible query methods used by ExpressionEngine. The ILT Hub Quest
-/// Tracker UI reads <see cref="Snapshot"/> and may request quiet refreshes.
+/// and exposes UB-compatible query methods used by ExpressionEngine.
 /// </summary>
 internal sealed class QuestTracker
 {
@@ -51,12 +50,10 @@ internal sealed class QuestTracker
         RegexOptions.Compiled);
 
     private readonly RynthCoreHost _host;
-    private readonly object _gate = new();
     private readonly Dictionary<string, QuestRecord> _flags = new(StringComparer.OrdinalIgnoreCase);
 
     private bool _refreshing;
     private bool _gotFirstQuest;
-    private bool _clearOnFirstLine;
     private bool _quietRefresh;
     private DateTime _lastLineTime;
     private DateTime _refreshStarted;
@@ -69,13 +66,13 @@ internal sealed class QuestTracker
     /// <summary>UTC time the last refresh finished with data (MinValue = never).</summary>
     public DateTime LastRefreshUtc { get; private set; } = DateTime.MinValue;
 
-    /// <summary>Last refresh outcome text for the UI ("12 flags", "rate limited", ...).</summary>
+    /// <summary>Last refresh outcome text for the ILT Hub ("12 flags", "rate limited", ...).</summary>
     public string LastStatus { get; private set; } = "not refreshed";
 
     /// <summary>Number of cached flags.</summary>
-    public int Count { get { lock (_gate) return _flags.Count; } }
+    public int Count => _flags.Count;
 
-    /// <summary>Raised on the pump thread whenever a refresh ends (any reason).</summary>
+    /// <summary>Raised on the pump thread when a refresh ends. The ILT Hub reads Disabled and Count.</summary>
     public event Action? RefreshCompleted;
 
     public QuestTracker(RynthCoreHost host) => _host = host;
@@ -84,24 +81,40 @@ internal sealed class QuestTracker
     /// Issues /myquests to the server to populate the quest flag cache.
     /// No-ops if already refreshing or InvokeChatParser is not available.
     /// </summary>
-    /// <param name="quiet">When true, <see cref="OnChatLine"/> reports quest lines as eatable.</param>
-    public void Refresh(bool quiet = false)
+    public void Refresh() => Refresh(quiet: false);
+
+    /// <summary>
+    /// Issues /myquests. <paramref name="quiet"/> asks <see cref="OnChatLine"/> to report
+    /// those lines as eatable so the ILT Hub can hide its own poll.
+    /// </summary>
+    public void Refresh(bool quiet)
     {
         if (_refreshing || !_host.HasInvokeChatParser)
             return;
+        _quietRefresh = quiet;
+        ExpectReply();
+        RefreshSent?.Invoke();
+        _host.InvokeChatParser("/myquests");
+    }
+
+    /// <summary>Set by the plugin: told whenever Refresh sends /myquests (the Meta Manager shows that reply).</summary>
+    public Action? RefreshSent;
+
+    /// <summary>
+    /// Someone else (the Meta Manager's poll) just sent /myquests: read the reply into the
+    /// cache as if Refresh had sent it, so quest expressions stay fresh.
+    /// </summary>
+    public void ExpectReply()
+    {
         _refreshing = true;
         _gotFirstQuest = false;
-        _clearOnFirstLine = true;
-        _quietRefresh = quiet;
         _lastLineTime = DateTime.UtcNow;
         _refreshStarted = DateTime.UtcNow;
-        _host.InvokeChatParser("/myquests");
     }
 
     /// <summary>
     /// Feed every incoming chat line here. Quest lines are parsed and cached;
     /// terminal lines (empty list, rate limit, etc.) end the refresh early.
-    /// Returns true when the line belonged to a QUIET refresh (caller may hide it).
     /// </summary>
     public bool OnChatLine(string text)
     {
@@ -110,22 +123,24 @@ internal sealed class QuestTracker
 
         if (text.Contains("Quest list is empty"))
         {
-            lock (_gate) _flags.Clear();
+            bool quiet = _quietRefresh;
             Finish("quest list is empty", gotData: true);
-            return _quietRefresh;
+            return quiet;
         }
 
         if (text.Contains("The command \"myquests\" is not currently enabled"))
         {
             Disabled = true;
+            bool quiet = _quietRefresh;
             Finish("/myquests is disabled on this server", gotData: false);
-            return _quietRefresh;
+            return quiet;
         }
 
         if (text.Contains("This command may only be run once every"))
         {
+            bool quiet = _quietRefresh;
             Finish("rate limited by the server (try again in a minute)", gotData: false);
-            return _quietRefresh;
+            return quiet;
         }
 
         var m = QuestLineRegex.Match(text);
@@ -153,12 +168,7 @@ internal sealed class QuestTracker
                 out double rt) && rt > 0)
             rec.RepeatTime = TimeSpan.FromSeconds(rt);
 
-        lock (_gate)
-        {
-            // A new listing replaces the old one wholesale (removed flags disappear).
-            if (_clearOnFirstLine) { _flags.Clear(); _clearOnFirstLine = false; }
-            _flags[rec.Key] = rec;
-        }
+        _flags[rec.Key] = rec;
         return _quietRefresh;
     }
 
@@ -196,21 +206,16 @@ internal sealed class QuestTracker
             LastRefreshUtc = DateTime.UtcNow;
         }
         try { RefreshCompleted?.Invoke(); }
-        catch (Exception ex) { RynthLog.Write(LogCat.Quests, $"[RynthAi] QuestTracker RefreshCompleted handler threw: {ex.Message}"); }
+        catch (Exception ex) { _host.Log($"[RynthAi] QuestTracker RefreshCompleted threw: {ex.Message}"); }
     }
 
+    /// <summary>Copy of every cached record for the ILT Hub quest list.</summary>
+    public QuestRecord[] Snapshot() => _flags.Values.ToArray();
+
     /// <summary>Returns true if the key exists in the cached quest flag list.</summary>
-    public bool HasFlag(string key) { lock (_gate) return _flags.ContainsKey(key.ToLowerInvariant()); }
+    public bool HasFlag(string key) => _flags.ContainsKey(key.ToLowerInvariant());
 
     /// <summary>Returns the cached record for the given key, or false if not found.</summary>
     public bool TryGetFlag(string key, out QuestRecord rec)
-    {
-        lock (_gate) return _flags.TryGetValue(key.ToLowerInvariant(), out rec!);
-    }
-
-    /// <summary>Copy of every cached record (safe to enumerate from any thread).</summary>
-    public QuestRecord[] Snapshot()
-    {
-        lock (_gate) return _flags.Values.ToArray();
-    }
+        => _flags.TryGetValue(key.ToLowerInvariant(), out rec!);
 }

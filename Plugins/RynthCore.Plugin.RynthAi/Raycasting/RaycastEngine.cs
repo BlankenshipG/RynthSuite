@@ -29,6 +29,49 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         private const float RayLateralOffset = 0.35f; // left/right shoulder spread (meters)
         private const float RayVerticalOffset = 0.30f; // up/down spread (meters)
 
+        // ── Box pre-filter (2026-10-02 flood work) ─────────────────────────────────────────
+        // Every ray used to call RayIntersect on every volume of the landblock (883 in the
+        // Matron Hive, x5 rays per spell target in dungeons, for every monster in range 20
+        // times a second). A TriangleMesh or AxisAlignedBox volume can only be hit inside its
+        // Min/Max box (RayIntersect tests that box first), so a volume whose box doesn't touch
+        // the segment's box is skipped without the call. Same verdicts: LosProof's 4281 pairs
+        // give the same counts. Other volume types (sphere, cylinder, polygon) are always tested.
+        private const float BoxSlack = 0.001f; // 1 mm, so float rounding can never skip a real hit
+
+        // One spare candidate list, borrowed and given back (no allocation per check, safe if two
+        // threads ever cast at once: the second just makes its own). Not [ThreadStatic]: the
+        // plugin can live in a collectible context.
+        private static List<BoundingVolume>? s_spareCandidates;
+
+        private static bool BoxBounded(BoundingVolume v)
+            => v.Type == BoundingVolume.VolumeType.TriangleMesh || v.Type == BoundingVolume.VolumeType.AxisAlignedBox;
+
+        /// <summary>True when <paramref name="v"/> cannot touch anything inside [lo, hi].</summary>
+        private static bool OutsideBox(BoundingVolume v, Vector3 lo, Vector3 hi)
+        {
+            if (!BoxBounded(v)) return false;
+            Vector3 mn = v.Min, mx = v.Max;
+            return mx.X < lo.X || mn.X > hi.X || mx.Y < lo.Y || mn.Y > hi.Y || mx.Z < lo.Z || mn.Z > hi.Z;
+        }
+
+        private static void SegmentBox(Vector3 a, Vector3 b, out Vector3 lo, out Vector3 hi)
+        {
+            Vector3 slack = new Vector3(BoxSlack, BoxSlack, BoxSlack);
+            lo = Vector3.Min(a, b) - slack;
+            hi = Vector3.Max(a, b) + slack;
+        }
+
+        /// <summary>The non-door volumes that could touch anything inside [lo, hi], into <paramref name="list"/>.</summary>
+        private static void Candidates(List<BoundingVolume> geometry, Vector3 lo, Vector3 hi, List<BoundingVolume> list)
+        {
+            list.Clear();
+            foreach (var v in geometry)
+            {
+                if (v.IsDoor || OutsideBox(v, lo, hi)) continue;
+                list.Add(v);
+            }
+        }
+
         /// <summary>
         /// Tests if a straight-line path (magic spells, crossbow bolts) is blocked
         /// by any collision geometry.
@@ -73,13 +116,30 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 Vector3 L = lateral * RayLateralOffset;
                 Vector3 U = up       * RayVerticalOffset;
 
-                // 5 rays: center, left shoulder, right shoulder, slightly up, slightly down
-                if (IsSingleRayBlocked(origin,     target,     geometry)) return true;
-                if (IsSingleRayBlocked(origin - L, target - L, geometry)) return true;
-                if (IsSingleRayBlocked(origin + L, target + L, geometry)) return true;
-                if (IsSingleRayBlocked(origin + U, target + U, geometry)) return true;
-                if (IsSingleRayBlocked(origin - U, target - U, geometry)) return true;
-                return false;
+                // One pass picks the volumes whose boxes touch the box around all five rays;
+                // the five rays then test only those (was five passes over every volume).
+                Vector3 reach = new Vector3(
+                    Math.Abs(L.X) + Math.Abs(U.X), Math.Abs(L.Y) + Math.Abs(U.Y), Math.Abs(L.Z) + Math.Abs(U.Z));
+                SegmentBox(origin, target, out Vector3 lo, out Vector3 hi);
+                var near = System.Threading.Interlocked.Exchange(ref s_spareCandidates, null) ?? new List<BoundingVolume>(256);
+                try
+                {
+                    Candidates(geometry, lo - reach, hi + reach, near);
+                    if (near.Count == 0) return false;
+
+                    // 5 rays: center, left shoulder, right shoulder, slightly up, slightly down
+                    if (IsSingleRayBlocked(origin,     target,     near)) return true;
+                    if (IsSingleRayBlocked(origin - L, target - L, near)) return true;
+                    if (IsSingleRayBlocked(origin + L, target + L, near)) return true;
+                    if (IsSingleRayBlocked(origin + U, target + U, near)) return true;
+                    if (IsSingleRayBlocked(origin - U, target - U, near)) return true;
+                    return false;
+                }
+                finally
+                {
+                    near.Clear();
+                    s_spareCandidates = near;
+                }
             }
 
             return IsSingleRayBlocked(origin, target, geometry);
@@ -92,10 +152,11 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
             if (distanceToTarget < 1e-4f) return false;
 
             Vector3 direction = delta / distanceToTarget;
+            SegmentBox(origin, target, out Vector3 lo, out Vector3 hi);
 
             foreach (var volume in geometry)
             {
-                if (volume.IsDoor) continue;
+                if (volume.IsDoor || OutsideBox(volume, lo, hi)) continue;
 
                 float hitDist;
                 if (volume.RayIntersect(origin, direction, distanceToTarget, out hitDist))
@@ -239,7 +300,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         /// Tests the path a missile really flies: the low ballistic arc at the weapon's launch
         /// speed (see <see cref="MissileBallistics"/>), raised by <paramref name="clearance"/>
         /// at mid-flight. Unlike <see cref="IsArcPathBlocked"/> (the old flat-ground
-        /// approximation, kept for magic arcs), the arc passes exactly through the aim point
+        /// approximation, no longer used by combat), the arc passes exactly through the aim point
         /// for any height difference. Floors and ceilings are part of the dungeon geometry, so
         /// an arc that rises into a ceiling reports blocked. Out of reach counts as blocked.
         /// Hits within 0.5 m of the shooter or 0.3 m of the target are ignored, as in the
@@ -254,6 +315,22 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 return false;
 
             var arc = MissileBallistics.Solve(origin.X, origin.Y, origin.Z, target.X, target.Y, target.Z, speed);
+            return IsBallisticArcBlocked(origin, target, in arc, clearance, geometry, out result);
+        }
+
+        /// <summary>
+        /// As above for an arc already solved from <paramref name="origin"/> to
+        /// <paramref name="target"/>: a missile's (<see cref="MissileBallistics.Solve"/>) or an
+        /// arc spell's (<see cref="MissileBallistics.SolveLateral"/>).
+        /// </summary>
+        public static bool IsBallisticArcBlocked(Vector3 origin, Vector3 target, in MissileArc arc, float clearance,
+                                                 List<BoundingVolume> geometry, out ArcLosResult result)
+        {
+            result = default;
+            if (float.IsNaN(origin.X) || float.IsNaN(origin.Y) || float.IsNaN(origin.Z) ||
+                float.IsNaN(target.X) || float.IsNaN(target.Y) || float.IsNaN(target.Z))
+                return false;
+
             result.Sag  = arc.MaxRiseAboveChord;
             result.Apex = arc.ApexAboveLaunch;
             if (!arc.Valid)
@@ -286,9 +363,10 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 if (len > 1e-4f)
                 {
                     Vector3 dir = seg / len;
+                    SegmentBox(prev, cur, out Vector3 lo, out Vector3 hi);
                     foreach (var volume in geometry)
                     {
-                        if (volume.IsDoor) continue;
+                        if (volume.IsDoor || OutsideBox(volume, lo, hi)) continue;
                         if (!volume.RayIntersect(prev, dir, len, out float hd)) continue;
                         if (hd < 0f || hd > len) continue;
                         if (travelled + hd < 0.5f) continue;          // at the shooter
@@ -319,10 +397,11 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
             if (dist < 0.01f) return false;
 
             Vector3 dir = delta / dist;
+            SegmentBox(start, end, out Vector3 lo, out Vector3 hi);
 
             foreach (var volume in geometry)
             {
-                if (volume.IsDoor) continue;
+                if (volume.IsDoor || OutsideBox(volume, lo, hi)) continue;
 
                 float hitDist;
                 if (volume.RayIntersect(start, dir, dist, out hitDist))

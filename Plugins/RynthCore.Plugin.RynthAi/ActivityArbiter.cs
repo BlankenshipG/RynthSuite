@@ -61,11 +61,18 @@ internal readonly struct ArbiterInputs
     /// but never changes who wins the tick.
     /// </summary>
     public readonly bool FollowActive;
+    /// <summary>
+    /// A lootable corpse in range has waited LootStarveMs while combat kept the tick, and no
+    /// monster is close (the caller checks both). Looting gets the tick: on a busy spawn there
+    /// is always a monster inside MonsterRange, so "combat first" meant corpses were never
+    /// looted until the area emptied (2026-10-03).
+    /// </summary>
+    public readonly bool LootStarved;
 
     public ArbiterInputs(bool macroRunning, bool wantBuffing, bool wantCombat,
                          bool wantLooting, bool wantSalvaging, bool wantNav,
                          bool combatEngaged = false, bool boostNav = false, bool boostLoot = false,
-                         bool followActive = false)
+                         bool followActive = false, bool lootStarved = false)
     {
         MacroRunning  = macroRunning;
         WantBuffing   = wantBuffing;
@@ -77,6 +84,7 @@ internal readonly struct ArbiterInputs
         BoostNav      = boostNav;
         BoostLoot     = boostLoot;
         FollowActive  = followActive;
+        LootStarved   = lootStarved;
     }
 }
 
@@ -114,6 +122,9 @@ internal sealed class ActivityArbiter
         // which was a hatch bolted onto the OnTick cascade and becomes this one
         // clause instead.
         if (s.BoostLoot && s.WantLooting && !s.CombatEngaged) return BotActivity.Looting;
+
+        // Loot starvation: a corpse waited too long behind combat and nothing is close.
+        if (s.LootStarved && s.WantLooting) return BotActivity.Looting;
 
         // ── Default order ─────────────────────────────────────────────────
         if (s.WantCombat)    return BotActivity.Combat;
@@ -203,7 +214,8 @@ internal sealed class ActivityArbiter
     private void LogDecisionIfChanged(BotActivity decision, in ArbiterInputs s, string botAction, bool wrote)
     {
         string key = $"{decision} wrote={wrote} ba={botAction} want[buff={s.WantBuffing} cbt={s.WantCombat} loot={s.WantLooting} salv={s.WantSalvaging} nav={s.WantNav}]"
-                   + $" eng={s.CombatEngaged} boost[nav={s.BoostNav} loot={s.BoostLoot}]";
+                   + $" eng={s.CombatEngaged} boost[nav={s.BoostNav} loot={s.BoostLoot}]"
+                   + (s.LootStarved ? " lootStarved" : "");
         if (key == _lastDecisionKey) return;
         _lastDecisionKey = key;
         _log($"Arbiter[step5]: {key}");

@@ -15,24 +15,48 @@
     <RootNamespace>RynthCore.Plugin.RynthAi</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthAi</AssemblyName>
     <Platforms>x86</Platforms>
-    <!-- Keep in sync with RynthAiPlugin.VersionPointer (reported via GetVersion). -->
-    <!-- Previous release: 0.6.18 (per-category log levels). -->
-    <Version>0.6.33</Version>
-    <AssemblyVersion>0.6.33.0</AssemblyVersion>
-    <FileVersion>0.6.33.0</FileVersion>
-    <InformationalVersion>0.6.33-legacy-ui</InformationalVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Install-folder resolver used by the ILT Hub, diagnostics, and chat translator. -->
+    <Compile Include="..\..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- UB damage-insights seed schema, shared with the Monster Editor importer. -->
+    <Compile Include="..\..\Shared\UbMobSeed.cs" Link="Shared\UbMobSeed.cs" />
+    <!-- Interfaces shared with other RynthSuite plugins (RynthLua uses RynthAi.Script, RynthNet RynthAi.Status). -->
+    <Compile Include="..\Shared\RynthAiScriptApi.cs" Link="Shared\RynthAiScriptApi.cs" />
+    <!-- RynthNet reads the bot state through RynthAi.Status. -->
+    <Compile Include="..\Shared\RynthAiStatusApi.cs" Link="Shared\RynthAiStatusApi.cs" />
+    <!-- RynthNav's navmesh path queries (stuck-recovery detours outdoors). -->
+    <Compile Include="..\Shared\RynthNavPathApi.cs" Link="Shared\RynthNavPathApi.cs" />
+    <!-- One logged, guarded way to use an object (who used what, and why). -->
+    <Compile Include="..\Shared\UseAudit.cs" Link="Shared\UseAudit.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Offline tests (Tools\RynthCore.RynthAiHostTests) reach internal types. Test-only; no runtime effect. -->
+    <InternalsVisibleTo Include="RynthCore.RynthAiHostTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="Combat\SpellData.txt" />
+    <!-- Creature weaknesses (ops/rynth-creature-resists.py builds both). -->
+    <EmbeddedResource Include="CreatureData\creature_resists.tsv" />
+    <EmbeddedResource Include="CreatureData\creature_types.txt" />
+    <!-- Creature weakness table (wcid -> damage multipliers) from the world database. Built in,
+         and also copied next to the DLL as Data\creature_weakness.json; a copy in
+         C:\Games\RynthSuite\RynthAi\Data wins over the built-in one. -->
+    <EmbeddedResource Include="Data\creature_weakness.json" />
+    <None Include="Data\creature_weakness.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
     <TrimmerRootAssembly Include="ImGui.NET" />
+    <!-- Lua editing moved to the RynthLua plugin. This window targeted settings fields that no longer exist. -->
+    <Compile Remove="LegacyUi\LegacuLuaUi.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -61,12 +85,5 @@
   <Target Name="RemoveBundledImGuiNativeFromPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
     <Delete Files="$(PublishDir)cimgui.dll" Condition="Exists('$(PublishDir)cimgui.dll')" />
   </Target>
-
-  <ItemGroup>
-    <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
-    <Compile Include="..\..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
-    <!-- UB damage-insights seed schema, shared with the Monster Editor importer. -->
-    <Compile Include="..\..\Shared\UbMobSeed.cs" Link="Shared\UbMobSeed.cs" />
-  </ItemGroup>
 
 </Project>

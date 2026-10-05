@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -24,7 +23,7 @@ namespace RynthCore.Plugin.RynthAi;
 internal static class DungeonHazardStore
 {
     // Sibling of the existing NavProfiles folder (see LegacyDashboardRenderer._navFolder).
-    private static readonly string Folder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"DungeonHazards");
+    private static readonly string Folder = @"C:\Games\RynthSuite\RynthAi\DungeonHazards";
 
     private static string PathFor(uint landblockKey)
         => System.IO.Path.Combine(Folder, $"{landblockKey:X4}.txt");

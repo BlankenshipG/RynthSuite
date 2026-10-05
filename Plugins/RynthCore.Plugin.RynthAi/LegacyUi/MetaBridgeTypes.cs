@@ -22,4 +22,6 @@ internal sealed class MetaCommand
     public string Path { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;
     public MetaRuleDto? Rule { get; set; }
+    /// <summary>The Meta Manager's mm_add / mm_update rule.</summary>
+    public RynthCore.Plugin.RynthAi.Meta.MetaScheduleRule? ScheduleRule { get; set; }
 }

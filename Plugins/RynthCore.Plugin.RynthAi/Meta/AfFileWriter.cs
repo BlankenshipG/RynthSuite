@@ -144,7 +144,7 @@ internal static class AfFileWriter
                 break;
 
             case MetaConditionType.ChatMessageCapture:
-                writer.Write($"{keyword} {{{data}}} {{}}");
+                writer.Write($"{keyword} {{{data}}} {{{rule.ChatColors}}}");
                 break;
 
             case MetaConditionType.InventoryItemCount_LE:
@@ -228,7 +228,7 @@ internal static class AfFileWriter
 
             case MetaActionType.CallMetaState:
                 // Format: CallState {<target>} {<return>}
-                writer.Write($"{keyword} {{{data}}} {{{rule.State}}}");
+                writer.Write($"{keyword} {{{data}}} {{{(string.IsNullOrEmpty(rule.CallReturnState) ? rule.State : rule.CallReturnState)}}}");
                 break;
 
             case MetaActionType.EmbeddedNavRoute:
@@ -263,7 +263,7 @@ internal static class AfFileWriter
                 var parts = data.Split(';');
                 string variable = parts.Length > 0 ? parts[0] : "";
                 string option = parts.Length > 1 ? parts[1] : "";
-                writer.Write($"{keyword} {{{variable}}} {{{option}}}");
+                writer.Write($"{keyword} {{{option}}} {{{variable}}}");   // metaf order
                 break;
             }
 

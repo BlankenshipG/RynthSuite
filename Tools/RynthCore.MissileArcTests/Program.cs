@@ -5,7 +5,8 @@ namespace RynthCore.MissileArcTests;
 
 // Tests for the missile arc math combat's LOS uses (MissileBallistics): the low ballistic
 // solution passes through the aim point, rises with distance and falls with launch speed,
-// goes out of reach past v²/g, and the clearance bump leaves both ends in place.
+// goes out of reach past v²/g, and the clearance bump leaves both ends in place. Arc spells
+// (SolveLateral) fly exactly as ACE launches them and meet a 3.8 m ceiling from about 50 m.
 // Self-contained; fails on zero assertions.
 //
 // Run: dotnet run -c Release  (exit 0 = pass, 1 = fail)
@@ -42,6 +43,10 @@ internal static class Program
         TestDungeonCeiling();
         TestSegmentCount();
         TestBadInput();
+        TestArcSpellMatchesAce();
+        TestArcSpellRise();
+        TestArcSpellCorridor();
+        TestArcSpellBadInput();
 
         Console.WriteLine($"\n{_asserts} assertions, {_fails} failed.");
         if (_asserts == 0) { Console.WriteLine("ABORT: zero assertions ran."); return 1; }
@@ -179,6 +184,79 @@ internal static class Program
         Check(MissileBallistics.SegmentCount(50f) == 20, "50 m → 20 segments");
         Check(MissileBallistics.SegmentCount(500f) == 24, "capped at 24 segments");
         Check(MissileBallistics.SegmentCount(float.NaN) == 6, "NaN → minimum");
+    }
+
+    // ── Arc spells (SolveLateral) ─────────────────────────────────────────────
+
+    /// <summary>
+    /// ACE (WorldObject_Magic.CalculateProjectileVelocity → Trajectory.solve_ballistic_arc_lateral,
+    /// target standing still): horizontal speed S toward the aim point, time t = d/S, vertical
+    /// speed vz = −(2a − 2c + g·t²)/(2t) with g = PhysicsGlobals.Gravity = −9.8, then free flight
+    /// z(τ) = a + vz·τ + ½·g·τ². The model must give the same height everywhere.
+    /// </summary>
+    private static void TestArcSpellMatchesAce()
+    {
+        foreach (var (d, a, c) in new[] { (20f, 1.8f, 1.0f), (45f, 1.8f, 3.5f), (60f, 4f, -2f), (8f, 1.8f, 1.8f) })
+        {
+            const float S = MissileBallistics.AceArcSpellSpeed, g = -9.8f;
+            float t = d / S;
+            float vz = -(2 * a - 2 * c + g * t * t) / (t * 2);
+            var arc = MissileBallistics.SolveLateral(0, 0, a, d * 0.6f, d * 0.8f, c, S);
+            Check(arc.Valid && !arc.Vertical, $"{d} m arc spell is a valid arc");
+            for (int i = 0; i <= 10; i++)
+            {
+                float tau = t * i / 10f;
+                float aceZ = a + vz * tau + 0.5f * g * tau * tau;
+                Near(arc.OZ + arc.HeightAt(i / 10f), aceZ, 0.002, $"{d} m ({a}→{c}): height at {i * 10}% matches ACE");
+            }
+        }
+        Near(MissileBallistics.AceArcSpellSpeed, 40, 0, "arc projectiles: MaximumVelocity 40 (ACE world db, flameboltgravity etc.)");
+    }
+
+    private static void TestArcSpellRise()
+    {
+        var a20 = MissileBallistics.SolveLateral(0, 0, 0, 20, 0, 0, 40);
+        var a40 = MissileBallistics.SolveLateral(0, 0, 0, 40, 0, 0, 40);
+        var a60 = MissileBallistics.SolveLateral(0, 0, 0, 60, 0, 0, 40);
+        Near(a20.MaxRiseAboveChord, 9.8 * 400 / (8 * 1600.0), 0.001, "20 m: rises g·d²/(8v²) = 0.31 m");
+        Near(a40.MaxRiseAboveChord, 1.225, 0.001, "40 m: 1.23 m");
+        Near(a60.MaxRiseAboveChord, 2.756, 0.002, "60 m: 2.76 m");
+        Near(a40.HeightAt(0.5f), a40.MaxRiseAboveChord, 0.001, "level: highest at mid-flight");
+        Check(MissileBallistics.SolveLateral(0, 0, 0, 200, 0, 0, 40).Valid, "always reaches (no out of reach for a fixed horizontal speed)");
+        Check(MissileBallistics.SolveLateral(0, 0, 0, 40, 0, 0, 25).MaxRiseAboveChord > a40.MaxRiseAboveChord, "slower = higher arc");
+        Check(MissileBallistics.SolveLateral(0, 0, 0, 13.9f, 0, 0, 40).MaxRiseAboveChord < 0.15f && MissileBallistics.SolveLateral(0, 0, 0, 14.1f, 0, 0, 40).MaxRiseAboveChord > 0.15f, "under 14 m the arc is within 0.15 m of the line (tested as the line)");
+        var up = MissileBallistics.SolveLateral(0, 0, 0, 30, 0, 6, 40);
+        Near(up.HeightAt(1f), 6, 0.001, "uphill arc lands on the aim point");
+        Near(up.MaxRiseAboveChord, 9.8 * 900 / (8 * 1600.0), 0.001, "rise above the line doesn't depend on the slope");
+    }
+
+    /// <summary>The brief's corridor: a 3.8 m ceiling, the arc leaving the caster's head (1.8 m
+    /// above the floor) for a target's chest (1.0 m), with the default 0.5 m clearance.</summary>
+    private static void TestArcSpellCorridor()
+    {
+        const float ceiling = 3.8f, launch = 1.8f, aim = 1.0f, clr = 0.5f;
+        float Top(float d, float c) => MissileBallistics.MaxPathZ(MissileBallistics.SolveLateral(0, 0, launch, d, 0, aim, 40), c);
+        Check(Top(15, clr) < ceiling, $"15 m: clear ({Top(15, clr):0.00} m)");
+        Check(Top(30, clr) < ceiling, $"30 m: clear ({Top(30, clr):0.00} m)");
+        Check(Top(45, clr) < ceiling, $"45 m: clear ({Top(45, clr):0.00} m)");
+        Check(Top(55, clr) > ceiling, $"55 m: blocked by the ceiling ({Top(55, clr):0.00} m)");
+        Check(Top(55, 0f) < ceiling, $"55 m with no clearance: the bare arc still passes ({Top(55, 0f):0.00} m)");
+        Check(Top(70, 0f) > ceiling, $"70 m: even the bare arc hits it ({Top(70, 0f):0.00} m)");
+        // Where it starts to block (the LosProof dat test meets it at 49 m in 0x6346).
+        float first = 0;
+        for (float d = 15; d <= 80; d += 0.5f) if (Top(d, clr) > ceiling) { first = d; break; }
+        Check(first > 45 && first < 53, $"a 3.8 m corridor blocks arcs from about 50 m (first at {first:0.0} m)");
+        // Missiles for comparison: a 25 m/s bow shot from the chest hits it far sooner.
+        var bow = MissileBallistics.Solve(0, 0, 1, 40, 0, 1, 25);
+        Check(MissileBallistics.MaxPathZ(bow, clr) > ceiling, "a 40 m bow shot at 25 m/s already hits it (arc spells are much flatter)");
+    }
+
+    private static void TestArcSpellBadInput()
+    {
+        Check(!MissileBallistics.SolveLateral(0, 0, 0, 10, 0, 0, 0f).Valid, "arc spell: zero speed is no arc");
+        Check(!MissileBallistics.SolveLateral(0, 0, 0, float.NaN, 0, 0, 40f).Valid, "arc spell: NaN is no arc");
+        var v = MissileBallistics.SolveLateral(3, 3, 0, 3.01f, 3, 2, 40f);
+        Check(v.Valid && v.Vertical, "arc spell straight up/down: flown as a line");
     }
 
     private static void TestBadInput()

@@ -15,11 +15,6 @@
     <RootNamespace>RynthCore.Plugin.RynthVision</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthVision</AssemblyName>
     <Platforms>x86</Platforms>
-    <!-- Keep in step with VersionPointer in RynthVisionPlugin.cs. -->
-    <Version>0.1.1</Version>
-    <AssemblyVersion>0.1.1.0</AssemblyVersion>
-    <FileVersion>0.1.1.0</FileVersion>
-    <InformationalVersion>0.1.1-experimental</InformationalVersion>
     <!-- Publish straight to the plugin's launcher-registered home so a bare
          `dotnet publish` lands where the engine hot-reloads it. Build still
          uses bin\; only publish is redirected. Deploy-RynthCore.ps1 points its
@@ -28,25 +23,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <TrimmerRootAssembly Include="ImGui.NET" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
     <ProjectReference Include="..\..\Shared\RynthCore.TerrainData\RynthCore.TerrainData.csproj" />
   </ItemGroup>
-
-  <Target Name="RemoveBundledImGuiNativeFromBuild" AfterTargets="Build">
-    <Delete Files="$(OutputPath)cimgui.dll" Condition="Exists('$(OutputPath)cimgui.dll')" />
-  </Target>
-
-  <Target Name="RemoveBundledImGuiNativeFromPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
-    <Delete Files="$(PublishDir)cimgui.dll" Condition="Exists('$(PublishDir)cimgui.dll')" />
-  </Target>
 
 </Project>

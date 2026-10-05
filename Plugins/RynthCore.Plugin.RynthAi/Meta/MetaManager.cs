@@ -7,7 +7,6 @@ using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.CreatureData;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
-using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.Meta;
 
@@ -32,7 +31,13 @@ internal sealed class MetaManager
     // ── State tracking ───────────────────────────────────────────────────────
     private string _lastState = "";
     private DateTime _stateStartTime = DateTime.Now;
+
+    /// <summary>Wall clock for seconds-in-state, the watchdog and the chat window. Tests swap it
+    /// for a fake clock; the plugin never changes it.</summary>
+    internal Func<DateTime> Clock { get; set; } = static () => DateTime.Now;
     private bool _lastMacroRunning;
+    // PSecsInStateGE's clock: restarts on a real state entry, not on macro stop/start.
+    private DateTime _statePStartTime = DateTime.Now;
 
     // Observability (GetStateSnapshot / §3.4). Written on the plugin-tick thread
     // inside the locked rule-eval pass; read by the bridge under the same lock.
@@ -52,8 +57,15 @@ internal sealed class MetaManager
     private int _idxVersion = -1;
 
     // ── Chat tracking ────────────────────────────────────────────────────────
-    private string _lastChatText = "";
-    private DateTime _lastChatTime = DateTime.MinValue;
+    // Every line from the last second is kept (it used to be one slot, so the
+    // earlier lines of a burst were never checked). A rule consumes the line it
+    // fired on, so re-entering its state can't fire it again on the same line.
+    private readonly record struct ChatLine(long Seq, DateTime At, string Text, int Type);
+    private readonly List<ChatLine> _chatLines = new();
+    private long _chatSeq;
+    private readonly Dictionary<MetaRule, long> _chatConsumed = new();
+    private MetaRule? _evalRule;     // top-level rule being evaluated
+    private long _evalChatSeq;       // newest chat line its condition matched
     private Match? _lastChatMatch;
 
     // ── Call stack (CallMetaState / ReturnFromCall) ──────────────────────────
@@ -75,6 +87,14 @@ internal sealed class MetaManager
     // ── Vendor state tracking ─────────────────────────────────────────────────
     private uint _openVendorId;
     private bool _vendorClosedThisTick;
+    private bool _vendorClosedNow;   // the edge this tick's rule pass sees
+
+    // ── Death (one-shot) ─────────────────────────────────────────────────────
+    // The plugin holds every tick from a death until 5 s after the respawn, so
+    // Think never runs while health reads 0. The death is latched here and the
+    // first meta tick after the hold sees it.
+    private bool _deathPending;
+    private bool _deathNow;
 
     // ── Enchantment read buffers (reused per tick to avoid allocation) ────────
     private readonly uint[] _enchSpellIds = new uint[256];
@@ -91,7 +111,7 @@ internal sealed class MetaManager
         // §3.3: surface schema/enum drift once per session instead of letting a
         // mid-enum insert silently corrupt every saved meta + the JSON bridge.
         if (MetaSchema.DriftError != null)
-            RynthLog.Write(LogCat.Meta, $"[Meta] SCHEMA DRIFT — fix MetaSchema/enum alignment: {MetaSchema.DriftError}");
+            _host.Log($"[Meta] SCHEMA DRIFT — fix MetaSchema/enum alignment: {MetaSchema.DriftError}");
     }
 
     public void SetMtCommandHandler(Func<string, bool> handler) => _mtCommandHandler = handler;
@@ -140,7 +160,7 @@ internal sealed class MetaManager
         for (int i = 0; i < route.Points.Count; i++)
         {
             NavPoint point = route.Points[i];
-            if (point.Type != NavPointType.Point)
+            if (!NavRouteParser.IsPlainWaypoint(point.Type))
                 continue;
 
             double distance = Math.Sqrt(Math.Pow(point.NS - ns, 2) + Math.Pow(point.EW - ew, 2));
@@ -183,11 +203,20 @@ internal sealed class MetaManager
         return engine;
     }
 
-    public void HandleChat(string text)
+    public void HandleChat(string text, int chatType = -1)
     {
-        _lastChatText = text;
-        _lastChatTime = DateTime.Now;
+        DateTime now = Clock();
+        while (_chatLines.Count > 0 && ((now - _chatLines[0].At).TotalSeconds > 1.0 || _chatLines.Count >= 64))
+            _chatLines.RemoveAt(0);
+        _chatLines.Add(new ChatLine(++_chatSeq, now, text ?? "", chatType));
     }
+
+    /// <summary>Writes pending setpvar/setgvar values now (they are otherwise
+    /// throttled to one write every 2 s). Called when the session is torn down.</summary>
+    public void FlushPendingVars() => _expressions?.FlushVars(force: true);
+
+    /// <summary>The player died (called every tick while dead; one-shot for the meta).</summary>
+    public void OnPlayerDeath() => _deathPending = true;
 
     public void OnVendorOpen(uint vendorId)
     {
@@ -216,8 +245,15 @@ internal sealed class MetaManager
             if (_lastMacroRunning && !_settings.IsMacroRunning)
                 _expressions?.FlushVars(force: true);   // persist pending vars on stop
             _lastMacroRunning = _settings.IsMacroRunning;
+            _vendorClosedThisTick = false;   // a close while stopped never fires later
+            _deathPending = false;           // nor does a death
             return;
         }
+
+        // A real state entry (anything but a bare macro stop/start) restarts the
+        // persistent seconds-in-state clock too.
+        bool realStateEntry = _settings.ForceStateReset
+            || !string.Equals(_settings.CurrentState, _lastState, StringComparison.OrdinalIgnoreCase);
 
         // Macro just started — force reset so rules re-evaluate even if state
         // name matches where we stopped. Otherwise HasFired stays latched across
@@ -225,6 +261,14 @@ internal sealed class MetaManager
         if (!_lastMacroRunning)
             _settings.ForceStateReset = true;
         _lastMacroRunning = true;
+
+        // A freshly loaded meta starts with an empty call stack; a Return must
+        // not pop a state name left over from the previous meta.
+        if (_settings.MetaCallStackReset)
+        {
+            _settings.MetaCallStackReset = false;
+            _stateStack.Clear();
+        }
 
         // ── State change / forced reset ──────────────────────────────────────
         // Only reset HasFired on ForceStateReset (set by meta actions: SetState,
@@ -234,15 +278,18 @@ internal sealed class MetaManager
         // otherwise EmbedNav reloads the nav route from index 0 on every cycle.
         if (_settings.ForceStateReset)
         {
-            _stateStartTime = DateTime.Now;
+            if (realStateEntry)
+                _host.Log($"[Meta] state '{_lastState}' -> '{_settings.CurrentState}' after {(Clock() - _stateStartTime).TotalSeconds:0}s");
+            _stateStartTime = Clock();
             _watchdogActive = false;
+            if (realStateEntry) _statePStartTime = Clock();
             _settings.ForceStateReset = false;
             lock (_settings.MetaRulesLock)
                 foreach (var r in _settings.MetaRules) r.HasFired = false;
         }
         _lastState = _settings.CurrentState;
 
-        double secondsInState = (DateTime.Now - _stateStartTime).TotalSeconds;
+        double secondsInState = (Clock() - _stateStartTime).TotalSeconds;
 
         // ── Portal state edge detection ───────────────────────────────────────
         bool currentPortal = _host.HasIsPortaling && _host.IsPortaling();
@@ -250,8 +297,14 @@ internal sealed class MetaManager
         _portalExitedThisTick  = !currentPortal && _lastPortalState;
         _lastPortalState = currentPortal;
 
-        // ── Vendor edge detection (reset one-shot flag each tick) ─────────────
+        // ── Vendor edge detection (one-shot) ──────────────────────────────────
+        // OnVendorClose arrives between ticks. Hand the edge to this tick's
+        // rule pass, then clear it; clearing it before the pass (as before)
+        // meant VendorClosed could never be true.
+        _vendorClosedNow = _vendorClosedThisTick;
         _vendorClosedThisTick = false;
+        _deathNow = _deathPending;
+        _deathPending = false;
 
         // ── Watchdog ─────────────────────────────────────────────────────────
         if (_watchdogActive &&
@@ -263,9 +316,11 @@ internal sealed class MetaManager
 
             if (distMoved < _watchdogMetersRequired)
             {
-                if (DateTime.Now > _watchdogExpiration)
+                if (Clock() > _watchdogExpiration)
                 {
                     _watchdogActive = false;
+                    // VTank calls the watchdog state: a Return in it re-enters this one.
+                    _stateStack.Push(_settings.CurrentState);
                     _settings.CurrentState = _watchdogState;
                     _settings.ForceStateReset = true;
                     _host.WriteToChat($"[RynthAi] WATCHDOG TRIGGERED \u2192 {_watchdogState}", 1);
@@ -275,7 +330,7 @@ internal sealed class MetaManager
             else
             {
                 _lastWatchdogPos = currentPos;
-                _watchdogExpiration = DateTime.Now.AddSeconds(_watchdogSecondsConfig);
+                _watchdogExpiration = Clock().AddSeconds(_watchdogSecondsConfig);
             }
         }
 
@@ -300,16 +355,23 @@ internal sealed class MetaManager
             // clear before each rule so a ChatMessageCapture match can't bleed
             // its {0}/{1} groups into a later rule's action (or the next tick).
             _lastChatMatch = null;
+            _evalRule = rule;
+            _evalChatSeq = 0;
 
             if (EvaluateCondition(rule, secondsInState))
             {
+                if (_evalChatSeq > 0) _chatConsumed[rule] = _evalChatSeq;
                 rule.HasFired = true;
-                rule.LastFiredAt = DateTime.Now;
+                rule.LastFiredAt = Clock();
                 _lastFiredState = rule.State;
                 _lastFiredCond  = DescribeCondition(rule);
                 _lastFiredAct   = DescribeAction(rule);
                 _lastFiredAt    = rule.LastFiredAt;
 
+                // Always in the log (a rule fires at most once per state entry): a tester's meta
+                // that stopped loading its nav left no trace of which state it was in or which
+                // rules fired (2026-10-01). Chat only with MetaDebug.
+                _host.Log($"[Meta] fired: state '{rule.State}' | {_lastFiredCond} -> {_lastFiredAct}");
                 if (_settings.MetaDebug)
                     _host.WriteToChat($"[Meta] {rule.State} | {DescribeCondition(rule)} → {DescribeAction(rule)}", 1);
 
@@ -327,11 +389,11 @@ internal sealed class MetaManager
             // A condition/action threw. Localise it to this tick instead of
             // letting partial state (half-applied SetState, pushed call stack)
             // persist. ForceStateReset recomputes HasFired cleanly next tick.
-            RynthLog.Write(LogCat.Meta, $"[Meta] Think crashed in '{_settings.CurrentState}': {ex.GetType().Name}: {ex.Message}");
+            _host.Log($"[Meta] Think crashed in '{_settings.CurrentState}': {ex.GetType().Name}: {ex.Message}");
             if (_settings.MetaDebug)
                 _host.WriteToChat($"[Meta] Think exception: {ex.Message}", 1);
             _lastExprError   = $"Think: {ex.GetType().Name}: {Truncate(ex.Message, 100)}";
-            _lastExprErrorAt = DateTime.Now;
+            _lastExprErrorAt = Clock();
             _settings.ForceStateReset = true;
         }
     }
@@ -355,7 +417,8 @@ internal sealed class MetaManager
 
             case MetaConditionType.Any:
             {
-                if (rule.Children == null || rule.Children.Count == 0) return true;
+                // VTank: an empty Any is false (and Not of it is true); metas use it as a "disabled" gate.
+                if (rule.Children == null || rule.Children.Count == 0) return false;
                 foreach (var child in rule.Children)
                     if (EvaluateCondition(child, secondsInState)) return true;
                 return false;
@@ -366,28 +429,35 @@ internal sealed class MetaManager
                 return !EvaluateCondition(rule.Children[0], secondsInState);
 
             // ── Vital checks (value) ──────────────────────────────────────────
+            // Compared signed: a (uint) cast made a negative threshold ~4 billion,
+            // so "health <= -1" was always true. MaxHealth > 0 = the vitals have been
+            // read at least once (they are all 0 until the first poll after login).
             case MetaConditionType.MainHealthLE:
-                return int.TryParse(rule.ConditionData, out int hv) && _vitals.CurrentHealth <= (uint)hv;
+                return int.TryParse(rule.ConditionData, out int hv) && _vitals.MaxHealth > 0 && (long)_vitals.CurrentHealth <= hv;
 
             case MetaConditionType.MainManaLE:
-                return int.TryParse(rule.ConditionData, out int mv) && _vitals.CurrentMana <= (uint)mv;
+                return int.TryParse(rule.ConditionData, out int mv) && _vitals.MaxHealth > 0 && (long)_vitals.CurrentMana <= mv;
 
             case MetaConditionType.MainStamLE:
-                return int.TryParse(rule.ConditionData, out int sv) && _vitals.CurrentStamina <= (uint)sv;
+                return int.TryParse(rule.ConditionData, out int sv) && _vitals.MaxHealth > 0 && (long)_vitals.CurrentStamina <= sv;
 
             // ── Vital checks (percentage) ─────────────────────────────────────
+            // "Main Health/Mana % >=" (the UI label, the engine meta panel and
+            // RynthScript's healthPct/manaPct >= N all mean >=, like VitaePHE).
+            // These are RynthAi-only conditions (VTank has no vital conditions,
+            // so no .met or metaf file carries them); the runtime used <=.
             case MetaConditionType.MainHealthPHE:
                 return int.TryParse(rule.ConditionData, out int hpct) &&
                        _vitals.MaxHealth > 0 &&
-                       (_vitals.CurrentHealth * 100.0 / _vitals.MaxHealth) <= hpct;
+                       (_vitals.CurrentHealth * 100.0 / _vitals.MaxHealth) >= hpct;
 
             case MetaConditionType.MainManaPHE:
                 return int.TryParse(rule.ConditionData, out int mpct) &&
                        _vitals.MaxMana > 0 &&
-                       (_vitals.CurrentMana * 100.0 / _vitals.MaxMana) <= mpct;
+                       (_vitals.CurrentMana * 100.0 / _vitals.MaxMana) >= mpct;
 
             case MetaConditionType.CharacterDeath:
-                return _vitals.CurrentHealth == 0;
+                return _deathNow || (_vitals.MaxHealth > 0 && _vitals.CurrentHealth == 0);
 
             case MetaConditionType.VitaePHE:
             {
@@ -400,32 +470,36 @@ internal sealed class MetaManager
 
             // ── Time ──────────────────────────────────────────────────────────
             case MetaConditionType.SecondsInState_GE:
-            case MetaConditionType.SecondsInStateP_GE:
                 return double.TryParse(rule.ConditionData, out double reqSecs) && secondsInState >= reqSecs;
+
+            // VTank: "Persistent timer; does not reset if meta is stopped/started."
+            // It still restarts when the state is entered again (SetState, Call, Return).
+            case MetaConditionType.SecondsInStateP_GE:
+                return double.TryParse(rule.ConditionData, out double reqPSecs)
+                    && (Clock() - _statePStartTime).TotalSeconds >= reqPSecs;
 
             // ── Chat ──────────────────────────────────────────────────────────
             case MetaConditionType.ChatMessage:
             case MetaConditionType.ChatMessageCapture:
-            {
-                if (string.IsNullOrEmpty(rule.ConditionData)) return false;
-                if ((DateTime.Now - _lastChatTime).TotalSeconds > 1.0) return false;
-                var match = RegexCache.Match(_lastChatText, rule.ConditionData);
-                if (match.Success)
-                {
-                    if (rule.Condition == MetaConditionType.ChatMessageCapture)
-                        _lastChatMatch = match;
-                    return true;
-                }
-                return false;
-            }
+                return EvaluateChat(rule);
 
             // ── Pack slots ────────────────────────────────────────────────────
             case MetaConditionType.PackSlots_LE:
             {
-                if (!int.TryParse(rule.ConditionData, out int targetSlots) || _objectCache == null) return false;
+                if (!int.TryParse(rule.ConditionData, out int targetSlots) || _objectCache == null || _playerId == 0) return false;
+                // Empty slots in the MAIN pack (VTank "Pack Slots <="): only loose items
+                // whose container is the player count. Side packs, their contents and
+                // foci don't use the 102 item slots (same rule as GetMainPackEmptySlots).
                 int used = 0;
+                int pid = unchecked((int)_playerId);
                 foreach (var item in _objectCache.GetDirectInventory())
-                    if (item.WieldedLocation <= 0) used++;
+                {
+                    if (item.WieldedLocation > 0) continue;
+                    if (item.Container != pid) continue;
+                    if (item.ObjectClass is AcObjectClass.Container or AcObjectClass.Foci) continue;
+                    if (item.Values(LongValueKey.EquippedSlots, 0) > 0) continue;
+                    used++;
+                }
                 return (102 - used) <= targetSlots;
             }
 
@@ -437,10 +511,12 @@ internal sealed class MetaManager
                 var parts = rule.ConditionData.Split(',');
                 if (parts.Length < 2 || !int.TryParse(parts[1], out int targetCount)) return false;
                 string itemName = parts[0].Trim();
+                // The supply, not the number of stacks: a stack of 80 tapers is 80
+                // (VTank's "Inventory Item Count"; getitemcountininventorybyname sums the same way).
                 int count = 0;
                 foreach (var item in _objectCache.GetDirectInventory())
                     if (item.Name.Equals(itemName, StringComparison.OrdinalIgnoreCase))
-                        count++;
+                        count += Math.Max(1, item.Values(LongValueKey.StackCount, 1));
                 return rule.Condition == MetaConditionType.InventoryItemCount_LE
                     ? count <= targetCount
                     : count >= targetCount;
@@ -538,7 +614,12 @@ internal sealed class MetaManager
                 if (!_host.TryGetPlayerPose(out uint cellId, out _, out _, out _, out _, out _, out _, out _)) return false;
                 uint landblock = cellId >> 16;
                 if (uint.TryParse(rule.ConditionData, System.Globalization.NumberStyles.HexNumber, null, out uint hex))
+                {
+                    // metaf writes the full value ("BlockE 00070000", "BlockE 8B370000"),
+                    // and VTank matches its leading 4 digits. RynthAi's own files use 4.
+                    if (hex > 0xFFFF) hex >>= 16;
                     return landblock == hex;
+                }
                 if (uint.TryParse(rule.ConditionData, out uint dec))
                     return landblock == dec;
                 return false;
@@ -565,7 +646,7 @@ internal sealed class MetaManager
                 return _openVendorId != 0;
 
             case MetaConditionType.VendorClosed:
-                return _vendorClosedThisTick;
+                return _vendorClosedNow;
 
             case MetaConditionType.Expression:
             {
@@ -578,7 +659,7 @@ internal sealed class MetaManager
                 if (v.StartsWith("ERR:", StringComparison.Ordinal))
                 {
                     _lastExprError   = $"{rule.State}: {Truncate(v, 120)}";
-                    _lastExprErrorAt = DateTime.Now;
+                    _lastExprErrorAt = Clock();
                     if (_settings.MetaDebug)
                         _host.WriteToChat($"[Meta] expr error in '{rule.State}': {Truncate(v, 80)}", 1);
                     return false;
@@ -607,11 +688,13 @@ internal sealed class MetaManager
                 double minDist = double.MaxValue;
                 foreach (var pt in _settings.CurrentRoute.Points)
                 {
-                    if (pt.Type != NavPointType.Point) continue;
+                    if (!NavRouteParser.IsPlainWaypoint(pt.Type)) continue;
                     double d = Math.Sqrt((pt.NS - ns) * (pt.NS - ns) + (pt.EW - ew) * (pt.EW - ew));
                     if (d < minDist) minDist = d;
                 }
-                return minDist != double.MaxValue && minDist >= threshold;
+                // NS/EW are map coordinates (1.0 = 240 yd); the threshold is in yards
+                // (metaf: "shortest distance to current navroute >= Distance (in yards)").
+                return minDist != double.MaxValue && minDist * 240.0 >= threshold;
             }
 
             // ── Priority monster count within distance ────────────────────────
@@ -646,6 +729,51 @@ internal sealed class MetaManager
 
             default: return false;
         }
+    }
+
+    /// <summary>
+    /// True if a chat line from the last second (checked oldest first) matches
+    /// the rule's pattern and the rule being evaluated hasn't already fired on
+    /// that line or a later one.
+    /// </summary>
+    private bool EvaluateChat(MetaRule rule)
+    {
+        if (string.IsNullOrEmpty(rule.ConditionData) || _chatLines.Count == 0) return false;
+        bool capture = rule.Condition == MetaConditionType.ChatMessageCapture;
+        long consumed = _evalRule != null && _chatConsumed.TryGetValue(_evalRule, out long c) ? c : 0;
+        DateTime now = Clock();
+        for (int i = 0; i < _chatLines.Count; i++)
+        {
+            ChatLine line = _chatLines[i];
+            if (line.Seq <= consumed) continue;
+            if ((now - line.At).TotalSeconds > 1.0) continue;
+            if (capture && !ChatColorListAllows(rule.ChatColors, line.Type)) continue;
+            var match = RegexCache.Match(line.Text, rule.ConditionData);
+            if (!match.Success) continue;
+            if (line.Seq > _evalChatSeq) _evalChatSeq = line.Seq;
+            if (capture)
+            {
+                _lastChatMatch = match;
+                // VTank: each named group goes to capturegroup_<name>, the line's
+                // colour (chat type) to capturecolor.
+                foreach (Group g in match.Groups)
+                    if (!int.TryParse(g.Name, out _))
+                        Expressions.SetVariable("capturegroup_" + g.Name, g.Value);
+                Expressions.SetVariable("capturecolor", line.Type.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>VTank ChatCapture colour list ("2;4"): empty matches any line. A line
+    /// whose chat type the engine didn't give (-1) isn't filtered.</summary>
+    private static bool ChatColorListAllows(string? colors, int chatType)
+    {
+        if (string.IsNullOrWhiteSpace(colors) || chatType < 0) return true;
+        foreach (string part in colors.Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            if (int.TryParse(part, out int id) && id == chatType) return true;
+        return false;
     }
 
     // ── Action execution ─────────────────────────────────────────────────────
@@ -702,7 +830,9 @@ internal sealed class MetaManager
                 string callState = ProcessData(rule.ActionData);
                 if (!string.IsNullOrEmpty(callState))
                 {
-                    _stateStack.Push(_settings.CurrentState);
+                    // VTank pushes the rule's ReturnState; empty (older RynthAi rules) = this state.
+                    string ret = ProcessData(rule.CallReturnState);
+                    _stateStack.Push(string.IsNullOrEmpty(ret) ? _settings.CurrentState : ret);
                     _settings.CurrentState = callState;
                     _settings.ForceStateReset = true;
                 }
@@ -720,7 +850,7 @@ internal sealed class MetaManager
             {
                 if (string.IsNullOrWhiteSpace(rule.ActionData))
                 {
-                    RynthLog.Write(LogCat.Meta, "[Meta] EmbedNav: empty ActionData, ignored");
+                    _host.Log("[Meta] EmbedNav: empty ActionData, ignored");
                     break;
                 }
                 string routeName = rule.ActionData.Split(';')[0];
@@ -756,13 +886,13 @@ internal sealed class MetaManager
                         _settings.CurrentRoute     = newRoute;
                         _settings.ActiveNavIndex   = StartIndexForRoute(newRoute);
                         _settings.EnableNavigation = true;
-                        RynthLog.Write(LogCat.Meta, $"[Meta] EmbedNav: loaded '{routeName}' ({newRoute.Points.Count} pts, was {priorPoints})");
+                        _host.Log($"[Meta] EmbedNav: loaded '{routeName}' ({newRoute.Points.Count} pts, was {priorPoints})");
                         _host.WriteToChat($"[RynthAi Meta] Route \u2192 {routeName} ({newRoute.Points.Count} pts)", 1);
                         break;
                     }
 
                     // Fallback: a standalone .nav file in NavProfiles.
-                    string navFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"NavProfiles");
+                    string navFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
                     string fullPath = Path.Combine(navFolder, routeName + ".nav");
                     if (File.Exists(fullPath))
                     {
@@ -771,19 +901,19 @@ internal sealed class MetaManager
                         _settings.CurrentRoute     = newRoute;
                         _settings.ActiveNavIndex   = StartIndexForRoute(newRoute);
                         _settings.EnableNavigation = true;
-                        RynthLog.Write(LogCat.Meta, $"[Meta] EmbedNav: loaded file '{routeName}' ({newRoute.Points.Count} pts, was {priorPoints})");
+                        _host.Log($"[Meta] EmbedNav: loaded file '{routeName}' ({newRoute.Points.Count} pts, was {priorPoints})");
                         _host.WriteToChat($"[RynthAi Meta] Route \u2192 {routeName} ({newRoute.Points.Count} pts)", 1);
                     }
                     else
                     {
                         string keys = string.Join(", ", _settings.EmbeddedNavs.Keys);
-                        RynthLog.Write(LogCat.Meta, $"[Meta] EmbedNav: route '{routeName}' not found. Embedded keys: [{keys}]");
+                        _host.Log($"[Meta] EmbedNav: route '{routeName}' not found. Embedded keys: [{keys}]");
                         _host.WriteToChat($"[RynthAi Meta] Route missing: {routeName}", 1);
                     }
                 }
                 catch (Exception ex)
                 {
-                    RynthLog.Write(LogCat.Meta, $"[Meta] EmbedNav error: {ex.Message}");
+                    _host.Log($"[Meta] EmbedNav error: {ex.Message}");
                     _host.WriteToChat($"[RynthAi Meta] Load Error: {ex.Message}", 1);
                 }
                 break;
@@ -797,7 +927,7 @@ internal sealed class MetaManager
                 _watchdogState = parts[0].Trim();
                 if (!float.TryParse(parts[1].Trim(), out _watchdogMetersRequired)) _watchdogMetersRequired = 5f;
                 if (!double.TryParse(parts[2].Trim(), out _watchdogSecondsConfig)) _watchdogSecondsConfig = 5.0;
-                _watchdogExpiration = DateTime.Now.AddSeconds(_watchdogSecondsConfig);
+                _watchdogExpiration = Clock().AddSeconds(_watchdogSecondsConfig);
                 if (_host.HasGetPlayerPose &&
                     _host.TryGetPlayerPose(out _, out float wx, out float wy, out float wz, out _, out _, out _, out _))
                     _lastWatchdogPos = new Vector3(wx, wy, wz);
@@ -811,12 +941,26 @@ internal sealed class MetaManager
 
             case MetaActionType.SetRAOption:
             {
+                // VTank SetOpt {Option} {Expression}: evaluate the expression and set the
+                // real option, the same way '/vt opt set' does. It used to store the raw
+                // text in a private option table nothing reads, so SetOpt {EnableNav} {True}
+                // (and every other SetOpt) did nothing.
                 string optData = ProcessData(rule.ActionData);
                 if (!string.IsNullOrEmpty(optData))
                 {
-                    var parts = optData.Split(';');
+                    var parts = optData.Split(';', 2);
                     if (parts.Length >= 2)
-                        Expressions.SetOption(parts[0].Trim(), parts[1].Trim());
+                    {
+                        string raw = parts[1].Trim();
+                        string value = Expressions.Evaluate(raw);
+                        if (value.StartsWith("ERR:", StringComparison.Ordinal))
+                        {
+                            _lastExprError   = $"{rule.State}: SetOpt {parts[0].Trim()}: {Truncate(value, 100)}";
+                            _lastExprErrorAt = Clock();
+                            value = raw;
+                        }
+                        TrySetVtOption(parts[0].Trim(), value);
+                    }
                 }
                 break;
             }
@@ -831,7 +975,7 @@ internal sealed class MetaManager
                     {
                         string varName = parts[0].Trim();
                         string optName = parts[1].Trim();
-                        Expressions.SetVariable(varName, Expressions.GetOption(optName));
+                        Expressions.SetVariable(varName, GetVtOption(optName) ?? "0");
                     }
                 }
                 break;
@@ -877,9 +1021,9 @@ internal sealed class MetaManager
                 {
                     _viewsWarned = true;
                     _lastExprError   = $"{rule.Action} ignored — VTank Views are not supported in RynthAi";
-                    _lastExprErrorAt = DateTime.Now;
+                    _lastExprErrorAt = Clock();
                     _host.WriteToChat("[RynthAi] Meta uses VTank Views (CreateView/DestroyView) — not supported; those actions are ignored.", 1);
-                    RynthLog.Write(LogCat.Meta, $"[Meta] {rule.Action} ignored — VTank Views unsupported");
+                    _host.Log($"[Meta] {rule.Action} ignored — VTank Views unsupported");
                 }
                 break;
         }
@@ -910,12 +1054,44 @@ internal sealed class MetaManager
             return TrySetVtOption(optName, optVal);
         }
 
+        // /vt opt get <option> — show one option's value.
+        if (sub == "opt" && parts.Length >= 4 &&
+            parts[2].Equals("get", StringComparison.OrdinalIgnoreCase))
+        {
+            string optName = parts[3];
+            _host.WriteToChat($"[RynthAi] {optName} = {GetVtOption(optName) ?? "(not set)"}", 1);
+            return true;
+        }
+
+        // /vt opt list — every VTank option RynthAi maps, with its value.
+        if (sub == "opt" && parts.Length >= 3 &&
+            parts[2].Equals("list", StringComparison.OrdinalIgnoreCase))
+        {
+            var line = new System.Text.StringBuilder();
+            foreach (string name in System.Linq.Enumerable.OrderBy(VtOptionMap.Keys, k => k, StringComparer.OrdinalIgnoreCase))
+            {
+                string item = $"{name}={GetVtOption(name) ?? "?"}";
+                if (line.Length + item.Length > 180) { _host.WriteToChat("[RynthAi] " + line, 1); line.Clear(); }
+                if (line.Length > 0) line.Append(", ");
+                line.Append(item);
+            }
+            if (line.Length > 0) _host.WriteToChat("[RynthAi] " + line, 1);
+            return true;
+        }
+
+        // /vt start | /vt stop — the macro, as VTank's own start/stop.
+        if (sub is "start" or "stop")
+        {
+            _raCommandHandler?.Invoke("/ra " + sub);
+            return true;
+        }
+
         // /vt meta load <name> — load a meta file from MetaFiles folder
         if (sub == "meta" && parts.Length >= 4 &&
             parts[2].Equals("load", StringComparison.OrdinalIgnoreCase))
         {
             string name = string.Join(" ", parts, 3, parts.Length - 3);
-            string metaDir = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
+            string metaDir = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
             string afPath = Path.Combine(metaDir, name + ".af");
             string metPath = Path.Combine(metaDir, name + ".met");
 
@@ -933,8 +1109,9 @@ internal sealed class MetaManager
                         _settings.EmbeddedNavs.Clear();
                         foreach (var kvp in loaded.EmbeddedNavs)
                             _settings.EmbeddedNavs[kvp.Key] = kvp.Value;
-                        _settings.CurrentState = loaded.Rules[0].State;
+                        _settings.CurrentState = loaded.StartState;
                         _settings.ForceStateReset = true;
+                        _settings.MetaCallStackReset = true;
                         _settings.CurrentMetaPath = loadPath;
                         _host.WriteToChat(
                             $"[RynthAi] Loaded meta '{name}': {loaded.Rules.Count} rules, {loaded.EmbeddedNavs.Count} navs"
@@ -957,12 +1134,14 @@ internal sealed class MetaManager
         }
 
         // /vt nav load <name> — load a nav route
+        // It used to store only the bare name as the nav path, so nothing loaded.
+        // /vt nav save <name> saves the current route under that name.
         if (sub == "nav" && parts.Length >= 4 &&
-            parts[2].Equals("load", StringComparison.OrdinalIgnoreCase))
+            (parts[2].Equals("load", StringComparison.OrdinalIgnoreCase)
+             || parts[2].Equals("save", StringComparison.OrdinalIgnoreCase)))
         {
             string name = string.Join(" ", parts, 3, parts.Length - 3);
-            _settings.CurrentNavPath = name;
-            _host.WriteToChat($"[RynthAi] Nav route set: {name}", 1);
+            _raCommandHandler?.Invoke($"/ra nav {parts[2].ToLowerInvariant()} {name}");
             return true;
         }
 
@@ -970,9 +1149,27 @@ internal sealed class MetaManager
         if ((sub == "loot" || sub == "lootprofile") && parts.Length >= 4 &&
             parts[2].Equals("load", StringComparison.OrdinalIgnoreCase))
         {
-            string name = string.Join(" ", parts, 3, parts.Length - 3);
-            _settings.CurrentLootPath = name;
-            _host.WriteToChat($"[RynthAi] Loot profile set: {name}", 1);
+            string name = string.Join(" ", parts, 3, parts.Length - 3).Trim().Trim('"');
+            // A bare name is a file in LootProfiles (.utl, else .json). Storing the
+            // bare name made the loader report "not found" and looting stopped.
+            string path = name;
+            if (!File.Exists(path))
+            {
+                string folder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
+                string stem = name.EndsWith(".utl", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                    ? name : name + ".utl";
+                string candidate = Path.Combine(folder, stem);
+                if (!File.Exists(candidate) && !stem.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                    candidate = Path.Combine(folder, name + ".json");
+                path = candidate;
+            }
+            if (!File.Exists(path))
+            {
+                _host.WriteToChat($"[RynthAi] Loot profile not found: {name}", 1);
+                return true;
+            }
+            _settings.CurrentLootPath = path;
+            _host.WriteToChat($"[RynthAi] Loot profile set: {Path.GetFileName(path)}", 1);
             return true;
         }
 
@@ -991,7 +1188,7 @@ internal sealed class MetaManager
 
         // /vt <verb> aliases → existing /ra handlers (Phase 1.3 VTank-meta migration).
         // Re-dispatch through the /ra path (_raCommandHandler → HandleRaCommand).
-        if (sub is "forcebuff" or "cancelforcebuff" or "addnavpt")
+        if (sub is "forcebuff" or "cancelforcebuff" or "addnavpt" or "mexec" or "clearbusy")
         {
             _raCommandHandler?.Invoke("/ra " + string.Join(" ", parts, 1, parts.Length - 1));
             return true;
@@ -1040,6 +1237,24 @@ internal sealed class MetaManager
         return false;
     }
 
+    /// <summary>The RynthAi setting a VTank option name maps to (EnableNav → EnableNavigation).</summary>
+    internal static bool TryMapVtOption(string vtName, out string raName)
+    {
+        if (VtOptionMap.TryGetValue(vtName, out string? n)) { raName = n; return true; }
+        raName = "";
+        return false;
+    }
+
+    /// <summary>VTank bool text (true/false/on/off, any case) as 1/0; anything else unchanged.</summary>
+    internal static string NormalizeVtValue(string vtValue) => vtValue.ToLowerInvariant() switch
+    {
+        "true"  => "1",
+        "false" => "0",
+        "on"    => "1",
+        "off"   => "0",
+        _       => vtValue
+    };
+
     // VTank option name → RynthAi settings mapping
     private static readonly Dictionary<string, string> VtOptionMap = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1064,12 +1279,16 @@ internal sealed class MetaManager
         // Phase 1.2 VTank-meta migration aliases (targets verified in BuildSettingsMap)
         ["autocram"]                  = "EnableAutocram",
         ["autostack"]                 = "EnableAutostack",
+        ["readunknownscrolls"]        = "ReadUnknownScrolls",      // VTank: loots and reads unknown scrolls
         ["usedispelitems"]            = "UseDispelItems",
         ["castdispelself"]            = "CastDispelSelf",
         ["opendoorrange"]             = "OpenDoorRange",
         // Phase 2 migration: vital recharge is 2-tier — norm = with-target/in-combat,
         // notarg = idle/no-target (RynthAi has both: HealAt/… vs TopOff…). Percent 0-100.
         ["recharge-norm-hitp"]        = "HealAt",
+        ["usekitsinmagicmode"]        = "UseKitsInMagicMode",
+        ["gotopeacemodetousekits"]    = "PeaceModeForKits",
+        ["stopmacroondeath"]          = "StopMacroOnDeath",
         ["recharge-norm-mana"]        = "GetManaAt",
         ["recharge-norm-stam"]        = "RestamAt",
         ["recharge-notarg-hitp"]      = "TopOffHP",
@@ -1080,29 +1299,45 @@ internal sealed class MetaManager
         ["corpseapproachrange-min"]   = "CorpseApproachRangeMin",
         ["manastonelootcount"]        = "ManaStoneKeepCount",
         ["rebuftimeremainingseconds"] = "RebuffSecondsRemaining",
-        ["navclosestoprange"]         = "NavCloseStopRange",        // landblock fraction; nav reads ×240
+        // VTank's "Follow/Nav Min Distance" box: landblock units (x240 = yards). The settings map
+        // converts it into FollowNavMin, the nav point reach (see ExpressionEngine).
+        ["navclosestoprange"]         = "NavCloseStopRange",
+        ["follownavmin"]              = "FollowNavMin",             // RynthAi's own name, yards
     };
+
+    /// <summary>A VTank option's current value (mapped setting, else a stored generic option).</summary>
+    private string? GetVtOption(string vtName)
+    {
+        var map = Expressions.BuildSettingsMapPublic();
+        if (VtOptionMap.TryGetValue(vtName, out string? raName))
+        {
+            if (map.TryGetValue(raName, out var entry)) return entry.Get();
+        }
+        // A RynthAi setting named directly (EnableCombat, OpenDoors, NavCloseStopRange...).
+        if (map.TryGetValue(vtName, out var direct)) return direct.Get();
+        string v = Expressions.GetOption(vtName);
+        return string.IsNullOrEmpty(v) ? null : v;
+    }
 
     private bool TrySetVtOption(string vtName, string vtValue)
     {
         // Translate VTank bool strings to numeric
-        string value = vtValue.ToLower() switch
-        {
-            "true"  => "1",
-            "false" => "0",
-            "on"    => "1",
-            "off"   => "0",
-            _       => vtValue
-        };
+        string value = NormalizeVtValue(vtValue);
 
+        var map = Expressions.BuildSettingsMapPublic();
         if (VtOptionMap.TryGetValue(vtName, out string? raName))
         {
-            var map = Expressions.BuildSettingsMapPublic();
             if (map.TryGetValue(raName, out var entry))
             {
                 entry.Set(value);
                 return true;
             }
+        }
+        // A RynthAi setting named directly (EnableCombat, OpenDoors, NavCloseStopRange...).
+        if (map.TryGetValue(vtName, out var direct))
+        {
+            direct.Set(value);
+            return true;
         }
 
         // Not mapped — store as a generic option so expressions can still read it
@@ -1142,6 +1377,7 @@ internal sealed class MetaManager
     private void RebuildStateIndex()
     {
         _stateIndex.Clear();
+        _chatConsumed.Clear();   // drop rules that are gone; at worst a line is seen again
         var list = _settings.MetaRules;
         foreach (var r in list)
         {
@@ -1171,20 +1407,20 @@ internal sealed class MetaManager
             MacroRunning   = _settings.IsMacroRunning,
             MetaEnabled    = _settings.EnableMeta,
             CurrentState   = _settings.CurrentState ?? "",
-            SecondsInState = (DateTime.Now - _stateStartTime).TotalSeconds,
+            SecondsInState = (Clock() - _stateStartTime).TotalSeconds,
             StackDepth     = _stateStack.Count,
             WatchdogActive = _watchdogActive,
             WatchdogState  = _watchdogState ?? "",
             WatchdogSecondsRemaining = _watchdogActive
-                ? Math.Max(0, (_watchdogExpiration - DateTime.Now).TotalSeconds) : 0,
+                ? Math.Max(0, (_watchdogExpiration - Clock()).TotalSeconds) : 0,
             LastFiredState     = _lastFiredState,
             LastFiredCondition = _lastFiredCond,
             LastFiredAction    = _lastFiredAct,
             LastFiredSecondsAgo = _lastFiredAt == DateTime.MinValue
-                ? -1 : (DateTime.Now - _lastFiredAt).TotalSeconds,
+                ? -1 : (Clock() - _lastFiredAt).TotalSeconds,
             LastExprError = _lastExprError,
             LastExprErrorSecondsAgo = _lastExprErrorAt == DateTime.MinValue
-                ? -1 : (DateTime.Now - _lastExprErrorAt).TotalSeconds,
+                ? -1 : (Clock() - _lastExprErrorAt).TotalSeconds,
         };
         if (_settings.MetaRules != null)
             lock (_settings.MetaRulesLock)

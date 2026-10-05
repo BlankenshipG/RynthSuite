@@ -410,9 +410,11 @@ internal static class AfFileParser
 
             case MetaConditionType.ChatMessageCapture:
             {
-                // ChatCapture {pattern} {replacement} — we only use the pattern
+                // ChatCapture {pattern} {colour id list, e.g. 2;4}
                 string pattern = ExtractBraceContent(rest, out int endPos);
                 rule.ConditionData = pattern;
+                string r1 = endPos > 0 && endPos < rest.Length ? rest.Substring(endPos).Trim() : "";
+                rule.ChatColors = r1.StartsWith('{') ? ExtractBraceContent(r1, out _).Trim() : "";
                 break;
             }
 
@@ -523,8 +525,17 @@ internal static class AfFileParser
 
         switch (actionType)
         {
-            case MetaActionType.SetMetaState:
             case MetaActionType.CallMetaState:
+            {
+                // CallState {ToState} {ReturnState}: the second brace is what gets
+                // pushed on the call stack (it was dropped, so Return went back to the caller).
+                rule.ActionData = ExtractBraceContent(rest, out int e1);
+                string r1 = e1 < rest.Length ? rest.Substring(e1).Trim() : "";
+                rule.CallReturnState = r1.StartsWith('{') ? ExtractBraceContent(r1, out _) : "";
+                break;
+            }
+
+            case MetaActionType.SetMetaState:
             case MetaActionType.ChatCommand:
             case MetaActionType.ExpressionAction:
             case MetaActionType.ChatExpression:
@@ -571,9 +582,11 @@ internal static class AfFileParser
 
             case MetaActionType.GetRAOption:
             {
-                string variable = ExtractBraceContent(rest, out int e1);
+                // metaf: GetOpt {Option} {Variable} (GetOpt {OpenDoors} {doors}).
+                // ActionData stays "variable;option".
+                string option = ExtractBraceContent(rest, out int e1);
                 string r1 = e1 < rest.Length ? rest.Substring(e1).Trim() : "";
-                string option = ExtractBraceContent(r1, out _);
+                string variable = ExtractBraceContent(r1, out _);
                 rule.ActionData = $"{variable};{option}";
                 break;
             }
@@ -706,8 +719,20 @@ internal static class AfFileParser
                     }
                     break;
 
-                case "pau": // pau seconds
-                    if (tokens.Length >= 2)
+                case "pau": // metaf: pau X Y Z PauseMs   (old RynthAi form: pau seconds)
+                    if (tokens.Length >= 5)
+                    {
+                        // The metaf form was read as "pau seconds": the X coordinate became
+                        // the pause (e.g. -62144 ms) and the point moved to 0,0,0.
+                        navFileLines.Add("3"); // type 3 = Pause
+                        navFileLines.Add(tokens[1]); // EW
+                        navFileLines.Add(tokens[2]); // NS
+                        navFileLines.Add(tokens[3]); // Z
+                        navFileLines.Add("0");
+                        double.TryParse(tokens[4], NumberStyles.Any, CultureInfo.InvariantCulture, out double pauseMs);
+                        navFileLines.Add(((int)pauseMs).ToString(CultureInfo.InvariantCulture));
+                    }
+                    else if (tokens.Length >= 2)
                     {
                         navFileLines.Add("3"); // type 3 = Pause
                         navFileLines.Add("0");
@@ -731,35 +756,49 @@ internal static class AfFileParser
                     }
                     break;
 
-                case "ptl": // ptl EW NS Z destEW destNS destZ objectClass {PortalName}
+                // The trailer for type 6 is exactly the 6 lines NavRouteParser reads: name,
+                // class, tie, targetEW, targetNS, targetZ. ptl wrote 5 extra "0" lines and
+                // vnd/tlk 5 more too, which NavRouteParser (and CountNavPoints) then read as
+                // an extra Point at 0,0,0 after every portal, vendor or NPC: after using a
+                // portal the bot headed for the middle of Dereth.
+                case "ptl": // metaf: ptl X Y Z TargetX TargetY TargetZ ObjectClass {Name}
+                case "tlk": // metaf: tlk X Y Z TargetX TargetY TargetZ ObjectClass {Name}
                     if (tokens.Length >= 8)
                     {
-                        navFileLines.Add("6"); // type 6 = PortalNPC
+                        navFileLines.Add("6"); // type 6 = PortalNPC (used by name; NPC talk too)
                         navFileLines.Add(tokens[1]); // EW
                         navFileLines.Add(tokens[2]); // NS
                         navFileLines.Add(tokens[3]); // Z
                         navFileLines.Add("0");
-                        string portalName = tokens.Length >= 9 ? tokens[8] : tokens[7];
-                        int objClass = 14; // Portal class
-                        int.TryParse(tokens[7], out objClass);
-                        navFileLines.Add(portalName);
+                        string targetName = tokens.Length >= 9 ? tokens[8] : tokens[7];
+                        if (!int.TryParse(tokens[7], out int objClass))
+                            objClass = nodeType == "tlk" ? 37 : 14; // NPC / Portal
+                        navFileLines.Add(targetName);
                         navFileLines.Add(objClass.ToString());
                         navFileLines.Add("False");
-                        navFileLines.Add(tokens[4]); // dest EW
-                        navFileLines.Add(tokens[5]); // dest NS
-                        navFileLines.Add(tokens[6]); // dest Z
+                        navFileLines.Add(tokens[4]); // target EW
+                        navFileLines.Add(tokens[5]); // target NS
+                        navFileLines.Add(tokens[6]); // target Z
+                    }
+                    else if (nodeType == "tlk" && tokens.Length >= 5)
+                    {
+                        // Old RynthAi form: tlk EW NS Z objectId {NPCName}
+                        navFileLines.Add("6");
+                        navFileLines.Add(tokens[1]);
+                        navFileLines.Add(tokens[2]);
+                        navFileLines.Add(tokens[3]);
                         navFileLines.Add("0");
-                        navFileLines.Add("0"); // land EW
-                        navFileLines.Add("0"); // land NS
-                        navFileLines.Add("0"); // land Z
-                        navFileLines.Add("0");
+                        navFileLines.Add(tokens.Length >= 6 ? tokens[5] : "NPC");
+                        navFileLines.Add("37"); // NPC class
+                        navFileLines.Add("False");
+                        navFileLines.Add(tokens[1]); navFileLines.Add(tokens[2]); navFileLines.Add(tokens[3]);
                     }
                     break;
 
-                case "vnd": // vnd EW NS Z vendorId {VendorName}
+                case "vnd": // metaf: vnd X Y Z TargetGUID {TargetName}
                     if (tokens.Length >= 5)
                     {
-                        navFileLines.Add("6"); // treat vendor as PortalNPC type
+                        navFileLines.Add("6"); // treat vendor as PortalNPC type (used by name)
                         navFileLines.Add(tokens[1]); // EW
                         navFileLines.Add(tokens[2]); // NS
                         navFileLines.Add(tokens[3]); // Z
@@ -768,25 +807,7 @@ internal static class AfFileParser
                         navFileLines.Add(vndName);
                         navFileLines.Add("12"); // NPC class
                         navFileLines.Add("False");
-                        navFileLines.Add("0"); navFileLines.Add("0"); navFileLines.Add("0"); navFileLines.Add("0");
-                        navFileLines.Add("0"); navFileLines.Add("0"); navFileLines.Add("0"); navFileLines.Add("0");
-                    }
-                    break;
-
-                case "tlk": // tlk EW NS Z objectId {NPCName}
-                    if (tokens.Length >= 5)
-                    {
-                        navFileLines.Add("6");
-                        navFileLines.Add(tokens[1]);
-                        navFileLines.Add(tokens[2]);
-                        navFileLines.Add(tokens[3]);
-                        navFileLines.Add("0");
-                        string tlkName = tokens.Length >= 6 ? tokens[5] : "NPC";
-                        navFileLines.Add(tlkName);
-                        navFileLines.Add("37"); // NPC class
-                        navFileLines.Add("False");
-                        navFileLines.Add("0"); navFileLines.Add("0"); navFileLines.Add("0"); navFileLines.Add("0");
-                        navFileLines.Add("0"); navFileLines.Add("0"); navFileLines.Add("0"); navFileLines.Add("0");
+                        navFileLines.Add(tokens[1]); navFileLines.Add(tokens[2]); navFileLines.Add(tokens[3]);
                     }
                     break;
 

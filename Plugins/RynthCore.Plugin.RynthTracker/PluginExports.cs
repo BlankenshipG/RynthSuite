@@ -26,9 +26,6 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginTick", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void Tick() => Runtime.OnTick();
 
-    [UnmanagedCallersOnly(EntryPoint = "RynthPluginRender", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void Render() => Runtime.OnRender();
-
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnLoginComplete", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnLoginComplete() => Runtime.OnLoginComplete();
 
@@ -45,6 +42,10 @@ public static unsafe class PluginExports
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnDeleteObject", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnDeleteObject(uint objectId) => Runtime.OnDeleteObject(objectId);
+
+    // Kills and XP per kill (0.2.0) come from this; without the export the engine never calls it.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnKillNotification", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void OnKillNotification(IntPtr textUtf16) => Runtime.OnKillNotification(textUtf16);
 
     // ── Snapshot bridge ──────────────────────────────────────────────────────
     // Panel polls RynthTrackerGetSnapshotJson every 500ms.

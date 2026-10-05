@@ -159,6 +159,25 @@ public static class VTankLootEvaluator
     }
 
     /// <summary>
+    /// The first rule, in list order, that matches the item (rule Priority is not consulted),
+    /// or null when none does; <paramref name="index"/> is its position, or -1.
+    /// Corpse looting classifies items with this.
+    /// </summary>
+    public static VTankLootRule? FirstMatch(VTankLootProfile profile, WorldObject? item, VTankLootContext? ctx, out int index)
+    {
+        for (int i = 0; i < profile.Rules.Count; i++)
+        {
+            if (Match(profile.Rules[i], item, ctx))
+            {
+                index = i;
+                return profile.Rules[i];
+            }
+        }
+        index = -1;
+        return null;
+    }
+
+    /// <summary>
     /// One condition on its own, same semantics as inside <see cref="Match(VTankLootRule, WorldObject?, VTankLootContext?)"/>.
     /// AutoVendor judges conditions one at a time so it can tell "no" from "can't tell".
     /// Throws on a malformed data line or an unsupported node type (the caller decides what that means).
@@ -178,7 +197,7 @@ public static class VTankLootEvaluator
             VTankNodeTypes.DoubleValKeyLE                  => Double(d) is var (val,key) && item.Values((DoubleValueKey)key, 0.0) <= val,
             VTankNodeTypes.DoubleValKeyGE                  => Double(d) is var (val,key) && item.Values((DoubleValueKey)key, 0.0) >= val,
             VTankNodeTypes.DamagePercentGE                 => false, // VTank source returns false unconditionally
-            VTankNodeTypes.ObjectClass                     => (int)item.ObjectClass == ReadInt(d, 0),
+            VTankNodeTypes.ObjectClass                     => ScrollLearner.ClassMatches(item, ReadInt(d, 0)),   // Scroll (42) also matches scroll Books
             VTankNodeTypes.SpellCountGE                    => ctx is null || ctx.GetItemSpellIds(itemId).Length >= ReadInt(d, 0),
             VTankNodeTypes.SpellMatch                      => MatchSpellMatch(itemId, ctx, d),
             VTankNodeTypes.MinDamageGE                     => MatchMinDamageGE(item, d),

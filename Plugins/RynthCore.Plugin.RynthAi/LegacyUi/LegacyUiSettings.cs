@@ -46,6 +46,11 @@ public sealed class LegacyUiSettings
     public float NavTurnRateDegPerSec = 270f;    // mode 0 (heading servo) max turn rate
     public float NavTier1TurnSpeed = 3.0f;       // mode 1 (CM_Movement) DoMovement turn-command speed (magnitude of CMotionInterp turn_speed; 1.0 = native keyboard rate)
     public float PostPortalDelaySec = 4.0f;
+    // Route recovery (NavigationEngine detours): when stuck after the jump fails, or when nav
+    // itself wanders off the route, plan a way back with the dungeon map / RynthNav navmesh.
+    public bool  NavRecoveryEnabled = true;
+    public float NavOffTrackYards = 170f;        // off track beyond this (never below 160: metas pull the bot up to ~159 yd away)
+    public int   NavMaxDetourAttempts = 3;       // detours per waypoint before falling back to the escape ladder alone
     public float T2Speed = 1.0f;
     public float T2DistanceTo = 0.5f;
     public float T2ReissueMs = 2000f;
@@ -64,6 +69,10 @@ public sealed class LegacyUiSettings
 
     public bool EnableAutostack = true;
     public bool EnableAutocram = true;
+    // VTank's ReadUnknownScrolls (default on): loot scrolls of spells the character doesn't
+    // know and can learn (school trained or specialized, ACE's skill rule), then read them
+    // at a safe moment; scrolls already in the pack too. Needs looting on for corpses.
+    public bool ReadUnknownScrolls = true;
     public bool EnableCombineSalvage = true;
     public bool CombineBagsDuringSalvage = true;
 
@@ -100,6 +109,29 @@ public sealed class LegacyUiSettings
     public bool MChargesWhenOff;
 
     public int HealAt = 60;
+    // Vitals consumables and safety stops (2026-09-28). Stops are options: most
+    // metas handle a death themselves (run back), so the macro keeps going unless asked.
+    public bool UsePotions = true;
+    // Unlimited buff gems (Asheron's Benediction, Blackmoor's Favor) and field rations (2026-09-29).
+    public bool UseBuffItems = true;
+    public int MakeRationsBelow = 5;   // 0 = don't cook field rations
+    public bool UseKitsInMagicMode = true;
+    public bool PeaceModeForKits = false;
+    // Use a healing/stamina kit only when its success chance (ACE's own skill check) is at
+    // least this %, else cast the spell instead, as VTank does. 0 = always use kits.
+    public int KitMinSuccessPct = 70;
+    // Emergency heal: at or under this health %, a healing kit (out of Magic mode, ahead of Heal
+    // At's chain) and, while a cast is pending, a kit or potion. 0 = off.
+    public int EmergencyHealAt = 30;
+    // Stamina to Health Self: cast at or under this health % ahead of Heal At's chain, when
+    // stamina is over StaminaToHealthMinStamina %. 0 = never cast it. Both default to the
+    // values that were hard-wired to Emergency Heal At before (30 / 20).
+    public int StaminaToHealthAt = 30;
+    public int StaminaToHealthMinStamina = 20;
+    public bool StopMacroOnDeath = false;
+    public bool StopMacroOnNoComponents = false;
+    public bool StopLootingWhenPackFull = true;
+    public bool StopMacroWhenPackFull = false;
     public int RestamAt = 30;
     public int GetManaAt = 40;
     public int TopOffHP = 95;
@@ -119,17 +151,25 @@ public sealed class LegacyUiSettings
     public int RingRange = 5;
     public int ApproachRange = 4;
     public int MinRingTargets = 4;
+    // Blast like a ring: with BlastRange > 0, a rule with Blast on casts a blast only when
+    // MinBlastTargets monsters are within BlastRange in the blast's fan (3 projectiles over 90
+    // degrees) toward the target; otherwise its other shape. 0 = off: Blast is just a shape.
+    public int BlastRange = 0;
+    public int MinBlastTargets = 3;
+    // Nav point reach (VTank "Follow/Nav Min Distance"), yards: how close nav gets to each
+    // nav point before moving on to the next, and how close Follow gets to its leader.
+    // Metas set it as FollowNavMin (yards) or VTank's NavCloseStopRange (landblock units,
+    // x240 = yards; the same VTank setting). Settings ▸ Navigation and the Nav panel show it.
     public float FollowNavMin = 1.5f;
-    // VTank navclosestoprange: stop this many LANDBLOCK FRACTIONS short of a finite
-    // (Once) route's final point (×240 = yards; 0.00625 ≈ 1.5yd). 0 = off. Runtime-
-    // set by migrated metas; not persisted.
-    public float NavCloseStopRange = 0f;
+    public const float FollowNavMinLowest = 0.5f, FollowNavMinHighest = 20f;
+    public static float ClampFollowNavMin(float yards) =>
+        float.IsNaN(yards) ? 1.5f : Math.Clamp(yards, FollowNavMinLowest, FollowNavMinHighest);
+    /// <summary>Marker colours, waypoint HUD / labels, breadcrumb trail and recording options.</summary>
+    public NavOverlaySettings NavOverlay = new();
     public float NavRingThickness = 6.0f;
     public float NavLineThickness = 6.0f;
     public float NavHeightOffset = 0.05f;
     public float NavSlopeSink = 1.5f;
-    /// <summary>Marker colours, waypoint HUD / labels, breadcrumb trail and recording options.</summary>
-    public NavOverlaySettings NavOverlay = new();
     public bool  ShowTerrainPassability = true;
     public double MaxMonRange = 12.0;
     public bool SummonPets;
@@ -169,6 +209,12 @@ public sealed class LegacyUiSettings
     public int RebuffTopOffSecondsRemaining = 1200;
     public bool StartMacroOnLogin;
     public bool PatrolOnLogin;
+    /// <summary>
+    /// Decal bridge only: when VTank's macro starts, RynthAi's macro stops, and it won't start
+    /// while VTank runs (one bot per client). On by default; a profile saved before this
+    /// setting existed loads it as on. Without Decal it does nothing.
+    /// </summary>
+    public bool YieldToVTank = true;
 
     public int BlacklistAttempts = 3;
     public int BlacklistTimeoutSec = 30;
@@ -209,14 +255,6 @@ public sealed class LegacyUiSettings
 
     public int MeleeAttackPower = -1;
     public int MissileAttackPower = -1;
-    /// <summary>When true, only ammo stacks listed under Items → Missile ammunition are considered for auto-equip (besides per-monster override).</summary>
-    public bool MissileAmmoInventoryRulesOnly;
-    /// <summary>
-    /// When true (default), melee combat with a one-handed weapon equips the first shield listed
-    /// under Items → Shields whenever no off-hand is set for the monster (Damage panel override or
-    /// Monsters rule Offhand). Explicit per-monster off-hands are used regardless.
-    /// </summary>
-    public bool AutoEquipShield = true;
     /// <summary>
     /// Physical-attack path. FALSE (default since 2026-09-04) = the direct
     /// explicit-target path: Event_TargetedMelee/MissileAttack take the target
@@ -240,6 +278,22 @@ public sealed class LegacyUiSettings
     /// </summary>
     public bool UseNativeAttack = false;
     public bool UseRecklessness;
+    /// <summary>
+    /// Combat and buffing only ever wield weapons from the Items list. With this on (the
+    /// default), a character whose Items list has no wand at all may still buff and cast with a
+    /// caster from its pack (by object class, never by name). Any listed wand turns it off.
+    /// </summary>
+    public bool WieldUnlistedWandWhenNoneListed = true;
+    /// <summary>
+    /// The off hand (the Shield slot) when the monster rule doesn't choose one: "Auto" (a listed
+    /// shield with a one-handed melee weapon), "Shield", "Weapon" (dual wield a second listed
+    /// one-handed weapon; needs the Dual Wield skill) or "None" (never touched). A rule chooses
+    /// with MonsterRule.OffhandId (OffhandRules.RuleAuto..RuleNone). See OffhandPlanner.
+    /// </summary>
+    public string OffhandDefault = "Auto";
+    /// <summary>Auto: dual wield rather than a shield when the Dual Wield skill is trained and a
+    /// second one-handed melee weapon is listed. Off by default (the shield).</summary>
+    public bool PreferDualWield;
     public int MeleeAttackHeight = 1;
     public int MissileAttackHeight = 1;
 
@@ -250,7 +304,20 @@ public sealed class LegacyUiSettings
     public float BowArcVelocity       = 25.0f;
     public float CrossbowArcVelocity  = 40.0f;
     public float AtlatlArcVelocity    = 22.0f;
-    public float MagicArcVelocity     = 25.0f;
+    /// <summary>
+    /// Arc spells' HORIZONTAL speed (m/s). ACE flies every player arc at a fixed 40 m/s across
+    /// the ground under gravity 9.8 (MissileBallistics.SolveLateral). Combat casts an Arc only
+    /// when that path reaches the target, else the rule's other shape (or Bolt). Until
+    /// 2026-10-04 this was a launch speed for a flat-ground model, default 25:
+    /// <see cref="MigrateMagicArcVelocity"/> moves that old default to 40.
+    /// </summary>
+    public float MagicArcVelocity     = Raycasting.MissileBallistics.AceArcSpellSpeed;
+
+    /// <summary>A saved MagicArcVelocity under today's model: the old default (25, a launch
+    /// speed for the flat-ground model, which as a horizontal speed would make arcs 2.6x higher
+    /// than ACE flies them) and nonsense values become 40.</summary>
+    public static float MigrateMagicArcVelocity(float saved)
+        => float.IsFinite(saved) && saved > 0f && saved != 25.0f ? saved : Raycasting.MissileBallistics.AceArcSpellSpeed;
     /// <summary>
     /// Extra headroom (meters) a missile's arc must have at mid-flight for LoS to pass,
     /// on top of the modelled flight path (launch speed above, AC gravity 9.8). Covers
@@ -313,11 +380,25 @@ public sealed class LegacyUiSettings
     /// <summary>Milliseconds between /ub vendor open attempts.</summary>
     public int AutoVendorTriesTime = 5000;
 
+    // ── AutoTrade (UtilityBelt AutoTrade; /ub autotrade, /ra autotrade) ────────
+    /// <summary>Fill the trade window from a loot profile when a trade opens (UB default: off).</summary>
+    public bool AutoTradeEnabled = false;
+    /// <summary>Only print what would be added to the trade window.</summary>
+    public bool AutoTradeTestMode = false;
+    /// <summary>Send "AutoTrade finished: ..." and "Trade accepted: ..." as a /tell to yourself, for metas.</summary>
+    public bool AutoTradeThink = false;
+    public bool AutoTradeOnlyFromMainPack = false;
+    /// <summary>Accept the trade once every item AutoTrade added is in the window.</summary>
+    public bool AutoTradeAutoAccept = false;
+    /// <summary>Name patterns (.NET regex) whose accepted trades this character accepts too.
+    /// The autoAcceptList.json files (/ub autotrade autoaccept ...) are read as well.</summary>
+    public List<string> AutoTradeAutoAcceptChars { get; set; } = new();
+
     public List<MonsterRule> MonsterRules { get; set; } = new();
     public List<ItemRule> ItemRules { get; set; } = new();
-    public List<ConsumableRule> ConsumableRules { get; set; } = new();
-    /// <summary>Optional missile ammo stacks (arrows / quarrels / darts) with launcher category for manual prioritization.</summary>
+    /// <summary>Loose ammo the monster rules can prefer. Edited by the local monsters window.</summary>
     public List<AmmoRule> AmmoRules { get; set; } = new();
+    public List<ConsumableRule> ConsumableRules { get; set; } = new();
     public List<BuffRule> BuffRules { get; set; } = new();
     public List<MetaRule> MetaRules { get; set; } = new();
 
@@ -357,8 +438,12 @@ public sealed class LegacyUiSettings
             ? new Dictionary<string, List<string>>(value, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
     }
-    public string LuaScript = "-- Enter your Lua script here\nprint('RynthAi Lua Loaded')";
-    [JsonIgnore] public string LuaConsoleOutput = "--- RynthAi Lua Console ---";
+    /// <summary>
+    /// Set once this profile's weapons and consumables have been checked against
+    /// the character's own pack (new profiles are filled from it; older ones had
+    /// entries copied from another character removed). See TickPackSetup.
+    /// </summary>
+    public bool ProfileItemsChecked;
 
     public string SelectedProfile = "Default";
     [JsonIgnore] public NavRouteParser CurrentRoute { get; set; } = new();
@@ -430,12 +515,17 @@ public sealed class LegacyUiSettings
     [JsonIgnore]
     public readonly string[] AdvancedTabs =
     {
-        "Display", "UI", "Misc", "Recharge", "Melee Combat", "Missile Combat", "Spell Combat",
-        "Ranges", "Navigation", "Buffing", "Crafting", "Looting", "Vendoring", "Translate", "Diagnostics"
+        "Display", "UI", "Misc", "Recharge", "Melee Combat", "Spell Combat",
+        "Ranges", "Navigation", "Buffing", "Crafting", "Looting", "Vendoring"
     };
 
     [JsonIgnore]
     public bool ForceStateReset { get; set; }
+
+    /// <summary>Set when a meta file is loaded: the next meta tick empties the
+    /// CallState/Return stack.</summary>
+    [JsonIgnore]
+    public bool MetaCallStackReset { get; set; }
 
     [JsonIgnore]
     public string NavStatusLine = string.Empty;
@@ -459,6 +549,8 @@ public sealed class LegacyUiSettings
     // by the plugin each tick; 0 when not in a fellowship / target not loaded.
     [JsonIgnore]
     public uint FollowTargetId = 0;
+    /// <summary>A character picked by name (/ra follow Name, /ub follow[p]); wins over the fellowship leader. Session only.</summary>
+    [JsonIgnore] public uint FollowNamedTargetId;
 
     public LegacyUiSettings()
     {
@@ -501,19 +593,20 @@ public sealed class MonsterRule
     public bool UseRing { get; set; }
     public bool UseStreak { get; set; }
     public bool UseBolt { get; set; } = true;
+    /// <summary>Blast spells (Flame Blast, Frost Blast...: a spread of projectiles). Off in files
+    /// from before 2026-10-03. Wins over Bolt when both are on; see CombatManager.PickBaseShape.</summary>
+    public bool UseBlast { get; set; }
     public string ExVuln { get; set; } = "None";
+    /// <summary>The off hand for this rule: 0 = the global setting (OffhandDefault), 1 Auto,
+    /// 2 Shield, 3 Offhand weapon, 4 None (OffhandRules.Rule*); any other value is a listed
+    /// item to wield there (the old per-rule picker).</summary>
     public int OffhandId { get; set; }
-    /// <summary>When non-zero, prefer equipping this loose ammo stack for missile combat while this rule matches (must match launcher: bow/crossbow/atlatl).</summary>
+    /// <summary>Optional loose ammo stack id for missile combat while this rule matches (0 = auto).</summary>
     public int PreferredAmmoItemId { get; set; }
     public string PetDamage { get; set; } = "PAuto";
-}
-
-public sealed class AmmoRule
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = string.Empty;
-    /// <summary>Bow, Crossbow, Atlatl, or Auto (match any launcher).</summary>
-    public string Category { get; set; } = "Auto";
+    /// <summary>Debuffs the player typed in (Damage panel), comma separated: a spell's base
+    /// name ("Corrosion Vulnerability Other") casts its best known tier; a full name casts as is.</summary>
+    public string CustomDebuffs { get; set; } = "";
 }
 
 public sealed class BuffRule
@@ -525,22 +618,32 @@ public sealed class BuffRule
 
 public sealed class ItemRule
 {
-    /// <summary><see cref="Action"/> value for a weapon (main hand).</summary>
+    /// <summary>Action string for a listed weapon (VirindiTank import and the ILT gear importer).</summary>
     public const string WeaponAction = "Weapon";
-
-    /// <summary><see cref="Action"/> value for a shield carried in the secondary (off) hand.</summary>
+    /// <summary>Action string for a listed shield.</summary>
     public const string ShieldAction = "Shield";
 
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
-    /// <summary>"Weapon" (main hand) or "Shield" (off hand); older files may hold "Loot".</summary>
     public string Action { get; set; } = "Loot";
-    /// <summary>Damage element (weapons only; ignored for shields).</summary>
     public string Element { get; set; } = "Slash";
+    /// <summary>Where <see cref="Element"/> came from: "properties" (DamageType after an identify),
+    /// "icon" (UiEffects), "rending" (an imbue), "name", "set" (picked in the Items panel), or ""
+    /// (not known, or an entry from before sources were kept).</summary>
+    public string ElementSource { get; set; } = "";
     public bool KeepBuffed { get; set; } = true;
 
-    /// <summary>True for an off-hand shield entry. Shields are never chosen as the main weapon.</summary>
+    /// <summary>True when this row is a shield (off hand), not a main-hand weapon.</summary>
     public bool IsShield() => string.Equals(Action, ShieldAction, StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>Loose ammo the monster rules can prefer (bow, crossbow, atlatl, or Auto).</summary>
+public sealed class AmmoRule
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Bow, Crossbow, Atlatl, or Auto (match any launcher).</summary>
+    public string Category { get; set; } = "Auto";
 }
 
 /// <summary>JSON wire-format types used by the engine-side Avalonia MonstersPanel.</summary>
@@ -584,9 +687,6 @@ public sealed class ItemsBridgePayload
     public int                  ManaTapMinMana    { get; set; }
     public int                  ManaStoneKeepCount { get; set; }
     public string               CurrentTargetName { get; set; } = string.Empty;
-    /// <summary>Mirrors <see cref="LegacyUiSettings.AutoEquipShield"/>. Null when sent by an
-    /// older engine panel that has no Shields section — leave the setting unchanged then.</summary>
-    public bool?                AutoEquipShield   { get; set; }
 }
 
 // ── Nav bridge types ─────────────────────────────────────────────────────────
@@ -596,6 +696,7 @@ public sealed class NavBridgePoint
     public int    Idx    { get; set; }
     public string Type   { get; set; } = string.Empty;  // "Point", "Recall", "Pause", "Chat", "PortalNPC"
     public string Desc   { get; set; } = string.Empty;  // NavPoint.ToString()
+    public string Text   { get; set; } = string.Empty;  // Chat points: the command, for editing
     public double NS     { get; set; }
     public double EW     { get; set; }
     public double Z      { get; set; }
@@ -612,6 +713,10 @@ public sealed class NavBridgePayload
     public int               ActiveNavIndex   { get; set; }
     public List<string>      NavFiles         { get; set; } = new();
     public List<NavBridgePoint> Points        { get; set; } = new();
+    /// <summary>NavOverlaySettings.TrackBreadcrumbs (Nav panel "Breadcrumbs" toggle).</summary>
+    public bool              TrackBreadcrumbs { get; set; }
+    /// <summary>NavOverlaySettings.ShowRouteMarkers (Nav panel "Route overlay" toggle).</summary>
+    public bool              ShowRouteOverlay { get; set; }
 }
 
 /// <summary>One-shot command sent from the Avalonia NavPanel to the plugin.</summary>
@@ -624,6 +729,8 @@ public sealed class NavCommand
     public int    AddMode   { get; set; }   // 0=End, 1=Above, 2=Below
     public int    InsertAt  { get; set; } = -1;
     public string NavName   { get; set; } = string.Empty;
+    public string Text      { get; set; } = string.Empty;   // addChat: the command or text
+    public bool   On        { get; set; }                   // setBreadcrumbs / setRouteOverlay
 }
 
 /// <summary>Bridge payload for the engine-side Avalonia SettingsPanel.</summary>
@@ -648,6 +755,8 @@ public sealed class SettingsBridgePayload
     public bool PeaceModeWhenIdle { get; set; }
     public bool StartMacroOnLogin { get; set; }
     public bool PatrolOnLogin { get; set; }
+    // Absent from an older engine's payload: must not read as off.
+    public bool YieldToVTank { get; set; } = true;
     public bool EnableRaycasting { get; set; }
     public bool UseArcs { get; set; }
     public float BowArcVelocity { get; set; }
@@ -666,6 +775,19 @@ public sealed class SettingsBridgePayload
 
     // Recharge
     public int HealAt { get; set; }
+    public bool UsePotions { get; set; }
+    public bool UseBuffItems { get; set; } = true;
+    public int MakeRationsBelow { get; set; } = 5;
+    public bool UseKitsInMagicMode { get; set; }
+    public bool PeaceModeForKits { get; set; }
+    public int KitMinSuccessPct { get; set; } = 70;
+    public int EmergencyHealAt { get; set; } = 30;
+    public int StaminaToHealthAt { get; set; } = 30;
+    public int StaminaToHealthMinStamina { get; set; } = 20;
+    public bool StopMacroOnDeath { get; set; }
+    public bool StopMacroOnNoComponents { get; set; }
+    public bool StopLootingWhenPackFull { get; set; }
+    public bool StopMacroWhenPackFull { get; set; }
     public int RestamAt { get; set; }
     public int GetManaAt { get; set; }
     public int TopOffHP { get; set; }
@@ -690,6 +812,8 @@ public sealed class SettingsBridgePayload
     public int AttackSpellIntervalMs { get; set; }
     public bool CastDispelSelf { get; set; }
     public int MinRingTargets { get; set; }
+    public int BlastRange { get; set; }
+    public int MinBlastTargets { get; set; } = 3;   // absent from an older engine: keep the default
     public int MinSkillLevelTier1 { get; set; }
     public int MinSkillLevelTier2 { get; set; }
     public int MinSkillLevelTier3 { get; set; }
@@ -759,11 +883,11 @@ public sealed class SettingsBridgePayload
     public bool EnableLooting { get; set; }
     public bool BoostLootPriority { get; set; }
     public bool LootOnlyRareCorpses { get; set; }
-    public bool EnableGroundLoot { get; set; }
     public bool LootJumpEnabled { get; set; }
     public int LootJumpHeight { get; set; }
     public int LootOwnership { get; set; }
     public bool EnableAutostack { get; set; }
+    public bool ReadUnknownScrolls { get; set; } = true;   // absent from an older engine: keep the default
     public bool EnableCombineSalvage { get; set; }
     public bool CombineBagsDuringSalvage { get; set; }
     public int LootInterItemDelayMs { get; set; }
@@ -792,6 +916,9 @@ public sealed class SettingsBridgePayload
     public bool? AutoVendorOnlyFromMainPack { get; set; }
     public int? AutoVendorTries { get; set; }
     public int? AutoVendorTriesTime { get; set; }
+    // The off hand (only when the sender includes them; today's engine Settings face doesn't).
+    public string? OffhandDefault { get; set; }
+    public bool? PreferDualWield { get; set; }
 }
 
 public enum MetaConditionType
@@ -862,6 +989,14 @@ public sealed class MetaRule
     public string ActionData { get; set; } = string.Empty;
     public List<MetaRule> Children { get; set; } = new();
     public List<MetaRule> ActionChildren { get; set; } = new();
+
+    /// <summary>CallMetaState only: the state pushed on the call stack (VTank's
+    /// "ret"). Empty means the calling rule's current state, as before.</summary>
+    public string CallReturnState { get; set; } = string.Empty;
+
+    /// <summary>ChatMessageCapture only: VTank's colour (chat type) id list,
+    /// semicolon-separated ("2;4"). Empty matches every chat type.</summary>
+    public string ChatColors { get; set; } = string.Empty;
 
     /// <summary>Disabled rules are excluded from the per-state index so they
     /// never evaluate. Default true; missing in old JSON/.af → stays true

@@ -27,11 +27,12 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         // Attack type determines which raycast to use
         public enum AttackType
         {
-            Linear,       // Melee, peace, or arcs-disabled missiles
+            Linear,       // Peace, magic, or arcs-disabled missiles
             BowArc,       // Bows — moderate arc, arrows go higher than you'd think
             CrossbowArc,  // Crossbows — fastest projectile, flattest arc
             AtlatlArc,    // Atlatls, thrown weapons, darts — similar arc to bows
-            MagicArc      // War/Void magic Arc spells — same trajectory as missile weapons
+            MagicArc,     // War/Void magic Arc spells: fixed horizontal speed, gravity (MissileBallistics.SolveLateral)
+            Melee         // Melee: one straight ray chest to chest, no silhouette rays (see IsPathBlocked)
         }
 
         // Lower velocity = higher arc. Defaults tuned against in-game trajectories;
@@ -40,7 +41,17 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         public float BowArcVelocity      { get; set; } = 25.0f;
         public float CrossbowArcVelocity { get; set; } = 40.0f;
         public float AtlatlArcVelocity   { get; set; } = 22.0f;
-        public float MagicArcVelocity    { get; set; } = 25.0f;
+        // Arc spells: the HORIZONTAL speed (ACE flies them at a fixed lateral speed, 40 m/s for
+        // every player arc; see MissileBallistics.SolveLateral). Lower = higher arc.
+        public float MagicArcVelocity    { get; set; } = MissileBallistics.AceArcSpellSpeed;
+
+        /// <summary>
+        /// How far above the chest-height line (feet + 1 m) an arc spell leaves the caster. ACE
+        /// spawns arc projectiles at the caster's full height (CalculatePreOffset startFactor 1.0
+        /// for Arc, 2/3 for every other shape), about 1.8 m for a character, and aims them at
+        /// 5/6 of the target's height (taken as the usual chest line, feet + 1 m).
+        /// </summary>
+        public const float MagicArcLaunchAboveChest = 0.8f;
 
         // If true, use arc checks for missile weapons. If false, treat all as linear.
         public bool UseArcs { get; set; } = true;
@@ -69,6 +80,19 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
 
         private static bool IsMissileArc(AttackType t) =>
             t == AttackType.BowArc || t == AttackType.CrossbowArc || t == AttackType.AtlatlArc;
+
+        /// <summary>
+        /// The path an arc spell flies from <paramref name="chestOrigin"/> to
+        /// <paramref name="chestTarget"/> (both at chest height, feet + 1 m): it leaves
+        /// <see cref="MagicArcLaunchAboveChest"/> higher, at <paramref name="lateralSpeed"/>
+        /// horizontally, and lands on the target. <paramref name="launch"/> is that start point.
+        /// </summary>
+        public static MissileArc MagicArcPath(Vector3 chestOrigin, Vector3 chestTarget, float lateralSpeed, out Vector3 launch)
+        {
+            launch = new Vector3(chestOrigin.X, chestOrigin.Y, chestOrigin.Z + MagicArcLaunchAboveChest);
+            return MissileBallistics.SolveLateral(launch.X, launch.Y, launch.Z,
+                                                  chestTarget.X, chestTarget.Y, chestTarget.Z, lateralSpeed);
+        }
 
         /// <summary>Launch speed configured for a missile attack type.</summary>
         public float VelocityFor(AttackType t) => t switch
@@ -127,6 +151,68 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 if (targetPos == Vector3.Zero)
                     return false;
 
+                return IsPathBlocked(GetPlayerLandcell(host), origin, targetPos, attackType, out detail);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Targeting] Error checking LOS: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Would an ARC SPELL cast at <paramref name="targetId"/> now reach it? The straight line
+        /// (walls) and the arc the spell really flies (ceilings, in dungeons too), whatever
+        /// UseArcs says (that setting is about missile target selection). True = blocked.
+        /// No geometry or no positions: false (clear), the arc is cast as before.
+        /// </summary>
+        public bool IsMagicArcBlocked(RynthCoreHost host, uint targetId, out LosDetail detail)
+        {
+            detail = default;
+            detail.Type = AttackType.MagicArc;
+            if (!_geoLoader.IsInitialized)
+                return false;
+            try
+            {
+                Vector3 origin = GetPlayerPosition(host);
+                if (origin == Vector3.Zero)
+                    return false;
+                Vector3 targetPos = GetObjectPosition(host, targetId);
+                if (targetPos == Vector3.Zero)
+                    return false;
+                return IsPathBlockedCore(GetPlayerLandcell(host), origin, targetPos, AttackType.MagicArc, forceArc: true, out detail);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Targeting] Error checking magic arc: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>As <see cref="IsMagicArcBlocked(RynthCoreHost, uint, out LosDetail)"/> for
+        /// known feet positions (global meters), for tools running against the dats offline.</summary>
+        public bool IsMagicArcPathBlocked(uint landcell, Vector3 origin, Vector3 targetPos, out LosDetail detail)
+            => IsPathBlockedCore(landcell, origin, targetPos, AttackType.MagicArc, forceArc: true, out detail);
+
+        /// <summary>
+        /// The LOS verdict for known positions: <paramref name="origin"/> is the player's feet
+        /// and <paramref name="targetPos"/> the target's feet, both in global meters
+        /// (landblock * 192 + landblock-local origin), <paramref name="landcell"/> the
+        /// player's cell. No client reads, so tools can run it against the dat files offline
+        /// (Tools/RynthCore.LosProof).
+        /// </summary>
+        public bool IsPathBlocked(uint landcell, Vector3 origin, Vector3 targetPos, AttackType attackType, out LosDetail detail)
+            => IsPathBlockedCore(landcell, origin, targetPos, attackType, forceArc: false, out detail);
+
+        private bool IsPathBlockedCore(uint landcell, Vector3 origin, Vector3 targetPos, AttackType attackType, bool forceArc, out LosDetail detail)
+        {
+            detail = default;
+            detail.Type = attackType;
+            if (!_geoLoader.IsInitialized)
+                return false;
+
+            try
+            {
                 // Early-out: skip raycast if target is beyond scan distance
                 float dx = targetPos.X - origin.X;
                 float dy = targetPos.Y - origin.Y;
@@ -138,15 +224,19 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 origin.Z += 1.0f;
                 targetPos.Z += 1.0f;
 
-                uint landcell = GetPlayerLandcell(host);
                 uint cellPart = landcell & 0xFFFF;
                 bool isDungeon = cellPart >= 0x0100;
                 detail.Dungeon = isDungeon;
 
-                bool missileArc = UseArcs && IsMissileArc(attackType);
+                // Arc spells fly the arc ACE gives them (fixed horizontal speed, from the
+                // caster's head), tested like a missile's: straight line, then the arc, ceilings
+                // included. They used to get the old flat-ground arc outdoors and a straight line
+                // in dungeons, so an arc into a low ceiling passed.
+                bool magicArc = attackType == AttackType.MagicArc && (UseArcs || forceArc);
+                bool missileArc = (UseArcs && IsMissileArc(attackType)) || magicArc;
 
-                // Magic arcs keep the old rule: straight line indoors.
-                if (isDungeon && !missileArc)
+                // Arcs off: a straight line indoors. Melee keeps its own test.
+                if (isDungeon && !missileArc && attackType != AttackType.Melee)
                     attackType = AttackType.Linear;
                 detail.Type = attackType;
 
@@ -157,13 +247,16 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
 
                 // The missile's real path: solved up front so the pre-filter box covers its apex.
                 MissileArc arc = default;
+                Vector3 launch = origin;
                 float arcHeadroom = 0f;
                 if (missileArc)
                 {
                     detail.Velocity = VelocityFor(attackType);
-                    arc = MissileBallistics.Solve(origin.X, origin.Y, origin.Z,
+                    arc = magicArc
+                        ? MagicArcPath(origin, targetPos, detail.Velocity, out launch)
+                        : MissileBallistics.Solve(origin.X, origin.Y, origin.Z,
                                                   targetPos.X, targetPos.Y, targetPos.Z, detail.Velocity);
-                    arcHeadroom = arc.ApexAboveLaunch + Math.Max(0f, MissileArcClearance) + 0.5f;
+                    arcHeadroom = arc.ApexAboveLaunch + (launch.Z - origin.Z) + Math.Max(0f, MissileArcClearance) + 0.5f;
                 }
 
                 // Pre-filter: skip full ray test if no geometry near the path
@@ -193,7 +286,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                     }
 
                     detail.ArcChecked = true;
-                    return RaycastEngine.IsBallisticArcBlocked(origin, targetPos, detail.Velocity,
+                    return RaycastEngine.IsBallisticArcBlocked(launch, targetPos, in arc,
                         MissileArcClearance, geometry, out detail.Arc);
                 }
 
@@ -205,17 +298,21 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                     case AttackType.BowArc:       // arcs off (UseArcs=false) → straight line
                     case AttackType.CrossbowArc:
                     case AttackType.AtlatlArc:
+                    case AttackType.MagicArc:
                         detail.LineBlocked = RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
                         return detail.LineBlocked;
 
-                    case AttackType.MagicArc:
-                        if (UseArcs && !isDungeon)
-                        {
-                            if (!RaycastEngine.IsArcPathBlocked(origin, targetPos, MagicArcVelocity, geometry))
-                                return false;
-                            return RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: false);
-                        }
-                        return RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: isDungeon);
+                    // Melee: nothing flies, so the only question is whether a wall stands
+                    // between the two bodies: one ray, chest to chest. The five silhouette rays
+                    // (0.35 m to each side, 0.3 m up and down) are there for spells slipping
+                    // through corner seams; for melee they clip door jambs and hide a monster
+                    // seen through a doorway at an angle. Offline in landblock 0x6346
+                    // (Tools/RynthCore.LosProof) they blocked 297 of 1404 such open lines, the
+                    // single ray 88, and both block every one of 199 walls, also with the
+                    // player and the monster pressed against it.
+                    case AttackType.Melee:
+                        detail.LineBlocked = RaycastEngine.IsLinearPathBlocked(origin, targetPos, geometry, multiRay: false);
+                        return detail.LineBlocked;
 
                     default:
                         return false;
@@ -353,9 +450,9 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 if (currentCombatMode == 1)
                     return AttackType.Linear;
 
-                // MELEE MODE: Linear (range check only, no projectile arc)
+                // MELEE MODE: one straight ray, no projectile arc
                 if (currentCombatMode == 2)
-                    return AttackType.Linear;
+                    return AttackType.Melee;
 
                 // MISSILE MODE: Check the weapon name for bow vs crossbow vs thrown.
                 // No name (weapon not resolved yet) is still a missile shot: bow arc. The

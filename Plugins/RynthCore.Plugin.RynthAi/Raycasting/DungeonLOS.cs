@@ -645,13 +645,11 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                         if (ms.Position + 4 > ms.Length) break;
                         uint key = reader.ReadUInt32();
 
-                        var geo = ParseCellStruct(reader, ms, renderOnly);
+                        var geo = ParseCellStruct(reader, ms, renderOnly, out bool readToEnd);
                         if (geo != null)
                             result[key] = geo;
-                        else
-                        {
-                            break; // CellStruct parse failed — stream position unknown, can't continue
-                        }
+                        if (geo == null || !readToEnd)
+                            break; // CellStruct not read to its end: stream position unknown, can't continue
                     }
                 }
             }
@@ -680,9 +678,10 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         ///   Header (3 × uint32) → VertexArray → RenderPolygons → PortalIndices → [align]
         ///   → CellBSP → PhysicsPolygons → PhysicsBSP → [DrawingBSP] → [align]
         /// </summary>
-        private CellGeometry ParseCellStruct(BinaryReader reader, MemoryStream ms, bool renderOnly = false)
+        private CellGeometry ParseCellStruct(BinaryReader reader, MemoryStream ms, bool renderOnly, out bool readToEnd)
         {
             var geo = new CellGeometry();
+            readToEnd = false;
 
             try
             {
@@ -727,18 +726,23 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                         geo.Polygons.Add(cellPoly);
                 }
 
-                // For map rendering, render polygons with portal tags are all we need.
-                if (renderOnly)
-                    return geo;
+                // Render polygons with portal tags are all the walls and the map need, but the
+                // rest of this CellStruct must still be read past: an Environment holds several
+                // CellStructs back to back, and the next one starts after this one's BSP trees.
+                // Returning here left the stream in the Cell BSP, so the next CellStruct parse
+                // read garbage and ParseEnvironment stopped: only CellStruct 0 of every
+                // Environment ever had walls, and every EnvCell using CellStruct 1+ (318 of
+                // 625 cells in landblock 0x6346) was open space to LOS and the dungeon map.
 
                 // Now attempt to skip Cell BSP and reach physics polygons
                 bool canContinue = SkipBSPTree(reader, ms, BSPTreeType.Cell);
 
                 // If BSP skip succeeded and physics polygons exist, upgrade to physics data
+                // (not for render-only geometry, which keeps its render polygons).
                 if (canContinue && numPhysicsPolygons > 0)
                 {
                     var physicsPolys = ParsePolygons(reader, ms, numPhysicsPolygons);
-                    if (physicsPolys != null && physicsPolys.Count > 0)
+                    if (!renderOnly && physicsPolys != null && physicsPolys.Count > 0)
                     {
                         // Replace rendering fallback with precise physics collision surfaces
                         geo.Polygons.Clear();
@@ -778,6 +782,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                     aligned = (ms.Position + 3) & ~3L;
                     if (aligned <= ms.Length) ms.Position = aligned;
                 }
+                readToEnd = canContinue;
 
                 return geo;
             }
@@ -1067,7 +1072,6 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         private static void Log(string msg)
         {
             System.Diagnostics.Debug.WriteLine($"[DungeonLOS] {msg}");
-            RynthLog.Trace(LogCat.Raycast, $"[DungeonLOS] {msg}"); // visible via /ra trace raycast
         }
 
     }

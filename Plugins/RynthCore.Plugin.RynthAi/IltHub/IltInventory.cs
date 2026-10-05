@@ -13,8 +13,12 @@ using RynthCore.PluginSdk;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
-/// <summary>Registered ACECustom charm: display name and every known WCID (base + tier variants).</summary>
-internal sealed record IltCharmDef(string Name, uint[] Wcids);
+/// <summary>
+/// Registered ACECustom charm (CharmAbilityRegistry): display name, every known WCID (base +
+/// tier variants), the player PropertyBool the server sets while the ability is active (0 when
+/// it is kept in memory only, like Auto-Rebuff) and a one-line effect summary.
+/// </summary>
+internal sealed record IltCharmDef(string Name, uint[] Wcids, uint PlayerFlag = 0, string Effect = "");
 
 internal sealed class IltInventory
 {
@@ -48,6 +52,10 @@ internal sealed class IltInventory
     public const uint IntSplitArrowCount = 9031;
     public const uint IntMaterialType = 131;
     public const uint IntUses = 92;
+    /// <summary>ACECustom charm item: current tier (PropertyInt.CharmLevel).</summary>
+    public const uint IntCharmLevel = 50005;
+    /// <summary>ACECustom charm item: highest tier for this charm line (PropertyInt.CharmMaxLevel).</summary>
+    public const uint IntCharmMaxLevel = 50006;
     public const uint StrUse = 14;
     public const uint QuadTotalXp = 1;
     public const uint QuadAvailableXp = 2;
@@ -56,22 +64,39 @@ internal sealed class IltInventory
     public const uint BoolPyrealRefillActive = 9049;
     public const uint BoolUniversalMasteryActive = 50038;
 
-    /// <summary>Server-registered charms (ACECustom). Guardian Hand has no published WCID — see IltGear.</summary>
+    /// <summary>
+    /// Every charm in ACECustom's CharmAbilityRegistry (WCIDs and player flags match the server's
+    /// WCIDToAbilityId map and PropertyBool ids). Guardian Hand is not a registry charm and has no
+    /// published WCID — see IltGear.
+    /// </summary>
     public static readonly IltCharmDef[] Charms =
     {
-        new("Mana Barrier",     new uint[] { 777700001, 777700054, 777710004, 777720004 }),
-        new("Infinite Casting", WcidInfiniteCastingStone),
-        new("Asheron's Favor",  new uint[] { 777700020, 777710002, 777720002 }),
-        new("Artisan's",        new uint[] { 777700021, 777710003, 777720003 }),
-        new("Shrapnel",         new uint[] { 777700022 }),
-        new("Agony",            new uint[] { 777700023 }),
-        new("Split Cast",       new uint[] { 777700024 }),
-        new("Explosive Arrow",  new uint[] { 777700025, 777710005, 777720005 }),
-        new("Omni Strike",      new uint[] { 777700026 }),
-        new("Fork",             new uint[] { 777700027, 777710007, 777720007 }),
-        new("Auto-Rebuff",      new uint[] { 777700300 }),
-        new("Summon Essence Refill",       new uint[] { WcidSummonRefillCharm }),
-        new("Universal Summoning Mastery", new uint[] { WcidUniversalMasteryCharm }),
+        new("Mana Barrier",     new uint[] { 777700001, 777700054, 777710004, 777720004 }, 50010,
+            "Mana absorbs incoming damage (better ratio at higher tiers)."),
+        new("Infinite Casting", WcidInfiniteCastingStone, 50028,
+            "Infinite Casting Stone: spells cast without consuming components."),
+        new("Asheron's Favor",  new uint[] { 777700020, 777710002, 777720002 }, 50030,
+            "+10 / 15 / 20% health and +50 / 100 / 250 natural armor."),
+        new("Artisan's",        new uint[] { 777700021, 777710003, 777720003 }, 50031,
+            "Imbue success chance +4 / 8 / 12%."),
+        new("Shrapnel",         new uint[] { 777700022 }, 50032,
+            "Tectonic Rifts cast as Rocky Shrapnel (Rocky Shrapnel must be learned)."),
+        new("Agony",            new uint[] { 777700023 }, 50033,
+            "Tectonic Rifts I casts as Ring of Unspeakable Agony (the spell must be learned)."),
+        new("Split Cast",       new uint[] { 777700024 }, 50035,
+            "Streak, Arc and Bolt spells split to several nearby targets."),
+        new("Explosive Arrow",  new uint[] { 777700025, 777710005, 777720005 }, 50036,
+            "Arrow hits detonate an elemental ring at the target."),
+        new("Omni Strike",      new uint[] { 777700026 }, 50037,
+            "Melee hits use the damage type the target is weakest to."),
+        new("Fork",             new uint[] { 777700027, 777710007, 777720007 }, 50039,
+            "Streak, Arc and Bolt projectiles fork to nearby enemies (50 / 75 / 100% damage)."),
+        new("Auto-Rebuff",      new uint[] { 777700300 }, 0,
+            "Keeps your buffs up automatically."),
+        new("Summon Essence Refill",       new uint[] { WcidSummonRefillCharm }, BoolPyrealRefillActive,
+            "Refills an empty pet essence from banked pyreals when you summon."),
+        new("Universal Summoning Mastery", new uint[] { WcidUniversalMasteryCharm }, BoolUniversalMasteryActive,
+            "Use pet essences of any summoning mastery."),
     };
 
     private readonly RynthCoreHost _host;
@@ -183,9 +208,12 @@ internal sealed class IltInventory
     public long CountByName(string name)
         => Items().Where(wo => wo.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).Sum(wo => (long)StackSize(wo));
 
-    /// <summary>True when the player carries any spell components or an Infinite Casting Stone.</summary>
+    /// <summary>
+    /// True when the player carries spell components or an Infinite Casting Stone that isn't
+    /// known to be switched OFF (an OFF stone doesn't waive components).
+    /// </summary>
     public bool HasCastingSupplies()
-        => FindByWcid(WcidInfiniteCastingStone) != null
+        => AllByWcid(WcidInfiniteCastingStone).Any(stone => CharmStatus(stone) != IltTri.Off)
            || Items().Any(wo => wo.ObjectClass == AcObjectClass.SpellComponent);
 
     /// <summary>Free main-pack slots (best effort: capacity minus direct children; -1 when unknown).</summary>
@@ -218,6 +246,24 @@ internal sealed class IltInventory
         if (use.Contains("Status: OFF", StringComparison.OrdinalIgnoreCase)) return IltTri.Off;
         return IltTri.Unknown;
     }
+
+    /// <summary>
+    /// Charm tier and max tier from the item's CharmLevel / CharmMaxLevel ints, else parsed from
+    /// the appraisal Use text ("Charm [Tier 2/3]"). (0, 0) until the appraisal is loaded.
+    /// </summary>
+    public (int Tier, int MaxTier) CharmTier(WorldObject charm)
+    {
+        int tier = Int(charm, IntCharmLevel, 0), max = Int(charm, IntCharmMaxLevel, 0);
+        if (tier > 0) return (tier, max);
+        var m = CharmTierText.Match(Str(charm, StrUse));
+        if (!m.Success) return (0, 0);
+        int.TryParse(m.Groups[1].Value, out tier);
+        if (m.Groups[2].Success) int.TryParse(m.Groups[2].Value, out max);
+        return (tier, max);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex CharmTierText =
+        new(@"Charm \[Tier (\d+)(?:/(\d+))?\]", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>Charm definition for an item (by WCID), or null.</summary>
     public IltCharmDef? CharmDefFor(WorldObject wo)

@@ -1,19 +1,10 @@
 # RynthSuite
 
-RynthCore-based plugins and tools for Asheron's Call. Requires [RynthCore](https://aelrynth.com/rynth.html) — a .NET 10 NativeAOT injection framework for the AC client (`git clone https://aelrynth.com/git/RynthCore.git`).
+RynthCore-based plugins and tools for Asheron's Call. Requires [RynthCore](https://aelrynth.com/git/rynth/RynthCore) — a .NET 10 NativeAOT injection framework for the AC client.
 
 ---
 
 ## Plugins
-
-### ub-Rythai (3.x)
-
-Lives in the **sibling repo** `ub-Rythai/` (not under `RynthSuite/`). Built as **`net10.0-windows`** NativeAOT for RynthCore — **not** .NET Framework **net48** (that is Decal Utility Belt in `UB/` / `ub-IT/`). See `../ub-Rythai/README.md` and `../ub-Rythai/Changelog/`.
-
-```bash
-cd ../ub-Rythai/RynthCore.Plugin.UbRythai
-dotnet publish -c Release
-```
 
 ### RynthAi
 
@@ -58,7 +49,7 @@ Cross-platform Avalonia editors built on the shared LootSdk. These target `net10
 
 ## Requirements
 
-- [RynthCore](https://aelrynth.com/rynth.html) built and deployed to `C:\Games\RynthCore\` (source: `https://aelrynth.com/git/RynthCore.git`)
+- [RynthCore](https://aelrynth.com/git/rynth/RynthCore) built and deployed to `C:\Games\RynthCore\`
 - **.NET 10 SDK (x86)** for the plugin (NativeAOT)
 - .NET 10 SDK for the tools (any platform)
 - Asheron's Call client installed at `C:\Turbine\Asheron's Call\` (for raycasting `.dat` access)
@@ -115,8 +106,6 @@ RynthSuite/
 │   └── RynthCore.MonsterEditor/          Avalonia monster profile editor
 └── Docs/                                 Code reviews + Chorizite gap analysis
 ```
-
-**ub-Rythai** (3.x, net10): sibling folder `ub-Rythai/RynthCore.Plugin.UbRythai/`.
 
 ## License
 

@@ -10,7 +10,7 @@ using RynthCore.Loot.VTank;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Loot;
 using RynthCore.PluginSdk;
-using RynthCore.Install;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.Vendor;
 
@@ -34,7 +34,7 @@ namespace RynthCore.Plugin.RynthAi.Vendor;
 /// </summary>
 internal sealed class AutoVendorManager
 {
-    public static readonly string MainProfileDir = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"AutoVendor");
+    public const string MainProfileDir = @"C:\Games\RynthSuite\RynthAi\AutoVendor";
     public const string ProfileSubfolder = "AutoVendor";
 
     private const long BailMs = 60_000;          // UB bailTimer
@@ -161,7 +161,7 @@ internal sealed class AutoVendorManager
         if (_opening && vendorId == _openTarget)
         {
             _opening = false;
-            RynthLog.Write(LogCat.Vendor, $"[RynthAi] AutoVendor: vendor {_openTargetName} opened successfully");
+            _host.Log($"[RynthAi] AutoVendor: vendor {_openTargetName} opened successfully");
         }
 
         if (fresh)
@@ -338,7 +338,7 @@ internal sealed class AutoVendorManager
         _openNextAt = Now() + 250;   // UB fudges the first attempt to ~250 ms after the command
         _opening = true;
         if (_host.HasSetAutoRun) _host.SetAutoRun(false);
-        RynthLog.Write(LogCat.Vendor, $"[RynthAi] AutoVendor: attempting to open vendor {vendor.Name}");
+        _host.Log($"[RynthAi] AutoVendor: attempting to open vendor {vendor.Name}");
     }
 
     /// <summary>/ub vendor opencancel</summary>
@@ -358,7 +358,7 @@ internal sealed class AutoVendorManager
         while (_commands.TryDequeue(out Action? cmd))
         {
             try { cmd(); }
-            catch (Exception ex) { RynthLog.Write(LogCat.Vendor, $"[RynthAi] AutoVendor command failed: {ex.GetType().Name}: {ex.Message}"); }
+            catch (Exception ex) { _host.Log($"[RynthAi] AutoVendor command failed: {ex.GetType().Name}: {ex.Message}"); }
         }
 
         long now = Now();
@@ -459,7 +459,7 @@ internal sealed class AutoVendorManager
         _sessionSkip.Clear();
         _bailAt = Now();
         _nextActionAt = 0;
-        RynthLog.Write(LogCat.Vendor, $"[RynthAi] AutoVendor: {_vendorName} [0x{merchantId:X8}] profile '{path}' ({_profile.Rules.Count} rules)");
+        _host.Log($"[RynthAi] AutoVendor: {_vendorName} [0x{merchantId:X8}] profile '{path}' ({_profile.Rules.Count} rules)");
 
         BuildIdQueue();
         _phase = Phase.Identifying;
@@ -577,7 +577,7 @@ internal sealed class AutoVendorManager
         {
             if (now - _bailAt > 500)
             {
-                RynthLog.Write(LogCat.Vendor, "[RynthAi] AutoVendor: stop because no vendor");
+                _host.Log("[RynthAi] AutoVendor: stop because no vendor");
                 Stop(false);
             }
             return;
@@ -638,7 +638,7 @@ internal sealed class AutoVendorManager
             if (prev >= 0) _expectBought[prev] = (line.Item.Name, _expectBought[prev].Target + line.Amount);
             else _expectBought.Add((line.Item.Name, have + line.Amount));
         }
-        RynthLog.Write(LogCat.Vendor, $"[RynthAi] AutoVendor Buy List: {sb} - {plan.Total}/{pack.Funds}");
+        _host.Log($"[RynthAi] AutoVendor Buy List: {sb} - {plan.Total}/{pack.Funds}");
 
         uint id = _host.VendorBuy(v.Id, entries);
         if (id == 0)
@@ -661,7 +661,7 @@ internal sealed class AutoVendorManager
         _lastSellIds.Clear();
         foreach (uint i in ids) { _expectSold.Add(i); _lastSellIds.Add(i); }
         string names = string.Join(", ", plan.Sells.Select(s => s.StackSize > 1 ? $"{s.Name} x{s.StackSize}" : s.Name));
-        RynthLog.Write(LogCat.Vendor, $"[RynthAi] AutoVendor Sell List: {names} - {plan.Total}");
+        _host.Log($"[RynthAi] AutoVendor Sell List: {names} - {plan.Total}");
 
         uint id = _host.VendorSell(v.Id, ids);
         if (id == 0)
@@ -714,7 +714,7 @@ internal sealed class AutoVendorManager
         {
             if (now - _tradeSentAt > TradeWaitMs)
             {
-                RynthLog.Write(LogCat.Vendor, "[RynthAi] AutoVendor: no trade status in time; checking the inventory");
+                _host.Log("[RynthAi] AutoVendor: no trade status in time; checking the inventory");
                 EnterConfirm(now);
             }
             return;
@@ -781,7 +781,7 @@ internal sealed class AutoVendorManager
         }
         if (now > _confirmDeadline)
         {
-            RynthLog.Write(LogCat.Vendor, $"[RynthAi] AutoVendor: event timeout. Sell list: {sellLeft}, buy list: {buyLeft}");
+            _host.Log($"[RynthAi] AutoVendor: event timeout. Sell list: {sellLeft}, buy list: {buyLeft}");
             _expectSold.Clear();
             _expectBought.Clear();
             _phase = Phase.Ready;
@@ -800,7 +800,7 @@ internal sealed class AutoVendorManager
         _splitBefore = new HashSet<uint>(inv.Select(w => unchecked((uint)w.Id)));
         _splitName = item.Name;
         _splitAmount = amount;
-        RynthLog.Write(LogCat.Vendor, $"[RynthAi] AutoVendor DoSplit {item.Name}:{item.Id:X8} old: {item.StackSize} new: {amount} ({why})");
+        _host.Log($"[RynthAi] AutoVendor DoSplit {item.Name}:{item.Id:X8} old: {item.StackSize} new: {amount} ({why})");
         if (player == 0 || !_host.SplitStackInternal(item.Id, player, 0, amount))
         {
             TradeFailed(isBuy: false, $"could not split {item.Name}", now);
@@ -942,10 +942,10 @@ internal sealed class AutoVendorManager
         if (_openAttempts <= tries)
         {
             if (_openAttempts > 1)
-                RynthLog.Write(LogCat.Vendor, "[RynthAi] AutoVendor: vendor open timed out, trying again");
+                _host.Log("[RynthAi] AutoVendor: vendor open timed out, trying again");
             _openAttempts++;
             _openNextAt = now + Math.Clamp(_settings.AutoVendorTriesTime, 500, 30_000);
-            if (_host.HasUseObject) _host.UseObject(_openTarget);
+            if (_host.HasUseObject) _host.UseFor(_openTarget, "Vendor", "AutoVendor: open the vendor", UseKind.Asked);
             _openHoldUntil = now + 500 + Math.Clamp(_settings.AutoVendorTriesTime, 500, 30_000);
             return;
         }

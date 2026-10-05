@@ -16,8 +16,16 @@ namespace RynthCore.Plugin.RynthAi;
 /// </summary>
 internal sealed class NavMarkerRenderer
 {
-    // Ring / active ring / line colours come from LegacyUiSettings.NavOverlay (ARGB).
+    // Colors — ARGB format for D3D9 (0xAARRGGBB)
+    private const uint ColorCyan3D   = 0xFF00FFFF;
+    private const uint ColorRed3D    = 0xFFFF4444;
+    private const uint ColorLine3D   = 0xFF0088FF;
     private const uint ColorPortal3D = 0xFFFF44FF;  // magenta — live portal target
+
+    // Colors — ABGR format for ImGui fallback
+    private const uint ColorCyanImGui = 0xFFFFFF00;
+    private const uint ColorRedImGui  = 0xFF4444FF;
+    private const uint ColorLineImGui = 0xFFFF8800;
 
     // Ring geometry for ImGui fallback
     private const int RingSegments = 32;
@@ -37,6 +45,20 @@ internal sealed class NavMarkerRenderer
     private readonly RynthCoreHost _host;
     private readonly LegacyUiSettings _settings;
     private int _frameCount;
+
+    /// <summary>The raycast geometry (dungeon cells, terrain), once loaded; lines follow the floor with it.</summary>
+    internal Func<Raycasting.GeometryLoader?>? GeometrySource { get; set; }
+
+    // Floor-following lines: a straight segment between two points on a slope or stairs
+    // cut through the floor. Each segment is split into ~1.5 m steps set on the floor
+    // below them (dungeon floor by a down-ray, terrain height outside). Worked out once per
+    // route and landblock, cached by segment.
+    private const float FloorStep = 1.5f;
+    private object? _floorRoute;
+    private int _floorRouteCount;
+    private uint _floorBlock;
+    private readonly System.Collections.Generic.Dictionary<(int, int), float[]> _floorCache = new();
+    private uint _frameCell;
 
     public NavMarkerRenderer(RynthCoreHost host, LegacyUiSettings settings)
     {
@@ -67,7 +89,7 @@ internal sealed class NavMarkerRenderer
 
             Render3D(route, winStart, count, px, py, pz, playerNS, playerEW, ringRadius, heightOffset);
         }
-        catch (Exception ex) { RynthLog.Write(LogCat.Navigation, $"NavMarkers(3D): {ex.Message}"); }
+        catch (Exception ex) { _host.Log($"NavMarkers(3D): {ex.Message}"); }
     }
 
     /// <summary>
@@ -87,7 +109,7 @@ internal sealed class NavMarkerRenderer
 
             RenderImGuiFallback(route, winStart, count, px, py, pz, playerNS, playerEW, ringRadius, heightOffset);
         }
-        catch (Exception ex) { RynthLog.Write(LogCat.Navigation, $"NavMarkers(ImGui): {ex.Message}"); }
+        catch (Exception ex) { _host.Log($"NavMarkers(ImGui): {ex.Message}"); }
     }
 
     private bool TryPrepareFrame(out NavRouteParser route, out int winStart, out int count,
@@ -101,6 +123,7 @@ internal sealed class NavMarkerRenderer
         playerNS = playerEW = 0.0;
         ringRadius = 0f; heightOffset = 0f;
 
+        // Route overlay switched off (Nav panel / "/ra navoverlay off"): no rings or lines.
         if (!_settings.NavOverlay.ShowRouteMarkers)
             return false;
 
@@ -114,6 +137,7 @@ internal sealed class NavMarkerRenderer
         if (!_host.TryGetPlayerPose(out uint cellId, out px, out py, out pz,
                 out _, out _, out _, out _))
             return false;
+        _frameCell = cellId;
 
         // Don't paint during portal animation — portalspace has landblock 0x0000,
         // but also check IsPortaling() for the brief window before cellId zeroes out.
@@ -123,7 +147,9 @@ internal sealed class NavMarkerRenderer
             return false;
 
         route = r;
-        ringRadius = Math.Max(0.1f, _settings.FollowNavMin);
+        // The ring is the nav point reach: same floor as NavigationEngine.ArrivalYards (rings were drawn
+        // down to 0.1 while nav still went to 1.5). Doorway points use their own tighter reach (pass 1).
+        ringRadius = Math.Max(LegacyUiSettings.FollowNavMinLowest, _settings.FollowNavMin);
         heightOffset = _settings.NavHeightOffset;
 
         // Render a contiguous window of the route centered on the active
@@ -135,15 +161,14 @@ internal sealed class NavMarkerRenderer
         // 300+ waypoint dungeon route — ordered by DFS, so visually patchy —
         // with no markers at all.)
         int n = r.Points.Count;
-        count = Math.Min(n, Math.Clamp(_settings.NavOverlay.MaxRouteMarkers, 8, MaxMarkers));
+        count = Math.Min(n, MaxMarkers);
         if (n <= count)
         {
             winStart = 0;
         }
         else
         {
-            int active = _settings.ActiveNavIndex;
-            if (active < 0 || active >= n) active = 0;
+            int active = WindowCenter(r, playerNS, playerEW);
             int half = count / 2;
             if (r.RouteType == NavRouteType.Circular)
                 winStart = ((active - half) % n + n) % n;
@@ -152,6 +177,51 @@ internal sealed class NavMarkerRenderer
         }
         return true;
     }
+
+    private int _nearestIdx = -1;
+    private int _nearestFrame;
+    private NavRouteParser? _nearestRoute;
+
+    /// <summary>
+    /// Route index the marker window is centred on: the active waypoint while it's
+    /// near the player, otherwise the waypoint nearest the player. With the macro
+    /// off after a recall, the active waypoint can be far away, which left a long
+    /// route's markers drawn only around that distant spot and none nearby.
+    /// </summary>
+    private int WindowCenter(NavRouteParser r, double playerNS, double playerEW)
+    {
+        int n = r.Points.Count;
+        int active = _settings.ActiveNavIndex;
+        if (active < 0 || active >= n) active = 0;
+        var ap = r.Points[active];
+        double adN = ap.NS - playerNS, adE = ap.EW - playerEW;
+        if (!HasGroundCoords(ap.Type) || Math.Sqrt(adN * adN + adE * adE) * 240.0 <= NearActiveYards)
+            return active;
+
+        if (!ReferenceEquals(r, _nearestRoute) || _frameCount - _nearestFrame >= 15 || _nearestIdx >= n)
+        {
+            _nearestRoute = r;
+            _nearestFrame = _frameCount;
+            _nearestIdx = active;
+            double best = double.MaxValue;
+            for (int i = 0; i < n; i++)
+            {
+                var p = r.Points[i];
+                if (!HasGroundCoords(p.Type)) continue;
+                double dN = p.NS - playerNS, dE = p.EW - playerEW;
+                double d = dN * dN + dE * dE;
+                if (d < best) { best = d; _nearestIdx = i; }
+            }
+        }
+        return _nearestIdx;
+    }
+
+    private const double NearActiveYards = 60.0;
+
+    // Waypoints whose coordinates are real ground positions (drawn as markers).
+    // Recall/Portal/Chat/Pause carry placeholder coordinates and are skipped.
+    private static bool HasGroundCoords(NavPointType t)
+        => NavRouteParser.IsPlainWaypoint(t) || t == NavPointType.Jump;
 
     // Absolute route index of the k-th point in the render window. The modulo
     // wraps circular routes; for non-circular routes winStart is clamped so the
@@ -200,7 +270,7 @@ internal sealed class NavMarkerRenderer
             // placeholder coordinates (a PortalNPC coord pointing "to the
             // abyss" is the recurring case), so a ring drawn there floats far
             // off in empty space.
-            if (pt.Type != NavPointType.Point)
+            if (!HasGroundCoords(pt.Type))
                 continue;
 
             // D3D coords: X=EW, Y=height(up), Z=NS
@@ -212,10 +282,11 @@ internal sealed class NavMarkerRenderer
             validArr[k] = true;
 
             bool isActive = (i == _settings.ActiveNavIndex);
-            uint color = isActive ? _settings.NavOverlay.ColorActiveRing : _settings.NavOverlay.ColorRing;
+            uint color = isActive ? ColorRed3D : ColorCyan3D;
             float thick = isActive ? ringThick * 1.3f : ringThick;
 
-            _host.Nav3DAddRing(wx, wy, wz, ringRadius, thick, color);
+            float reach = pt.Doorway ? Math.Min(ringRadius, (float)NavigationEngine.DoorwayReachYd) : ringRadius;
+            _host.Nav3DAddRing(wx, wy, wz, reach, thick, color);
 
         }
 
@@ -226,15 +297,32 @@ internal sealed class NavMarkerRenderer
         // portal, you don't walk — so no segment should span it (this is what
         // produced the "line to the abyss", whether to the portal's placeholder
         // coord or onward to the post-teleport destination point).
+        PrepareFloorCache(route);
         for (int k = 0; k < count; k++)
         {
             if (!validArr[k]) continue;
             int nk = NextInWindow(k, count, n, circular);
             if (nk < 0 || nk >= count || !validArr[nk]) continue;
 
-            _host.Nav3DAddLine(wxArr[k], wyArr[k], wzArr[k],
-                               wxArr[nk], wyArr[nk], wzArr[nk],
-                               lineThick, _settings.NavOverlay.ColorLine);
+            float[]? heights = FloorHeights(WindowAbsIdx(winStart, k, n), WindowAbsIdx(winStart, nk, n),
+                                            wxArr[k], wyArr[k], wzArr[k], wxArr[nk], wyArr[nk], wzArr[nk], heightOffset);
+            if (heights == null)
+            {
+                _host.Nav3DAddLine(wxArr[k], wyArr[k], wzArr[k],
+                                   wxArr[nk], wyArr[nk], wzArr[nk],
+                                   lineThick, ColorLine3D);
+                continue;
+            }
+            // heights[s] is the line's height at step s of heights.Length-1 equal steps.
+            int steps = heights.Length - 1;
+            for (int s = 0; s < steps; s++)
+            {
+                float t0 = (float)s / steps, t1 = (float)(s + 1) / steps;
+                _host.Nav3DAddLine(
+                    wxArr[k] + (wxArr[nk] - wxArr[k]) * t0, heights[s],     wzArr[k] + (wzArr[nk] - wzArr[k]) * t0,
+                    wxArr[k] + (wxArr[nk] - wxArr[k]) * t1, heights[s + 1], wzArr[k] + (wzArr[nk] - wzArr[k]) * t1,
+                    lineThick, ColorLine3D);
+            }
         }
 
         // ── Pass 3: live portal marker + line ────────────────────────
@@ -255,6 +343,83 @@ internal sealed class NavMarkerRenderer
             _host.Nav3DAddRing(pwx, pwy, pwz, ringRadius, ringThick * 1.4f, ColorPortal3D);
             _host.Nav3DAddLine(px, pwy, py, pwx, pwy, pwz, lineThick, ColorPortal3D);
         }
+    }
+
+    private void PrepareFloorCache(NavRouteParser route)
+    {
+        uint block = _frameCell >> 16;
+        if (!ReferenceEquals(route, _floorRoute) || route.Points.Count != _floorRouteCount || block != _floorBlock)
+        {
+            _floorCache.Clear();
+            _floorRoute = route;
+            _floorRouteCount = route.Points.Count;
+            _floorBlock = block;
+        }
+    }
+
+    /// <summary>
+    /// Line heights at equal steps from point a to point b following the floor, or null when
+    /// the segment is short, flat, or no floor data is available (draw it straight). The frame
+    /// here is the player's landblock: x = EW metres, y = height, z = NS metres.
+    /// </summary>
+    private float[]? FloorHeights(int ia, int ib, float ax, float ay, float az, float bx, float by, float bz, float lift)
+    {
+        if (_floorCache.TryGetValue((ia, ib), out float[]? cached)) return cached.Length == 0 ? null : cached;
+
+        float[]? result = ComputeFloorHeights(ax, ay, az, bx, by, bz, lift);
+        _floorCache[(ia, ib)] = result ?? Array.Empty<float>();
+        return result;
+    }
+
+    private float[]? ComputeFloorHeights(float ax, float ay, float az, float bx, float by, float bz, float lift)
+    {
+        var geo = GeometrySource?.Invoke();
+        if (geo == null) return null;
+        float dx = bx - ax, dz = bz - az;
+        float run = MathF.Sqrt(dx * dx + dz * dz);
+        if (run < FloorStep * 1.5f) return null;
+
+        uint cell = _frameCell;
+        bool dungeon = (cell & 0xFFFF) >= 0x0100;
+        float baseX = ((cell >> 24) & 0xFF) * 192f, baseY = ((cell >> 16) & 0xFF) * 192f;
+        System.Collections.Generic.List<Raycasting.BoundingVolume>? geometry = dungeon ? geo.GetLandblockGeometry(cell) : null;
+        if (dungeon && (geometry == null || geometry.Count == 0)) return null;
+
+        int steps = Math.Clamp((int)MathF.Ceiling(run / FloorStep), 2, 64);
+        var heights = new float[steps + 1];
+        bool anyFloor = false;
+        for (int s = 0; s <= steps; s++)
+        {
+            float t = (float)s / steps;
+            float lineY = ay + (by - ay) * t;               // straight-line height (already lifted)
+            float gx = baseX + ax + dx * t, gy = baseY + az + dz * t;
+            float floor = dungeon ? DungeonFloor(geometry!, gx, gy, lineY - lift) : geo.GetTerrainZWorld(gx, gy);
+            // Only snap to a floor near the straight line: never to a floor on another level.
+            if (!float.IsNaN(floor) && MathF.Abs(floor + lift - lineY) < 4f)
+            {
+                heights[s] = floor + lift;
+                anyFloor = true;
+            }
+            else heights[s] = lineY;
+        }
+        // Keep the ends on the rings.
+        heights[0] = ay;
+        heights[steps] = by;
+        return anyFloor ? heights : null;
+    }
+
+    /// <summary>Highest floor at or below (gx, gy, nearZ + 2): a down-ray against the dungeon's cell geometry.</summary>
+    private static float DungeonFloor(System.Collections.Generic.List<Raycasting.BoundingVolume> geometry, float gx, float gy, float nearZ)
+    {
+        var origin = new Raycasting.Vector3(gx, gy, nearZ + 2f);
+        var down = new Raycasting.Vector3(0, 0, -1);
+        float best = float.MaxValue;
+        foreach (var v in geometry)
+        {
+            if (v.IsDoor) continue;
+            if (v.RayIntersect(origin, down, 6f, out float d) && d < best) best = d;
+        }
+        return best == float.MaxValue ? float.NaN : origin.Z - best;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -312,7 +477,7 @@ internal sealed class NavMarkerRenderer
             // placeholder coordinates (a PortalNPC coord pointing "to the
             // abyss" is the recurring case), so a ring drawn there floats far
             // off in empty space.
-            if (pt.Type != NavPointType.Point)
+            if (!HasGroundCoords(pt.Type))
                 continue;
 
             float wx = px + (float)((pt.EW - playerEW) * 240.0);
@@ -342,7 +507,7 @@ internal sealed class NavMarkerRenderer
 
             float avgD = (_centerDepth[k] + _centerDepth[nk]) * 0.5f;
             float thick = Math.Clamp(baseLineThick * 60f / Math.Max(avgD, 1f), baseLineThick * 0.5f, baseLineThick * 2f);
-            drawList.AddLine(_centerScreen[k], _centerScreen[nk], NavOverlaySettings.ArgbToImGui(_settings.NavOverlay.ColorLine), thick);
+            drawList.AddLine(_centerScreen[k], _centerScreen[nk], ColorLineImGui, thick);
         }
 
         // ── Pass 3: 3D ground rings at each waypoint ────────────────
@@ -360,7 +525,7 @@ internal sealed class NavMarkerRenderer
             // placeholder coordinates (a PortalNPC coord pointing "to the
             // abyss" is the recurring case), so a ring drawn there floats far
             // off in empty space.
-            if (pt.Type != NavPointType.Point)
+            if (!HasGroundCoords(pt.Type))
                 continue;
 
             float cx = px + (float)((pt.EW - playerEW) * 240.0);
@@ -379,7 +544,7 @@ internal sealed class NavMarkerRenderer
             if (visCount < 2) continue;
 
             bool isActive = (i == _settings.ActiveNavIndex);
-            uint color = NavOverlaySettings.ArgbToImGui(isActive ? _settings.NavOverlay.ColorActiveRing : _settings.NavOverlay.ColorRing);
+            uint color = isActive ? ColorRedImGui : ColorCyanImGui;
             float ringThick = isActive ? baseRingThick * 1.3f : baseRingThick;
 
             for (int s = 0; s < RingSegments; s++)

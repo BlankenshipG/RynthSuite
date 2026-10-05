@@ -5,7 +5,6 @@ using System.Linq;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.Meta;
-using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -47,7 +46,7 @@ internal sealed class LegacyMetaUi
     private string _statusMessage = "";
     private DateTime _statusTime = DateTime.MinValue;
 
-    private static readonly string MetaFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
+    private static readonly string MetaFolder = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
 
     /// <summary>Warnings from the most recent LoadMacroFile, so the Avalonia
     /// bridge can surface them too (it doesn't see the LoadedMeta).</summary>
@@ -325,6 +324,8 @@ internal sealed class LegacyMetaUi
                             ConditionData = rule.ConditionData,
                             Action = rule.Action,
                             ActionData = rule.ActionData,
+                            CallReturnState = rule.CallReturnState,
+                            ChatColors = rule.ChatColors,
                             Children = CloneChildren(rule.Children),
                             ActionChildren = CloneChildren(rule.ActionChildren)
                         };
@@ -414,7 +415,9 @@ internal sealed class LegacyMetaUi
             {
                 if (ImGui.Selectable(state, _settings.CurrentState == state))
                 {
-                    if (_settings.CurrentState == state) _settings.ForceStateReset = true;
+                    // Always a fresh entry (like SetState): the seconds-in-state timer
+                    // and the old state's watchdog must not carry over to the new state.
+                    _settings.ForceStateReset = true;
                     _settings.CurrentState = state;
                 }
             }
@@ -437,6 +440,7 @@ internal sealed class LegacyMetaUi
                 if (!string.IsNullOrWhiteSpace(_newStateName))
                 {
                     _settings.CurrentState = _newStateName;
+                    _settings.ForceStateReset = true;
                     _newStateName = "";
                 }
                 ImGui.CloseCurrentPopup();
@@ -1016,6 +1020,8 @@ internal sealed class LegacyMetaUi
                 ConditionData  = r.ConditionData,
                 Action         = r.Action,
                 ActionData     = r.ActionData,
+                CallReturnState = r.CallReturnState,
+                ChatColors     = r.ChatColors,
                 Children       = CloneChildren(r.Children),
                 ActionChildren = CloneChildren(r.ActionChildren)
             });
@@ -1131,7 +1137,8 @@ internal sealed class LegacyMetaUi
         }
     }
 
-    internal void LoadMacroFile(string filePath)
+    /// <summary>Loads a .met/.af (empty path clears). False when nothing was loaded; <see cref="LastLoadStatus"/> says why.</summary>
+    internal bool LoadMacroFile(string filePath)
     {
         if (string.IsNullOrEmpty(filePath))
         {
@@ -1145,7 +1152,7 @@ internal sealed class LegacyMetaUi
             _settings.ForceStateReset = true;
             _statusMessage = "Macro cleared.";
             _statusTime = DateTime.Now;
-            return;
+            return true;
         }
 
         try
@@ -1161,7 +1168,7 @@ internal sealed class LegacyMetaUi
             {
                 _statusMessage = "Unsupported file type";
                 _statusTime = DateTime.Now;
-                return;
+                return false;
             }
 
             LastLoadWarnings = loaded.Warnings;
@@ -1171,7 +1178,7 @@ internal sealed class LegacyMetaUi
                     ? $"No rules parsed — {loaded.Warnings.Count} warning(s): {loaded.Warnings[0]}"
                     : "No rules found (profile?)";
                 _statusTime = DateTime.Now;
-                return;
+                return false;
             }
 
             lock (_settings.MetaRulesLock)
@@ -1181,8 +1188,9 @@ internal sealed class LegacyMetaUi
                 foreach (var kvp in loaded.EmbeddedNavs)
                     _settings.EmbeddedNavs[kvp.Key] = kvp.Value;
             }
-            _settings.CurrentState = loaded.Rules[0].State;
+            _settings.CurrentState = loaded.StartState;
             _settings.ForceStateReset = true;
+            _settings.MetaCallStackReset = true;
             _settings.CurrentMetaPath = filePath;
 
             string name = Path.GetFileNameWithoutExtension(filePath);
@@ -1191,13 +1199,19 @@ internal sealed class LegacyMetaUi
                 ? $"Loaded {loaded.Rules.Count} rules / {stateCount} states / {loaded.EmbeddedNavs.Count} navs from {name}"
                 : $"Loaded {loaded.Rules.Count} rules / {stateCount} states from {name} — {loaded.Warnings.Count} warning(s): {loaded.Warnings[0]}";
             _statusTime = DateTime.Now;
+            return true;
         }
         catch (Exception ex)
         {
             _statusMessage = $"Load error: {ex.Message}";
             _statusTime = DateTime.Now;
+            return false;
         }
     }
+
+    /// <summary>The status line of the last load (why it failed, or what it loaded).</summary>
+    internal string LastLoadStatus => _statusMessage ?? string.Empty;
+
 
     private void TryAutoSaveMeta()
     {

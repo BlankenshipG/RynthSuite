@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using RynthCore.Plugin.RynthAi.Raycasting;
 
@@ -30,16 +29,15 @@ public sealed class TerrainSampler : IDisposable
     private float[]? _landHeightTable;
     private bool _ready;
 
-    // Deep-audit finding #6 (2026-06-18): RynthVision's /rv watertypes ->
-    // InspectTerrain runs synchronously on the Avalonia UI thread and calls
-    // LoadLandblock, while the same call hits from the AC tick thread hundreds
-    // of times per Submit via the slope/water overlays. Two threads mutating
-    // one plain Dictionary (with a periodic Clear() at MaxCache=30) is classic
-    // bucket-array corruption on whichever thread lands on it — frequently
-    // AC's own main thread. Guard every access with this gate.
+    // Parsed landblocks, least-recently-used first out. RynthVision calls
+    // LoadLandblock only from the plugin pump thread (its engine panels reach
+    // it through the pump too), but this class is shared, so the cache stays
+    // behind a lock that is uncontended in that case. The capacity holds a
+    // whole 7×7-landblock overlay window (radius 24 cells = ±3 landblocks)
+    // plus headroom, so a tick never evicts what the next tick needs.
     private readonly object _cacheGate = new();
-    private readonly Dictionary<uint, LandblockData?> _cache = new();
-    private const int MaxCache = 30;
+    private readonly LruCache<uint, LandblockData?> _cache = new(MaxCache);
+    private const int MaxCache = 64;
 
     public bool IsReady => _ready;
     public string Status { get; private set; } = "uninitialized";
@@ -48,11 +46,14 @@ public sealed class TerrainSampler : IDisposable
     /// Opens the AC .dat files and loads the land-height table. Idempotent. When
     /// acFolderPath is null, uses the running process's directory — inside an
     /// injected plugin that's acclient.exe's folder, where the active client's
-    /// .dat files live.
+    /// .dat files live. Cheap: the dats' B-trees are searched on demand, so
+    /// this reads two headers and the RegionDesc record. A failed attempt
+    /// closes whatever it opened, so calling it again doesn't leak handles.
     /// </summary>
     public bool Initialize(string? acFolderPath = null)
     {
         if (_ready) return true;
+        bool ok = false;
         try
         {
             string? folder = acFolderPath;
@@ -89,12 +90,22 @@ public sealed class TerrainSampler : IDisposable
 
             _ready = true;
             Status = "ready";
+            ok = true;
             return true;
         }
         catch (Exception ex)
         {
             Status = ex.Message;
             return false;
+        }
+        finally
+        {
+            if (!ok)
+            {
+                _portalDat.Close();
+                _cellDat.Close();
+                _landHeightTable = null;
+            }
         }
     }
 
@@ -104,16 +115,50 @@ public sealed class TerrainSampler : IDisposable
         if (!_ready || _landHeightTable == null) return null;
         lock (_cacheGate)
         {
-            if (_cache.TryGetValue(landblockKey, out var cached)) return cached;
+            if (_cache.TryGet(landblockKey, out var cached)) return cached;
         }
 
         LandblockData? data = LandblockData.Load(_cellDat, landblockKey, _landHeightTable);
         lock (_cacheGate)
         {
-            if (_cache.Count >= MaxCache) _cache.Clear();
-            _cache[landblockKey] = data;
+            _cache.Set(landblockKey, data);
         }
         return data;
+    }
+
+    /// <summary>
+    /// Terrain Z at landblock-local (lx, ly) in [0, 192], on the triangle AC
+    /// actually uses for that cell (<see cref="SwToNeCut"/>). Unlike
+    /// LandblockData.GetTerrainZLocal, which always splits SW→NE, this matches
+    /// the rendered ground on every cell. Coordinates are clamped to the block.
+    /// </summary>
+    public static float GetTerrainZ(LandblockData lb, float lx, float ly)
+    {
+        const float block = CellLength * 8f;
+        if (lx < 0f) lx = 0f; else if (lx > block) lx = block;
+        if (ly < 0f) ly = 0f; else if (ly > block) ly = block;
+
+        int cx = Math.Min((int)(lx / CellLength), 7);
+        int cy = Math.Min((int)(ly / CellLength), 7);
+        float u = (lx - cx * CellLength) / CellLength;
+        float v = (ly - cy * CellLength) / CellLength;
+
+        float h00 = lb.GetVertexZ(cx,     cy);     // SW
+        float h10 = lb.GetVertexZ(cx + 1, cy);     // SE
+        float h01 = lb.GetVertexZ(cx,     cy + 1); // NW
+        float h11 = lb.GetVertexZ(cx + 1, cy + 1); // NE
+
+        if (SwToNeCut(lb.LandblockKey, cx, cy))
+        {
+            // SE half (SW,SE,NE) when v <= u, NW half (SW,NE,NW) otherwise.
+            return v <= u
+                ? h00 + u * (h10 - h00) + v * (h11 - h10)
+                : h00 + v * (h01 - h00) + u * (h11 - h01);
+        }
+        // SW half (SW,SE,NW) when u + v <= 1, NE half (SE,NE,NW) otherwise.
+        return u + v <= 1f
+            ? h00 + u * (h10 - h00) + v * (h01 - h00)
+            : h11 + (1f - u) * (h01 - h11) + (1f - v) * (h10 - h11);
     }
 
     /// <summary>
@@ -266,8 +311,11 @@ public sealed class TerrainSampler : IDisposable
 
     public void Dispose()
     {
+        _ready = false;
         _portalDat.Dispose();
         _cellDat.Dispose();
-        _ready = false;
+        _landHeightTable = null;
+        lock (_cacheGate) _cache.Clear();
+        Status = "closed";
     }
 }

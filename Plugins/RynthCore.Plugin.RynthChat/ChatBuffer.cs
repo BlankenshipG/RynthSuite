@@ -1,9 +1,19 @@
 using System;
 using System.Text;
-using System.Threading;
 
 namespace RynthCore.Plugin.RynthChat;
 
+/// <summary>
+/// The newest 500 chat lines, exported to the engine as JSON
+/// (RynthChatGetScrollbackJson). Add runs on the game thread (chat dispatch),
+/// BuildJson on the engine's pump thread; the lock covers both.
+///
+/// JSON per line: {"seq":N,"ts":"HH:mm:ss","chan":"Chat","type":3,"sender":"Bob"|null,"text":"..."}.
+/// "type" (AC's ChatMessageType) was added in 0.2.0; engines before it ignore it.
+/// Every non-ASCII character is written as a \uXXXX escape, so the export is
+/// pure ASCII and survives the ANSI marshalling on both sides (before 0.2.0 an
+/// accented name or the "→" of an outgoing tell arrived as "?").
+/// </summary>
 internal sealed class ChatBuffer
 {
     private const int Capacity = 500;
@@ -23,18 +33,19 @@ internal sealed class ChatBuffer
         string? sender = ChatClassifier.SenderFor(text, chatType);
         string ts = DateTime.Now.ToString("HH:mm:ss");
 
-        var line = new ChatLine
-        {
-            Seq       = Interlocked.Increment(ref _nextSeq) - 1,
-            Timestamp = ts,
-            Channel   = channel,
-            Sender    = sender,
-            Text      = text,
-        };
-
         lock (_lock)
         {
-            _ring[_head % Capacity] = line;
+            // Numbered under the lock, so the ring is always in seq order (the
+            // engine skips anything at or below the last seq it has seen).
+            _ring[_head % Capacity] = new ChatLine
+            {
+                Seq       = _nextSeq++,
+                Timestamp = ts,
+                Channel   = channel,
+                ChatType  = chatType,
+                Sender    = sender,
+                Text      = text,
+            };
             _head = (_head + 1) % Capacity;
             if (_count < Capacity) _count++;
         }
@@ -69,10 +80,12 @@ internal sealed class ChatBuffer
             sb.Append("{\"seq\":");
             sb.Append(line.Seq);
             sb.Append(",\"ts\":\"");
-            sb.Append(line.Timestamp);
+            AppendEscaped(sb, line.Timestamp);
             sb.Append("\",\"chan\":\"");
             AppendEscaped(sb, line.Channel);
-            sb.Append("\",\"sender\":");
+            sb.Append("\",\"type\":");
+            sb.Append(line.ChatType);
+            sb.Append(",\"sender\":");
             if (line.Sender != null)
             {
                 sb.Append('"');
@@ -94,8 +107,23 @@ internal sealed class ChatBuffer
 
     private static void AppendEscaped(StringBuilder sb, string s)
     {
-        foreach (char c in s)
+        for (int i = 0; i < s.Length; i++)
         {
+            char c = s[i];
+            // A surrogate pair is escaped as two \uXXXX; a lone half becomes U+FFFD.
+            // System.Text.Json refuses a lone surrogate, and before 0.2.1 one such line
+            // failed the engine's whole batch (and every poll after it).
+            if (char.IsSurrogate(c))
+            {
+                if (char.IsHighSurrogate(c) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+                {
+                    AppendUnicodeEscape(sb, c);
+                    AppendUnicodeEscape(sb, s[++i]);
+                }
+                else
+                    sb.Append("\\uFFFD");
+                continue;
+            }
             switch (c)
             {
                 case '"':  sb.Append("\\\""); break;
@@ -104,12 +132,20 @@ internal sealed class ChatBuffer
                 case '\r': sb.Append("\\r");  break;
                 case '\t': sb.Append("\\t");  break;
                 default:
-                    if (c < 0x20)
-                        sb.Append($"\\u{(int)c:X4}");
+                    // Control characters and everything outside ASCII: the string is
+                    // marshalled as ANSI, which would turn those into '?'.
+                    if (c < 0x20 || c > 0x7E)
+                        AppendUnicodeEscape(sb, c);
                     else
                         sb.Append(c);
                     break;
             }
         }
+    }
+
+    private static void AppendUnicodeEscape(StringBuilder sb, char c)
+    {
+        sb.Append("\\u");
+        sb.Append(((int)c).ToString("X4"));
     }
 }

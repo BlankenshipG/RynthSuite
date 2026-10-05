@@ -37,6 +37,10 @@ internal sealed class IltHubController
     public IltProgression Progression { get; }
     public IltGear Gear { get; }
     public IltGames Games { get; }
+    /// <summary>Registry charm acquired / active / server state (Charms Tracking tab).</summary>
+    public IltCharmTracker Charms { get; }
+    /// <summary>Temple guardians: riddle translator, hand-in, attribute turn-in tracker.</summary>
+    public IltGuardian Guardian { get; }
 
     public IltHubController(RynthCoreHost host, string charFolder, Func<WorldObjectCache?> cache,
                             Func<LegacyUiSettings?> settings, Func<QuestTracker?> quests, Action saveCombatSettings)
@@ -58,7 +62,9 @@ internal sealed class IltHubController
         Progression = new IltProgression(_ctx);
         Gear = new IltGear(_ctx);
         Games = new IltGames(_ctx);
-        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Games });
+        Charms = new IltCharmTracker(_ctx);
+        Guardian = new IltGuardian(_ctx, quests, Quests);
+        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Games, Guardian });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
         options.ProbeReplyTap = OnProbeReply;
@@ -68,8 +74,44 @@ internal sealed class IltHubController
     public IltHubState State => _ctx.State;
     public IltServerOptions Options => _ctx.Options;
 
+    /// <summary>
+    /// Shows / hides / toggles the Mini Remote, which is the Hub's main window ("show", "hide",
+    /// "toggle"). Set by RynthAiPlugin; returns the chat reply. Pump thread.
+    /// </summary>
+    public Func<string, string>? MiniRemoteCommand { get; set; }
+
+    /// <summary>True while the Mini Remote is on screen (set by RynthAiPlugin).</summary>
+    public Func<bool>? MiniRemoteVisible { get; set; }
+
     /// <summary>World is ILT-like and the server has at least one Hub feature on.</summary>
     public bool Available => _ctx.Options.IsIltLikeWorld && _ctx.Options.AnyFeatureOn;
+
+    /// <summary>
+    /// Whether a section window can be shown now. Character always can (it explains why the Hub is
+    /// idle and holds the Force-ILT override); the rest need server features.
+    /// </summary>
+    public bool SectionAvailable(IltSection section) => section switch
+    {
+        IltSection.Character => true,
+        IltSection.Banking => Available && !_ctx.Options.IsOff(IltFeature.Bank),
+        IltSection.Games => Available && Games.AnyGameAvailable,
+        _ => Available,
+    };
+
+    public bool IsSectionOpen(IltSection section) => IltSections.IsOpen(_ctx.State.Character, section);
+
+    /// <summary>Opens / closes a section window (render or pump thread; a plain bool write).</summary>
+    public void SetSectionOpen(IltSection section, bool open) => IltSections.SetOpen(_ctx.State.Character, section, open);
+
+    /// <summary>The Force-ILT world override (world identity only; features still come from the server).</summary>
+    public bool ForceIltWorld
+    {
+        get => _ctx.State.ForceLeaftideFeatures;
+        set => _ctx.State.ForceLeaftideFeatures = value;
+    }
+
+    /// <summary>Re-asks the server which features are on (safe from the render thread: posted to the pump).</summary>
+    public void RequestOptionsRefresh() => _ctx.Post(() => _ctx.Options.Refresh(manual: true));
 
     /// <summary>True when the cached options already say /myquests is off (skip the login refresh).</summary>
     public bool SkipLoginQuestRefresh => _ctx.Options.IsIltLikeWorld && _ctx.Options.IsOff(IltFeature.Quests);
@@ -84,7 +126,6 @@ internal sealed class IltHubController
         _ctx.Options.OnLoginComplete();
         _ctx.Inventory.Reset();
         Rates.Reset();
-        DashWindows.ShowIltHub = _ctx.State.WindowVisible; // reopen where the player left it
 
         if (petManager != null)
         {
@@ -121,13 +162,16 @@ internal sealed class IltHubController
         _ctx.Options.Tick();
         HookQuestOutcome();
 
-        // One hint per session once the server confirms Hub features. The window is separate
+        // "Hub UI on screen" gates bank auto-refresh and the gear / split-arrow scans.
+        _ctx.State.WindowVisible = (MiniRemoteVisible?.Invoke() ?? false) || IltSections.AnyOpen(_ctx.State.Character);
+
+        // One hint per session once the server confirms Hub features. The Mini Remote is separate
         // from the main RynthAi panel, so say how to open it.
         if (!_availabilityAnnounced && Available)
         {
             _availabilityAnnounced = true;
             if (!_ctx.State.WindowVisible)
-                _ctx.Chat("[ILT Hub] ILT server features detected. Type /ra hub to open the ILT Hub window.");
+                _ctx.Chat("[ILT Hub] ILT server features detected. Type /ra hub to open the Mini Remote (Options lists the Hub windows).");
         }
 
         // Features run only on ILT-like worlds; elsewhere the Hub is fully dormant.
@@ -200,15 +244,25 @@ internal sealed class IltHubController
         _ctx.Store.SaveStateIfDirty(_ctx.State);
     }
 
-    /// <summary>Render thread: Hub window, confirm popups, games HUD.</summary>
-    public void Render() => _ui.Render();
-
-    /// <summary>Opens/closes the Hub window (render or pump thread).</summary>
-    public void SetVisible(bool visible)
+    /// <summary>
+    /// JSON for the engine Skills panel's Progression tab (RynthPluginGetProgressionJson).
+    /// "available" is false off ILT-like worlds; the panel then hides the ILT sections. Pump thread.
+    /// </summary>
+    public string BuildProgressionJson()
     {
-        _ctx.State.WindowVisible = visible;
-        DashWindows.ShowIltHub = visible;
+        var sb = new System.Text.StringBuilder(2048);
+        sb.Append("{\"available\":").Append(Available ? "true" : "false");
+        sb.Append(",\"world\":\"").Append(RynthAiPlugin.JsonEscape(_ctx.Options.WorldName ?? string.Empty)).Append("\",");
+        Progression.AppendSnapshotJson(sb);
+        sb.Append('}');
+        return sb.ToString();
     }
+
+    /// <summary>JSON for the engine Settings panel's Charms Tracking tab (RynthPluginGetCharmsJson). Pump thread.</summary>
+    public string BuildCharmsJson() => Charms.BuildJson();
+
+    /// <summary>Render thread: section windows, confirm popups, games HUD.</summary>
+    public void Render() => _ui.Render();
 
     // ── Probe taps: reuse login-probe replies so tabs fill without extra commands ──
 
@@ -228,8 +282,11 @@ internal sealed class IltHubController
     // ── Commands ────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// "/ra hub [show|hide|toggle|refresh|bank|status|force on|off|profile save|load|list ...|suit list|test|load ...]"
-    /// and "/ra quests [refresh|check &lt;regex&gt;|window|favhud]". Pump thread. Returns false if not handled.
+    /// "/ra hub [show|hide|toggle|open &lt;section&gt; [show|hide|toggle]|refresh|bank|status|force on|off|
+    /// profile save|load|list ...|suit list|test|load ...]" (show/hide/toggle drive the Mini Remote),
+    /// "/ra quests [refresh|check &lt;regex&gt;|window|favhud]", "/ra pets [show|hide|toggle]" and
+    /// "/ra guardian ..." (see IltGuardian.HandleCommand).
+    /// Pump thread. Returns false if not handled.
     /// </summary>
     public bool HandleCommand(string verb, string[] args)
     {
@@ -245,9 +302,7 @@ internal sealed class IltHubController
                     Quests.CheckCommand(string.Join(" ", args.Skip(1)));
                     break;
                 case "window":
-                    // Undocked "Quests" window (closing it docks the tracker back into the Hub).
-                    cs.QuestTrackerPoppedOut = ResolveToggle(mode, cs.QuestTrackerPoppedOut);
-                    _ctx.Chat(cs.QuestTrackerPoppedOut ? "[ILT Hub] Quests window shown." : "[ILT Hub] Quest tracker docked back into the Hub.");
+                    OpenSection(IltSection.Quests, mode);
                     break;
                 case "favhud":
                 case "favorites":
@@ -260,15 +315,42 @@ internal sealed class IltHubController
             }
             return true;
         }
+        if (verb.Equals("pets", StringComparison.OrdinalIgnoreCase))
+        {
+            // "/ra pets [show|hide|toggle]": same as "/ra hub open pets".
+            OpenSection(IltSection.Pet, args.Length > 0 ? args[0] : "toggle");
+            return true;
+        }
+        if (verb.Equals("guardian", StringComparison.OrdinalIgnoreCase))
+        {
+            // "/ra guardian window [show|hide|toggle]" opens the window; everything else is the Guardian's.
+            if (args.Length > 0 && args[0].Equals("window", StringComparison.OrdinalIgnoreCase))
+                OpenSection(IltSection.Guardian, args.Length > 1 ? args[1] : "toggle");
+            else
+                Guardian.HandleCommand(args);
+            return true;
+        }
         if (!verb.Equals("hub", StringComparison.OrdinalIgnoreCase)) return false;
 
         string cmd = args.Length > 0 ? args[0].ToLowerInvariant() : "toggle";
         string rest = args.Length > 1 ? string.Join(" ", args.Skip(1)) : string.Empty;
         switch (cmd)
         {
-            case "show": SetVisible(true); break;
-            case "hide": SetVisible(false); break;
-            case "toggle": SetVisible(!_ctx.State.WindowVisible); break;
+            case "show":
+            case "hide":
+            case "toggle":
+                // The Mini Remote is the Hub's main window.
+                if (MiniRemoteCommand != null) _ctx.Chat(MiniRemoteCommand(cmd));
+                else _ctx.Chat("[ILT Hub] The Mini Remote is not available yet.");
+                break;
+            case "open":
+                if (args.Length < 2 || !IltSections.TryParse(args[1], out IltSection section))
+                {
+                    _ctx.Chat("[ILT Hub] Usage: /ra hub open character|quests|pets|banking|gear|games|guardian [show|hide|toggle]");
+                    break;
+                }
+                OpenSection(section, args.Length > 2 ? args[2] : "toggle");
+                break;
             case "refresh": _ctx.Options.Refresh(manual: true); break;
             case "bank": Banking.RequestRefresh(quiet: false); break;
             case "status": PrintStatus(); break;
@@ -285,12 +367,25 @@ internal sealed class IltHubController
                 ClearPending();
                 break;
             default:
-                _ctx.Chat("[ILT Hub] /ra hub show|hide|toggle|refresh|bank|status|force on|off|clap|confirm|cancel");
+                _ctx.Chat("[ILT Hub] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|force on|off|clap|confirm|cancel");
+                _ctx.Chat("[ILT Hub] /ra hub open character|quests|pets|banking|gear|games|guardian [show|hide|toggle]");
                 _ctx.Chat("[ILT Hub] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
-                _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]");
+                _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");
+                _ctx.Chat("[ILT Hub] /ra guardian [window|translate <text>|handin|stop|chat on|off|auto on|off|buy on|off|refresh|status]");
                 break;
         }
         return true;
+    }
+
+    /// <summary>Applies show / hide / toggle to a section window and says what happened.</summary>
+    private void OpenSection(IltSection section, string mode)
+    {
+        bool open = IltSections.Resolve(mode, IsSectionOpen(section));
+        SetSectionOpen(section, open);
+        string label = IltSections.Label(section);
+        _ctx.Chat(!open ? $"[ILT Hub] {label} window hidden."
+            : SectionAvailable(section) ? $"[ILT Hub] {label} window shown."
+            : $"[ILT Hub] {label} window will show once the server reports that feature on.");
     }
 
     /// <summary>"show"/"on" → true, "hide"/"off" → false, anything else flips <paramref name="current"/>.</summary>

@@ -11,13 +11,38 @@ namespace RynthCore.Plugin.RynthAi;
 
 public static unsafe class PluginExports
 {
-    private static readonly RynthPluginRuntime<RynthAiPlugin> Runtime = new();
+    internal static readonly RynthPluginRuntime<RynthAiPlugin> Runtime = new();
+
+    // Typed interfaces for other plugins (host GetPluginInterface, API v68): "RynthAi.Script" v1
+    // for RynthLua, "RynthAi.Status" v1 for RynthNet (the bot state it shares with the other clients). Fixed signature: void* (const char* iface, uint version).
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginQueryInterface", CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static IntPtr QueryInterface(IntPtr ifaceAnsi, uint version)
+    {
+        try
+        {
+            string iface = ifaceAnsi == IntPtr.Zero ? "" : Marshal.PtrToStringAnsi(ifaceAnsi) ?? "";
+            IntPtr table = ScriptInterface.Query(iface, version);
+            return table != IntPtr.Zero ? table : StatusInterface.Query(iface, version);
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginInit", CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int Init(RynthCoreApiNative* api) => Runtime.Init(api);
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginShutdown", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void Shutdown() => Runtime.Shutdown();
+    public static void Shutdown()
+    {
+        Runtime.Shutdown();
+        StatusInterface.Release();
+        // The loot editor's state can be a few hundred KB (LootSnobV4): don't leave it behind on a reload.
+        foreach (IntPtr p in new[] { Interlocked.Exchange(ref _lootStatePtr, IntPtr.Zero),
+                     Interlocked.Exchange(ref _lootRulePtr, IntPtr.Zero), Interlocked.Exchange(ref _lootVocabPtr, IntPtr.Zero) })
+            if (p != IntPtr.Zero) Marshal.FreeCoTaskMem(p);
+    }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnUIInitialized", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnUIInitialized() => Runtime.OnUIInitialized();
@@ -27,9 +52,6 @@ public static unsafe class PluginExports
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnLogout", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnLogout() => Runtime.OnLogout();
-
-    [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnBarAction", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void OnBarAction() => Runtime.OnBarAction();
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnSelectedTargetChange", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnSelectedTargetChange(uint currentTargetId, uint previousTargetId) => Runtime.OnSelectedTargetChange(currentTargetId, previousTargetId);
@@ -43,11 +65,12 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginTick", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void Tick() => Runtime.OnTick();
 
+    // Local ImGui windows (ILT Hub, HUDs, translator, item info, nav overlay). The engine
+    // calls this when the export exists; the main panels stay on the engine side.
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginRender", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void Render() => Runtime.OnRender();
 
-    /// <summary>Engine calls this instead of RynthPluginRender while its ImGui shell is off
-    /// (Avalonia UI): ILT Hub + Item Info windows only. Never lets an exception escape.</summary>
+    /// <summary>Engine calls this instead of RynthPluginRender while its ImGui shell is off.</summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderOverlay", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void RenderOverlay()
     {
@@ -204,7 +227,7 @@ public static unsafe class PluginExports
     }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginToggleMacro", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void ToggleMacro() => SafeInvoke(() => Runtime.Plugin?.DashboardRenderer?.TogglePanelMacro());
+    public static void ToggleMacro() => SafeInvoke(() => Runtime.Plugin?.ToggleMacroFromPanel());   // refuses a start while VTank runs
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetSubsystemEnabled", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void SetSubsystemEnabled(int subsystemId, int enabled)
@@ -278,6 +301,26 @@ public static unsafe class PluginExports
     }
 
     private static IntPtr _monsterDamageJsonPtr = IntPtr.Zero;
+    private static IntPtr _monsterDetailJsonPtr = IntPtr.Zero;
+
+    // One monster's breakdown for the Damage tab's detail panel (freed on the next call).
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetMonsterDetailJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetMonsterDetailJson(uint wcid)
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildMonsterDetailJson(wcid) ?? "{}";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _monsterDetailJsonPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
 
     // Structured per-monster rows for the interactive Damage panel (UTF-8/ANSI JSON).
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetMonsterDamageJson", CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -299,6 +342,37 @@ public static unsafe class PluginExports
     }
 
     // Manual HP override from the Damage panel (hp <= 0 clears it).
+    private static IntPtr _awakenedTierJsonPtr = IntPtr.Zero;
+
+    // Aelrynth difficulty tiers (2026-10-03): the Damage panel's tier label and picker.
+    // {"show":false} off Aelrynth or until the server has sent a tier; else
+    // {"show":true,"current":N,"view":M,"following":bool,"percent":5,"tiers":[0,...]}.
+    // An engine without the picker never calls this; the damage JSON then shows the current tier.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetAwakenedTierJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetAwakenedTierJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildAwakenedTierJson() ?? "{\"show\":false}";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _awakenedTierJsonPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    // The tier the damage JSON and monster detail describe: -1 = the current one (default).
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetDamageViewTier", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void SetDamageViewTier(int tier)
+    {
+        try { Runtime.Plugin?.SetDamageViewTier(tier); } catch { }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetMonsterHp", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void SetMonsterHp(uint wcid, int hp)
     {
@@ -348,11 +422,44 @@ public static unsafe class PluginExports
         try { Runtime.Plugin?.SetMonsterWeapon(wcid, weaponId); } catch { }
     }
 
-    // Per-monster offhand override from the Damage panel (offhandId == 0 clears). Shields are equipped by combat.
+    // Per-monster offhand override from the Damage panel (offhandId == 0 clears). Stored only.
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetMonsterOffhand", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void SetMonsterOffhand(uint wcid, uint offhandId)
     {
         try { Runtime.Plugin?.SetMonsterOffhand(wcid, offhandId); } catch { }
+    }
+
+    // Damage panel Pet column: picker entries (Auto, elements, Items-panel essences)
+    // and the per-monster choice ("" = Auto, "E:<element>", "I:<essence id>").
+    private static IntPtr _petChoicesPtr = IntPtr.Zero;
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetPetChoicesJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetPetChoicesJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildPetChoicesJson() ?? "[]";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _petChoicesPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginSetMonsterPet", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void SetMonsterPet(uint wcid, IntPtr ansiChoice)
+    {
+        try
+        {
+            string choice = ansiChoice == IntPtr.Zero ? "" : Marshal.PtrToStringAnsi(ansiChoice) ?? "";
+            Runtime.Plugin?.SetMonsterPet(wcid, choice);
+        }
+        catch { }
     }
 
     // Per-character DEFAULT weapon from the Damage panel's Default line (weaponId == 0 clears →
@@ -504,6 +611,56 @@ public static unsafe class PluginExports
         }
     }
 
+    private static IntPtr _progressionPtr = IntPtr.Zero;
+
+    /// <summary>
+    /// Skills panel Progression tab (ILT augmentations / enlightenment). Same contract as
+    /// RynthPluginGetPatrolInfoJson: one static buffer, valid until the next call; the engine
+    /// polls it from its pump thread only.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetProgressionJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetProgressionJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildProgressionJson() ?? "{\"available\":false}";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _progressionPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    private static IntPtr _charmsPtr = IntPtr.Zero;
+
+    /// <summary>
+    /// Settings panel Charms Tracking tab (ACECustom registry charms: acquired / active / server
+    /// state). Same contract as RynthPluginGetProgressionJson: one static buffer, valid until the
+    /// next call; the engine polls it from its pump thread only.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetCharmsJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetCharmsJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildCharmsJson() ?? "{\"available\":false}";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _charmsPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
     // ── Items bridge (engine-side Avalonia ItemsPanel) ──────────────────────
 
     private static IntPtr _itemsPtr = IntPtr.Zero;
@@ -574,18 +731,79 @@ public static unsafe class PluginExports
         catch { }
     }
 
+    // ── Loot editor bridge (engine-side ImGui Loot Editor) ──────────────────
+    // RynthCore docs/IMGUI_LOOT_EDITOR.md. Strings are UTF-8 both ways (the
+    // bridges above are ANSI). Each Get frees its previous buffer on the next
+    // call, so the engine's UI data hub is the only caller (plugin pump thread).
+
+    private static IntPtr _lootStatePtr = IntPtr.Zero, _lootRulePtr = IntPtr.Zero, _lootVocabPtr = IntPtr.Zero;
+
+    private static IntPtr Utf8Swap(ref IntPtr slot, string json)
+    {
+        IntPtr newPtr = Marshal.StringToCoTaskMemUTF8(json);
+        IntPtr oldPtr = Interlocked.Exchange(ref slot, newPtr);
+        if (oldPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(oldPtr);
+        return newPtr;
+    }
+
+    /// <summary>Changes whenever the editor's state does; 0 before RynthAi is ready.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginLootEditRevision", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static int LootEditRevision()
+    {
+        try { return Runtime.Plugin?.LootEditor.Revision() ?? 0; }
+        catch { return 0; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetLootEditJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetLootEditJson()
+    {
+        try
+        {
+            string? json = Runtime.Plugin?.LootEditor.StateJson();
+            return json == null ? IntPtr.Zero : Utf8Swap(ref _lootStatePtr, json);
+        }
+        catch { return IntPtr.Zero; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetLootEditRuleJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetLootEditRuleJson(int index)
+    {
+        try
+        {
+            string? json = Runtime.Plugin?.LootEditor.RuleJson(index);
+            return json == null ? IntPtr.Zero : Utf8Swap(ref _lootRulePtr, json);
+        }
+        catch { return IntPtr.Zero; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetLootEditVocabJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetLootEditVocabJson()
+    {
+        try
+        {
+            string? json = Runtime.Plugin?.LootEditor.VocabJson();
+            return json == null ? IntPtr.Zero : Utf8Swap(ref _lootVocabPtr, json);
+        }
+        catch { return IntPtr.Zero; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginSendLootEditCommand", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void SendLootEditCommand(IntPtr utf8Json)
+    {
+        try
+        {
+            if (utf8Json == IntPtr.Zero) return;
+            string? json = Marshal.PtrToStringUTF8(utf8Json);
+            if (string.IsNullOrEmpty(json)) return;
+            Runtime.Plugin?.LootEditor.Command(json);
+        }
+        catch { }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginAddSelectedWeapon", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void AddSelectedWeapon()
     {
         try { Runtime.Plugin?.DashboardRenderer?.AddSelectedWeapon(); }
-        catch { }
-    }
-
-    // Engine Items panel "Add Selected Shield" (off-hand entry, ItemRule Action="Shield").
-    [UnmanagedCallersOnly(EntryPoint = "RynthPluginAddSelectedShield", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void AddSelectedShield()
-    {
-        try { Runtime.Plugin?.DashboardRenderer?.AddSelectedShield(); }
         catch { }
     }
 

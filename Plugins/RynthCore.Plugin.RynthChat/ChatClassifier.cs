@@ -50,35 +50,37 @@ internal static class ChatClassifier
     };
 
     // ── Sender extraction ──────────────────────────────────────────────────
+    // Bob says, "..."  /  Bob tells you, "..."  /  [General] Bob says, "..."
+    // [Allegiance] Bob says, "..."  /  Bob says on the Fellowship channel, "..."
+    // Before 0.2.0 the channel-tag forms captured "[General] Bob" as the sender.
+    // The sender is metadata (mentions, rules); the engine no longer prints it
+    // in front of the line, which already names the speaker.
 
-    private static readonly Regex _sayRe        = new(@"^(.+?) says, """,                           RegexOptions.Compiled);
-    private static readonly Regex _tellInRe     = new(@"^(.+?) tells you, """,                      RegexOptions.Compiled);
-    private static readonly Regex _tellOutRe    = new(@"^You tell (.+?), """,                       RegexOptions.Compiled);
-    private static readonly Regex _allegianceRe = new(@"^(.+?) says on the Allegiance channel, """, RegexOptions.Compiled);
-    private static readonly Regex _fellowRe     = new(@"^(.+?) says on the Fellowship channel, """, RegexOptions.Compiled);
-    private static readonly Regex _chanSenderRe = new(@"^(.+?) says on the .+? channel, """,        RegexOptions.Compiled);
+    private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(20);
+    private static readonly Regex _incomingRe = new(
+        @"^(?:\[[^\]]{1,40}\] )?(.+?) (?:says|tells you)\b[^""]{0,60}?, """, RegexOptions.CultureInvariant, Timeout);
+    private static readonly Regex _tellOutRe  = new(@"^You tell (.+?), """, RegexOptions.CultureInvariant, Timeout);
 
     internal static string? SenderFor(string text, int chatType) => (uint)chatType switch
     {
-        0x02 => Match(_sayRe, text),
-        0x03 => Match(_tellInRe, text),
+        0x02 or 0x03 or 0x08 or 0x0A or 0x12 or 0x13 => Match(_incomingRe, text),
         0x04 => TellOutSender(text),
-        0x12 => Match(_allegianceRe, text) ?? Match(_sayRe, text),
-        0x13 => Match(_fellowRe, text)     ?? Match(_sayRe, text),
-        0x0A => Match(_sayRe, text),
-        0x08 => Match(_chanSenderRe, text),
         _    => null,
     };
 
     private static string? Match(Regex re, string text)
     {
-        var m = re.Match(text);
-        return m.Success ? m.Groups[1].Value : null;
+        try
+        {
+            var m = re.Match(text);
+            return m.Success ? m.Groups[1].Value : null;
+        }
+        catch (RegexMatchTimeoutException) { return null; }
     }
 
     private static string? TellOutSender(string text)
     {
-        var m = _tellOutRe.Match(text);
-        return m.Success ? $"→{m.Groups[1].Value}" : null;
+        string? name = Match(_tellOutRe, text);
+        return name != null ? $"→{name}" : null;
     }
 }

@@ -87,8 +87,7 @@ public static class SpellDatabase
         return $"Unknown Spell ({spellId})";
     }
 
-    /// <summary>Spell family and difficulty (power) — e.g. Legendary Strength = (261, 35),
-    /// Aura of Elysa's Sight = (152, 300). False when the spell isn't in SpellData.txt.</summary>
+    /// <summary>Spell family and difficulty (power). False when the spell isn't in SpellData.txt.</summary>
     public static bool TryGetSpellMeta(int spellId, out int family, out int difficulty)
     {
         if (_spellMeta.TryGetValue(spellId, out var meta))
@@ -130,6 +129,22 @@ public static class SpellDatabase
             map[kvp.Value] = kvp.Key;
         foreach (var kvp in _builtinSpells)
             map.TryAdd(kvp.Value, kvp.Key);
+        return map;
+    }
+
+    /// <summary>
+    /// Every id per name. Some names have several ids (Missile Weapon Mastery Self VI is
+    /// 472/496/544, Light Weapon Mastery has five per tier), and BuildNameToIdMap keeps
+    /// only the last, which a character may not know.
+    /// </summary>
+    public static Dictionary<string, List<int>> BuildNameToIdsMap()
+    {
+        var map = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kvp in _spellNames)
+        {
+            if (!map.TryGetValue(kvp.Value, out var ids)) map[kvp.Value] = ids = new List<int>();
+            ids.Add(kvp.Key);
+        }
         return map;
     }
 

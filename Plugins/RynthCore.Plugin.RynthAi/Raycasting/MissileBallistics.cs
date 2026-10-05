@@ -3,7 +3,7 @@ using System;
 namespace RynthCore.Plugin.RynthAi.Raycasting
 {
     /// <summary>
-    /// The flight path of an AC missile (arrow, bolt, dart), as pure math: no host, no
+    /// The flight path of an AC missile (arrow, bolt, dart) or arc spell, as pure math: no host, no
     /// geometry, no allocation. Kept dependency-free so Tools/RynthCore.MissileArcTests
     /// compiles it directly.
     ///
@@ -139,6 +139,40 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
 
             double tan = (v2 - Math.Sqrt(disc)) / (gravity * (double)d);
             double k = gravity * (1.0 + tan * tan) / (2.0 * v2);
+            return new MissileArc(ox, oy, oz, dx / d, dy / d, d, rise, (float)tan, (float)k, valid: true, vertical: false);
+        }
+
+        /// <summary>ACE's launch speed for player arc spells (Flame Arc I-VII, the Incantations,
+        /// Nether Arc): the projectile weenies (flameboltgravity 20974 and its siblings,
+        /// ace43232-netherarc) all have MaximumVelocity 40.</summary>
+        public const float AceArcSpellSpeed = 40f;
+
+        /// <summary>
+        /// The path of an ARC SPELL, which ACE flies differently from a missile: a fixed
+        /// HORIZONTAL speed (the projectile's MaximumVelocity, 40 m/s for every player arc) and
+        /// a vertical launch speed chosen so the arc lands on the aim point under gravity 9.8
+        /// (WorldObject_Magic.CalculateProjectileVelocity → Trajectory.solve_ballistic_arc_lateral,
+        /// gravity only for ProjectileSpellType.Arc). So it always reaches, and rises
+        /// g·d²/(8·v²) above the straight line at mid-flight: 0.3 m at 20 m, 1.2 m at 40 m,
+        /// 2.8 m at 60 m. Same shape as <see cref="Solve"/> (height = x·tanθ − K·x²) with
+        /// K = g/(2v²) and tanθ = rise/d + K·d.
+        /// </summary>
+        public static MissileArc SolveLateral(float ox, float oy, float oz,
+                                              float tx, float ty, float tz,
+                                              float lateralSpeed, float gravity = AcGravity)
+        {
+            float dx = tx - ox, dy = ty - oy;
+            float rise = tz - oz;
+            float d = (float)Math.Sqrt(dx * dx + dy * dy);
+
+            if (float.IsNaN(d) || float.IsNaN(rise) || !(lateralSpeed > 0f) || !(gravity > 0f))
+                return new MissileArc(ox, oy, oz, 0f, 0f, 0f, 0f, 0f, 0f, valid: false, vertical: false);
+
+            if (d < VerticalEpsilon)
+                return new MissileArc(ox, oy, oz, 0f, 0f, d, rise, 0f, 0f, valid: true, vertical: true);
+
+            double k = gravity / (2.0 * lateralSpeed * lateralSpeed);
+            double tan = rise / (double)d + k * d;
             return new MissileArc(ox, oy, oz, dx / d, dy / d, d, rise, (float)tan, (float)k, valid: true, vertical: false);
         }
 

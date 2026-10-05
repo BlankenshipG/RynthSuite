@@ -1,0 +1,315 @@
+using System;
+using System.Collections.Generic;
+using RynthCore.Plugin.RynthAi.CreatureData;
+
+namespace RynthCore.Plugin.RynthAi;
+
+/// <summary>One weapon from the user's Items list that combat may wield.</summary>
+/// <param name="Kind">CombatMode.Melee / Missile / Magic.</param>
+/// <param name="Element">Normalized element ("" = unknown).</param>
+/// <param name="Rending">Element of a rending imbue ("" = none).</param>
+/// <param name="SlayerType">The creature type it slays (PropertyInt 166 SlayerCreatureType, 0 = none).</param>
+/// <param name="SlayerBonus">Its damage multiplier against that type (PropertyFloat 138 SlayerDamageBonus, 0 = none).</param>
+internal sealed record WeaponCandidate(int Id, string Name, int Kind, string Element, string Rending, bool InHand,
+    int SlayerType = 0, double SlayerBonus = 0);
+
+/// <summary>What to fight a monster with: the weapon (0 = none), the element to cast or
+/// debuff with, and why.</summary>
+internal readonly record struct WeaponPlan(int WeaponId, string Element, string Source);
+
+/// <summary>
+/// The element-and-weapon rule, pure (no host). The weakness decides the weapon, never the
+/// other way round, except for a slayer:
+///   1. A Damage tab weapon (this monster's, else the DEFAULT row's) is used as set; it must be in the Items list.
+///      Its element is the rule's, else its own, else the weakest the character can cast.
+///   2. A slayer: a listed weapon of the character's main kind whose SlayerCreatureType is
+///      the monster's CreatureType and whose SlayerDamageBonus is above 1 (ACE multiplies the
+///      whole hit by it, so it beats any element choice). Several: the biggest bonus, then
+///      the element order (the rule's element, else the weakest group), then a matching
+///      rending, then the one in hand, then list order. Its element is the wand's own, else a
+///      melee/missile weapon's own, else the rule's, else the weakest the character can cast.
+///      Creature type unknown (not appraised yet): no slayer step.
+///   3. (The Damage tab DEFAULT row's weapon is a player pick too: it is step 1.)
+///   4. A Monsters rule damage type (not Auto) is the element; wield the listed weapon of that
+///      element (a matching rending first, then the one in hand, then list order).
+///   Whatever is chosen, a wand casts its own element when it has one (owner's rule,
+///   2026-09-30: "the wand should always cast its element, especially when rended").
+///   5. Auto with a known weakness: walk the monster's elements from weakest (highest
+///      multiplier) down; the first element a listed weapon of the character's main kind has
+///      wins, and that weapon is wielded. Elements tied on the multiplier count as one step,
+///      and within a step the weapon in hand wins, then a rending, then the weakness order.
+///      A caster only counts for elements the character can cast.
+///      No listed weapon has any of them: keep the one in hand (else the learned best, else
+///      the first), and cast the weakest element the character can.
+///   6. Weakness unknown: keep the weapon in hand (else the learned best, else the first) and
+///      use its element; nothing known at all: Slash (or the first element the character can cast).
+/// "Main kind" = the kind of the first usable weapon in the list, so a bow character with a
+/// buff wand listed isn't switched to magic, and a melee character isn't swapped to a wand.
+/// </summary>
+internal static class WeaponPlanner
+{
+    /// <summary>Two multipliers this close are a tie.</summary>
+    public const double TieEpsilon = 0.005;
+
+    /// <summary>Fallback element order when nothing is known ("Slash" first).</summary>
+    public static readonly string[] FallbackOrder = { "Slash", "Fire", "Cold", "Lightning", "Acid", "Pierce", "Bludgeon", "Nether" };
+
+    public static WeaponPlan Choose(
+        IReadOnlyList<WeaponCandidate> listed,
+        string? ruleElement,
+        CreatureWeakness.Ranking? weak,
+        Func<string, bool> canCast,
+        int fixedWeaponId = 0,
+        string fixedSource = "Damage tab",
+        int learnedBestId = 0,
+        int creatureType = 0,
+        bool fixedIsDefault = false)
+    {
+        string rule = WeaponElements.Normalize(ruleElement);
+        bool ruleSet = rule.Length > 0;
+        WeaponCandidate? fixedPick = fixedWeaponId != 0 ? Find(listed, fixedWeaponId) : null;
+
+        // 1. A weapon the player picked on the Damage tab: for this monster, or the DEFAULT row's
+        //    (listed only). A player's pick is honoured, slayer or not (owner, 2026-10-04: "if
+        //    it's set to auto slayer wins, if the player picks a weapon we honour that").
+        //    fixedIsDefault only changes the source label.
+        if (fixedPick != null)
+            return FixedPlan(fixedPick, fixedSource, rule, weak, canCast);
+
+        if (listed.Count == 0)
+        {
+            // Nothing listed: no weapon; the element still follows the rule / weakness.
+            string elem = ruleSet ? rule : WeakestCastable(weak, canCast, null) ?? Fallback(canCast);
+            return new WeaponPlan(0, elem, "none");
+        }
+
+        int mainKind = listed[0].Kind;
+        var pool = new List<WeaponCandidate>();
+        foreach (var c in listed) if (c.Kind == mainKind) pool.Add(c);
+
+        // 2. A slayer of this monster's creature type.
+        if (creatureType > 0)
+        {
+            var s = BestSlayer(pool, creatureType, rule, weak, canCast);
+            if (s != null)
+            {
+                string elem = WandElement(s, canCast)
+                    ?? (s.Kind != CombatMode.Magic && s.Element.Length > 0 ? s.Element
+                        : ruleSet ? rule
+                        : WeakestCastable(weak, canCast, s) ?? ElementOrFallback(s, canCast));
+                return new WeaponPlan(s.Id, elem, SlayerSource(creatureType, s.SlayerBonus));
+            }
+        }
+
+        // 3. The Damage tab default weapon (listed only).
+        if (fixedPick != null)
+            return FixedPlan(fixedPick, fixedSource, rule, weak, canCast);
+
+        // 4. An explicit damage type: the listed weapon of that element (main kind first).
+        if (ruleSet)
+        {
+            var w = BestOf(pool, rule, null) ?? BestOf(listed, rule, null);
+            if (w != null) return new WeaponPlan(w.Id, rule, "Monsters rule " + rule);
+            var keep = InHand(pool) ?? pool[0];
+            // A wand casts its own element: the rule's element only when the weapon has none.
+            string keepElem = WandElement(keep, canCast) ?? rule;
+            return new WeaponPlan(keep.Id, keepElem, keep.InHand ? "Monsters rule " + rule + " (none listed; in hand)" : "Monsters rule " + rule + " (none listed)");
+        }
+
+        // 5. Auto, weakness known: weakest element a listed weapon has.
+        if (weak != null && weak.Order.Count > 0)
+        {
+            string handElem = InHand(pool)?.Element ?? "";
+            foreach (var group in TieGroups(weak))
+            {
+                // Within a tie: the element of the weapon in hand (no needless swap), else
+                // the weakness order; for one element: a matching rending, then the weapon
+                // in hand, then list order.
+                bool handInGroup = handElem.Length > 0 && group.Contains(handElem);
+                WeaponCandidate? best = null;
+                int bestRank = int.MaxValue;
+                for (int i = 0; i < pool.Count; i++)
+                {
+                    var c = pool[i];
+                    int idx = group.IndexOf(c.Element);
+                    if (idx < 0) continue;
+                    if (c.Kind == CombatMode.Magic && !canCast(c.Element)) continue;
+                    int elemRank = handInGroup && c.Element == handElem ? 0 : 1 + idx;
+                    int rank = elemRank * 100000
+                             + (c.Rending.Length > 0 && c.Rending == c.Element ? 0 : 10000)
+                             + (c.InHand ? 0 : 1000)
+                             + i;
+                    if (rank < bestRank) { bestRank = rank; best = c; }
+                }
+                if (best != null)
+                    return new WeaponPlan(best.Id, best.Element, $"weak to {best.Element} ({weak.Source})");
+            }
+
+            // No listed weapon has any element of the ranking: keep what we have.
+            var keep = InHand(pool) ?? Find(pool, learnedBestId) ?? pool[0];
+            // A wand whose element the character can't cast (no Void Magic for a Nether
+            // wand, no spells of it) casts the weakest element the character can, like a
+            // wand with no element; only a melee/missile weapon keeps its own element here.
+            string elem = WandElement(keep, canCast)
+                ?? (keep.Element.Length == 0 || keep.Kind == CombatMode.Magic
+                    ? WeakestCastable(weak, canCast, keep) ?? Fallback(canCast)
+                    : keep.Element);
+            return new WeaponPlan(keep.Id, elem, $"weak to {elem} ({weak.Source}); no listed weapon of it");
+        }
+
+        // 6. Weakness unknown: the weapon in hand and its element.
+        var hand = InHand(pool);
+        if (hand != null)
+            return new WeaponPlan(hand.Id, ElementOrFallback(hand, canCast), "in hand (weakness unknown)");
+        var learned = Find(pool, learnedBestId);
+        if (learned != null)
+            return new WeaponPlan(learned.Id, ElementOrFallback(learned, canCast), "Damage tab learned");
+        return new WeaponPlan(pool[0].Id, ElementOrFallback(pool[0], canCast), "ItemRules");
+    }
+
+    /// <summary>
+    /// The ranking's elements grouped by equal multiplier, weakest group first. A learned
+    /// ranking (NaN multipliers) is one element per group.
+    /// </summary>
+    public static List<List<string>> TieGroups(CreatureWeakness.Ranking weak)
+    {
+        var groups = new List<List<string>>();
+        double last = double.NaN;
+        foreach (var (e, m) in weak.Order)
+        {
+            if (groups.Count > 0 && !double.IsNaN(m) && !double.IsNaN(last) && Math.Abs(m - last) <= TieEpsilon)
+                groups[^1].Add(e);
+            else
+                groups.Add(new List<string> { e });
+            last = m;
+        }
+        return groups;
+    }
+
+    /// <summary>The weakest element the character can cast; ties go to <paramref name="wand"/>'s element.</summary>
+    public static string? WeakestCastable(CreatureWeakness.Ranking? weak, Func<string, bool> canCast, WeaponCandidate? wand)
+    {
+        if (weak == null) return null;
+        foreach (var group in TieGroups(weak))
+        {
+            if (wand != null && wand.Element.Length > 0 && group.Contains(wand.Element) && canCast(wand.Element))
+                return wand.Element;
+            foreach (string e in group)
+                if (canCast(e)) return e;
+        }
+        return null;
+    }
+
+    /// <summary>True when <paramref name="c"/> slays <paramref name="creatureType"/> (ACE: SlayerCreatureType == CreatureType, with a bonus).</summary>
+    public static bool Slays(WeaponCandidate c, int creatureType) =>
+        creatureType > 0 && c.SlayerType == creatureType && c.SlayerBonus > 1.0 + TieEpsilon;
+
+    /// <summary>The plan's source for a slayer: "slayer (Olthoi x2)".</summary>
+    public static string SlayerSource(int creatureType, double bonus) =>
+        $"slayer ({CreatureTypeNames.Name(creatureType)} x{bonus.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)})";
+
+    /// <summary>
+    /// The matching slayer to wield: the biggest bonus (ties within <see cref="TieEpsilon"/>),
+    /// then the element order (the rule's element, else the weakest group), then a matching
+    /// rending, then the one in hand, then list order. Null when none matches.
+    /// </summary>
+    private static WeaponCandidate? BestSlayer(List<WeaponCandidate> pool, int creatureType, string rule,
+        CreatureWeakness.Ranking? weak, Func<string, bool> canCast)
+    {
+        double top = 0;
+        foreach (var c in pool) if (Slays(c, creatureType) && c.SlayerBonus > top) top = c.SlayerBonus;
+        if (top <= 0) return null;
+
+        List<List<string>>? groups = rule.Length == 0 && weak != null && weak.Order.Count > 0 ? TieGroups(weak) : null;
+        WeaponCandidate? best = null;
+        int bestRank = int.MaxValue;
+        for (int i = 0; i < pool.Count; i++)
+        {
+            var c = pool[i];
+            if (!Slays(c, creatureType) || c.SlayerBonus < top - TieEpsilon) continue;
+            int elemRank = 0;
+            if (rule.Length > 0) elemRank = c.Element == rule ? 0 : 1;
+            else if (groups != null)
+            {
+                elemRank = groups.Count;
+                if (c.Element.Length > 0 && (c.Kind != CombatMode.Magic || canCast(c.Element)))
+                    for (int g = 0; g < groups.Count; g++)
+                        if (groups[g].Contains(c.Element)) { elemRank = g; break; }
+            }
+            int rank = elemRank * 100000
+                     + (c.Rending.Length > 0 && c.Rending == c.Element ? 0 : 10000)
+                     + (c.InHand ? 0 : 1000)
+                     + i;
+            if (rank < bestRank) { bestRank = rank; best = c; }
+        }
+        return best;
+    }
+
+    /// <summary>A Damage tab weapon: the wand's own element, else the rule's, else its own / the weakest castable.</summary>
+    private static WeaponPlan FixedPlan(WeaponCandidate f, string source, string rule, CreatureWeakness.Ranking? weak, Func<string, bool> canCast)
+    {
+        string elem = WandElement(f, canCast) ?? (rule.Length > 0 ? rule : ElementFor(f, weak, canCast));
+        return new WeaponPlan(f.Id, elem, source);
+    }
+
+    /// <summary>
+    /// The element for a weapon the user fixed (the Damage tab): its own element when known
+    /// (the walk down the weakness list stops at the only candidate's element), else the
+    /// weakest element the character can cast.
+    /// </summary>
+    private static string ElementFor(WeaponCandidate w, CreatureWeakness.Ranking? weak, Func<string, bool> canCast)
+    {
+        if (w.Element.Length > 0 && (w.Kind != CombatMode.Magic || canCast(w.Element))) return w.Element;
+        return WeakestCastable(weak, canCast, w) ?? ElementOrFallback(w, canCast);
+    }
+
+    /// <summary>
+    /// A wand (caster) always casts its own element when it has one (damage type, icon element
+    /// or rending) and the character can cast it: its elemental bonus (and a rending) only
+    /// works for spells of its element. Null for other weapons or an element not known.
+    /// </summary>
+    private static string? WandElement(WeaponCandidate w, Func<string, bool> canCast) =>
+        w.Kind == CombatMode.Magic && w.Element.Length > 0 && canCast(w.Element) ? w.Element : null;
+
+    private static string ElementOrFallback(WeaponCandidate w, Func<string, bool> canCast)
+    {
+        if (w.Element.Length > 0 && (w.Kind != CombatMode.Magic || canCast(w.Element))) return w.Element;
+        return Fallback(canCast);
+    }
+
+    private static string Fallback(Func<string, bool> canCast)
+    {
+        foreach (string e in FallbackOrder)
+            if (canCast(e)) return e;
+        return "Slash";
+    }
+
+    /// <summary>The weapon of <paramref name="element"/> to wield: matching rending first, then in hand, then list order.</summary>
+    private static WeaponCandidate? BestOf(IReadOnlyList<WeaponCandidate> list, string element, Func<string, bool>? canCast)
+    {
+        WeaponCandidate? best = null;
+        int bestRank = int.MaxValue;
+        for (int i = 0; i < list.Count; i++)
+        {
+            var c = list[i];
+            if (c.Element != element) continue;
+            if (canCast != null && c.Kind == CombatMode.Magic && !canCast(element)) continue;
+            int rank = (c.Rending == element ? 0 : 10000) + (c.InHand ? 0 : 1000) + i;
+            if (rank < bestRank) { bestRank = rank; best = c; }
+        }
+        return best;
+    }
+
+    private static WeaponCandidate? InHand(IReadOnlyList<WeaponCandidate> list)
+    {
+        foreach (var c in list) if (c.InHand) return c;
+        return null;
+    }
+
+    private static WeaponCandidate? Find(IReadOnlyList<WeaponCandidate> list, int id)
+    {
+        if (id == 0) return null;
+        foreach (var c in list) if (c.Id == id) return c;
+        return null;
+    }
+}

@@ -7,7 +7,6 @@ using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Raycasting;
 using RynthCore.PluginSdk;
-using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -18,7 +17,7 @@ namespace RynthCore.Plugin.RynthAi;
 /// dungeons stack would be unreadable otherwise.
 ///
 /// Explored state is per-EnvCell and persisted per-landblock under
-/// <SuiteDir>\RynthAi\ExploredDungeons\XXYY0000.json.
+/// C:\Games\RynthSuite\RynthAi\ExploredDungeons\XXYY0000.json.
 /// </summary>
 internal sealed class RadarWallRenderer
 {
@@ -50,7 +49,7 @@ internal sealed class RadarWallRenderer
     private readonly bool[] _inside = new bool[MaxPolyVerts];
 
     private static readonly string ExploredDir =
-        System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"ExploredDungeons");
+        @"C:\Games\RynthSuite\RynthAi\ExploredDungeons";
 
     public RadarWallRenderer(RynthCoreHost host, LegacyUiSettings settings)
     {
@@ -63,7 +62,7 @@ internal sealed class RadarWallRenderer
     public void Render()
     {
         try { RenderCore(); }
-        catch (Exception ex) { RynthLog.Write(LogCat.Radar, $"RadarWalls: {ex.Message}"); }
+        catch (Exception ex) { _host.Log($"RadarWalls: {ex.Message}"); }
     }
 
     private void RenderCore()
@@ -289,7 +288,7 @@ internal sealed class RadarWallRenderer
         }
         catch (Exception ex)
         {
-            RynthLog.Write(LogCat.Radar, $"RadarWalls: load {path} failed: {ex.Message}");
+            _host.Log($"RadarWalls: load {path} failed: {ex.Message}");
         }
     }
 
@@ -310,7 +309,7 @@ internal sealed class RadarWallRenderer
         }
         catch (Exception ex)
         {
-            RynthLog.Write(LogCat.Radar, $"RadarWalls: save failed: {ex.Message}");
+            _host.Log($"RadarWalls: save failed: {ex.Message}");
         }
     }
 

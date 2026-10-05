@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Offline tests for the RynthAi code that is bound to the engine host: loot rule matching
+    (LootEvaluator, VTankLootEvaluator, Keep #) and metas (MetaManager conditions and state
+    transitions, ExpressionEngine functions). No game, no engine, no client.
+
+    Unlike RynthCore.RynthAiTests (a plain net10.0 exe that links single source files), this
+    runner references the plugin project itself. That only works as a net10.0-windows x86
+    exe: the plugin is net10.0-windows and marked 32-bit (see RynthCore.RynthAiTests\README.md).
+    It needs the x86 .NET runtime (C:\Program Files (x86)\dotnet). The plugin grants
+    InternalsVisibleTo to this assembly name.
+
+    The host is either default(RynthCoreHost) (every Has* is false, every call does nothing) or
+    Fakes\FakeHost.cs, which fills in a handful of engine calls with in-process fakes. Program.cs
+    points every hard-coded C:\Games path the tested code can write to at a temp folder before
+    any test runs.
+
+    Run: dotnet run -c Release, optionally followed by a name filter after the usual separator
+    (exit 0 = pass, 1 = fail; KNOWN = a registered bug, which does not fail the run).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Same as the plugin: number parsing in the tested code uses the current culture. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>RynthCore.RynthAiHostTests</RootNamespace>
+    <AssemblyName>RynthCore.RynthAiHostTests</AssemblyName>
+    <Platforms>x86</Platforms>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Plugins\RynthCore.Plugin.RynthAi\RynthCore.Plugin.RynthAi.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Same assertion helper and runner as RynthCore.RynthAiTests (one copy, linked). -->
+    <Compile Include="..\RynthCore.RynthAiTests\Harness\Check.cs" Link="Harness\Check.cs" />
+    <Compile Include="..\RynthCore.RynthAiTests\Harness\Runner.cs" Link="Harness\Runner.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The engine's radar snapshot parser (self-contained DTOs), so the radar test checks
+         RynthAi's JSON against the engine's real reader. Same relative engine path the plugin
+         itself references. -->
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\Data\RadarSnapshotJson.cs" Link="Engine\RadarSnapshotJson.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

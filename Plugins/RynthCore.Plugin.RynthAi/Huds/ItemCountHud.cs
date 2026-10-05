@@ -14,8 +14,12 @@ internal sealed class ItemCountHud
     private static readonly Vector4 ColName = new(0.70f, 0.75f, 0.80f, 1f);
 
     private readonly HudController _hud;
+    private bool _rescueChecked; // off-screen check done for the current show
 
     public ItemCountHud(HudController hud) => _hud = hud;
+
+    /// <summary>The HUD was not drawn this frame: check its position again on the next show.</summary>
+    public void OnHidden() => _rescueChecked = false;
 
     public void Render()
     {
@@ -27,13 +31,15 @@ internal sealed class ItemCountHud
                     | ImGuiWindowFlags.NoFocusOnAppearing | ImGuiWindowFlags.NoNav;
         if (s.ItemHudLocked) flags |= ImGuiWindowFlags.NoMove;
 
-        ImGui.SetNextWindowPos(new Vector2(20, 220), ImGuiCond.FirstUseEver);
+        // Right of and above centre, clear of the character in the middle of the view.
+        UiPlacement.CenterFirstUse(new Vector2(220, -160));
         ImGui.SetNextWindowBgAlpha(0.55f);
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(4, 4));
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 2));
         bool visible = ImGui.Begin("Item HUD##rynthitemhud", flags);
         ImGui.PopStyleVar(2);
         if (!visible) { ImGui.End(); return; }
+        UiPlacement.RescueOncePerShow(ref _rescueChecked);
 
         if (entries.Length == 0)
         {
