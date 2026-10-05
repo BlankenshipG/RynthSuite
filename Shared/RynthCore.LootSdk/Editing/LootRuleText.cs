@@ -40,13 +40,14 @@ public static class LootRuleText
 
     public static readonly (int Id, string Name)[] LongKeys =
     {
-        (5, "EncumbVal"), (19, "Value"), (25, "Level"), (28, "ArmorLevel"), (45, "DamageType"),
+        (5, "EncumbVal"), (9, "Locations"), (19, "Value"), (25, "Level"), (28, "ArmorLevel"), (44, "Damage"), (45, "DamageType"),
         (48, "WeaponSkill"), (54, "MaxDamage"),
         (87, "MaxStructure"), (88, "Structure"), (105, "ItemWorkmanship"), (107, "ItemMaxMana"),
         (131, "MaterialType"), (158, "WieldRequirements"), (159, "WieldSkilltype"), (160, "WieldDifficulty"),
         (218, "EquippedSlots"), (353, "ImbuedEffect"), (370, "DamageRating"), (371, "DamageResistRating"),
         (372, "CritRating"), (373, "CritResistRating"), (374, "CritDamageRating"),
         (375, "CritDamageResistRating"), (376, "HealBoostRating"), (379, "VitalityRating"),
+        (0x0D000000, "Type (WCID)"),   // Decal's synthetic key: the weenie class id
     };
 
     public static readonly (int Id, string Name)[] DoubleKeys =

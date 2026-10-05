@@ -55,6 +55,8 @@ internal static class Program
         ArcWhenClearTests.Register(runner);
         UseAtLoginTests.Register(runner);
         LearnSpellsTests.Register(runner);
+        AttackLatencyTests.Register(runner);
+        LootAddItemTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }

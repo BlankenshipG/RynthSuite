@@ -43,6 +43,17 @@ public sealed class LootEditSession
     public int RuleCount => Shown?.Rules.Count ?? _json?.Rules.Count ?? 0;
     /// <summary>The edited model (null for JSON / nothing open). Tests read it.</summary>
     public VTankLootProfile? Profile => _utl;
+    /// <summary>The open .json profile (native format), else null.</summary>
+    public LootProfile? JsonProfile => _json;
+    /// <summary>"utl", "json", or empty when nothing is open.</summary>
+    public string Format => !IsOpen ? string.Empty : _json != null ? "json" : "utl";
+    /// <summary>Why edits are refused (empty when they aren't).</summary>
+    public string ReadOnlyReason => _readOnlyReason;
+    /// <summary>True when InsertAndSave can add a rule: an editable .utl, or a .json profile.</summary>
+    public bool CanInsert => _utl != null || _json != null;
+    /// <summary>The last message (what the last command or load did).</summary>
+    public string Message => _message;
+    public bool MessageOk => _messageOk;
 
     // =====================================================================
     //  Load
@@ -422,19 +433,7 @@ public sealed class LootEditSession
                 return Fail($"{FileName(_path)} changed on disk since you opened it. Reload (drops your edits) or Save anyway.");
             }
 
-            byte[] bytes = Encode();
-            string? dir = System.IO.Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            string tmp = _path + ".tmp";
-            File.WriteAllBytes(tmp, bytes);
-            if (File.Exists(_path))
-            {
-                try { File.Replace(tmp, _path, _path + ".bak", ignoreMetadataErrors: true); }
-                catch (PlatformNotSupportedException) { File.Copy(tmp, _path, overwrite: true); File.Delete(tmp); }
-                catch (IOException) { File.Copy(_path, _path + ".bak", overwrite: true); File.Copy(tmp, _path, overwrite: true); File.Delete(tmp); }
-            }
-            else File.Move(tmp, _path);
-
+            WriteFile(_path, Encode());
             _stamp = FileStamp.Read(_path);
             _dirty = false;
             _changedOnDisk = false;
@@ -443,6 +442,135 @@ public sealed class LootEditSession
         catch (Exception ex)
         {
             return Fail($"Save failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Writes a temp file and swaps it in, the old file kept as .bak.</summary>
+    private static void WriteFile(string path, byte[] bytes)
+    {
+        string? dir = System.IO.Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        string tmp = path + ".tmp";
+        File.WriteAllBytes(tmp, bytes);
+        if (File.Exists(path))
+        {
+            try { File.Replace(tmp, path, path + ".bak", ignoreMetadataErrors: true); }
+            catch (PlatformNotSupportedException) { File.Copy(tmp, path, overwrite: true); File.Delete(tmp); }
+            catch (IOException) { File.Copy(path, path + ".bak", overwrite: true); File.Copy(tmp, path, overwrite: true); File.Delete(tmp); }
+        }
+        else File.Move(tmp, path);
+    }
+
+    // =====================================================================
+    //  Add one rule and save (the "Add to loot profile" of a clicked item)
+    // =====================================================================
+
+    /// <summary>
+    /// Inserts <paramref name="rule"/> at <paramref name="index"/> (clamped; the
+    /// end when out of range) and saves at once, the old file kept as .bak.
+    /// .utl: through the edited model, refused while there are unsaved edits (so
+    /// it never saves someone's half-done changes with it) or when the file opens
+    /// read-only. .json: <paramref name="native"/> is spliced into the file's
+    /// Rules array as text, so every other byte stays as it was (the JSON writer
+    /// itself is lossy). Both check before writing that the result reads back
+    /// with every other rule unchanged; nothing is written when it doesn't.
+    /// </summary>
+    public bool InsertAndSave(VTankLootRule rule, LootRule? native, int index)
+    {
+        if (!IsOpen) return Fail("No profile open.");
+        if (_dirty) return Fail($"Unsaved changes in {FileName(_path)}. Save or discard them in the Loot Editor first.");
+        if (_json != null)
+            return native == null ? Fail("That rule can't be written in the native format.") : InsertJson(native, index);
+        if (_utl == null) return Fail(_readOnlyReason);
+        if (!_stamp.Exists) return Fail($"{FileName(_path)} doesn't exist yet. Save it once in the Loot Editor first.");
+
+        List<VTankLootRule> rules = _utl.Rules;
+        int at = index < 0 || index > rules.Count ? rules.Count : index;
+        if (_utl.FileVersion < 1) rule.CustomExpression = null;
+        else rule.CustomExpression ??= string.Empty;
+
+        var before = new List<string>(rules.Count);
+        foreach (VTankLootRule r in rules) before.Add(RuleText(_utl, r));
+        rules.Insert(at, rule);
+        string? bad = VerifyUtl(before, at);
+        if (bad != null)
+        {
+            rules.RemoveAt(at);
+            return Fail("Not added (the profile would not read back the same): " + bad);
+        }
+        _dirty = true;
+        if (!Save())
+        {
+            string why = _message;
+            rules.RemoveAt(at);
+            _dirty = false;
+            if (_changedOnDisk)
+            {
+                // Someone else wrote the file: show theirs (nothing of ours is pending).
+                Open(_path, force: true);
+                return Fail($"Not added: {FileName(_path)} changed on disk; reloaded it. Try again.");
+            }
+            return Fail("Not added. " + why);
+        }
+        _focus = at;
+        return Ok($"Added \"{rule.Name}\" at {at + 1} and saved {FileName(_path)} ({RuleCount} rules).");
+    }
+
+    private static string RuleText(VTankLootProfile owner, VTankLootRule r) =>
+        VTankLootWriter.Serialize(new VTankLootProfile { FileVersion = owner.FileVersion, Rules = { r } });
+
+    /// <summary>Null when the model, written and parsed back, has the old rules unchanged and the new one at <paramref name="at"/>.</summary>
+    private string? VerifyUtl(List<string> before, int at)
+    {
+        VTankLootProfile back;
+        try { back = VTankLootParser.LoadFromText(Decode(Encode(), out _, out _)); }
+        catch (Exception ex) { return ex.Message; }
+        if (back.Rules.Count != before.Count + 1) return $"{back.Rules.Count} rules instead of {before.Count + 1}.";
+        if (!SameSalvage(back.SalvageCombine, _utl!.SalvageCombine)) return "the salvage combine settings changed.";
+        for (int i = 0, j = 0; i < back.Rules.Count; i++)
+        {
+            string text = RuleText(back, back.Rules[i]);
+            if (i == at)
+            {
+                if (text != RuleText(_utl, _utl.Rules[at])) return "the new rule reads back differently.";
+                continue;
+            }
+            if (text != before[j++]) return $"rule {i + 1} would change.";
+        }
+        return null;
+    }
+
+    private static bool SameSalvage(SalvageCombineSettings? a, SalvageCombineSettings? b)
+    {
+        if (a == null || b == null) return a == null && b == null;
+        string Text(SalvageCombineSettings s) => VTankLootWriter.Serialize(new VTankLootProfile { FileVersion = 1, SalvageCombine = s });
+        return Text(a) == Text(b);
+    }
+
+    private bool InsertJson(LootRule native, int index)
+    {
+        try
+        {
+            byte[] bytes = File.ReadAllBytes(_path);
+            if (!FileStamp.Of(_path, bytes).SameContent(_stamp))
+            {
+                Open(_path, force: true);
+                return Fail($"{FileName(_path)} changed on disk; reloaded it. Try again.");
+            }
+            byte[]? spliced = LootJsonSplice.Insert(bytes, native, index, out int at, out string error);
+            if (spliced == null) return Fail("Not added: " + error);
+            WriteFile(_path, spliced);
+
+            _json = System.Text.Json.JsonSerializer.Deserialize(Decode(spliced, out _, out _), LootJsonContext.Default.LootProfile) ?? new LootProfile();
+            _stamp = FileStamp.Read(_path);
+            _changedOnDisk = false;
+            _focus = at;
+            Revision++;
+            return Ok($"Added \"{native.Name}\" at {at + 1} and saved {FileName(_path)} ({RuleCount} rules).");
+        }
+        catch (Exception ex)
+        {
+            return Fail($"Not added: {ex.Message}");
         }
     }
 

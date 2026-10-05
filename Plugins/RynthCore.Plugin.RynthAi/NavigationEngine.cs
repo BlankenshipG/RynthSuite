@@ -219,7 +219,10 @@ internal sealed class NavigationEngine
     private const double DoorwayTurnEnter = 8.0, DoorwayTurnExit = 3.0;
     private bool _steerDoorway;
     private double TurnEnterNow => _steerDoorway ? Math.Min(BigTurnEnter, DoorwayTurnEnter) : BigTurnEnter;
-    private double TurnExitNow  => _steerDoorway ? Math.Min(BigTurnExit,  DoorwayTurnExit)  : BigTurnExit;
+    // Never tighter than the turn dead zone (+0.5): the servo stops turning inside DeadZone, so an
+    // exit below it left the error between the two, no turn and no run: nav stood still until the
+    // player tapped forward (doorway exit 3 vs dead zone 4, 2026-10-04).
+    private double TurnExitNow  => Math.Max(DeadZone + 0.5, _steerDoorway ? Math.Min(BigTurnExit, DoorwayTurnExit) : BigTurnExit);
     private double SweepMult    => Math.Max(1.0,  _settings.NavSweepMult);
     // Nav point reach (FollowNavMin, VTank's "Follow/Nav Min Distance"): how close to get to
     // each nav point before moving on. Floored at the Settings minimum (0.5); it used to be
@@ -2752,12 +2755,21 @@ internal sealed class NavigationEngine
     //  MOVEMENT HELPERS
     // ══════════════════════════════════════════════════════════════════════════
 
+    // Auto-run re-sent this often while nav wants to move. The flag alone trusted that auto-run
+    // stayed on; a cast, a stance change, a corpse use or a server stop turns it off without
+    // telling nav, and nav sat still until the player tapped forward (2026-10-04). Setting it
+    // on when it already is costs nothing; nav only ticks while it's the active activity.
+    private const long ForwardReassertMs = 1000;
+    private long _lastForwardAssertMs;
+
     private void StartForward()
     {
-        if (!_isMovingForward)
+        long now = Environment.TickCount64;
+        if (!_isMovingForward || now - _lastForwardAssertMs >= ForwardReassertMs)
         {
             _host.SetAutoRun(true);
             _isMovingForward = true;
+            _lastForwardAssertMs = now;
         }
     }
 

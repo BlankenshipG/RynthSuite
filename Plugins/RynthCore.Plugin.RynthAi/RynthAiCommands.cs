@@ -74,6 +74,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra lootparse     — inspect the selected loot profile");
         ChatLine("[RynthAi] /ra lootcheckinv  — test the loot profile against inventory");
         ChatLine("[RynthAi] /ra lootcheck     — classify selected item (on|off = auto on click)");
+        ChatLine("[RynthAi] /ra loot add [keep|keep N|salvage|sell|read] [name|like] [preview] — add a loot rule for the selected item");
         ChatLine("[RynthAi] /ra dumpinv       — dump all inventory items (cache + direct)");
         ChatLine("[RynthAi] /ra combat        — dump combat state machine snapshot");
         ChatLine("[RynthAi] /ra why           — one-glance diagnosis of why the bot is idle/attacking");
@@ -1507,7 +1508,17 @@ public sealed partial class RynthAiPlugin
     internal LootEditorBridge LootEditor => _lootEditor ??= new LootEditorBridge(
         () => _dashboard?.Settings?.CurrentLootPath ?? string.Empty,
         OnLootProfileEdited,
-        Vendor.AutoVendorManager.MainProfileDir);
+        Vendor.AutoVendorManager.MainProfileDir)
+    {
+        Items = new LootItemHooks
+        {
+            SelectedItemId = () => Host.HasGetSelectedItemId ? Host.GetSelectedItemId() : 0,
+            Facts = BuildLootItemFacts,
+            FirstMatchUtl = FirstLootRuleFor,
+            FirstMatchNative = FirstLootRuleFor,
+            Added = OnLootRuleAdded,
+        },
+    };
 
     /// <summary>
     /// The Loot Editor saved <paramref name="path"/>: drop the cached copies and,
@@ -1515,6 +1526,19 @@ public sealed partial class RynthAiPlugin
     /// Plugin pump thread (the editor's export), the same thread as the tick.
     /// </summary>
     private void OnLootProfileEdited(string path)
+    {
+        string name = System.IO.Path.GetFileName(path);
+        if (!ForgetLootProfile(path))
+        {
+            ChatLine($"[RynthAi] Loot Editor saved {name}.");
+            return;
+        }
+        ChatLine($"[RynthAi] Loot Editor saved {name}; reloading it.");
+        ReloadLootProfileInUse(path);
+    }
+
+    /// <summary>Drops the cached copies of <paramref name="path"/>. True when it is the loot profile in use.</summary>
+    private bool ForgetLootProfile(string path)
     {
         bool Same(string a) => RynthCore.Loot.Editing.LootEditSession.SamePath(a, path);
         if (Same(_loadedLootProfilePath))
@@ -1527,15 +1551,134 @@ public sealed partial class RynthAiPlugin
             _nativeLootProfile = null;
             _nativeLootProfileTime = DateTime.MinValue;
         }
-        string name = System.IO.Path.GetFileName(path);
-        if (!Same(_dashboard?.Settings?.CurrentLootPath ?? string.Empty))
-        {
-            ChatLine($"[RynthAi] Loot Editor saved {name}.");
-            return;
-        }
-        ChatLine($"[RynthAi] Loot Editor saved {name}; reloading it.");
+        return Same(_dashboard?.Settings?.CurrentLootPath ?? string.Empty);
+    }
+
+    private void ReloadLootProfileInUse(string path)
+    {
         if (path.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) TryLoadNativeLootProfile(out _, out _);
         else TryLoadLootProfile(string.Empty, out _, out _);
+    }
+
+    // ── Add to loot profile (a clicked item; /ra loot add, the engine's popup) ──
+
+    /// <summary>A rule from "Add to loot profile" was saved: say so, and reload the profile when it is the one in use.</summary>
+    private void OnLootRuleAdded(RynthCore.Loot.Editing.LootEditItemDraft d)
+    {
+        bool inUse = ForgetLootProfile(d.TargetPath);
+        ChatLine($"[RynthAi] {d.Message}{(inUse ? "" : " (not the profile RynthAi loots with)")}.");
+        if (inUse) ReloadLootProfileInUse(d.TargetPath);
+    }
+
+    /// <summary>What a loot rule can be built from: the item's name, class, stack and key properties, from the object cache.</summary>
+    private RynthCore.Loot.Editing.LootItemFacts? BuildLootItemFacts(uint itemId, bool like)
+    {
+        WorldObject? wo = _objectCache?[unchecked((int)itemId)];
+        if (wo == null) return null;
+        var f = new RynthCore.Loot.Editing.LootItemFacts
+        {
+            Id = wo.Id,
+            Name = wo.Name,
+            ObjectClass = (int)wo.ObjectClass,
+            StackSize = Math.Max(1, wo.Values(LongValueKey.StackCount, 1)),
+            MaxStackSize = Math.Max(1, wo.Values(LongValueKey.MaxStackSize, 1)),
+        };
+        foreach (int key in RynthCore.Loot.Editing.LootItemRules.IntKeys)
+        {
+            int v = wo.Values(key, 0);
+            if (v != 0) f.Ints[key] = v;
+        }
+        foreach (int key in RynthCore.Loot.Editing.LootItemRules.DoubleKeys)
+        {
+            double v = wo.Values((DoubleValueKey)key, 0.0);
+            if (v != 0) f.Doubles[key] = v;
+        }
+        if (like)
+        {
+            var ctx = new VTankLootContext(Host, _playerId) { Cache = _objectCache };
+            foreach (string n in ctx.GetItemSpellNames(itemId))
+                if (!string.IsNullOrEmpty(n)) f.Spells.Add(n);
+            // Material, workmanship and spells need an ID: ask for one, so the next preview has them.
+            if (Host.HasRequestId && Host.HasHasAppraisalData && !Host.HasAppraisalData(itemId)) Host.RequestId(itemId);
+        }
+        return f;
+    }
+
+    /// <summary>The first rule of <paramref name="profile"/> that takes the item now (the corpse looter's order), or -1.</summary>
+    private int FirstLootRuleFor(uint itemId, VTankLootProfile profile)
+    {
+        WorldObject? wo = _objectCache?[unchecked((int)itemId)];
+        if (wo == null) return -1;
+        VTankLootEvaluator.FirstMatch(profile, wo, new VTankLootContext(Host, _playerId) { Cache = _objectCache }, out int index);
+        return index;
+    }
+
+    private int FirstLootRuleFor(uint itemId, RynthCore.Loot.LootProfile profile)
+    {
+        WorldObject? wo = _objectCache?[unchecked((int)itemId)];
+        if (wo == null) return -1;
+        for (int i = 0; i < profile.Rules.Count; i++)
+            if (Loot.LootEvaluator.Matches(profile.Rules[i], wo, _charSkills)) return i;
+        return -1;
+    }
+
+    /// <summary>
+    /// /ra loot add [keep|keep N|salvage|sell|read] [name|like] [preview]: a rule for
+    /// the selected item, straight into the loot profile in use (the defaults: exact
+    /// name and class; Read for scrolls, Keep # one full stack for stacks, else Keep).
+    /// </summary>
+    private void HandleLootCommand(string[] parts)
+    {
+        string sub = parts.Length >= 3 ? parts[2].ToLowerInvariant() : string.Empty;
+        if (sub != "add")
+        {
+            ChatLine("[RynthAi] /ra loot add [keep|keep N|salvage|sell|read] [name|like] [preview] — add a loot rule for the selected item to the loot profile in use");
+            ChatLine("[RynthAi]   default: exact name + class; Read for scrolls, Keep # (one full stack) for stacks, else Keep. name = name only, like = items like this. preview = show it, add nothing.");
+            ChatLine("[RynthAi]   Also: right-click an item in the Inventory panel, or 'Add selected item' in the Loot Editor.");
+            return;
+        }
+
+        var req = new RynthCore.Loot.Editing.LootEditItemRequest();
+        bool preview = false;
+        for (int i = 3; i < parts.Length; i++)
+        {
+            string w = parts[i].ToLowerInvariant();
+            switch (w)
+            {
+                case "keep": req.Action = (int)VTankLootAction.Keep; break;
+                case "keep#": req.Action = (int)VTankLootAction.KeepUpTo; break;
+                case "salvage": req.Action = (int)VTankLootAction.Salvage; break;
+                case "sell": req.Action = (int)VTankLootAction.Sell; break;
+                case "read": req.Action = (int)VTankLootAction.Read; break;
+                case "name": req.Match = (int)RynthCore.Loot.Editing.LootItemMatch.Name; break;
+                case "like": req.Match = (int)RynthCore.Loot.Editing.LootItemMatch.Like; break;
+                case "exact": req.Match = (int)RynthCore.Loot.Editing.LootItemMatch.NameAndClass; break;
+                case "preview":
+                case "?": preview = true; break;
+                default:
+                    if (int.TryParse(w.TrimStart('#'), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int n) && n >= 0)
+                    {
+                        req.Action = (int)VTankLootAction.KeepUpTo;
+                        req.KeepCount = n;
+                        break;
+                    }
+                    ChatLine($"[RynthAi] loot add: '{parts[i]}'? Use keep, keep N, salvage, sell, read, name, like or preview.");
+                    return;
+            }
+        }
+
+        RynthCore.Loot.Editing.LootEditItemDraft d = LootEditor.AddItem(req, add: !preview);
+        if (d.Preview.Count > 0 && (preview || !d.Ok))
+        {
+            ChatLine($"[RynthAi] {d.ItemName} -> {d.TargetFile}:");
+            foreach (string line in d.Preview) ChatLine("[RynthAi]   " + line);
+            if (d.OrderNote.Length > 0) ChatLine("[RynthAi]   " + d.OrderNote);
+        }
+        foreach (string note in d.Notes) ChatLine("[RynthAi]   Note: " + note);
+        if (!d.Ok) ChatLine("[RynthAi] Loot rule not added: " + d.Error);
+        else if (preview) ChatLine("[RynthAi] (preview only; /ra loot add without 'preview' adds it)");
+        else if (d.Added && d.OrderNote.Length > 0) ChatLine("[RynthAi]   " + d.OrderNote);
+        // An add's own chat line comes from OnLootRuleAdded.
     }
 
     private bool TryLoadNativeLootProfile(out RynthCore.Loot.LootProfile profile, out string loadedPath)

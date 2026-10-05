@@ -32,6 +32,7 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "clear") return Clearance.Run(args.Skip(1).ToArray());
         uint lb = 0x6346;
         string acDir = @"C:\Turbine\Asheron's Call";
         string dumpDir = null;

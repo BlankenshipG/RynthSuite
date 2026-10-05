@@ -215,6 +215,35 @@ public sealed partial class RynthAiPlugin
         Log($"[RynthAi] shadow busy-reset on cast resolve (was {was}, {reason}) — real field left to the engine reconciler");
     }
 
+    // CombatManager calls this when the busy count holding its attack is a leftover: the server
+    // finished every action behind it (a UseDone arrived after it last rose) and no gesture is
+    // animating — AC lowered the real field inline, where the busy hook can't see it (see
+    // CombatBusyGate). Same as OnBuffCastResolved: the shadow only, the real field stays with the
+    // engine reconciler, and it spares CheckBusyTimeout's real-field force-clear 5 s later.
+    // Logged at most every 10 s (it can happen on every cast).
+    private long _lastCombatBusyStaleLogAt;
+    private int _combatBusyStaleSinceLog;
+    private void OnCombatBusyStale(string reason)
+    {
+        if (_busyCount <= 0) return;
+        int was = _busyCount;
+        _busyCount = 0;
+        _busyCountLastIncrementAt = 0;
+        _busyCountBecamePositiveAt = 0;
+        if (_combatManager != null) _combatManager.BusyCount = 0;
+        if (_buffManager != null) _buffManager.BusyCount = 0;
+        _combatBusyStaleSinceLog++;
+        long now = CorpseNowMs;
+        if (now - _lastCombatBusyStaleLogAt >= 10_000)
+        {
+            string count = _lastCombatBusyStaleLogAt == 0 ? "first"
+                : $"{_combatBusyStaleSinceLog} in the last {(now - _lastCombatBusyStaleLogAt) / 1000.0:0}s";
+            Log($"[RynthAi] shadow busy-reset by combat (was {was}, {reason}; {count}) — real field left to the engine reconciler");
+            _lastCombatBusyStaleLogAt = now;
+            _combatBusyStaleSinceLog = 0;
+        }
+    }
+
     private long _lastCorpsePruneAt;
     private const long CorpsePruneIntervalMs = 60_000; // prune once per minute
     // Retain a completed-corpse mark this long. Must exceed the longest AC corpse
@@ -285,9 +314,9 @@ public sealed partial class RynthAiPlugin
             return;
         }
 
-        // _completedCorpses is authoritative. FinalizeCorpse deliberately leaves a
-        // looted corpse open server-side, so AC re-announces its contents every time
-        // it re-streams into range on a patrol loop. Treat any reopen of a completed
+        // _completedCorpses is authoritative. On an engine without CloseContainer (API
+        // before v76) a looted corpse stays open server-side, so AC re-announces its
+        // contents every time it re-streams into range on a patrol loop. Treat any reopen of a completed
         // corpse as a passive re-announce: never clear the mark, never start a loot
         // session. Membership alone decides — same rule the polling reconciler
         // already enforces in SyncCorpseContainerState. A corpse NOT in the set
@@ -1993,10 +2022,13 @@ public sealed partial class RynthAiPlugin
         _pendingManaStoneIds.Clear(); _pendingManaTapIds.Clear(); _pendingKeepUpTo.Clear();
         ResetCurrentLootItem();
 
-        // Clear container state immediately. Do NOT send UseObject(corpse) to close it —
-        // that increments busy count and blocks the next open until the server acks the close.
-        // The server will auto-close this corpse when the next UseObject open is sent.
-        // SyncCorpseContainerState guards against re-claiming via _completedCorpses.
+        // Close the loot window (CloseCorpseContainer: the client's own close packet, which
+        // adds nothing to the busy count; never UseObject(corpse), which does and blocks the
+        // next open until the server acks it). Engines without it keep the old behaviour: the
+        // server closes this corpse when the next UseObject open is sent.
+        // Clear container state immediately; SyncCorpseContainerState guards against
+        // re-claiming via _completedCorpses until the server's close lands.
+        CloseCorpseContainer(corpseId, "completed");
         if (_openedContainerId == corpseId)
         {
             _openedContainerId = 0;
@@ -2363,6 +2395,49 @@ public sealed partial class RynthAiPlugin
         _corpseTargetSince = now - _corpseHoldFrozenAge;
     }
 
+    /// <summary>
+    /// Closes the loot window of a corpse the bot is done with, when it is the open container:
+    /// Host.CloseContainer (API v76) sends the 0x0195 NoLongerViewingContents game action, the
+    /// packet the client sends when the player closes the window. It is not an inventory request:
+    /// AC's busy count doesn't move (no OnBusyCountIncremented, so the next open isn't held) and
+    /// the client's one pending item request is left alone. The engine queues it on AC's main
+    /// thread ahead of the next corpse's UseObject. The server answers with CloseGroundContainer,
+    /// which closes the window and brings OnStopViewingObjectContents. Older engines: nothing
+    /// (the server closes the corpse when the next one is opened, as before).
+    /// </summary>
+    private void CloseCorpseContainer(int corpseId, string why)
+    {
+        if (corpseId == 0 || !Host.HasCloseContainer)
+            return;
+
+        bool isOpen = _openedContainerId == corpseId
+            || (Host.HasGetGroundContainerId && unchecked((int)Host.GetGroundContainerId()) == corpseId);
+        if (!isOpen)
+            return;
+
+        if (Host.CloseContainer(unchecked((uint)corpseId)))
+            LootDiag($"[RynthAi] Corpse loot: closing 0x{(uint)corpseId:X8} ({why}).");
+        else
+            LootDiag($"[RynthAi] Corpse loot: close of 0x{(uint)corpseId:X8} not sent ({why}).");
+    }
+
+    /// <summary>
+    /// The macro was switched off with a corpse open: close it (the corpse isn't marked
+    /// completed, so a later run can still loot what is left). The open-container state is
+    /// cleared by the server's answer (OnStopViewingObjectContents), as for a window the
+    /// player closes. Called once, on the running-to-stopped transition, so a corpse the
+    /// player opens by hand while the macro is off is never closed.
+    /// </summary>
+    private void CloseOpenCorpseOnMacroStop()
+    {
+        int corpseId = _openedContainerId;
+        if (corpseId == 0 || !IsCorpseLikeObject(corpseId))
+            return;
+
+        ResetCurrentLootItem();
+        CloseCorpseContainer(corpseId, "macro stopped");
+    }
+
     private void AbandonCurrentCorpse(long now, string reason)
     {
         int corpseId = _targetCorpseId != 0 ? _targetCorpseId : _openedContainerId;
@@ -2394,8 +2469,10 @@ public sealed partial class RynthAiPlugin
             LootDiag($"[RynthAi] Corpse loot: 0x{(uint)corpseId:X8} was never opened (abandon #{abandons}) — retry in {NeverOpenedAbandonRetryMs / 1000}s instead of completed-marking.");
         }
 
-        // Force-clear container state — don't try UseObject to close.
-        // The server will auto-close when we open the next corpse or move away.
+        // Close it the client's way (no busy count; see CloseCorpseContainer) and force-clear
+        // container state. Never UseObject to close. Without CloseContainer the server closes
+        // it when we open the next corpse or move away.
+        CloseCorpseContainer(corpseId, "abandoned");
         if (_openedContainerId == corpseId)
         {
             _openedContainerId = 0;

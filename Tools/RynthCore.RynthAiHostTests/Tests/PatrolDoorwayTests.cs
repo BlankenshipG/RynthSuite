@@ -19,7 +19,11 @@ namespace RynthCore.RynthAiHostTests.Tests;
 //     crossing round the corner;
 //   - the patrol over such a dungeon puts no point inside the big room and still goes
 //     through every doorway; a big dead-end room is looked into;
-//   - ceilings are not floors.
+//   - ceilings are not floors;
+//   - every point keeps 1 m from walls and floor edges where the space allows (pushed off a
+//     wall, centred in a narrow corridor, a doorway point moved back along its centre line,
+//     a crypt bend, a dead end's look-in point out of its end cap), and a leg cutting an
+//     inside corner gets a corner.
 internal static class PatrolDoorwayTests
 {
     public static void Register(Runner r)
@@ -34,6 +38,13 @@ internal static class PatrolDoorwayTests
         r.Add("dungeon patrol: a loop through a big room: no points inside it, every doorway taken", PatrolLoop);
         r.Add("dungeon patrol: a big dead-end room is looked into, not skirted", PatrolLooksIntoDeadEndRoom);
         r.Add("dungeon floors: a ceiling (facing down) is not a floor", CeilingIsNotFloor);
+        r.Add("dungeon clearance: walls, floor edges and slopes too steep to stand on bound it; a face high above doesn't", ClearanceMeasure);
+        r.Add("dungeon clearance: a point next to a wall (or past the floor's edge) is pushed out to 1 m", PushedOffWall);
+        r.Add("dungeon clearance: a point in a corridor narrower than 2 m ends on its middle line", NarrowCorridorCentred);
+        r.Add("dungeon doorways: a doorway point near the far wall of a T junction moves back along the centre line", DoorwayPointMovesAlongCentreLine);
+        r.Add("dungeon doorways: in a short chamfered bend (crypt corner) the points come off the bend's outer wall", ChamferedBend);
+        r.Add("dungeon patrol: a dead end's look-in point comes out of the end cap onto the floor", DeadEndLookInOnFloor);
+        r.Add("dungeon legs: a leg cutting an inside corner gets a corner put in", LegAroundInsideCorner);
     }
 
     // ── Fixture builder ──────────────────────────────────────────────────────
@@ -76,6 +87,15 @@ internal static class PatrolDoorwayTests
         }
 
         public void Wall(uint cell, double x0, double y0, double x1, double y1) => Walls.Add((cell, VerticalQuad(x0, y0, x1, y1)));
+
+        /// <summary>A cell whose origin is (ox, oy) and whose floor is the given polygon (counter-clockwise from above).</summary>
+        public uint CellPoly(double ox, double oy, params (double X, double Y, double Z)[] floor)
+        {
+            uint id = _next++;
+            Graph[id] = new DungeonNavNode { CellId = id, EW = DungeonGeometry.WorldToNav(ox), NS = DungeonGeometry.WorldToNav(oy), Z = 0 };
+            Floors.Add((id, floor.Select(v => new V3((float)v.X, (float)v.Y, (float)v.Z)).ToArray()));
+            return id;
+        }
 
         public DungeonGeometry Geo() => DungeonGeometry.Build(Graph, Portals, Floors, Walls);
     }
@@ -373,6 +393,161 @@ internal static class PatrolDoorwayTests
         var geo = d.Geo();
         Check.False(geo.HasFloor(a), "a cell with only a ceiling has no floor data");
         Check.True(geo.OnFloorOfAny(new[] { a }, 5, 5, 0), "so nothing is checked against it");
+    }
+
+    // ── Clearance from walls ─────────────────────────────────────────────────
+
+    private static double Clear(DungeonGeometry geo, NavPoint p) => geo.Clearance(X(p), Y(p), p.Z * 240.0, 3.0);
+
+    private static void ClearanceMeasure()
+    {
+        // A 10 x 10 room, a wall along its west side; a steep slope (2 m up over 1.6 m, about 51
+        // degrees) beyond its east side.
+        var d = new Dungeon();
+        uint room = d.Cell(0, 0, 10, 10);
+        d.Wall(room, 0, 0, 0, 10);
+        d.Floors.Add((room, new[] { new V3(10f, 0f, 0f), new V3(11.6f, 0f, 2f), new V3(11.6f, 10f, 2f), new V3(10f, 10f, 0f) }));
+        // A face across the room's north half that starts 2.5 m up (the face above an arch).
+        d.Walls.Add((room, new[] { new V3(0f, 8f, 2.5f), new V3(10f, 8f, 2.5f), new V3(10f, 8f, 4f), new V3(0f, 8f, 4f) }));
+        var geo = d.Geo();
+        Check.Near(geo.Clearance(0.4, 5, 0), 0.4, 0.06, "0.4 m from the west wall");
+        Check.Near(geo.Clearance(9.3, 5, 0), 0.7, 0.06, "the slope too steep to stand on bounds the floor (0.7 m to its foot)");
+        Check.Near(geo.Clearance(5, 5, 0), 3.0, 1e-6, "the middle: nothing within 3 m (the face 3 m north is 2.5 m up)");
+        Check.Near(geo.Clearance(5, 8.2, 0), 1.8, 0.06, "under the high face: the nearest bound is the room's north edge, 1.8 m away");
+        Check.Eq(geo.Clearance(-0.5, 5, 0), 0.0, "past the floor's edge: 0");
+        Check.Eq(geo.Clearance(10.8, 5, 1), 0.0, "on the steep slope: 0");
+    }
+
+    private static void PushedOffWall()
+    {
+        var d = new Dungeon();
+        uint room = d.Cell(0, 0, 10, 10);
+        d.Wall(room, 0, 0, 0, 10);
+        var geo = d.Geo();
+        double x = 0.3, y = 5;
+        double c = geo.PushClear(ref x, ref y, 0, 1.0, 2.0);
+        Check.True(c >= 0.98, $"pushed to 1 m clearance ({c:F2})");
+        Check.True(x >= 0.98 && x <= 1.2, $"straight out from the wall, not further than needed (x {x:F2})");
+        Check.Near(y, 5, 0.15, "along the wall's normal");
+
+        // Past the floor's edge (a dead end's cell origin inside its end cap): onto the floor first.
+        x = -0.5; y = 5;
+        c = geo.PushClear(ref x, ref y, 0, 1.0, 3.0);
+        Check.True(c >= 0.98 && x > 0, $"onto the floor with 1 m clearance ({x:F2}, {y:F2}: {c:F2})");
+
+        // In the open: left alone.
+        x = 5; y = 5;
+        geo.PushClear(ref x, ref y, 0, 1.0, 2.0);
+        Check.True(x == 5 && y == 5, "a point with room enough is not moved");
+    }
+
+    private static void NarrowCorridorCentred()
+    {
+        var d = new Dungeon();
+        uint corr = d.Cell(0, 0, 20, 1.6);
+        d.Wall(corr, 0, 0, 20, 0);
+        d.Wall(corr, 0, 1.6, 20, 1.6);
+        var geo = d.Geo();
+        double x = 10, y = 0.3;
+        double c = geo.PushClear(ref x, ref y, 0, 1.0, 2.0);
+        Check.Near(y, 0.8, 0.06, $"on the middle line of the 1.6 m corridor (y {y:F2})");
+        Check.Near(c, 0.8, 0.06, "as clear as the corridor allows");
+        Check.Near(x, 10, 0.5, "not moved along the corridor");
+    }
+
+    private static void DoorwayPointMovesAlongCentreLine()
+    {
+        // A room (x 0..10) opening east into a north-south corridor 4.6 m wide (x 10..14.6), like
+        // a hive corridor: the 4 m standoff would put the exit point 0.6 m from the far wall.
+        var d = new Dungeon();
+        uint room = d.Cell(0, 0, 10, 10);
+        uint corr = d.Cell(10, -10, 14.6, 20);
+        d.OpenX(room, corr, 10, 2.35, 7.65);
+        d.Wall(corr, 14.6, -10, 14.6, 20);
+        var geo = d.Geo();
+        var pts = Path(d, geo, 2, 5, 12.3, -8, room, corr);
+        var exit = pts.First(p => X(p) > 10);
+        Check.Near(Y(exit), 5, 1e-3, "the exit point stays on the opening's centre line");
+        Check.Near(X(exit), 13.5, 0.13, $"3.5 m beyond the opening, not 4 (x {X(exit):F2})");
+        Check.True(Clear(geo, exit) >= 0.98, $"1 m from the far wall ({Clear(geo, exit):F2})");
+        Check.True(exit.Doorway, "still a doorway point");
+        Check.Near(X(pts[0]), 6, 1e-3, "the approach in the open room keeps its 4 m");
+    }
+
+    // Rithwic Crypt's corner: a corridor 3.33 m wide comes from the west, a chamfered cell turns
+    // it north. The chamfer strip is 2.36 m across, so the doorway points' centre lines (y 1.67
+    // and x 5) run into its outer wall within a metre of the openings.
+    private static (Dungeon D, uint West, uint Corner, uint North) ChamferDungeon()
+    {
+        var d = new Dungeon();
+        uint west = d.Cell(-10, 0, 0, 3.33);
+        uint corner = d.CellPoly(2.5, 4.2, (0, 0, 0), (6.67, 6.67, 0), (3.33, 6.67, 0), (0, 3.33, 0));
+        uint north = d.Cell(3.33, 6.67, 6.67, 16.67);
+        d.OpenX(west, corner, 0, 0, 3.33);
+        d.OpenY(corner, north, 6.67, 3.33, 6.67);
+        d.Wall(corner, 0, 0, 6.67, 6.67);         // the bend's outer wall
+        d.Wall(corner, 0, 3.33, 3.33, 6.67);      // its inner wall
+        d.Wall(west, -10, 0, 0, 0); d.Wall(west, -10, 3.33, 0, 3.33);
+        d.Wall(north, 3.33, 6.67, 3.33, 16.67); d.Wall(north, 6.67, 6.67, 6.67, 16.67);
+        return (d, west, corner, north);
+    }
+
+    private static void ChamferedBend()
+    {
+        var (d, west, corner, north) = ChamferDungeon();
+        var geo = d.Geo();
+        var pts = Path(d, geo, -8, 1.67, 5, 15, west, corner, north);
+        var inBend = pts.Where(p => X(p) > 0 && Y(p) < 6.67).ToList();
+        Check.True(inBend.Count >= 1, $"points in the bend ({inBend.Count})");
+        foreach (var p in pts)
+            Check.True(Clear(geo, p) >= 0.98, $"({X(p):F2}, {Y(p):F2}) is 1 m from every wall ({Clear(geo, p):F2})");
+        // Before: the exit point on the west opening's centre line, 1 m in: 0.47 m from the outer wall.
+        Check.True(geo.Clearance(1, 1.67, 0) < 0.5, "the centre line's best spot was under 0.5 m from the outer wall");
+        var cells = new[] { west, corner, north };
+        Check.True(LegsClear(geo, cells, -8, 1.67, pts, 5, 15), "every leg stays on the floor and off the walls");
+    }
+
+    private static void DeadEndLookInOnFloor()
+    {
+        // The loop dungeon with a dead end off its east corner: a corridor (x 45.3..53.7) closed by
+        // a steep end cap (53.7..55.3, 2 m up), its cell origin behind the cap (55.8), as in the
+        // Olthoi hive. The patrol starts there, so it looks into it.
+        var (d, _, _, _, _) = LoopDungeon();
+        uint corner = d.Graph.Values.First(n => Math.Abs(DungeonGeometry.NavToWorld(n.EW) - 42.65) < 0.01 && Math.Abs(DungeonGeometry.NavToWorld(n.NS) - 5) < 0.01).CellId;
+        uint dead = d.CellPoly(55.8, 5, (45.3, 2.35, 0), (53.7, 2.35, 0), (53.7, 7.65, 0), (45.3, 7.65, 0));
+        d.Floors.Add((dead, new[] { new V3(53.7f, 7.65f, 0f), new V3(53.7f, 2.35f, 0f), new V3(55.3f, 5f, 2f) }));
+        d.OpenX(corner, dead, 45.3, 2.35, 7.65);
+        var geo = d.Geo();
+        var route = DungeonPathfinder.BuildPatrolRoute(d.Graph, dead, null, geo);
+        var lookIn = route.Points.Where(p => X(p) > 46 && Math.Abs(Y(p) - 5) < 1).ToList();
+        Check.True(lookIn.Count >= 1, "the patrol walks into the dead end");
+        Check.False(route.Points.Any(p => X(p) > 53.7), "no point on or behind the end cap (the cell origin is at x 55.8)");
+        foreach (var p in lookIn) Check.True(Clear(geo, p) >= 0.98, $"look-in point ({X(p):F2}, {Y(p):F2}) 1 m from the cap and walls ({Clear(geo, p):F2})");
+    }
+
+    private static void LegAroundInsideCorner()
+    {
+        // An L: a corridor down from the north (x 0..3.33) turning east (y 0..3.33); the inside
+        // corner at (3.33, 3.33). A leg from the north arm to the east arm cuts through it.
+        var d = new Dungeon();
+        uint down = d.Cell(0, 3.33, 3.33, 13.33);
+        uint turn = d.Cell(0, 0, 3.33, 3.33);
+        uint across = d.Cell(3.33, 0, 13.33, 3.33);
+        d.OpenY(turn, down, 3.33, 0, 3.33);
+        d.OpenX(turn, across, 3.33, 0, 3.33);
+        d.Wall(down, 3.33, 3.33, 3.33, 13.33);
+        d.Wall(across, 3.33, 3.33, 13.33, 3.33);
+        var geo = d.Geo();
+        NavPoint P(double x, double y) => new() { EW = DungeonGeometry.WorldToNav(x), NS = DungeonGeometry.WorldToNav(y), Z = 0 };
+        var pts = new List<NavPoint> { P(1.67, 8), P(9, 1.67) };
+        Check.True(geo.LegClearance(1.67, 8, 0, 9, 1.67, 0, 1.0, 0.5, out _, out _, out _) < 0.3, "the straight leg passes the inside corner closer than 0.3 m");
+        DungeonPathfinder.KeepLegsOffWalls(geo, pts, closed: false);
+        Check.True(pts.Count >= 3, $"a corner put in ({pts.Count - 2})");
+        for (int i = 0; i + 1 < pts.Count; i++)
+        {
+            double least = geo.LegClearance(X(pts[i]), Y(pts[i]), 0, X(pts[i + 1]), Y(pts[i + 1]), 0, 1.0, 0.5, out _, out _, out _);
+            Check.True(least >= 0.6, $"leg {i} keeps 0.6 m from the corner ({least:F2})");
+        }
     }
 
     private static double DistToSegment(double px, double py, double ax, double ay, double bx, double by)

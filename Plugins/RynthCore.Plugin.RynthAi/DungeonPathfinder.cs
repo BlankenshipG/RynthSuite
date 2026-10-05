@@ -634,6 +634,11 @@ internal static partial class DungeonPathfinder
         }
 
         SimplifyRoute(route);
+        // The map geometry is there but the room patrol found nothing to walk (the start is cut
+        // off from every doorway): the cell walk's points still keep off the walls.
+        if (geo != null)
+            foreach (var p in route.Points)
+                PushOffWalls(geo, Tag(p, "cell-walk"), null, CornerPushMax);
         return route;
     }
 

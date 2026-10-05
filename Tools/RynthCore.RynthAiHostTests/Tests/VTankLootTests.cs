@@ -25,6 +25,7 @@ internal static class VTankLootTests
         r.Add("loot vtank: DisabledRule node (9999)", DisabledRuleNode);
         r.Add("loot vtank: string value match", StringValueMatch);
         r.Add("loot vtank: long keys LE/GE/E/NE and flag, at the boundary", LongKeys);
+        r.Add("loot vtank: Decal's Type key (0x0D000000) is the WCID - 'loot everything that isn't retail'", WcidKey);
         r.Add("loot vtank: double keys LE/GE", DoubleKeys);
         r.Add("loot vtank: object class", ObjectClass);
         r.Add("loot vtank: value and workmanship requirements", ValueAndWorkmanship);
@@ -141,6 +142,27 @@ internal static class VTankLootTests
         Check.False(M(item, C(N.LongValKeyFlagExists, "8", "9")), "flag not set");
         Check.True(M(item, C(N.LongValKeyLE, "5", "105")), "missing key reads 0 and passes LE");
         Check.True(M(item, C(N.LongValKeyGE, " 1000 ", " 19 ")), "surrounding spaces in data lines are accepted");
+    }
+
+    // Tom (2026-10-04): a rule that loots everything not retail by weenie id. Retail WCIDs on
+    // Aelrynth end at 53488; custom content is above. VTank writes it as LongValKeyGE on Decal's
+    // synthetic "Type" key, which RynthAi now reads as the WCID through the object cache.
+    private static void WcidKey()
+    {
+        FakeHost.Reset();
+        var host = FakeHost.Create();
+        var cache = new WorldObjectCache(host);
+        const uint Custom = 0x80001001, Retail = 0x80001002;
+        FakeHost.Wcids[Custom] = 3000105;
+        FakeHost.Wcids[Retail] = 20646;
+        var custom = new WorldObject(unchecked((int)Custom), "Driftwarden Greataxe", AcObjectClass.MeleeWeapon) { Cache = cache };
+        var retail = new WorldObject(unchecked((int)Retail), "Ust", AcObjectClass.Ust) { Cache = cache };
+        string type = WorldObjectCache.DecalTypeKey.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        Check.Eq(custom.Values(unchecked((int)WorldObjectCache.DecalTypeKey), 0), 3000105, "the Type key reads the WCID");
+        Check.True(M(custom, C(N.LongValKeyGE, "53489", type)), "custom WCID 3000105 >= 53489: looted");
+        Check.False(M(retail, C(N.LongValKeyGE, "53489", type)), "retail WCID 20646: not");
+        Check.True(M(retail, C(N.LongValKeyE, "20646", type)), "an exact WCID match works too");
     }
 
     private static void DoubleKeys()

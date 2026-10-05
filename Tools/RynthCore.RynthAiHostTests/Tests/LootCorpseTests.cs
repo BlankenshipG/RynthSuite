@@ -46,6 +46,10 @@ internal static class LootCorpseTests
         r.Add("loot chain: 'My Kills Only' loots your kill and skips another player's", OwnershipModes);
         r.Add("loot starvation: a corpse waiting behind far-off combat gets a turn, a close monster keeps combat", LootStarvation);
         r.Add("loot logging: a corpse held by combat is logged once, with the reason", HeldByCombatLoggedOnce);
+        r.Add("corpse close: a finished corpse is closed once (CloseContainer, API v76)", FinishedCorpseClosedOnce);
+        r.Add("corpse close: an engine without CloseContainer leaves it to the next open (no close)", FinishedCorpseNotClosedOnOldEngine);
+        r.Add("corpse close: an abandoned open corpse is closed once", AbandonedCorpseClosed);
+        r.Add("corpse close: stopping the macro mid-loot closes the open corpse, not marked completed", MacroStopClosesCorpse);
     }
 
     // ── World set-up ──────────────────────────────────────────────────────────
@@ -329,5 +333,111 @@ internal static class LootCorpseTests
         for (int i = 0; i < 5; i++) bot.Tick(BotActivity.Combat);
         int lines = FakeHost.Logs.Count(l => l.Contains($"corpse 0x{Corpse:X8} waits for combat"));
         Check.Eq(lines, 1, "one line for the held corpse, not one per tick");
+    }
+
+    // ── Closing the corpse when done (2026-10-04: "when finished looting I don't think the
+    //    corpse closes"). API v76 CloseContainer sends the client's own close packet (0x0195). ──
+
+    /// <summary>Claims, opens and starts looting the corpse; the gem's move has been sent.
+    /// With <paramref name="closeSupported"/> the host has CloseContainer and GetGroundContainerId,
+    /// and the client reports the corpse open (as the engine does after ViewContents).</summary>
+    private static Bot OpenCorpseAndSendPickup(bool closeSupported)
+    {
+        BaseWorld(corpsePositioned: true);
+        FakeHost.CloseContainerCalls = closeSupported;
+        var host = FakeHost.Create(Player);
+        Check.Eq(host.HasCloseContainer, closeSupported, "the host's CloseContainer support");
+        var bot = new Bot(host);
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        bot.Tick(BotActivity.Looting);
+        Check.True(FakeHost.Uses.Contains(Corpse), "the corpse is opened");
+
+        bot.Cache.OnCreateObject(Gem);
+        bot.Cache.Tick();
+        if (closeSupported)
+            FakeHost.GroundContainer = Corpse;
+        bot.P.OnViewObjectContents(Corpse);
+        for (int i = 0; i < 100 && !FakeHost.ExternalMoves.Any(m => m.Id == Gem); i++)
+        {
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        Check.True(FakeHost.ExternalMoves.Contains((Gem, Player, 0)), "the gem's move is sent");
+        Check.Eq(FakeHost.Closes.Count, 0, "nothing closed while an item is still being looted");
+        return bot;
+    }
+
+    private static bool Completed(Bot bot) =>
+        bot.Get<Dictionary<int, long>>("_completedCorpses").ContainsKey(unchecked((int)Corpse));
+
+    /// <summary>The gem lands in the pack; ticks until the corpse is marked completed.</summary>
+    private static void FinishLooting(Bot bot)
+    {
+        FakeHost.Containers[Gem] = Player;
+        for (int i = 0; i < 200 && !Completed(bot); i++)
+        {
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        Check.True(Completed(bot), "the corpse is completed once its last item is in the pack");
+    }
+
+    private static void FinishedCorpseClosedOnce()
+    {
+        var bot = OpenCorpseAndSendPickup(closeSupported: true);
+        FinishLooting(bot);
+        Check.Eq(string.Join(",", FakeHost.Closes.Select(c => $"{c:X8}")), $"{Corpse:X8}", "the finished corpse is closed, once");
+        Check.Eq(bot.Get<int>("_busyCount"), 0, "the close adds nothing to the busy count");
+        Check.Eq(bot.Get<int>("_openedContainerId"), 0, "the bot no longer holds it open");
+
+        // Until the server's answer lands the client still reports it open: no second close.
+        for (int i = 0; i < 5; i++) bot.Tick(BotActivity.Looting);
+        Check.Eq(FakeHost.Closes.Count, 1, "no re-close while the client still shows it");
+        Check.Eq(bot.Get<int>("_openedContainerId"), 0, "a completed corpse is not re-claimed from the client's state");
+
+        // The server's CloseGroundContainer: the window goes, StopViewingObjectContents follows.
+        FakeHost.GroundContainer = 0;
+        bot.P.OnStopViewingObjectContents(Corpse);
+        for (int i = 0; i < 5; i++) bot.Tick(BotActivity.Looting);
+        Check.Eq(FakeHost.Closes.Count, 1, "still one close after the server's answer");
+        Check.Eq(FakeHost.Uses.Count(u => u == Corpse), 1, "never a UseObject to close it");
+    }
+
+    private static void FinishedCorpseNotClosedOnOldEngine()
+    {
+        var bot = OpenCorpseAndSendPickup(closeSupported: false);
+        FinishLooting(bot);
+        Check.Eq(FakeHost.Closes.Count, 0, "no CloseContainer on an engine before v76");
+        Check.Eq(FakeHost.Uses.Count(u => u == Corpse), 1, "and no UseObject to close it either");
+    }
+
+    private static void AbandonedCorpseClosed()
+    {
+        var bot = OpenCorpseAndSendPickup(closeSupported: true);
+        bot.Call("AbandonCurrentCorpse", Environment.TickCount64, "timeout");
+        Check.Eq(string.Join(",", FakeHost.Closes.Select(c => $"{c:X8}")), $"{Corpse:X8}", "the abandoned corpse is closed, once");
+        Check.True(Completed(bot), "an opened corpse that timed out is completed (as before)");
+        Check.Eq(bot.Get<int>("_openedContainerId"), 0, "and released");
+    }
+
+    private static void MacroStopClosesCorpse()
+    {
+        var bot = OpenCorpseAndSendPickup(closeSupported: true);
+        bot.S.IsMacroRunning = false;
+        bot.Call("CloseOpenCorpseOnMacroStop");
+        Check.Eq(string.Join(",", FakeHost.Closes.Select(c => $"{c:X8}")), $"{Corpse:X8}", "the open corpse is closed when the macro stops");
+        Check.False(Completed(bot), "not completed: a later run can loot what is left");
+
+        // Macro off, ticking on: no further close before the server's answer.
+        for (int i = 0; i < 5; i++) bot.Tick(BotActivity.Idle);
+        Check.Eq(FakeHost.Closes.Count, 1, "one close");
+        FakeHost.GroundContainer = 0;
+        bot.P.OnStopViewingObjectContents(Corpse);
+        Check.Eq(bot.Get<int>("_openedContainerId"), 0, "the server's answer clears the open corpse");
+
+        // No open corpse: nothing to close.
+        bot.Call("CloseOpenCorpseOnMacroStop");
+        Check.Eq(FakeHost.Closes.Count, 1, "a stop with no corpse open closes nothing");
     }
 }

@@ -524,6 +524,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         _combatManager = new CombatManager(Host, _dashboard.Settings, _objectCache!, _spellManager);
         _combatManager.SetWeaponSwapGate(_weaponSwapGate);
+        _combatManager.SetStaleBusyCallback(OnCombatBusyStale);
         if (_buffManager != null)
             _buffManager.OffhandStowed = id => _combatManager?.NoteOffhandStowed(id);
         _combatManager.SetCharacterSkills(_charSkills);
@@ -1362,6 +1363,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     // while nav owns the tick, so it never got to clear these itself.
                     _doorRequestedId = 0;
                     ResetDoorState();
+                    // A corpse left open mid-loot is closed, as a player would close its window.
+                    try { CloseOpenCorpseOnMacroStop(); }
+                    catch (Exception ex) { Host.Log($"[RynthAi] Macro-stop corpse close failed: {ex.Message}"); }
                     try
                     {
                         int busyBefore = Host.HasGetBusyState ? Host.GetBusyState() : -1;
@@ -2918,6 +2922,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "lootparse":    HandleLootParseCommand(trimmed); break;
             case "lootcheckinv": HandleLootCheckInventoryCommand(trimmed); break;
             case "lootcheck":    HandleLootCheckSelectedCommand(parts); break;
+            case "loot":         HandleLootCommand(parts); break;
             case "corpseinfo":   HandleCorpseInfoCommand(); break;
             case "corpsecheck":  HandleCorpseCheckCommand(parts); break;
             case "corpseopen":   HandleCorpseOpenCommand(); break;

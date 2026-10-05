@@ -988,10 +988,16 @@ public class WorldObjectCache
     /// Read an STypeInt property from an object via CBaseQualities::InqInt.
     /// Returns defaultValue if the API is unavailable or the property is not set.
     /// </summary>
+    /// <summary>Decal's synthetic LongValueKey "Type" (0x0D000000): the object's weenie class id
+    /// (WCID). VTank profiles match WCIDs with it ("loot everything that isn't retail").</summary>
+    public const uint DecalTypeKey = 0x0D000000;
+
     public int GetIntProperty(int id, uint stype, int defaultValue)
     {
-        if (!_host.HasGetObjectIntProperty) return defaultValue;
         uint uid = unchecked((uint)id);
+        if (stype == DecalTypeKey)
+            return _host.HasGetObjectWcid && _host.TryGetObjectWcid(uid, out uint wcid) ? unchecked((int)wcid) : defaultValue;
+        if (!_host.HasGetObjectIntProperty) return defaultValue;
         return _host.TryGetObjectIntProperty(uid, stype, out int v) ? v : defaultValue;
     }
 

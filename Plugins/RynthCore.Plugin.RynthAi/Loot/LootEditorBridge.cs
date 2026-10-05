@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
+using RynthCore.Loot;
 using RynthCore.Loot.Editing;
+using RynthCore.Loot.VTank;
 
 namespace RynthCore.Plugin.RynthAi.Loot;
 
@@ -13,7 +15,8 @@ namespace RynthCore.Plugin.RynthAi.Loot;
 /// hot reload after a save. The engine calls the exports (PluginExports, "Loot
 /// editor bridge") from its UI data hub on the plugin pump thread, the same
 /// thread as the plugin tick; the lock only guards against any other caller.
-/// Nothing here touches AC.
+/// Nothing here touches AC: what it needs about items (the "Add to loot
+/// profile" popup, /ra loot add) comes through <see cref="Items"/>.
 /// </summary>
 internal sealed class LootEditorBridge
 {
@@ -29,6 +32,15 @@ internal sealed class LootEditorBridge
     private bool _followInUse = true;
     private long _nextDiskCheck;
     private string? _vocabJson;
+
+    // "Add to loot profile": the popup's current rule, and a second session for a
+    // target profile the editor doesn't have open (so the editor's view never changes).
+    private LootEditItemDraft? _draft;
+    private long _draftRevision;
+    private LootEditSession? _other;
+
+    /// <summary>RynthAi's item lookups for "Add to loot profile". Set once by the plugin.</summary>
+    public LootItemHooks Items { get; set; } = new();
 
     public LootEditorBridge(Func<string> inUsePath, Action<string> onSaved, params string[] vendorFolders)
     {
@@ -56,9 +68,12 @@ internal sealed class LootEditorBridge
                 if (_followInUse && !_session.IsDirty && inUse.Length > 0 && !LootEditSession.SamePath(inUse, _session.Path))
                     _session.Open(inUse);
             }
-            return unchecked((int)_session.Revision);
+            return unchecked((int)StateRevision);
         }
     }
+
+    // The session's revision plus the popup draft's: both only grow, so the sum moves when either does.
+    private long StateRevision => _session.Revision + _draftRevision;
 
     public string StateJson()
     {
@@ -67,6 +82,8 @@ internal sealed class LootEditorBridge
             string inUse = InUse;
             if (!_session.IsOpen && _followInUse && inUse.Length > 0) _session.Open(inUse);
             LootEditState state = _session.BuildState(inUse, ListFiles());
+            state.Revision = StateRevision;
+            state.ItemDraft = _draft;
             return JsonSerializer.Serialize(state, LootEditJsonContext.Default.LootEditState);
         }
     }
@@ -87,6 +104,11 @@ internal sealed class LootEditorBridge
     {
         LootEditCommand? cmd = JsonSerializer.Deserialize(json, LootEditJsonContext.Default.LootEditCommand);
         if (cmd == null) return;
+        if (cmd.Op is "item_preview" or "item_add" or "item_close")
+        {
+            ItemCommand(cmd);
+            return;
+        }
         string? saved = null;
         lock (_sync)
         {
@@ -113,6 +135,147 @@ internal sealed class LootEditorBridge
                 saved = _session.Path;
         }
         if (saved != null) _onSaved(saved);
+    }
+
+    // =====================================================================
+    //  Add to loot profile (a clicked item)
+    // =====================================================================
+
+    private void ItemCommand(LootEditCommand cmd)
+    {
+        LootEditItemDraft? added = null;
+        lock (_sync)
+        {
+            if (cmd.Op == "item_close")
+            {
+                if (_draft == null) return;
+                _draft = null;
+                _draftRevision++;
+                return;
+            }
+            LootEditItemDraft d = BuildDraft(cmd.Item ?? new LootEditItemRequest(), cmd.Op == "item_add");
+            _draft = d;
+            _draftRevision++;
+            if (d.Added) added = d;
+        }
+        if (added != null) Items.Added(added);
+    }
+
+    /// <summary>
+    /// /ra loot add: the popup's preview (<paramref name="add"/> false) or Add,
+    /// without touching the popup's draft. After an add, Items.Added has run
+    /// (chat line, reload) before this returns.
+    /// </summary>
+    public LootEditItemDraft AddItem(LootEditItemRequest request, bool add)
+    {
+        LootEditItemDraft d;
+        lock (_sync) d = BuildDraft(request, add);
+        if (d.Added) Items.Added(d);
+        return d;
+    }
+
+    /// <summary>The rule the item makes, where it goes, and (add) the insert and save. Under the lock.</summary>
+    private LootEditItemDraft BuildDraft(LootEditItemRequest req, bool add)
+    {
+        var d = new LootEditItemDraft { Seq = req.Seq };
+        uint id = req.ItemId != 0 ? req.ItemId : Items.SelectedItemId();
+        if (id == 0) return Refuse(d, "No item selected. Click an item first.");
+        d.ItemId = id;
+        var match = (LootItemMatch)Math.Clamp(req.Match, 0, 2);
+        LootItemFacts? facts = Items.Facts(id, match == LootItemMatch.Like);
+        if (facts == null) return Refuse(d, $"RynthAi doesn't know item 0x{id:X8} yet. Select it again in a moment.");
+        d.ItemName = facts.Name;
+        d.ClassName = LootItemRules.ClassName(facts.ObjectClass);
+        d.Stackable = facts.Stackable;
+
+        string inUse = InUse;
+        string target = req.ToOpenProfile && _session.IsOpen ? _session.Path : inUse;
+        if (target.Length == 0) return Refuse(d, "No loot profile selected. Pick one in RynthAi first.");
+        d.TargetPath = target;
+        d.TargetFile = Path.GetFileName(target);
+        d.TargetInUse = LootEditSession.SamePath(target, inUse);
+        if (!File.Exists(target)) return Refuse(d, $"Loot profile not found: {target}");
+        LootEditSession s = SessionFor(target);
+        if (!s.IsOpen || !LootEditSession.SamePath(s.Path, target)) return Refuse(d, s.Message);
+        d.Format = s.Format;
+        if (!s.CanInsert) return Refuse(d, $"{d.TargetFile} is read-only here: {s.ReadOnlyReason}");
+
+        var options = new LootItemRuleOptions
+        {
+            Match = match,
+            Action = req.Action == 0 ? null : (VTankLootAction)req.Action,
+            KeepCount = req.KeepCount < 0 ? null : req.KeepCount,
+            RuleName = req.RuleName,
+        };
+        LootItemRuleDraft? draft = LootItemRules.Build(facts, options, out string error);
+        if (draft == null) return Refuse(d, error);
+        d.Match = (int)draft.Match;
+        d.Action = (int)draft.Action;
+        d.KeepCount = draft.KeepCount;
+        d.RuleName = draft.Rule.Name;
+        d.DefaultRuleName = draft.DefaultName;
+        d.Preview = LootItemRules.PreviewLines(draft.Rule);
+        d.Notes.AddRange(draft.Notes);
+
+        bool json = s.Format == "json";
+        LootRule? native = null;
+        if (json)
+        {
+            var dropped = new List<string>();
+            native = LootItemRules.ToNative(draft.Rule, dropped);
+            foreach (string c in dropped) d.Notes.Add($"Left out (the native format has no such condition): {c}");
+            if (native == null) return Refuse(d, "The native format can't hold any of this rule's conditions.");
+        }
+
+        // Just before the first rule that decides this item now (first match wins), else the end.
+        int count = s.RuleCount;
+        int first = json ? Items.FirstMatchNative(id, s.JsonProfile!) : Items.FirstMatchUtl(id, s.Profile!);
+        if (first >= count) first = -1;
+        int at = first >= 0 ? first : count;
+        d.InsertAt = at;
+        d.RuleCount = count;
+        if (first >= 0)
+        {
+            string name = json ? s.JsonProfile!.Rules[first].Name : s.Profile!.Rules[first].Name;
+            name = string.IsNullOrWhiteSpace(name) ? $"#{first + 1}" : name.Trim();
+            string action = json ? s.JsonProfile!.Rules[first].Action.ToString() : LootRuleText.ActionName(s.Profile!.Rules[first].Action);
+            bool same = json ? LootItemRules.SameRule(native!, s.JsonProfile!.Rules[first]) : LootItemRules.SameRule(draft.Rule, s.Profile!.Rules[first]);
+            if (same) return Refuse(d, $"Already there: rule {first + 1} '{name}' does exactly this.");
+            d.OrderNote = $"Goes in at {at + 1} of {count + 1}, just before rule {first + 1} '{name}' ({action}), which takes this item now. "
+                + "Rules are checked top to bottom and the first match wins, so this is the lowest spot where the new rule still decides; the rules above it are untouched.";
+        }
+        else
+            d.OrderNote = $"Goes in at the end ({at + 1} of {count + 1}): no rule takes this item now, so at the end it only gets items no other rule wants.";
+
+        if (s.IsDirty) return Refuse(d, $"The Loot Editor has unsaved changes in {d.TargetFile}. Save or discard them first.");
+        d.Ok = true;
+        if (!add) return d;
+
+        if (!s.InsertAndSave(draft.Rule, native, at)) return Refuse(d, s.Message);
+        d.Added = true;
+        d.Message = $"Added loot rule '{draft.Rule.Name}' to {d.TargetFile}";
+        return d;
+    }
+
+    private static LootEditItemDraft Refuse(LootEditItemDraft d, string error)
+    {
+        d.Ok = false;
+        d.Error = error;
+        return d;
+    }
+
+    /// <summary>The editor's session when it has <paramref name="target"/> open, else a second one (fresh from disk).</summary>
+    private LootEditSession SessionFor(string target)
+    {
+        if (_session.IsOpen && LootEditSession.SamePath(_session.Path, target))
+        {
+            _session.CheckDisk();
+            return _session;
+        }
+        _other ??= new LootEditSession();
+        if (_other.IsOpen && LootEditSession.SamePath(_other.Path, target)) _other.CheckDisk();
+        else _other.Open(target, force: true);
+        return _other;
     }
 
     /// <summary>LootProfiles (*.utl, *.json), then AutoVendor profiles, then the open file if it is elsewhere.</summary>
@@ -143,4 +306,19 @@ internal sealed class LootEditorBridge
             files.Add(new LootEditFile { Path = _session.Path, Display = Path.GetFileName(_session.Path) });
         return files;
     }
+}
+
+/// <summary>What the loot editor bridge asks RynthAi about items (the plugin fills these in).</summary>
+internal sealed class LootItemHooks
+{
+    /// <summary>The item selected in the game, or 0.</summary>
+    public Func<uint> SelectedItemId { get; set; } = () => 0;
+    /// <summary>The item's facts from the object cache, or null. The bool: "items like this" (ask for an ID if it isn't identified).</summary>
+    public Func<uint, bool, LootItemFacts?> Facts { get; set; } = (_, _) => null;
+    /// <summary>The first rule of the .utl profile that matches the item now, or -1.</summary>
+    public Func<uint, VTankLootProfile, int> FirstMatchUtl { get; set; } = (_, _) => -1;
+    /// <summary>The first rule of the native profile that matches the item now, or -1.</summary>
+    public Func<uint, LootProfile, int> FirstMatchNative { get; set; } = (_, _) => -1;
+    /// <summary>A rule was added and saved: say so and reload the profile. Outside the bridge's lock.</summary>
+    public Action<LootEditItemDraft> Added { get; set; } = _ => { };
 }

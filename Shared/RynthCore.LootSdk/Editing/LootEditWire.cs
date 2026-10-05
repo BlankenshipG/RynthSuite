@@ -41,6 +41,12 @@ public sealed class LootEditState
     /// <summary>Profiles in the loot folder, for the picker.</summary>
     public List<LootEditFile> Files { get; set; } = new();
     public List<LootEditRow> Rules { get; set; } = new();
+
+    /// <summary>
+    /// The "Add to loot profile" popup's rule (item_preview / item_add), or null.
+    /// Added 2026-10; an older engine ignores it.
+    /// </summary>
+    public LootEditItemDraft? ItemDraft { get; set; }
 }
 
 public sealed class LootEditFile
@@ -103,6 +109,67 @@ public sealed class LootEditCommand
     /// <summary>open/reload: discard unsaved edits; save: overwrite a file that changed on disk.</summary>
     public bool Force { get; set; }
     public LootEditRule? Rule { get; set; }
+    /// <summary>item_preview / item_add: the item and the popup's choices (added 2026-10).</summary>
+    public LootEditItemRequest? Item { get; set; }
+}
+
+/// <summary>
+/// "Add to loot profile" from a clicked item (added 2026-10): what the popup
+/// asks for. item_preview builds the rule into LootEditState.ItemDraft;
+/// item_add builds it and adds it to the profile (saved, RynthAi reloads it);
+/// item_close drops the draft.
+/// </summary>
+public sealed class LootEditItemRequest
+{
+    /// <summary>The item; 0 = the item selected in the game.</summary>
+    public uint ItemId { get; set; }
+    /// <summary>LootItemMatch: 0 name + class, 1 name only, 2 items like this.</summary>
+    public int Match { get; set; }
+    /// <summary>VTank action code (1 Keep, 2 Salvage, 3 Sell, 4 Read, 10 Keep #); 0 = the item's default.</summary>
+    public int Action { get; set; }
+    /// <summary>Keep # count; -1 = default (one full stack).</summary>
+    public int KeepCount { get; set; } = -1;
+    /// <summary>Empty = the default name ("Keep Copper Pea").</summary>
+    public string RuleName { get; set; } = string.Empty;
+    /// <summary>True: the profile open in the Loot Editor; false: the one RynthAi loots with.</summary>
+    public bool ToOpenProfile { get; set; }
+    /// <summary>Echoed in the draft so the popup knows the answer is to its latest ask.</summary>
+    public int Seq { get; set; }
+}
+
+/// <summary>The rule an item makes, as the popup shows it, and what happened when it was added.</summary>
+public sealed class LootEditItemDraft
+{
+    public int Seq { get; set; }
+    /// <summary>False: Error says why there is no rule (no item selected, read-only profile...).</summary>
+    public bool Ok { get; set; }
+    public string Error { get; set; } = string.Empty;
+    public uint ItemId { get; set; }
+    public string ItemName { get; set; } = string.Empty;
+    public string ClassName { get; set; } = string.Empty;
+    public bool Stackable { get; set; }
+    public string TargetPath { get; set; } = string.Empty;
+    public string TargetFile { get; set; } = string.Empty;
+    /// <summary>The target is the profile RynthAi loots with.</summary>
+    public bool TargetInUse { get; set; }
+    /// <summary>"utl" or "json".</summary>
+    public string Format { get; set; } = string.Empty;
+    /// <summary>What was built (the defaults filled in).</summary>
+    public int Match { get; set; }
+    public int Action { get; set; }
+    public int KeepCount { get; set; }
+    public string RuleName { get; set; } = string.Empty;
+    public string DefaultRuleName { get; set; } = string.Empty;
+    /// <summary>The rule in words: name, action, one line per condition (ASCII).</summary>
+    public List<string> Preview { get; set; } = new();
+    /// <summary>Where it goes (0-based) among RuleCount rules, and why there.</summary>
+    public int InsertAt { get; set; } = -1;
+    public int RuleCount { get; set; }
+    public string OrderNote { get; set; } = string.Empty;
+    public List<string> Notes { get; set; } = new();
+    /// <summary>item_add went through; Message says what was added where.</summary>
+    public bool Added { get; set; }
+    public string Message { get; set; } = string.Empty;
 }
 
 /// <summary>Names for the face's pickers. Sent once per plugin load.</summary>

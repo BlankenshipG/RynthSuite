@@ -43,6 +43,7 @@ internal static partial class Program
         TestVTankFixtureParse();
         TestMalformedInputs();
         RunLootEditTests(args);
+        RunLootAddTests(args);
 
         Console.WriteLine($"\nGolden tests: {_asserts} assertions, {_fails} failed.");
 

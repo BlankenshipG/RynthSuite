@@ -95,6 +95,13 @@ internal static unsafe class FakeHost
     /// <summary>The engine's VTank signal (API v74 GetVTankState flags: 1 = watching, 2 = running);
     /// -1 = not installed (an engine before v74). Opt-in: set before Create().</summary>
     public static int VTankFlags = -1;
+    /// <summary>Opt-in (set before Create): the server gates combat paces casts on, GetUseDoneSeq
+    /// (answering <see cref="UseDoneSeq"/>) and GetCastBusyState (answering <see cref="CastBusy"/>).</summary>
+    public static bool ServerGates;
+    /// <summary>The count of server UseDone (0x01C7) events the fake reports.</summary>
+    public static int UseDoneSeq;
+    /// <summary>1 while a cast gesture animates (GetCastBusyState), else 0.</summary>
+    public static int CastBusy;
     public static int VTankSeq;
     public static int CombatModeValue = 1;
     /// <summary>Opt-in (set before Create): WieldItem (a wield into a named slot, API v70+). The
@@ -119,6 +126,15 @@ internal static unsafe class FakeHost
     /// <summary>Item id -> wielded location: GetObjectWielderInfo says the player wields it there.</summary>
     public static readonly Dictionary<uint, uint> Wielded = new();
     private static readonly List<uint> _panelItems = new();
+    /// <summary>Opt-in (set before Create): CloseContainer (API v76; the host then reports at
+    /// least v76) and GetGroundContainerId (answering <see cref="GroundContainer"/>).</summary>
+    public static bool CloseContainerCalls;
+    /// <summary>Every CloseContainer (container id), in order (opt-in with <see cref="CloseContainerCalls"/>).</summary>
+    public static readonly List<uint> Closes = new();
+    /// <summary>The container the client has open (GetGroundContainerId), 0 = none.</summary>
+    public static uint GroundContainer;
+    /// <summary>The item selected in the game (GetSelectedItemId); 0 = none.</summary>
+    public static uint SelectedItem;
 
     // ANSI strings handed back to tested code stay alive for the whole run.
     private static readonly Dictionary<string, IntPtr> _ansi = new();
@@ -137,9 +153,12 @@ internal static unsafe class FakeHost
         AutoRunCalls.Clear(); AutoRun = false; Jumps = 0; Turns = 0; Casts.Clear();
         Uses.Clear(); IdRequests.Clear(); Moves.Clear(); Appraised.Clear(); WeaponCalls = false; CombatModeValue = 1;
         VTankFlags = -1; VTankSeq = 0; LogCostMicros = 0;
+        ServerGates = false; UseDoneSeq = 0; CastBusy = 0;
         WieldCalls = false; Wields.Clear();
         SalvageCalls = false; ExternalMoves.Clear(); SalvageAdds.Clear(); SalvageExecutes.Clear();
         RefuseSalvageAdd.Clear(); OnSalvageExecute = null; Wielded.Clear(); _panelItems.Clear();
+        CloseContainerCalls = false; Closes.Clear(); GroundContainer = 0;
+        SelectedItem = 0;
     }
 
     /// <summary>
@@ -203,6 +222,7 @@ internal static unsafe class FakeHost
             api.WieldItemFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint, int>)&WieldItem;
         }
         api.GetObjectWcidFn         = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint>)&GetObjectWcid;
+        api.GetSelectedItemIdFn     = (IntPtr)(delegate* unmanaged[Cdecl]<uint>)&GetSelectedItemId;
         api.ReadKnownSpellsFn       = (IntPtr)(delegate* unmanaged[Cdecl]<uint*, int, int>)&ReadKnownSpells;
         api.LogFn                   = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, void>)&Log;
         api.WriteToChatFn           = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, int>)&WriteToChat;
@@ -232,10 +252,21 @@ internal static unsafe class FakeHost
         api.GetPlayerBaseVitalsFn   = (IntPtr)(delegate* unmanaged[Cdecl]<uint*, uint*, uint*, int>)&GetPlayerBaseVitals;
         api.GetWorldNameFn          = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr>)&GetWorldName;
         api.GetAccountNameFn        = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr>)&GetAccountName;
+        if (ServerGates)
+        {
+            api.GetUseDoneSeqFn    = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&GetUseDoneSeq;
+            api.GetCastBusyStateFn = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&GetCastBusyState;
+        }
         if (VTankFlags >= 0)
         {
             api.Version = Math.Max(api.Version, 74u);
             api.GetVTankStateFn = (IntPtr)(delegate* unmanaged[Cdecl]<int*, int>)&GetVTankState;
+        }
+        if (CloseContainerCalls)
+        {
+            api.Version = Math.Max(api.Version, 76u);
+            api.CloseContainerFn       = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int>)&CloseContainer;
+            api.GetGroundContainerIdFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint>)&GetGroundContainerId;
         }
         LastApi = api;
         return new RynthCoreHost(api);
@@ -289,6 +320,12 @@ internal static unsafe class FakeHost
             while (System.Diagnostics.Stopwatch.GetTimestamp() < until) { }
         }
     }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetUseDoneSeq() => UseDoneSeq;
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetCastBusyState() => CastBusy;
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int WriteToChat(IntPtr text, int type) { Chat.Add(Marshal.PtrToStringUni(text) ?? ""); return 1; }
@@ -460,6 +497,9 @@ internal static unsafe class FakeHost
     private static uint GetPlayerId() => PlayerIdValue;
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static uint GetSelectedItemId() => SelectedItem;
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int SetAutoRun(int on) { AutoRun = on != 0; AutoRunCalls.Add(AutoRun); return 1; }
 
     // The fake character turns instantly.
@@ -480,6 +520,12 @@ internal static unsafe class FakeHost
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int WieldItem(uint id, uint mask) { Wields.Add((id, mask)); return 1; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int CloseContainer(uint id) { Closes.Add(id); return 1; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static uint GetGroundContainerId() => GroundContainer;
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int MoveItemExternal(uint id, uint target, int amount) { ExternalMoves.Add((id, target, amount)); return 1; }

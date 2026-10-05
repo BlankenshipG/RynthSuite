@@ -226,8 +226,30 @@ public partial class CombatManager : IDisposable
         _host.HasGetCurrentCombatMode ? _host.GetCurrentCombatMode() : CombatMode.NonCombat;
 
     /// <summary>Client busy count — set by plugin from OnBusyCountIncremented/Decremented.
-    /// When > 0, combat must not send any game actions (SelectItem, attack, cast).</summary>
-    public int BusyCount { get; set; }
+    /// When > 0, combat must not send any game actions (SelectItem, attack, cast) — unless
+    /// <see cref="_busyGate"/> shows the count is a leftover the server already finished.</summary>
+    public int BusyCount
+    {
+        get => _busyCount;
+        set
+        {
+            _busyCount = value;
+            _busyGate.NoteCount(value, _host.HasUseDoneSeq ? _host.GetUseDoneSeq() : 0);
+        }
+    }
+    private int _busyCount;
+    private readonly CombatBusyGate _busyGate = new();
+
+    /// <summary>Resets the plugin's shared busy mirror (not AC's real field) once combat finds the
+    /// count is a leftover: the same thing BuffManager's cast-resolved callback does for buffs.
+    /// Set by RynthAiPlugin; the argument says why.</summary>
+    private Action<string>? _onStaleBusy;
+    public void SetStaleBusyCallback(Action<string> cb) => _onStaleBusy = cb;
+
+    private readonly CombatLatencyTracker _latency = new();
+    private CombatLatencyTracker.Wait _tickWait = CombatLatencyTracker.Wait.Other;
+    private bool _attackedThisTick;
+    private int _lastAttackCmdTargetId;   // the target the last attack command (lastAttackCmd) was for
 
     /// <summary>D4 (record-only): human-readable reason combat did NOT cast on the
     /// most recent tick (or "cast" when it did). Set at every magic skip site; read
@@ -1617,6 +1639,20 @@ public partial class CombatManager : IDisposable
         _damageSincePendingCast = false;
     }
 
+    /// <summary>
+    /// Take a just-killed (or predicted-killed) monster out of the current scan list. The scan
+    /// skips <see cref="_recentlyKilled"/> ids, but it runs at most every SCAN_INTERVAL_MS and the
+    /// kill notice arrives between ticks, so the next tick's target pick still saw the dead mob
+    /// in the old list and locked it again (score ~140: closest and wounded) — a "lock" of the
+    /// corpse-to-be right after "DropTarget ... killed", dropped one tick later as "hp=0". On
+    /// every kill in the 2026-10-01/10-04 Olthoi logs; a cast or swing could go at it.
+    /// </summary>
+    private void ForgetScanned(int id)
+    {
+        for (int i = _scannedTargets.Count - 1; i >= 0; i--)
+            if (_scannedTargets[i].Id == id) _scannedTargets.RemoveAt(i);
+    }
+
     private void DropTarget(string reason)
     {
         if (activeTargetId != 0)
@@ -1673,6 +1709,7 @@ public partial class CombatManager : IDisposable
         if (swapId == 0) return;
 
         _recentlyKilled[swapId] = DateTime.Now.AddMilliseconds(PREDICTED_SWAP_SUPPRESS_MS);
+        ForgetScanned(swapId);
         // Queue this predicted one-shot so it's CREDITED when its death confirms —
         // we may swap away before its KillerNotification. Capture the name LIVE
         // from the world filter (_fightTargetName is often empty this early).
@@ -1840,6 +1877,7 @@ public partial class CombatManager : IDisposable
         else if (tid != 0 && curMatches)
         {
             _recentlyKilled[tid] = nowKill.AddMilliseconds(RECENTLY_KILLED_SUPPRESS_MS);
+            ForgetScanned(tid);
             DropTarget("killed (KillerNotification)");
         }
     }
@@ -2093,7 +2131,67 @@ public partial class CombatManager : IDisposable
         return false;
     }
 
+    /// <summary>Floor between attack commands for the first cast at a new target when the server
+    /// gates are available (see <see cref="AttackIntervalMs"/>). Only bounds how fast a refused
+    /// cast could be retried; a refusal sets the target as the last attacked, so the retry waits
+    /// the full interval anyway.</summary>
+    internal const double NewTargetCastFloorMs = 300;
+
+    /// <summary>True when <see cref="BusyCount"/> is positive only because AC lowered it inline at a
+    /// server UseDone the busy hook can't see (see <see cref="CombatBusyGate"/>).</summary>
+    internal bool BusyIsLeftover()
+    {
+        bool gesture = _host.HasGetCastBusyState && !_host.CanCastNow;
+        return _busyGate.IsStale(BusyCount, _host.HasUseDoneSeq,
+            _host.HasUseDoneSeq ? _host.GetUseDoneSeq() : 0, gesture);
+    }
+
+    /// <summary>Times combat found the busy count was a leftover and went ahead (status/tests).</summary>
+    internal int StaleBusyResets => _staleBusyResets;
+    private int _staleBusyResets;
+
+    /// <summary>
+    /// The interval the combat tick waits after an attack command before the next one.
+    /// Melee/missile: 1000 ms (AC paces swings and shots itself). Magic: the Attack Spell Delay
+    /// setting (≤0 = 1500), except for the first cast at a new target when the engine has the
+    /// server gates (UseDone and the cast gesture): those already hold the cast until the
+    /// previous one is finished, so the new target only waits <see cref="NewTargetCastFloorMs"/>.
+    /// Casting at the same target keeps the full setting.
+    /// </summary>
+    internal static double AttackIntervalMs(int combatMode, int attackSpellIntervalMs, bool hasServerGates, bool newTarget)
+    {
+        if (combatMode != CombatMode.Magic) return 1000.0;
+        double interval = attackSpellIntervalMs > 0 ? attackSpellIntervalMs : 1500;
+        if (newTarget && hasServerGates) return Math.Min(interval, NewTargetCastFloorMs);
+        return interval;
+    }
+
     public bool Think()
+    {
+        _tickWait = CombatLatencyTracker.Wait.Other;
+        _attackedThisTick = false;
+        bool result = ThinkCore();
+
+        // [CombatLatency]: charge this tick to what it waited on, or log the engagement once
+        // its first attack/cast went out (see CombatLatencyTracker).
+        if (_latency.Pending)
+        {
+            double nowMs = Environment.TickCount64;
+            if (activeTargetId == 0)
+                _latency.OnDrop();
+            else if (_attackedThisTick)
+            {
+                string? line = _latency.OnAttack(activeTargetId, nowMs, CombatModeName(CurrentCombatMode),
+                    _worldFilter[activeTargetId]?.Name);
+                if (line != null) _host.Log(line);
+            }
+            else
+                _latency.OnTick(activeTargetId, nowMs, _tickWait);
+        }
+        return result;
+    }
+
+    private bool ThinkCore()
     {
         if (!_settings.EnableCombat) return false;
 
@@ -2189,9 +2287,15 @@ public partial class CombatManager : IDisposable
             else if (target != null && IsSpellProjectileName(target.Name))
                 DropTarget("spell projectile (not a monster)");
             else if (target != null && (int)target.ObjectClass != (int)AcObjectClass.Monster)
+            {
+                ForgetScanned(activeTargetId);
                 DropTarget("became corpse");
+            }
             else if (_worldFilter.GetHealthRatio(activeTargetId) == 0f)
+            {
+                ForgetScanned(activeTargetId);
                 DropTarget("hp=0");
+            }
             else if (target != null &&
                      _worldFilter.Distance(_host.GetPlayerId() == 0 ? 0 : (int)_host.GetPlayerId(), activeTargetId) > disengageLimit)
                 DropTarget("out of range");
@@ -2315,7 +2419,10 @@ public partial class CombatManager : IDisposable
         if (!(CurrentCombatMode == CombatMode.Magic && IsCastInFlight()))
         {
             if (!EquipWeaponAndSetStance(targetObj, "Auto"))
+            {
+                _tickWait = CombatLatencyTracker.Wait.Stance;
                 return true;
+            }
         }
 
         bool useNative = _settings.UseNativeAttack && _host.HasNativeAttack;
@@ -2331,10 +2438,17 @@ public partial class CombatManager : IDisposable
         // offensive casts stops back-to-back "You're too busy!" refusals that
         // silently drop casts and cost kills. ≤0 (e.g. a pre-existing settings
         // file saved before this field existed) falls back to 1500ms.
-        double attackCmdIntervalMs = CurrentCombatMode == CombatMode.Magic
-            ? (_settings.AttackSpellIntervalMs > 0 ? _settings.AttackSpellIntervalMs : 1500)
-            : 1000.0;
-        if ((DateTime.Now - lastAttackCmd).TotalMilliseconds >= attackCmdIntervalMs)
+        // The first cast at a NEW target (after a kill or a predicted-kill swap) doesn't wait out
+        // the interval left over from the last target when the engine reports UseDone: the
+        // cast-resolution gate (UseDone) and the gesture gate (CanCastNow) below already hold it
+        // until the previous cast is finished, which is what the interval stood in for before
+        // those gates existed (it predates them, 2026-06-06 vs 06-20). See AttackIntervalMs.
+        double attackCmdIntervalMs = AttackIntervalMs(CurrentCombatMode, _settings.AttackSpellIntervalMs,
+            hasServerGates: _host.HasUseDoneSeq && _host.HasGetCastBusyState,
+            newTarget: activeTargetId != _lastAttackCmdTargetId);
+        if ((DateTime.Now - lastAttackCmd).TotalMilliseconds < attackCmdIntervalMs)
+            _tickWait = CombatLatencyTracker.Wait.Interval;
+        else
         {
             _offensiveCastThisCycle = false;
             // Convert any pending offensive cast whose refusal window has
@@ -2343,11 +2457,25 @@ public partial class CombatManager : IDisposable
             JudgePendingOffensiveCast();
             JudgePendingCast(); // verdict on the last cast once its window elapses
 
-            // Client is busy processing a previous action — don't queue more
+            // Client is busy processing a previous action — don't queue more. Unless the count
+            // is a leftover: the server finished every action behind it (a UseDone arrived after
+            // it last rose) and no gesture is animating — AC lowered it inline, where the busy
+            // hook can't see it, and it would otherwise hold combat until the 5 s force-clear.
+            // The shared mirror is reset (not AC's real field — the engine reconciler owns that),
+            // the same as BuffManager does when a buff resolves. See CombatBusyGate.
             if (BusyCount > 0)
             {
-                LastCombatSkipReason = "busy-count"; // D4 record-only
-                return true;
+                if (!BusyIsLeftover())
+                {
+                    LastCombatSkipReason = "busy-count"; // D4 record-only
+                    _tickWait = CombatLatencyTracker.Wait.Busy;
+                    return true;
+                }
+                int was = BusyCount;
+                _staleBusyResets++;
+                _onStaleBusy?.Invoke($"combat: the server finished the action (UseDone) — was {was}");
+                if (BusyCount > 0) BusyCount = 0;   // no callback, or the shared mirror was already 0
+                _busyGate.Reset();
             }
 
             // Magic cadence guard: while a previous combat cast is still
@@ -2359,6 +2487,7 @@ public partial class CombatManager : IDisposable
             if (CurrentCombatMode == CombatMode.Magic && IsAwaitingCastResolution())
             {
                 LastCombatSkipReason = "cast-cadence"; // D4 record-only (IsCastInFlight)
+                _tickWait = CombatLatencyTracker.Wait.Cast;
                 return true;
             }
 
@@ -2385,12 +2514,14 @@ public partial class CombatManager : IDisposable
                     _facingTarget = false;
                     _faceSettledAt = DateTime.Now;
                     LastCombatSkipReason = "face-settle-release"; // D4 record-only
+                    _tickWait = CombatLatencyTracker.Wait.Face;
                     return true; // settle tick
                 }
                 if (CurrentCombatMode == CombatMode.Magic
                     && (DateTime.Now - _faceSettledAt).TotalMilliseconds < FACE_SETTLE_MS)
                 {
                     LastCombatSkipReason = "face-settle-wait"; // D4 record-only
+                    _tickWait = CombatLatencyTracker.Wait.Face;
                     return true; // let the turn-stop settle on the server first
                 }
             }
@@ -2413,7 +2544,10 @@ public partial class CombatManager : IDisposable
                         _faceStartTime = DateTime.Now;
                     }
                     if ((DateTime.Now - _faceStartTime).TotalMilliseconds < FACE_TIMEOUT_MS)
+                    {
+                        _tickWait = CombatLatencyTracker.Wait.Face;
                         return true; // not facing yet, keep waiting
+                    }
                 }
                 _facingTarget = false;
                 ClearCombatTurnMotions();
@@ -2453,6 +2587,7 @@ public partial class CombatManager : IDisposable
                     if ((DateTime.Now - lastAttackCmd).TotalMilliseconds > 5000)
                         _host.Log($"[CombatCast] CanCastNow=false — gesture gate blocking cast (last attack {(DateTime.Now - lastAttackCmd).TotalMilliseconds:0}ms ago, target=0x{activeTargetId:X8})");
                     LastCombatSkipReason = "cast-gate"; // D4 record-only (CanCastNow=false)
+                    _tickWait = CombatLatencyTracker.Wait.Cast;
                     return true;
                 }
 
@@ -2515,6 +2650,7 @@ public partial class CombatManager : IDisposable
                             _lastEquipTime = DateTime.Now; // gate AttackWithMagic until wand is wielded
                             _host.ChangeCombatMode(CombatMode.Magic);
                             lastAttackCmd = DateTime.Now;
+                            _lastAttackCmdTargetId = activeTargetId;
                             return true;
                         }
                     }
@@ -2523,6 +2659,7 @@ public partial class CombatManager : IDisposable
                 // Physical combat always attacks — spell shape flags (UseArc/Bolt/Ring/Streak)
                 // are only relevant in magic mode and must not gate melee/missile attacks.
                 physicalSent = AttackTarget();
+                if (physicalSent) _attackedThisTick = true;
             }
 
             // Ring spells hit an area — no per-target damage feedback is generated,
@@ -2537,6 +2674,7 @@ public partial class CombatManager : IDisposable
             if (!_lastCastWasRing && (!magicMode || _offensiveCastThisCycle) && physicalSent)
                 RecordOffensiveCast(activeTargetId);
             lastAttackCmd = DateTime.Now;
+            _lastAttackCmdTargetId = activeTargetId;
 
             // Predicted kill shot (set in AttackWithMagic): the cast we just fired
             // is expected to finish this mob. DON'T swap yet — on ACE a war cast is
@@ -3118,6 +3256,11 @@ public partial class CombatManager : IDisposable
         }
         else
             _host.Log($"[CombatTarget] lock 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' (score={bestScore:0.0}, priority {bestPriority}, {DescribeTargetPos(bestId)})");
+
+        // [CombatLatency]: time this engagement from the lock to its first attack.
+        double lockMs = Environment.TickCount64;
+        double sinceKillMs = _lastKillAt == DateTime.MinValue ? double.MaxValue : (DateTime.Now - _lastKillAt).TotalMilliseconds;
+        _latency.OnLock(bestId, lockMs, sinceKillMs <= 2000 ? lockMs - sinceKillMs : double.NaN);
 
         activeTargetId      = bestId;
         _lockedTargetId     = bestId;
@@ -4311,6 +4454,7 @@ public partial class CombatManager : IDisposable
     /// cast waits for it to resolve on the server (see IsAwaitingCastResolution).</summary>
     private void MarkCombatCastIssued()
     {
+        _attackedThisTick = true;   // [CombatLatency]: a debuff or attack cast went out
         _awaitingCastResolution = true;
         _castResolutionDeadline = DateTime.Now.AddMilliseconds(CAST_RESOLUTION_TIMEOUT_MS);
         _useDoneSeqAtCast = _host.HasUseDoneSeq ? _host.GetUseDoneSeq() : 0;
@@ -4555,9 +4699,10 @@ public partial class CombatManager : IDisposable
             LastCombatSkipReason = "equip-gate"; // D4 record-only
             return;
         }
-        // Cadence is the motion-end gate (CanCastNow at the AttackWithMagic
-        // call site, CombatManager.cs:905) — no fixed inter-cast interval;
-        // fire as soon as the cast gesture completes.
+        // Cadence is set in Think before this is called: the previous cast must have resolved
+        // (UseDone, IsAwaitingCastResolution), its gesture must be over (CanCastNow), and the
+        // Attack Spell Delay must have passed since the last cast at this same target (the first
+        // cast at a new target skips that delay when the two server gates exist — AttackIntervalMs).
 
         if (_waitingForDebuffResult)
         {
@@ -4630,6 +4775,22 @@ public partial class CombatManager : IDisposable
         int warTier  = _spellManager?.GetHighestSpellTier(AcSkillType.WarMagic)  ?? 0;
         int voidTier = _spellManager?.GetHighestSpellTier(AcSkillType.VoidMagic) ?? 0;
         int offensiveSpellId = FindBestShapedSpell(element, rule, out bool isRing, out int castShape, arcTargetId: activeTargetId);
+        // No spell of that element known (a low caster whose listed knife says Slash, with no
+        // Slash war spell): cast an element the character does know rather than nothing every
+        // cycle (2026-10-02 log; found 2026-10-04). Not when an arc gave way to an obstacle.
+        if (offensiveSpellId == 0 && !_lastShapeArcGaveWay)
+        {
+            foreach (string alt in WeaponPlanner.FallbackOrder)
+            {
+                if (alt.Equals(element, StringComparison.OrdinalIgnoreCase)) continue;
+                int altId = FindBestShapedSpell(alt, rule, out bool altRing, out int altShape, arcTargetId: activeTargetId);
+                if (altId == 0) continue;
+                if (_noElementFallbackLogged.Add(element))
+                    _host.Log($"[CombatCast] no {element} attack spell known: casting {alt} instead");
+                element = alt; offensiveSpellId = altId; isRing = altRing; castShape = altShape;
+                break;
+            }
+        }
         LogArcChoice(rule, target, castShape);
         if (offensiveSpellId != 0)
         {
@@ -4711,6 +4872,7 @@ public partial class CombatManager : IDisposable
     }
 
     private int _autoElemDiagCount;
+    private readonly HashSet<string> _noElementFallbackLogged = new(StringComparer.OrdinalIgnoreCase);
 
     private string GetPreferredElement(WorldObject? target, MonsterRule? rule)
     {

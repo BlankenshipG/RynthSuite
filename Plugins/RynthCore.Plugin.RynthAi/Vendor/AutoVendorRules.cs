@@ -81,6 +81,8 @@ internal static class AutoVendorRules
 
     // Decal's synthetic LongValueKey ids start at 0x0D000000; RynthAi reads STypes only.
     internal const int MaxStandardKey = 0xFFFF;
+    // Except Decal's "Type" (0x0D000000), the weenie class id, which RynthAi reads too.
+    internal const int DecalTypeKey = 0x0D000000;
 
     // RynthAi derives ObjectClass from ITEM_TYPE alone. Decal splits these further
     // (Misc -> HealingKit/Lockpick, Book -> Scroll/Journal/Sign, Container -> Foci,
@@ -126,6 +128,7 @@ internal static class AutoVendorRules
             case VTankNodeTypes.LongValKeyNE:
             case VTankNodeTypes.LongValKeyFlagExists:
             {
+                if (TryKey(d, 1, out int wkey) && wkey == DecalTypeKey) return true;   // the WCID: always known
                 if (!TryKey(d, 1, out int key) || key < 0 || key > MaxStandardKey) return false;
                 if (f.IsVendorListing) return ListingIntKeys.Contains(key);
                 return f.Appraised || PwdIntKeys.Contains(key);
