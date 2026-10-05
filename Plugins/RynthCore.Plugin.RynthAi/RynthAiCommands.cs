@@ -184,7 +184,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra lootparse     — inspect the selected loot profile");
         ChatLine("[RynthAi] /ra lootcheckinv  — test the loot profile against inventory");
         ChatLine("[RynthAi] /ra lootcheck     — classify selected item (on|off = auto on click)");
-        ChatLine("[RynthAi] /ra iteminfo (ii) — Mag-style item line (on|off = on select; settings = window)");
+        ChatLine("[RynthAi] /ra iteminfo (ii) — Mag-style item info (on|off = on select; click left|right|off; layout pet|line; settings = window)");
         ChatLine("[RynthAi]   ii fields | field <name> on|off | rating <tag> on|off | value|verbose on|off | reset");
         ChatLine("[RynthAi] /ra dumpinv       — dump all inventory items (cache + direct)");
         ChatLine("[RynthAi] /ra combat        — dump combat state machine snapshot");

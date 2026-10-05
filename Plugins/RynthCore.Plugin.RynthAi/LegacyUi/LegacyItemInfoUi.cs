@@ -81,7 +81,9 @@ internal sealed class LegacyItemInfoUi
             _previewOptions = options;
         }
 
-        ImGui.BeginChild("iiPreview", new Vector2(0, 70), ImGuiChildFlags.Borders);
+        // Pet-style output is up to four lines plus wrapping.
+        float previewHeight = s.Layout == MagItemInfoSettings.LayoutPetLines ? 110 : 70;
+        ImGui.BeginChild("iiPreview", new Vector2(0, previewHeight), ImGuiChildFlags.Borders);
         if (string.IsNullOrEmpty(_previewText))
             ImGui.TextDisabled("Select an item to preview its info line.");
         else
@@ -103,10 +105,15 @@ internal sealed class LegacyItemInfoUi
 
         ImGui.Checkbox("Describe items when selected##iiOnSel", ref s.OnSelect);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Print the line every time you click an item.\n/ra iteminfo always works, whatever is set here.");
+            ImGui.SetTooltip("Print the info every time the selection changes to an item.\n/ra iteminfo always works, whatever is set here.");
 
+        RenderClickTrigger(s, "##iiClick");
+
+        ImGui.Text("Item types:");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Which items the select / click triggers describe.\n/ra iteminfo and Print to chat ignore these.");
         ImGui.Indent();
-        ImGui.BeginDisabled(!s.OnSelect);
+        ImGui.BeginDisabled(!s.OnSelect && s.ClickTrigger == MagItemInfoSettings.ClickOff);
         ImGui.Checkbox("Weapons##iiSelW", ref s.OnSelectWeapons);      ImGui.SameLine();
         ImGui.Checkbox("Armor & clothing##iiSelA", ref s.OnSelectArmor); ImGui.SameLine();
         ImGui.Checkbox("Jewelry##iiSelJ", ref s.OnSelectJewelry);      ImGui.SameLine();
@@ -119,6 +126,42 @@ internal sealed class LegacyItemInfoUi
             s.Sanitize();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("How long to wait for an unidentified item's appraisal\nbefore printing what is already known.");
+    }
+
+    /// <summary>
+    /// "ID on click" combo (Off / Left / Right). Shared with Advanced Settings → Display, so
+    /// <paramref name="idSuffix"/> keeps the ImGui ids unique per window.
+    /// </summary>
+    public static void RenderClickTrigger(MagItemInfoSettings s, string idSuffix)
+    {
+        ImGui.SetNextItemWidth(200);
+        if (ImGui.Combo("ID + print on click" + idSuffix, ref s.ClickTrigger,
+                MagItemInfoCatalog.ClickTriggers, MagItemInfoCatalog.ClickTriggers.Length))
+            s.Sanitize();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Clicking an item in the world or your packs IDs it and prints its info,\n" +
+                "even when it was already selected. Clicks on RynthCore windows, drags and\n" +
+                "held-button camera turns are ignored.\n" +
+                "Right click prints whatever item is selected after the click: if your client\n" +
+                "doesn't select on right click, left-click to select, then right-click to print.\n" +
+                "Needs the ImGui overlay enabled.");
+    }
+
+    /// <summary>Layout combo (pet-style lines / one line). Shared with Advanced Settings → Display.</summary>
+    public static void RenderLayout(MagItemInfoSettings s, string idSuffix)
+    {
+        ImGui.SetNextItemWidth(200);
+        if (ImGui.Combo("Layout" + idSuffix, ref s.Layout, MagItemInfoCatalog.Layouts, MagItemInfoCatalog.Layouts.Length))
+            s.Sanitize();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Pet-style lines (like the ILT Hub pet roster):\n" +
+                "  1  Name (type mastery), set, AL, tinks, applied, craft\n" +
+                "  2  imbues, slayer, damage, variance, %a / %md / %mc\n" +
+                "  3  [ratings]  wield / activation / diff, value\n" +
+                "  4  Spells: …\n" +
+                "One line: the classic Mag-Tools single line.");
     }
 
     // ── Field toggles ────────────────────────────────────────────────────────
@@ -207,27 +250,46 @@ internal sealed class LegacyItemInfoUi
 
     private void RenderChat(MagItemInfoSettings s)
     {
-        if (!ImGui.CollapsingHeader("Chat output##ii")) return;
+        if (!ImGui.CollapsingHeader("Chat output##ii", ImGuiTreeNodeFlags.DefaultOpen)) return;
 
-        string current = $"{s.ChatType}";
-        foreach (var (type, label) in MagItemInfoCatalog.ChatTypes)
-            if (type == s.ChatType) { current = label; break; }
+        RenderLayout(s, "##iiLayout");
 
-        ImGui.SetNextItemWidth(220);
-        if (ImGui.BeginCombo("Chat type / colour##iiChat", current))
-        {
-            foreach (var (type, label) in MagItemInfoCatalog.ChatTypes)
-                if (ImGui.Selectable(label, type == s.ChatType)) s.ChatType = type;
-            ImGui.EndCombo();
-        }
+        ChatTypeCombo("Chat type / colour##iiChat", ref s.ChatType, allowSameAsHeader: false);
         ImGui.SameLine();
         if (ImGui.Button("Test##iiChatTest")) _testChatType?.Invoke(s.ChatType);
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Print a sample line with this chat type to see its colour.");
 
+        // Pet-style only: the roster draws its detail lines in a second colour.
+        ImGui.BeginDisabled(s.Layout != MagItemInfoSettings.LayoutPetLines);
+        ChatTypeCombo("Detail lines colour##iiChatDetail", ref s.DetailChatType, allowSameAsHeader: true);
+        ImGui.SameLine();
+        if (ImGui.Button("Test##iiChatDetailTest"))
+            _testChatType?.Invoke(s.DetailChatType == MagItemInfoSettings.SameAsHeader ? s.ChatType : s.DetailChatType);
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Chat type for lines 2-4 of the pet-style layout\n(the name line uses the colour above).");
+
         ImGui.SetNextItemWidth(220);
         ImGui.InputText("Line prefix##iiPrefix", ref s.Prefix, 32);
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Text put in front of every item info line (may be empty).");
+    }
+
+    /// <summary>Chat type picker; <paramref name="allowSameAsHeader"/> adds the "same as name line" entry (-1).</summary>
+    private static void ChatTypeCombo(string label, ref int chatType, bool allowSameAsHeader)
+    {
+        const string SameLabel = "Same as name line";
+        string current = chatType == MagItemInfoSettings.SameAsHeader ? SameLabel : $"{chatType}";
+        foreach (var (type, name) in MagItemInfoCatalog.ChatTypes)
+            if (type == chatType) { current = name; break; }
+
+        ImGui.SetNextItemWidth(220);
+        if (!ImGui.BeginCombo(label, current)) return;
+        if (allowSameAsHeader && ImGui.Selectable(SameLabel, chatType == MagItemInfoSettings.SameAsHeader))
+            chatType = MagItemInfoSettings.SameAsHeader;
+        foreach (var (type, name) in MagItemInfoCatalog.ChatTypes)
+            if (ImGui.Selectable(name, type == chatType)) chatType = type;
+        ImGui.EndCombo();
     }
 }

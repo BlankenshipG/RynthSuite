@@ -43,10 +43,21 @@ public sealed class MagItemInfoSettings
 {
     /// <summary>Spell list modes for <see cref="SpellMode"/>.</summary>
     public const int SpellModeMag = 0, SpellModeAll = 1;
+    /// <summary>Mouse triggers for <see cref="ClickTrigger"/>.</summary>
+    public const int ClickOff = 0, ClickLeft = 1, ClickRight = 2;
+    /// <summary>Output layouts for <see cref="Layout"/>.</summary>
+    public const int LayoutOneLine = 0, LayoutPetLines = 1;
+    /// <summary><see cref="DetailChatType"/> value meaning "use <see cref="ChatType"/>".</summary>
+    public const int SameAsHeader = -1;
 
     // ── When to print ────────────────────────────────────────────────────────
     /// <summary>Print automatically when an item is selected.</summary>
     public bool OnSelect;
+    /// <summary>
+    /// Print the selected item after a left (<see cref="ClickLeft"/>) or right (<see cref="ClickRight"/>)
+    /// click in the game world / inventory — also re-prints an item that was already selected.
+    /// </summary>
+    public int ClickTrigger = ClickOff;
     /// <summary>On-select class filters (manual /ra iteminfo ignores them).</summary>
     public bool OnSelectWeapons = true;
     public bool OnSelectArmor   = true;
@@ -68,8 +79,12 @@ public sealed class MagItemInfoSettings
     public int MaxListedSpells = 26;
 
     // ── How to print ─────────────────────────────────────────────────────────
+    /// <summary><see cref="LayoutPetLines"/> (pet-roster style lines) or <see cref="LayoutOneLine"/> (Mag one-liner).</summary>
+    public int Layout = LayoutPetLines;
     /// <summary>AC chat type passed to WriteToChat (selects the chat colour / window).</summary>
     public int ChatType = 1;
+    /// <summary>Chat type for pet-style lines 2+, or <see cref="SameAsHeader"/>.</summary>
+    public int DetailChatType = SameAsHeader;
     /// <summary>Text put in front of every line.</summary>
     public string Prefix = "[RynthAi] ";
 
@@ -94,6 +109,9 @@ public sealed class MagItemInfoSettings
         if (SpellMode is not (SpellModeMag or SpellModeAll)) SpellMode = SpellModeMag;
         MaxListedSpells = Math.Clamp(MaxListedSpells, 1, 64);
         if (ChatType < 0 || ChatType > 31) ChatType = 1;
+        if (DetailChatType < SameAsHeader || DetailChatType > 31) DetailChatType = SameAsHeader;
+        if (ClickTrigger is not (ClickOff or ClickLeft or ClickRight)) ClickTrigger = ClickOff;
+        if (Layout is not (LayoutOneLine or LayoutPetLines)) Layout = LayoutPetLines;
         Prefix ??= string.Empty;
         if (Prefix.Length > 32) Prefix = Prefix[..32];
     }
@@ -103,6 +121,9 @@ public sealed class MagItemInfoSettings
     {
         var d = new MagItemInfoSettings();
         OnSelect = d.OnSelect;
+        ClickTrigger = d.ClickTrigger;
+        Layout = d.Layout;
+        DetailChatType = d.DetailChatType;
         OnSelectWeapons = d.OnSelectWeapons; OnSelectArmor = d.OnSelectArmor;
         OnSelectJewelry = d.OnSelectJewelry; OnSelectOther = d.OnSelectOther;
         IdTimeoutSec = d.IdTimeoutSec;
@@ -167,6 +188,12 @@ public static class MagItemInfoCatalog
         new(388, "OP",   "Overpower"),
         new(389, "OPR",  "Overpower Resist"),
     };
+
+    /// <summary>Labels for <see cref="MagItemInfoSettings.ClickTrigger"/>, indexed by value.</summary>
+    public static readonly string[] ClickTriggers = { "Off", "Left mouse click", "Right mouse click" };
+
+    /// <summary>Labels for <see cref="MagItemInfoSettings.Layout"/>, indexed by value.</summary>
+    public static readonly string[] Layouts = { "One line (Mag-Tools)", "Pet-style lines" };
 
     /// <summary>Common AC chat types for the colour picker (value passed to WriteToChat).</summary>
     public static readonly (int Type, string Label)[] ChatTypes =

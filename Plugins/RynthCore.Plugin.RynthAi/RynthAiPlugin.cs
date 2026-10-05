@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.28-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.29-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -1655,7 +1655,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             int sid = unchecked((int)currentTargetId);
             WorldObject? obj = _objectCache?[sid];
             if (obj != null && IsLootableClass(obj.ObjectClass) && ItemInfoWantsClass(itemInfo, obj.ObjectClass))
-                QueueItemInfo(sid, requestId: false);
+                QueueAutoItemInfo(sid, requestId: false);
         }
     }
 
@@ -2479,6 +2479,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ImGui.SetCurrentContext(Host.ImGuiContext);
         try
         {
+            DetectItemInfoClick(); // /ra iteminfo click left|right
+
             // Nav3D: in 3D mode, geometry is submitted from OnTick (so it
             // survives EnableImGuiShell=false). The clear+submit for nav
             // markers happens there. Here we only need to handle the ImGui
@@ -2552,6 +2554,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ImGui.SetCurrentContext(Host.ImGuiContext);
         try
         {
+            DetectItemInfoClick(); // /ra iteminfo click left|right
+
             int pushedColors = LegacyDashboardRenderer.PushDashboardStyle();
             try { _iltHub?.Render(); }
             finally { ImGui.PopStyleColor(pushedColors); }

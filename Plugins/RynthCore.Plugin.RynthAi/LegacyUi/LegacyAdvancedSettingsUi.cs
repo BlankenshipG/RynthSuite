@@ -196,7 +196,9 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Text("Item Info (Mag-style)");
                 ImGui.Checkbox("Describe items when selected", ref _settings.ItemInfoSettings.OnSelect);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Prints one Mag-style line to chat for each item you select:\nset, AL, imbues, slayer, tinks, damage, %a/%md, spells, wield, craft, [ratings].\n/ra iteminfo prints the selected item on demand.");
+                    ImGui.SetTooltip("Prints Mag-style info to chat for each item you select:\nset, AL, imbues, slayer, tinks, damage, %a/%md, spells, wield, craft, [ratings].\n/ra iteminfo prints the selected item on demand.");
+                LegacyItemInfoUi.RenderClickTrigger(_settings.ItemInfoSettings, "##advIiClick");
+                LegacyItemInfoUi.RenderLayout(_settings.ItemInfoSettings, "##advIiLayout");
                 if (ImGui.Button("Item Info settings..."))
                     _settings.ItemInfoSettings.ShowWindow = true;
                 if (ImGui.IsItemHovered())

@@ -1,12 +1,17 @@
 using System;
+using System.Collections.Generic;
+using System.Numerics;
 using System.Text;
+using System.Threading;
+using ImGuiNET;
 using RynthCore.Loot;
 using RynthCore.Plugin.RynthAi.ItemInfo;
 
 namespace RynthCore.Plugin.RynthAi;
 
 /// <summary>
-/// /ra iteminfo — Mag-style one-line item info (ratings, damage, spells, slayer, imbues …),
+/// /ra iteminfo — Mag-style item info (ratings, damage, spells, slayer, imbues …) as one line or
+/// as pet-roster style lines, printed on demand, on select or on a left/right mouse click;
 /// ported from UtilityBelt ub-IT / Mag-Tools ItemInfo. Partial class of RynthAiPlugin.
 ///
 ///   /ra iteminfo                      describe the selected item (IDs it first when needed)
@@ -17,6 +22,8 @@ namespace RynthCore.Plugin.RynthAi;
 ///   /ra iteminfo rating &lt;tag&gt; on|off  show/hide one rating (D, CD, CDR, …)
 ///   /ra iteminfo value on|off         append value + burden
 ///   /ra iteminfo verbose on|off       list every spell instead of Mag's filter
+///   /ra iteminfo click left|right|off print the selected item after a mouse click
+///   /ra iteminfo layout pet|line      pet-roster style lines or the Mag one-liner
 ///   /ra iteminfo reset                restore defaults
 /// Every option is also editable in the "RynthAi Item Info" window (LegacyItemInfoUi).
 /// </summary>
@@ -25,6 +32,25 @@ public sealed partial class RynthAiPlugin
     // One pending describe at a time: the newest request replaces the previous one.
     private int  _itemInfoPendingId;
     private long _itemInfoPendingSince;
+
+    // Automatic triggers (select + click) can both fire for one click; the same item inside
+    // this window prints once.
+    private const long AutoDedupeMs = 1500;
+    private int  _itemInfoLastAutoId;
+    private long _itemInfoLastAutoAt;
+
+    // Click trigger. A press counts as a click only if it started outside every overlay window,
+    // was released within ClickMaxHoldMs and moved at most ClickMaxMovePx — so item drags and
+    // right-button mouse-look never print. The client updates the selection after it handles
+    // the click, so the selection is read ClickSettleMs after the release, on the tick thread.
+    private const long  ClickMaxHoldMs = 600;
+    private const float ClickMaxMovePx = 6f;
+    private const long  ClickSettleMs  = 150;
+    private bool    _iiClickPrevDown;
+    private bool    _iiClickArmed;
+    private long    _iiClickPressAt;
+    private Vector2 _iiClickPressPos;
+    private long    _iiClickResolveAt; // TickCount64 to read the selection at; 0 = none (Interlocked)
 
     /// <summary>Character settings when loaded, else null (commands then use defaults / refuse edits).</summary>
     private MagItemInfoSettings? ItemInfoSettings => _dashboard?.Settings.ItemInfoSettings;
@@ -89,6 +115,33 @@ public sealed partial class RynthAiPlugin
                 ListItemInfoFields(s);
                 return;
 
+            case "click":
+                switch (arg3.ToLowerInvariant())
+                {
+                    case "left":  case "l":   s.ClickTrigger = MagItemInfoSettings.ClickLeft;  break;
+                    case "right": case "r":   s.ClickTrigger = MagItemInfoSettings.ClickRight; break;
+                    case "off":   case "none": s.ClickTrigger = MagItemInfoSettings.ClickOff;  break;
+                    case "": break;
+                    default:
+                        ChatLine("[RynthAi] Usage: /ra iteminfo click left|right|off");
+                        return;
+                }
+                ChatLine($"[RynthAi] Item info on click: {MagItemInfoCatalog.ClickTriggers[s.ClickTrigger]}");
+                return;
+
+            case "layout":
+                switch (arg3.ToLowerInvariant())
+                {
+                    case "pet": case "pets": case "lines": s.Layout = MagItemInfoSettings.LayoutPetLines; break;
+                    case "line": case "mag": case "one":   s.Layout = MagItemInfoSettings.LayoutOneLine;  break;
+                    case "": break;
+                    default:
+                        ChatLine("[RynthAi] Usage: /ra iteminfo layout pet|line");
+                        return;
+                }
+                ChatLine($"[RynthAi] Item info layout: {MagItemInfoCatalog.Layouts[s.Layout]}");
+                return;
+
             case "reset":
                 s.ResetToDefaults();
                 ChatLine("[RynthAi] Item info settings reset to defaults.");
@@ -101,7 +154,7 @@ public sealed partial class RynthAiPlugin
             ChatLine($"[RynthAi] Item info on select: {OnOff(onSelect)}");
             return;
         }
-        ChatLine("[RynthAi] Usage: /ra iteminfo [on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|reset]");
+        ChatLine("[RynthAi] Usage: /ra iteminfo [on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|reset]");
     }
 
     private static string OnOff(bool on) => on ? "ON" : "OFF";
@@ -166,9 +219,89 @@ public sealed partial class RynthAiPlugin
         _itemInfoPendingSince = Environment.TickCount64;
     }
 
+    /// <summary>
+    /// Select / click triggers: <see cref="QueueItemInfo"/> unless the same item was queued
+    /// automatically within <see cref="AutoDedupeMs"/> (one click can raise both triggers).
+    /// </summary>
+    internal void QueueAutoItemInfo(int itemId, bool requestId)
+    {
+        long now = Environment.TickCount64;
+        if (itemId == _itemInfoLastAutoId && now - _itemInfoLastAutoAt < AutoDedupeMs) return;
+        _itemInfoLastAutoId = itemId;
+        _itemInfoLastAutoAt = now;
+        QueueItemInfo(itemId, requestId);
+    }
+
+    /// <summary>
+    /// Render-thread click watcher (OnRender / OnRenderOverlay, ImGui context current). The ImGui
+    /// backend sees every mouse message on the game window, including the ones the game handles,
+    /// so the raw button state is edge-detected here; the selection is resolved in
+    /// <see cref="TickItemInfo"/>.
+    /// </summary>
+    private void DetectItemInfoClick()
+    {
+        int trigger = ItemInfoSettings?.ClickTrigger ?? MagItemInfoSettings.ClickOff;
+        int button = trigger switch
+        {
+            MagItemInfoSettings.ClickLeft  => 0,
+            MagItemInfoSettings.ClickRight => 1,
+            _ => -1,
+        };
+        if (button < 0)
+        {
+            _iiClickPrevDown = false;
+            _iiClickArmed = false;
+            return;
+        }
+
+        ImGuiIOPtr io = ImGui.GetIO();
+        bool down = io.MouseDown[button];
+        long now = Environment.TickCount64;
+
+        if (down && !_iiClickPrevDown)
+        {
+            // A press on an overlay window belongs to the overlay, not to an item in the game.
+            _iiClickArmed = !io.WantCaptureMouse;
+            _iiClickPressAt = now;
+            _iiClickPressPos = io.MousePos;
+        }
+        else if (down && _iiClickArmed)
+        {
+            bool held  = now - _iiClickPressAt > ClickMaxHoldMs;
+            bool moved = Vector2.DistanceSquared(io.MousePos, _iiClickPressPos) > ClickMaxMovePx * ClickMaxMovePx;
+            if (held || moved) _iiClickArmed = false; // drag or mouse-look, not a click
+        }
+        else if (!down && _iiClickPrevDown && _iiClickArmed)
+        {
+            _iiClickArmed = false;
+            Interlocked.Exchange(ref _iiClickResolveAt, now + ClickSettleMs);
+        }
+        _iiClickPrevDown = down;
+    }
+
+    /// <summary>Tick-thread half of the click trigger: describe whatever item the click selected.</summary>
+    private void ResolveItemInfoClick()
+    {
+        long at = Interlocked.Read(ref _iiClickResolveAt);
+        if (at == 0 || Environment.TickCount64 < at) return;
+        if (Interlocked.CompareExchange(ref _iiClickResolveAt, 0, at) != at) return;
+
+        var s = ItemInfoSettings;
+        if (s == null || s.ClickTrigger == MagItemInfoSettings.ClickOff || !Host.HasGetSelectedItemId) return;
+        uint selected = Host.GetSelectedItemId();
+        if (selected == 0) return;
+
+        int id = unchecked((int)selected);
+        WorldObject? obj = _objectCache?[id];
+        if (obj == null || !IsLootableClass(obj.ObjectClass) || !ItemInfoWantsClass(s, obj.ObjectClass)) return;
+        QueueAutoItemInfo(id, requestId: true);
+    }
+
     /// <summary>Plugin-tick poll for a pending describe (no appraisal-arrived event in the SDK).</summary>
     private void TickItemInfo()
     {
+        ResolveItemInfoClick();
+
         int id = _itemInfoPendingId;
         if (id == 0) return;
         bool ready = Host.HasAppraisalData(unchecked((uint)id));
@@ -179,15 +312,22 @@ public sealed partial class RynthAiPlugin
         PrintItemInfo(id, identified: ready);
     }
 
-    /// <summary>Builds the line (no prefix) or returns null with <paramref name="error"/> set.</summary>
-    private string? BuildItemInfoLine(int itemId, out string? error)
+    /// <summary>
+    /// Builds the output lines (no prefix / indent) in the configured layout, or returns null
+    /// with <paramref name="error"/> set. The one-line layout returns a single line.
+    /// </summary>
+    private List<string>? BuildItemInfoLines(int itemId, out string? error)
     {
         error = null;
         WorldObject? wo = _objectCache?[itemId];
         if (wo == null) { error = $"Item 0x{(uint)itemId:X8} is not in the object cache."; return null; }
         try
         {
-            return MagItemDescriber.Describe(new CacheItemPropertySource(Host, wo), MagItemInfoOptions.From(ItemInfoSettings));
+            var s = ItemInfoSettings;
+            MagItemDescription d = MagItemDescriber.Build(new CacheItemPropertySource(Host, wo), MagItemInfoOptions.From(s));
+            return (s?.Layout ?? MagItemInfoSettings.LayoutPetLines) == MagItemInfoSettings.LayoutOneLine
+                ? new List<string> { d.ToOneLine() }
+                : d.ToPetLines();
         }
         catch (Exception ex)
         {
@@ -197,28 +337,39 @@ public sealed partial class RynthAiPlugin
         }
     }
 
+    /// <summary>
+    /// Chat output. Pet-style: line 1 carries the prefix in <see cref="MagItemInfoSettings.ChatType"/>,
+    /// later lines are indented like the pet roster and use <see cref="MagItemInfoSettings.DetailChatType"/>.
+    /// </summary>
     private void PrintItemInfo(int itemId, bool identified)
     {
-        string? line = BuildItemInfoLine(itemId, out string? error);
-        if (line == null) { ChatLine("[RynthAi] " + error); return; }
-        if (!identified) line += " (not identified — stats may be incomplete)";
+        List<string>? lines = BuildItemInfoLines(itemId, out string? error);
+        if (lines == null || lines.Count == 0) { ChatLine("[RynthAi] " + error); return; }
+        if (!identified) lines[0] += " (not identified — stats may be incomplete)";
 
         var s = ItemInfoSettings;
-        Host.WriteToChat((s?.Prefix ?? "[RynthAi] ") + line, s?.ChatType ?? 1);
+        string prefix = s?.Prefix ?? "[RynthAi] ";
+        int headerType = s?.ChatType ?? 1;
+        int detailType = s == null || s.DetailChatType == MagItemInfoSettings.SameAsHeader ? headerType : s.DetailChatType;
+
+        Host.WriteToChat(prefix + lines[0], headerType);
+        for (int i = 1; i < lines.Count; i++)
+            Host.WriteToChat(prefix + "  " + lines[i], detailType);
     }
 
-    /// <summary>Item Info window preview: the selected item's line, or null when nothing is selected.</summary>
+    /// <summary>Item Info window preview: the selected item's lines, or null when nothing is selected.</summary>
     private string? DescribeSelectedItemForPreview()
     {
         if (!Host.HasGetSelectedItemId) return null;
         uint selected = Host.GetSelectedItemId();
         if (selected == 0) return null;
         int id = unchecked((int)selected);
-        string? line = BuildItemInfoLine(id, out string? error);
-        if (line == null) return error;
+        List<string>? lines = BuildItemInfoLines(id, out string? error);
+        if (lines == null || lines.Count == 0) return error;
         if (Host.HasHasAppraisalData && !Host.HasAppraisalData(selected))
-            line += " (not identified yet — Print to chat IDs it)";
-        return line;
+            lines[0] += " (not identified yet — Print to chat IDs it)";
+        // The window adds the prefix to the first line; indent the rest like chat.
+        return string.Join("\n  ", lines);
     }
 
     /// <summary>Item Info window "Test" button: sample line in the chosen chat type.</summary>
