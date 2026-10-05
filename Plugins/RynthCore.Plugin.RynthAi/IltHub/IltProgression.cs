@@ -372,8 +372,11 @@ internal sealed class IltProgression : IIltFeature
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(cur.ToString());
                 ImGui.TableNextColumn();
                 ImGui.SetNextItemWidth(80);
-                if (ImGui.InputInt($"##tgt{a.Key}", ref tgt, 0)) C.AugTargets[a.Key] = Math.Clamp(tgt, 0, a.Cap);
-                tgt = Math.Clamp(tgt, cur, a.Cap);
+                // The server can report a level above our cap (e.g. Specialization 280 > 266);
+                // Math.Clamp throws when min > max, and a throw mid-table breaks the ImGui frame.
+                int ceiling = Math.Max(cur, a.Cap);
+                if (ImGui.InputInt($"##tgt{a.Key}", ref tgt, 0)) C.AugTargets[a.Key] = Math.Clamp(tgt, 0, ceiling);
+                tgt = Math.Clamp(tgt, cur, ceiling);
                 decimal lum = AugLumCost(a, cur, tgt);
                 long coins = (long)(tgt - cur) * a.CoinsPerLevel;
                 totalLum += lum;
