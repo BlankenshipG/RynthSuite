@@ -17,6 +17,14 @@ namespace RynthCore.Plugin.RynthAi;
 [JsonSerializable(typeof(MetaRuleDto))]
 [JsonSerializable(typeof(MetaCommand))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Meta.MetaScheduleConfig))]
+// UB seed, translation, diagnostics, ILT Hub, HUD and item info files persist through this
+// context (NativeAOT cannot reflect).
+[JsonSerializable(typeof(RynthCore.CreatureSeed.UbMobSeedFile))]
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Translate.TranslateSettings))]
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.RynthLogConfig))]
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Huds.HudState))]
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.IltHub.IltHubState))]
+[JsonSerializable(typeof(System.Collections.Generic.List<RynthCore.Plugin.RynthAi.IltHub.IltBankTransaction>), TypeInfoPropertyName = "IltBankTransactionList")]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     IncludeFields = true,

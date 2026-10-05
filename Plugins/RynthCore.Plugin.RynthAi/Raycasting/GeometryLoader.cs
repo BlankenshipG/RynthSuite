@@ -1788,6 +1788,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         {
             string line = $"[GeoLoader] {msg}";
             System.Diagnostics.Debug.WriteLine(line);
+            RynthLog.Trace(LogCat.Raycast, line); // visible via /ra trace raycast
             if (DiagLog.Count < 200) DiagLog.Add(msg);
         }
     }

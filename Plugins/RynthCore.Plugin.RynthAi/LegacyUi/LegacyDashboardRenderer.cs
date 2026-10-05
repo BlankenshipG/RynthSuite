@@ -12,7 +12,7 @@ using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
-internal sealed class LegacyDashboardRenderer
+internal sealed partial class LegacyDashboardRenderer
 {
     internal static readonly Vector4 ColTeal = new(0.15f, 0.85f, 0.90f, 1.00f);
     internal static readonly Vector4 ColAmber = new(0.91f, 0.70f, 0.20f, 1.00f);
@@ -1087,6 +1087,13 @@ internal sealed class LegacyDashboardRenderer
                 AutoVendorTriesTime        = s.AutoVendorTriesTime,
                 OffhandDefault             = s.OffhandDefault,
                 PreferDualWield            = s.PreferDualWield,
+                EnableGroundLoot           = s.EnableGroundLoot,
+                ItemInfoOnSelect           = s.ItemInfoSettings.OnSelect,
+                // Diagnostics (per PC, RynthLog)
+                DiagDebugToChat            = RynthLog.DebugToChat,
+                DiagFileLogAll             = RynthLog.FileLogAll,
+                DiagCategories             = RynthLog.FormatCategoryLevels(),
+                DiagFolder                 = RynthLog.Directory,
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.SettingsBridgePayload);
         }
@@ -1288,6 +1295,12 @@ internal sealed class LegacyDashboardRenderer
             // Off hand: only fields the sender actually included (the engine face doesn't draw them yet)
             if (p.OffhandDefault is string od && OffhandRules.TryParse(od, out var odMode)) s.OffhandDefault = OffhandRules.SettingValue(odMode);
             if (p.PreferDualWield            is bool pdw)     s.PreferDualWield            = pdw;
+            s.EnableGroundLoot           = p.EnableGroundLoot;
+            s.ItemInfoSettings.OnSelect  = p.ItemInfoOnSelect;
+            // Diagnostics: each setter rewrites diagnostics.json, so only touch what changed.
+            if (p.DiagDebugToChat != RynthLog.DebugToChat) RynthLog.DebugToChat = p.DiagDebugToChat;
+            if (p.DiagFileLogAll  != RynthLog.FileLogAll)  RynthLog.FileLogAll  = p.DiagFileLogAll;
+            RynthLog.ApplyCategoryLevels(p.DiagCategories);
             SaveSettings();
         }
         catch { }
@@ -2300,6 +2313,12 @@ internal sealed class LegacyDashboardRenderer
                 ActiveNavIndex    = _settings.ActiveNavIndex,
                 NavFiles          = new List<string>(_navFiles),
                 Points            = points,
+                TrackBreadcrumbs  = _settings.NavOverlay.TrackBreadcrumbs,
+                ShowRouteOverlay  = _settings.NavOverlay.ShowRouteMarkers,
+                IsRecording       = _settings.IsRecordingNav,
+                TrailPoints       = NavBreadcrumbs?.Trail.Length ?? 0,
+                TrailYards        = NavBreadcrumbs?.TrailYards ?? 0,
+                EditStatus        = CurrentNavEditStatus(),
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.NavBridgePayload);
         }
@@ -2326,6 +2345,18 @@ internal sealed class LegacyDashboardRenderer
 
                 case "stopNav":
                     _settings.EnableNavigation = false;
+                    SaveSettings();
+                    break;
+
+                case "setBreadcrumbs":
+                    // Nav panel "Breadcrumbs": record (and draw) the walked trail.
+                    _settings.NavOverlay.TrackBreadcrumbs = cmd.On;
+                    SaveSettings();
+                    break;
+
+                case "setRouteOverlay":
+                    // Nav panel "Route overlay": route rings / lines, waypoint labels, guide line.
+                    _settings.NavOverlay.ShowRouteMarkers = cmd.On;
                     SaveSettings();
                     break;
 
@@ -2404,6 +2435,11 @@ internal sealed class LegacyDashboardRenderer
                 case "loadNav":
                     int ni = _navFiles.IndexOf(cmd.NavName);
                     if (ni >= 0) { _selectedNavIdx = ni; LoadSelectedNav(); SaveSettings(); }
+                    break;
+
+                default:
+                    // Route editor commands (multi-select edits, pause / portal steps, trail -> route).
+                    HandleNavEditCommand(cmd);
                     break;
             }
         }

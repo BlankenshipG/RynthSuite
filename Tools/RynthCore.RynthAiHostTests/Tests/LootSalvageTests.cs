@@ -28,6 +28,8 @@ internal static class LootSalvageTests
     private const uint ItemBase = 0x80000B00;
     private const uint UstWcid = 20646;
     private const uint ItemTypeJewelry = 0x8, ItemTypeGem = 0x800, ItemTypeContainer = 0x200, ItemTypeArmor = 0x2;
+    private static readonly string TestLogDirectory =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RynthAiHostTests", "Diagnostics");
 
     public static void Register(Runner r)
     {
@@ -143,6 +145,10 @@ internal static class LootSalvageTests
             }
             beforeCreate?.Invoke();
             Host = FakeHost.Create(Player);
+            // SalvageManager logs through RynthLog (LogCat.Salvage), which forwards to the host it
+            // is bound to; bind it to this fake so FakeHost.Logs sees the [Salvage] lines. A temp
+            // folder keeps the test's diagnostics.json and log files out of the real install.
+            RynthLog.Init(Host, TestLogDirectory);
             Cache = FakeHost.MakeCache(Host, Player, ids);
             Settings.EnableCombineSalvage = false; // bag merging has its own tests in game
             Settings.SalvageOpenDelayFirstMs = 400; Settings.SalvageOpenDelayFastMs = 50;

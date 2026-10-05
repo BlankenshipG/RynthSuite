@@ -13,6 +13,8 @@ public static class DashWindows
     public static bool ShowWeapons;
     public static bool ShowLua;
     public static bool ShowDungeonMap;
+    /// <summary>ILT Hub window (persisted in ilt-hub.json, not in the combat profile).</summary>
+    public static bool ShowIltHub;
 }
 
 public sealed class LegacyUiSettings
@@ -79,6 +81,10 @@ public sealed class LegacyUiSettings
     public bool CombineBagsDuringSalvage = true;
 
     public bool ShowTargetStaminaMana;
+
+    /// <summary>Mag-style item info (/ra iteminfo): on-select, per-field visibility, chat type, prefix.
+    /// Edited in the "RynthAi Item Info" window.</summary>
+    public RynthCore.Plugin.RynthAi.ItemInfo.MagItemInfoSettings ItemInfoSettings = new();
 
     public bool EnableMissileCrafting = true;
     public int MissileCraftAmmoThreshold = 1000;
@@ -162,6 +168,8 @@ public sealed class LegacyUiSettings
     public const float FollowNavMinLowest = 0.5f, FollowNavMinHighest = 20f;
     public static float ClampFollowNavMin(float yards) =>
         float.IsNaN(yards) ? 1.5f : Math.Clamp(yards, FollowNavMinLowest, FollowNavMinHighest);
+    /// <summary>Marker colours, waypoint HUD / labels, breadcrumb trail and recording options.</summary>
+    public NavOverlaySettings NavOverlay = new();
     public float NavRingThickness = 6.0f;
     public float NavLineThickness = 6.0f;
     public float NavHeightOffset = 0.05f;
@@ -197,6 +205,8 @@ public sealed class LegacyUiSettings
     /// </summary>
     public bool TravelToOwnCorpse;
     public bool LootOnlyRareCorpses;
+    /// <summary>Also pick up loose ground items that match the loot profile, within the corpse max range.</summary>
+    public bool EnableGroundLoot;
     public bool PeaceModeWhenIdle = true;
     public bool RebuffWhenIdle;
     /// <summary>
@@ -411,6 +421,8 @@ public sealed class LegacyUiSettings
 
     public List<MonsterRule> MonsterRules { get; set; } = new();
     public List<ItemRule> ItemRules { get; set; } = new();
+    /// <summary>Loose ammo the monster rules can prefer. Edited by the local monsters window.</summary>
+    public List<AmmoRule> AmmoRules { get; set; } = new();
     public List<ConsumableRule> ConsumableRules { get; set; } = new();
     public List<BuffRule> BuffRules { get; set; } = new();
     public List<MetaRule> MetaRules { get; set; } = new();
@@ -614,6 +626,8 @@ public sealed class MonsterRule
     /// 2 Shield, 3 Offhand weapon, 4 None (OffhandRules.Rule*); any other value is a listed
     /// item to wield there (the old per-rule picker).</summary>
     public int OffhandId { get; set; }
+    /// <summary>Optional loose ammo stack id for missile combat while this rule matches (0 = auto).</summary>
+    public int PreferredAmmoItemId { get; set; }
     public string PetDamage { get; set; } = "PAuto";
     /// <summary>Debuffs the player typed in (Damage panel), comma separated: a spell's base
     /// name ("Corrosion Vulnerability Other") casts its best known tier; a full name casts as is.</summary>
@@ -629,6 +643,11 @@ public sealed class BuffRule
 
 public sealed class ItemRule
 {
+    /// <summary>Action string for a listed weapon (VirindiTank import and the ILT gear importer).</summary>
+    public const string WeaponAction = "Weapon";
+    /// <summary>Action string for a listed shield.</summary>
+    public const string ShieldAction = "Shield";
+
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Action { get; set; } = "Loot";
@@ -638,6 +657,18 @@ public sealed class ItemRule
     /// (not known, or an entry from before sources were kept).</summary>
     public string ElementSource { get; set; } = "";
     public bool KeepBuffed { get; set; } = true;
+
+    /// <summary>True when this row is a shield (off hand), not a main-hand weapon.</summary>
+    public bool IsShield() => string.Equals(Action, ShieldAction, StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>Loose ammo the monster rules can prefer (bow, crossbow, atlatl, or Auto).</summary>
+public sealed class AmmoRule
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Bow, Crossbow, Atlatl, or Auto (match any launcher).</summary>
+    public string Category { get; set; } = "Auto";
 }
 
 /// <summary>JSON wire-format types used by the engine-side Avalonia MonstersPanel.</summary>
@@ -707,6 +738,17 @@ public sealed class NavBridgePayload
     public int               ActiveNavIndex   { get; set; }
     public List<string>      NavFiles         { get; set; } = new();
     public List<NavBridgePoint> Points        { get; set; } = new();
+    /// <summary>NavOverlaySettings.TrackBreadcrumbs (Nav panel "Breadcrumbs" toggle).</summary>
+    public bool              TrackBreadcrumbs { get; set; }
+    /// <summary>NavOverlaySettings.ShowRouteMarkers (Nav panel "Route overlay" toggle).</summary>
+    public bool              ShowRouteOverlay { get; set; }
+    /// <summary>Route recording is on (/ra navrec).</summary>
+    public bool              IsRecording      { get; set; }
+    /// <summary>Breadcrumb trail since the last teleport: point count and walked yards.</summary>
+    public int               TrailPoints      { get; set; }
+    public double            TrailYards       { get; set; }
+    /// <summary>Result of the last route edit ("Route reversed."), empty once it is a few seconds old.</summary>
+    public string            EditStatus       { get; set; } = string.Empty;
 }
 
 /// <summary>One-shot command sent from the Avalonia NavPanel to the plugin.</summary>
@@ -720,6 +762,12 @@ public sealed class NavCommand
     public int    InsertAt  { get; set; } = -1;
     public string NavName   { get; set; } = string.Empty;
     public string Text      { get; set; } = string.Empty;   // addChat: the command or text
+    public bool   On        { get; set; }                   // setBreadcrumbs / setRouteOverlay / setRecording
+    public List<int> Indices { get; set; } = new();         // movePoints / duplicatePoints / deletePoints
+    public int    Delta     { get; set; }                   // movePoints: -1 up, +1 down
+    public double Seconds   { get; set; }                   // addPause
+    public double Yards     { get; set; }                   // simplifyRoute tolerance
+    public bool   Reverse   { get; set; }                   // trailToRoute: backtrack (walk the trail in reverse)
 }
 
 /// <summary>Bridge payload for the engine-side Avalonia SettingsPanel.</summary>
@@ -915,6 +963,21 @@ public sealed class SettingsBridgePayload
     // The off hand (only when the sender includes them; today's engine Settings face doesn't).
     public string? OffhandDefault { get; set; }
     public bool? PreferDualWield { get; set; }
+
+    // Ground loot (GroundLootController; also /ra groundloot on|off).
+    public bool EnableGroundLoot { get; set; }
+    // Item info: describe an item in chat when it is selected (/ra iteminfo onselect).
+    public bool ItemInfoOnSelect { get; set; }
+
+    // Diagnostics. Stored per PC in Logs\Diagnostics\diagnostics.json (RynthLog), not in
+    // the character profile; applied only when a value differs, so a save of other
+    // settings doesn't rewrite that file.
+    public bool DiagDebugToChat { get; set; }
+    public bool DiagFileLogAll { get; set; } = true;
+    /// <summary>Every trace category as "Name=Level" joined by ','; Level 0 = Off, 1 = Trace, 2 = Info.</summary>
+    public string DiagCategories { get; set; } = string.Empty;
+    /// <summary>Read-only: the diagnostics folder, shown under the switches.</summary>
+    public string DiagFolder { get; set; } = string.Empty;
 }
 
 public enum MetaConditionType

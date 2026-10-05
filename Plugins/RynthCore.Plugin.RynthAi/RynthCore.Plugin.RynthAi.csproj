@@ -29,6 +29,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Install-folder resolver used by the ILT Hub, diagnostics, and chat translator. -->
+    <Compile Include="..\..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- UB damage-insights seed schema, shared with the Monster Editor importer. -->
+    <Compile Include="..\..\Shared\UbMobSeed.cs" Link="Shared\UbMobSeed.cs" />
     <!-- Interfaces shared with other RynthSuite plugins (RynthLua uses RynthAi.Script, RynthNet RynthAi.Status). -->
     <Compile Include="..\Shared\RynthAiScriptApi.cs" Link="Shared\RynthAiScriptApi.cs" />
     <!-- RynthNet reads the bot state through RynthAi.Status. -->
