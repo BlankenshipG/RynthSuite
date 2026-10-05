@@ -3348,8 +3348,9 @@ public partial class CombatManager : IDisposable
 
     /// <summary>
     /// The weapon to fight <paramref name="target"/> with (0 = none), and the element in
-    /// <paramref name="desired"/>. See WeaponPlanner for the order: the Damage tab's weapon
-    /// (listed only), the Monsters rule's damage type, the weakness (weakest element a listed
+    /// <paramref name="desired"/>. See WeaponPlanner for the order: this monster's Damage tab
+    /// weapon (listed only), a slayer of the monster, the Damage tab DEFAULT row's weapon, the
+    /// Monsters rule's damage type, the weakness (weakest element a listed
     /// weapon of the main kind has), else the weapon in hand, the learned best, the first.
     /// Casters are skipped when the character has no War/Void Magic (IsUsableCombatWeapon).
     /// </summary>
@@ -3414,7 +3415,13 @@ public partial class CombatManager : IDisposable
         var weak = WeaknessFor(target);
         listed = ApplyAmmo(listed, ruleElement, weak);
         // Slayers (PropertyInt 166 = the monster's PropertyInt 2) only when a listed weapon has one.
-        int ctype = listed.Any(c => c.SlayerType > 0) ? CreatureTypeOf(wcid, target.Name, target.Id) : 0;
+        int ctype = 0;
+        if (listed.Any(c => c.SlayerType > 0))
+        {
+            ctype = CreatureTypeOf(wcid, target.Name, target.Id);
+            if (ctype == 0 && _slayerTypeUnknownNoted.TryAdd(wcid != 0 ? wcid.ToString() : target.Name ?? "", 0))
+                _host.Log($"[EquipDiag] '{target.Name}' (wcid {wcid}): creature type not known yet (not appraised, not in the creature data) - no slayer check until it is");
+        }
         return WeaponPlanner.Choose(listed, ruleElement, weak, e => CanCastElement(e, rule),
             fixedId, fixedSource, learnedId, ctype, fixedIsDefault);
     }
@@ -3424,17 +3431,25 @@ public partial class CombatManager : IDisposable
 
     /// <summary>
     /// A weapon's slayer (creature type, damage multiplier); (0, 0) when it has none or isn't
-    /// identified yet (the weapon tracker identifies listed weapons). ACE needs both properties.
+    /// identified yet (the weapon tracker identifies listed weapons). The multiplier is 0 when
+    /// not known: ACE sends SlayerCreatureType (int 166, an assessment property) on appraisal
+    /// but never SlayerDamageBonus (float 138), so requiring both (as before 2026-10-05) meant no
+    /// slayer was ever seen on an ACE server. A server that does send float 138 gets it used.
     /// </summary>
     internal (int Type, double Bonus) SlayerOf(int weaponId)
     {
         uint uid = unchecked((uint)weaponId);
         if (!_host.HasGetObjectIntProperty || !_host.TryGetObjectIntProperty(uid, PropSlayerCreatureType, out int t) || t <= 0)
             return (0, 0);
-        if (!_host.HasGetObjectDoubleProperty || !_host.TryGetObjectDoubleProperty(uid, PropSlayerDamageBonus, out double b) || b <= 0)
-            return (0, 0);
-        return (t, b);
+        double bonus = _host.HasGetObjectDoubleProperty && _host.TryGetObjectDoubleProperty(uid, PropSlayerDamageBonus, out double b) && b > 0 ? b : 0;
+        if (_slayerNoted.TryAdd((weaponId, t), 0))
+            _host.Log($"[EquipDiag] weapon 0x{uid:X8} '{WeaponName(weaponId)}' slays {CreatureTypeNames.Name(t)} ({(bonus > 0 ? "x" + bonus.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "bonus not sent")})");
+        return (t, bonus);
     }
+
+    // Logged once each: a listed weapon's slayer; a monster whose type isn't known while a slayer is listed.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int), byte> _slayerNoted = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _slayerTypeUnknownNoted = new();
 
     // Creature type by wcid, once seen: a wcid's type never changes, so the next spawn is instant.
     // Concurrent: the Damage tab's JSON export asks for weaknesses off the combat tick.
@@ -3443,7 +3458,8 @@ public partial class CombatManager : IDisposable
     /// <summary>
     /// The monster's CreatureType (PropertyInt 2; 0 = unknown): this session's per-wcid cache,
     /// else the creature store (appraisals saved by name and wcid), else the live appraisal
-    /// (the engine identifies every new object). Never guessed from the name.
+    /// (the engine identifies every new object), else the shipped world-database table
+    /// (CreatureWeakness: wcid and exact name). Never guessed from name keywords.
     /// </summary>
     internal int CreatureTypeOf(uint wcid, string? name, int objectId = 0)
     {
@@ -3464,6 +3480,11 @@ public partial class CombatManager : IDisposable
             if (_creatureTypeByWcid.Count > 4096) _creatureTypeByWcid.Clear();
             _creatureTypeByWcid[wcid] = ctype;
         }
+        // Not seen yet on this server: the shipped world-database table (wcid and name must both
+        // match, as for its resists). Not cached, so this monster's own appraisal still wins once
+        // it lands. 4,506 of the ~4,900 creature profiles are seeded without a type (2026-10-05),
+        // so before this the first fight with a monster had no slayer step.
+        if (ctype <= 0) ctype = CreatureWeakness.TableCreatureType(wcid, name);
         return ctype > 0 ? ctype : 0;
     }
 
@@ -3996,7 +4017,7 @@ public partial class CombatManager : IDisposable
                 && (CurrentCombatMode == CombatMode.Melee || CurrentCombatMode == CombatMode.Missile))
             {
                 if (_host.HasCancelAttack)   _host.CancelAttack();
-                if (_host.HasStopCompletely) _host.StopCompletely();
+                if (_host.HasStopCompletely) _host.StopCompletelyBy("Combat");
                 _combatSwapTeardownDone = true;
                 _host.Log($"[EquipDiag] CancelAttack+StopCompletely before wand equip (mode was {CurrentCombatMode})");
             }
@@ -4244,7 +4265,7 @@ public partial class CombatManager : IDisposable
             && (CurrentCombatMode == CombatMode.Melee || CurrentCombatMode == CombatMode.Missile))
         {
             if (_host.HasCancelAttack)   _host.CancelAttack();
-            if (_host.HasStopCompletely) _host.StopCompletely();
+            if (_host.HasStopCompletely) _host.StopCompletelyBy("Combat");
             _combatSwapTeardownDone = true;
         }
         if (!EnsureHandClearForWand(wandId, diagNow: true))
@@ -4393,13 +4414,13 @@ public partial class CombatManager : IDisposable
             }
             else if (error > 0)
             {
-                _host.SetMotion(MotionTurnRight, true);
-                _host.SetMotion(MotionTurnLeft,  false);
+                _host.SetMotionBy("Combat", MotionTurnRight, true);
+                _host.SetMotionBy("Combat", MotionTurnLeft,  false);
             }
             else
             {
-                _host.SetMotion(MotionTurnLeft,  true);
-                _host.SetMotion(MotionTurnRight, false);
+                _host.SetMotionBy("Combat", MotionTurnLeft,  true);
+                _host.SetMotionBy("Combat", MotionTurnRight, false);
             }
         }
         catch { }
@@ -4407,8 +4428,8 @@ public partial class CombatManager : IDisposable
 
     private void ClearCombatTurnMotions()
     {
-        _host.SetMotion(MotionTurnRight, false);
-        _host.SetMotion(MotionTurnLeft,  false);
+        _host.SetMotionBy("Combat", MotionTurnRight, false);
+        _host.SetMotionBy("Combat", MotionTurnLeft,  false);
     }
 
     /// <summary>Let go of a turn the facing servo is holding. Called when combat stops

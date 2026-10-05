@@ -337,7 +337,7 @@ internal sealed class AutoVendorManager
         _openAttempts = 1;
         _openNextAt = Now() + 250;   // UB fudges the first attempt to ~250 ms after the command
         _opening = true;
-        if (_host.HasSetAutoRun) _host.SetAutoRun(false);
+        if (_host.HasSetAutoRun) _host.SetAutoRunBy("Vendor", false);
         _host.Log($"[RynthAi] AutoVendor: attempting to open vendor {vendor.Name}");
     }
 
@@ -959,9 +959,9 @@ internal sealed class AutoVendorManager
     private void CancelUse()
     {
         if (_host.HasTurnToHeading && _host.TryGetPlayerHeading(out float h))
-            _host.TurnToHeading((h + 359f) % 360f);
+            _host.TurnToHeadingBy("Vendor", (h + 359f) % 360f);
         else if (_host.HasStopCompletely)
-            _host.StopCompletely();
+            _host.StopCompletelyBy("Vendor");
     }
 
     private WorldObject? FindVendor(string target, bool partial)

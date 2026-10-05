@@ -91,6 +91,22 @@ internal static class CreatureWeakness
         return null;
     }
 
+    /// <summary>
+    /// The creature type the world-database table gives this monster (0 = not in it). Same match
+    /// as <see cref="Rank"/>: the wcid's row when its name agrees (or no name is given); no wcid,
+    /// the first row of that name. Never guessed from name keywords.
+    /// </summary>
+    public static int TableCreatureType(uint wcid, string? name)
+    {
+        EnsureLoaded();
+        name ??= "";
+        if (wcid == 0 && name.Length > 0 && ByName.TryGetValue(name, out uint byName)) wcid = byName;
+        if (wcid != 0 && ByWcid.TryGetValue(wcid, out var row)
+            && (name.Length == 0 || row.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            return row.Type > 0 ? row.Type : 0;
+        return 0;
+    }
+
     /// <summary>Damage multiplier for one element from the server table or the type average; false when unknown.</summary>
     public static bool TryGetMultiplier(uint wcid, string? name, int creatureType, string element, out double mult)
     {

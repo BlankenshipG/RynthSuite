@@ -2543,7 +2543,7 @@ internal sealed class ExpressionEngine
             if (!_castCombatTornDown && (mode == CombatMode.Melee || mode == CombatMode.Missile))
             {
                 if (_host.HasCancelAttack)   _host.CancelAttack();
-                if (_host.HasStopCompletely) _host.StopCompletely();
+                if (_host.HasStopCompletely) _host.StopCompletelyBy("Meta");
                 _castCombatTornDown = true;
                 _host.Log($"[MetaCast] CancelAttack+StopCompletely before wand equip (mode was {mode})");
             }
@@ -2882,7 +2882,7 @@ internal sealed class ExpressionEngine
         if (!MotionValues.TryGetValue(motionArg, out uint motionVal)) return "0";
         bool on = ToDouble(stateArg) != 0;
         _wantedMotion[motionArg] = on;
-        return _host.SetMotion(motionVal, on) ? "1" : "0";
+        return _host.SetMotionBy("Meta", motionVal, on) ? "1" : "0";
     }
 
     private string EvalGetMotion(string motionArg)
@@ -2899,7 +2899,7 @@ internal sealed class ExpressionEngine
         if (_host.HasSetMotion)
         {
             foreach (var kvp in MotionValues)
-                _host.SetMotion(kvp.Value, false);
+                _host.SetMotionBy("Meta", kvp.Value, false);
         }
         _wantedMotion.Clear();
         return "1";
@@ -3305,6 +3305,8 @@ internal sealed class ExpressionEngine
             ["StopMacroOnDeath"] = (() => B(s.StopMacroOnDeath), v => s.StopMacroOnDeath = ToDouble(v) != 0),
             ["StopMacroOnNoComponents"] = (() => B(s.StopMacroOnNoComponents), v => s.StopMacroOnNoComponents = ToDouble(v) != 0),
             ["StopLootingWhenPackFull"] = (() => B(s.StopLootingWhenPackFull), v => s.StopLootingWhenPackFull = ToDouble(v) != 0),
+            ["LootOwnCorpse"] = (() => B(s.LootOwnCorpse), v => s.LootOwnCorpse = ToDouble(v) != 0),
+            ["TravelToOwnCorpse"] = (() => B(s.TravelToOwnCorpse), v => s.TravelToOwnCorpse = ToDouble(v) != 0),
             ["StopMacroWhenPackFull"] = (() => B(s.StopMacroWhenPackFull), v => s.StopMacroWhenPackFull = ToDouble(v) != 0),
             ["SummonPets"]          = (() => B(s.SummonPets),          v => s.SummonPets          = ToDouble(v) != 0),
             ["MineOnly"]            = (() => B(s.MineOnly),            v => s.MineOnly            = ToDouble(v) != 0),
@@ -3340,6 +3342,7 @@ internal sealed class ExpressionEngine
             ["ManaStoneKeepCount"]     = (() => I(s.ManaStoneKeepCount),     v => { if (int.TryParse(v, out int i)) s.ManaStoneKeepCount = i; }),
             ["RebuffSecondsRemaining"] = (() => I(s.RebuffSecondsRemaining), v => { if (int.TryParse(v, out int i)) s.RebuffSecondsRemaining = i; }),
             ["RebuffTopOffSecondsRemaining"] = (() => I(s.RebuffTopOffSecondsRemaining), v => { if (int.TryParse(v, out int i)) s.RebuffTopOffSecondsRemaining = i; }),
+            ["CastBuffsOverItemBuffs"]       = (() => B(s.CastBuffsOverItemBuffs),       v => s.CastBuffsOverItemBuffs       = ToDouble(v) != 0),
             // AutoVendor (UB names map here through /ub opt: AutoVendor.Enabled -> AutoVendorEnabled, ...)
             ["AutoVendorEnabled"]          = (() => B(s.AutoVendorEnabled),          v => s.AutoVendorEnabled          = ToDouble(v) != 0),
             ["AutoVendorEnableBuying"]     = (() => B(s.AutoVendorEnableBuying),     v => s.AutoVendorEnableBuying     = ToDouble(v) != 0),

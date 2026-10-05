@@ -29,6 +29,8 @@ public sealed partial class RynthAiPlugin
         {
             _deathSeen = true;
             Log("[RynthAi] Death detected (health 0).");
+            try { RecordDeathSpot(); }   // where the corpse will be (RynthAiPlugin.OwnCorpse.cs)
+            catch (Exception ex) { Log($"[RynthAi] Death spot not recorded: {ex.Message}"); }
             if (s.StopMacroOnDeath && s.IsMacroRunning)
             {
                 HandleMacroRunCommand("stop", Array.Empty<string>());
@@ -82,7 +84,11 @@ public sealed partial class RynthAiPlugin
                 _navigationEngine?.Stop();
             }
             else
+            {
                 Log("[RynthAi] Respawned — resuming.");
+                try { OnRespawnedForOwnCorpse(); }   // Travel Back To My Corpse
+                catch (Exception ex) { Log($"[RynthAi] Own corpse travel not started: {ex.Message}"); }
+            }
         }
         return hold;
     }

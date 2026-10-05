@@ -38,12 +38,27 @@ internal static partial class Program
             TestAddJsonInsert(crlf: false);
             TestAddJsonInsert(crlf: true);
             TestAddJsonEdgeCases();
+            TestAddBuiltInReasonWire();
             TestAddDeployedCopies(args);
         }
         finally
         {
             try { Directory.Delete(_addDir, recursive: true); } catch { }
         }
+    }
+
+    // The popup's "why RynthAi takes it anyway" (2026-10-05): on the wire next to OrderNote,
+    // and a payload from a RynthAi without it reads as empty.
+    private static void TestAddBuiltInReasonWire()
+    {
+        Console.WriteLine("\n-- LootAdd: built-in keep reason on the wire --");
+        var st = new LootEditState { ItemDraft = new LootEditItemDraft { Seq = 3, OrderNote = "Goes in at the end. Why.", BuiltInReason = "Why." } };
+        string json = System.Text.Json.JsonSerializer.Serialize(st, LootEditJsonContext.Default.LootEditState);
+        LootEditState? back = System.Text.Json.JsonSerializer.Deserialize(json, LootEditJsonContext.Default.LootEditState);
+        Eq(back?.ItemDraft?.BuiltInReason, "Why.", "BuiltInReason round-trips");
+        Eq(back?.ItemDraft?.OrderNote, "Goes in at the end. Why.", "OrderNote too");
+        LootEditState? old = System.Text.Json.JsonSerializer.Deserialize("{\"ItemDraft\":{\"Seq\":1,\"OrderNote\":\"x\"}}", LootEditJsonContext.Default.LootEditState);
+        Eq(old?.ItemDraft?.BuiltInReason, "", "an older RynthAi's draft: empty");
     }
 
     private static string AddFile(string name, byte[] bytes)

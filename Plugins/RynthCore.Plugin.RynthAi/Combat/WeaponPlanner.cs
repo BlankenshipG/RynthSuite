@@ -9,7 +9,9 @@ namespace RynthCore.Plugin.RynthAi;
 /// <param name="Element">Normalized element ("" = unknown).</param>
 /// <param name="Rending">Element of a rending imbue ("" = none).</param>
 /// <param name="SlayerType">The creature type it slays (PropertyInt 166 SlayerCreatureType, 0 = none).</param>
-/// <param name="SlayerBonus">Its damage multiplier against that type (PropertyFloat 138 SlayerDamageBonus, 0 = none).</param>
+/// <param name="SlayerBonus">Its damage multiplier against that type (PropertyFloat 138 SlayerDamageBonus); 0 = not
+/// known. ACE never sends float 138 on appraisal (it isn't an assessment property), so with a SlayerType it is
+/// usually 0, and the weapon still slays (every slayer in the ACE world database has a bonus of 1.15 or more).</param>
 internal sealed record WeaponCandidate(int Id, string Name, int Kind, string Element, string Rending, bool InHand,
     int SlayerType = 0, double SlayerBonus = 0);
 
@@ -19,17 +21,22 @@ internal readonly record struct WeaponPlan(int WeaponId, string Element, string 
 
 /// <summary>
 /// The element-and-weapon rule, pure (no host). The weakness decides the weapon, never the
-/// other way round, except for a slayer:
-///   1. A Damage tab weapon (this monster's, else the DEFAULT row's) is used as set; it must be in the Items list.
-///      Its element is the rule's, else its own, else the weakest the character can cast.
+/// other way round, except for a slayer (owner's rule, 2026-10-05: a monster is always
+/// attacked with a slayer of it before an element choice, even when another weapon's element
+/// meets a lower resistance; only a weapon the player set for that monster trumps it):
+///   1. The weapon set on THIS monster's own Damage tab row is used as set, slayer or not; it
+///      must be in the Items list. Its element is the rule's, else its own, else the weakest
+///      the character can cast.
 ///   2. A slayer: a listed weapon of the character's main kind whose SlayerCreatureType is
-///      the monster's CreatureType and whose SlayerDamageBonus is above 1 (ACE multiplies the
-///      whole hit by it, so it beats any element choice). Several: the biggest bonus, then
-///      the element order (the rule's element, else the weakest group), then a matching
-///      rending, then the one in hand, then list order. Its element is the wand's own, else a
-///      melee/missile weapon's own, else the rule's, else the weakest the character can cast.
-///      Creature type unknown (not appraised yet): no slayer step.
-///   3. (The Damage tab DEFAULT row's weapon is a player pick too: it is step 1.)
+///      the monster's CreatureType and whose SlayerDamageBonus is above 1 or not known (ACE
+///      multiplies the whole hit by it, so it beats any element choice, and never sends the
+///      bonus on appraisal). Several: the biggest bonus (an unknown one counts as
+///      UnknownSlayerBonus), then the element order (the rule's element, else the weakest
+///      group), then a matching rending, then the one in hand, then list order. Its element
+///      is the wand's own, else a melee/missile weapon's own, else the rule's, else the
+///      weakest the character can cast. Creature type unknown: no slayer step.
+///      A slayer of another kind (a melee slayer for a mage) is not a candidate.
+///   3. The Damage tab DEFAULT row's weapon (listed only): above the element steps, below a slayer.
 ///   4. A Monsters rule damage type (not Auto) is the element; wield the listed weapon of that
 ///      element (a matching rending first, then the one in hand, then list order).
 ///   Whatever is chosen, a wand casts its own element when it has one (owner's rule,
@@ -51,6 +58,12 @@ internal static class WeaponPlanner
     /// <summary>Two multipliers this close are a tie.</summary>
     public const double TieEpsilon = 0.005;
 
+    /// <summary>
+    /// The bonus a slayer whose SlayerDamageBonus isn't known is ranked at: the smallest in the
+    /// ACE world database (1.15), so a slayer with a known bigger bonus wins over it.
+    /// </summary>
+    public const double UnknownSlayerBonus = 1.15;
+
     /// <summary>Fallback element order when nothing is known ("Slash" first).</summary>
     public static readonly string[] FallbackOrder = { "Slash", "Fire", "Cold", "Lightning", "Acid", "Pierce", "Bludgeon", "Nether" };
 
@@ -69,12 +82,13 @@ internal static class WeaponPlanner
         bool ruleSet = rule.Length > 0;
         WeaponCandidate? fixedPick = fixedWeaponId != 0 ? Find(listed, fixedWeaponId) : null;
 
-        // 1. A weapon the player picked on the Damage tab: for this monster, or the DEFAULT row's
-        //    (listed only). A player's pick is honoured, slayer or not (owner, 2026-10-04: "if
-        //    it's set to auto slayer wins, if the player picks a weapon we honour that").
-        //    fixedIsDefault only changes the source label.
-        if (fixedPick != null)
-            return FixedPlan(fixedPick, fixedSource, rule, weak, canCast);
+        // 1. The weapon the player set on this monster's own Damage tab row (listed only): honoured,
+        //    slayer or not (owner, 2026-10-05: "the only time a slayer property gets trumped is if
+        //    the player manually inputs a weapon without it"). The DEFAULT row's weapon is not a
+        //    pick for this monster: a slayer of it beats that one (step 3).
+        if (fixedPick != null && !fixedIsDefault)
+            return FixedPlan(fixedPick, Slays(fixedPick, creatureType)
+                ? fixedSource + ", " + SlayerSource(creatureType, fixedPick.SlayerBonus) : fixedSource, rule, weak, canCast);
 
         if (listed.Count == 0)
         {
@@ -101,7 +115,7 @@ internal static class WeaponPlanner
             }
         }
 
-        // 3. The Damage tab default weapon (listed only).
+        // 3. The Damage tab DEFAULT row's weapon (listed only): no slayer of this monster is listed.
         if (fixedPick != null)
             return FixedPlan(fixedPick, fixedSource, rule, weak, canCast);
 
@@ -200,16 +214,24 @@ internal static class WeaponPlanner
         return null;
     }
 
-    /// <summary>True when <paramref name="c"/> slays <paramref name="creatureType"/> (ACE: SlayerCreatureType == CreatureType, with a bonus).</summary>
+    /// <summary>
+    /// True when <paramref name="c"/> slays <paramref name="creatureType"/> (ACE: SlayerCreatureType ==
+    /// CreatureType). A bonus that is known must be above 1; an unknown one (0: ACE doesn't send
+    /// float 138 on appraisal) counts.
+    /// </summary>
     public static bool Slays(WeaponCandidate c, int creatureType) =>
-        creatureType > 0 && c.SlayerType == creatureType && c.SlayerBonus > 1.0 + TieEpsilon;
+        creatureType > 0 && c.SlayerType == creatureType && (c.SlayerBonus <= 0 || c.SlayerBonus > 1.0 + TieEpsilon);
 
-    /// <summary>The plan's source for a slayer: "slayer (Olthoi x2)".</summary>
-    public static string SlayerSource(int creatureType, double bonus) =>
-        $"slayer ({CreatureTypeNames.Name(creatureType)} x{bonus.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)})";
+    /// <summary>The bonus a slayer is ranked at: its own when known, else <see cref="UnknownSlayerBonus"/>.</summary>
+    public static double RankBonus(WeaponCandidate c) => c.SlayerBonus > 0 ? c.SlayerBonus : UnknownSlayerBonus;
+
+    /// <summary>The plan's source for a slayer: "slayer (Olthoi x2)", or "slayer (Olthoi)" when the bonus isn't known.</summary>
+    public static string SlayerSource(int creatureType, double bonus) => bonus > 0
+        ? $"slayer ({CreatureTypeNames.Name(creatureType)} x{bonus.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)})"
+        : $"slayer ({CreatureTypeNames.Name(creatureType)})";
 
     /// <summary>
-    /// The matching slayer to wield: the biggest bonus (ties within <see cref="TieEpsilon"/>),
+    /// The matching slayer to wield: the biggest bonus (<see cref="RankBonus"/>; ties within <see cref="TieEpsilon"/>),
     /// then the element order (the rule's element, else the weakest group), then a matching
     /// rending, then the one in hand, then list order. Null when none matches.
     /// </summary>
@@ -217,7 +239,7 @@ internal static class WeaponPlanner
         CreatureWeakness.Ranking? weak, Func<string, bool> canCast)
     {
         double top = 0;
-        foreach (var c in pool) if (Slays(c, creatureType) && c.SlayerBonus > top) top = c.SlayerBonus;
+        foreach (var c in pool) if (Slays(c, creatureType) && RankBonus(c) > top) top = RankBonus(c);
         if (top <= 0) return null;
 
         List<List<string>>? groups = rule.Length == 0 && weak != null && weak.Order.Count > 0 ? TieGroups(weak) : null;
@@ -226,7 +248,7 @@ internal static class WeaponPlanner
         for (int i = 0; i < pool.Count; i++)
         {
             var c = pool[i];
-            if (!Slays(c, creatureType) || c.SlayerBonus < top - TieEpsilon) continue;
+            if (!Slays(c, creatureType) || RankBonus(c) < top - TieEpsilon) continue;
             int elemRank = 0;
             if (rule.Length > 0) elemRank = c.Element == rule ? 0 : 1;
             else if (groups != null)

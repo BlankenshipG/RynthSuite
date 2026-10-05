@@ -166,6 +166,12 @@ public sealed class LootEditItemDraft
     public int InsertAt { get; set; } = -1;
     public int RuleCount { get; set; }
     public string OrderNote { get; set; } = string.Empty;
+    /// <summary>
+    /// Why RynthAi's own looting takes the item whatever the profile says, or empty: one of
+    /// its built-in keeps (Learn unknown spells, mana stones, Mana Tap), with where to change
+    /// it (2026-10-05). Also appended to OrderNote, which every engine's popup shows.
+    /// </summary>
+    public string BuiltInReason { get; set; } = string.Empty;
     public List<string> Notes { get; set; } = new();
     /// <summary>item_add went through; Message says what was added where.</summary>
     public bool Added { get; set; }

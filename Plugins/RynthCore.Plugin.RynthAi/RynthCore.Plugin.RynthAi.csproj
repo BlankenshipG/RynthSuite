@@ -15,7 +15,18 @@
     <RootNamespace>RynthCore.Plugin.RynthAi</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthAi</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
+         highest API use NOT behind a Has*/version check. Every call above v66 (vendor v67, plugin interfaces v68, use/weenie results and wield v70, trade v72, instance ids v73, VTank state v74, CloseContainer v76) is behind a Has*/version check with a fallback. -->
+    <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
+    <RynthPluginDescription>The bot: combat, buffs, looting, navigation routes and metas.</RynthPluginDescription>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Plugins it can use when they are loaded (looked up at run time; optional, so they never block or reorder it). -->
+    <RynthPluginDependency Include="RynthNav" Optional="true" />
+    <RynthPluginDependency Include="RynthLua" Optional="true" />
+    <RynthPluginDependency Include="RynthNet" Optional="true" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Interfaces shared with other RynthSuite plugins (RynthLua uses RynthAi.Script, RynthNet RynthAi.Status). -->
@@ -26,6 +37,8 @@
     <Compile Include="..\Shared\RynthNavPathApi.cs" Link="Shared\RynthNavPathApi.cs" />
     <!-- One logged, guarded way to use an object (who used what, and why). -->
     <Compile Include="..\Shared\UseAudit.cs" Link="Shared\UseAudit.cs" />
+    <!-- Movement calls logged with the subsystem that sent them (stuck-cast diagnosis, 2026-10-05). -->
+    <Compile Include="..\Shared\MoveAudit.cs" Link="Shared\MoveAudit.cs" />
   </ItemGroup>
 
   <ItemGroup>

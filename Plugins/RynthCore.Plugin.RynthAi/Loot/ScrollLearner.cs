@@ -279,28 +279,38 @@ internal sealed class ScrollLearner
     /// setting on, a scroll on a corpse whose spell the character doesn't know and can learn.
     /// One copy per spell.
     /// </summary>
-    public bool ShouldLootFromCorpse(WorldObject item, out string ruleLabel)
+    public bool ShouldLootFromCorpse(WorldObject item, out string ruleLabel) =>
+        ShouldLootFromCorpse(item, out ruleLabel, out _, preview: false);
+
+    // preview: the same answer with nothing recorded or logged (the loot popup asking why).
+    // why: the spell and why it is taken, in a few words.
+    public bool ShouldLootFromCorpse(WorldObject item, out string ruleLabel, out string why, bool preview)
     {
         ruleLabel = string.Empty;
+        why = string.Empty;
         if (!_settings.ReadUnknownScrolls || !LooksLikeScroll(item)) return false;
 
         ScrollJudgement j = Judge(item);
         if (j.Verdict == ScrollVerdict.NoSpell) return false;   // a book, a note: not ours to judge
         if (!j.Learnable)
         {
-            LogItem(item.Id, $"[Learn] leaving '{item.Name}' ({j.SpellName}: {j.Why})");
+            if (!preview) LogItem(item.Id, $"[Learn] leaving '{item.Name}' ({j.SpellName}: {j.Why})");
             return false;
         }
 
         long now = NowMs();
         if (OtherCopyTaken(j.SpellId, item.Id, now))
         {
-            LogItem(item.Id, $"[Learn] leaving '{item.Name}' ({j.SpellName}: another copy is already on its way)");
+            if (!preview) LogItem(item.Id, $"[Learn] leaving '{item.Name}' ({j.SpellName}: another copy is already on its way)");
             return false;
         }
-        _approved[j.SpellId] = (item.Id, now);
-        LogItem(item.Id, $"[Learn] looting '{item.Name}' ({j.SpellName}: {j.Why})");
+        if (!preview)
+        {
+            _approved[j.SpellId] = (item.Id, now);
+            LogItem(item.Id, $"[Learn] looting '{item.Name}' ({j.SpellName}: {j.Why})");
+        }
         ruleLabel = RuleLabel;
+        why = $"{j.SpellName}: {j.Why}";
         return true;
     }
 

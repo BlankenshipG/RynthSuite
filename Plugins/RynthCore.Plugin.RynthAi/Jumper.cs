@@ -1,6 +1,7 @@
 using System;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -87,7 +88,7 @@ internal sealed class Jumper
         {
             _turningStartedAt = DateTime.UtcNow;
             if (_host.HasTurnToHeading)
-                _host.TurnToHeading(_targetHeading);
+                _host.TurnToHeadingBy("Jump", _targetHeading);
             _host.Log($"[Jumper] Start turn->{_targetHeading:F0} letters='{directionLetters}' hold={_msToHoldDown}ms");
         }
         else

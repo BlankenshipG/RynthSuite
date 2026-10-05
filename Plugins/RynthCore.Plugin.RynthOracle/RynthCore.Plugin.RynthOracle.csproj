@@ -20,6 +20,10 @@
     <RootNamespace>RynthCore.Plugin.RynthOracle</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthOracle</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
+         highest API use NOT behind a Has*/version check. Script windows (v71, HasUi) draw its window and titles/server info (v75) are guarded with fallbacks; below v71 it runs without a window (/ro status), as on an engine with ImGui off. -->
+    <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
+    <RynthPluginDescription>Quests, character, titles and leaderboards.</RynthPluginDescription>
   </PropertyGroup>
 
   <ItemGroup>

@@ -81,6 +81,14 @@ internal static unsafe class FakeHost
     public static int Jumps;
     public static int Turns;
     public static readonly List<(uint Target, int SpellId)> Casts = new();
+    /// <summary>Opt-in: wires GiveObjectTo (AC's give action); every call lands in <see cref="Gives"/>.</summary>
+    public static bool GiveCalls;
+    /// <summary>Every GiveObjectTo (item, target, amount; 0 = the whole object), in order.</summary>
+    public static readonly List<(uint Item, uint Target, int Amount)> Gives = new();
+    /// <summary>Opt-in: wires StopCompletely (off by default so no other test sees it).</summary>
+    public static bool StopCalls;
+    /// <summary>StopCompletely calls (opt-in with <see cref="StopCalls"/>).</summary>
+    public static int Stops;
     /// <summary>Every UseObject (a wield, a use) and RequestId (an identify), in order.</summary>
     public static readonly List<uint> Uses = new();
     public static readonly List<uint> IdRequests = new();
@@ -100,6 +108,12 @@ internal static unsafe class FakeHost
     public static bool ServerGates;
     /// <summary>The count of server UseDone (0x01C7) events the fake reports.</summary>
     public static int UseDoneSeq;
+    /// <summary>The error code of the last UseDone (GetLastUseDone, v70; 0 = completed, 0x1D = too busy).
+    /// Opt-in with <see cref="LastUseDoneCalls"/> (set before Create, together with ServerGates).</summary>
+    public static uint LastUseDoneError;
+    public static bool LastUseDoneCalls;
+    /// <summary>One more UseDone with <paramref name="error"/> (0 = the action completed).</summary>
+    public static void UseDone(uint error) { UseDoneSeq++; LastUseDoneError = error; }
     /// <summary>1 while a cast gesture animates (GetCastBusyState), else 0.</summary>
     public static int CastBusy;
     public static int VTankSeq;
@@ -135,6 +149,12 @@ internal static unsafe class FakeHost
     public static uint GroundContainer;
     /// <summary>The item selected in the game (GetSelectedItemId); 0 = none.</summary>
     public static uint SelectedItem;
+    /// <summary>Opt-in: install SendPluginCommand (the engine's plugin-command broker, API v64).</summary>
+    public static bool PluginCommandCalls;
+    /// <summary>What SendPluginCommand answers: true = delivered (the target plugin is loaded).</summary>
+    public static bool PluginCommandDelivered = true;
+    /// <summary>Every SendPluginCommand (plugin, action, value), in order.</summary>
+    public static readonly List<(string Plugin, string Action, string Value)> PluginCommands = new();
 
     // ANSI strings handed back to tested code stay alive for the whole run.
     private static readonly Dictionary<string, IntPtr> _ansi = new();
@@ -150,15 +170,16 @@ internal static unsafe class FakeHost
         Vitals = default; BaseVitals = default; WorldName = ""; AccountName = "";
         HeadingDeg = 0; Wcids.Clear(); Spellbook.Clear(); PlayerIdValue = 0;
         Logs.Clear(); Chat.Clear(); ChatCommands.Clear();
-        AutoRunCalls.Clear(); AutoRun = false; Jumps = 0; Turns = 0; Casts.Clear();
+        AutoRunCalls.Clear(); AutoRun = false; Jumps = 0; Turns = 0; Casts.Clear(); StopCalls = false; Stops = 0; GiveCalls = false; Gives.Clear();
         Uses.Clear(); IdRequests.Clear(); Moves.Clear(); Appraised.Clear(); WeaponCalls = false; CombatModeValue = 1;
         VTankFlags = -1; VTankSeq = 0; LogCostMicros = 0;
-        ServerGates = false; UseDoneSeq = 0; CastBusy = 0;
+        ServerGates = false; UseDoneSeq = 0; CastBusy = 0; LastUseDoneError = 0; LastUseDoneCalls = false;
         WieldCalls = false; Wields.Clear();
         SalvageCalls = false; ExternalMoves.Clear(); SalvageAdds.Clear(); SalvageExecutes.Clear();
         RefuseSalvageAdd.Clear(); OnSalvageExecute = null; Wielded.Clear(); _panelItems.Clear();
         CloseContainerCalls = false; Closes.Clear(); GroundContainer = 0;
         SelectedItem = 0;
+        PluginCommandCalls = false; PluginCommandDelivered = true; PluginCommands.Clear();
     }
 
     /// <summary>
@@ -199,6 +220,10 @@ internal static unsafe class FakeHost
         api.TurnToHeadingFn         = (IntPtr)(delegate* unmanaged[Cdecl]<float, int>)&TurnToHeading;
         api.JumpNonAutonomousFn     = (IntPtr)(delegate* unmanaged[Cdecl]<float, int>)&JumpNonAutonomous;
         api.CastSpellFn             = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int>)&CastSpell;
+        if (StopCalls)
+            api.StopCompletelyFn    = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&StopCompletely;
+        if (GiveCalls)
+            api.GiveObjectToFn      = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint, int, int>)&GiveObjectTo;
         if (WeaponCalls)
         {
             api.UseObjectFn            = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int>)&UseObject;
@@ -256,6 +281,8 @@ internal static unsafe class FakeHost
         {
             api.GetUseDoneSeqFn    = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&GetUseDoneSeq;
             api.GetCastBusyStateFn = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&GetCastBusyState;
+            if (LastUseDoneCalls)
+                api.GetLastUseDoneFn = (IntPtr)(delegate* unmanaged[Cdecl]<int*, uint*, int>)&GetLastUseDone;
         }
         if (VTankFlags >= 0)
         {
@@ -267,6 +294,11 @@ internal static unsafe class FakeHost
             api.Version = Math.Max(api.Version, 76u);
             api.CloseContainerFn       = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int>)&CloseContainer;
             api.GetGroundContainerIdFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint>)&GetGroundContainerId;
+        }
+        if (PluginCommandCalls)
+        {
+            api.Version = Math.Max(api.Version, 64u);
+            api.SendPluginCommandFn = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)&SendPluginCommand;
         }
         LastApi = api;
         return new RynthCoreHost(api);
@@ -328,7 +360,22 @@ internal static unsafe class FakeHost
     private static int GetCastBusyState() => CastBusy;
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetLastUseDone(int* seq, uint* error)
+    {
+        *seq = UseDoneSeq;
+        *error = UseDoneSeq == 0 ? 0 : LastUseDoneError;
+        return 1;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int WriteToChat(IntPtr text, int type) { Chat.Add(Marshal.PtrToStringUni(text) ?? ""); return 1; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int SendPluginCommand(IntPtr plugin, IntPtr action, IntPtr value)
+    {
+        PluginCommands.Add((Marshal.PtrToStringAnsi(plugin) ?? "", Marshal.PtrToStringAnsi(action) ?? "", Marshal.PtrToStringAnsi(value) ?? ""));
+        return PluginCommandDelivered ? 1 : 0;
+    }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int InvokeChatParser(IntPtr text) { ChatCommands.Add(Marshal.PtrToStringUni(text) ?? ""); return 1; }
@@ -511,6 +558,10 @@ internal static unsafe class FakeHost
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int CastSpell(uint target, int spellId) { Casts.Add((target, spellId)); return 1; }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int StopCompletely() { Stops++; return 1; }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GiveObjectTo(uint item, uint target, int amount) { Gives.Add((item, target, amount)); return 1; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int GetCurrentCombatMode() => CombatModeValue;

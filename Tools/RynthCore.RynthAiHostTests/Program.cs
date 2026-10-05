@@ -28,6 +28,8 @@ internal static class Program
         ExpressionEngine.PvarsDir = Path.Combine(TempRoot, "pvars");
         ExpressionEngine.GvarsPath = Path.Combine(TempRoot, "gvars.txt");
         ExpressionEngine.ItemGiverDir = Path.Combine(TempRoot, "ItemGiver");
+        // The dungeon map bake writes floor plans under C:\Games\RynthSuite\RynthAi\Maps.
+        RynthCore.Plugin.RynthAi.Maps.DungeonMapBake.CacheDir = Path.Combine(TempRoot, "Maps");
 
         // Spell names (item spells, spell expiry by name) come from the plugin's embedded table.
         SpellDatabase.Load();
@@ -50,13 +52,18 @@ internal static class Program
         FloodPerfTests.Register(runner);
         LootSalvageTests.Register(runner);
         LootCorpseTests.Register(runner);
+        OwnCorpseTests.Register(runner);
         VitalsTests.Register(runner);
+        CastSafetyTests.Register(runner);
+        HealLatencyTests.Register(runner);
         BlastTests.Register(runner);
         ArcWhenClearTests.Register(runner);
         UseAtLoginTests.Register(runner);
         LearnSpellsTests.Register(runner);
         AttackLatencyTests.Register(runner);
         LootAddItemTests.Register(runner);
+        GiveTests.Register(runner);
+        DungeonMapBakeTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }

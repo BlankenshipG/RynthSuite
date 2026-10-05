@@ -150,6 +150,22 @@ internal sealed class ActivityArbiter
     };
 
     /// <summary>
+    /// What a display shows for the bot's activity (the RynthAi dashboard and the phone, through
+    /// the snapshot's "botAction"; RynthNet's status "action"). The same as the BotAction control
+    /// string except for "Buffing", which is one slot for every vitals and buff job: there it is
+    /// <paramref name="buffingLabel"/> (Healing, Restoring mana, Restoring stamina or Buffing).
+    /// Healing showed as "Buffing" on both (2026-10-05). The control string itself never changes:
+    /// CombatManager's canRun and CorpseOpenController compare against "Buffing".
+    /// </summary>
+    public static string DisplayLabel(string? botAction, string? buffingLabel)
+    {
+        string action = string.IsNullOrEmpty(botAction) ? "Default" : botAction;
+        if (string.Equals(action, "Buffing", OIC) && !string.IsNullOrEmpty(buffingLabel))
+            return buffingLabel;
+        return action;
+    }
+
+    /// <summary>
     /// STEP 1 shadow mode. Compute the would-be decision and log it whenever
     /// it (or the legacy BotAction it's being compared against) changes.
     /// Caller still runs the legacy cascade; this only observes.

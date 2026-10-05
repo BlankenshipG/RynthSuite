@@ -249,6 +249,9 @@ internal sealed class ManaStoneManager
         if (itemId != 0) _lootedForTap[itemId] = NowMs;
     }
 
+    /// <summary>The looter picked this item up as "ManaTap" this session (it is waiting to be drained).</summary>
+    public bool WasLootedForTap(int itemId) => _lootedForTap.ContainsKey(itemId);
+
     /// <summary>
     /// Drops entries whose item has left the pack: drained (destroyed), sold, given
     /// away, salvaged, dropped, or never arrived. Also drops items the player has
@@ -685,7 +688,7 @@ internal sealed class ManaStoneManager
     /// is unreliable for unappraised items, so we fall back to the name, matching
     /// CombatManager/BuffManager.IsWandObject.
     /// </summary>
-    private static bool IsWandLike(WorldObject item)
+    internal static bool IsWandLike(WorldObject item)
         => item.ObjectClass == AcObjectClass.WandStaffOrb || IsWandName(item.Name);
 
     private static bool IsWandName(string name)

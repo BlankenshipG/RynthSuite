@@ -159,6 +159,34 @@ public static unsafe class PluginExports
         }
     }
 
+    // ── Hot-reload deferral (2026-10-05) ─────────────────────────────────────────
+    // The engine calls this on its reload thread before it tears itself down for a hot reload:
+    // a non-empty text ("in combat (a monster engaged, ...)") makes it wait and ask again, up to
+    // its cap. Fixed signature, const char* (void); null or "" = safe. Optional: an engine that
+    // doesn't know it simply reloads, and a plugin without it never holds a reload. Per-thread
+    // buffer (same reasoning as _snapshotPtr).
+    [ThreadStatic] private static IntPtr _reloadBlockerPtr;
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginReloadBlocker", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr ReloadBlocker()
+    {
+        try
+        {
+            string reason = Runtime.Plugin?.ReloadBlocker ?? "";
+            if (reason.Length == 0) return IntPtr.Zero;
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(reason);
+            IntPtr oldPtr = _reloadBlockerPtr;
+            _reloadBlockerPtr = newPtr;
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
     // ── Full-inventory bridge (read-only remote inventory viewer, P1) ───────────
     // Dedicated export (NOT folded into the 150ms status snapshot) so 100s of items never ride the
     // hot path. The RynthRemote plugin polls this on its own slower cadence (P2). Per-thread buffer

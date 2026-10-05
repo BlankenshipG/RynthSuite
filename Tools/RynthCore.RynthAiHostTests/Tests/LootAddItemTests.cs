@@ -27,6 +27,8 @@ internal static class LootAddItemTests
 {
     private const uint Player = 0x50000E01;
     private const uint Opal = 0x80271101, Taper = 0x80271102, Coin = 0x80271103;
+    private const uint Ring = 0x80271104, Stone = 0x80271105, Sceptre = 0x80271106;
+    private const uint ItemTypeJewelry = 0x8, ItemTypeCaster = 0x8000, ItemTypeManaStone = 0x80000, CurrentMana = 107;
     private const uint ItemTypeGem = 0x800, ItemTypeComponent = 0x1000;
     private const BindingFlags Any = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
 
@@ -39,6 +41,8 @@ internal static class LootAddItemTests
         r.Add("loot add: refusals (nothing selected, the same rule twice, no profile)", Refusals);
         r.Add("loot add: the popup's item_preview / item_add / item_close through the editor bridge", BridgePopupFlow);
         r.Add("loot add: unsaved edits in the Loot Editor block the add (nothing saved behind them)", BridgeRefusesUnderEdits);
+        r.Add("loot add: the popup says when RynthAi's built-in looting takes the item (Mana Tap, mana stones)", BuiltInReasons);
+        r.Add("loot: Mana Tap never loots a wand (ACE won't drain one, so it was kept for good)", ManaTapSkipsWands);
     }
 
     // ── World and plugin ──────────────────────────────────────────────────────
@@ -48,8 +52,10 @@ internal static class LootAddItemTests
         public readonly RynthAiPlugin P = new();
         public readonly LegacyUiSettings S = new();
         public readonly WorldObjectCache Cache;
+        public readonly RynthCoreHost Host;
 
-        public Bot()
+        /// <summary><paramref name="world"/> adds objects (after the standard ones, before the host); list their ids in <paramref name="extra"/>.</summary>
+        public Bot(Action? world = null, params uint[] extra)
         {
             FakeHost.Reset();
             FakeHost.Names[Player] = "Tester";
@@ -62,12 +68,14 @@ internal static class LootAddItemTests
             FakeHost.Ints[(Taper, 11)] = 100;    // MaxStackSize
             FakeHost.Ints[(Taper, 12)] = 37;     // StackCount
             FakeHost.Names[Coin] = "Pyreal";
+            world?.Invoke();
             var host = FakeHost.Create(Player);
+            Host = host;
             typeof(RynthPluginBase).GetMethod("Attach", Any)!.Invoke(P, new object[] { FakeHost.LastApi });
             var dash = (LegacyDashboardRenderer)RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
             typeof(LegacyDashboardRenderer).GetField("_settings", Any)!.SetValue(dash, S);
             Set("_dashboard", dash);
-            Cache = FakeHost.MakeCache(host, Player, new[] { Player, Opal, Taper, Coin });
+            Cache = FakeHost.MakeCache(host, Player, new[] { Player, Opal, Taper, Coin }.Concat(extra));
             Set("_objectCache", Cache);
             Set("_playerId", Player);
             Set("_charSkills", new CharacterSkills(host));
@@ -339,5 +347,114 @@ internal static class LootAddItemTests
         Check.True(d != null && d.Preview.Count > 0, "the preview still shows");
         Check.Eq(File.ReadAllText(path), SellGems, "nothing saved");
         Check.Eq(State(b).Rules[1].Name, "half-done", "the edit is still there, unsaved");
+    }
+
+    // ── Built-in keeps (2026-10-05) ───────────────────────────────────────────
+
+    // A ring with 3,001 mana, an empty mana stone in the pack, tapping on at 2,500.
+    private static Bot TapWorld()
+    {
+        var bot = new Bot(() =>
+        {
+            FakeHost.Names[Ring] = "Gold Ring";
+            FakeHost.ItemTypes[Ring] = ItemTypeJewelry;
+            FakeHost.Ints[(Ring, CurrentMana)] = 3001;
+            FakeHost.Names[Stone] = "Mana Stone";
+            FakeHost.ItemTypes[Stone] = ItemTypeManaStone;
+            FakeHost.Ints[(Stone, CurrentMana)] = 0;
+            FakeHost.Names[Sceptre] = "Piercing Sceptre";
+            FakeHost.ItemTypes[Sceptre] = ItemTypeCaster;
+            FakeHost.Ints[(Sceptre, CurrentMana)] = 3001;
+        }, Ring, Stone, Sceptre);
+        bot.S.EnableManaTapping = true;
+        bot.S.ManaTapMinMana = 2500;
+        bot.Set("_manaStoneManager", new ManaStoneManager(bot.Host, bot.S, bot.Cache));
+        return bot;
+    }
+
+    /// <summary>The looter's own call (what [LootEval] logs): taken?, action tag, rule label.</summary>
+    private static (bool Taken, string Action, string Rule) LootEval(Bot bot, uint id)
+    {
+        MethodInfo m = typeof(RynthAiPlugin).GetMethod("ClassifyItemAgainstProfile", Any)!;
+        object?[] args = { bot.Item(id), bot.S, null, null, null };
+        bool taken = (bool)m.Invoke(bot.P, args)!;
+        return (taken, (string)args[2]!, (string)args[4]!);
+    }
+
+    private static void BuiltInReasons()
+    {
+        // Tom, 2026-10-05: "when I click on the wand it says no rule matches" - Mana Tap had
+        // looted it. The popup now says which built-in keep takes an item and where to change it.
+        var bot = TapWorld();
+        string path = Temp("tap.utl", SellGems);
+        bot.S.CurrentLootPath = path;
+        LootEditorBridge b = bot.P.LootEditor;
+        FakeHost.Chat.Clear();
+
+        Send(b, new LootEditCommand { Op = "item_preview", Item = new LootEditItemRequest { ItemId = Ring, Seq = 1 } });
+        LootEditItemDraft? d = State(b).ItemDraft;
+        Check.True(d != null && d.Ok, "draft: " + d?.Error);
+        const string tap = "No rule in the loot profile in use takes it, but RynthAi keeps it anyway: "
+            + "Mana Tap (3,001 mana >= 2,500), looted to drain into an empty mana stone - change in the Items panel, Mana Stone Tapping.";
+        Check.Eq(d?.BuiltInReason, tap, "the reason, with the numbers and where to change it");
+        Check.True(d != null && d.OrderNote.Contains("at the end") && d.OrderNote.EndsWith(tap, StringComparison.Ordinal),
+            "OrderNote (what every engine's popup shows) carries it: " + d?.OrderNote);
+        Check.True(d != null && d.OrderNote.All(c => c < 128), "ASCII only (the popup's font)");
+
+        // The same function the looter runs: [LootEval] tags it [ManaTap].
+        Check.Eq(bot.Get<System.Collections.Generic.HashSet<int>>("_pendingManaTapIds")?.Count, 0, "the preview recorded nothing");
+        Check.False(bot.ChatText.Contains("Mana tap candidate"), "and said nothing in chat\n" + bot.ChatText);
+        var eval = LootEval(bot, Ring);
+        Check.True(eval.Taken && eval.Action == "ManaTap", "the looter takes it as [ManaTap]: " + eval.Action);
+        Check.True(eval.Rule.StartsWith("ManaTap (mana=3001", StringComparison.Ordinal), "rule label as in the log: " + eval.Rule);
+
+        // A profile rule decides: no built-in reason.
+        Send(b, new LootEditCommand { Op = "item_preview", Item = new LootEditItemRequest { ItemId = Opal, Seq = 2 } });
+        d = State(b).ItemDraft;
+        Check.Eq(d?.BuiltInReason, "", "the gem: rule 1 sells it, nothing built in");
+        Check.True(d != null && d.OrderNote.Contains("just before rule 1 'Sell all gems'"), "order note as before: " + d?.OrderNote);
+
+        // Mana stones are checked ahead of the profile.
+        Send(b, new LootEditCommand { Op = "item_preview", Item = new LootEditItemRequest { ItemId = Stone, Seq = 3 } });
+        d = State(b).ItemDraft;
+        Check.True(d != null && d.BuiltInReason.StartsWith("RynthAi takes it before any loot profile rule: a mana stone,", StringComparison.Ordinal),
+            "mana stone: " + d?.BuiltInReason);
+        Check.True(d != null && d.BuiltInReason.Contains("of 5 kept - change in the Items panel"), "with the keep count");
+
+        // Under the threshold: not taken, nothing to explain.
+        bot.S.ManaTapMinMana = 5000;
+        Send(b, new LootEditCommand { Op = "item_preview", Item = new LootEditItemRequest { ItemId = Ring, Seq = 4 } });
+        Check.Eq(State(b).ItemDraft?.BuiltInReason, "", "3,001 mana under a 5,000 threshold: no reason");
+        bot.S.ManaTapMinMana = 2500;
+
+        // Already in the pack after a Mana Tap pickup, quota full now: still says why it was taken.
+        bot.Get<System.Collections.Generic.HashSet<int>>("_pendingManaTapIds")!.Clear();   // (the LootEval call above approved it)
+        bot.Get<ManaStoneManager>("_manaStoneManager")!.MarkLootedForTap(unchecked((int)Ring));
+        FakeHost.Ints[(Stone, CurrentMana)] = 500;   // the only stone is charged: no free slot
+        Send(b, new LootEditCommand { Op = "item_preview", Item = new LootEditItemRequest { ItemId = Ring, Seq = 5 } });
+        Check.Eq(State(b).ItemDraft?.BuiltInReason,
+            "No rule in the loot profile in use takes it, but RynthAi keeps it anyway: it was looted for Mana Tap, to drain into an empty mana stone - change in the Items panel, Mana Stone Tapping.",
+            "looted for tapping earlier");
+
+        // /ra loot add preview shows it in chat too.
+        FakeHost.Ints[(Stone, CurrentMana)] = 0;
+        FakeHost.SelectedItem = Ring;
+        FakeHost.Chat.Clear();
+        bot.Ra("/ra loot add preview");
+        Check.True(bot.ChatText.Contains("RynthAi keeps it anyway: it was looted for Mana Tap"), "/ra loot add preview says it\n" + bot.ChatText);
+        Check.Eq(File.ReadAllText(path), SellGems, "preview saves nothing");
+    }
+
+    private static void ManaTapSkipsWands()
+    {
+        var bot = TapWorld();
+        bot.S.CurrentLootPath = Temp("wand.utl", SellGems);
+        var wand = LootEval(bot, Sceptre);
+        Check.False(wand.Taken, $"a 3,001-mana sceptre is left: [{wand.Action}] {wand.Rule}");
+        Check.Eq(bot.Get<System.Collections.Generic.HashSet<int>>("_pendingManaTapIds")?.Count, 0, "not counted against the tap quota");
+        var ring = LootEval(bot, Ring);
+        Check.True(ring.Taken && ring.Action == "ManaTap", "a ring with the same mana is still tapped: " + ring.Action);
+        Send(bot.P.LootEditor, new LootEditCommand { Op = "item_preview", Item = new LootEditItemRequest { ItemId = Sceptre, Seq = 1 } });
+        Check.Eq(State(bot.P.LootEditor).ItemDraft?.BuiltInReason, "", "the popup has no built-in reason for the wand");
     }
 }

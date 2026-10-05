@@ -104,7 +104,7 @@ public sealed partial class RynthAiPlugin
             _doorActionAt = now;
 
             _navigationEngine?.Stop();
-            if (Host.HasStopCompletely) Host.StopCompletely();
+            if (Host.HasStopCompletely) Host.StopCompletelyBy("Door");
             _doorPausedNav = true;
 
             Host.UseFor(unchecked((uint)doorId), "Door",

@@ -76,7 +76,7 @@ public sealed partial class RynthAiPlugin
         {
             w.WriteStartObject();
             w.WriteBoolean("macro", st.IsMacroRunning);
-            w.WriteString("action", st.BotAction ?? "");
+            w.WriteString("action", ActivityArbiter.DisplayLabel(st.BotAction, st.BuffingLabel));   // display (RynthNet)
             w.WriteString("state", st.CurrentState ?? "");
             w.WriteBoolean("combat", st.EnableCombat);
             w.WriteBoolean("buff", st.EnableBuffing);

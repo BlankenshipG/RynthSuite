@@ -11,4 +11,14 @@
   <ItemGroup>
     <IlcArg Include="--runtimeopt:GCSegmentSize=800000" />
   </ItemGroup>
+
+  <!--
+    Plugin manifest fields shared by every RynthSuite plugin (Directory.Build.targets embeds the
+    manifest; each csproj sets its own RynthPluginMinEngineApi and description).
+  -->
+  <PropertyGroup>
+    <RynthPluginAuthor>RynthSuite</RynthPluginAuthor>
+    <RynthPluginHomepage>https://aelrynth.com/rynth.html</RynthPluginHomepage>
+    <RynthPluginLicense>MIT</RynthPluginLicense>
+  </PropertyGroup>
 </Project>

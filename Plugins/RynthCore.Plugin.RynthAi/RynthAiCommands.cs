@@ -68,6 +68,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra hazard add|del|list|near — mark current cell as lava/acid so patrol avoids it");
         ChatLine("[RynthAi] /ra jump[swzxc] [heading] [holdtime] — jump with optional face/direction (s=run w=fwd x=back z=strafeL c=strafeR)");
         ChatLine("[RynthAi] /ra corpseinfo    — show corpse range/open diagnostics");
+        ChatLine("[RynthAi] /ra owncorpse [go|stop] — where your corpse is; travel back to it, or stop");
         ChatLine("[RynthAi] /ra corpsecheck   — explain whether a corpse would be looted");
         ChatLine("[RynthAi] /ra corpseopen    — force the nearest corpse open flow");
         ChatLine("[RynthAi] /ra fellowinfo    — show fellowship tracker state");
@@ -1209,8 +1210,8 @@ public sealed partial class RynthAiPlugin
         }
 
         // Stop any active turn motion so the character doesn't keep spinning
-        Host.SetMotion(0x6500000D, false); // TurnRight
-        Host.SetMotion(0x6500000E, false); // TurnLeft
+        Host.SetMotionBy("Command", 0x6500000D, false); // TurnRight
+        Host.SetMotionBy("Command", 0x6500000E, false); // TurnLeft
 
         if (!Host.HasGetPlayerPose || !Host.TryGetPlayerPose(out _, out _, out _, out float z, out _, out _, out _, out _))
         {
@@ -1517,8 +1518,37 @@ public sealed partial class RynthAiPlugin
             FirstMatchUtl = FirstLootRuleFor,
             FirstMatchNative = FirstLootRuleFor,
             Added = OnLootRuleAdded,
+            BuiltInKeep = LootBuiltInKeepFor,
         },
     };
+
+    /// <summary>
+    /// Why RynthAi's looting takes the item without a loot profile rule, for the "Add to
+    /// loot profile" popup: the looter's own ClassifyItemAgainstProfile as a preview (nothing
+    /// recorded), so the answer is exactly what [LootEval] would tag. An item already in the
+    /// pack that Mana Tap looted earlier says so even when the tap quota is full now.
+    /// </summary>
+    private Loot.LootBuiltInKeep? LootBuiltInKeepFor(uint itemId)
+    {
+        WorldObject? wo = _objectCache?[unchecked((int)itemId)];
+        LegacyUiSettings? settings = _dashboard?.Settings;
+        if (wo == null || settings == null) return null;
+        try
+        {
+            if (ClassifyLootItem(wo, settings, preview: true, out string action, out _, out _, out string builtIn)
+                && builtIn.Length > 0)
+                return new Loot.LootBuiltInKeep(builtIn, BeforeProfile: action != ManaTapActionLabel);
+            if (_manaStoneManager?.WasLootedForTap(wo.Id) == true)
+                return new Loot.LootBuiltInKeep(
+                    "it was looted for Mana Tap, to drain into an empty mana stone - change in the Items panel, Mana Stone Tapping",
+                    BeforeProfile: false);
+        }
+        catch (Exception ex)
+        {
+            Host.Log($"[LootAdd] built-in keep check failed for 0x{itemId:X8}: {ex.GetType().Name}: {ex.Message}");
+        }
+        return null;
+    }
 
     /// <summary>
     /// The Loot Editor saved <paramref name="path"/>: drop the cached copies and,
@@ -2121,7 +2151,7 @@ public sealed partial class RynthAiPlugin
         if (Host.HasForceResetBusyCount)
             Host.ForceResetBusyCount();
         if (Host.HasStopCompletely)
-            Host.StopCompletely();
+            Host.StopCompletelyBy("Command");
         // Reset all tracked counts — engine, plugin, combat, buff
         _busyCount = 0;
         _busyCountLastIncrementAt = 0;
@@ -2144,7 +2174,7 @@ public sealed partial class RynthAiPlugin
 
         if (Host.HasCancelAttack)      Host.CancelAttack();
         if (Host.HasChangeCombatMode)  Host.ChangeCombatMode(CombatMode.NonCombat);
-        if (Host.HasStopCompletely)    Host.StopCompletely();
+        if (Host.HasStopCompletely)    Host.StopCompletelyBy("Command");
         if (Host.HasForceResetBusyCount) Host.ForceResetBusyCount();
         // The item-action lock itself is not the busy count: AC refuses every use,
         // equip and move while its pending-item-request slot or attacking flag is
@@ -2409,6 +2439,38 @@ public sealed partial class RynthAiPlugin
 
     private enum GiveItemMatch { Exact, Partial, Regex }
 
+    /// <summary>
+    /// Hands <paramref name="amount"/> of an item to a player or NPC with AC's give action
+    /// (Event_GiveObjectRequest) when the engine has it; MoveItemExternal is move-to-container
+    /// and silently does nothing for an NPC. amount 0 or the whole stack = the whole object.
+    /// </summary>
+    internal bool GiveItem(uint itemId, uint targetId, int amount, int stackSize)
+    {
+        if (Host.HasGiveObjectTo)
+            return Host.GiveObjectTo(itemId, targetId, amount <= 0 || amount >= stackSize ? 0 : amount);
+        return Host.MoveItemExternal(itemId, targetId, Math.Max(1, amount));
+    }
+
+    /// <summary>
+    /// Carried items a give may hand over, in pack order: never worn or wielded gear. Walks the
+    /// live inventory, then every known object the client says the player carries (the live walk
+    /// can miss items off AC's main thread, as FindObject notes).
+    /// </summary>
+    private List<WorldObject> GiveCandidates(Func<string, bool> nameMatches)
+    {
+        var found = new List<WorldObject>();
+        var seen = new HashSet<int>();
+        if (_objectCache == null) return found;
+        foreach (var wo in _objectCache.GetDirectInventory(forceRefresh: true))
+            if (nameMatches(wo.Name) && !WorldObjectCache.IsWieldedByPlayer(Host, wo) && seen.Add(wo.Id))
+                found.Add(wo);
+        foreach (var wo in _objectCache.AllKnownObjects())
+            if (!seen.Contains(wo.Id) && nameMatches(wo.Name) && IsCarriedByPlayer(wo.Id)
+                && !WorldObjectCache.IsWieldedByPlayer(Host, wo) && seen.Add(wo.Id))
+                found.Add(wo);
+        return found;
+    }
+
     private void HandleGiveCommand(string[] parts, GiveItemMatch itemMatch, bool partialPlayer, bool allItems = false)
     {
         if (_objectCache == null) { ChatLine("[RynthAi] Object cache not ready."); return; }
@@ -2463,22 +2525,15 @@ public sealed partial class RynthAiPlugin
             catch { ChatLine($"[RynthAi] Invalid regex: {itemPart}"); return; }
         }
 
-        // Collect matching inventory stacks
-        var matches = new List<WorldObject>();
-        foreach (var wo in _objectCache.GetDirectInventory(forceRefresh: true))
+        // Collect matching carried stacks (never worn or wielded gear)
+        var matches = GiveCandidates(name => itemMatch switch
         {
-            // GetDirectInventory includes worn and wielded gear; never give that away.
-            if (WorldObjectCache.IsWieldedByPlayer(Host, wo)) continue;
-            bool hit = itemMatch switch
-            {
-                GiveItemMatch.Exact   => string.Equals(wo.Name, itemPart, StringComparison.OrdinalIgnoreCase),
-                GiveItemMatch.Partial => wo.Name.IndexOf(itemPart, StringComparison.OrdinalIgnoreCase) >= 0,
-                GiveItemMatch.Regex   => rx!.IsMatch(wo.Name),
-                _                     => false,
-            };
-            if (hit) matches.Add(wo);
-            if (matches.Count >= maxCount) break;
-        }
+            GiveItemMatch.Exact   => string.Equals(name, itemPart, StringComparison.OrdinalIgnoreCase),
+            GiveItemMatch.Partial => name.IndexOf(itemPart, StringComparison.OrdinalIgnoreCase) >= 0,
+            GiveItemMatch.Regex   => rx!.IsMatch(name),
+            _                     => false,
+        });
+        if (!allItems && matches.Count > maxCount) matches.RemoveRange(maxCount, matches.Count - maxCount);
 
         if (matches.Count == 0) { ChatLine($"[RynthAi] No items found matching '{itemPart}'"); return; }
 
@@ -2509,7 +2564,8 @@ public sealed partial class RynthAiPlugin
             }
             if (gives.Count == 1)
             {
-                Host.MoveItemExternal((uint)gives[0].Item.Id, (uint)target.Id, gives[0].Amount);
+                GiveItem((uint)gives[0].Item.Id, (uint)target.Id, gives[0].Amount,
+                    Math.Max(1, gives[0].Item.Values(LongValueKey.StackCount, 1)));
                 ChatLine($"[RynthAi] Giving {gives[0].Amount} x '{gives[0].Item.Name}' to {target.Name}");
             }
             else
@@ -2523,7 +2579,7 @@ public sealed partial class RynthAiPlugin
         {
             var item = matches[0];
             int stackSize = Math.Max(1, item.Values(LongValueKey.StackCount, 1));
-            Host.MoveItemExternal((uint)item.Id, (uint)target.Id, stackSize);
+            GiveItem((uint)item.Id, (uint)target.Id, stackSize, stackSize);
             ChatLine($"[RynthAi] Giving '{item.Name}' to {target.Name}");
         }
     }

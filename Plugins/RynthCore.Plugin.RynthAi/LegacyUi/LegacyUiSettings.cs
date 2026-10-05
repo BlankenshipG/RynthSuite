@@ -24,6 +24,10 @@ public sealed class LegacyUiSettings
     /// <summary>Bot action state — what the bot is doing right now (Default, Combat, Looting, Navigating, Buffing).
     /// Separate from meta state so operational cycling doesn't corrupt meta rule matching.</summary>
     [JsonIgnore] public string BotAction = "Default";
+    /// <summary>Display only: what the "Buffing" slot is doing (Healing, Restoring mana, Restoring
+    /// stamina, Buffing). Written by RynthAiPlugin every tick; never read by control flow.
+    /// Displays use ActivityArbiter.DisplayLabel, never this field alone.</summary>
+    [JsonIgnore] public string BuffingLabel = "Buffing";
     [JsonIgnore] public bool IsRecordingNav;
 
     public bool EnableBuffing = true;
@@ -180,6 +184,18 @@ public sealed class LegacyUiSettings
     public float OpenDoorRange = 5.0f;
     public bool AutoUnlockDoors;
     public int LootOwnership;
+    /// <summary>
+    /// Recover your own death corpse ("Corpse of &lt;you&gt;", identified by its "Killed by" line):
+    /// when it is within loot range the bot opens it and takes every item on it, whatever the
+    /// loot profile, Loot From, value or salvage rules say. On by default (owner, 2026-10-05);
+    /// a profile saved before this setting loads it as on.
+    /// </summary>
+    public bool LootOwnCorpse = true;
+    /// <summary>
+    /// After a death and respawn, travel back to where you died (RynthNav, outdoors only), fight
+    /// on the way as usual, recover the corpse, then carry on. Off by default.
+    /// </summary>
+    public bool TravelToOwnCorpse;
     public bool LootOnlyRareCorpses;
     public bool PeaceModeWhenIdle = true;
     public bool RebuffWhenIdle;
@@ -197,6 +213,15 @@ public sealed class LegacyUiSettings
     /// below RebuffSecondsRemaining only the expiring buff is recast.
     /// </summary>
     public int RebuffTopOffSecondsRemaining = 1200;
+    /// <summary>
+    /// Cast our own buff even when an item already gives that buff (a permanent, item-granted
+    /// enchantment at the same tier or higher). For servers with buff augments, where a player's
+    /// own cast is stronger or lasts longer than the item's. On by default: on retail the cost
+    /// is a few extra casts, while missing the buff is worse. A profile saved before this
+    /// setting existed loads it as on. Off = an item-granted buff at the tier we'd cast counts
+    /// as on for good (the behaviour before 2026-10-05).
+    /// </summary>
+    public bool CastBuffsOverItemBuffs = true;
     public bool StartMacroOnLogin;
     public bool PatrolOnLogin;
     /// <summary>
@@ -828,6 +853,9 @@ public sealed class SettingsBridgePayload
     public bool RebuffWhenIdle { get; set; }
     public int RebuffSecondsRemaining { get; set; }
     public int RebuffTopOffSecondsRemaining { get; set; } = 1200;   // absent in older files
+    // Nullable: an engine that predates the setting doesn't send it, and a save from its
+    // Settings face must leave the setting alone rather than force it either way.
+    public bool? CastBuffsOverItemBuffs { get; set; }
     public int BuffMinSkillLevelTier1 { get; set; }
     public int BuffMinSkillLevelTier2 { get; set; }
     public int BuffMinSkillLevelTier3 { get; set; }
@@ -850,6 +878,10 @@ public sealed class SettingsBridgePayload
     public bool LootJumpEnabled { get; set; }
     public int LootJumpHeight { get; set; }
     public int LootOwnership { get; set; }
+    // Nullable, as CastBuffsOverItemBuffs: an engine that predates them doesn't send them,
+    // and its save must leave them alone.
+    public bool? LootOwnCorpse { get; set; }
+    public bool? TravelToOwnCorpse { get; set; }
     public bool EnableAutostack { get; set; }
     public bool ReadUnknownScrolls { get; set; } = true;   // absent from an older engine: keep the default
     public bool EnableCombineSalvage { get; set; }

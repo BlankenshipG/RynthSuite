@@ -15,6 +15,9 @@
     <RootNamespace>RynthCore.Plugin.RynthChat</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthChat</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Plugin manifest (embedded; see Plugins\Directory.Build.targets). Nothing above the SDK baseline. -->
+    <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
+    <RynthPluginDescription>A chat window that sorts messages into tabs.</RynthPluginDescription>
   </PropertyGroup>
 
   <ItemGroup>

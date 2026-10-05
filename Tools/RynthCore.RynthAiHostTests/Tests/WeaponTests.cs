@@ -37,8 +37,13 @@ internal static class WeaponTests
         r.Add("element choice: a wand always casts its own element (rule, Damage tab, no match)", ChoiceWandCastsOwn);
         r.Add("element choice: elements the character can't cast are skipped", ChoiceCastable);
         r.Add("slayer: beats the weakness and the Monsters rule's damage type", SlayerBeatsWeaknessAndRule);
-        r.Add("slayer: a weapon the player picked (for the monster or on the DEFAULT row) beats it", SlayerVsDamageTab);
-        r.Add("slayer: other creature types, no bonus and other kinds are ignored", SlayerNonMatching);
+        r.Add("slayer: only this monster's own Damage tab weapon beats it, not the DEFAULT row's", SlayerVsDamageTab);
+        r.Add("slayer (owner's rule 2026-10-05): a Slash slayer beats a Pierce weapon the monster is weaker to", SlayerBeatsLowerResist);
+        r.Add("slayer: this monster's own pick that is a slayer is used, labelled", SlayerManualPickIsSlayer);
+        r.Add("slayer: the Damage tab's learned best never beats it", SlayerBeatsLearnedBest);
+        r.Add("slayer: bonus not sent (ACE never sends float 138) still slays, ranked below a known bonus", SlayerBonusUnknown);
+        r.Add("slayer: creature type from the world-database table before the monster's appraisal", SlayerTypeFromTable);
+        r.Add("slayer: other creature types, an x1 bonus and other kinds are ignored", SlayerNonMatching);
         r.Add("slayer: the bigger bonus wins, then the element order, then the hand", SlayerOrder);
         r.Add("slayer: creature type unknown, the old choice", SlayerUnknownType);
         r.Add("slayer: the element follows the chosen weapon", SlayerElement);
@@ -376,17 +381,126 @@ internal static class WeaponTests
         var list = new List<WeaponCandidate> { Wand(1, "Fire"), Slayer(2, CombatMode.Magic, "Cold", Olthoi, 2.0) };
 
         var pick = WeaponPlanner.Choose(list, "", weak, All, fixedWeaponId: 1, creatureType: Olthoi);
-        Check.Eq(pick.WeaponId, 1, "the Damage tab's weapon for this monster is the player's pick: it wins");
+        Check.Eq(pick.WeaponId, 1, "a non-slayer set on this monster's own Damage tab row: the player's pick wins");
         Check.Eq(pick.Source, "Damage tab", "source");
+        Check.Eq(pick.Element, "Fire", "and casts its own element");
 
         var def = WeaponPlanner.Choose(list, "", weak, All, fixedWeaponId: 1, fixedSource: "Damage tab default",
             creatureType: Olthoi, fixedIsDefault: true);
-        Check.Eq(def.WeaponId, 1, "the Damage tab DEFAULT row's weapon is a player pick too: it beats a matching slayer");
+        Check.Eq(def.WeaponId, 2, "the DEFAULT row's non-slayer weapon: a slayer of this monster still wins");
+        Check.Eq(def.Source, "slayer (Olthoi x2)", "source");
+
+        var defRule = WeaponPlanner.Choose(list, "Fire", weak, All, fixedWeaponId: 1, fixedSource: "Damage tab default",
+            creatureType: Olthoi, fixedIsDefault: true);
+        Check.Eq(defRule.WeaponId, 2, "the DEFAULT row's weapon and a Monsters rule of Fire: still the slayer");
 
         var defNoSlayer = WeaponPlanner.Choose(list, "", weak, All, fixedWeaponId: 1, fixedSource: "Damage tab default",
             creatureType: Undead, fixedIsDefault: true);
         Check.Eq(defNoSlayer.WeaponId, 1, "no matching slayer: the default still beats the weakness");
         Check.Eq(defNoSlayer.Source, "Damage tab default", "source");
+    }
+
+    private static void SlayerBeatsLowerResist()
+    {
+        // Owner, 2026-10-05: an Olthoi slayer that does Slash is picked before a Pierce weapon
+        // even when the Olthoi resists Pierce less, because the slayer outperforms it.
+        var weak = Rank(("Pierce", 0.86), ("Slash", 0.67), ("Fire", 0.65));
+        var spear = new WeaponCandidate(1, "Spear", CombatMode.Melee, "Pierce", "", true);
+        var list = new List<WeaponCandidate> { spear, Slayer(2, CombatMode.Melee, "Slash", Olthoi, 2.0) };
+
+        var p = WeaponPlanner.Choose(list, "", weak, All, creatureType: Olthoi);
+        Check.Eq(p.WeaponId, 2, "the Slash Olthoi slayer, not the Pierce spear in hand");
+        Check.Eq(p.Element, "Slash", "it hits with Slash");
+        Check.Eq(p.Source, "slayer (Olthoi x2)", "source");
+
+        var r = WeaponPlanner.Choose(list, "Pierce", weak, All, creatureType: Olthoi);
+        Check.Eq(r.WeaponId, 2, "a Monsters rule of Pierce: still the slayer");
+
+        Check.Eq(WeaponPlanner.Choose(list, "", weak, All, creatureType: Undead).WeaponId, 1,
+            "not an Olthoi: the Pierce spear (weakness)");
+    }
+
+    private static void SlayerManualPickIsSlayer()
+    {
+        var weak = Rank(("Fire", 1.4), ("Cold", 1.0));
+        var list = new List<WeaponCandidate>
+        {
+            Wand(1, "Fire"),
+            Slayer(2, CombatMode.Magic, "Acid", Olthoi, 3.0),
+            Slayer(3, CombatMode.Magic, "Cold", Olthoi, 2.0),
+        };
+        var p = WeaponPlanner.Choose(list, "", weak, All, fixedWeaponId: 3, creatureType: Olthoi);
+        Check.Eq(p.WeaponId, 3, "this monster's own pick is a slayer: that one, though another has a bigger bonus");
+        Check.Eq(p.Element, "Cold", "its own element");
+        Check.Eq(p.Source, "Damage tab, slayer (Olthoi x2)", "source names the pick and the slayer");
+
+        // The DEFAULT row's pick is a slayer: step 2 finds it like any listed slayer (biggest bonus first).
+        var d = WeaponPlanner.Choose(list, "", weak, All, fixedWeaponId: 3, fixedSource: "Damage tab default",
+            creatureType: Olthoi, fixedIsDefault: true);
+        Check.Eq(d.WeaponId, 2, "DEFAULT row's slayer pick: the best slayer of the monster (x3)");
+    }
+
+    private static void SlayerBeatsLearnedBest()
+    {
+        var weak = Rank(("Fire", 1.4), ("Cold", 1.0));
+        var list = new List<WeaponCandidate> { Wand(1, "Fire"), Slayer(2, CombatMode.Magic, "Cold", Olthoi, 2.0) };
+        Check.Eq(WeaponPlanner.Choose(list, "", weak, All, learnedBestId: 1, creatureType: Olthoi).WeaponId, 2,
+            "weakness known, the learned best is the Fire wand: the slayer");
+        Check.Eq(WeaponPlanner.Choose(list, "", null, All, learnedBestId: 1, creatureType: Olthoi).WeaponId, 2,
+            "weakness unknown, learned best: the slayer");
+        Check.Eq(WeaponPlanner.Choose(list, "", null, All, learnedBestId: 1, creatureType: 0).WeaponId, 1,
+            "creature type unknown: the learned best, as before");
+
+        // Through CombatManager: the store's learned best (GetBestWeapon) doesn't beat a listed slayer.
+        var rig = new Rig(990002, "Olthoi Learner");
+        rig.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+        for (int i = 0; i < 4; i++) rig.Store.RecordHit(FireWand, 990002, "Olthoi Learner", "Fire", 7, 300, false);
+        Check.Eq(rig.Store.GetBestWeapon(990002), FireWand, "the Damage tab learned the fire wand as best");
+        rig.C.InHandOverride = () => unchecked((int)FireWand);
+        FakeHost.Ints[(ListedWand, 166)] = Olthoi;
+        FakeHost.Ints[(Monster, 2)] = Olthoi;
+        Check.Eq(unchecked((uint)rig.C.PlanFor(rig.Target, null).WeaponId), ListedWand, "the slayer wand, not the learned best");
+    }
+
+    private static void SlayerBonusUnknown()
+    {
+        var weak = Rank(("Fire", 1.4), ("Cold", 1.0));
+        var unknown = Slayer(2, CombatMode.Magic, "Cold", Olthoi, 0);
+        Check.True(WeaponPlanner.Slays(unknown, Olthoi), "SlayerCreatureType sent, bonus not: it slays");
+        Check.False(WeaponPlanner.Slays(unknown, Undead), "not another type");
+        var p = WeaponPlanner.Choose(new List<WeaponCandidate> { Wand(1, "Fire", inHand: true), unknown }, "", weak, All, creatureType: Olthoi);
+        Check.Eq(p.WeaponId, 2, "the slayer with no bonus sent beats the Fire wand the monster is weak to");
+        Check.Eq(p.Source, "slayer (Olthoi)", "source has no multiplier");
+
+        var both = new List<WeaponCandidate> { unknown, Slayer(3, CombatMode.Magic, "Acid", Olthoi, 2.0) };
+        Check.Eq(WeaponPlanner.Choose(both, "", weak, All, creatureType: Olthoi).WeaponId, 3,
+            "a known x2 bonus ranks above one not sent");
+        var two = new List<WeaponCandidate> { Slayer(4, CombatMode.Magic, "Acid", Olthoi, 0), unknown };
+        Check.Eq(WeaponPlanner.Choose(two, "", weak, All, creatureType: Olthoi).WeaponId, 2,
+            "two with no bonus sent: the element order (Cold before Acid)");
+    }
+
+    private static void SlayerTypeFromTable()
+    {
+        // wcid 3 "Olthoi Worker" is type 1 (Olthoi) in creature_resists.tsv. The monster isn't
+        // appraised (no int 2) and the creature store doesn't know it: the table answers.
+        var rig = new Rig(3, "Olthoi Worker");
+        rig.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+        rig.C.InHandOverride = () => unchecked((int)FireWand);
+        FakeHost.Ints[(ListedWand, 166)] = Olthoi;          // no float 138, as ACE sends it
+        Check.Eq(CreatureWeakness.TableCreatureType(3, "Olthoi Worker"), Olthoi, "table: wcid 3 is an Olthoi");
+        Check.Eq(CreatureWeakness.TableCreatureType(3, "Not An Olthoi"), 0, "a custom monster reusing the wcid: no type");
+        Check.Eq(rig.C.CreatureTypeOf(3, "Olthoi Worker"), Olthoi, "CreatureTypeOf falls back to the table");
+        var p = rig.C.PlanFor(rig.Target, null);
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "first sight of an Olthoi Worker: the slayer wand");
+        Check.Eq(p.Source, "slayer (Olthoi)", "source");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("slays Olthoi (bonus not sent)")), "the weapon's slayer is logged");
+
+        // A listed slayer and a monster of unknown type: logged once, no slayer step.
+        var odd = new WorldObject(unchecked((int)Monster) + 5, "Custom Thing", AcObjectClass.Monster);
+        FakeHost.Wcids[Monster + 5] = 990005;
+        Check.Eq(unchecked((uint)rig.C.PlanFor(odd, null).WeaponId), FireWand, "type unknown: the weakness choice");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("creature type not known yet")), "and it is logged");
     }
 
     private static void SlayerNonMatching()
@@ -396,7 +510,6 @@ internal static class WeaponTests
         {
             Wand(1, "Fire"),
             Slayer(2, CombatMode.Magic, "Cold", Undead, 2.0),      // another type
-            Slayer(3, CombatMode.Magic, "Cold", Olthoi, 0),        // no bonus property (ACE needs both)
             Slayer(4, CombatMode.Magic, "Cold", Olthoi, 1.0),      // x1: no gain
             Slayer(5, CombatMode.Melee, "Slash", Olthoi, 3.0),     // not the main kind (magic)
         };
@@ -455,6 +568,9 @@ internal static class WeaponTests
         Check.Eq(p.Source, "weak to Fire (test)", "source");
         var r = WeaponPlanner.Choose(list, "Cold", weak, All, creatureType: 0);
         Check.Eq(r.Source, "Monsters rule Cold", "and the rule as before");
+        var d = WeaponPlanner.Choose(list, "", weak, All, fixedWeaponId: 1, fixedSource: "Damage tab default", creatureType: 0, fixedIsDefault: true);
+        Check.Eq(d.WeaponId, 1, "type unknown and a DEFAULT row weapon: the default, as before");
+        Check.Eq(d.Source, "Damage tab default", "source");
     }
 
     private static void SlayerElement()
@@ -488,6 +604,9 @@ internal static class WeaponTests
 
         var before = rig.C.PlanFor(rig.Target, null);
         Check.Eq(unchecked((uint)before.WeaponId), FireWand, "no slayer properties yet: the Fire wand (weakness)");
+        Check.Eq(rig.C.SlayerOf(unchecked((int)ListedWand)), (0, 0.0), "no int 166: no slayer");
+        FakeHost.Ints[(ListedWand, 166)] = Olthoi;
+        Check.Eq(rig.C.SlayerOf(unchecked((int)ListedWand)), (Olthoi, 0.0), "int 166 alone (what ACE sends): a slayer, bonus not known");
 
         FakeHost.Ints[(ListedWand, 166)] = Olthoi;
         FakeHost.Doubles[(ListedWand, 138)] = 2.0;

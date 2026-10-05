@@ -15,6 +15,10 @@
     <RootNamespace>RynthCore.Plugin.RynthNav</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthNav</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
+         highest API use NOT behind a Has*/version check. Live object ids (v69) and WieldItem (v70) are behind Has* checks; without them portal avoidance/aiming and wand wielding fall back. -->
+    <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
+    <RynthPluginDescription>Walks you to coordinates and towns, with route planning and the Atlas. Downloads its map (about 540 MB).</RynthPluginDescription>
     <!-- Publish straight to the launcher-registered home (mirrors RynthVision). -->
     <PublishDir>C:\Games\RynthSuite\RynthNav\</PublishDir>
   </PropertyGroup>

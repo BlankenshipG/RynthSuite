@@ -711,6 +711,13 @@ internal sealed class LegacyAdvancedSettingsUi
                         "alone. Default 1200 (20 minutes). At or below 'Rebuff With', only the\n" +
                         "expiring buff is recast.");
 
+                ImGui.Checkbox("Cast buffs even when an item gives them", ref _settings.CastBuffsOverItemBuffs);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Cast your own buff even when worn gear already gives that buff.\n" +
+                        "For servers with buff augments, where your own cast is stronger or\n" +
+                        "lasts longer. On by default: on retail it costs a few extra casts.");
+
                 ImGui.Spacing();
                 ImGui.Separator();
                 ImGui.Text("Buff Difficulty (Min Buffed Skill)");
@@ -757,6 +764,12 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Text("Corpse Ownership");
                 ImGui.SetNextItemWidth(180);
                 ImGui.Combo("Loot From", ref _settings.LootOwnership, LootOwnershipModes, LootOwnershipModes.Length);
+                ImGui.Checkbox("Recover My Corpse", ref _settings.LootOwnCorpse);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("When your own corpse (\"Corpse of <you>\") is within loot range, open it and take\nevery item on it, whatever the loot profile and Loot From say.");
+                ImGui.Checkbox("Travel Back To My Corpse", ref _settings.TravelToOwnCorpse);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("After a death, travel back to where you died with RynthNav (outdoors only),\nfighting on the way, recover the corpse, then carry on. Needs the macro running.");
 
                 ImGui.Spacing();
                 ImGui.Text("Inventory Management");

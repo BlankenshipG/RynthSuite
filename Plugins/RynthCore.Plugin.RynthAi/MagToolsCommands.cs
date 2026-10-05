@@ -303,7 +303,7 @@ public sealed partial class RynthAiPlugin
         if (parts.Length < 3 || !float.TryParse(parts[2], out float degrees)) return false;
         if (!Host.HasTurnToHeading) { ChatLine("[RynthAi] TurnToHeading not available."); return true; }
 
-        Host.TurnToHeading(degrees);
+        Host.TurnToHeadingBy("Command", degrees);
         return true;
     }
 
@@ -470,7 +470,12 @@ public sealed partial class RynthAiPlugin
         string itemName   = argStr[..toIdx].Trim();
         string targetName = argStr[(toIdx + 4)..].Trim();
 
-        var item = FindObject(itemName, inv: true, land: false, partial: partial);
+        // /mt give hands over the FIRST carried match (/ub give hands over all of them).
+        // Never worn or wielded gear: FindObject's inventory walk includes it.
+        var candidates = GiveCandidates(n => partial
+                ? n.IndexOf(itemName, StringComparison.OrdinalIgnoreCase) >= 0
+                : string.Equals(n, itemName, StringComparison.OrdinalIgnoreCase));
+        var item = candidates.Count > 0 ? candidates[0] : null;
         if (item == null) { ChatLine($"[RynthAi] Item not found: '{itemName}'"); return true; }
 
         var target = FindObject(targetName, inv: false, land: true, partial: true);

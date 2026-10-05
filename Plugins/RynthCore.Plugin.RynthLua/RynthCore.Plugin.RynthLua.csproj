@@ -15,7 +15,16 @@
     <RootNamespace>RynthCore.Plugin.RynthLua</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthLua</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
+         highest API use NOT behind a Has*/version check. Vendor v67, the RynthAi bridge v68, live ids v69, action results v70, script windows v71, trade v72 and instance ids v73 are all guarded; scripts run without them (views.Available is false below v71). -->
+    <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
+    <RynthPluginDescription>Lua scripting for metas and your own scripts.</RynthPluginDescription>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Plugins it can use when they are loaded (looked up at run time; optional, so they never block or reorder it). -->
+    <RynthPluginDependency Include="RynthAi" Optional="true" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />

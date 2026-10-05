@@ -117,6 +117,22 @@ public sealed partial class RynthAiPlugin
         // through to HandleMtCommand returning false → "Unrecognized /ub".
         int sp = fullCommand.IndexOf(' ');
 
+        // /ub give[p] [count] <item> to <target>: UtilityBelt gives EVERY matching carried item
+        // (Tom, 2026-10-05: "/ub give ... should give every item that matches the name"), unless
+        // a count is given. It used to fall through to /mt give, which hands over only the first.
+        // Targets match partially, as /mt give always did. give = exact item, givep = partial item.
+        if (sp > 0 && cmd is "give" or "givep")
+        {
+            string rest = fullCommand.Substring(sp + cmd.Length + 1).TrimStart();
+            string first = rest.Split(' ', 2)[0];
+            bool counted = int.TryParse(first, out int n) && n > 0;
+            string verb = cmd == "givep"
+                ? (counted ? "givepp" : "giveapp")
+                : (counted ? "givexp" : "giveaxp");
+            HandleRaCommand("/ra " + verb + " " + rest);
+            return true;
+        }
+
         // Verbs /mt doesn't implement but /ra does — route to the /ra dispatcher
         // (VTank-meta migration). "/ub follow X" → "/ra follow X"; myquests → /ra
         // quest-flag refresh.

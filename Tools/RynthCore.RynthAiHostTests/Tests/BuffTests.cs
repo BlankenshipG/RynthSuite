@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
 using RynthCore.Loot;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.LegacyUi;
@@ -48,6 +51,9 @@ internal static class BuffTests
         r.Add("rebuff: permanent, expired, and two enchantments in one family", RebuffPermanentAndDuplicates);
         r.Add("rebuff: a higher tier is only chased above the tier that has landed", RebuffTierUpgrade);
         r.Add("rebuff: a chat-confirmed item spell counts as on", ItemSpellFromChat);
+        r.Add("rebuff: our own lower tier under an expiring higher one counts as on", RebuffUnderExpiringHigherTier);
+        r.Add("rebuff: cast over item-granted buffs (CastBuffsOverItemBuffs on)", RebuffOverItemBuffs);
+        r.Add("rebuff: CastBuffsOverItemBuffs defaults on, loads, saves, bridges", OverItemBuffsSetting);
 
         r.Add("buff choice: spell names the tables miss (Bludgeon Bane, Nuhmudira's, T'ing, Celdiseth's)", NameGapsResolve);   // was a known failure; fixed by 940cb21
         r.Add("buff choice: a mastery whose name has several spell ids", MultiIdMastery);   // was a known failure; fixed by 0aedcee
@@ -438,21 +444,26 @@ internal static class BuffTests
         Check.True(rig.B.NeedsAnyBuff(), "Force Rebuff: everything is due");
     }
 
+    // CastBuffsOverItemBuffs off: the behaviour before 2026-10-05 (an item-granted permanent
+    // entry at the tier we'd cast satisfies the family). The setting's own cases are below.
     private static void RebuffPermanentAndDuplicates()
     {
         var rig = StrengthRig(300, "Strength Self VI");
+        rig.S.CastBuffsOverItemBuffs = false;
         rig.Live(("Strength Self VI", double.MaxValue));
         Check.False(rig.B.NeedsAnyBuff(), "a permanent enchantment counts as on");
         rig.Live(("Strength Self VI", -5));
         Check.True(rig.B.NeedsAnyBuff(), "an expired entry is dropped: recast");
 
         var t7 = StrengthRig(340, "Strength Self VI", "Might of the Lugians");   // 340 buffed: tier 7
+        t7.S.CastBuffsOverItemBuffs = false;
         t7.Live(("Strength Self VI", double.MaxValue), ("Might of the Lugians", 3000));
         Check.False(t7.B.NeedsAnyBuff(), "a permanent VI and a timed VII: the VII owns the family");
         t7.Live(("Might of the Lugians", 3000), ("Strength Self VI", double.MaxValue));
         Check.False(t7.B.NeedsAnyBuff(), "same in the other order");
 
         var item = StrengthRig(340, "Strength Self VI", "Might of the Lugians");
+        item.S.CastBuffsOverItemBuffs = false;
         item.Live(("Strength Self VI", double.MaxValue));
         Check.True(item.B.NeedsAnyBuff(), "only a permanent (item-granted) VI while VII is castable: cast the VII");
     }
@@ -471,6 +482,118 @@ internal static class BuffTests
         var inc = StrengthRig(500, "Incantation of Strength Self");
         inc.Live(("Strength Self VI", 3000));
         Check.False(inc.B.NeedsAnyBuff(), "an Incantation that lands as VI isn't recast for ever");
+    }
+
+    // A buff bot's level 8 that runs out while our own lower tier is already under it
+    // (Drakkon, 2026-10-05): the 8 owns the family timer, so the family read "due"
+    // right after our VI landed and every pass recast it until the batch audit parked it.
+    private static void RebuffUnderExpiringHigherTier()
+    {
+        var rig = StrengthRig(300, "Strength Self VI");   // 300 buffed: tier 6
+        rig.Live(("Incantation of Strength Self", 3000));
+        Check.False(rig.B.NeedsAnyBuff(), "a bot's 8 with 3000 s left: fine");
+        rig.Live(("Incantation of Strength Self", 200));
+        Check.True(rig.B.NeedsAnyBuff(), "the 8 is running out and nothing is under it: cast our VI");
+        rig.Live(("Incantation of Strength Self", 200), ("Strength Self VI", 1800));
+        Check.False(rig.B.NeedsAnyBuff(), "our VI is under the expiring 8: covered, no recast");
+        rig.Live(("Strength Self VI", 1800), ("Incantation of Strength Self", 200));
+        Check.False(rig.B.NeedsAnyBuff(), "same in the other order");
+        rig.Live(("Incantation of Strength Self", 200), ("Strength Self VI", 250));
+        Check.True(rig.B.NeedsAnyBuff(), "both under the threshold: recast");
+
+        var low = StrengthRig(300, "Strength Self V", "Strength Self VI");
+        low.Live(("Incantation of Strength Self", 200), ("Strength Self V", 1800));
+        Check.True(low.B.NeedsAnyBuff(), "only a V under it while VI is castable: still cast the VI");
+        low.S.CastBuffsOverItemBuffs = false;
+        low.Live(("Incantation of Strength Self", 200), ("Strength Self VI", double.MaxValue));
+        Check.False(low.B.NeedsAnyBuff(), "setting off: a permanent VI under it covers it");
+        low.S.CastBuffsOverItemBuffs = true;
+        low.Live(("Incantation of Strength Self", 200), ("Strength Self VI", double.MaxValue));
+        Check.True(low.B.NeedsAnyBuff(), "setting on: a permanent (item) VI under it doesn't cover it: cast ours");
+    }
+
+    // "Cast buffs even when an item already gives that buff" (CastBuffsOverItemBuffs, default
+    // on, 2026-10-05). On servers with buff augments a player's own cast is stronger or longer
+    // than the item's, so a permanent item-granted entry must not satisfy the family; the timer
+    // follows our own timed entry, and once that lands it reads on until it runs low.
+    private static void RebuffOverItemBuffs()
+    {
+        var rig = StrengthRig(300, "Strength Self VI");   // tier 6
+        Check.True(rig.S.CastBuffsOverItemBuffs, "on by default");
+        rig.Live(("Strength Self VI", double.MaxValue));
+        Check.True(rig.B.NeedsAnyBuff(), "only an item's permanent VI: cast our own");
+        rig.Live(("Strength Self VI", double.MaxValue), ("Strength Self VI", 3000));
+        Check.False(rig.B.NeedsAnyBuff(), "our VI landed (3000 s) over the item's VI: on, no recast loop");
+        rig.Live(("Strength Self VI", 3000), ("Strength Self VI", double.MaxValue));
+        Check.False(rig.B.NeedsAnyBuff(), "same in the other order");
+        rig.Live(("Strength Self VI", double.MaxValue), ("Strength Self VI", 200));
+        Check.True(rig.B.NeedsAnyBuff(), "ours running low (200 s) with the item's VI still on: recast");
+        rig.Live(("Strength Self VI", 200), ("Strength Self VI", double.MaxValue));
+        Check.True(rig.B.NeedsAnyBuff(), "same in the other order");
+        rig.Live(("Strength Self VI", double.MaxValue), ("Strength Self VI", 2700));
+        Check.False(rig.B.NeedsAnyBuff(), "recast landed: on again");
+
+        // A higher item tier than we can cast: ours is still cast and tracked.
+        var high = StrengthRig(300, "Strength Self VI");
+        high.Live(("Might of the Lugians", double.MaxValue));
+        Check.True(high.B.NeedsAnyBuff(), "an item's permanent VII, we cast VI: cast it");
+        high.Live(("Might of the Lugians", double.MaxValue), ("Strength Self VI", 3000));
+        Check.False(high.B.NeedsAnyBuff(), "our VI under the item's VII: on until it runs low");
+        high.Live(("Might of the Lugians", double.MaxValue), ("Strength Self VI", 100));
+        Check.True(high.B.NeedsAnyBuff(), "our VI running low: recast");
+
+        // The tier-upgrade rule still works on our timed entries.
+        var up = StrengthRig(340, "Strength Self VI", "Might of the Lugians");   // tier 7
+        up.Live(("Might of the Lugians", 3000));
+        up.Live(("Strength Self VI", double.MaxValue), ("Strength Self V", 3000));
+        Check.True(up.B.NeedsAnyBuff(), "VII has landed before: our V is upgraded, the item's VI doesn't stop it");
+        up.Live(("Strength Self VI", double.MaxValue), ("Might of the Lugians", 3000));
+        Check.False(up.B.NeedsAnyBuff(), "our VII on: fine");
+
+        // Switched on between live reads: a permanent that owns the timer no longer counts.
+        var toggled = StrengthRig(300, "Strength Self VI");
+        toggled.S.CastBuffsOverItemBuffs = false;
+        toggled.Live(("Strength Self VI", double.MaxValue));
+        Check.False(toggled.B.NeedsAnyBuff(), "off: the item's VI counts");
+        toggled.S.CastBuffsOverItemBuffs = true;
+        Check.True(toggled.B.NeedsAnyBuff(), "switched on before the next read: cast ours");
+        toggled.S.CastBuffsOverItemBuffs = false;
+        toggled.Live(("Strength Self VI", double.MaxValue));
+        Check.False(toggled.B.NeedsAnyBuff(), "switched back off: the item's VI counts again");
+    }
+
+    private static void OverItemBuffsSetting()
+    {
+        Check.True(new LegacyUiSettings().CastBuffsOverItemBuffs, "a new profile: on");
+        var old = JsonSerializer.Deserialize("{\"EnableBuffing\":true,\"RebuffSecondsRemaining\":300}", RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(old != null && old.CastBuffsOverItemBuffs, "a profile saved before the setting: on");
+        var off = JsonSerializer.Deserialize(
+            JsonSerializer.Serialize(new LegacyUiSettings { CastBuffsOverItemBuffs = false }, RynthAiJsonContext.Default.LegacyUiSettings),
+            RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(off != null && !off.CastBuffsOverItemBuffs, "off is saved and loaded");
+
+        // Profile switch/load copies it (CopySettings is the hand-written field list).
+        var copy = typeof(LegacyDashboardRenderer).GetMethod("CopySettings", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var dst = new LegacyUiSettings();
+        copy.Invoke(null, new object[] { new LegacyUiSettings { CastBuffsOverItemBuffs = false }, dst });
+        Check.False(dst.CastBuffsOverItemBuffs, "a profile with it off loads off");
+        copy.Invoke(null, new object[] { old!, dst });
+        Check.True(dst.CastBuffsOverItemBuffs, "an old profile loads on");
+
+        // Engine Settings face: the payload carries it; an engine without the field leaves it alone.
+        var payload = JsonSerializer.Deserialize("{\"PatrolOnLogin\":false}", RynthAiJsonContext.Default.SettingsBridgePayload);
+        Check.True(payload != null && payload.CastBuffsOverItemBuffs == null, "an older engine's payload has no value");
+        var s = new LegacyUiSettings { CastBuffsOverItemBuffs = false };
+        var dash = (LegacyDashboardRenderer)RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+        typeof(LegacyDashboardRenderer).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(dash, s);
+        typeof(LegacyDashboardRenderer).GetField("_advancedSettingsUi", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(dash, new LegacyAdvancedSettingsUi(s));   // BuildSettingsJson reads its crafting state
+        var sent = JsonSerializer.Deserialize(dash.BuildSettingsJson(), RynthAiJsonContext.Default.SettingsBridgePayload);
+        Check.True(sent != null && sent.CastBuffsOverItemBuffs == false, "sent to the engine face");
+        dash.ApplySettingsJson("{\"PatrolOnLogin\":false}");
+        Check.False(s.CastBuffsOverItemBuffs, "a save without the field leaves it off");
+        dash.ApplySettingsJson("{\"CastBuffsOverItemBuffs\":true}");
+        Check.True(s.CastBuffsOverItemBuffs, "a save with it on turns it on");
     }
 
     private static BuffRig ArmorRig()

@@ -120,6 +120,12 @@ public class BuffManager : IDisposable
     // recorded (live refresh or post-cast). Max-of-observed so it converges to
     // the character's true ceiling after the first cast.
     private readonly Dictionary<int, int> _familyAchievedTier = new();
+    // Every live player enchantment per family from the last RefreshFromLiveMemory
+    // (_ramBuffTimers keeps only the strongest). Lets a family read "on" when the
+    // strongest entry is running out but another one at the tier we'd cast is under it:
+    // a buff bot's level 8 expiring over our own fresh VI (2026-10-05). Permanent marks an
+    // item-granted entry (no expiry), which CastBuffsOverItemBuffs leaves out.
+    private readonly Dictionary<int, List<(int Level, DateTime Expiration, bool Permanent)>> _familyLiveEntries = new();
     // Highest tier this session has CAST per family (nominal level). The achieved-tier cap
     // applies only once the target tier has been tried, so a family deliberately cast low
     // first (the tier-7 creature bootstrap before 8s) still upgrades.
@@ -234,20 +240,40 @@ public class BuffManager : IDisposable
     // a slower tier-8 cast simply produces a later UseDone. Bounded by a timeout
     // so a dropped event can't wedge buffing, and inert (never waits) on an
     // engine build without UseDone observation.
-    private int _useDoneSeqAtCast;
-    private bool _awaitingCastResolution;
-    private DateTime _castResolutionDeadline = DateTime.MinValue;
-    private const double CastResolutionTimeoutMs = 2500; // covers a tier-7/8 windup+recoil
+    //
+    // 2026-10-05 (Drakkon, DreamWeave): "finished" used to be ANY new UseDone, and the refusal
+    // of the next cast is a UseDone too (err 0x1D), so under a refusal storm the wait cleared at
+    // once. The wait now belongs to the cast: see CastTracker.AwaitingServer.
+    private const double CastResolutionTimeoutMs = 2500; // from the send; later when the incantation is late
+    // Sends, incantations, results and the server's UseDones for the casts this class sends.
+    private readonly CastTracker _cast;
+
+    /// <summary>Clock for the cast-safety timing (give-up, server wait, held-cast nudge, stance
+    /// settle). The host tests replace it; everything else here reads DateTime.Now.</summary>
+    internal Func<DateTime> Clock { get => _cast.Clock; set => _cast.Clock = value; }
+    private DateTime Now => _cast.Now;
+
+    // Held-cast nudge (2026-10-05): a cast the server holds open (incantation, no result) is
+    // only let go by a movement packet; StopCompletely from a standing character may send none.
+    // Once per held cast: autorun on and straight off again, then no cast for this long.
+    private const double NudgeHoldMs = 2000;
+    /// <summary>Movement nudges sent for held casts this session (/ra status, tests).</summary>
+    internal int CastNudges { get; private set; }
 
     private int _busyRefusalStreak;
     private DateTime _busyBackoffUntil = DateTime.MinValue;
     private const double BusyBackoffBaseMs = 500;
     private const double BusyBackoffMaxMs  = 8000;
+    // During a too-busy backoff a heal may still retry, but no faster than this.
+    private const double BusyHealRetryMs   = 1500;
+    // Refusals in a row (with backoff, about 3.5 s or more) before StopCompletely: longer than any real gesture.
+    private const int BusyStopAtStreak     = 4;
 
     // "Not enough mana" refusal (see OnChatWindowText): the refused family rests
     // briefly and buffing pauses; neither is a silent-no-show strike.
     private DateTime _lowManaPauseUntil = DateTime.MinValue;
     private const double LowManaBuffPauseMs = 5000;
+    private const double LowManaHealRestSec = 2;
     private const double LowManaFamilyRestSec = 15;
 
     private readonly Dictionary<int, DateTime> _castIssuedAtByFamily = new();
@@ -335,8 +361,52 @@ public class BuffManager : IDisposable
     public int CurrentCombatMode =>
         _host.HasGetCurrentCombatMode ? _host.GetCurrentCombatMode() : CombatMode.NonCombat;
 
-    /// <summary>Client busy count — when > 0, don't send any game actions.</summary>
-    public int BusyCount { get; set; }
+    /// <summary>Client busy count — when > 0, don't send any game actions (but see
+    /// <see cref="BusyHoldsHeal"/>: a heal goes ahead of a leftover count).</summary>
+    public int BusyCount
+    {
+        get => _busyCount;
+        set
+        {
+            _busyCount = value;
+            _busyGate.NoteCount(value, UseDoneSeqNow());
+        }
+    }
+    private int _busyCount;
+
+    // A heal and a leftover busy count (2026-10-05, a mage's heals "sometimes several seconds
+    // late"): a war or void cast raises the plugin's busy count, and AC lowers its own count
+    // inline when the server's UseDone arrives, where the busy hook can't see it, so the plugin's
+    // count sits at 1 until CheckBusyTimeout force-clears it 5 s after it rose (CombatBusyGate).
+    // Combat checks for that leftover before each attack. A heal never did: once health crossed a
+    // line the arbiter gave the tick to vitals, combat stopped running, nobody cleared the count,
+    // and the heal waited out the rest of the 5 s. How late depended on how long before the drop
+    // the last war spell went out. Heals now use the same rule combat does.
+    private readonly CombatBusyGate _busyGate = new();
+    private Action<string>? _onStaleBusy;
+    /// <summary>Resets the plugin's shared busy mirror when a heal finds the count is a leftover
+    /// (the same callback combat uses). Set by RynthAiPlugin.</summary>
+    public void SetStaleBusyCallback(Action<string> cb) => _onStaleBusy = cb;
+
+    /// <summary>
+    /// True while the busy count should hold a heal: it is positive and not a leftover. A leftover
+    /// (a UseDone arrived after the count last rose and no cast gesture is animating: the server
+    /// finished every action behind it) is cleared here, as combat does, and lets the heal go.
+    /// </summary>
+    internal bool BusyHoldsHeal()
+    {
+        if (BusyCount <= 0) return false;
+        bool gesture = _host.HasGetCastBusyState && !_host.CanCastNow;
+        if (!_busyGate.IsStale(BusyCount, _host.HasUseDoneSeq, UseDoneSeqNow(), gesture)) return true;
+        int was = BusyCount;
+        StaleBusyClears++;
+        _onStaleBusy?.Invoke($"vitals: health is under a heal line and the server finished the action (UseDone) — was {was}");
+        if (BusyCount > 0) BusyCount = 0;   // no callback, or the shared mirror was already 0
+        _busyGate.Reset();
+        return false;
+    }
+    /// <summary>Times a heal found the busy count was a leftover and went ahead (tests, status).</summary>
+    internal int StaleBusyClears { get; private set; }
 
     /// <summary>
     /// Record-only diagnostic (D4): the reason the most recent buff-decision cycle
@@ -402,6 +472,8 @@ public class BuffManager : IDisposable
         _settings = settings;
         _spellManager = spellManager;
         _vitals = vitals;
+        _cast = new CastTracker(s => _host.Log(s));
+        _healLatency = new HealLatencyTracker(s => _host.Log(s));
     }
 
     public void SetCharacterSkills(CharacterSkills skills) => _charSkills = skills;
@@ -576,13 +648,85 @@ public class BuffManager : IDisposable
         return HealthUnderAnyLine(_vitals.HealthPct, _vitals.StaminaPct);
     }
 
-    private bool HealthUnderAnyLine(int hp, int stamPct)
+    private bool HealthUnderAnyLine(int hp, int stamPct) => ActiveHealLine(hp, stamPct, out _, out _).Length > 0;
+
+    /// <summary>For the engine's reload deferral (ReloadSafety): the heal line health is under now
+    /// ("" = none, or vitals not read yet), with the health and the line's value.</summary>
+    internal string HealLineNow(out int healthPct, out int lineValue)
     {
-        if (_settings.EmergencyHealAt > 0 && hp <= _settings.EmergencyHealAt) return true;
-        if (StaminaToHealthAllowed(_settings, hp, stamPct)) return true;
-        bool inCombat = _combatManager?.HasCloseThreat(System.Math.Max(1, _settings.MonsterRange)) == true;
-        return hp < (inCombat ? _settings.HealAt : _settings.TopOffHP);
+        healthPct = _vitals.HealthPct;
+        lineValue = 0;
+        if (_vitals.MaxHealth == 0) return "";
+        return ActiveHealLine(healthPct, _vitals.StaminaPct, out lineValue, out _);
     }
+
+    /// <summary>For the engine's reload deferral: the cast awaiting its result (pending, or held
+    /// open by the server), or "".</summary>
+    internal string CastInFlightName
+    {
+        get
+        {
+            if (_pendingSpellId != 0) return SpellTableStub.GetById(_pendingSpellId)?.Name ?? $"spell {_pendingSpellId}";
+            return _cast.Held?.Name ?? "";
+        }
+    }
+
+    /// <summary>
+    /// The heal line health is under, by name ("" = none): Emergency Heal At, Stamina To Health At,
+    /// Heal At (a monster within MonsterRange) or Top Off HP (idle). The same test HealthUnderAnyLine
+    /// always made; the name and value are for [HealLatency].
+    /// </summary>
+    private string ActiveHealLine(int hp, int stamPct, out int value, out bool inCombat)
+    {
+        inCombat = _combatManager?.HasCloseThreat(System.Math.Max(1, _settings.MonsterRange)) == true;
+        value = 0;
+        if (_settings.EmergencyHealAt > 0 && hp <= _settings.EmergencyHealAt) { value = _settings.EmergencyHealAt; return "Emergency Heal At"; }
+        if (StaminaToHealthAllowed(_settings, hp, stamPct)) { value = _settings.StaminaToHealthAt; return "Stamina To Health At"; }
+        value = inCombat ? _settings.HealAt : _settings.TopOffHP;
+        if (hp < value) return inCombat ? "Heal At" : "Top Off HP";
+        return "";
+    }
+
+    // ── What the activity display says while the arbiter's slot is "Buffing" ──
+    // BotAction stays "Buffing" for every vitals job: it is a control string (CombatManager's
+    // canRun and CorpseOpenController read it). The dashboard and the phone showed it as is, so a
+    // heal read "Buffing" (2026-10-05). The display label says which job it is.
+    public const string LabelHealing = "Healing";
+    public const string LabelMana = "Restoring mana";
+    public const string LabelStamina = "Restoring stamina";
+    public const string LabelBuffing = "Buffing";
+
+    /// <summary>
+    /// Why the vitals/buff slot is held, for display: Healing, Restoring mana, Restoring stamina or
+    /// Buffing. The cast or kit in flight says it first; then health under a heal line; then what
+    /// the last vitals check started. Side-effect free (KitPending is not called).
+    /// </summary>
+    public string BuffingLabel
+    {
+        get
+        {
+            if (_pendingSpellId != 0 && _pendingSpellId == _pendingVitalSpellId && _pendingVitalLabel.Length > 0)
+                return _pendingVitalLabel;
+            if (_kitUsedAt != DateTime.MinValue && (DateTime.Now - _kitUsedAt).TotalMilliseconds < KitResultTimeoutMs)
+                return _kitIsStamina ? LabelStamina : LabelHealing;
+            if (_isHealingSelf || WantsHealNow()) return LabelHealing;
+            if (_pendingSpellId != 0) return LabelBuffing;
+            if (_isRechargingMana) return LabelMana;
+            if (_isRechargingStamina) return LabelStamina;
+            return LabelBuffing;
+        }
+    }
+
+    /// <summary>The display label for a vital spell's base name (AttemptVitalCast's argument).</summary>
+    internal static string VitalLabel(string baseName) => baseName switch
+    {
+        "Heal Self" or "Stamina to Health Self" => LabelHealing,
+        "Stamina to Mana Self" => LabelMana,
+        "Revitalize Self" => LabelStamina,
+        _ => LabelBuffing,
+    };
+    private string _pendingVitalLabel = "";
+    private bool _kitIsStamina;
 
     public BuffStateSnapshot GetStateSnapshot() => new()
     {
@@ -621,6 +765,17 @@ public class BuffManager : IDisposable
     }
 
     private bool _liveBuffsRefreshed;
+    /// <summary>Host tests: skip the login refresh wait so OnHeartbeat runs at once.</summary>
+    internal void MarkLiveBuffsReadyForTests() => _liveBuffsRefreshed = true;
+    /// <summary>The login refresh has a trusted snapshot of the live buffs (buff casting may start).</summary>
+    public bool LiveBuffsReady => _liveBuffsRefreshed;
+    /// <summary>
+    /// Set by RynthAiPlugin when this login is a hot reload (engine or plugin) of a character
+    /// that was already in game in this client: the enchantment registry is complete, so the
+    /// login refresh trusts its first read instead of waiting for two equal reads (5.8 s after
+    /// the 2026-10-05 reload).
+    /// </summary>
+    public bool CarriedOverSession { get; set; }
     private DateTime _lastLiveRefreshAttempt = DateTime.MinValue;
     private DateTime _lastPeriodicRefreshAt = DateTime.MinValue;
     private const int PeriodicRefreshIntervalMs = 30_000;
@@ -634,7 +789,53 @@ public class BuffManager : IDisposable
     private int _lastLoginRefreshCount = -1;
     private const int LoginRefreshMaxWaitMs = 20_000;
 
+    // ── [HealLatency] (see HealLatencyTracker) ─────────────────────────────────
+    private readonly HealLatencyTracker _healLatency;
+    internal HealLatencyTracker HealLatency => _healLatency;
+    // Why this heartbeat sent no heal (the tracker files the tick's time under it), plus a detail.
+    private string _healHold = "";
+    private string _healHoldDetail = "";
+    // What a vitals step that "handled" the tick without sending anything was waiting on.
+    private string _healWaitKind = "";
+    /// <summary>The arbiter's last decision (set by RynthAiPlugin after it decides), for [HealLatency].</summary>
+    internal string ArbiterActivity { get; set; } = "";
+
+    private void Hold(string why, string detail = "")
+    {
+        _healHold = why;
+        _healHoldDetail = detail;
+    }
+
+    /// <summary>A heal (kit or spell) sent earlier hasn't resolved yet.</summary>
+    private bool HealInFlight() =>
+        (_pendingSpellId != 0 && _pendingSpellId == _pendingVitalSpellId && _pendingVitalLabel == LabelHealing)
+        || (_kitUsedAt != DateTime.MinValue && !_kitIsStamina && (DateTime.Now - _kitUsedAt).TotalMilliseconds < KitResultTimeoutMs);
+
     public void OnHeartbeat()
+    {
+        bool track = _settings.IsMacroRunning && _vitals.MaxHealth > 0;
+        _healHold = "";
+        _healHoldDetail = "";
+        _healWaitKind = "";
+        if (track)
+        {
+            string line = ActiveHealLine(_vitals.HealthPct, _vitals.StaminaPct, out int lineValue, out bool inCombat);
+            _healLatency.Observe(Now, _vitals.HealthPct, line, lineValue, inCombat, HealInFlight());
+        }
+        try { HeartbeatCore(); }
+        finally
+        {
+            NoteStanceLateHolder();
+            if (track)
+            {
+                string hold = _healHold;
+                if (hold.Length == 0 && DateTime.Now < _healUnavailableUntil) hold = "heal backoff (nothing could heal)";
+                _healLatency.EndTick(Now, hold, _healHoldDetail, ArbiterActivity);
+            }
+        }
+    }
+
+    private void HeartbeatCore()
     {
         // Requests queued from other threads (see RequestForceFullRebuff), in click order
         // as far as it matters: a cancel after a rebuff request wins.
@@ -655,11 +856,24 @@ public class BuffManager : IDisposable
 
         if (!_settings.IsMacroRunning) return;
 
+        // Close casts the server reports finished, and say once when one is being held open.
+        PollCastTracker();
+
+        // A Magic stance we asked for: watch the client's mode every tick (see ObserveStance).
+        ObserveStance();
+
         // RefreshFromLiveMemory at OnLoginComplete fails when the server-time
         // packet hasn't landed yet (GetServerTime returns 0). On those
         // logins we have NO timers and would recast every buff that has
         // hours left server-side. Retry every second until we get the
-        // live snapshot, and BLOCK any cast attempts in the meantime.
+        // live snapshot, and hold BUFF casts in the meantime.
+        //
+        // Heals are not held (2026-10-05, Drakkon died after an engine hot reload mid-fight:
+        // "health 12% under Emergency Heal At 30% ... held by: login buff refresh 5737 ms").
+        // The refresh only protects buff timers; a heal, a kit or a potion never reads them,
+        // so the vitals step below runs during the refresh and only the buff casting after it
+        // waits (buffsHeldForRefresh).
+        bool buffsHeldForRefresh = false;
         if (!_liveBuffsRefreshed)
         {
             if ((DateTime.Now - _lastLiveRefreshAttempt).TotalMilliseconds > 1000)
@@ -672,20 +886,32 @@ public class BuffManager : IDisposable
                     // Only trust the snapshot once the registry stops growing
                     // (two equal 1s reads), so we don't open the gate on a
                     // half-streamed set and rebuff buffs that are still landing.
+                    // After a hot reload (engine or plugin) the client never left the world and
+                    // its registry is complete: the first read is trusted (CarriedOverSession), unless
+                    // it is empty (a read that found nothing yet must not wipe every timer).
                     bool stable    = (n == _lastLoginRefreshCount);
                     bool timedOut  = (DateTime.Now - _loginRefreshStartAt).TotalMilliseconds > LoginRefreshMaxWaitMs;
+                    bool carried   = CarriedOverSession && n > 0;
                     _lastLoginRefreshCount = n;
-                    if (stable || timedOut)
+                    if (stable || timedOut || carried)
                     {
                         _liveBuffsRefreshed = true;
-                        _host.Log($"[BuffDiag] login refresh ready: {n} enchantment(s) (stable={stable} timedOut={timedOut})");
+                        string why = carried && !stable && !timedOut
+                            ? "hot reload: still in game, the first read is complete"
+                            : $"stable={stable} timedOut={timedOut}";
+                        _host.Log($"[BuffDiag] login refresh ready: {n} enchantment(s) ({why})");
                         _host.WriteToChat($"[RynthAi] Live buff timers ready ({n} loaded).", 1);
                     }
                 }
             }
-            // Don't cast anything until we have a real snapshot — otherwise
+            // Don't cast a buff until we have a real snapshot — otherwise
             // we'd recast over a 1-hour-old buff at the start of every login.
-            return;
+            buffsHeldForRefresh = !_liveBuffsRefreshed;
+            if (buffsHeldForRefresh && !HealthUnderAnyLine(_vitals.HealthPct, _vitals.StaminaPct))
+            {
+                Hold("login buff refresh");
+                return;
+            }
         }
 
         // Periodic re-sync: if the character died and lost all enchantments, the
@@ -713,7 +939,7 @@ public class BuffManager : IDisposable
         // at worst a buff is recast later (2026-10-04).
         if (_pendingSpellId != 0 && _pendingSpellId != _pendingVitalSpellId && WantsHealNow()
             && (DateTime.Now - _lastCastAttempt).TotalMilliseconds >= HealInterruptMinMs
-            && BusyCount == 0 && CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s)))
+            && CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s)) && !BusyHoldsHeal())
         {
             _host.Log($"[BuffDiag] health {_vitals.HealthPct}% under a heal line: released pending buff id={_pendingSpellId} to heal first.");
             _pendingSpellId = 0;
@@ -733,9 +959,12 @@ public class BuffManager : IDisposable
             // releases the pending cast, with no strike.
             if (pendingSpell != null && _pendingSpellId == _pendingVitalSpellId)
             {
-                if ((DateTime.Now - _lastCastAttempt).TotalMilliseconds > SelfBuffGiveUpMs)
+                // Timed from the incantation when one arrived (2026-10-05): a healthy DreamWeave
+                // vital takes 2.2-2.5 s after its incantation, and 2.5 s from the send gave up on
+                // casts the server was still finishing.
+                if (PendingGiveUpReached(SelfBuffGiveUpMs))
                 {
-                    _host.Log($"[BuffDiag] vital cast '{pendingSpell.Name}' (id={_pendingSpellId}) not confirmed by chat in {SelfBuffGiveUpMs:0}ms — released, no strike.");
+                    _host.Log($"[BuffDiag] vital cast '{pendingSpell.Name}' (id={_pendingSpellId}) not confirmed by chat ({GiveUpWhy(SelfBuffGiveUpMs)}) — released, no strike.");
                     _pendingSpellId = 0;
                     _pendingVitalSpellId = 0;
                     _onCastResolved?.Invoke("vital cast unconfirmed");
@@ -743,6 +972,7 @@ public class BuffManager : IDisposable
                 else
                 {
                     TryEmergencyHealWhilePending();
+                    Hold(_pendingVitalLabel == LabelHealing ? "heal cast in flight" : "vital cast in flight", pendingSpell.Name);
                     return;
                 }
             }
@@ -765,7 +995,9 @@ public class BuffManager : IDisposable
                     // refreshed, and the late fizzle line then cleared the NEXT cast.
                     // While the old entry hasn't moved, wait for the chat line or the
                     // enchantment event; at the give-up it is judged exactly as before.
-                    if (active && sinceCastMs <= SelfBuffGiveUpMs
+                    // Give-up timed from the incantation when one arrived (see the vital path).
+                    bool pastGiveUp = PendingGiveUpReached(SelfBuffGiveUpMs);
+                    if (active && !pastGiveUp
                         && _castIssuedAtByFamily.TryGetValue(pendingSpell.Family, out DateTime issuedAt)
                         && _expiryAtCastByFamily.TryGetValue(pendingSpell.Family, out DateTime expiryThen)
                         && expiryThen > issuedAt                          // it was on when we cast
@@ -777,11 +1009,12 @@ public class BuffManager : IDisposable
                         // _forceRebuffCastFamilies (not timers), so the family MUST be
                         // marked cast here or the batch respins this buff forever.
                         if (_isForceRebuffing) _forceRebuffCastFamilies.Add(pendingSpell.Family);
+                        _cast.Confirmed(_pendingSpellId, "confirmed in the enchantment registry");
                         _pendingSpellId = 0; // landed — registry confirms it; advance
                         NoteCastAccepted();  // it went through — end any too-busy backoff
                         _onCastResolved?.Invoke("self-buff confirmed (registry)");
                     }
-                    else if (sinceCastMs > SelfBuffGiveUpMs)
+                    else if (pastGiveUp)
                     {
                         // Not in the registry after settling → this tier didn't take.
                         // A WARM snapshot already excludes unknown tiers, so a no-show
@@ -815,14 +1048,15 @@ public class BuffManager : IDisposable
                 // Yield while the self-buff cast is in flight. PendingSpellId keeps
                 // the arbiter on Buffing, so CombatManager can't sneak a peace-mode
                 // switch in mid-cast.
-                if (_pendingSpellId != 0) { TryEmergencyHealWhilePending(); return; }
+                if (_pendingSpellId != 0) { TryEmergencyHealWhilePending(); Hold("buff cast in flight", pendingSpell.Name); return; }
             }
             else if (pendingIsArmor)
             {
                 // ARMOR/ITEM: chat is authoritative. No-chat valve abandons a cast
                 // AC never answers so the cycle can't wedge; the chat handlers do
                 // the cooldown. Blacklist (unless snapshot confirms known) drops tier.
-                if ((DateTime.Now - _lastCastAttempt).TotalMilliseconds > NoChatResolveTimeoutMs)
+                // From the send, or later when the incantation came late (never earlier than before).
+                if (PendingGiveUpReached(NoChatResolveTimeoutMs))
                 {
                     int stuckId = _pendingSpellId;
                     var stuck = SpellTableStub.GetById(stuckId);
@@ -873,12 +1107,15 @@ public class BuffManager : IDisposable
                     _onCastResolved?.Invoke("no-chat timeout (armor)");
                 }
                 // Hold the cycle until chat resolves the item cast.
-                if (_pendingSpellId != 0) { TryEmergencyHealWhilePending(); return; }
+                if (_pendingSpellId != 0) { TryEmergencyHealWhilePending(); Hold("item spell in flight", pendingSpell?.Name ?? ""); return; }
             }
         }
 
         if ((DateTime.Now - _lastCastAttempt).TotalMilliseconds < _settings.SpellCastIntervalMs)
+        {
+            Hold("cast interval");
             return;
+        }
 
         // Don't issue a cast while the previous cast GESTURE is still animating.
         // CanCastNow is the engine's CMotionInterp gesture gate (the REAL cast
@@ -894,14 +1131,31 @@ public class BuffManager : IDisposable
         // CombatManager can't sneak in a peace-mode switch mid-cast") is the
         // arbiter's call now — it reads PendingSpellId / WantsVitalRecharge /
         // NeedsAnyBuff and is the sole writer of the "Buffing" string.
-        if (!CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s)) || BusyCount > 0)
+        // A heal goes ahead of a busy count the server has already finished (BusyHoldsHeal);
+        // everything else still waits for the count to drop.
+        bool gateOpen = CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s));
+        bool busyHolds = BusyCount > 0
+            && (ActiveHealLine(_vitals.HealthPct, _vitals.StaminaPct, out _, out _).Length == 0 || BusyHoldsHeal());
+        if (!gateOpen || busyHolds)
         {
-            LastBuffSkipReason = BusyCount > 0 ? "busy (BusyCount>0)" : "cast gate closed (CanCastNow=false / gesture animating)";
+            LastBuffSkipReason = busyHolds ? "busy (BusyCount>0)" : "cast gate closed (CanCastNow=false / gesture animating)";
+            if (!gateOpen) Hold("cast gate (a gesture is animating)");
+            else Hold("busy count", $"busy {BusyCount}");
             return;
         }
 
         if (CheckVitals())
+        {
+            if (_healHold.Length == 0) Hold(_healWaitKind.Length > 0 ? _healWaitKind : "vitals step busy", _vitalWhy);
             return;
+        }
+
+        // The login refresh above held buffs only: the heal had its turn, the buffs wait.
+        if (buffsHeldForRefresh)
+        {
+            Hold("login buff refresh");
+            return;
+        }
 
         // Mana floor: no buff while mana is under Get Mana At. CheckVitals above already tried
         // Stamina to Mana and a mana potion; when neither could run (stamina too low, none
@@ -1021,7 +1275,10 @@ public class BuffManager : IDisposable
     /// DateTime.MinValue when the family has no timer at all.</summary>
     private DateTime CurrentExpiryFor(int family)
     {
-        if (_ramBuffTimers.TryGetValue(family, out RamTimerInfo? t)) return t.Expiration;
+        // An item-granted permanent isn't ours when CastBuffsOverItemBuffs is on (only possible
+        // between the setting being switched on and the next live read).
+        if (_ramBuffTimers.TryGetValue(family, out RamTimerInfo? t) && !(t.IsPermanent && _settings.CastBuffsOverItemBuffs))
+            return t.Expiration;
         if (_itemSpellTimers.TryGetValue(family, out ItemSpellRecord? i)) return i.ExpiresAt;
         return DateTime.MinValue;
     }
@@ -1102,6 +1359,7 @@ public class BuffManager : IDisposable
         if (KitPending())
         {
             _isHealingSelf = true;
+            Hold(_kitIsStamina ? "stamina kit in flight" : "healing kit in flight");
             return true;
         }
 
@@ -1157,6 +1415,7 @@ public class BuffManager : IDisposable
                 return true;
             }
             _healUnavailableUntil = DateTime.Now.AddMilliseconds(HealUnavailableMs);
+            Hold("nothing could heal", $"kit: {Why(kitWhy)}; Heal Self: {Why(spellWhy)}; potion: {Why(_vitalWhy)}");
             LogNoHeal($"health {curHealthPct}% < {(inCombat ? "Heal At" : "Top Off HP")} {hpThreshold}% but nothing healed: " +
                       $"kit: {Why(kitWhy)}; Heal Self: {Why(spellWhy)}; potion: {Why(_vitalWhy)}");
         }
@@ -1224,7 +1483,7 @@ public class BuffManager : IDisposable
         int emergencyAt = _settings.EmergencyHealAt;
         if (emergencyAt <= 0 || _vitals.HealthPct > emergencyAt) return;
         if ((DateTime.Now - _lastPendingEmergencyHealAt).TotalMilliseconds < 2500) return;
-        if (IsAwaitingCastResolution() || BusyCount > 0 || KitPending()) return;
+        if (IsAwaitingCastResolution() || BusyHoldsHeal() || KitPending()) return;
         if (!CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s))) return;
         if (AttemptHealthKitUse() || AttemptPotion("HealthPotion"))
         {
@@ -1259,6 +1518,28 @@ public class BuffManager : IDisposable
     private bool AttemptVitalCast(string baseName)
     {
         if (!IsSkillUsable(AcSkillType.LifeMagic)) return VitalNo("Life Magic not usable");
+        // AC just said "You're too busy!": a cast now draws another refusal and can keep the
+        // gesture from finishing (Drakkon, 2026-10-05: Stamina to Mana every 0.4 s until he was
+        // moved). Mana and stamina wait out the backoff; a heal still retries, but no faster
+        // than BusyHealRetryMs. Waiting counts as handled, so no potion is drunk meanwhile.
+        if (DateTime.Now < _busyBackoffUntil)
+        {
+            bool healthSpell = baseName is "Heal Self" or "Stamina to Health Self";
+            if (!healthSpell || (DateTime.Now - _lastCastAttempt).TotalMilliseconds < BusyHealRetryMs)
+            {
+                _vitalWhy = $"AC too busy, waiting {(_busyBackoffUntil - DateTime.Now).TotalMilliseconds:0} ms";
+                _healWaitKind = "too-busy backoff";
+                return true;
+            }
+        }
+        // Mana and stamina also wait until the server has finished the last cast (its result, or
+        // its UseDone after the incantation; bounded by its give-up time). A heal never waits.
+        if (baseName is not ("Heal Self" or "Stamina to Health Self") && IsAwaitingCastResolution())
+        {
+            _vitalWhy = "the server hasn't finished the last cast";
+            _healWaitKind = "server finishing the last cast";
+            return true;
+        }
         int spellId = FindBestSpellId(baseName, AcSkillType.LifeMagic);
         if (spellId == 0) return VitalNo($"no known '{baseName}' spell at the allowed tiers");
         // Parked after a hard server refusal (see OnChatWindowText) — the same
@@ -1270,9 +1551,10 @@ public class BuffManager : IDisposable
             return VitalNo($"parked for {(coolUntil - DateTime.Now).TotalSeconds:0} s more after a refusal or no-show");
         if (CurrentCombatMode != CombatMode.Magic && DateTime.Now < _vitalSwapBlockedUntil)
             return VitalNo("wand swap blocked, retrying shortly");
-        if (!EnsureMagicMode())
+        bool urgentHeal = baseName is "Heal Self" or "Stamina to Health Self" && HealIsUrgent(_vitals.HealthPct, _vitals.StaminaPct);
+        if (!EnsureMagicMode(urgentHeal: urgentHeal))
         {
-            if (!_magicModeBlocked) return true;   // a swap step is in flight: yield the tick
+            if (!_magicModeBlocked) { _healWaitKind = "wand swap / Magic stance"; return true; }   // a swap step is in flight: yield the tick
             // The switch can't complete now (no room to put the bow away, the wand won't
             // wield): not handled, so the kit/potion after this gets its turn.
             _vitalSwapBlockedUntil = DateTime.Now.AddSeconds(VitalSwapBlockedRetrySec);
@@ -1283,6 +1565,7 @@ public class BuffManager : IDisposable
         // strike. Mirror the buff path: not handled, so the potion gets its turn.
         _pendingSpellId = spellId;
         _pendingVitalSpellId = spellId;   // instant: confirmed by chat, never by the registry
+        _pendingVitalLabel = VitalLabel(baseName);
         bool castOk = _host.CastSpell((uint)_host.GetPlayerId(), spellId);
         _lastCastAttempt = DateTime.Now;
         if (!castOk)
@@ -1290,9 +1573,17 @@ public class BuffManager : IDisposable
             _pendingSpellId = 0;
             return VitalNo($"the client refused the cast (spell {spellId})");
         }
-        NoteCastIssued();
+        NoteCastIssued(spellId);
+        if (_pendingVitalLabel == LabelHealing)
+        {
+            _healSpellIds.Add(spellId);
+            _healLatency.HealSent(Now, baseName);
+        }
         return true;
     }
+
+    private static bool IsHealthPotionType(string[] types) =>
+        Array.FindIndex(types, t => t.Equals("HealthPotion", StringComparison.OrdinalIgnoreCase)) >= 0;
 
     /// <summary>
     /// Drinks the first potion of <paramref name="types"/> from the Items panel.
@@ -1306,10 +1597,12 @@ public class BuffManager : IDisposable
         {
             if (Array.FindIndex(types, t => t.Equals(rule.Type, StringComparison.OrdinalIgnoreCase)) < 0) continue;
             if (_worldObjectCache[rule.Id] == null) continue;
+            if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
             _host.Log($"[RynthAi] Vitals: drinking {rule.Name} ({rule.Type}).");
             _host.UseFor(unchecked((uint)rule.Id), "Buff", $"vitals: drink {rule.Name} ({rule.Type}) from the Items list");
             _lastPotionAt = DateTime.Now;
             _lastCastAttempt = DateTime.Now;
+            if (IsHealthPotionType(types)) _healLatency.HealSent(Now, rule.Name);
             return true;
         }
         // Nothing on the Items panel: anything in the pack of that kind (Field Rations
@@ -1318,10 +1611,12 @@ public class BuffManager : IDisposable
         {
             string? kind = RynthCore.Plugin.RynthAi.LegacyUi.LegacyWeaponsUi.PotionType(wo);
             if (kind == null || Array.FindIndex(types, t => t.Equals(kind, StringComparison.OrdinalIgnoreCase)) < 0) continue;
+            if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
             _host.Log($"[RynthAi] Vitals: using {wo.Name} from the pack ({kind}).");
             _host.UseFor(unchecked((uint)wo.Id), "Buff", $"vitals: {kind} potion from the pack");
             _lastPotionAt = DateTime.Now;
             _lastCastAttempt = DateTime.Now;
+            if (IsHealthPotionType(types)) _healLatency.HealSent(Now, wo.Name ?? "health potion");
             return true;
         }
         return VitalNo("none in the Items list or the pack");
@@ -1447,6 +1742,7 @@ public class BuffManager : IDisposable
             if (r.Type.Equals("HealthKit", StringComparison.OrdinalIgnoreCase) && _worldObjectCache[r.Id] is WorldObject wo) { kit = wo; break; }
         if (kit == null) { kit = BestPackHealingKit(); fromPack = true; }
         if (kit == null) return VitalNo("no healing kit");
+        if (KitRetryWait(out string kitWait)) return VitalNo(kitWait);
         // Too likely to fail on what's missing (KitMinSuccessPct): let the spell have it.
         uint missing = _vitals.MaxHealth > _vitals.CurrentHealth ? _vitals.MaxHealth - _vitals.CurrentHealth : 0;
         if (!KitChanceOk(kit.Id, kit.Name ?? "", missing, _settings.PeaceModeForKits)) return VitalNo($"{kit.Name} under Kit Min Success %");
@@ -1454,15 +1750,18 @@ public class BuffManager : IDisposable
         {
             _host.ChangeCombatMode(CombatMode.NonCombat);
             _lastCastAttempt = DateTime.Now;
+            _healWaitKind = "peace mode for the kit";
             return true;   // use the kit next tick, once in peace mode
         }
 
         uint playerId = _host.GetPlayerId();
         if (playerId == 0) return false;
+        if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
         if (fromPack) _host.Log($"[RynthAi] Vitals: using {kit.Name} from the pack.");
         _host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: healing kit on yourself");
         _lastCastAttempt = DateTime.Now;
         MarkKitUsed();
+        _healLatency.HealSent(Now, kit.Name ?? "healing kit");
         return true;
     }
 
@@ -1477,6 +1776,7 @@ public class BuffManager : IDisposable
         if (mode == CombatMode.Magic && !_settings.UseKitsInMagicMode) return false;
         WorldObject? kit = BestPackStaminaKit();
         if (kit == null) return false;
+        if (KitRetryWait(out _)) return false;
         uint missing = _vitals.MaxStamina > _vitals.CurrentStamina ? _vitals.MaxStamina - _vitals.CurrentStamina : 0;
         if (!KitChanceOk(kit.Id, kit.Name ?? "", missing, _settings.PeaceModeForKits)) return false;
         if (_settings.PeaceModeForKits && mode != CombatMode.NonCombat && _host.HasChangeCombatMode)
@@ -1487,10 +1787,11 @@ public class BuffManager : IDisposable
         }
         uint playerId = _host.GetPlayerId();
         if (playerId == 0) return false;
+        if (HeldCastBlocksItemUse(out _)) return false;
         _host.Log($"[RynthAi] Vitals: using {kit.Name} from the pack.");
-        _host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: healing kit on yourself");
+        _host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: stamina kit on yourself");
         _lastCastAttempt = DateTime.Now;
-        MarkKitUsed();
+        MarkKitUsed(stamina: true);
         return true;
     }
 
@@ -1505,21 +1806,70 @@ public class BuffManager : IDisposable
     private const double KitResultTimeoutMs = 8000;
     private const double KitLandGraceMs = 700;
 
-    internal void MarkKitUsed()   // internal for the host tests (VitalsTests)
+    // A refused kit (2026-10-05): ACE answers a kit used while the character is busy (a swing, a
+    // cast still resolving), in the air, or on something it can't heal with a UseDone error and
+    // no chat result (Healer.cs: YoureTooBusy, YouCantDoThatWhileInTheAir, YouCantHealThat). No
+    // result line ever came, so every vital waited the full KitResultTimeoutMs, 8 s with no heal
+    // at all (CheckVitals returns at KitPending, Heal Self included). Now the kit's refusal ends
+    // the wait: a UseDone with an error after the kit went out, or "You're too busy!" within
+    // KitRefusalWindowMs of it. The next kit waits KitRetryAfterRefusalMs, so Heal Self or a
+    // potion gets the turn first and a refusal can't become a kit every tick.
+    private int _kitSeqAtUse;
+    private DateTime _kitRefusedAt = DateTime.MinValue;
+    private const double KitRefusalWindowMs = 3000;
+    private const double KitRetryAfterRefusalMs = 1000;
+    /// <summary>Kit uses the server refused (tests, status).</summary>
+    internal int KitRefusals { get; private set; }
+
+    internal void MarkKitUsed(bool stamina = false)   // internal for the host tests (VitalsTests)
     {
         _kitUsedAt = DateTime.Now;
         _kitLandedAt = DateTime.MinValue;
+        _kitIsStamina = stamina;
+        _kitSeqAtUse = UseDoneSeqNow();
     }
 
     internal bool KitPending()
     {
         if (_kitUsedAt == DateTime.MinValue) return false;
+        // Refused by the server: a UseDone carrying an error since the kit went out.
+        if (_kitLandedAt == DateTime.MinValue && _host.TryGetLastUseDone(out int seq, out uint err)
+            && seq != _kitSeqAtUse && err != 0)
+        {
+            KitRefused($"UseDone error 0x{err:X}");
+            return false;
+        }
         DateTime now = DateTime.Now;
         bool done = _kitLandedAt != DateTime.MinValue
             ? (now - _kitLandedAt).TotalMilliseconds >= KitLandGraceMs
             : (now - _kitUsedAt).TotalMilliseconds >= KitResultTimeoutMs;
         if (done) { _kitUsedAt = DateTime.MinValue; _kitLandedAt = DateTime.MinValue; }
         return !done;
+    }
+
+    /// <summary>The kit in flight was refused: no result line will come, so stop waiting for one.</summary>
+    private void KitRefused(string why)
+    {
+        if (_kitUsedAt == DateTime.MinValue || _kitLandedAt != DateTime.MinValue) return;
+        double ms = (DateTime.Now - _kitUsedAt).TotalMilliseconds;
+        _kitUsedAt = DateTime.MinValue;
+        _kitRefusedAt = DateTime.Now;
+        KitRefusals++;
+        _host.Log($"[RynthAi] Vitals: the {(_kitIsStamina ? "stamina" : "healing")} kit was refused {ms:0} ms after use ({why}): " +
+                  $"no result will come, vitals carry on (next kit in {KitRetryAfterRefusalMs:0} ms).");
+    }
+
+    /// <summary>True (with why) while a kit must wait after its last refusal.</summary>
+    private bool KitRetryWait(out string why)
+    {
+        double since = (DateTime.Now - _kitRefusedAt).TotalMilliseconds;
+        if (since < KitRetryAfterRefusalMs)
+        {
+            why = $"kit refused {since:0} ms ago, retrying shortly";
+            return true;
+        }
+        why = "";
+        return false;
     }
 
     /// <summary>True for the chat lines that end a kit use on yourself (ACE Healer.cs).</summary>
@@ -1754,7 +2104,7 @@ public class BuffManager : IDisposable
             if (diagnose) _host.Log($"[FR] CAST '{buffBaseName}' resolvedSpellId={spellId} (pending now set)");
             bool castOk = _host.CastSpell((uint)_host.GetPlayerId(), spellId);
             _lastCastAttempt = DateTime.Now;
-            if (castOk) NoteCastIssued();
+            if (castOk) NoteCastIssued(spellId);
             if (castOk && buffFamily != 0 && spellInfo != null)
             {
                 // Highest tier cast per family this session: IsBuffActive's landed-tier cap only
@@ -2040,8 +2390,12 @@ public class BuffManager : IDisposable
             return false;
         }
 
-        // Player buffs — use RAM timers
-        if (_ramBuffTimers.TryGetValue(targetSpell.Family, out RamTimerInfo? timer))
+        // Player buffs — use RAM timers. With CastBuffsOverItemBuffs on, a permanent
+        // (item-granted) entry is not ours and never satisfies the family. The live refresh
+        // already keeps permanents out of the timers then; this covers the setting being
+        // switched on between refreshes.
+        if (_ramBuffTimers.TryGetValue(targetSpell.Family, out RamTimerInfo? timer)
+            && !(timer.IsPermanent && _settings.CastBuffsOverItemBuffs))
         {
             // Tier-upgrade flap guard: many high-tier buffs are Incantations
             // (nominal tier 8) that LAND at a lower, skill-capped tier — e.g.
@@ -2072,8 +2426,21 @@ public class BuffManager : IDisposable
                 _lastArmorRecastReason.Remove(targetSpell.Family);
                 return true;
             }
+            // The strongest entry is running out, but another one in the family at the
+            // tier we'd cast (or better) still has time: AC moves to it when the strong one
+            // ends, so casting again changes nothing. Without this a buff bot's expiring 8
+            // made our own fresh VI under it recast every pass until the audit parked it.
+            if (CoveredByAnotherEntry(targetSpell.Family, effectiveTarget, rebufferSec))
+            {
+                _lastArmorRecastReason.Remove(targetSpell.Family);
+                return true;
+            }
             double remainSec = (timer.Expiration - DateTime.Now).TotalSeconds;
             LogPlayerRecast(targetSpell, $"expiry-window remainSec={remainSec:F0} threshold={rebufferSec} storedLvl={timer.SpellLevel} exp={timer.Expiration:HH:mm:ss} (stored='{timer.SpellName}')");
+        }
+        else if (timer != null)
+        {
+            LogPlayerRecast(targetSpell, $"only an item-granted '{timer.SpellName}' (permanent, lvl={timer.SpellLevel}) and CastBuffsOverItemBuffs is on: cast our own");
         }
         else
         {
@@ -2082,6 +2449,21 @@ public class BuffManager : IDisposable
 
         if (_isForceRebuffing) return false;
 
+        return false;
+    }
+
+    /// <summary>True when the last live read holds an entry in <paramref name="family"/> at
+    /// <paramref name="minLevel"/> or above with more than <paramref name="rebufferSec"/> left
+    /// (a permanent one counts unless CastBuffsOverItemBuffs is on: then only our timed
+    /// entries do).</summary>
+    private bool CoveredByAnotherEntry(int family, int minLevel, int rebufferSec)
+    {
+        if (!_familyLiveEntries.TryGetValue(family, out var entries)) return false;
+        bool ignorePermanent = _settings.CastBuffsOverItemBuffs;
+        DateTime due = DateTime.Now.AddSeconds(rebufferSec);
+        foreach (var (level, expiration, permanent) in entries)
+            if (level >= minLevel && expiration > due && !(permanent && ignorePermanent))
+                return true;
         return false;
     }
 
@@ -2243,6 +2625,7 @@ public class BuffManager : IDisposable
         }
 
         _ramBuffTimers.Clear();
+        _familyLiveEntries.Clear();
         for (int i = 0; i < count; i++)
         {
             var spellInfo = SpellTableStub.GetById((int)spellIds[i]);
@@ -2298,13 +2681,27 @@ public class BuffManager : IDisposable
             // Keep the higher tier; on a tie keep whichever lasts longer
             // (PermanentSentinel naturally sorts last, so a permanent entry wins
             // a tie against a timed one of the same tier).
+            //
+            // CastBuffsOverItemBuffs (default on, 2026-10-05): a permanent entry is item-granted,
+            // not ours, and on a server with buff augments our own cast is stronger or longer.
+            // It never takes the family timer then, so the timer tracks the highest TIMED entry
+            // (ours) and the buff is cast, then recast when it runs low. Once our cast lands
+            // the family reads on until it runs low, so no recast loop: the 09-27 loop came
+            // from a permanent entry OWNING the timer at a tier below the target, which can't
+            // happen when permanents are left out.
+            bool ignoredAsItemBuff = isPermanent && _settings.CastBuffsOverItemBuffs;
             bool keepExisting =
-                _ramBuffTimers.TryGetValue(spellInfo.Family, out RamTimerInfo? seen)
-                && (seen.SpellLevel > level
-                    || (seen.SpellLevel == level && seen.Expiration >= candidate.Expiration));
+                ignoredAsItemBuff
+                || (_ramBuffTimers.TryGetValue(spellInfo.Family, out RamTimerInfo? seen)
+                    && (seen.SpellLevel > level
+                        || (seen.SpellLevel == level && seen.Expiration >= candidate.Expiration)));
 
             if (!keepExisting)
                 _ramBuffTimers[spellInfo.Family] = candidate;
+
+            if (!_familyLiveEntries.TryGetValue(spellInfo.Family, out var familyEntries))
+                _familyLiveEntries[spellInfo.Family] = familyEntries = new List<(int, DateTime, bool)>();
+            familyEntries.Add((level, candidate.Expiration, isPermanent));
 
             // Learn the real ceiling this family lands at (Incantations cap below
             // their nominal tier) so IsBuffActive stops chasing an unreachable tier.
@@ -2321,9 +2718,11 @@ public class BuffManager : IDisposable
 
             if (isPermanent && _loggedPermanentFamilies.Add(spellInfo.Family))
                 _host.Log($"[BuffDiag] permanent player enchant tracked: id={spellInfo.Id} '{spellInfo.Name}' (fam={spellInfo.Family}, lvl={level}) — presence-only, not persisted" +
-                          (keepExisting
-                              ? $" — outranked in this family by '{seen!.SpellName}' (lvl={seen.SpellLevel}), which owns the timer"
-                              : ""));
+                          (ignoredAsItemBuff
+                              ? " — item-granted, CastBuffsOverItemBuffs is on: our own cast owns the timer"
+                              : keepExisting && _ramBuffTimers.TryGetValue(spellInfo.Family, out RamTimerInfo? owner)
+                                  ? $" — outranked in this family by '{owner.SpellName}' (lvl={owner.SpellLevel}), which owns the timer"
+                                  : ""));
         }
 
         // Restore item enchantment timers that weren't covered by player enchantments
@@ -2628,6 +3027,7 @@ public class BuffManager : IDisposable
                 // while _pendingSpellId is still set. Clearing pending here without marking
                 // it would make an auto-batch respin this buff forever.
                 if (_isForceRebuffing) _forceRebuffCastFamilies.Add(pendingSpell.Family);
+                _cast.Confirmed(_pendingSpellId, "enchantment landed");
                 _pendingSpellId = 0;
                 NoteCastAccepted();
                 _onCastResolved?.Invoke("self-buff confirmed (enchantment event)");
@@ -2690,6 +3090,15 @@ public class BuffManager : IDisposable
         if (_pendingSpellId != 0)
             _host.Log($"[BuffChat] pending={_pendingSpellId} type={chatType} text='{text}'");
 
+        // Our own incantation ('You say, "Puish Zharil"') is the server STARTING the last cast we
+        // sent: its give-up and the server wait are timed from here (CastTracker). It is speech,
+        // so it never reaches the result matchers below.
+        if (IsOwnIncantation(text))
+        {
+            _cast.Incantation(UseDoneSeqNow());
+            return;
+        }
+
         // Speech and our own lines are never cast results. Every chat line reaches
         // this handler, so "Bob tells you, "did you cast banes?"" matched "ou cast ",
         // fell back to the pending spell and wrote a phantom 1-hour armor timer; a
@@ -2722,7 +3131,25 @@ public class BuffManager : IDisposable
         // construction → 0x00460D1D killed regardless of gate precision.
         if (lower.Contains("you're too busy") || lower.Contains("you are too busy"))
         {
-            if (_pendingSpellId != 0)
+            // A kit in flight with no result yet: this is its refusal (see KitRefused). Our bot
+            // sends nothing else while a kit is pending (CheckVitals returns at KitPending).
+            if (_kitUsedAt != DateTime.MinValue && _kitLandedAt == DateTime.MinValue
+                && (DateTime.Now - _kitUsedAt).TotalMilliseconds <= KitRefusalWindowMs)
+                KitRefused("You're too busy!");
+            // A refusal, never "done" (2026-10-05). When the pending cast's incantation has come,
+            // the server is running it and this refused something else (a loot use, a kit): the
+            // pending cast is kept and still resolves on its own result or give-up time.
+            ObserveLastUseDone();
+            var cur = _cast.Current;
+            bool pendingRunning = _pendingSpellId != 0 && cur != null && cur.SpellId == _pendingSpellId
+                                  && cur.HasIncantation && !cur.Done;
+            bool urgentNudge = HeldNudgeUrgent();
+            bool nudge = _cast.Refusal(UseDoneSeqNow(), urgentNudge ? CastTracker.UrgentHeldAfterIncantMs : CastTracker.HeldAfterIncantMs);
+            if (pendingRunning)
+            {
+                _host.Log($"[BuffChat] too busy while pending={_pendingSpellId} is running on the server (incantation seen) — something else was refused; pending kept.");
+            }
+            else if (_pendingSpellId != 0)
             {
                 var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
                 if (pendingSpell != null && IsItemEnchantment(pendingSpell.Name))
@@ -2732,7 +3159,7 @@ public class BuffManager : IDisposable
                 }
                 _host.Log($"[BuffChat] PARKED pending={_pendingSpellId} — AC too busy (cast gesture in progress); throttle kept, backing off before re-issue.");
             }
-            _pendingSpellId = 0;
+            if (!pendingRunning) _pendingSpellId = 0;
 
             // AC is authoritatively busy — wait, escalating, rather than retrying
             // on the 400ms tick. Cleared by NoteCastAccepted on the next success.
@@ -2742,7 +3169,22 @@ public class BuffManager : IDisposable
             if (_busyRefusalStreak == 1 || _busyRefusalStreak % 5 == 0)
                 _host.Log($"[BuffChat] too-busy streak={_busyRefusalStreak} — backing off {backoffMs:0}ms before the next cast attempt.");
 
-            _onCastResolved?.Invoke("too busy");
+            // A run of refusals with nothing landing is a gesture that won't finish on its own;
+            // moving the character cleared it (Drakkon, 2026-10-05). Do that once per streak.
+            // Not while one of our casts is open on the server (incantation, no result): a stop
+            // mid-windup can cancel a healthy cast, and a held one gets the nudge below instead.
+            if (_busyRefusalStreak == BusyStopAtStreak && _host.HasStopCompletely && _cast.HeldSeconds == 0)
+            {
+                _host.StopCompletelyBy("Buff/TooBusy");
+                _host.Log($"[BuffChat] too-busy streak={_busyRefusalStreak} — the cast gesture looks stuck: StopCompletely to clear it.");
+            }
+
+            // A cast the server has held open past CastTracker.HeldAfterIncantMs while it refuses
+            // the next ones: one movement nudge, once per held cast (what moving him by hand did).
+            if (nudge && _settings.IsMacroRunning)
+                SendCastNudge(urgentNudge);
+
+            if (!pendingRunning) _onCastResolved?.Invoke("too busy");
             return;
         }
 
@@ -2760,6 +3202,7 @@ public class BuffManager : IDisposable
             lower.Contains("you must specify") ||
             lower.Contains("have all the components for this spell"))
         {
+            _cast.Result(null, "refused by the server", atStart: true);
             if (_pendingSpellId != 0)
             {
                 var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
@@ -2797,8 +3240,10 @@ public class BuffManager : IDisposable
         // A zeroed _lastCastAttempt (the soft-fail path) would re-cast at tick rate.
         if (lower.Contains("enough mana"))
         {
+            _cast.Result(null, "not enough mana", atStart: true);
             if (_pendingSpellId == 0) return;
             var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
+            double restSec = LowManaFamilyRestSec;
             if (pendingSpell != null)
             {
                 if (IsItemEnchantment(pendingSpell.Name))
@@ -2806,9 +3251,14 @@ public class BuffManager : IDisposable
                     _itemSpellTimers.Remove(pendingSpell.Family);
                     SaveBuffTimers();
                 }
-                _buffFailCooldownUntil[pendingSpell.Family] = DateTime.Now.AddSeconds(LowManaFamilyRestSec);
+                // A heal rests only LowManaHealRestSec (2026-10-05): long enough for the mana step
+                // after it to cast Stamina to Mana or drink, not 15 s with no Heal Self after the
+                // mana was back (a mage low on mana mid-fight).
+                bool healSpell = _pendingSpellId == _pendingVitalSpellId && _pendingVitalLabel == LabelHealing;
+                restSec = healSpell ? LowManaHealRestSec : LowManaFamilyRestSec;
+                _buffFailCooldownUntil[pendingSpell.Family] = DateTime.Now.AddSeconds(restSec);
             }
-            _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId} - not enough mana; resting the family {LowManaFamilyRestSec:0}s, buffs {LowManaBuffPauseMs / 1000:0}s.");
+            _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId} - not enough mana; resting the family {restSec:0}s, buffs {LowManaBuffPauseMs / 1000:0}s.");
             _pendingSpellId = 0;
             _lowManaPauseUntil = DateTime.Now.AddMilliseconds(LowManaBuffPauseMs);
             _onCastResolved?.Invoke("not enough mana");
@@ -2821,6 +3271,7 @@ public class BuffManager : IDisposable
             lower.Contains("your spell failed") ||
             lower.Contains("lack the mana"))
         {
+            _cast.Result(null, "fizzled");
             if (_pendingSpellId != 0)
             {
                 var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
@@ -2853,13 +3304,35 @@ public class BuffManager : IDisposable
         if (commaIdx > 0 && commaIdx < endIdx) endIdx = commaIdx;
         string spellName = afterCast.Substring(0, endIdx).Trim();
 
+        // Which of our casts this result belongs to, by the spell name it starts with (a vital's
+        // line, "You cast Revitalize Self V and restore 70 points...", has no " on " or comma).
+        var tracked = _cast.Result(afterCast, "result");
+
         // Try to find the spell by name first (authoritative — this is what was actually cast)
         int spellId = SpellDatabase.GetIdByName(spellName);
         SpellInfo? spellInfo = spellId > 0 ? SpellTableStub.GetById(spellId) : null;
 
-        // Fall back to pending spell if name lookup fails
+        // Then the cast the line names (a late result of an earlier cast is credited to that cast,
+        // not to whatever is pending now: Stamina to Mana was credited to Creature Enchantment
+        // Mastery, 2026-10-05), then the pending spell.
+        if (spellInfo == null && tracked != null)
+            spellInfo = SpellTableStub.GetById(tracked.SpellId);
         if (spellInfo == null && _pendingSpellId != 0)
             spellInfo = SpellTableStub.GetById(_pendingSpellId);
+
+        // A result that names another spell than the pending one is not the pending cast's
+        // result: the pending cast keeps waiting for its own (or its give-up time).
+        var pendingInfo = _pendingSpellId != 0 ? SpellTableStub.GetById(_pendingSpellId) : null;
+        if (pendingInfo != null && spellInfo != null && spellInfo.Family != pendingInfo.Family)
+        {
+            _buffFailCooldownUntil.Remove(spellInfo.Family);
+            _silentNoShowCounts.Remove(spellInfo.Family);
+            NoteCastAccepted();
+            if (IsItemEnchantment(spellInfo.Name)) RecordItemSpellCast(spellInfo);
+            else RecordSpellTimer(spellInfo);
+            _host.Log($"[BuffChat] result for '{spellInfo.Name}' is not pending={_pendingSpellId} ('{pendingInfo.Name}') — recorded, pending kept.");
+            return;
+        }
 
         if (spellInfo != null)
         {
@@ -2893,32 +3366,151 @@ public class BuffManager : IDisposable
 
     /// <summary>Record that a cast just went out, so the next one waits for the
     /// server to report the action finished rather than a blind interval.</summary>
-    private void NoteCastIssued()
+    private void NoteCastIssued(int spellId)
     {
-        if (!_host.HasUseDoneSeq) { _awaitingCastResolution = false; return; }
-        _useDoneSeqAtCast        = _host.GetUseDoneSeq();
-        _awaitingCastResolution  = true;
-        _castResolutionDeadline  = DateTime.Now.AddMilliseconds(CastResolutionTimeoutMs);
+        string name = SpellTableStub.GetById(spellId)?.Name ?? $"spell {spellId}";
+        _cast.Sent(spellId, name, UseDoneSeqNow());
     }
 
-    /// <summary>True while the server has not yet reported finishing the last
-    /// cast. Self-clears on the UseDone-seq advance (completed OR refused) or on
-    /// the timeout, so this can never wedge the buff loop.</summary>
-    private bool IsAwaitingCastResolution()
+    /// <summary>
+    /// True while the server has not finished the last cast sent: until its own result line, a
+    /// UseDone with no error after its incantation, or (after a refusal) a UseDone(0) showing
+    /// the server free, bounded by its give-up time (CastResolutionTimeoutMs from the send,
+    /// later with a late incantation). A refusal (0x1D) is never "finished" (2026-10-05).
+    /// Inert on an engine without UseDone observation, as before. Internal for the host tests.
+    /// </summary>
+    internal bool IsAwaitingCastResolution()
     {
-        if (!_awaitingCastResolution) return false;
-        if (_host.HasUseDoneSeq && _host.GetUseDoneSeq() != _useDoneSeqAtCast)
-        {
-            _awaitingCastResolution = false;
-            return false;
-        }
-        if (DateTime.Now >= _castResolutionDeadline)
-        {
-            _awaitingCastResolution = false;
-            return false;
-        }
-        return true;
+        if (!_host.HasUseDoneSeq) return false;
+        bool hasLast = _host.TryGetLastUseDone(out int lastSeq, out uint lastErr);
+        return _cast.AwaitingServer(CastResolutionTimeoutMs, _host.GetUseDoneSeq(), hasLast, lastSeq, lastErr);
     }
+
+    private int UseDoneSeqNow() => _host.HasUseDoneSeq ? _host.GetUseDoneSeq() : 0;
+
+    private void ObserveLastUseDone()
+    {
+        if (_host.TryGetLastUseDone(out int seq, out uint err))
+            _cast.ObserveUseDone(seq, err);
+    }
+
+    /// <summary>Each tick: casts the server finished (UseDone(0) after the incantation) close,
+    /// and a cast held open past CastTracker.HeldAfterIncantMs is logged once.</summary>
+    private void PollCastTracker()
+    {
+        if ((_cast.Current == null || _cast.Current.Done) && (_cast.Open == null || _cast.Open.Done)) return;
+        ObserveLastUseDone();
+        _cast.Poll();
+        // A held heal, or any held cast while health is under a heal line: nudge at
+        // UrgentHeldAfterIncantMs on its own, without waiting for AC to refuse something
+        // (2026-10-05: the held Heal Self was nudged 11.2 s after its incantation).
+        if (_settings.IsMacroRunning && HeldNudgeUrgent() && _cast.TakeNudge(CastTracker.UrgentHeldAfterIncantMs))
+            SendCastNudge(urgent: true);
+    }
+
+    /// <summary>The held cast is a heal, or health is under a heal line: nudge it early.</summary>
+    private bool HeldNudgeUrgent()
+    {
+        var held = _cast.Held;
+        if (held == null) return false;
+        return IsHealCast(held.SpellId)
+            || (_vitals.MaxHealth > 0 && HealthUnderAnyLine(_vitals.HealthPct, _vitals.StaminaPct));
+    }
+
+    // Spell ids this session sent as health spells (Heal Self, Stamina to Health Self at any tier:
+    // the high tiers have their own names, e.g. Adja's Intervention). Set by AttemptVitalCast.
+    private readonly HashSet<int> _healSpellIds = new();
+    private bool IsHealCast(int spellId) => _healSpellIds.Contains(spellId);
+
+    // Kits and potions while a cast is held open (2026-10-05): ACE (Healer.cs, Food.cs) answers a
+    // use while the player is busy with "You're too busy!", and every kit Drakkon used while a Heal
+    // Self was held open came back 0x1D (13:42:26, 13:42:34, 13:42:47). So while a cast is held:
+    // none before its nudge has gone out (the nudge is what may free it), then one try every
+    // HeldItemRetryMs (the nudge does not always free it at once: 9 s at 13:42:34).
+    private const double HeldItemRetryMs = 3000;
+    private DateTime _lastHeldItemTryAt = DateTime.MinValue;
+    /// <summary>Kit / potion attempts skipped because a cast was held open (tests, status).</summary>
+    internal int HeldItemSkips { get; private set; }
+
+    /// <summary>True (with why) when a kit or potion would only be refused: a cast is held open.
+    /// Otherwise false, and an attempt now is counted against HeldItemRetryMs.</summary>
+    internal bool HeldCastBlocksItemUse(out string why)   // internal for the host tests (CastSafetyTests)
+    {
+        why = "";
+        var held = _cast.Held;
+        // Only a cast past its normal result window: before that the vital is still pending
+        // and the server is simply finishing it.
+        if (held == null || (Now - held.IncantAt).TotalMilliseconds <= CastTracker.IncantToResultMs) return false;
+        if (!held.Nudged)
+        {
+            HeldItemSkips++;
+            why = $"'{held.Name}' is held open by the server: ACE refuses kits and potions until it ends (nudge first)";
+            return true;
+        }
+        double since = (Now - _lastHeldItemTryAt).TotalMilliseconds;
+        if (since < HeldItemRetryMs)
+        {
+            HeldItemSkips++;
+            why = $"'{held.Name}' still held open after the nudge: next kit/potion try in {HeldItemRetryMs - since:0} ms";
+            return true;
+        }
+        _lastHeldItemTryAt = Now;
+        return false;
+    }
+
+    /// <summary>The pending cast is past its give-up time: from its incantation when one came
+    /// (CastTracker.GiveUpAt), else <paramref name="fallbackMs"/> from the send.</summary>
+    private bool PendingGiveUpReached(double fallbackMs) =>
+        _cast.GiveUpReached(_pendingSpellId, fallbackMs)
+        ?? (DateTime.Now - _lastCastAttempt).TotalMilliseconds > fallbackMs;
+
+    private string GiveUpWhy(double fallbackMs)
+    {
+        var c = _cast.Current;
+        if (c == null || c.SpellId != _pendingSpellId) return $"in {fallbackMs:0} ms";
+        return c.HasIncantation
+            ? $"{(Now - c.IncantAt).TotalMilliseconds:0} ms after its incantation, {(Now - c.SentAt).TotalMilliseconds:0} ms after the send"
+            : $"no incantation in {(Now - c.SentAt).TotalMilliseconds:0} ms";
+    }
+
+    /// <summary>Our own speech line: 'You say, "..."' (the leading Y may be stripped).</summary>
+    internal static bool IsOwnIncantation(string text) =>
+        text.StartsWith("You say, \"", StringComparison.OrdinalIgnoreCase)
+        || text.StartsWith("ou say, \"", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// One movement nudge for a cast the server holds open (CastTracker.Refusal said so, once per
+    /// held cast). ACE ends a cast when the cast gesture's motion completes on the server, and a
+    /// movement packet from the client is what let Drakkon's held casts finish (2026-10-05).
+    /// StopCompletely from a standing character may send no movement at all, so this sends
+    /// autorun on and straight off: two movement-state changes, no real step. Then casts wait
+    /// NudgeHoldMs for the held cast's result.
+    /// </summary>
+    private void SendCastNudge(bool urgent = false)
+    {
+        var held = _cast.Open;
+        string name = held?.Name ?? "?";
+        double secs = _cast.HeldSeconds;
+        if (!_host.HasSetAutoRun)
+        {
+            _host.Log($"[CastSafe] '{name}' held open {secs:0.0} s after its incantation, but this engine has no SetAutoRun: no nudge.");
+            return;
+        }
+        _host.SetAutoRunBy("Buff/Nudge", true);
+        _host.SetAutoRunBy("Buff/Nudge", false);
+        CastNudges++;
+        if (urgent) UrgentNudges++;
+        DateTime hold = DateTime.Now.AddMilliseconds(NudgeHoldMs);
+        if (_busyBackoffUntil < hold) _busyBackoffUntil = hold;
+        string why = urgent
+            ? (held != null && IsHealCast(held.SpellId) ? "it is a heal" : $"health {_vitals.HealthPct}% is under a heal line") +
+              $": nudged at {CastTracker.UrgentHeldAfterIncantMs / 1000:0.0} s, not {CastTracker.HeldAfterIncantMs / 1000:0} s"
+            : "AC answers 'too busy'";
+        _host.Log($"[CastSafe] '{name}' held open {secs:0.0} s after its incantation and {why}: " +
+                  $"one movement nudge (autorun on, off; #{CastNudges} this session). Casts wait {NudgeHoldMs:0} ms for its result.");
+    }
+    /// <summary>Nudges sent early because the held cast was a heal or health was under a heal line.</summary>
+    internal int UrgentNudges { get; private set; }
 
     /// <summary>A cast was accepted by AC, so whatever it was busy with has
     /// cleared — drop the too-busy backoff immediately rather than serving out a
@@ -2991,7 +3583,126 @@ public class BuffManager : IDisposable
     // No-wand branch: bare-handed flips sent without reaching Magic before it stops holding the bot.
     private const int NoWandFlipMaxFails = 4;
 
-    private bool EnsureMagicMode(bool forBuff = false)
+    // Stance settle (2026-10-05): the first hung cast went out 0.55 s after ChangeCombatMode(Magic)
+    // and the wand use. EnsureMagicMode trusted the client's combat-mode field, which flips before
+    // the server's stance animation has run. After a stance request or wand use from here, the
+    // first cast waits until the client reports Magic for StanceSettleMs AND StanceMinAfterRequestMs
+    // have passed since the request (the stance animation, about 1 s). A request older than
+    // StanceWaitStaleMs is not waited on.
+    private const double StanceSettleMs = 300;
+    private const double StanceMinAfterRequestMs = 1000;
+    private const double StanceWaitStaleMs = 10_000;
+    private DateTime _stanceRequestedAt = DateTime.MinValue;
+    private DateTime _magicSeenAt = DateTime.MinValue;
+    private bool _stanceWaitLogged;
+    // Emergency heals (2026-10-05): a heal under Emergency Heal At or Stamina To Health At, or under
+    // Heal At with a monster in range, waits only for the client to read Magic plus StanceSettleMs:
+    // no StanceMinAfterRequestMs floor. Drakkon's last Heal Self waited 4.1 s after the request.
+    private bool _stanceUrgent;
+    // What held the first cast after the stance was ready (logged with the settle; see StanceSettled).
+    private string _stanceLateHolder = "";
+    /// <summary>Times the first cast after a stance change used the emergency-heal settle (tests, status).</summary>
+    internal int UrgentStanceSettles { get; private set; }
+
+    private void NoteStanceRequest()
+    {
+        _stanceRequestedAt = Now;
+        _magicSeenAt = DateTime.MinValue;
+        _stanceWaitLogged = false;
+        _stanceLateHolder = "";
+    }
+
+    /// <summary>
+    /// Each heartbeat while a stance request is open: when the client first reads Magic, and a
+    /// drop out of Magic restarts it. StanceSettled used to start the 300 ms clock only when it
+    /// was first CALLED in Magic, which every other gate in front of it (cast interval, a busy
+    /// count, a kit in flight) could put off; it also measured the "settled" time at that call.
+    /// Root cause of the 4.1 s logged on 2026-10-05: the stance was ready 1 s after the request,
+    /// but a healing kit went out 0.9 s after the request and the vitals step held the spell for
+    /// the kit's result and grace (KitPending) until 3.1 s later; the log blamed the stance.
+    /// </summary>
+    private void ObserveStance()
+    {
+        if (_stanceRequestedAt == DateTime.MinValue) return;
+        if (CurrentCombatMode == CombatMode.Magic)
+        {
+            if (_magicSeenAt == DateTime.MinValue) _magicSeenAt = Now;
+        }
+        else
+            _magicSeenAt = DateTime.MinValue;   // not Magic (yet, or again): the streak restarts
+    }
+
+    /// <summary>When the stance we asked for counts as settled (MinValue: not reading Magic yet).</summary>
+    private DateTime StanceReadyAt(bool urgent)
+    {
+        if (_magicSeenAt == DateTime.MinValue) return DateTime.MinValue;
+        DateTime ready = _magicSeenAt.AddMilliseconds(StanceSettleMs);
+        if (urgent) return ready;
+        DateTime minAfterRequest = _stanceRequestedAt.AddMilliseconds(StanceMinAfterRequestMs);
+        return minAfterRequest > ready ? minAfterRequest : ready;
+    }
+
+    /// <summary>OnHeartbeat's end: while the stance is ready but no cast has used it, remember
+    /// what held the tick, for the settle line.</summary>
+    private void NoteStanceLateHolder()
+    {
+        if (_stanceRequestedAt == DateTime.MinValue) return;
+        DateTime ready = StanceReadyAt(_stanceUrgent);
+        if (ready == DateTime.MinValue || Now < ready) return;
+        string h = _healHold.Length > 0 ? _healHold : LastBuffSkipReason;
+        if (h.Length > 0 && !h.StartsWith("Magic stance settling", StringComparison.Ordinal)) _stanceLateHolder = h;
+    }
+
+    /// <summary>False while the Magic stance we asked for is still settling (see the fields).
+    /// <paramref name="urgentHeal"/>: an emergency heal, which skips the 1 s floor.</summary>
+    private bool StanceSettled(bool urgentHeal = false)
+    {
+        if (_stanceRequestedAt == DateTime.MinValue) return true;
+        DateTime now = Now;
+        if ((now - _stanceRequestedAt).TotalMilliseconds > StanceWaitStaleMs)
+        {
+            _stanceRequestedAt = DateTime.MinValue;
+            return true;
+        }
+        _stanceUrgent = urgentHeal;
+        if (_magicSeenAt == DateTime.MinValue) _magicSeenAt = now;   // the client reads Magic (the caller checked)
+        DateTime ready = StanceReadyAt(urgentHeal);
+        if (now < ready)
+        {
+            LastBuffSkipReason = $"Magic stance settling ({(ready - now).TotalMilliseconds:0} ms left)";
+            if (!_stanceWaitLogged)
+            {
+                _stanceWaitLogged = true;
+                _host.Log($"[BuffStance] client reads Magic {(now - _stanceRequestedAt).TotalMilliseconds:0} ms after the stance request; first cast waits {(ready - now).TotalMilliseconds:0} ms more for the stance to settle" +
+                          (urgentHeal ? " (emergency heal: no 1 s floor)." : "."));
+            }
+            return false;
+        }
+        double late = (now - ready).TotalMilliseconds;
+        string lateText = late > 250
+            ? $"; the stance was ready {(ready - _stanceRequestedAt).TotalMilliseconds:0} ms after the request and the cast then waited {late:0} ms" +
+              (_stanceLateHolder.Length > 0 ? $" for: {_stanceLateHolder}" : "")
+            : "";
+        _host.Log($"[BuffStance] Magic stance settled: first cast {(now - _stanceRequestedAt).TotalMilliseconds:0} ms after the stance request ({(now - _magicSeenAt).TotalMilliseconds:0} ms after the client read Magic)" +
+                  (urgentHeal ? ", emergency heal" : "") + lateText + ".");
+        if (urgentHeal) UrgentStanceSettles++;
+        _stanceRequestedAt = DateTime.MinValue;
+        _magicSeenAt = DateTime.MinValue;
+        _stanceLateHolder = "";
+        return true;
+    }
+
+    /// <summary>
+    /// A health spell that must not wait for the full stance settle: health under Emergency Heal
+    /// At or Stamina To Health At, or under Heal At with a monster within MonsterRange.
+    /// </summary>
+    private bool HealIsUrgent(int hp, int stamPct)
+    {
+        string line = ActiveHealLine(hp, stamPct, out _, out bool inCombat);
+        return line is "Emergency Heal At" or "Stamina To Health At" || (line == "Heal At" && inCombat);
+    }
+
+    private bool EnsureMagicMode(bool forBuff = false, bool urgentHeal = false)
     {
         // Per-call signal; only the buff path may set it (vitals/self-heals NEVER degrade).
         _wandSwapExhausted = false;
@@ -3015,7 +3726,8 @@ public class BuffManager : IDisposable
             _bowDequipPendingId = 0;
             _bowDequipAttempts = 0;
             _wieldGateFailCount = 0;
-            return true;
+            // In Magic, but the stance we asked for may still be settling: yield the tick.
+            return StanceSettled(urgentHeal);
         }
 
         int wandId = FindWandInItems();
@@ -3031,6 +3743,7 @@ public class BuffManager : IDisposable
             if ((DateTime.Now - _lastBuffStanceAttempt).TotalMilliseconds > noWandGateMs)
             {
                 _host.ChangeCombatMode(CombatMode.Magic);
+                NoteStanceRequest();
                 _lastBuffStanceAttempt = DateTime.Now;
                 _lastCastAttempt = DateTime.Now;
                 if (_buffStanceConsecutiveFails < 6) _buffStanceConsecutiveFails++;
@@ -3115,7 +3828,7 @@ public class BuffManager : IDisposable
                 (CurrentCombatMode == CombatMode.Melee || CurrentCombatMode == CombatMode.Missile))
             {
                 if (_host.HasCancelAttack)   _host.CancelAttack();
-                if (_host.HasStopCompletely) _host.StopCompletely();
+                if (_host.HasStopCompletely) _host.StopCompletelyBy("Buff/WandSwap");
                 _combatTeardownDoneForCurrentBuffCycle = true;
                 _host.Log($"[BuffPre] CancelAttack+StopCompletely before wand equip (mode was {CurrentCombatMode})");
             }
@@ -3158,6 +3871,7 @@ public class BuffManager : IDisposable
             }
 
             _host.UseFor((uint)wandId, "Buff", "buffing: wield the wand");
+            NoteStanceRequest();
             _pendingWieldId = wandId;
             _pendingWieldAt = now;
             _lastCastAttempt = now;
@@ -3189,6 +3903,7 @@ public class BuffManager : IDisposable
             _buffStanceReEquips++;
             _host.Log($"[BuffStance] STUCK {stuckMs:0}ms (wielded, mode={CurrentCombatMode}≠Magic) — re-equip attempt {_buffStanceReEquips}/{BuffStanceReEquipMax} 0x{(uint)wandId:X8}");
             _host.UseFor((uint)wandId, "Buff", "buffing: stance stuck, wield the wand again");
+            NoteStanceRequest();
             _lastCastAttempt = DateTime.Now;
             return false;
         }
@@ -3212,6 +3927,7 @@ public class BuffManager : IDisposable
         if ((DateTime.Now - _lastBuffStanceAttempt).TotalMilliseconds > gateMs)
         {
             _host.ChangeCombatMode(CombatMode.Magic);
+            NoteStanceRequest();
             _lastBuffStanceAttempt = DateTime.Now;
             _lastCastAttempt = DateTime.Now;
             if (_buffStanceConsecutiveFails < 6) _buffStanceConsecutiveFails++;

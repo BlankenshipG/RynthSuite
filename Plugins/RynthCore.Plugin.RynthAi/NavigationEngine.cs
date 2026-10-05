@@ -367,7 +367,7 @@ internal sealed class NavigationEngine
 
                 if (Now - _stopRequestedAt >= (long)StopDebounceMs)
                 {
-                    _host.SetAutoRun(false);
+                    _host.SetAutoRunBy("Nav", false);
                     _isMovingForward = false;
                     _isTurning       = false;
                     _hasStopped      = true;
@@ -444,16 +444,16 @@ internal sealed class NavigationEngine
             // Handle active settle period
             if (_globalSettling)
             {
-                _host.SetAutoRun(false);
+                _host.SetAutoRunBy("Nav", false);
                 ClearTurnMotions();
-                if (_host.HasStopCompletely) _host.StopCompletely();
+                if (_host.HasStopCompletely) _host.StopCompletelyBy("Nav");
                 _isMovingForward = false;
                 _isTurning       = false;
 
                 if (Now - _globalSettleStart > (long)PostTeleportMs)
                 {
                     _host.Log($"Nav: global post-teleport settle done ({PostTeleportMs:F0}ms)");
-                    if (_host.HasStopCompletely) _host.StopCompletely();
+                    if (_host.HasStopCompletely) _host.StopCompletelyBy("Nav");
                     if (_host.HasForceResetBusyCount) _host.ForceResetBusyCount();
                     if (_combatManager != null) _combatManager.BusyCount = 0;
                     _hasGoodHeading = false;
@@ -632,7 +632,7 @@ internal sealed class NavigationEngine
         _offTrackSince   = 0;
         RememberFiredPortalAction();
         ResetPortalState();
-        _host.SetAutoRun(false);
+        _host.SetAutoRunBy("Nav", false);
         ClearTurnMotions();
         _isMovingForward = false;
         _isTurning       = false;
@@ -999,11 +999,11 @@ internal sealed class NavigationEngine
             int want = absError <= DeadZone ? 0 : (error > 0 ? 1 : -1);
             if (want != _tier1TurnDir)
             {
-                if (_tier1TurnDir > 0)      _host.StopMovement(MotionTurnRight, 0);
-                else if (_tier1TurnDir < 0) _host.StopMovement(MotionTurnLeft,  0);
+                if (_tier1TurnDir > 0)      _host.StopMovementBy("Nav", MotionTurnRight, 0);
+                else if (_tier1TurnDir < 0) _host.StopMovementBy("Nav", MotionTurnLeft,  0);
 
-                if (want > 0)      _host.DoMovement(MotionTurnRight, (float)Tier1TurnSpeed, 0);
-                else if (want < 0) _host.DoMovement(MotionTurnLeft,  (float)Tier1TurnSpeed, 0);
+                if (want > 0)      _host.DoMovementBy("Nav", MotionTurnRight, (float)Tier1TurnSpeed, 0);
+                else if (want < 0) _host.DoMovementBy("Nav", MotionTurnLeft,  (float)Tier1TurnSpeed, 0);
 
                 _tier1TurnDir = want;
             }
@@ -1019,14 +1019,14 @@ internal sealed class NavigationEngine
                 double newHeading = currentDeg + step;
                 if (newHeading >= 360.0)     newHeading -= 360.0;
                 else if (newHeading <   0.0) newHeading += 360.0;
-                _host.TurnToHeading((float)newHeading);
+                _host.TurnToHeadingBy("Nav", (float)newHeading);
             }
         }
 
         // ── Heartbeat: periodically re-assert autorun ───────────────────────
         if (_isMovingForward && Now - _lastHeartbeat > (long)HeartbeatMs)
         {
-            _host.SetAutoRun(true);
+            _host.SetAutoRunBy("Nav", true);
             _lastHeartbeat = Now;
         }
     }
@@ -1050,13 +1050,13 @@ internal sealed class NavigationEngine
 
             if (error > 0)
             {
-                _host.SetMotion(MotionTurnRight, true);
-                _host.SetMotion(MotionTurnLeft,  false);
+                _host.SetMotionBy("Nav", MotionTurnRight, true);
+                _host.SetMotionBy("Nav", MotionTurnLeft,  false);
             }
             else
             {
-                _host.SetMotion(MotionTurnLeft,  true);
-                _host.SetMotion(MotionTurnRight, false);
+                _host.SetMotionBy("Nav", MotionTurnLeft,  true);
+                _host.SetMotionBy("Nav", MotionTurnRight, false);
             }
             return;
         }
@@ -1067,13 +1067,13 @@ internal sealed class NavigationEngine
             StopForward();
             if (error > 0)
             {
-                _host.SetMotion(MotionTurnRight, true);
-                _host.SetMotion(MotionTurnLeft,  false);
+                _host.SetMotionBy("Nav", MotionTurnRight, true);
+                _host.SetMotionBy("Nav", MotionTurnLeft,  false);
             }
             else
             {
-                _host.SetMotion(MotionTurnLeft,  true);
-                _host.SetMotion(MotionTurnRight, false);
+                _host.SetMotionBy("Nav", MotionTurnLeft,  true);
+                _host.SetMotionBy("Nav", MotionTurnRight, false);
             }
             _isTurning = true;
             return;
@@ -1098,13 +1098,13 @@ internal sealed class NavigationEngine
 
             if (_lastTurnDir > 0)
             {
-                _host.SetMotion(MotionTurnRight, true);
-                _host.SetMotion(MotionTurnLeft,  false);
+                _host.SetMotionBy("Nav", MotionTurnRight, true);
+                _host.SetMotionBy("Nav", MotionTurnLeft,  false);
             }
             else
             {
-                _host.SetMotion(MotionTurnLeft,  true);
-                _host.SetMotion(MotionTurnRight, false);
+                _host.SetMotionBy("Nav", MotionTurnLeft,  true);
+                _host.SetMotionBy("Nav", MotionTurnRight, false);
             }
         }
         else
@@ -1115,7 +1115,7 @@ internal sealed class NavigationEngine
 
         if (_isMovingForward && Now - _lastHeartbeat > (long)HeartbeatMs)
         {
-            _host.SetAutoRun(true);
+            _host.SetAutoRunBy("Nav", true);
             _lastHeartbeat = Now;
         }
     }
@@ -1742,7 +1742,7 @@ internal sealed class NavigationEngine
             case PortalState.Settling:
                 // Keep clearing motions until settled
                 ClearTurnMotions();
-                _host.SetAutoRun(false);
+                _host.SetAutoRunBy("Nav", false);
                 _isMovingForward = false;
 
                 if (Now - _portalStateStart > (long)SettleDelayMs)
@@ -1861,9 +1861,9 @@ internal sealed class NavigationEngine
                 // Hammer-stop to cancel any lingering UseItem walk and clear
                 // the client's internal action queue (prevents stuck hourglass
                 // cursor when UseObject is interrupted by portal teleport).
-                _host.SetAutoRun(false);
+                _host.SetAutoRunBy("Nav", false);
                 ClearTurnMotions();
-                if (_host.HasStopCompletely) _host.StopCompletely();
+                if (_host.HasStopCompletely) _host.StopCompletelyBy("Nav");
                 _isMovingForward = false;
                 _isTurning       = false;
 
@@ -1874,7 +1874,7 @@ internal sealed class NavigationEngine
                     // Force-clear the client's internal busy count (hourglass cursor)
                     // and our tracked busy count. Portal teleport interrupts actions
                     // without firing the matching DecrementBusyCount callback.
-                    if (_host.HasStopCompletely) _host.StopCompletely();
+                    if (_host.HasStopCompletely) _host.StopCompletelyBy("Nav");
                     if (_host.HasForceResetBusyCount) _host.ForceResetBusyCount();
                     if (_combatManager != null) _combatManager.BusyCount = 0;
 
@@ -2096,13 +2096,13 @@ internal sealed class NavigationEngine
             double step = Math.Clamp(err, -MaxStepDeg, MaxStepDeg);
             double newHeading = curDeg + step;
             if (newHeading >= 360.0) newHeading -= 360.0; else if (newHeading < 0.0) newHeading += 360.0;
-            _host.TurnToHeading((float)newHeading);
+            _host.TurnToHeadingBy("Nav", (float)newHeading);
             // Run only once roughly aligned, so we don't arc wide on a big turn.
             if (Math.Abs(err) <= BigTurnEnter) StartForward(); else StopForward();
         }
         else
         {
-            _host.TurnToHeading((float)desiredDeg);
+            _host.TurnToHeadingBy("Nav", (float)desiredDeg);
             StartForward();
         }
     }
@@ -2220,7 +2220,7 @@ internal sealed class NavigationEngine
         if (escapeHeading >= 360.0) escapeHeading -= 360.0; else if (escapeHeading < 0.0) escapeHeading += 360.0;
 
         _host.Log($"Nav: stuck x{_stuckCount} — escape burst {offset:+0;-0}° for {RecoveryBurstMs:F0}ms.");
-        _host.TurnToHeading((float)escapeHeading);
+        _host.TurnToHeadingBy("Nav", (float)escapeHeading);
         StartForward();
         _recoveryKind  = RecoveryKind.Escape;
         _recoveryUntil = Now + (long)RecoveryBurstMs;
@@ -2767,7 +2767,7 @@ internal sealed class NavigationEngine
         long now = Environment.TickCount64;
         if (!_isMovingForward || now - _lastForwardAssertMs >= ForwardReassertMs)
         {
-            _host.SetAutoRun(true);
+            _host.SetAutoRunBy("Nav", true);
             _isMovingForward = true;
             _lastForwardAssertMs = now;
         }
@@ -2775,15 +2775,15 @@ internal sealed class NavigationEngine
 
     private void StopForward()
     {
-        _host.SetAutoRun(false);
+        _host.SetAutoRunBy("Nav", false);
         _isMovingForward = false;
     }
 
     private void ClearTurnMotions()
     {
         // Mode-0/legacy motion keys are local cmdinterp toggles — cheap, always clear.
-        _host.SetMotion(MotionTurnRight, false);
-        _host.SetMotion(MotionTurnLeft,  false);
+        _host.SetMotionBy("Nav", MotionTurnRight, false);
+        _host.SetMotionBy("Nav", MotionTurnLeft,  false);
 
         // Tier 1 turns are CM_Movement *server events* (0xF661). Only send a
         // StopMovement when a turn is actually in flight — this method is called
@@ -2791,7 +2791,7 @@ internal sealed class NavigationEngine
         // send floods the server. _tier1TurnDir tracks the one active direction.
         if (_tier1TurnDir != 0 && _host.HasStopMovement)
         {
-            _host.StopMovement(_tier1TurnDir > 0 ? MotionTurnRight : MotionTurnLeft, 0);
+            _host.StopMovementBy("Nav", _tier1TurnDir > 0 ? MotionTurnRight : MotionTurnLeft, 0);
             _tier1TurnDir = 0;
         }
     }
@@ -2850,7 +2850,7 @@ internal sealed class NavigationEngine
         if (!_host.HasTurnToHeading) return true;
         if (!TryGetQuaternionHeading(out float curDeg))
         {
-            _host.TurnToHeading((float)desiredDeg);
+            _host.TurnToHeadingBy("Nav", (float)desiredDeg);
             return true;
         }
         long nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -2862,7 +2862,7 @@ internal sealed class NavigationEngine
         double maxStep = Math.Max(10.0, _settings.NavTurnRateDegPerSec) * Math.Max(dt, 0.01);
         double newHeading = curDeg + Math.Clamp(err, -maxStep, maxStep);
         if (newHeading >= 360.0) newHeading -= 360.0; else if (newHeading < 0.0) newHeading += 360.0;
-        _host.TurnToHeading((float)newHeading);
+        _host.TurnToHeadingBy("Nav", (float)newHeading);
 
         double abs = Math.Abs(err);
         if (_servoTurning) { if (abs <= BigTurnExit) _servoTurning = false; }

@@ -14,6 +14,7 @@ using RynthCore.Plugin.RynthAi.Vendor;
 using RynthCore.PluginCore;
 using RynthCore.Loot;
 using RynthCore.Loot.VTank;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -64,14 +65,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi(PluginModule.HandWrittenVersion);
 
-    /// <summary>
-    /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
-    /// updates only when they click, so this stays at 66 while newer calls are feature-
-    /// detected (Host.HasVendorTrade for API v67 vendor trading: AutoVendor reports "needs a
-    /// RynthCore update" without it). The SDK default is CurrentApiVersion, which would make
-    /// every SDK bump refuse older engines. Raise it only for a call RynthAi can't run without.
-    /// </summary>
-    public override uint MinimumApiVersion => 66;
+    // Oldest engine RynthAi runs on: RynthPluginMinEngineApi in the csproj (66), which is both its
+    // manifest's minEngineApi and, through RynthPluginBase.MinimumApiVersion's default, its own
+    // runtime check. Players get plugin updates automatically but engine updates only when they
+    // click, so it stays at 66 while newer calls are feature-detected (Host.HasVendorTrade for API
+    // v67 vendor trading: AutoVendor reports "needs a RynthCore update" without it). Raise it only
+    // for a call RynthAi can't run without.
 
     private LegacyDashboardRenderer? _dashboard;
 
@@ -105,7 +104,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private ActivityArbiter? _arbiter; // STEP 1: shadow-mode only (ACTIVITY_ARBITER_PLAN.md)
     private PlayerVitalsCache _vitals = new();
     private uint _playerId;
-    private int _vitalsTickCounter;
+    private long _lastVitalsPollAt;
+    private const long VitalsPollMs = 100;   // see the poll in OnTick
     private bool _initialized;
     private bool _loginComplete;
     private bool _patrolOnLoginPending;
@@ -153,6 +153,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private readonly HashSet<uint> _seenMonstersThisSession = new();
     private int _creatureSaveTickCounter;
     private int _settingsSaveTickCounter;
+    private int _mapBakeTickCounter;
     private int _settingsLoadRetryCounter;
 
     public override int Initialize()
@@ -167,6 +168,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // Every use goes through Host.UseFor (Plugins/Shared/UseAudit.cs): one log line
         // each, and no automatic door/corpse use while the macro is off.
         RynthCore.Plugin.Shared.UseAudit.Reset("RynthAi", () => _dashboard?.Settings.IsMacroRunning == true);
+        // Every movement call is logged with its subsystem (Plugins/Shared/MoveAudit.cs).
+        RynthCore.Plugin.Shared.MoveAudit.Reset();
         _objectCache = new WorldObjectCache(Host); // must exist before CreateObject events fire during login
         // Items we use (or use something on) get re-identified before a meta reads them.
         // ObjectUsed is a static event and Shutdown never unsubscribes: when the engine
@@ -242,7 +245,80 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         Log("RynthAi: logout — tearing down session.");
         try { _dashboard?.SaveSettings(); } catch { }
+        // A real logout: the next OnLoginComplete is a fresh login, not a hot reload.
+        ClearInGameMarker();
         TeardownSession();
+    }
+
+    // ── Hot reload vs real login (2026-10-05) ──────────────────────────────────────────────
+    // The engine calls OnLoginComplete on a real login AND on a freshly (re)loaded plugin while
+    // the character is already in game. After the engine reload at 13:42:55 RynthAi treated it as
+    // a login: the buff refresh waited 5.8 s for two equal reads of an enchantment registry that
+    // was already complete. A process-wide environment variable (it outlives the plugin's load
+    // context and a NativeAOT plugin's runtime alike, and dies with the client) names the player
+    // whose live buffs were read in this client; a real logout clears it.
+    private const string InGameMarkerVar = "RYNTHAI_INGAME_PLAYER";
+    private bool _inGameMarkerSet;
+
+    private static string InGameMarkerValue(uint playerId) => $"{Environment.ProcessId}:{playerId:X8}";
+
+    /// <summary>At login: true when this player's live buffs were already read in this client
+    /// and no logout came since (an engine or plugin hot reload).</summary>
+    private static bool IsCarriedOverSession(uint playerId)
+    {
+        if (playerId == 0) return false;
+        try { return Environment.GetEnvironmentVariable(InGameMarkerVar) == InGameMarkerValue(playerId); }
+        catch { return false; }
+    }
+
+    /// <summary>Each tick until done: once the login refresh has a trusted snapshot, mark this
+    /// player as in game for a later hot reload.</summary>
+    private void NoteCarriedOverSessionReady()
+    {
+        if (_inGameMarkerSet || _buffManager == null || !_buffManager.LiveBuffsReady || _playerId == 0) return;
+        _inGameMarkerSet = true;
+        try { Environment.SetEnvironmentVariable(InGameMarkerVar, InGameMarkerValue(_playerId)); } catch { }
+    }
+
+    private void ClearInGameMarker()
+    {
+        _inGameMarkerSet = false;
+        try { Environment.SetEnvironmentVariable(InGameMarkerVar, null); } catch { }
+    }
+
+    // ── Reload deferral (2026-10-05) ───────────────────────────────────────────────────────
+    // The engine asks every plugin before a hot reload (RynthPluginReloadBlocker) and waits while
+    // one answers with a reason. Computed here on the pump thread each tick; the export reads the
+    // last text from the engine's reload thread. A text older than ReloadBlockerStaleMs (the tick
+    // stopped, a logout) counts as safe, so a stalled plugin can't hold a reload.
+    private volatile string _reloadBlocker = "";
+    private long _reloadBlockerAt;
+    private const long ReloadBlockerStaleMs = 5000;
+
+    private void UpdateReloadBlocker()
+    {
+        var s = _dashboard?.Settings;
+        string reason = "";
+        if (s != null && _buffManager != null)
+        {
+            string line = _buffManager.HealLineNow(out int hp, out int lineValue);
+            reason = ReloadSafety.Reason(s.IsMacroRunning, _combatManager?.HasEngageableTarget == true,
+                                         line, hp, lineValue, _buffManager.CastInFlightName);
+        }
+        _reloadBlocker = reason;
+        Interlocked.Exchange(ref _reloadBlockerAt, Environment.TickCount64);
+    }
+
+    /// <summary>For the RynthPluginReloadBlocker export (any thread): why a hot reload now would
+    /// hurt, or "" when it is safe.</summary>
+    internal string ReloadBlocker
+    {
+        get
+        {
+            if (!_loginComplete) return "";
+            if (Environment.TickCount64 - Interlocked.Read(ref _reloadBlockerAt) > ReloadBlockerStaleMs) return "";
+            return _reloadBlocker;
+        }
     }
 
     /// <summary>
@@ -493,6 +569,13 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _weaponSwapGate ??= new WeaponSwapGate();
 
         _buffManager = new BuffManager(Host, _dashboard.Settings, _spellManager, _vitals);
+        _inGameMarkerSet = false;
+        if (IsCarriedOverSession(_playerId))
+        {
+            // A hot reload: the registry is complete, and heals must not wait on a login refresh.
+            _buffManager.CarriedOverSession = true;
+            Log("RynthAi: hot reload - this character was already in game in this client; the buff refresh trusts its first read.");
+        }
         _buffManager.SetWeaponSwapGate(_weaponSwapGate);
         _buffManager.SetCastResolvedCallback(OnBuffCastResolved);
         _buffManager.SetCharacterSkills(_charSkills);
@@ -525,6 +608,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager = new CombatManager(Host, _dashboard.Settings, _objectCache!, _spellManager);
         _combatManager.SetWeaponSwapGate(_weaponSwapGate);
         _combatManager.SetStaleBusyCallback(OnCombatBusyStale);
+        _buffManager?.SetStaleBusyCallback(OnCombatBusyStale);   // a heal ahead of a leftover busy count
         if (_buffManager != null)
             _buffManager.OffhandStowed = id => _combatManager?.NoteOffhandStowed(id);
         _combatManager.SetCharacterSkills(_charSkills);
@@ -651,7 +735,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         _navigationEngine?.Stop();
         if (Host.HasStopCompletely)
-            Host.StopCompletely();
+            Host.StopCompletelyBy("Arbiter");
 
         // Combat taking the tick invalidates any in-progress door interaction.
         // The legacy cascade did this on the combat edge only; keep it there.
@@ -1262,6 +1346,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 _settingsSaveTickCounter = 0;
                 _dashboard?.TickAutoSave();
             }
+            // Dungeon floor plans on disk for DrakRemote (StatusAgent /map), whether or not a
+            // map panel is open: one pose read about twice a second; the bake itself runs once
+            // per landblock on a pool thread.
+            if (_loginComplete && ++_mapBakeTickCounter >= 30)
+            {
+                _mapBakeTickCounter = 0;
+                _dashboard?.TickDungeonMapBake();
+            }
             // Pick up an external Monster Editor save (monsters.json watcher). This used
             // to run only inside the legacy dashboard's Render(), which the engine no
             // longer calls, so edits waited for the next login. A flag check when idle.
@@ -1317,9 +1409,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // One bot per client (Decal bridge): VTank's macro started -> ours stops, before
                 // anything below can move, attack, cast or buff this tick.
                 if (_dashboard?.Settings is { } yieldSettings) TickVTankYield(yieldSettings);
-                if (++_vitalsTickCounter >= 30)
+                // Player vitals: AC sends none of its own health through OnUpdateHealth (that is the
+                // 0x01C0 health-of-a-target message), so this read is how the bot learns health
+                // dropped. It ran every 30th tick: ~1 s at a background client's 30 fps, 1.5-3 s on a
+                // slower or busier PC, added to every heal at random (2026-10-05, "heals sometimes
+                // late"). The engine's snapshot is a locked struct copy kept current by its vitals
+                // hook, so read it every VitalsPollMs instead.
+                long vitalsNow = Environment.TickCount64;
+                if (vitalsNow - _lastVitalsPollAt >= VitalsPollMs)
                 {
-                    _vitalsTickCounter = 0;
+                    _lastVitalsPollAt = vitalsNow;
                     if (Host.HasGetPlayerVitals &&
                         Host.TryGetPlayerVitals(out uint hp, out uint maxHp, out uint st, out uint maxSt, out uint mp, out uint maxMp))
                     {
@@ -1342,6 +1441,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 if (diag) Host.Log("[RynthAi] OnTick: before buffManager");
                 _buffManager?.OnHeartbeat();
                 if (diag) Host.Log("[RynthAi] OnTick: after buffManager");
+                NoteCarriedOverSessionReady();
+                UpdateReloadBlocker();
 
                 var settings = _dashboard?.Settings;
                 if (settings == null)
@@ -1370,7 +1471,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     {
                         int busyBefore = Host.HasGetBusyState ? Host.GetBusyState() : -1;
                         if (Host.HasCancelAttack) Host.CancelAttack();
-                        if (Host.HasStopCompletely) Host.StopCompletely();
+                        if (Host.HasStopCompletely) Host.StopCompletelyBy("MacroStop");
                         if (busyBefore > 0 && Host.HasForceResetBusyCount) Host.ForceResetBusyCount();
                         _busyCount = 0;
                         _busyCountLastIncrementAt = 0;
@@ -1499,8 +1600,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     bool followActive = (settings.FollowMode && settings.FollowTargetId != 0)
                         || (settings.CurrentRoute != null && settings.CurrentRoute.RouteType == NavRouteType.Follow
                             && settings.CurrentRoute.FollowTargetName.Length > 0);
+                    // Travelling back to your corpse (RynthNav walks): RynthAi's own route waits.
                     bool wantNav = settings.IsMacroRunning && settings.EnableNavigation
-                                && (routeLoaded || followActive);
+                                && (routeLoaded || followActive)
+                                && !OwnCorpseTravelHoldsNav;
                     // Loot starvation: a lootable corpse in range has waited LootStarveMs behind
                     // combat and no monster is within LootStarveCloseYards. A busy spawn always
                     // has a monster inside MonsterRange, so without this corpses waited until
@@ -1515,6 +1618,13 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                         lootStarved:   lootStarved);
                     _activity = _arbiter.Apply(in inputs, settings);
                     _lootStarveTurn = lootStarved && _activity == BotActivity.Looting;
+                    // Display only: what the Buffing slot is doing (ActivityArbiter.DisplayLabel),
+                    // and the decision for [HealLatency]'s "arbiter gave the tick to" part.
+                    if (_buffManager != null)
+                    {
+                        settings.BuffingLabel = _activity == BotActivity.Buffing ? _buffManager.BuffingLabel : BuffManager.LabelBuffing;
+                        _buffManager.ArbiterActivity = ActivityArbiter.ToBotAction(_activity);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1528,6 +1638,19 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     {
                         _lastArbiterErrorLogAt = Environment.TickCount64;
                         Host.Log($"[RynthAi] Arbiter inputs threw - standing idle this tick: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+                    }
+                }
+
+                // ── Travel back to your corpse (TravelToOwnCorpse) ─────────────────
+                // After the decision, ahead of every early return below: RynthNav walks only
+                // while the arbiter says Idle, and is stopped the moment RynthAi wants the tick.
+                try { TickOwnCorpseTravel(settings); }
+                catch (Exception ex)
+                {
+                    if (Environment.TickCount64 - _lastOwnCorpseTravelErrorLogAt > 10_000)
+                    {
+                        _lastOwnCorpseTravelErrorLogAt = Environment.TickCount64;
+                        Host.Log($"[RynthAi] Own corpse travel tick threw: {ex.GetType().Name}: {ex.Message}");
                     }
                 }
 
@@ -1819,6 +1942,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     }
     private long _lastArbiterErrorLogAt = -100_000;
     private long _lastMetaScheduleErrorLogAt = -100_000;
+    private long _lastOwnCorpseTravelErrorLogAt = -100_000;
     private long _lastTickErrorLogAt = -100_000;
 
     private bool _lootInspectMode = true; // always on; /ra lootcheck off to disable
@@ -1877,6 +2001,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _metaManager?.HandleChat(text, chatType);
         _questTracker?.OnChatLine(text);
         CheckChatForSafetyStops(text);
+        try { OnOwnCorpseChat(text); } catch { }
     }
 
     // ACE sends GameEventKillerNotification (0x01AD) to the killer at the
@@ -2845,7 +2970,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if ((DateTime.UtcNow - _lastGiveAt).TotalMilliseconds < intervalMs) return;
 
         var (itemId, targetId, stackSize) = _pendingGives.Dequeue();
-        Host.MoveItemExternal(itemId, targetId, stackSize);
+        // The queued amount is what to hand over; GiveItem gives the whole object when it is
+        // the whole stack (amount 0) and uses AC's real give action, which an NPC accepts.
+        int whole = _objectCache?[unchecked((int)itemId)] is WorldObject wo ? Math.Max(1, wo.Values(LongValueKey.StackCount, 1)) : stackSize;
+        GiveItem(itemId, targetId, stackSize, whole);
         _lastGiveAt = DateTime.UtcNow;
 
         if (_pendingGives.Count == 0)
@@ -2926,6 +3054,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "corpseinfo":   HandleCorpseInfoCommand(); break;
             case "corpsecheck":  HandleCorpseCheckCommand(parts); break;
             case "corpseopen":   HandleCorpseOpenCommand(); break;
+            case "owncorpse":
+            case "mycorpse":     HandleOwnCorpseCommand(parts); break;
             case "fellow":
             case "fellowship":   HandleFellowshipCommand(parts); break;
             case "fellowinfo":   HandleFellowshipInfoCommand(); break;

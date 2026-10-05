@@ -15,7 +15,16 @@
     <RootNamespace>RynthCore.Plugin.RynthNet</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthNet</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
+         highest API use NOT behind a Has*/version check. The RynthAi status lookup (GetPluginInterface, v68) is guarded; networking needs nothing above v66. -->
+    <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
+    <RynthPluginDescription>Lets the RynthCore clients on this PC talk to each other: shared commands, vitals, positions and bot state.</RynthPluginDescription>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Plugins it can use when they are loaded (looked up at run time; optional, so they never block or reorder it). -->
+    <RynthPluginDependency Include="RynthAi" Optional="true" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />

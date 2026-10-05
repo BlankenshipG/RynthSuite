@@ -187,6 +187,7 @@ internal sealed class LootEditorBridge
         d.ItemName = facts.Name;
         d.ClassName = LootItemRules.ClassName(facts.ObjectClass);
         d.Stackable = facts.Stackable;
+        d.BuiltInReason = BuiltInSentence(Items.BuiltInKeep(id));
 
         string inUse = InUse;
         string target = req.ToOpenProfile && _session.IsOpen ? _session.Path : inUse;
@@ -246,6 +247,7 @@ internal sealed class LootEditorBridge
         }
         else
             d.OrderNote = $"Goes in at the end ({at + 1} of {count + 1}): no rule takes this item now, so at the end it only gets items no other rule wants.";
+        AppendBuiltIn(d);
 
         if (s.IsDirty) return Refuse(d, $"The Loot Editor has unsaved changes in {d.TargetFile}. Save or discard them first.");
         d.Ok = true;
@@ -261,7 +263,28 @@ internal sealed class LootEditorBridge
     {
         d.Ok = false;
         d.Error = error;
+        AppendBuiltIn(d);
         return d;
+    }
+
+    /// <summary>
+    /// The popup's sentence for one of RynthAi's built-in keeps. "No rule matches" alone
+    /// misled: a wand Mana Tap had looted read as looted for no reason (2026-10-05).
+    /// </summary>
+    internal static string BuiltInSentence(LootBuiltInKeep? keep)
+    {
+        if (keep == null || keep.Reason.Length == 0) return string.Empty;
+        return keep.BeforeProfile
+            ? $"RynthAi takes it before any loot profile rule: {keep.Reason}."
+            : $"No rule in the loot profile in use takes it, but RynthAi keeps it anyway: {keep.Reason}.";
+    }
+
+    // OrderNote is what every engine's popup (and /ra loot add) shows, so the reason rides on it;
+    // BuiltInReason carries it on its own for a face that wants it separately.
+    private static void AppendBuiltIn(LootEditItemDraft d)
+    {
+        if (d.BuiltInReason.Length == 0 || d.OrderNote.EndsWith(d.BuiltInReason, StringComparison.Ordinal)) return;
+        d.OrderNote = d.OrderNote.Length == 0 ? d.BuiltInReason : d.OrderNote + " " + d.BuiltInReason;
     }
 
     /// <summary>The editor's session when it has <paramref name="target"/> open, else a second one (fresh from disk).</summary>
@@ -321,4 +344,16 @@ internal sealed class LootItemHooks
     public Func<uint, LootProfile, int> FirstMatchNative { get; set; } = (_, _) => -1;
     /// <summary>A rule was added and saved: say so and reload the profile. Outside the bridge's lock.</summary>
     public Action<LootEditItemDraft> Added { get; set; } = _ => { };
+    /// <summary>
+    /// One of RynthAi's built-in keeps that takes the item now with the loot profile in use
+    /// (the looter's own classification, run as a preview), or null.
+    /// </summary>
+    public Func<uint, LootBuiltInKeep?> BuiltInKeep { get; set; } = _ => null;
 }
+
+/// <summary>
+/// A built-in keep: <see cref="Reason"/> says what and where to change it (ASCII);
+/// <see cref="BeforeProfile"/> when it is checked ahead of the loot profile's rules
+/// (Learn unknown spells, mana stones) rather than only when no rule matches (Mana Tap).
+/// </summary>
+internal sealed record LootBuiltInKeep(string Reason, bool BeforeProfile);

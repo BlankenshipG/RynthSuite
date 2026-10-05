@@ -15,6 +15,10 @@
     <RootNamespace>RynthCore.Plugin.RynthVision</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthVision</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
+         highest API use NOT behind a Has*/version check. Only the v60/v61 Nav3D calls, behind HasNav3DTriangle. -->
+    <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
+    <RynthPluginDescription>Shows unclimbable slopes, impassable water and your radar range in the world.</RynthPluginDescription>
     <!-- Publish straight to the plugin's launcher-registered home so a bare
          `dotnet publish` lands where the engine hot-reloads it. Build still
          uses bin\; only publish is redirected. Deploy-RynthCore.ps1 points its

@@ -15,6 +15,10 @@
     <RootNamespace>RynthCore.Plugin.RynthTracker</RootNamespace>
     <AssemblyName>RynthCore.Plugin.RynthTracker</AssemblyName>
     <Platforms>x86</Platforms>
+    <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
+         highest API use NOT behind a Has*/version check. Nothing above the v66 baseline. -->
+    <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
+    <RynthPluginDescription>Kills, experience and luminance per hour for each session.</RynthPluginDescription>
   </PropertyGroup>
 
   <ItemGroup>

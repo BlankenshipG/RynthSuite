@@ -8,6 +8,7 @@ using System.Text.Json;
 using RynthCore.PluginSdk;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.Meta;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -293,6 +294,10 @@ internal sealed class LegacyDashboardRenderer
     {
         _dungeonMapUi.SetRaycast(raycast);
     }
+
+    /// <summary>Bake the floor plans of a dungeon just entered, with no map panel open
+    /// (DrakRemote's /map). Cheap: one pose read; the work runs on a pool thread.</summary>
+    public void TickDungeonMapBake() => _dungeonMapUi?.TickBake(_host); // null in tests' bare dashboards
 
     public void PushChatLine(string? text, int chatType) => _rynthChatUi.Push(text, chatType);
 
@@ -1028,6 +1033,7 @@ internal sealed class LegacyDashboardRenderer
                 RebuffWhenIdle             = s.RebuffWhenIdle,
                 RebuffSecondsRemaining     = s.RebuffSecondsRemaining,
                 RebuffTopOffSecondsRemaining = s.RebuffTopOffSecondsRemaining,
+                CastBuffsOverItemBuffs     = s.CastBuffsOverItemBuffs,
                 BuffMinSkillLevelTier1     = s.BuffMinSkillLevelTier1,
                 BuffMinSkillLevelTier2     = s.BuffMinSkillLevelTier2,
                 BuffMinSkillLevelTier3     = s.BuffMinSkillLevelTier3,
@@ -1048,6 +1054,8 @@ internal sealed class LegacyDashboardRenderer
                 LootJumpEnabled            = s.LootJumpEnabled,
                 LootJumpHeight             = s.LootJumpHeight,
                 LootOwnership              = s.LootOwnership,
+                LootOwnCorpse              = s.LootOwnCorpse,
+                TravelToOwnCorpse          = s.TravelToOwnCorpse,
                 EnableAutostack            = s.EnableAutostack,
                 ReadUnknownScrolls         = s.ReadUnknownScrolls,
                 EnableCombineSalvage       = s.EnableCombineSalvage,
@@ -1228,6 +1236,7 @@ internal sealed class LegacyDashboardRenderer
             s.RebuffWhenIdle             = p.RebuffWhenIdle;
             s.RebuffSecondsRemaining     = p.RebuffSecondsRemaining;
             if (p.RebuffTopOffSecondsRemaining > 0) s.RebuffTopOffSecondsRemaining = p.RebuffTopOffSecondsRemaining;
+            if (p.CastBuffsOverItemBuffs is bool castOverItems) s.CastBuffsOverItemBuffs = castOverItems;   // absent = unchanged
             s.BuffMinSkillLevelTier1     = p.BuffMinSkillLevelTier1;
             s.BuffMinSkillLevelTier2     = p.BuffMinSkillLevelTier2;
             s.BuffMinSkillLevelTier3     = p.BuffMinSkillLevelTier3;
@@ -1245,6 +1254,8 @@ internal sealed class LegacyDashboardRenderer
             s.LootJumpEnabled            = p.LootJumpEnabled;
             s.LootJumpHeight             = p.LootJumpHeight;
             s.LootOwnership              = p.LootOwnership;
+            if (p.LootOwnCorpse is bool lootOwn) s.LootOwnCorpse = lootOwn;               // absent = unchanged
+            if (p.TravelToOwnCorpse is bool travelOwn) s.TravelToOwnCorpse = travelOwn;   // absent = unchanged
             s.EnableAutostack            = p.EnableAutostack;
             s.ReadUnknownScrolls         = p.ReadUnknownScrolls;
             s.EnableCombineSalvage       = p.EnableCombineSalvage;
@@ -1644,11 +1655,14 @@ internal sealed class LegacyDashboardRenderer
         dst.OpenDoorRange            = tmp.OpenDoorRange;
         dst.AutoUnlockDoors          = tmp.AutoUnlockDoors;
         dst.LootOwnership            = tmp.LootOwnership;
+        dst.LootOwnCorpse            = tmp.LootOwnCorpse;
+        dst.TravelToOwnCorpse        = tmp.TravelToOwnCorpse;
         dst.LootOnlyRareCorpses      = tmp.LootOnlyRareCorpses;
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;
         dst.RebuffTopOffSecondsRemaining = tmp.RebuffTopOffSecondsRemaining;
+        dst.CastBuffsOverItemBuffs   = tmp.CastBuffsOverItemBuffs;
         dst.BlacklistAttempts             = tmp.BlacklistAttempts;
         dst.BlacklistTimeoutSec           = tmp.BlacklistTimeoutSec;
         // 0 is never meant (every UI floors it at 250+) and is what the Settings-panel bug
@@ -2316,8 +2330,8 @@ internal sealed class LegacyDashboardRenderer
                     break;
 
                 case "addWaypoint":
-                    _host.SetMotion(0x6500000D, false); // stop TurnRight
-                    _host.SetMotion(0x6500000E, false); // stop TurnLeft
+                    _host.SetMotionBy("UI", 0x6500000D, false); // stop TurnRight
+                    _host.SetMotionBy("UI", 0x6500000E, false); // stop TurnLeft
                     if (_host.HasGetPlayerPose &&
                         _host.TryGetPlayerPose(out _, out float wx, out float wy, out float wz, out _, out _, out _, out _) &&
                         NavCoordinateHelper.TryGetNavCoords(_host, out double wNS, out double wEW))
@@ -2441,7 +2455,11 @@ internal sealed class LegacyDashboardRenderer
         sb.Append('{');
         AppendBool(sb, "macroRunning", _settings.IsMacroRunning); sb.Append(',');
         AppendString(sb, "currentState", _settings.CurrentState ?? string.Empty); sb.Append(',');
-        AppendString(sb, "botAction", _settings.BotAction ?? "Default"); sb.Append(',');
+        // "botAction" is what the displays show (the dashboard's activity line, and the phone through
+        // RynthRemote's status file): the control string, except that the Buffing slot says what it
+        // is doing (Healing, Restoring mana, ...). The control string itself is "botActionControl".
+        AppendString(sb, "botAction", ActivityArbiter.DisplayLabel(_settings.BotAction, _settings.BuffingLabel)); sb.Append(',');
+        AppendString(sb, "botActionControl", _settings.BotAction ?? "Default"); sb.Append(',');
         AppendString(sb, "selectedProfile", _settings.SelectedProfile ?? "Default"); sb.Append(',');
         // Copy the four profile lists under the lock so we never enumerate one
         // while a Refresh*Files mutator Clear()s it on the pump thread — that
