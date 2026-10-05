@@ -29,6 +29,8 @@ public sealed class HudState
     // ── Mini Remote ──
     public bool ShowMiniRemote;
     public bool MiniRemoteLocked;
+    /// <summary>Sections laid out side by side in columns (the V/H button) instead of stacked.</summary>
+    public bool MiniRemoteHorizontal;
     public bool MiniShowStats = true;
     /// <summary>Attack target row: name, health bar, distance.</summary>
     public bool MiniShowTarget = true;

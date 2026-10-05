@@ -16,8 +16,12 @@ public sealed class IltHubState
     public int SchemaVersion = 1;
 
     // ── Window / shell ──────────────────────────────────────────────────────
+    /// <summary>
+    /// Hub UI on screen: the Mini Remote or any ILT section window (IltHubController.Tick keeps it
+    /// current). Bank auto-refresh and the gear / split-arrow scans run only while it is true.
+    /// </summary>
     public bool WindowVisible;
-    /// <summary>Tab order: 0 Character, 1 Pet, 2 Banking, 3 Gear, 4 Games.</summary>
+    /// <summary>Unused since the tabbed Hub window was retired; kept so old files still load.</summary>
     public int SelectedTab;
     public bool GamesHudVisible = true;
 
@@ -172,10 +176,19 @@ public sealed class IltCharacterState
     /// <summary>Floating quest favorites HUD is shown.</summary>
     public bool ShowQuestFavoritesHud;
     public bool QuestFavoritesHudLocked;
-    /// <summary>The quest tracker is undocked from the Hub into its own "Quests" window.</summary>
+    // ILT section windows, opened from the Mini Remote's Options (IltSections).
+    /// <summary>The "Quests" window (tracker + quest bonus) is open.</summary>
     public bool QuestTrackerPoppedOut;
-    /// <summary>The pet roster is undocked from the Hub into its own "Pets" window.</summary>
+    /// <summary>The "Pets" window is open.</summary>
     public bool PetsWindowOpen;
+    /// <summary>The "ILT Character" window (world status, session rates) is open.</summary>
+    public bool CharacterWindowOpen;
+    /// <summary>The "Banking" window is open.</summary>
+    public bool BankingWindowOpen;
+    /// <summary>The "Gear" window is open.</summary>
+    public bool GearWindowOpen;
+    /// <summary>The "Games" window is open.</summary>
+    public bool GamesWindowOpen;
 }
 
 public sealed class IltItemConversion

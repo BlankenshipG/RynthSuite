@@ -239,11 +239,8 @@ internal sealed class IltQuests : IIltFeature
 
     // ── UI (render thread) ──────────────────────────────────────────────────
 
-    /// <summary>
-    /// Quest tracker body. Drawn inside the Hub's Quests tab, or filling the standalone
-    /// "Quests" window when <paramref name="poppedOut"/> (the table then uses the full height).
-    /// </summary>
-    public void RenderQuestTracker(bool poppedOut = false)
+    /// <summary>Quest tracker body, filling the "Quests" window (the table uses the remaining height).</summary>
+    public void RenderQuestTracker()
     {
         var t = _tracker();
         if (t == null) { ImGui.TextDisabled("Quest tracker not ready."); return; }
@@ -258,9 +255,6 @@ internal sealed class IltQuests : IIltFeature
         ImGui.SameLine();
         if (ImGui.SmallButton("Reload quests.xml")) _ctx.Post(LoadFriendlyNames);
         ImGui.SameLine();
-        if (!poppedOut && ImGui.SmallButton("Pop out##quests")) cs.QuestTrackerPoppedOut = true;
-        if (!poppedOut && ImGui.IsItemHovered()) ImGui.SetTooltip("Undock the quest tracker into its own window.");
-        if (!poppedOut) ImGui.SameLine();
         ImGui.TextDisabled(t.IsRefreshing ? "refreshing..." : t.LastStatus
             + (t.LastRefreshUtc == DateTime.MinValue ? "" : " @ " + t.LastRefreshUtc.ToLocalTime().ToString("t")));
 
@@ -292,7 +286,7 @@ internal sealed class IltQuests : IIltFeature
             .ToArray();
 
         if (ImGui.BeginTable("##iltquests", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.Resizable,
-                new Vector2(0, poppedOut ? -1 : 260)))
+                new Vector2(0, -1)))
         {
             ImGui.TableSetupScrollFreeze(0, 1);
             ImGui.TableSetupColumn("*", ImGuiTableColumnFlags.WidthFixed, 18);
@@ -348,13 +342,15 @@ internal sealed class IltQuests : IIltFeature
     }
 
     /// <summary>
-    /// Windows that live outside the Hub window: the undocked "Quests" tracker and the
-    /// floating favorites HUD. Called every frame whether or not the Hub window is open.
+    /// The "Quests" window (opened from the Mini Remote's Options or "/ra hub open quests"; drawn
+    /// only while the Hub is available, matching IltHubController.SectionAvailable) and the
+    /// floating favorites HUD. Called every frame.
     /// </summary>
     public void RenderFloatingWindows()
     {
         var cs = _ctx.State.Character;
-        if (cs.QuestTrackerPoppedOut) RenderPoppedOutTracker(cs);
+        bool hubAvailable = _ctx.Options.IsIltLikeWorld && _ctx.Options.AnyFeatureOn;
+        if (cs.QuestTrackerPoppedOut && hubAvailable) RenderPoppedOutTracker(cs);
         else _questsRescueChecked = false;
         if (cs.ShowQuestFavoritesHud) RenderFavoritesHud(cs);
     }
@@ -370,10 +366,9 @@ internal sealed class IltQuests : IIltFeature
             UiPlacement.RescueOncePerShow(ref _questsRescueChecked);
             // Quest bonus first (collapsed by default) so the tracker table can fill the rest.
             if (ImGui.CollapsingHeader("Quest bonus (/qb)##qbwin")) RenderQb();
-            RenderQuestTracker(poppedOut: true);
+            RenderQuestTracker();
         }
         ImGui.End();
-        // Closing the window docks quests back into the Hub's Quests tab.
         if (!open) cs.QuestTrackerPoppedOut = false;
     }
 

@@ -89,6 +89,12 @@ public sealed partial class RynthAiPlugin
         _huds = new Huds.HudController(Host, dash.CharFolder, () => _objectCache, dash, () => _iltHub, _hudIcons,
             () => _combatManager?.activeTargetId ?? 0);
         if (_translateUi != null) _huds.Translate = _translateUi;
+
+        // The Mini Remote is the Hub's main window: "/ra hub [show|hide|toggle]" drives it, and
+        // while it is up the Hub keeps its bank / gear data fresh.
+        var huds = _huds;
+        _iltHub.MiniRemoteCommand = mode => "[ILT Hub] " + huds.HandleCommand("remote", mode);
+        _iltHub.MiniRemoteVisible = () => huds.State.ShowMiniRemote;
         EnsureItemInfoUi();
     }
 

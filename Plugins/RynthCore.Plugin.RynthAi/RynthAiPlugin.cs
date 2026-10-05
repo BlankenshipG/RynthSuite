@@ -754,8 +754,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "hub":
             case "quests":
             case "pets":
-                // Dashboard Char launcher (hub=show) and its right-click menu (pets, quests window);
-                // value carries the "/ra hub|quests|pets" arguments.
+                // Dashboard Char launcher (hub=show opens the Mini Remote) and its right-click menu
+                // (hub=open <section> toggle); value carries the "/ra hub|quests|pets" arguments.
                 if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
                 _iltHub.HandleCommand(action.ToLowerInvariant(), value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
                 break;
