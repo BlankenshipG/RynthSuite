@@ -55,8 +55,6 @@
 
   <ItemGroup>
     <TrimmerRootAssembly Include="ImGui.NET" />
-    <!-- Lua editing moved to the RynthLua plugin. This window targeted settings fields that no longer exist. -->
-    <Compile Remove="LegacyUi\LegacuLuaUi.cs" />
   </ItemGroup>
 
   <ItemGroup>
