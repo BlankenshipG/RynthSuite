@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.24-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.25-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -274,7 +274,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _iltHub = null;
         try { _huds?.OnLogout(); } catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "logout"); }
         _huds = null;
-        if (_dashboard != null) _dashboard.IltHubAvailable = null;
+        if (_dashboard != null)
+        {
+            _dashboard.IltHubAvailable = null;
+            _dashboard.MiniRemoteVisible = null;
+            _dashboard.SetMiniRemoteVisible = null;
+        }
         _questTracker = null;
         _inventoryManager = null;
         _salvageManager = null;
@@ -330,6 +335,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _hudIcons ??= new Huds.HudIconCache(Host, () => _raycast?.GeometryLoader?.PortalDat);
         _huds = new Huds.HudController(Host, _dashboard.CharFolder, () => _objectCache, _dashboard, () => _iltHub, _hudIcons);
         _dashboard.SetInventoryHudLauncher(() => { if (_huds != null) _huds.State.ShowSetup = true; });
+        _dashboard.MiniRemoteVisible = () => _huds?.State.ShowMiniRemote == true;
+        _dashboard.SetMiniRemoteVisible = v => { if (_huds != null) _huds.State.ShowMiniRemote = v; };
     }
 
     public override void OnLoginComplete()

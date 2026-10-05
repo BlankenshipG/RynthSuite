@@ -2361,9 +2361,19 @@ internal sealed class LegacyDashboardRenderer
         ImGui.TableNextRow();
         ImGui.TableNextColumn(); LegacyDashboardDrawing.GridBtn("Dungeon Map", "map", ref DashWindows.ShowDungeonMap);
         ImGui.TableNextColumn();
-        // ILT Hub launcher: only on ACECustom/ILT worlds with at least one server feature on.
+        // "Char" opens the ILT Hub: only on ACECustom/ILT worlds with at least one server feature on.
         if (IltHubAvailable?.Invoke() == true)
-            LegacyDashboardDrawing.GridBtn("ILT Hub", "heart", ref DashWindows.ShowIltHub);
+            LegacyDashboardDrawing.GridBtn("Char", "heart", ref DashWindows.ShowIltHub);
+        ImGui.TableNextColumn();
+        // "Hub" toggles the Mini Remote; its visibility lives in the per-character HUD state.
+        if (MiniRemoteVisible != null && SetMiniRemoteVisible != null)
+        {
+            bool shown = MiniRemoteVisible();
+            bool before = shown;
+            LegacyDashboardDrawing.GridBtn("Hub", "bag", ref shown);
+            if (shown != before) SetMiniRemoteVisible(shown);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Show/hide the Mini Remote (/ra remote). Setup: /ra huds.");
+        }
         ImGui.EndTable();
     }
 
@@ -2440,6 +2450,10 @@ internal sealed class LegacyDashboardRenderer
 
     /// <summary>Set by the plugin: true when the ILT Hub should be offered in the launcher grid.</summary>
     internal Func<bool>? IltHubAvailable { get; set; }
+
+    /// <summary>Reads / sets Mini Remote visibility for the dashboard's "Hub" button; null hides the button.</summary>
+    internal Func<bool>? MiniRemoteVisible { get; set; }
+    internal Action<bool>? SetMiniRemoteVisible { get; set; }
 
     private static void RenderPlaceholderWindow(string title, ref bool open, string message)
     {
