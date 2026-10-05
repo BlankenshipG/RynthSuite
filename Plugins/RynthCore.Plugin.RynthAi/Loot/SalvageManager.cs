@@ -1379,7 +1379,7 @@ public sealed class SalvageManager
         return name.Contains("Salvage (", StringComparison.OrdinalIgnoreCase);
     }
 
-    private void Log(string message) => _host.Log(message);
+    private void Log(string message) => RynthLog.Write(LogCat.Salvage, message);
 
     private void NoteError(string what)
     {

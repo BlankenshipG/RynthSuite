@@ -1072,6 +1072,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         private static void Log(string msg)
         {
             System.Diagnostics.Debug.WriteLine($"[DungeonLOS] {msg}");
+            RynthLog.Trace(LogCat.Raycast, $"[DungeonLOS] {msg}"); // visible via /ra trace raycast
         }
 
     }

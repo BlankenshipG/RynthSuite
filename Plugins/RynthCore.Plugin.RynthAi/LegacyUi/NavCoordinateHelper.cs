@@ -22,6 +22,17 @@ internal static class NavCoordinateHelper
         return false;
     }
 
+    /// <summary>Current position as a waypoint would store it (NS/EW map coords + Z in nav units).</summary>
+    public static bool TryGetNavPosition(RynthCoreHost host, out double northSouth, out double eastWest, out double navZ)
+    {
+        navZ = 0;
+        if (!TryGetNavCoords(host, out northSouth, out eastWest))
+            return false;
+        if (host.HasGetPlayerPose && host.TryGetPlayerPose(out _, out _, out _, out float z, out _, out _, out _, out _))
+            navZ = z / NavZScale;
+        return true;
+    }
+
     internal static bool TryConvertPoseToCoords(uint objCellId, float x, float y, out double northSouth, out double eastWest)
     {
         northSouth = 0;

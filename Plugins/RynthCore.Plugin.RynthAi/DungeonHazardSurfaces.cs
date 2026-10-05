@@ -30,13 +30,14 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using RynthCore.Plugin.RynthAi.Raycasting;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi;
 
 internal static class DungeonHazardSurfaces
 {
     // Sibling of NavProfiles / DungeonHazards (LegacyDashboardRenderer._navFolder family).
-    private static readonly string Folder  = @"C:\Games\RynthSuite\RynthAi";
+    private static readonly string Folder  = RynthInstallPaths.RynthAiDir;
     private static readonly string SetPath = System.IO.Path.Combine(Folder, "HazardTextures.txt");
 
     private static readonly object _gate = new();

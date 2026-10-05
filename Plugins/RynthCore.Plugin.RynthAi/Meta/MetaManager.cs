@@ -7,6 +7,7 @@ using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.CreatureData;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
+using RynthCore.Install;
 
 namespace RynthCore.Plugin.RynthAi.Meta;
 
@@ -111,7 +112,7 @@ internal sealed class MetaManager
         // §3.3: surface schema/enum drift once per session instead of letting a
         // mid-enum insert silently corrupt every saved meta + the JSON bridge.
         if (MetaSchema.DriftError != null)
-            _host.Log($"[Meta] SCHEMA DRIFT — fix MetaSchema/enum alignment: {MetaSchema.DriftError}");
+            RynthLog.Write(LogCat.Meta, $"[Meta] SCHEMA DRIFT — fix MetaSchema/enum alignment: {MetaSchema.DriftError}");
     }
 
     public void SetMtCommandHandler(Func<string, bool> handler) => _mtCommandHandler = handler;
@@ -389,7 +390,7 @@ internal sealed class MetaManager
             // A condition/action threw. Localise it to this tick instead of
             // letting partial state (half-applied SetState, pushed call stack)
             // persist. ForceStateReset recomputes HasFired cleanly next tick.
-            _host.Log($"[Meta] Think crashed in '{_settings.CurrentState}': {ex.GetType().Name}: {ex.Message}");
+            RynthLog.Write(LogCat.Meta, $"[Meta] Think crashed in '{_settings.CurrentState}': {ex.GetType().Name}: {ex.Message}");
             if (_settings.MetaDebug)
                 _host.WriteToChat($"[Meta] Think exception: {ex.Message}", 1);
             _lastExprError   = $"Think: {ex.GetType().Name}: {Truncate(ex.Message, 100)}";
@@ -850,7 +851,7 @@ internal sealed class MetaManager
             {
                 if (string.IsNullOrWhiteSpace(rule.ActionData))
                 {
-                    _host.Log("[Meta] EmbedNav: empty ActionData, ignored");
+                    RynthLog.Write(LogCat.Meta, "[Meta] EmbedNav: empty ActionData, ignored");
                     break;
                 }
                 string routeName = rule.ActionData.Split(';')[0];
@@ -886,13 +887,13 @@ internal sealed class MetaManager
                         _settings.CurrentRoute     = newRoute;
                         _settings.ActiveNavIndex   = StartIndexForRoute(newRoute);
                         _settings.EnableNavigation = true;
-                        _host.Log($"[Meta] EmbedNav: loaded '{routeName}' ({newRoute.Points.Count} pts, was {priorPoints})");
+                        RynthLog.Write(LogCat.Meta, $"[Meta] EmbedNav: loaded '{routeName}' ({newRoute.Points.Count} pts, was {priorPoints})");
                         _host.WriteToChat($"[RynthAi Meta] Route \u2192 {routeName} ({newRoute.Points.Count} pts)", 1);
                         break;
                     }
 
                     // Fallback: a standalone .nav file in NavProfiles.
-                    string navFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
+                    string navFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"NavProfiles");
                     string fullPath = Path.Combine(navFolder, routeName + ".nav");
                     if (File.Exists(fullPath))
                     {
@@ -901,19 +902,19 @@ internal sealed class MetaManager
                         _settings.CurrentRoute     = newRoute;
                         _settings.ActiveNavIndex   = StartIndexForRoute(newRoute);
                         _settings.EnableNavigation = true;
-                        _host.Log($"[Meta] EmbedNav: loaded file '{routeName}' ({newRoute.Points.Count} pts, was {priorPoints})");
+                        RynthLog.Write(LogCat.Meta, $"[Meta] EmbedNav: loaded file '{routeName}' ({newRoute.Points.Count} pts, was {priorPoints})");
                         _host.WriteToChat($"[RynthAi Meta] Route \u2192 {routeName} ({newRoute.Points.Count} pts)", 1);
                     }
                     else
                     {
                         string keys = string.Join(", ", _settings.EmbeddedNavs.Keys);
-                        _host.Log($"[Meta] EmbedNav: route '{routeName}' not found. Embedded keys: [{keys}]");
+                        RynthLog.Write(LogCat.Meta, $"[Meta] EmbedNav: route '{routeName}' not found. Embedded keys: [{keys}]");
                         _host.WriteToChat($"[RynthAi Meta] Route missing: {routeName}", 1);
                     }
                 }
                 catch (Exception ex)
                 {
-                    _host.Log($"[Meta] EmbedNav error: {ex.Message}");
+                    RynthLog.Write(LogCat.Meta, $"[Meta] EmbedNav error: {ex.Message}");
                     _host.WriteToChat($"[RynthAi Meta] Load Error: {ex.Message}", 1);
                 }
                 break;
@@ -1023,7 +1024,7 @@ internal sealed class MetaManager
                     _lastExprError   = $"{rule.Action} ignored — VTank Views are not supported in RynthAi";
                     _lastExprErrorAt = Clock();
                     _host.WriteToChat("[RynthAi] Meta uses VTank Views (CreateView/DestroyView) — not supported; those actions are ignored.", 1);
-                    _host.Log($"[Meta] {rule.Action} ignored — VTank Views unsupported");
+                    RynthLog.Write(LogCat.Meta, $"[Meta] {rule.Action} ignored — VTank Views unsupported");
                 }
                 break;
         }
@@ -1091,7 +1092,7 @@ internal sealed class MetaManager
             parts[2].Equals("load", StringComparison.OrdinalIgnoreCase))
         {
             string name = string.Join(" ", parts, 3, parts.Length - 3);
-            string metaDir = @"C:\Games\RynthSuite\RynthAi\MetaFiles";
+            string metaDir = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
             string afPath = Path.Combine(metaDir, name + ".af");
             string metPath = Path.Combine(metaDir, name + ".met");
 
