@@ -580,6 +580,9 @@ public sealed class ItemsBridgePayload
     public int                  ManaTapMinMana    { get; set; }
     public int                  ManaStoneKeepCount { get; set; }
     public string               CurrentTargetName { get; set; } = string.Empty;
+    /// <summary>Mirrors <see cref="LegacyUiSettings.AutoEquipShield"/>. Null when sent by an
+    /// older engine panel that has no Shields section — leave the setting unchanged then.</summary>
+    public bool?                AutoEquipShield   { get; set; }
 }
 
 // ── Nav bridge types ─────────────────────────────────────────────────────────

@@ -581,6 +581,14 @@ public static unsafe class PluginExports
         catch { }
     }
 
+    // Engine Items panel "Add Selected Shield" (off-hand entry, ItemRule Action="Shield").
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginAddSelectedShield", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void AddSelectedShield()
+    {
+        try { Runtime.Plugin?.DashboardRenderer?.AddSelectedShield(); }
+        catch { }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginAddSelectedConsumable", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void AddSelectedConsumable()
     {

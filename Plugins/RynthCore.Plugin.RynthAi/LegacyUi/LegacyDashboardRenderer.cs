@@ -1043,6 +1043,7 @@ internal sealed class LegacyDashboardRenderer
                 ManaTapMinMana    = _settings.ManaTapMinMana,
                 ManaStoneKeepCount = _settings.ManaStoneKeepCount,
                 CurrentTargetName = _currentTargetId != 0 ? (_targetLabel ?? string.Empty) : string.Empty,
+                AutoEquipShield   = _settings.AutoEquipShield,
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.ItemsBridgePayload);
         }
@@ -1059,34 +1060,52 @@ internal sealed class LegacyDashboardRenderer
         {
             var p = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.ItemsBridgePayload);
             if (p == null) return;
-            // The engine Items panel only round-trips id/name/element; keep each entry's
-            // Action (Weapon vs off-hand Shield) and KeepBuffed from the current list.
+            // The engine Items panel can't edit Action or KeepBuffed: keep both from the
+            // current list for existing entries (Weapon vs off-hand Shield is decided
+            // only by AddSelectedWeapon / AddSelectedShield).
             var previous = new Dictionary<int, ItemRule>();
             foreach (var r in _settings.ItemRules ?? new List<ItemRule>())
                 previous.TryAdd(r.Id, r); // tolerate duplicate ids in old settings files
+            var keptIds = new HashSet<int>();
             foreach (var w in p.Weapons)
             {
+                keptIds.Add(w.Id);
                 if (previous.TryGetValue(w.Id, out var old))
                 {
                     w.Action     = old.Action;
                     w.KeepBuffed = old.KeepBuffed;
                 }
-                else if (w.Action == "Loot")
+                else if (!w.IsShield())
                 {
-                    w.Action = ItemRule.WeaponAction; // the engine panel only adds weapons
+                    w.Action = ItemRule.WeaponAction; // older panels send no Action ("Loot")
                 }
             }
+
+            // A shield deleted in the engine panel must not stay referenced as a
+            // per-monster off-hand (same cleanup the ImGui Shields "Del" does).
+            bool monstersChanged = false;
+            foreach (var removed in previous.Values)
+            {
+                if (!removed.IsShield() || keptIds.Contains(removed.Id)) continue;
+                foreach (var mr in _settings.MonsterRules)
+                    if (mr.OffhandId == removed.Id) { mr.OffhandId = 0; monstersChanged = true; }
+            }
+
             _settings.ItemRules          = p.Weapons;
             _settings.ConsumableRules    = p.Consumables;
             _settings.EnableManaTapping  = p.EnableManaTapping;
             _settings.ManaTapMinMana     = p.ManaTapMinMana;
             _settings.ManaStoneKeepCount = p.ManaStoneKeepCount;
+            if (p.AutoEquipShield is bool autoShield) _settings.AutoEquipShield = autoShield;
             SaveSettings();
+            if (monstersChanged) SaveMonstersFile();
         }
         catch { }
     }
 
     public void AddSelectedWeapon()     { _weaponsUi.AddSelectedWeapon();     SaveSettings(); }
+    /// <summary>Adds the inventory-selected shield as an off-hand entry (engine Items panel).</summary>
+    public void AddSelectedShield()     { _weaponsUi.AddSelectedShield();     SaveSettings(); }
     public void AddSelectedConsumable() { _weaponsUi.AddSelectedConsumable(); SaveSettings(); }
 
     private (uint Id, string Name)? GetCurrentTargetForMonsterAdd()
