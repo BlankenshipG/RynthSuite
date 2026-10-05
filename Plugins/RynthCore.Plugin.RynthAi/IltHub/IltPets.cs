@@ -3,8 +3,10 @@
 //   * Pet roster (UtilityBelt Pets-tab style): every carried pet essence with three stat
 //     lines (bond / level / craft · sex / mutations / potency / mastery · ratings / uses /
 //     breeding), filtered by summon type (Combat / Healing / Cosmetic) and sortable.
-//     Combat essences and Healing Buddy / Dule box pets are classified automatically; any
-//     essence can be re-typed ("Add sel." or right-click a row).
+//     Pets are detected by type (essence WCID block, summoning-gem icon underlay,
+//     Summoning use requirement, ACECustom bond/potency) — a pet-like name only nominates
+//     an item for appraisal. Healing Buddy / Dule box and cosmetic naming pick the type,
+//     else Combat; any essence can be re-typed ("Add sel." or right-click a row).
 //       - Combat: the tick list is the existing ConsumableRules Type=="Pet" list that
 //         PetManager summons from (list order = summon priority) — no second summoner.
 //       - Healing: the tick picks the heal pet the healing state machine uses.
@@ -83,15 +85,65 @@ internal sealed class IltPets : IIltFeature
 
     // ── Classification ──────────────────────────────────────────────────────
 
-    /// <summary>ACECustom combat essence (WCID block or "... Essence"), excluding spirits / charms / capture devices.</summary>
-    public bool IsCombatEssence(WorldObject wo)
+    // Pet-device type signals (client-visible assessment properties).
+    private const uint IntMaxStructure = 91;
+    private const uint IntUseRequiresSkill = 366;
+    private const uint IntUseRequiresSkillSpec = 368;
+    private const uint IntBondLevel = 9053;     // ACECustom pet essence
+    private const uint IntPotencyStored = 9056; // ACECustom pet essence
+    private const int SkillSummoning = 54;
+    private const uint DidIconUnderlay = 52;
+    /// <summary>Low 24 bits of the summoning-gem icon underlay (0x06007420) every pet device carries.</summary>
+    private const uint SummonGemUnderlay = 0x007420;
+
+    /// <summary>Icon-underlay verdict per object id (the DID never changes; only successful reads are cached).</summary>
+    private readonly Dictionary<int, bool> _underlayCache = new();
+
+    /// <summary>
+    /// True when the item is a pet device by type, not by name: the ACECustom combat
+    /// essence WCID block, the summoning-gem icon underlay, a Summoning-skill use
+    /// requirement, or ACECustom bond/potency properties. Names (" Essence", heal /
+    /// stamina / cosmetic pet naming) only make an item a candidate, which must then show
+    /// charges (MaxStructure) — so augmentation gems like "Jibril's Essence" stay out.
+    /// Spirits, charms, capture devices and summoned pet creatures are never pets.
+    /// </summary>
+    public bool IsPetDevice(WorldObject wo)
     {
         uint w = _ctx.Inventory.Wcid(wo);
         if (w == IltInventory.WcidEncapsulatedSpirit) return false;
-        if (w is >= 78780030 and <= 78780089) return false; // charm block
-        if (w is >= 78780001 and <= 78780012) return false; // capture devices
-        if (w is >= 787801001 and <= 787801072) return true;
-        return wo.Name.EndsWith(" Essence", StringComparison.OrdinalIgnoreCase);
+        if (w is >= 78780030 and <= 78780089) return false;     // charm block
+        if (w is >= 78780001 and <= 78780012) return false;     // capture devices
+        if (w is >= 787802001 and <= 787802072) return false;   // summoned combat pet creatures
+        if (w is >= 787801001 and <= 787801072) return true;    // combat essence block
+
+        if (HasSummonGemUnderlay(wo)) return true;
+        if (RequiresSummoning(wo)) return true;
+        if (_ctx.Inventory.Int(wo, IntBondLevel) > 0 || _ctx.Inventory.Int(wo, IntPotencyStored, -1) >= 0) return true;
+
+        return IsPetNameCandidate(wo.Name) && _ctx.Inventory.Int(wo, IntMaxStructure) > 0;
+    }
+
+    /// <summary>Name hints UB's pet scan uses; never sufficient on their own (see <see cref="IsPetDevice"/>).</summary>
+    private static bool IsPetNameCandidate(string n)
+        => n.EndsWith(" Essence", StringComparison.OrdinalIgnoreCase)
+           || LooksLikeHealPet(n) || LooksLikeStaminaPet(n) || LooksLikeCosmeticPet(n);
+
+    /// <summary>UseRequiresSkill / UseRequiresSkillSpec is Summoning (appraisal data).</summary>
+    private bool RequiresSummoning(WorldObject wo)
+        => _ctx.Inventory.Int(wo, IntUseRequiresSkill) == SkillSummoning
+           || _ctx.Inventory.Int(wo, IntUseRequiresSkillSpec) == SkillSummoning;
+
+    /// <summary>Icon underlay is the summoning gem (network-populated, no appraisal needed; engine 2026.10.4.19+).</summary>
+    private bool HasSummonGemUnderlay(WorldObject wo)
+    {
+        if (_underlayCache.TryGetValue(wo.Id, out bool known)) return known;
+        var host = _ctx.Host;
+        if (!host.HasGetObjectDataIdProperty
+            || !host.TryGetObjectDataIdProperty(unchecked((uint)wo.Id), DidIconUnderlay, out uint did))
+            return false;
+        bool match = (did & 0x00FFFFFF) == SummonGemUnderlay;
+        _underlayCache[wo.Id] = match;
+        return match;
     }
 
     /// <summary>"Healing Buddy" / "Dule box" naming used by the server's heal pets.</summary>
@@ -99,12 +151,29 @@ internal sealed class IltPets : IIltFeature
         => (n.Contains("healing", StringComparison.OrdinalIgnoreCase) && n.Contains("buddy", StringComparison.OrdinalIgnoreCase))
            || (n.Contains("dule", StringComparison.OrdinalIgnoreCase) && n.Contains("box", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>Stamina buddy / crate / pet naming.</summary>
+    private static bool LooksLikeStaminaPet(string n)
+        => n.Contains("stamina", StringComparison.OrdinalIgnoreCase)
+           && (n.Contains("buddy", StringComparison.OrdinalIgnoreCase) || n.Contains("crate", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("pet", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Cosmetic / plush / display pet naming.</summary>
+    private static bool LooksLikeCosmeticPet(string n)
+        => n.Contains("cosmetic", StringComparison.OrdinalIgnoreCase) || n.Contains("plush", StringComparison.OrdinalIgnoreCase)
+           || n.Contains("display pet", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Name candidate that hasn't been appraised yet, so its type can't be confirmed.</summary>
+    private bool IsUnconfirmedCandidate(WorldObject wo)
+        => IsPetNameCandidate(wo.Name) && !IsPetDevice(wo)
+           && _ctx.Host.HasHasAppraisalData && !_ctx.Inventory.HasAppraisal(wo);
+
     private IltPetAssignment? FindAssignment(string name)
         => S.Assignments.FirstOrDefault(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// Summon type for a carried item: the user's override wins, then heal-pet naming (or
-    /// the configured heal pet), then combat essence. Null = not a pet essence.
+    /// Summon type for a carried item: the user's override wins, then the configured heal
+    /// pet. Anything else must be a pet device by type (<see cref="IsPetDevice"/>); its
+    /// naming then picks Healing / Cosmetic, defaulting to Combat. Null = not a pet.
     /// </summary>
     private IltPetKind? ClassifyKind(WorldObject wo, out bool assigned)
     {
@@ -115,9 +184,11 @@ internal sealed class IltPets : IIltFeature
             return (IltPetKind)Math.Clamp(a.Kind, 0, 2);
         }
         assigned = false;
-        if (LooksLikeHealPet(wo.Name) || NameIs(wo, S.HealPetName)) return IltPetKind.Healing;
-        if (IsCombatEssence(wo)) return IltPetKind.Combat;
-        return null;
+        if (NameIs(wo, S.HealPetName)) return IltPetKind.Healing;
+        if (!IsPetDevice(wo)) return null;
+        if (LooksLikeHealPet(wo.Name)) return IltPetKind.Healing;
+        if (LooksLikeCosmeticPet(wo.Name)) return IltPetKind.Cosmetic;
+        return IltPetKind.Combat;
     }
 
     private static bool NameIs(WorldObject wo, string name)
@@ -513,16 +584,30 @@ internal sealed class IltPets : IIltFeature
         }
     }
 
-    /// <summary>Requests appraisal for every carried pet essence (refreshes bond / potency after fights).</summary>
+    /// <summary>
+    /// Requests appraisal for every carried pet (refreshes bond / potency after fights) and
+    /// for un-appraised pet-named items, whose type is only known once the appraisal lands.
+    /// </summary>
     private void ScanPack()
     {
-        int n = 0;
+        int pets = 0, candidates = 0;
         foreach (var wo in _ctx.Inventory.Items())
         {
-            if (ClassifyKind(wo, out _) == null) continue;
-            if (_ctx.Inventory.RequestAppraisal(wo)) n++;
+            if (ClassifyKind(wo, out _) != null)
+            {
+                if (_ctx.Inventory.RequestAppraisal(wo)) pets++;
+            }
+            else if (IsUnconfirmedCandidate(wo) && _ctx.Inventory.RequestAppraisal(wo))
+            {
+                candidates++;
+            }
         }
-        _ctx.Chat(n > 0 ? $"[ILT Hub] Appraising {n} pet essence(s)…" : "[ILT Hub] Pet essences were appraised recently.");
+        if (pets == 0 && candidates == 0)
+            _ctx.Chat("[ILT Hub] Pets were appraised recently.");
+        else
+            _ctx.Chat(candidates > 0
+                ? $"[ILT Hub] Appraising {pets} pet(s) and checking {candidates} pet-named item(s)…"
+                : $"[ILT Hub] Appraising {pets} pet(s)…");
         RebuildPetSnapshot(autoAppraise: false);
     }
 
@@ -612,7 +697,14 @@ internal sealed class IltPets : IIltFeature
         foreach (var wo in _ctx.Inventory.Items())
         {
             var kind = ClassifyKind(wo, out bool assigned);
-            if (kind == null) continue;
+            if (kind == null)
+            {
+                // Pet-named but unconfirmed: its appraisal decides whether it is a pet device.
+                if (autoAppraise && appraised < AutoAppraisePerScan && IsUnconfirmedCandidate(wo)
+                    && _ctx.Inventory.RequestAppraisal(wo))
+                    appraised++;
+                continue;
+            }
 
             var s = IltPetStatsReader.Read(_ctx.Host, _ctx.Inventory, wo, unixNow);
             s.Kind = kind.Value;
@@ -677,7 +769,7 @@ internal sealed class IltPets : IIltFeature
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Dismiss the pet that is out.");
         ImGui.SameLine();
         if (ImGui.Button("Scan pack")) _ctx.Post(ScanPack);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Appraise every pet essence to refresh bond, potency and breeding.");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Appraise every pet to refresh bond, potency and breeding, and check pet-named items\n(an \"... Essence\" name alone isn't enough — the item must be a summoning pet device).");
         ImGui.SameLine();
         if (ImGui.Button("Add sel.")) _ctx.Post(() => AddSelectedAs(summonKind));
         if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Make the item selected in your pack a {KindNames[(int)kind].ToLowerInvariant()} pet.");
