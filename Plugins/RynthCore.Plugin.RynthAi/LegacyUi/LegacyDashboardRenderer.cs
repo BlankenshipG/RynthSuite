@@ -186,6 +186,10 @@ internal sealed class LegacyDashboardRenderer
             getCurrentTarget: GetCurrentTargetForMonsterAdd);
         _dungeonMapUi = new DungeonMapUi(host, _settings);
         _dungeonMapUi.OnSettingChanged = SaveSettings;
+        _navigationUi.NavFolder = _navFolder;
+        _navigationUi.OnSettingsChanged = SaveSettings;
+        _navigationUi.OnNavFilesChanged = RefreshNavFiles;
+        _navigationUi.FindNearestWaypoint = () => FindNearestWaypoint(_settings.CurrentRoute);
         _rynthRadarUi = new RynthRadarUi(host, _settings);
         _rynthRadarUi.OnSettingChanged = SaveSettings;
         _rynthRadarUi.SetMapData(_dungeonMapUi);
@@ -1464,6 +1468,8 @@ internal sealed class LegacyDashboardRenderer
         dst.NavLineThickness         = tmp.NavLineThickness;
         dst.NavHeightOffset          = tmp.NavHeightOffset;
         dst.NavSlopeSink             = tmp.NavSlopeSink;
+        dst.NavOverlay               = tmp.NavOverlay ?? new NavOverlaySettings();
+        dst.NavOverlay.Sanitize();
         dst.MaxMonRange              = tmp.MaxMonRange;
         dst.SummonPets               = tmp.SummonPets;
         dst.CustomPetRange           = tmp.CustomPetRange;
@@ -2551,6 +2557,9 @@ internal sealed class LegacyDashboardRenderer
         }
     }
 
+    /// <summary>Breadcrumb tracker for the Navigation window (trail export / clear, record count); null on teardown.</summary>
+    public void AttachNavBreadcrumbs(NavBreadcrumbTracker? tracker) => _navigationUi.Breadcrumbs = tracker;
+
     private void RefreshNavFiles()
     {
         var list = new List<string> { "None" };
@@ -2729,7 +2738,7 @@ internal sealed class LegacyDashboardRenderer
                         _host.TryGetPlayerPose(out _, out float wx, out float wy, out float wz, out _, out _, out _, out _) &&
                         NavCoordinateHelper.TryGetNavCoords(_host, out double wNS, out double wEW))
                     {
-                        InsertNavPoint(new NavPoint { NS = wNS, EW = wEW, Z = wz }, cmd.AddMode, cmd.InsertAt);
+                        InsertNavPoint(new NavPoint { NS = wNS, EW = wEW, Z = wz / NavCoordinateHelper.NavZScale }, cmd.AddMode, cmd.InsertAt);
                     }
                     break;
 
@@ -2738,7 +2747,7 @@ internal sealed class LegacyDashboardRenderer
                         _host.TryGetPlayerPose(out _, out float rx, out float ry, out float rz, out _, out _, out _, out _) &&
                         NavCoordinateHelper.TryGetNavCoords(_host, out double rNS, out double rEW))
                     {
-                        InsertNavPoint(new NavPoint { Type = NavPointType.Recall, NS = rNS, EW = rEW, Z = rz, SpellId = cmd.SpellId }, cmd.AddMode, cmd.InsertAt);
+                        InsertNavPoint(new NavPoint { Type = NavPointType.Recall, NS = rNS, EW = rEW, Z = rz / NavCoordinateHelper.NavZScale, SpellId = cmd.SpellId }, cmd.AddMode, cmd.InsertAt);
                     }
                     break;
 

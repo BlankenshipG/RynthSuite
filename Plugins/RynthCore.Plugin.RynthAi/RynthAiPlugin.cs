@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.29-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.30-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -80,6 +80,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     internal LegacyDashboardRenderer? DashboardRenderer => _dashboard;
     private NavigationEngine? _navigationEngine;
     private NavMarkerRenderer? _navMarkerRenderer;
+    private NavBreadcrumbTracker? _navBreadcrumbs;   // breadcrumb trail + nav route recording
+    private NavOverlayRenderer? _navOverlay;         // waypoint HUD / labels / guide line / trail drawing
     private RadarWallRenderer? _radarWallRenderer;
     private TerrainPassabilityOverlay? _terrainOverlay;
     private MainLogic? _raycast;
@@ -256,6 +258,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _navigationEngine?.Stop();
         _navigationEngine = null;
         _navMarkerRenderer = null;
+        try { _navBreadcrumbs?.Shutdown(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Navigation, ex, "nav recorder shutdown"); }
+        if (_dashboard != null) _dashboard.Settings.IsRecordingNav = false;
+        _navOverlay = null;
+        _navBreadcrumbs = null;
+        _dashboard?.AttachNavBreadcrumbs(null);
         long tFlush0 = Environment.TickCount64;
         _radarWallRenderer?.Flush();
         long tFlushMs = Environment.TickCount64 - tFlush0;
@@ -352,6 +360,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _navigationEngine = new NavigationEngine(Host, _dashboard.Settings);
         if (_objectCache != null) _navigationEngine.SetWorldObjectCache(_objectCache);
         _navMarkerRenderer = new NavMarkerRenderer(Host, _dashboard.Settings);
+        _navBreadcrumbs = new NavBreadcrumbTracker(Host, _dashboard.Settings, DescribeNavPortal, ChatLine);
+        _navOverlay = new NavOverlayRenderer(Host, _dashboard.Settings, _navBreadcrumbs);
+        _dashboard.AttachNavBreadcrumbs(_navBreadcrumbs);
         _radarWallRenderer = new RadarWallRenderer(Host, _dashboard.Settings);
         _terrainOverlay = new TerrainPassabilityOverlay(Host);
         Log($"RynthAi: NavMarkerRenderer created, HasNav3D={Host.HasNav3D}, version={Host.Version}");
@@ -1602,6 +1613,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     // (Buffing / missile-crafting / BoostNavPriority branches).
                     if (Host.HasNav3D)
                         _navMarkerRenderer?.SubmitNav3D();
+
+                    // Breadcrumb sampling + route recording, then trail / guide line geometry.
+                    try
+                    {
+                        _navBreadcrumbs?.Tick();
+                        if (Host.HasNav3D) _navOverlay?.SubmitNav3D();
+                    }
+                    catch (Exception ex) { RynthLog.Exception(LogCat.Navigation, ex, "nav breadcrumbs/overlay tick"); }
                 }
             }
         }
@@ -1657,6 +1676,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             if (obj != null && IsLootableClass(obj.ObjectClass) && ItemInfoWantsClass(itemInfo, obj.ObjectClass))
                 QueueAutoItemInfo(sid, requestId: false);
         }
+    }
+
+    /// <summary>Nav recorder hook: (name, Decal object class) when <paramref name="id"/> is a portal.</summary>
+    private (string Name, int ObjectClass)? DescribeNavPortal(uint id)
+    {
+        WorldObject? wo = _objectCache?[unchecked((int)id)];
+        if (wo == null || wo.ObjectClass != AcObjectClass.Portal || string.IsNullOrEmpty(wo.Name)) return null;
+        return (wo.Name, (int)AcObjectClass.Portal);
     }
 
     private static bool IsLootableClass(AcObjectClass cls) => cls is not (
@@ -2349,6 +2376,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "buildinfo":    HandleBuildInfoCommand(); break;
             case "navdebug":     HandleNavDebugCommand(); break;
             case "addnavpt":     HandleAddNavPointCommand(); break;
+            case "navrec":       HandleNavRecordCommand(parts); break;
+            case "navhud":       HandleNavHudCommand(parts); break;
+            case "navtrail":     HandleNavTrailCommand(parts); break;
             case "follow":       HandleFollowCommand(parts); break;
             case "myquests":
             case "refreshquests": _questTracker?.Refresh(); ChatLine("[RynthAi] Quest flag refresh requested."); break;
@@ -2487,6 +2517,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // fallback (engines without HasNav3D) and any submitters that
             // still live in OnRender.
             _navMarkerRenderer?.RenderImGuiFallback();
+            _navOverlay?.Render(); // waypoint HUD + labels (+ trail/guide fallback without Nav3D)
             _radarWallRenderer?.Render();
             if (_dashboard?.Settings.ShowTerrainPassability == true)
                 _terrainOverlay?.Render();
@@ -2565,6 +2596,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
             // Floating HUDs have no Avalonia counterpart either.
             _huds?.Render();
+
+            // Nav waypoint HUD / labels are ImGui-only too.
+            _navOverlay?.Render();
 
             _dashboard?.RenderOverlayWindows();
         }

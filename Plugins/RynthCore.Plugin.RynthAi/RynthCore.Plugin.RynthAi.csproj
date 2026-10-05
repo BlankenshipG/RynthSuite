@@ -17,10 +17,10 @@
     <Platforms>x86</Platforms>
     <!-- Keep in sync with RynthAiPlugin.VersionPointer (reported via GetVersion). -->
     <!-- Previous release: 0.6.18 (per-category log levels). -->
-    <Version>0.6.29</Version>
-    <AssemblyVersion>0.6.29.0</AssemblyVersion>
-    <FileVersion>0.6.29.0</FileVersion>
-    <InformationalVersion>0.6.29-legacy-ui</InformationalVersion>
+    <Version>0.6.30</Version>
+    <AssemblyVersion>0.6.30.0</AssemblyVersion>
+    <FileVersion>0.6.30.0</FileVersion>
+    <InformationalVersion>0.6.30-legacy-ui</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

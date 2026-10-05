@@ -128,6 +128,8 @@ public sealed class LegacyUiSettings
     public float NavLineThickness = 6.0f;
     public float NavHeightOffset = 0.05f;
     public float NavSlopeSink = 1.5f;
+    /// <summary>Marker colours, waypoint HUD / labels, breadcrumb trail and recording options.</summary>
+    public NavOverlaySettings NavOverlay = new();
     public bool  ShowTerrainPassability = true;
     public double MaxMonRange = 12.0;
     public bool SummonPets;

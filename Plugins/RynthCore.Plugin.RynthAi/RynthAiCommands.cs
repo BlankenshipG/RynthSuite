@@ -172,6 +172,9 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra buildinfo     — nearby geometry info");
         ChatLine("[RynthAi] /ra navdebug      — show nav coordinate/debug info");
         ChatLine("[RynthAi] /ra addnavpt      — append a waypoint at current location to loaded nav");
+        ChatLine("[RynthAi] /ra navrec [on|off]  — record a route while you walk (portals captured)");
+        ChatLine("[RynthAi] /ra navhud [on|off]  — show/hide the nav HUD (distance, direction, next step)");
+        ChatLine("[RynthAi] /ra navtrail [clear] — breadcrumb trail stats / wipe the trail");
         ChatLine("[RynthAi] /ra dunnav <NS> <EW>  — navigate to NS/EW coords through dungeon (no nav file needed)");
         ChatLine("[RynthAi] /ra dunnav-patrol      — circular hunt patrol through the whole dungeon (no nav file needed)");
         ChatLine("[RynthAi] /ra hazard add|del|list|near — mark current cell as lava/acid so patrol avoids it");
@@ -1154,6 +1157,41 @@ public sealed partial class RynthAiPlugin
         }
     }
 
+    /// <summary>/ra navrec [on|off] — toggles route recording (no argument flips the current state).</summary>
+    private void HandleNavRecordCommand(string[] parts)
+    {
+        if (_dashboard == null) return;
+        var s = _dashboard.Settings;
+        string arg = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
+        s.IsRecordingNav = arg switch { "on" => true, "off" => false, _ => !s.IsRecordingNav };
+        ChatLine($"[RynthAi] Nav recording {(s.IsRecordingNav ? "ON — walk the route; portals are captured" : "OFF")}.");
+    }
+
+    /// <summary>/ra navhud [on|off] — shows or hides the navigation HUD window.</summary>
+    private void HandleNavHudCommand(string[] parts)
+    {
+        if (_dashboard == null) return;
+        var o = _dashboard.Settings.NavOverlay;
+        string arg = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
+        o.ShowHud = arg switch { "on" => true, "off" => false, _ => !o.ShowHud };
+        ChatLine($"[RynthAi] Nav HUD {(o.ShowHud ? "shown" : "hidden")}.");
+    }
+
+    /// <summary>/ra navtrail clear — wipes the breadcrumb trail.</summary>
+    private void HandleNavTrailCommand(string[] parts)
+    {
+        string arg = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
+        if (arg == "clear")
+        {
+            _navBreadcrumbs?.RequestClear();
+            ChatLine("[RynthAi] Breadcrumb trail cleared.");
+            return;
+        }
+        int n = _navBreadcrumbs?.Trail.Length ?? 0;
+        double yd = _navBreadcrumbs?.TrailYards ?? 0;
+        ChatLine($"[RynthAi] Breadcrumbs: {n} points, {yd:F0} yd. Use /ra navtrail clear to wipe.");
+    }
+
     private void HandleAddNavPointCommand()
     {
         var settings = _dashboard?.Settings;
@@ -1179,8 +1217,8 @@ public sealed partial class RynthAiPlugin
             return;
         }
 
-        var newPt = new NavPoint { NS = ns, EW = ew, Z = z };
-        settings.CurrentRoute.Points.Add(newPt);
+        var newPt = new NavPoint { NS = ns, EW = ew, Z = z / NavCoordinateHelper.NavZScale };
+        NavRouteEditing.Apply(settings, list => { list.Add(newPt); return list; });
 
         string navName = string.IsNullOrEmpty(settings.CurrentNavPath)
             ? "(unsaved)"
