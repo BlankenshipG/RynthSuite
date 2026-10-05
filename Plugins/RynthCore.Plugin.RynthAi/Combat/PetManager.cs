@@ -60,6 +60,14 @@ internal sealed class PetManager
     // get parked so we advance to the next configured essence instead of looping.
     private readonly Dictionary<int, long> _deviceCooldownUntil = new();
 
+    // Essences the server just confirmed full ("You add the spirit…" / "…already full"). Until a
+    // summon reports "not enough charges", their Structure read is not trusted: the cached value
+    // can still be the empty 0 from the last appraisal, which re-issued the refill in a loop
+    // (spirit use → peace mode → clap) on 2026-10-04.
+    private readonly Dictionary<int, long> _confirmedFullUntil = new();
+    // Refills issued per essence inside RefillLoopWindowMs; a third one parks the essence.
+    private readonly Dictionary<int, (int Count, long WindowStart)> _refillAttempts = new();
+
     // Encapsulated Spirit — the fixed retail recharge item (WCID 49485). Detected
     // by name; it is never itself a summon device.
     private const string EncapsulatedSpiritName = "Encapsulated Spirit";
@@ -69,17 +77,34 @@ internal sealed class PetManager
     private const long AssumeActiveAfterSummonMs = 10_000;
     private const long DeviceFailCooldownMs      = 30_000;
     private const long DeviceNoSpiritCooldownMs  = 15_000;
+    private const long ConfirmedFullTrustMs      = 30 * 60_000;
+    private const long RefillLoopWindowMs        = 120_000;
+    private const int  RefillLoopMaxAttempts     = 2;
+    private const long RefillLoopParkMs          = 300_000;
 
     private string _playerName = string.Empty;
     private long   _playerNameAt;
 
     private static long NowMs => Environment.TickCount64;
 
-    /// <summary>ILT Hub: summon an empty essence (server pyreal-refill charm tops it up).</summary>
+    /// <summary>
+    /// Optional ILT Hub hook: when it returns true an EMPTY essence is used anyway, because
+    /// the server's Summon Essence Refill Charm refills it from banked pyreals on use.
+    /// Null (default) keeps the retail behaviour (spirit refill or park).
+    /// </summary>
     public Func<bool>? AllowSummonOnEmpty { get; set; }
-    /// <summary>ILT Hub: do not start a new summon while this is true.</summary>
+
+    /// <summary>
+    /// Optional ILT Hub hook: while it returns true no combat summon is started (e.g. the
+    /// healing-pet helper has its heal pet out). Null (default) never holds.
+    /// </summary>
     public Func<bool>? HoldSummons { get; set; }
-    /// <summary>ILT Hub: dismiss a cosmetic pet when monsters are nearby.</summary>
+
+    /// <summary>
+    /// Optional ILT Hub hook, called when a pet already holds the slot and monsters are near.
+    /// Returns true after dismissing a non-combat (cosmetic) pet so a combat pet can follow.
+    /// Null (default) leaves whatever pet is out alone.
+    /// </summary>
     public Func<bool>? YieldPetForCombat { get; set; }
 
     public PetManager(RynthCoreHost host, LegacyUiSettings settings,
@@ -120,7 +145,7 @@ internal sealed class PetManager
             bool spiritGone = _activeSpiritId != 0 && _objectCache[_activeSpiritId] == null;
             if (spiritGone || DeviceHasCharges(_activeDeviceId))
             {
-                _host.Log($"[RynthAi] Pet: refill complete (essence 0x{(uint)_activeDeviceId:X8}).");
+                RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: refill complete (essence 0x{(uint)_activeDeviceId:X8}).");
                 GoIdle();
             }
         }
@@ -129,7 +154,7 @@ internal sealed class PetManager
         // decrement that never lands), and waiting on it would wedge the subsystem.
         if (_state != PetState.Idle && now - _actionIssuedAt > ActionTimeoutMs)
         {
-            _host.Log($"[RynthAi] Pet: action timeout in {_state} after {now - _actionIssuedAt}ms (essence 0x{(uint)_activeDeviceId:X8}); cooling down.");
+            RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: action timeout in {_state} after {now - _actionIssuedAt}ms (essence 0x{(uint)_activeDeviceId:X8}); cooling down.");
             if (_activeDeviceId != 0)
                 _deviceCooldownUntil[_activeDeviceId] = now + DeviceFailCooldownMs;
             // A summon that we simply couldn't confirm very likely DID work — assume
@@ -165,8 +190,10 @@ internal sealed class PetManager
             // Drop to Idle; the next think tick reads Structure==0 and refills it.
             if (text.Contains("enough charges", StringComparison.OrdinalIgnoreCase))
             {
-                _host.Log($"[RynthAi] Pet: essence 0x{(uint)_activeDeviceId:X8} reports empty; will refill.");
-                // No server-side refill: park the essence so an empty-summon path cannot spin on it.
+                RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: essence 0x{(uint)_activeDeviceId:X8} reports empty; will refill.");
+                _confirmedFullUntil.Remove(_activeDeviceId); // really empty now — a refill is due
+                // The server-side pyreal refill didn't happen (charm off / no pyreals):
+                // park the essence so the empty-summon path can't spin on it.
                 if (AllowSummonOnEmpty?.Invoke() == true && _activeDeviceId != 0)
                     _deviceCooldownUntil[_activeDeviceId] = NowMs + DeviceNoSpiritCooldownMs;
                 GoIdle();
@@ -179,9 +206,20 @@ internal sealed class PetManager
         {
             // "You add the spirit to the essence." (success) / "This essence is
             // already full." (our Structure read was stale — also done).
-            if (text.Contains("add the spirit to the essence", StringComparison.OrdinalIgnoreCase)
-                || text.Contains("essence is already full", StringComparison.OrdinalIgnoreCase))
+            bool added = text.Contains("add the spirit to the essence", StringComparison.OrdinalIgnoreCase);
+            bool full  = text.Contains("essence is already full", StringComparison.OrdinalIgnoreCase);
+            if (added || full)
             {
+                int device = _activeDeviceId;
+                if (device != 0)
+                {
+                    _confirmedFullUntil[device] = NowMs + ConfirmedFullTrustMs;
+                    // Refresh the cached Structure so the roster / HUD and later reads agree.
+                    if (_host.HasRequestId) _host.RequestId(unchecked((uint)device));
+                }
+                RynthLog.Write(LogCat.Pets, added
+                    ? $"[RynthAi] Pet: refill complete (essence 0x{(uint)device:X8}, server confirmed)."
+                    : $"[RynthAi] Pet: essence 0x{(uint)device:X8} is already full; charge read was stale.");
                 GoIdle();
             }
         }
@@ -220,6 +258,13 @@ internal sealed class PetManager
 
             int charges = ReadCharges(deviceId); // -1 = unreadable
 
+            // The server said this essence is full since the read went stale — summon from it.
+            if (charges == 0 && _confirmedFullUntil.TryGetValue(deviceId, out long trustUntil))
+            {
+                if (now < trustUntil) charges = -1;
+                else _confirmedFullUntil.Remove(deviceId);
+            }
+
             if (charges != 0)
             {
                 // Has charges (or unreadable → attempt; an empty one is rejected
@@ -228,7 +273,8 @@ internal sealed class PetManager
                 return;
             }
 
-            // charges == 0 → empty. ILT shards with a pyreal-refill charm refill on use.
+            // charges == 0 → empty. ILT shards with an active pyreal-refill charm refill
+            // the essence server-side on use, so summon straight away.
             if (AllowSummonOnEmpty?.Invoke() == true)
             {
                 IssueSummon(deviceId, charges);
@@ -241,6 +287,8 @@ internal sealed class PetManager
                 int spiritId = FindEncapsulatedSpirit();
                 if (spiritId != 0)
                 {
+                    if (RefillLoopDetected(deviceId, now))
+                        continue;
                     IssueRefill(deviceId, spiritId);
                     return;
                 }
@@ -263,7 +311,7 @@ internal sealed class PetManager
         _activeSpiritId   = 0;
         _preActionCharges = charges;
         _actionIssuedAt   = NowMs;
-        _host.Log($"[RynthAi] Pet: summoning from essence 0x{(uint)deviceId:X8} (charges={charges}).");
+        RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: summoning from essence 0x{(uint)deviceId:X8} (charges={charges}).");
         _host.UseFor(unchecked((uint)deviceId), "Pet", "summon a pet from the essence");
     }
 
@@ -275,8 +323,35 @@ internal sealed class PetManager
         _activeDeviceId = deviceId;
         _activeSpiritId = spiritId;
         _actionIssuedAt = NowMs;
-        _host.Log($"[RynthAi] Pet: refilling essence 0x{(uint)deviceId:X8} with spirit 0x{(uint)spiritId:X8}.");
+        RecordRefillAttempt(deviceId, _actionIssuedAt);
+        RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: refilling essence 0x{(uint)deviceId:X8} with spirit 0x{(uint)spiritId:X8}.");
         _host.UseOnFor(unchecked((uint)spiritId), unchecked((uint)deviceId), "Pet", "refill the essence with a spirit");
+    }
+
+    /// <summary>Counts refills per essence inside <see cref="RefillLoopWindowMs"/>.</summary>
+    private void RecordRefillAttempt(int deviceId, long now)
+    {
+        if (_refillAttempts.TryGetValue(deviceId, out var a) && now - a.WindowStart < RefillLoopWindowMs)
+            _refillAttempts[deviceId] = (a.Count + 1, a.WindowStart);
+        else
+            _refillAttempts[deviceId] = (1, now);
+    }
+
+    /// <summary>
+    /// True (and the essence parked) when it was already refilled <see cref="RefillLoopMaxAttempts"/>
+    /// times in the window without becoming usable — the charge read is stale or the refill is
+    /// failing, and repeating it only burns spirits and forces peace mode.
+    /// </summary>
+    private bool RefillLoopDetected(int deviceId, long now)
+    {
+        if (!_refillAttempts.TryGetValue(deviceId, out var a) || now - a.WindowStart >= RefillLoopWindowMs)
+            return false;
+        if (a.Count < RefillLoopMaxAttempts)
+            return false;
+        _deviceCooldownUntil[deviceId] = now + RefillLoopParkMs;
+        _refillAttempts.Remove(deviceId);
+        RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: essence 0x{(uint)deviceId:X8} refilled {a.Count}x in {(now - a.WindowStart) / 1000}s and still reads empty; parking it for {RefillLoopParkMs / 60_000} min.");
+        return true;
     }
 
     private void GoIdle()
