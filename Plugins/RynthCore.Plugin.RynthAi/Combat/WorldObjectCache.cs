@@ -962,6 +962,14 @@ public class WorldObjectCache
             : defaultValue;
     }
 
+    /// <summary>
+    /// True when the object's ownership is readable and it has neither a container nor a
+    /// wielder — i.e. it lies loose in the world. Unreadable ownership reads as false, so a
+    /// pack item whose snapshot is missing is never mistaken for a ground drop.
+    /// </summary>
+    public bool IsOnGround(int id)
+        => TryGetOwnership(id, out int containerId, out int wielderId, out _) && containerId == 0 && wielderId == 0;
+
     public int GetContainerId(int id)
     {
         if (!TryGetOwnership(id, out int containerId, out _, out _))

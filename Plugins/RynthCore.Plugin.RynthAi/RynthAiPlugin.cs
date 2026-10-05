@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.26-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.27-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -252,6 +252,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     /// </summary>
     private void TeardownSession()
     {
+        ResetGroundLoot(clearCaches: true);
         _navigationEngine?.Stop();
         _navigationEngine = null;
         _navMarkerRenderer = null;
@@ -2377,6 +2378,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "corpseinfo":   HandleCorpseInfoCommand(); break;
             case "corpsecheck":  HandleCorpseCheckCommand(parts); break;
             case "corpseopen":   HandleCorpseOpenCommand(); break;
+            case "groundloot":   HandleGroundLootCommand(parts); break;
             case "fellow":
             case "fellowship":   HandleFellowshipCommand(parts); break;
             case "fellowinfo":   HandleFellowshipInfoCommand(); break;

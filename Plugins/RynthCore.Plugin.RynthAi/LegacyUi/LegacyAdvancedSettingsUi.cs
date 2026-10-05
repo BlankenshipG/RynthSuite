@@ -787,6 +787,11 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Enable Looting", ref _settings.EnableLooting);
                 ImGui.Checkbox("Boost Loot Priority", ref _settings.BoostLootPriority);
                 ImGui.Checkbox("Loot Only Rare Corpses", ref _settings.LootOnlyRareCorpses);
+                ImGui.Checkbox("Loot Items On Ground", ref _settings.EnableGroundLoot);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Also pick up loose items on the ground that match the loot profile,\n"
+                                   + $"within the corpse max range ({_settings.CorpseApproachRangeMax:0.#} yd, Navigation settings).\n"
+                                   + "Corpses are looted first. /ra groundloot on|off|status|scan");
                 ImGui.Checkbox("Jump When Looting", ref _settings.LootJumpEnabled);
                 if (_settings.LootJumpEnabled)
                 {

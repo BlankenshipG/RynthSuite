@@ -134,7 +134,12 @@ public class WorldObject
             if (o.Strings.TryGetValue((uint)key, out string? v)) return v;
             if (!o.LiveFallback) return defaultValue;
         }
-        return Cache?.GetStringProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+        string live = Cache?.GetStringProperty(Id, (uint)key, string.Empty) ?? string.Empty;
+        if (live.Length > 0) return live;
+        // Name isn't an assessment property, so appraisal data never carries it and the
+        // off-main-thread live read comes back empty; the network snapshot name is authoritative.
+        if (key == StringValueKey.Name && Name.Length > 0) return Name;
+        return defaultValue;
     }
 
     public double Values(DoubleValueKey key, double defaultValue)

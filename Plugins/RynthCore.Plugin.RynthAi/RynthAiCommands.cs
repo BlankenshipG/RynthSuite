@@ -179,6 +179,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra corpseinfo    — show corpse range/open diagnostics");
         ChatLine("[RynthAi] /ra corpsecheck   — explain whether a corpse would be looted");
         ChatLine("[RynthAi] /ra corpseopen    — force the nearest corpse open flow");
+        ChatLine("[RynthAi] /ra groundloot    — loot ground items by profile (on|off|status|scan)");
         ChatLine("[RynthAi] /ra fellowinfo    — show fellowship tracker state");
         ChatLine("[RynthAi] /ra lootparse     — inspect the selected loot profile");
         ChatLine("[RynthAi] /ra lootcheckinv  — test the loot profile against inventory");

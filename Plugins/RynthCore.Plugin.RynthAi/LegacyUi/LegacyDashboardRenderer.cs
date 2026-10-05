@@ -815,6 +815,7 @@ internal sealed class LegacyDashboardRenderer
                 EnableLooting              = s.EnableLooting,
                 BoostLootPriority          = s.BoostLootPriority,
                 LootOnlyRareCorpses        = s.LootOnlyRareCorpses,
+                EnableGroundLoot           = s.EnableGroundLoot,
                 LootJumpEnabled            = s.LootJumpEnabled,
                 LootJumpHeight             = s.LootJumpHeight,
                 LootOwnership              = s.LootOwnership,
@@ -993,6 +994,7 @@ internal sealed class LegacyDashboardRenderer
             s.EnableLooting              = p.EnableLooting;
             s.BoostLootPriority          = p.BoostLootPriority;
             s.LootOnlyRareCorpses        = p.LootOnlyRareCorpses;
+            s.EnableGroundLoot           = p.EnableGroundLoot;
             s.LootJumpEnabled            = p.LootJumpEnabled;
             s.LootJumpHeight             = p.LootJumpHeight;
             s.LootOwnership              = p.LootOwnership;
@@ -1478,6 +1480,7 @@ internal sealed class LegacyDashboardRenderer
         dst.AutoUnlockDoors          = tmp.AutoUnlockDoors;
         dst.LootOwnership            = tmp.LootOwnership;
         dst.LootOnlyRareCorpses      = tmp.LootOnlyRareCorpses;
+        dst.EnableGroundLoot         = tmp.EnableGroundLoot;
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;

@@ -417,6 +417,7 @@ public sealed partial class RynthAiPlugin
         if (!settings.IsMacroRunning || !settings.EnableLooting || settings.BoostNavPriority)
         {
             ResetCorpseTarget();
+            ResetGroundLoot(clearCaches: false);
             return;
         }
 
@@ -468,15 +469,27 @@ public sealed partial class RynthAiPlugin
         long now = CorpseNowMs;
         if (_targetCorpseId == 0)
         {
+            // A ground pickup already sent finishes before a corpse is claimed (one item action at a time).
+            if (GroundPickupInFlight)
+            {
+                TickGroundLoot(settings, maxMeters);
+                return;
+            }
+
             if (!TryFindNearestCorpse(maxMeters, out WorldObject? corpse, out _))
             {
                 // No corpses in range. STEP 4: nothing to release. The "Looting"
                 // string used to be held here from a just-completed corpse and
                 // had to be handed back so nav could resume; now HasLootWork
                 // simply stops returning true and the arbiter moves on by itself
-                // on the next tick.
+                // on the next tick. Loose ground items get their turn here.
+                TickGroundLoot(settings, maxMeters);
                 return;
             }
+
+            // A corpse outranks an unsent ground claim.
+            if (_groundTargetId != 0)
+                ResetGroundLoot(clearCaches: false);
 
             if (corpse == null)
                 return;
@@ -1303,7 +1316,7 @@ public sealed partial class RynthAiPlugin
         if (maxMeters <= 0.25)
             return false;
 
-        return HasUnlootedCorpsesInRange(maxMeters);
+        return HasUnlootedCorpsesInRange(maxMeters) || HasGroundLootWork(settings);
     }
 
     // STEP 4/5: IsCorpseNavigationClaimActive is gone. It answered "should loot

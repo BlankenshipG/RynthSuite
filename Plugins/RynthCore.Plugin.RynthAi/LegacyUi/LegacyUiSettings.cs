@@ -147,6 +147,8 @@ public sealed class LegacyUiSettings
     public bool AutoUnlockDoors;
     public int LootOwnership;
     public bool LootOnlyRareCorpses;
+    /// <summary>Also pick up loose ground items that match the loot profile, within the corpse max range.</summary>
+    public bool EnableGroundLoot;
     public bool PeaceModeWhenIdle = true;
     public bool RebuffWhenIdle;
     /// <summary>
@@ -755,6 +757,7 @@ public sealed class SettingsBridgePayload
     public bool EnableLooting { get; set; }
     public bool BoostLootPriority { get; set; }
     public bool LootOnlyRareCorpses { get; set; }
+    public bool EnableGroundLoot { get; set; }
     public bool LootJumpEnabled { get; set; }
     public int LootJumpHeight { get; set; }
     public int LootOwnership { get; set; }
