@@ -271,9 +271,24 @@ internal sealed class HudController
             if (!quiet) Chat("[RynthAi] This client build can't read the selected item.");
             return null;
         }
-        var wo = PackItem(unchecked((int)_host.GetSelectedItemId()));
-        if (wo == null && _lastPackSelId != 0 && NowMs - _lastPackSelAt <= RememberSelectionMs)
+        uint selected = _host.GetSelectedItemId();
+        var wo = PackItem(unchecked((int)selected));
+        bool fellBack = false;
+        long rememberedAge = NowMs - _lastPackSelAt;
+        if (wo == null && _lastPackSelId != 0 && rememberedAge <= RememberSelectionMs)
+        {
             wo = PackItem(_lastPackSelId);
+            fellBack = wo != null;
+        }
+        // Quiet calls feed tooltips several times a second: only real assignments are traced.
+        if (!quiet)
+        {
+            string selInfo = selected == 0 ? "none" : $"0x{selected:X8} ({(fellBack || wo == null ? DescribeCacheEntry(unchecked((int)selected)) : "in inventory")})";
+            string result = wo == null ? "nothing to assign"
+                : fellBack ? $"fell back to remembered 0x{_lastPackSelId:X8} '{wo.Name}' ({rememberedAge / 1000.0:0.0} s old)"
+                : $"selected '{wo.Name}'";
+            RynthLog.Trace(LogCat.Huds, $"assign candidate: selected={selInfo}; {result}");
+        }
         if (wo == null && !quiet)
             Chat("[RynthAi] Click an item in your pack (game inventory or RynthCore Inventory) first, "
                  + "or drag it from the RynthCore Inventory onto the slot.");
@@ -294,6 +309,7 @@ internal sealed class HudController
         if (string.IsNullOrWhiteSpace(name) || State.ItemHudItems.Any(e => e.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) return;
         var row = _pack.ByName.TryGetValue(name, out var r) ? r : null;
         State.ItemHudItems.Add(new HudItemEntry { Name = name, Wcid = row?.Wcid ?? 0, IconDid = row?.IconDid ?? 0 });
+        RynthLog.Trace(LogCat.Huds, $"item HUD += '{name}' (first id 0x{(uint)(row?.FirstId ?? 0):X8}, wcid {row?.Wcid ?? 0}, in pack scan: {(row != null ? "yes" : "no")})");
     }
 
     /// <summary>
@@ -346,7 +362,15 @@ internal sealed class HudController
     public void SetSlotFromItemId(int slot, uint objectId)
     {
         var wo = PackItem(unchecked((int)objectId));
-        if (wo == null) { Chat("[RynthAi] That item is no longer in your pack."); return; }
+        if (wo == null)
+        {
+            // The cache's view of the id shows a classification miss (item filed outside inventory).
+            int invCount = _cache()?.GetInventory().Count() ?? -1;
+            RynthLog.Trace(LogCat.Huds, $"slot-from-id: 0x{objectId:X8} not in inventory ({invCount} items); {DescribeCacheEntry(unchecked((int)objectId))}");
+            Chat("[RynthAi] That item is no longer in your pack.");
+            return;
+        }
+        RynthLog.Trace(LogCat.Huds, $"slot-from-id: 0x{objectId:X8} = '{wo.Name}' ({wo.ObjectClass}), requested slot {(slot < 0 ? "first empty" : (slot + 1).ToString("00"))}");
         if (slot < 0) slot = State.MiniRemoteSlots.FindIndex(e => e.IsEmpty);
         if (slot < 0) { Chat("[RynthAi] Every Mini Remote slot is in use. Clear one first (right-click it)."); return; }
         if (slot >= State.MiniRemoteSlots.Count) return;
@@ -356,8 +380,19 @@ internal sealed class HudController
     private void AssignSlot(int slot, WorldObject wo)
     {
         var row = _pack.ByName.TryGetValue(wo.Name, out var r) ? r : null;
-        State.MiniRemoteSlots[slot] = new HudItemEntry { Name = wo.Name, Wcid = row?.Wcid ?? Wcid(wo), IconDid = row?.IconDid ?? IconOf(wo) };
+        var entry = new HudItemEntry { Name = wo.Name, Wcid = row?.Wcid ?? Wcid(wo), IconDid = row?.IconDid ?? IconOf(wo) };
+        State.MiniRemoteSlots[slot] = entry;
+        RynthLog.Trace(LogCat.Huds, $"assign slot {slot + 1:00} = '{wo.Name}' 0x{(uint)wo.Id:X8} (wcid {entry.Wcid}, icon 0x{entry.IconDid:X8})");
         Chat($"[RynthAi] Mini Remote slot {slot + 1:00} = {wo.Name}.");
+    }
+
+    /// <summary>How the world cache knows <paramref name="id"/> (for traces): name and class, or that it doesn't.</summary>
+    private string DescribeCacheEntry(int id)
+    {
+        var cache = _cache();
+        if (cache == null) return "no world cache";
+        var wo = cache[id];
+        return wo == null ? "unknown to the world cache" : $"world cache has '{wo.Name}' as {wo.ObjectClass}";
     }
 
     /// <summary>
@@ -367,11 +402,21 @@ internal sealed class HudController
     public bool HandleRemoteSlot(string value)
     {
         var parts = (value ?? string.Empty).Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length != 2 || !uint.TryParse(parts[1], out uint id)) return false;
-        int slot;
-        if (parts[0].Equals("first", StringComparison.OrdinalIgnoreCase)) slot = -1;
-        else if (int.TryParse(parts[0], out int n) && n >= 1) slot = n - 1;
-        else return false;
+        int slot = 0;
+        bool ok = parts.Length == 2 && uint.TryParse(parts[1], out _);
+        if (ok)
+        {
+            if (parts[0].Equals("first", StringComparison.OrdinalIgnoreCase)) slot = -1;
+            else if (int.TryParse(parts[0], out int n) && n >= 1) slot = n - 1;
+            else ok = false;
+        }
+        if (!ok)
+        {
+            RynthLog.Trace(LogCat.Huds, $"remoteslot '{value}': can't parse (expected '<slot|first> <objectId>')");
+            return false;
+        }
+        uint id = uint.Parse(parts[1]);
+        RynthLog.Trace(LogCat.Huds, $"remoteslot '{value}': slot {(slot < 0 ? "first empty" : (slot + 1).ToString("00"))}, id 0x{id:X8}");
         SetSlotFromItemId(slot, id);
         return true;
     }
@@ -383,6 +428,8 @@ internal sealed class HudController
 
     public void Chat(string text)
     {
+        // Every message the player sees also lands in the Huds trace.
+        RynthLog.Trace(LogCat.Huds, "chat: " + text);
         if (_host.HasWriteToChat) _host.WriteToChat(text, 1);
     }
 

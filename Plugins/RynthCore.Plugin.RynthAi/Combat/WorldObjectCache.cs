@@ -601,17 +601,14 @@ public class WorldObjectCache
                     return;
                 }
 
-                // Non-creature with a position — could be equipped item on 0x8000 range
-                // or static world object; classify by type flags
-                if ((typeFlags & (ItemTypeMeleeWeapon | ItemTypeMissileWeapon | ItemTypeCaster | ItemTypeArmor | ItemTypeContainer)) != 0)
-                {
-                    // Item with a world position = equipped or ground-dropped
-                    cls = ClassifyItem(uid, typeFlags);
-                    _inventory.Add(id);
-                    _landscape.Remove(id);
-                    _byId[id] = Make(id, name, cls);
+                // Non-creature with a known type: classify it by its ItemType flags and place it
+                // by ownership. Only weapons/armor/casters/containers were accepted here before,
+                // so keys, gems, spell components, food and misc fell through to Unknown
+                // landscape (never inventory) and ReclassifyUnknownDynamics re-probed them
+                // every 2 s forever.
+                AcObjectClass typedCls = ClassifyItem(uid, typeFlags);
+                if (typedCls != AcObjectClass.Unknown && PlaceTypedObject(uid, id, name, typedCls, typeFlags))
                     return;
-                }
             }
             else if (uid >= 0x80000000u)
             {
@@ -658,6 +655,83 @@ public class WorldObjectCache
         _classifyRetry.Remove(uid);
         _byId[id] = Make(id, name, cls);
         }
+    }
+
+    /// <summary>
+    /// Places a positioned, non-creature object whose ItemType resolved to a real class.
+    /// Must be called under <see cref="_gate"/>.
+    /// <list type="bullet">
+    /// <item>Portals / lifestones → landscape with their real class.</item>
+    /// <item>Dynamic objects owned by the player (wielded, in the main pack, or in a side pack) → inventory.</item>
+    /// <item>Other dynamic objects (ground drops, corpse / chest contents) → landscape with the item class.</item>
+    /// <item>Ownership unreadable → gear-like types go to inventory, the rest to landscape.</item>
+    /// <item>Static non-fixture, non-container objects (doors, signs) → returns false; the caller keeps them Unknown scenery.</item>
+    /// </list>
+    /// Returns true when the object was placed and recorded in <see cref="_byId"/>.
+    /// </summary>
+    private bool PlaceTypedObject(uint uid, int id, string name, AcObjectClass cls, uint typeFlags)
+    {
+        bool isFixture = cls is AcObjectClass.Portal or AcObjectClass.Lifestone;
+        bool isDynamic = uid >= 0x80000000u;
+
+        bool toInventory;
+        if (isFixture)
+        {
+            toInventory = false;
+        }
+        else if (!isDynamic)
+        {
+            // Chests are static containers; other static objects stay Unknown scenery.
+            if ((typeFlags & ItemTypeContainer) == 0)
+                return false;
+            toInventory = false;
+        }
+        else
+        {
+            bool owned = IsOwnedByPlayer(id, out bool ownershipKnown);
+            toInventory = ownershipKnown
+                ? owned
+                : (typeFlags & (ItemTypeMeleeWeapon | ItemTypeMissileWeapon | ItemTypeCaster | ItemTypeArmor | ItemTypeContainer)) != 0;
+        }
+
+        _classifyRetry.Remove(uid);
+        _reclassifySkipState.Remove(uid);
+        if (toInventory)
+        {
+            if (_inventory.Add(id)) _inventoryDirty = true;
+            _landscape.Remove(id);
+        }
+        else
+        {
+            if (_inventory.Remove(id)) _inventoryDirty = true;
+            _landscape.Add(id);
+        }
+        _byId[id] = Make(id, name, cls);
+        TraceClassify(uid, name.Length > 0, true, true, typeFlags, toInventory ? $"typed->{cls}(inv)" : $"typed->{cls}(land)");
+        return true;
+    }
+
+    /// <summary>
+    /// True when the object is wielded by the player, sits in the player's main pack, or sits in
+    /// a side pack whose container is the player. <paramref name="known"/> is false when the
+    /// player id isn't set yet or the ownership read failed.
+    /// </summary>
+    private bool IsOwnedByPlayer(int id, out bool known)
+    {
+        known = false;
+        if (_playerId == 0 || !TryGetOwnership(id, out int containerId, out int wielderId, out _))
+            return false;
+
+        known = true;
+        uint container = unchecked((uint)containerId);
+        uint wielder = unchecked((uint)wielderId);
+        if (wielder == _playerId || container == _playerId)
+            return true;
+
+        // One level of nesting covers side packs (AC doesn't allow packs inside packs).
+        return container != 0
+            && TryGetOwnership(containerId, out int outer, out _, out _)
+            && unchecked((uint)outer) == _playerId;
     }
 
     // PublicWeenieDesc._bitfield BF_CORPSE (ObjectDescriptionFlag.Corpse).
@@ -725,6 +799,7 @@ public class WorldObjectCache
         List<int>? toPromote = null;
         List<int>? toCorpse  = null;
         List<(int id, string name, AcObjectClass cls)>? statics = null;
+        List<(int Id, uint Flags)>? toType = null; // Unknowns whose ItemType is now a real item class
         foreach (int id in _landscape)
         {
             uint uid = unchecked((uint)id);
@@ -771,14 +846,21 @@ public class WorldObjectCache
             // immediate signal that doesn't wait on qualities/appraisal). This
             // second path is what rescues a login mob within 2s if it slipped
             // to Unknown before its weenie/combat-state was readable.
-            bool isCreature = _host.TryGetItemType(uid, out uint typeFlags)
-                              && (typeFlags & ItemTypeCreature) != 0;
+            bool gotType = _host.TryGetItemType(uid, out uint typeFlags);
+            bool isCreature = gotType && (typeFlags & ItemTypeCreature) != 0;
             if (!isCreature
                 && _host.HasObjectIsAttackable
                 && _host.ObjectIsAttackable(uid))
                 isCreature = true;
             if (!isCreature)
             {
+                // Type known now (or arrived late): place it as a real item instead of
+                // re-probing it every pass. Applied after the loop: placing mutates _landscape.
+                if (gotType && typeFlags != 0 && ClassifyByItemType(typeFlags) != AcObjectClass.Unknown)
+                {
+                    (toType ??= new()).Add((id, typeFlags));
+                    continue;
+                }
                 DiagLogReclassifySkip(uid, wo.Name);
                 continue;
             }
@@ -832,10 +914,27 @@ public class WorldObjectCache
             _host.Log($"[RynthAi] ReclassifyUnknownDynamics: rescued {toCorpse.Count} stale corpse(s) → Corpse");
         }
 
+        if (toType != null)
+        {
+            int placed = 0, toInv = 0;
+            foreach (var (id, flags) in toType)
+            {
+                if (!_byId.TryGetValue(id, out var wo)) continue;
+                uint uid = unchecked((uint)id);
+                // An Unknown result would be re-queued every pass, so leave it to the skip diag.
+                AcObjectClass cls = ClassifyItem(uid, flags);
+                if (cls == AcObjectClass.Unknown || !PlaceTypedObject(uid, id, wo.Name ?? string.Empty, cls, flags)) continue;
+                placed++;
+                if (_inventory.Contains(id)) toInv++;
+            }
+            _host.Log($"[RynthAi] ReclassifyUnknownDynamics: typed {placed} Unknown object(s) as items ({toInv} into inventory)");
+        }
+
         // DIAG: heartbeat — Unknown landscape candidates checked but nothing promoted
         // this pass. Confirms ReclassifyUnknownDynamics is running and engine signals
         // keep failing for the stuck uids (vs. them never reaching _landscape at all).
         if (toPromote == null
+            && toType == null
             && _reclassifySkipState.Count > 0
             && _reclassifyDiagSummaryCount < MaxReclassifyDiagSummaries)
         {
