@@ -25,6 +25,7 @@ internal static class CreatureWeaknessTests
         r.Add("weakness: server table ranks most damage first", ServerTable);
         r.Add("weakness: type keyword is a whole word", TypeKeyword);
         r.Add("weakness: learned element goes first, then the type order", LearnedFirst);
+        r.Add("weakness: UB seed ranks after server data and learned, before the type", SeedBeforeType);
     }
 
     private static void Normalize()
@@ -129,5 +130,35 @@ internal static class CreatureWeaknessTests
         Check.Eq(alone?.Source, "learned", "learned with no type");
         Check.Eq(alone?.Order.Count, 1, "only the learned element");
         Check.Eq(alone?.Describe(), "Fire", "describe without a multiplier");
+    }
+
+    private static void SeedBeforeType()
+    {
+        var type = CreatureWeakness.Rank(0, OlthoiByKeyword, 0, null);
+        var r = CreatureWeakness.Rank(0, OlthoiByKeyword, 0, null, new[] { "Electric", "fire", "Holy", "Fire" });
+        Check.NotNull(r, "ranking with a seed");
+        if (r == null || type == null) return;
+        Check.Eq(r.Source, "UB seed, then Olthoi type", "source");
+        Check.Eq(r.Order[0].Element, "Lightning", "seed order first (normalised)");
+        Check.Eq(r.Order[1].Element, "Fire", "second seed element");
+        Check.True(double.IsNaN(r.Order[1].Mult), "seed elements have no multiplier");
+        Check.Eq(r.Order.Count, 8, "unknown names dropped, no element listed twice");
+        var rest = new List<string>();
+        foreach (var (e, _) in type.Order) if (e != "Lightning" && e != "Fire") rest.Add(e);
+        for (int i = 0; i < rest.Count; i++)
+            Check.Eq(r.Order[i + 2].Element, rest[i], $"then the type order at {i + 2}");
+
+        var learned = CreatureWeakness.Rank(0, OlthoiByKeyword, 0, "Cold", new[] { "Fire" });
+        Check.Eq(learned?.Source, "learned, then Olthoi type", "learned element beats the seed");
+        Check.Eq(learned?.Order[0].Element, "Cold", "learned element first");
+
+        var row = FirstServerRow();
+        if (row is { } sr)
+            Check.Eq(CreatureWeakness.Rank(sr.Wcid, sr.Name, 0, null, new[] { "Nether" })?.Source, "server data", "server table beats the seed");
+
+        var alone = CreatureWeakness.Rank(0, Unknown, 0, null, new[] { "Acid" });
+        Check.Eq(alone?.Source, "UB seed", "seed with no type");
+        Check.Eq(alone?.Order.Count, 1, "only the seed element");
+        Check.True(CreatureWeakness.Rank(0, Unknown, 0, null, new[] { "Holy" }) == null, "a seed with no element is ignored");
     }
 }

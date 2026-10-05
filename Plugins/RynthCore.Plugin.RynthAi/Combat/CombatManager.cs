@@ -3594,13 +3594,23 @@ public partial class CombatManager : IDisposable
         return any ? CreatureWeakness.FromAppraisal(m) : null;
     }
 
+    /// <summary>
+    /// Optional UtilityBelt damage seed lookup (wcid, name) → damage types best first, or null.
+    /// Set by the plugin when the seed store loads; null (default) leaves the ranking as before.
+    /// Called on the combat thread.
+    /// </summary>
+    internal Func<uint, string, IReadOnlyList<string>?>? MobSeedLookup { get; set; }
+
     /// <summary>The same by wcid and name; <paramref name="objectId"/> (optional) reads a live creature type.</summary>
     internal CreatureWeakness.Ranking? WeaknessFor(uint wcid, string? name, int objectId = 0)
     {
         name ??= "";
         int ctype = CreatureTypeOf(wcid, name, objectId);
         string learned = wcid != 0 ? _damageStore?.GetBestElement(wcid) ?? "" : "";
-        return CreatureWeakness.Rank(wcid, name, ctype, learned);
+        IReadOnlyList<string>? seeded = null;
+        try { seeded = MobSeedLookup?.Invoke(wcid, name); }
+        catch { seeded = null; }   // a bad seed file must never stop element choice
+        return CreatureWeakness.Rank(wcid, name, ctype, learned, seeded);
     }
 
     // Server replies seen when the last combat wield was sent (UseDone / WeenieError sequence).

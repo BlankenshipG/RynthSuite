@@ -58,10 +58,19 @@ internal static class CreatureWeakness
     /// <summary>
     /// The elements that hurt this monster most, or null when nothing is known. Order of
     /// sources: the server table (wcid + name), then what the Damage tab learned
-    /// (<paramref name="learnedBest"/>) ahead of the creature-type ranking, then the type
-    /// ranking alone. <paramref name="creatureType"/> 0 = unknown (the name keywords decide).
+    /// (<paramref name="learnedBest"/>) ahead of the creature-type ranking, then the
+    /// UtilityBelt damage seed (<paramref name="seeded"/>, best first) ahead of the type
+    /// ranking, then the type ranking alone. <paramref name="creatureType"/> 0 = unknown
+    /// (the name keywords decide).
     /// </summary>
-    public static Ranking? Rank(uint wcid, string? name, int creatureType, string? learnedBest)
+    /// <param name="seeded">
+    /// Damage types other players landed best on this monster (Monster Editor "Import UB
+    /// damage insights"), best first; null or empty = no seed. It reflects what players
+    /// owned as much as the monster's weakness, so it never outranks the server table or
+    /// this character's learned element; it only beats the generic creature-type average.
+    /// </param>
+    public static Ranking? Rank(uint wcid, string? name, int creatureType, string? learnedBest,
+        IReadOnlyList<string>? seeded = null)
     {
         EnsureLoaded();
         name ??= "";
@@ -86,9 +95,34 @@ internal static class CreatureWeakness
                     if (!e.Element.Equals(learned, StringComparison.OrdinalIgnoreCase)) r.Order.Add(e);
             return r;
         }
+        Ranking? seed = SeedRanking(seeded, type);
+        if (seed != null)
+            return seed;
         if (type != null)
             return new Ranking { Source = Pretty(type.Name) + " type", Order = new(type.Order) };
         return null;
+    }
+
+    /// <summary>
+    /// The seed's elements (normalised, de-duplicated, no multiplier: only the order is known),
+    /// then the creature type's remaining elements. Null when the seed names no element.
+    /// </summary>
+    private static Ranking? SeedRanking(IReadOnlyList<string>? seeded, TypeInfo? type)
+    {
+        if (seeded == null || seeded.Count == 0) return null;
+        var r = new Ranking();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string raw in seeded)
+        {
+            string e = Normalize(raw);
+            if (e.Length > 0 && seen.Add(e)) r.Order.Add((e, double.NaN));
+        }
+        if (r.Order.Count == 0) return null;
+        r.Source = type != null ? $"UB seed, then {Pretty(type.Name)} type" : "UB seed";
+        if (type != null)
+            foreach (var e in type.Order)
+                if (seen.Add(e.Element)) r.Order.Add(e);
+        return r;
     }
 
     /// <summary>

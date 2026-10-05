@@ -625,6 +625,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager.SetCharacterSkills(_charSkills);
         _combatManager.SetPlayerId(_playerId);
         _combatManager.SetDamageStores(_creatureStore, _damageStore);
+        _combatManager.MobSeedLookup = LookupMobSeed;
         _combatManager.SetAwakenedTier(_tier);
         // The raycast init thread may already have finished (warm dats): hand it over now.
         WireRaycastIntoCombat();

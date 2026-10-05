@@ -1,10 +1,11 @@
-// RynthAiPlugin.LocalFeatures.cs — ILT Hub, floating HUDs, chat translation, item info and the
-// nav overlay.
+// RynthAiPlugin.LocalFeatures.cs — ILT Hub, floating HUDs, chat translation, item info, the nav
+// overlay and the UB damage seed.
 //
 // The engine draws the main panels. These features draw their own ImGui windows from
 // RynthPluginRender / RynthPluginRenderOverlay. Lifecycle methods on RynthAiPlugin call into
 // this file; they add to combat, loot and navigation and never replace them.
 using System;
+using System.Collections.Generic;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
@@ -34,6 +35,23 @@ public sealed partial class RynthAiPlugin
         catch (Exception ex) { Host.Log($"[RynthAi] diagnostics init failed: {ex.Message}"); }
         try { _mobSeedStore = new CreatureData.UbMobSeedStore(); }
         catch (Exception ex) { Host.Log($"[RynthAi] mob seed store failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// CombatManager.MobSeedLookup: the seed's damage types for a monster, best first (highest
+    /// Score), or null when the seed has nothing for it. Feeds the Auto element ranking only
+    /// after the server table and the learned element (see CreatureWeakness.Rank).
+    /// </summary>
+    private IReadOnlyList<string>? LookupMobSeed(uint wcid, string name)
+    {
+        var store = _mobSeedStore;
+        if (store == null || !store.TryGetRanked(wcid, name, out var ranked) || ranked.Count == 0)
+            return null;
+        var ordered = new List<RynthCore.CreatureSeed.UbMobSeedElement>(ranked);
+        ordered.Sort((a, b) => b.Score.CompareTo(a.Score));
+        var elements = new List<string>(ordered.Count);
+        foreach (var e in ordered) elements.Add(e.Element);
+        return elements;
     }
 
     /// <summary>Chat translator survives logout; session language resets on each login.</summary>
