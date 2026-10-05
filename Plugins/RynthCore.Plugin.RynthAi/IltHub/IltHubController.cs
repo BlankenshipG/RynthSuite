@@ -90,6 +90,7 @@ internal sealed class IltHubController
         {
             petManager.AllowSummonOnEmpty = Pets.AllowSummonOnEmpty;
             petManager.HoldSummons = Pets.HoldCombatSummons;
+            petManager.YieldPetForCombat = Pets.YieldPetForCombat;
         }
 
         HookQuestOutcome();

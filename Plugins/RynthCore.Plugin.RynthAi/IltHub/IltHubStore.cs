@@ -90,6 +90,12 @@ internal sealed class IltHubStore
         s.Pet ??= new IltPetState();
         s.Pet.PetLog ??= new();
         s.Pet.ShinyLog ??= new();
+        s.Pet.Assignments ??= new();
+        s.Pet.Assignments.RemoveAll(a => a == null || string.IsNullOrWhiteSpace(a.Name));
+        s.Pet.CosmeticPetName ??= string.Empty;
+        s.Pet.RosterKind = Math.Clamp(s.Pet.RosterKind, 0, 2);
+        s.Pet.RosterSort = Math.Clamp(s.Pet.RosterSort, 0, 6);
+        s.Pet.CosmeticRespawnSeconds = Math.Clamp(s.Pet.CosmeticRespawnSeconds, 5, 600);
         s.Character ??= new IltCharacterState();
         s.Character.ItemConversions ??= new();
         s.Character.AugTargets = new Dictionary<string, int>(s.Character.AugTargets ?? new(), StringComparer.OrdinalIgnoreCase);

@@ -84,6 +84,13 @@ internal sealed class PetManager
     /// </summary>
     public Func<bool>? HoldSummons { get; set; }
 
+    /// <summary>
+    /// Optional ILT Hub hook, called when a pet already holds the slot and monsters are near.
+    /// Returns true after dismissing a non-combat (cosmetic) pet so a combat pet can follow.
+    /// Null (default) leaves whatever pet is out alone.
+    /// </summary>
+    public Func<bool>? YieldPetForCombat { get; set; }
+
     public PetManager(RynthCoreHost host, LegacyUiSettings settings,
                       WorldObjectCache objectCache, CombatManager? combat,
                       CharacterSkills? skills)
@@ -194,7 +201,13 @@ internal sealed class PetManager
     {
         // A pet is already up (just summoned, or detected in the world) — done.
         if (now < _assumePetActiveUntil) return;
-        if (IsPetActive()) return;
+        if (IsPetActive())
+        {
+            // A cosmetic pet in the slot steps aside for the fight; wait for the dismiss to land.
+            if (YieldPetForCombat != null && MonstersNearby() && YieldPetForCombat())
+                _assumePetActiveUntil = now + 3000;
+            return;
+        }
         if (HoldSummons?.Invoke() == true) return;
 
         // Only summon when mobs are near (the user's trigger).

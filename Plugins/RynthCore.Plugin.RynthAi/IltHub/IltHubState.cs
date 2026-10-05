@@ -108,6 +108,29 @@ public sealed class IltPetState
     /// <summary>Last captured /pets and /shinies rosters (display only).</summary>
     public List<string> PetLog = new();
     public List<string> ShinyLog = new();
+
+    // ── Pet roster (UB Pets-tab style) ──
+    /// <summary>Roster type shown in the Pet tab (IltPetKind: 0 Combat, 1 Healing, 2 Cosmetic).</summary>
+    public int RosterKind;
+    /// <summary>Roster sort (IltPetSort: 0 Priority, 1 Bond, 2 Potency, 3 Breed ready, 4 Level, 5 Uses, 6 Name).</summary>
+    public int RosterSort;
+    /// <summary>User type overrides by essence name; essences not listed are auto-classified.</summary>
+    public List<IltPetAssignment> Assignments = new();
+
+    /// <summary>Essence name of the chosen cosmetic (display) pet; empty = none.</summary>
+    public string CosmeticPetName = string.Empty;
+    /// <summary>Keep the cosmetic pet summoned while in peace mode; it is dismissed when a combat pet is needed.</summary>
+    public bool KeepCosmeticOut;
+    /// <summary>Seconds to wait before re-summoning the cosmetic pet after it despawns.</summary>
+    public int CosmeticRespawnSeconds = 15;
+}
+
+/// <summary>A user's choice of summon type for one essence (matched by name, case-insensitive).</summary>
+public sealed class IltPetAssignment
+{
+    public string Name = string.Empty;
+    /// <summary>IltPetKind as int (0 Combat, 1 Healing, 2 Cosmetic).</summary>
+    public int Kind;
 }
 
 // ── Character ───────────────────────────────────────────────────────────────

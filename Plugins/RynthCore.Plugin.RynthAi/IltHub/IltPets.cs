@@ -1,8 +1,16 @@
 // IltPets.cs — ILT Hub "Pet" tab.
 //
-//   * Essence picker: lists carried combat essences and edits the existing
-//     ConsumableRules Type=="Pet" list that PetManager already summons from — no second
-//     summoning loop. Order in that list is the summon priority.
+//   * Pet roster (UtilityBelt Pets-tab style): every carried pet essence with three stat
+//     lines (bond / level / craft · sex / mutations / potency / mastery · ratings / uses /
+//     breeding), filtered by summon type (Combat / Healing / Cosmetic) and sortable.
+//     Combat essences and Healing Buddy / Dule box pets are classified automatically; any
+//     essence can be re-typed ("Add sel." or right-click a row).
+//       - Combat: the tick list is the existing ConsumableRules Type=="Pet" list that
+//         PetManager summons from (list order = summon priority) — no second summoner.
+//       - Healing: the tick picks the heal pet the healing state machine uses.
+//       - Cosmetic: the tick picks a display pet; "Keep cosmetic pet out" summons it in
+//         peace mode and dismisses it when PetManager needs the slot for a fight.
+//     Summon / Despawn act on the highlighted row (or the type's chosen pet).
 //   * Pet charms: Summon Essence Refill (server refills an empty essence from banked
 //     pyreals) and Universal Summoning Mastery, read from the charm appraisal text and the
 //     player bools the server stamps. Feeds PetManager.AllowSummonOnEmpty.
@@ -20,6 +28,12 @@ namespace RynthCore.Plugin.RynthAi.IltHub;
 
 internal sealed class IltPets : IIltFeature
 {
+    private static readonly string[] KindNames = { "Combat", "Healing", "Cosmetic" };
+    private static readonly string[] SortNames = { "Priority", "Bond", "Potency", "Breed ready", "Level", "Uses", "Name" };
+
+    /// <summary>Un-ID'd essences auto-appraised per 2 s scan (keeps the server request rate low).</summary>
+    private const int AutoAppraisePerScan = 2;
+
     private readonly IltHubContext _ctx;
 
     // Healing-pet state machine.
@@ -32,16 +46,29 @@ internal sealed class IltPets : IIltFeature
     private long _lastHealThink;
     private string _healStatus = "idle";
 
-    // Render-thread snapshot of carried essences (rebuilt on the pump thread).
-    private volatile EssenceRow[] _essences = Array.Empty<EssenceRow>();
-    private long _lastEssenceScan;
+    // Roster snapshot (rebuilt on the pump thread, read by the render thread).
+    private volatile IltPetStats[] _pets = Array.Empty<IltPetStats>();
+    private long _lastPetScan;
+
+    // Active-pet / cosmetic bookkeeping (pump thread; the ui* copies are for the render thread).
+    private long _lastPresenceThink;
+    private int _lastSummonEssenceId;
+    private int _cosmeticOutEssenceId;
+    private long _cosmeticNextAt;
+    private volatile string _uiActivePet = string.Empty;
+    private volatile string _cosmeticStatus = "off";
 
     // Charm / supply status cached for the render thread.
     private volatile bool _uiRefillActive;
     private volatile bool _uiMasteryActive;
     private volatile bool _uiHasCasting = true;
 
-    private sealed record EssenceRow(int Id, string Name, int Uses, int MaxUses, bool Configured, int Priority, bool IsHealPet);
+    // Render-thread only: highlighted row and the sorted view cache.
+    private int _highlightId;
+    private IltPetStats[]? _viewSource;
+    private int _viewKind = -1;
+    private int _viewSort = -1;
+    private IltPetStats[] _view = Array.Empty<IltPetStats>();
 
     public IltPets(IltHubContext ctx) => _ctx = ctx;
 
@@ -60,14 +87,43 @@ internal sealed class IltPets : IIltFeature
         return wo.Name.EndsWith(" Essence", StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>Heal-pet essence: configured name, else "Healing Buddy" / "Dule box" naming.</summary>
-    private bool IsHealPet(WorldObject wo)
+    /// <summary>"Healing Buddy" / "Dule box" naming used by the server's heal pets.</summary>
+    private static bool LooksLikeHealPet(string n)
+        => (n.Contains("healing", StringComparison.OrdinalIgnoreCase) && n.Contains("buddy", StringComparison.OrdinalIgnoreCase))
+           || (n.Contains("dule", StringComparison.OrdinalIgnoreCase) && n.Contains("box", StringComparison.OrdinalIgnoreCase));
+
+    private IltPetAssignment? FindAssignment(string name)
+        => S.Assignments.FirstOrDefault(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Summon type for a carried item: the user's override wins, then heal-pet naming (or
+    /// the configured heal pet), then combat essence. Null = not a pet essence.
+    /// </summary>
+    private IltPetKind? ClassifyKind(WorldObject wo, out bool assigned)
     {
-        if (!string.IsNullOrWhiteSpace(S.HealPetName))
-            return wo.Name.Equals(S.HealPetName.Trim(), StringComparison.OrdinalIgnoreCase);
-        string n = wo.Name;
-        return (n.Contains("healing", StringComparison.OrdinalIgnoreCase) && n.Contains("buddy", StringComparison.OrdinalIgnoreCase))
-            || (n.Contains("dule", StringComparison.OrdinalIgnoreCase) && n.Contains("box", StringComparison.OrdinalIgnoreCase));
+        var a = FindAssignment(wo.Name);
+        if (a != null)
+        {
+            assigned = true;
+            return (IltPetKind)Math.Clamp(a.Kind, 0, 2);
+        }
+        assigned = false;
+        if (LooksLikeHealPet(wo.Name) || NameIs(wo, S.HealPetName)) return IltPetKind.Healing;
+        if (IsCombatEssence(wo)) return IltPetKind.Combat;
+        return null;
+    }
+
+    private static bool NameIs(WorldObject wo, string name)
+        => !string.IsNullOrWhiteSpace(name) && wo.Name.Equals(name.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private WorldObject? FindCarried(string name)
+        => string.IsNullOrWhiteSpace(name) ? null : _ctx.Inventory.Items().FirstOrDefault(wo => NameIs(wo, name));
+
+    /// <summary>Heal-pet essence: the ticked heal pet, else the first Healing-typed essence.</summary>
+    private WorldObject? FindHealEssence()
+    {
+        if (!string.IsNullOrWhiteSpace(S.HealPetName)) return FindCarried(S.HealPetName);
+        return _ctx.Inventory.Items().FirstOrDefault(wo => ClassifyKind(wo, out _) == IltPetKind.Healing);
     }
 
     // ── Charms / gates ──────────────────────────────────────────────────────
@@ -105,6 +161,28 @@ internal sealed class IltPets : IIltFeature
 
     /// <summary>PetManager hook: hold combat summons while the heal pet cycle is running.</summary>
     public bool HoldCombatSummons() => _heal != HealState.Idle;
+
+    /// <summary>
+    /// PetManager hook (pump thread): a pet already holds the slot and monsters are near.
+    /// When that pet is the cosmetic pet, dismiss it so a combat pet can be summoned.
+    /// Returns true when a dismiss was issued.
+    /// </summary>
+    public bool YieldPetForCombat()
+    {
+        if (_heal != HealState.Idle || string.IsNullOrWhiteSpace(S.CosmeticPetName)) return false;
+        var pet = FindOwnPet();
+        var essence = FindCarried(S.CosmeticPetName);
+        if (pet == null || essence == null) return false;
+        if (!PetMatchesEssence(pet, essence) && _cosmeticOutEssenceId != essence.Id) return false;
+        if (_ctx.Inventory.IsBusy || !_ctx.Inventory.Use(essence)) return false;
+
+        long now = IltHubContext.NowMs;
+        _cosmeticOutEssenceId = 0;
+        _cosmeticNextAt = now + Math.Max(5, S.CosmeticRespawnSeconds) * 1000L;
+        _cosmeticStatus = "dismissed for combat";
+        RynthLog.Trace(LogCat.IltPets, $"cosmetic pet '{pet.Name}' dismissed so a combat pet can be summoned");
+        return true;
+    }
 
     // ── Rosters ─────────────────────────────────────────────────────────────
 
@@ -150,10 +228,10 @@ internal sealed class IltPets : IIltFeature
 
     public void Tick(long nowMs)
     {
-        if (nowMs - _lastEssenceScan >= 2000)
+        if (nowMs - _lastPetScan >= 2000)
         {
-            _lastEssenceScan = nowMs;
-            RebuildEssenceSnapshot();
+            _lastPetScan = nowMs;
+            RebuildPetSnapshot(autoAppraise: true);
             // Host reads (and appraisal requests) happen here, never on the render thread.
             _uiRefillActive = RefillCharmActive();
             _uiMasteryActive = MasteryCharmActive();
@@ -163,6 +241,13 @@ internal sealed class IltPets : IIltFeature
         {
             _lastHealThink = nowMs;
             TickHealing(nowMs);
+        }
+        if (nowMs - _lastPresenceThink >= 1000)
+        {
+            _lastPresenceThink = nowMs;
+            var pet = FindOwnPet();
+            _uiActivePet = pet?.Name ?? string.Empty;
+            TickCosmetic(nowMs, pet);
         }
     }
 
@@ -192,7 +277,11 @@ internal sealed class IltPets : IIltFeature
     public void OnLogout()
     {
         _heal = HealState.Idle;
-        _essences = Array.Empty<EssenceRow>();
+        _pets = Array.Empty<IltPetStats>();
+        _uiActivePet = string.Empty;
+        _lastSummonEssenceId = 0;
+        _cosmeticOutEssenceId = 0;
+        _cosmeticNextAt = 0;
     }
 
     // ── Healing pet ─────────────────────────────────────────────────────────
@@ -217,11 +306,12 @@ internal sealed class IltPets : IIltFeature
                 if (S.MinHealthPoints > 0 && cur < S.MinHealthPoints) { _healStatus = "HP below minimum, not summoning"; return; }
                 if (_ctx.Inventory.IsBusy) return;
                 if (AnyOwnPetPresent()) { _healStatus = "another pet is out"; return; }
-                var essence = _ctx.Inventory.Items().FirstOrDefault(IsHealPet);
+                var essence = FindHealEssence();
                 if (essence == null) { _healStatus = "no heal-pet essence found"; return; }
                 if (_ctx.Inventory.Uses(essence) == 0 && !AllowSummonOnEmpty()) { _healStatus = "heal-pet essence is empty"; return; }
                 if (!_ctx.Inventory.Use(essence)) return;
                 _healEssenceId = essence.Id;
+                _lastSummonEssenceId = essence.Id;
                 _healStartedAt = now;
                 _heal = HealState.Summoning;
                 _healStatus = $"summoning heal pet (HP {pct}%)";
@@ -260,35 +350,208 @@ internal sealed class IltPets : IIltFeature
         if (essence != null) _ctx.Inventory.Use(essence);
     }
 
-    /// <summary>A live "&lt;Me&gt;'s …" creature is in the world (server pet naming).</summary>
-    private bool AnyOwnPetPresent()
+    // ── Active pet ──────────────────────────────────────────────────────────
+
+    /// <summary>The live "&lt;Me&gt;'s …" creature (server pet naming), or null.</summary>
+    private WorldObject? FindOwnPet()
     {
         var cache = _ctx.Inventory.Cache;
-        if (cache == null || _ctx.CharName.Length == 0) return false;
+        if (cache == null || _ctx.CharName.Length == 0) return null;
         string prefix = _ctx.CharName + "'s ";
-        return cache.GetLandscape().Any(wo => wo != null && wo.Name.StartsWith(prefix, StringComparison.Ordinal));
+        return cache.GetLandscape().FirstOrDefault(wo => wo != null && wo.Name.StartsWith(prefix, StringComparison.Ordinal));
     }
 
-    // ── Essence picker data ─────────────────────────────────────────────────
+    private bool AnyOwnPetPresent() => FindOwnPet() != null;
 
-    private void RebuildEssenceSnapshot()
+    /// <summary>"Fire Banshee Essence (250)" → "Fire Banshee": the part the summoned creature is named after.</summary>
+    private static string EssenceBaseName(string essenceName)
     {
-        var settings = _ctx.Settings;
-        var rules = settings?.ConsumableRules.Where(r => r.Type.Equals("Pet", StringComparison.OrdinalIgnoreCase)).ToList()
-                    ?? new List<ConsumableRule>();
-        var rows = new List<EssenceRow>();
+        int i = essenceName.IndexOf(" Essence", StringComparison.OrdinalIgnoreCase);
+        return (i > 0 ? essenceName[..i] : essenceName).Trim();
+    }
+
+    private static bool PetMatchesEssence(WorldObject pet, WorldObject essence) => PetMatchesEssence(pet, essence.Name);
+
+    private static bool PetMatchesEssence(WorldObject pet, string essenceName)
+    {
+        string b = EssenceBaseName(essenceName);
+        return b.Length > 0 && pet.Name.Contains(b, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Essence that summoned <paramref name="pet"/>: the longest essence base name contained
+    /// in the creature's name, else the last essence this tab / the heal cycle used.
+    /// </summary>
+    private WorldObject? ResolveActiveEssence(WorldObject pet)
+    {
+        WorldObject? best = null;
+        int bestLen = 0;
+        WorldObject? last = null;
         foreach (var wo in _ctx.Inventory.Items())
         {
-            if (!IsCombatEssence(wo) && !IsHealPet(wo)) continue;
-            int pri = rules.FindIndex(r => r.Id == wo.Id || r.Name.Equals(wo.Name, StringComparison.OrdinalIgnoreCase));
-            rows.Add(new EssenceRow(wo.Id, wo.Name, _ctx.Inventory.Uses(wo), _ctx.Inventory.Int(wo, IltInventory.IntMaxStructure),
-                pri >= 0, pri, IsHealPet(wo)));
+            if (wo.Id == _lastSummonEssenceId) last = wo;
+            if (ClassifyKind(wo, out _) == null) continue;
+            string b = EssenceBaseName(wo.Name);
+            if (b.Length > bestLen && pet.Name.Contains(b, StringComparison.OrdinalIgnoreCase))
+            {
+                best = wo;
+                bestLen = b.Length;
+            }
         }
-        _essences = rows.OrderBy(r => r.Configured ? r.Priority : int.MaxValue).ThenBy(r => r.Name).ToArray();
+        return best ?? last;
     }
 
+    // ── Cosmetic pet ────────────────────────────────────────────────────────
+
+    /// <summary>Keeps the chosen cosmetic pet summoned while nothing else needs the pet slot.</summary>
+    private void TickCosmetic(long now, WorldObject? pet)
+    {
+        if (!S.KeepCosmeticOut) { _cosmeticStatus = "off"; return; }
+        if (string.IsNullOrWhiteSpace(S.CosmeticPetName)) { _cosmeticStatus = "no cosmetic pet ticked"; return; }
+        if (pet != null)
+        {
+            _cosmeticStatus = PetMatchesEssence(pet, S.CosmeticPetName) ? "out" : "another pet is out";
+            return;
+        }
+        if (now < _cosmeticNextAt || _heal != HealState.Idle || _ctx.Inventory.IsBusy) return;
+        if (!_ctx.Inventory.InPeaceMode) { _cosmeticStatus = "waiting for peace mode"; return; }
+        var settings = _ctx.Settings;
+        if (settings != null && settings.IsMacroRunning && settings.SummonPets) { _cosmeticStatus = "combat summoner is active"; return; }
+
+        var essence = FindCarried(S.CosmeticPetName);
+        if (essence == null) { _cosmeticStatus = "essence not carried"; return; }
+        if (_ctx.Inventory.Uses(essence) == 0 && !AllowSummonOnEmpty())
+        {
+            _cosmeticStatus = "essence is empty";
+            _cosmeticNextAt = now + 30_000;
+            return;
+        }
+        if (!_ctx.Inventory.Use(essence)) return;
+        _cosmeticOutEssenceId = essence.Id;
+        _lastSummonEssenceId = essence.Id;
+        // Covers the summon round-trip so the pet isn't re-summoned before it appears.
+        _cosmeticNextAt = now + Math.Max(5, S.CosmeticRespawnSeconds) * 1000L;
+        _cosmeticStatus = "summoning";
+        RynthLog.Trace(LogCat.IltPets, $"cosmetic pet summon: {essence.Name}");
+    }
+
+    // ── Manual actions (pump thread) ────────────────────────────────────────
+
+    /// <summary>Summons from <paramref name="essenceId"/>, or the current type's chosen pet when 0.</summary>
+    private void SummonPet(int essenceId, IltPetKind kind)
+    {
+        if (FindOwnPet() is { } outPet) { _ctx.Chat($"[ILT Hub] {outPet.Name} is already out — Despawn it first."); return; }
+        if (_heal != HealState.Idle) { _ctx.Chat("[ILT Hub] The heal-pet cycle is running."); return; }
+        if (_ctx.Inventory.IsBusy) { _ctx.Chat("[ILT Hub] Busy — try again in a moment."); return; }
+
+        WorldObject? essence = essenceId != 0 ? _ctx.Inventory.Items().FirstOrDefault(w => w.Id == essenceId) : ChosenEssence(kind);
+        if (essence == null) { _ctx.Chat($"[ILT Hub] No {KindNames[(int)kind].ToLowerInvariant()} pet selected."); return; }
+        if (_ctx.Inventory.Uses(essence) == 0 && !AllowSummonOnEmpty()) { _ctx.Chat($"[ILT Hub] {essence.Name} has no uses left."); return; }
+        if (!_ctx.Inventory.Use(essence)) return;
+
+        _lastSummonEssenceId = essence.Id;
+        if (NameIs(essence, S.CosmeticPetName)) _cosmeticOutEssenceId = essence.Id;
+        RynthLog.Trace(LogCat.IltPets, $"manual summon: {essence.Name}");
+    }
+
+    /// <summary>Dismisses the pet that is out by using the essence that summoned it again.</summary>
+    private void DespawnPet()
+    {
+        var pet = FindOwnPet();
+        if (pet == null) { _ctx.Chat("[ILT Hub] No pet is out."); return; }
+        if (_ctx.Inventory.IsBusy) { _ctx.Chat("[ILT Hub] Busy — try again in a moment."); return; }
+        var essence = ResolveActiveEssence(pet);
+        if (essence == null) { _ctx.Chat($"[ILT Hub] Couldn't find the essence for {pet.Name}."); return; }
+        if (!_ctx.Inventory.Use(essence)) return;
+
+        // A manual dismiss shouldn't be undone straight away by "Keep cosmetic pet out".
+        _cosmeticNextAt = IltHubContext.NowMs + Math.Max(5, S.CosmeticRespawnSeconds) * 1000L;
+        if (essence.Id == _cosmeticOutEssenceId) _cosmeticOutEssenceId = 0;
+        RynthLog.Trace(LogCat.IltPets, $"manual despawn: {pet.Name} via {essence.Name}");
+    }
+
+    /// <summary>The pet the type's tick selects: first combat priority, the heal pet, or the cosmetic pet.</summary>
+    private WorldObject? ChosenEssence(IltPetKind kind)
+    {
+        switch (kind)
+        {
+            case IltPetKind.Healing:
+                return FindHealEssence();
+            case IltPetKind.Cosmetic:
+                return FindCarried(S.CosmeticPetName);
+            default:
+                var rules = PetRules();
+                foreach (var r in rules)
+                {
+                    var wo = _ctx.Inventory.Items().FirstOrDefault(w => w.Id == r.Id || NameIs(w, r.Name));
+                    if (wo != null) return wo;
+                }
+                return null;
+        }
+    }
+
+    /// <summary>Requests appraisal for every carried pet essence (refreshes bond / potency after fights).</summary>
+    private void ScanPack()
+    {
+        int n = 0;
+        foreach (var wo in _ctx.Inventory.Items())
+        {
+            if (ClassifyKind(wo, out _) == null) continue;
+            if (_ctx.Inventory.RequestAppraisal(wo)) n++;
+        }
+        _ctx.Chat(n > 0 ? $"[ILT Hub] Appraising {n} pet essence(s)…" : "[ILT Hub] Pet essences were appraised recently.");
+        RebuildPetSnapshot(autoAppraise: false);
+    }
+
+    /// <summary>Gives the item selected in the game a summon type (pump thread).</summary>
+    private void AddSelectedAs(IltPetKind kind)
+    {
+        if (!_ctx.Host.HasGetSelectedItemId) { _ctx.Chat("[ILT Hub] This client build can't read the selected item."); return; }
+        int id = unchecked((int)_ctx.Host.GetSelectedItemId());
+        var wo = _ctx.Inventory.Items().FirstOrDefault(w => w.Id == id);
+        if (wo == null) { _ctx.Chat("[ILT Hub] Select a pet essence in your pack first."); return; }
+        SetKind(wo.Id, wo.Name, kind);
+        _ctx.Chat($"[ILT Hub] {wo.Name} added as a {KindNames[(int)kind].ToLowerInvariant()} pet.");
+    }
+
+    /// <summary>
+    /// Re-types an essence (null = back to auto classification) and drops it from the other
+    /// types' selections so a pet is only ever chosen under one type.
+    /// </summary>
+    private void SetKind(int id, string name, IltPetKind? kind)
+    {
+        S.Assignments.RemoveAll(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (kind is { } k) S.Assignments.Add(new IltPetAssignment { Name = name, Kind = (int)k });
+
+        if (kind != IltPetKind.Combat && PetRules().Any(r => r.Id == id || r.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            SetCombatSelected(id, name, false);
+        if (kind != IltPetKind.Healing && S.HealPetName.Trim().Equals(name, StringComparison.OrdinalIgnoreCase))
+            S.HealPetName = string.Empty;
+        if (kind != IltPetKind.Cosmetic && S.CosmeticPetName.Trim().Equals(name, StringComparison.OrdinalIgnoreCase))
+            S.CosmeticPetName = string.Empty;
+        RebuildPetSnapshot(autoAppraise: false);
+    }
+
+    /// <summary>Applies a roster tick for the row's type (pump thread).</summary>
+    private void SetSelected(int id, string name, IltPetKind kind, bool on)
+    {
+        switch (kind)
+        {
+            case IltPetKind.Healing:  S.HealPetName = on ? name : string.Empty; break;
+            case IltPetKind.Cosmetic: S.CosmeticPetName = on ? name : string.Empty; break;
+            default: SetCombatSelected(id, name, on); break;
+        }
+        RebuildPetSnapshot(autoAppraise: false);
+    }
+
+    // ── Combat summon list (ConsumableRules Type=="Pet") ────────────────────
+
+    private List<ConsumableRule> PetRules()
+        => _ctx.Settings?.ConsumableRules.Where(r => r.Type.Equals("Pet", StringComparison.OrdinalIgnoreCase)).ToList()
+           ?? new List<ConsumableRule>();
+
     /// <summary>Adds or removes an essence from the PetManager list (pump thread).</summary>
-    private void SetConfigured(int id, string name, bool on)
+    private void SetCombatSelected(int id, string name, bool on)
     {
         var settings = _ctx.Settings;
         if (settings == null) return;
@@ -296,7 +559,6 @@ internal sealed class IltPets : IIltFeature
                                                 && (r.Id == id || r.Name.Equals(name, StringComparison.OrdinalIgnoreCase)));
         if (on) settings.ConsumableRules.Add(new ConsumableRule { Id = id, Name = name, Type = "Pet" });
         _ctx.SaveCombatSettings?.Invoke();
-        RebuildEssenceSnapshot();
     }
 
     /// <summary>Moves a configured essence up (-1) or down (+1) in summon priority (pump thread).</summary>
@@ -313,7 +575,40 @@ internal sealed class IltPets : IIltFeature
         if (j < 0 || j >= list.Count) return;
         (list[idx], list[j]) = (list[j], list[idx]);
         _ctx.SaveCombatSettings?.Invoke();
-        RebuildEssenceSnapshot();
+        RebuildPetSnapshot(autoAppraise: false);
+    }
+
+    // ── Roster snapshot (pump thread) ───────────────────────────────────────
+
+    private void RebuildPetSnapshot(bool autoAppraise)
+    {
+        var rules = PetRules();
+        long unixNow = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var rows = new List<IltPetStats>();
+        int appraised = 0;
+        foreach (var wo in _ctx.Inventory.Items())
+        {
+            var kind = ClassifyKind(wo, out bool assigned);
+            if (kind == null) continue;
+
+            var s = IltPetStatsReader.Read(_ctx.Host, _ctx.Inventory, wo, unixNow);
+            s.Kind = kind.Value;
+            s.KindAssigned = assigned;
+            int pri = rules.FindIndex(r => r.Id == wo.Id || r.Name.Equals(wo.Name, StringComparison.OrdinalIgnoreCase));
+            s.Priority = pri >= 0 ? pri : int.MaxValue;
+            s.Selected = s.Kind switch
+            {
+                IltPetKind.Healing  => NameIs(wo, S.HealPetName),
+                IltPetKind.Cosmetic => NameIs(wo, S.CosmeticPetName),
+                _                   => pri >= 0,
+            };
+            rows.Add(s);
+
+            // Stats beyond uses need an appraisal; trickle the requests for un-ID'd essences.
+            if (autoAppraise && !s.HasId && appraised < AutoAppraisePerScan && _ctx.Inventory.RequestAppraisal(wo))
+                appraised++;
+        }
+        _pets = rows.ToArray();
     }
 
     // ── UI (render thread) ──────────────────────────────────────────────────
@@ -323,9 +618,8 @@ internal sealed class IltPets : IIltFeature
         var settings = _ctx.Settings;
         if (settings == null) { ImGui.TextDisabled("Not logged in."); return; }
 
-        RenderCombatSummonOptions(settings);
-        ImGui.Separator();
-        RenderEssenceTable();
+        RenderRosterHeader(settings);
+        RenderRosterTable();
         ImGui.Separator();
         RenderCharms();
         ImGui.Separator();
@@ -334,57 +628,175 @@ internal sealed class IltPets : IIltFeature
         RenderRosters();
     }
 
-    private void RenderCombatSummonOptions(LegacyUiSettings settings)
+    /// <summary>Type / Sort combos, action buttons, the active-summon line and per-type options.</summary>
+    private void RenderRosterHeader(LegacyUiSettings settings)
     {
-        ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Combat pets (uses RynthAi's pet summoner)");
-        bool summon = settings.SummonPets;
-        if (ImGui.Checkbox("Summon pets when monsters are near", ref summon)) _ctx.Post(() => { settings.SummonPets = summon; _ctx.SaveCombatSettings?.Invoke(); });
-        bool refill = settings.PetAutoRefill;
-        if (ImGui.Checkbox("Refill empty essences with Encapsulated Spirit", ref refill)) _ctx.Post(() => { settings.PetAutoRefill = refill; _ctx.SaveCombatSettings?.Invoke(); });
-        int minMobs = settings.PetMinMonsters;
-        ImGui.SetNextItemWidth(100);
-        if (ImGui.InputInt("Min monsters", ref minMobs)) _ctx.Post(() => { settings.PetMinMonsters = Math.Max(1, minMobs); _ctx.SaveCombatSettings?.Invoke(); });
-    }
+        var kind = (IltPetKind)Math.Clamp(S.RosterKind, 0, 2);
 
-    private void RenderEssenceTable()
-    {
-        var rows = _essences;
-        ImGui.TextColored(LegacyDashboardRenderer.ColTeal, $"Carried essences ({rows.Length})");
-        ImGui.TextDisabled("Tick an essence to add it to the summon list; arrows set priority.");
-        if (ImGui.BeginTable("##iltess", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.ScrollY, new Vector2(0, 170)))
+        ImGui.TextUnformatted("Type");
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(100);
+        int k = (int)kind;
+        if (ImGui.Combo("##iltpetkind", ref k, KindNames, KindNames.Length)) { S.RosterKind = k; kind = (IltPetKind)k; _highlightId = 0; }
+        ImGui.SameLine();
+        ImGui.TextUnformatted("Sort");
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(110);
+        int sort = Math.Clamp(S.RosterSort, 0, SortNames.Length - 1);
+        if (ImGui.Combo("##iltpetsort", ref sort, SortNames, SortNames.Length)) S.RosterSort = sort;
+
+        int target = _highlightId;
+        var summonKind = kind;
+        if (ImGui.Button("Summon")) _ctx.Post(() => SummonPet(target, summonKind));
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Summon the highlighted pet (or this type's ticked pet).");
+        ImGui.SameLine();
+        if (ImGui.Button("Despawn")) _ctx.Post(DespawnPet);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Dismiss the pet that is out.");
+        ImGui.SameLine();
+        if (ImGui.Button("Scan pack")) _ctx.Post(ScanPack);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Appraise every pet essence to refresh bond, potency and breeding.");
+        ImGui.SameLine();
+        if (ImGui.Button("Add sel.")) _ctx.Post(() => AddSelectedAs(summonKind));
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Make the item selected in your pack a {KindNames[(int)kind].ToLowerInvariant()} pet.");
+
+        string active = _uiActivePet;
+        if (active.Length > 0) ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Active summon: " + active);
+        else ImGui.TextDisabled("Active summon: none");
+
+        switch (kind)
         {
-            ImGui.TableSetupColumn("Use", ImGuiTableColumnFlags.WidthFixed, 34);
-            ImGui.TableSetupColumn("Essence");
-            ImGui.TableSetupColumn("Uses", ImGuiTableColumnFlags.WidthFixed, 80);
-            ImGui.TableSetupColumn("Order", ImGuiTableColumnFlags.WidthFixed, 60);
-            ImGui.TableHeadersRow();
-            foreach (var r in rows)
+            case IltPetKind.Combat:
             {
-                ImGui.TableNextRow();
-                ImGui.TableNextColumn();
-                bool on = r.Configured;
-                if (ImGui.Checkbox($"##ess{r.Id}", ref on))
-                {
-                    var row = r;
-                    _ctx.Post(() => SetConfigured(row.Id, row.Name, on));
-                }
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(r.IsHealPet ? r.Name + "  (heal pet)" : r.Name);
-                ImGui.TableNextColumn();
-                if (r.Uses == 0) ImGui.TextColored(LegacyDashboardRenderer.ColHp, $"0 / {r.MaxUses}");
-                else ImGui.TextUnformatted($"{r.Uses} / {r.MaxUses}");
-                ImGui.TableNextColumn();
-                if (r.Configured)
-                {
-                    int id = r.Id;
-                    if (ImGui.ArrowButton($"##up{r.Id}", ImGuiDir.Up)) _ctx.Post(() => MovePriority(id, -1));
-                    ImGui.SameLine();
-                    if (ImGui.ArrowButton($"##dn{r.Id}", ImGuiDir.Down)) _ctx.Post(() => MovePriority(id, +1));
-                }
+                bool summon = settings.SummonPets;
+                if (ImGui.Checkbox("Summon when monsters are near", ref summon)) _ctx.Post(() => { settings.SummonPets = summon; _ctx.SaveCombatSettings?.Invoke(); });
+                ImGui.SameLine();
+                int minMobs = settings.PetMinMonsters;
+                ImGui.SetNextItemWidth(90);
+                if (ImGui.InputInt("Min monsters", ref minMobs)) _ctx.Post(() => { settings.PetMinMonsters = Math.Max(1, minMobs); _ctx.SaveCombatSettings?.Invoke(); });
+                bool refill = settings.PetAutoRefill;
+                if (ImGui.Checkbox("Refill empty essences with Encapsulated Spirit", ref refill)) _ctx.Post(() => { settings.PetAutoRefill = refill; _ctx.SaveCombatSettings?.Invoke(); });
+                ImGui.TextDisabled("Tick pets to add them to the summon list; with Sort = Priority the arrows set the order.");
+                break;
             }
-            ImGui.EndTable();
+            case IltPetKind.Healing:
+                ImGui.TextDisabled("Tick one heal pet (none ticked = first Healing Buddy / Dule box). Settings are below.");
+                break;
+            case IltPetKind.Cosmetic:
+            {
+                bool keep = S.KeepCosmeticOut;
+                if (ImGui.Checkbox("Keep cosmetic pet out", ref keep)) S.KeepCosmeticOut = keep;
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Peace mode only. Dismissed automatically when the combat summoner needs the pet slot.");
+                ImGui.SameLine();
+                int resp = S.CosmeticRespawnSeconds;
+                ImGui.SetNextItemWidth(90);
+                if (ImGui.InputInt("Respawn (s)", ref resp)) S.CosmeticRespawnSeconds = Math.Clamp(resp, 5, 600);
+                ImGui.TextDisabled("Tick one cosmetic pet. Status: " + _cosmeticStatus);
+                break;
+            }
         }
     }
+
+    /// <summary>Sorted rows of the current type, cached until the snapshot / type / sort changes.</summary>
+    private IltPetStats[] CurrentView()
+    {
+        var src = _pets;
+        int kind = Math.Clamp(S.RosterKind, 0, 2);
+        int sort = Math.Clamp(S.RosterSort, 0, SortNames.Length - 1);
+        if (!ReferenceEquals(src, _viewSource) || kind != _viewKind || sort != _viewSort)
+        {
+            _view = IltPetStatsReader.Sort(src.Where(p => (int)p.Kind == kind), (IltPetSort)sort);
+            _viewSource = src;
+            _viewKind = kind;
+            _viewSort = sort;
+        }
+        return _view;
+    }
+
+    /// <summary>One table row per pet: tick · three stat lines (highlight / right-click menu) · priority arrows.</summary>
+    private void RenderRosterTable()
+    {
+        var rows = CurrentView();
+        var kind = (IltPetKind)Math.Clamp(S.RosterKind, 0, 2);
+        bool showArrows = kind == IltPetKind.Combat && S.RosterSort == (int)IltPetSort.Priority;
+
+        if (rows.Length == 0)
+        {
+            ImGui.TextDisabled(kind == IltPetKind.Cosmetic
+                ? "No cosmetic pets yet — select an essence in your pack and press Add sel., or right-click a pet in another type."
+                : $"No {KindNames[(int)kind].ToLowerInvariant()} pet essences carried.");
+            return;
+        }
+
+        float lineH = ImGui.GetTextLineHeightWithSpacing();
+        float tableH = Math.Min(320f, rows.Length * (lineH * 3 + 6) + 8);
+        if (!ImGui.BeginTable("##iltpets", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.ScrollY, new Vector2(0, tableH)))
+            return;
+        ImGui.TableSetupColumn("##sel", ImGuiTableColumnFlags.WidthFixed, 26);
+        ImGui.TableSetupColumn("##pet");
+        ImGui.TableSetupColumn("##ord", ImGuiTableColumnFlags.WidthFixed, showArrows ? 52 : 1);
+
+        foreach (var r in rows)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            bool on = r.Selected;
+            if (ImGui.Checkbox($"##psel{r.Id}", ref on))
+            {
+                var row = r;
+                _ctx.Post(() => SetSelected(row.Id, row.Name, row.Kind, on));
+            }
+
+            ImGui.TableNextColumn();
+            Vector2 start = ImGui.GetCursorPos();
+            if (ImGui.Selectable($"##prow{r.Id}", _highlightId == r.Id, ImGuiSelectableFlags.AllowOverlap, new Vector2(0, lineH * 3 - ImGui.GetStyle().ItemSpacing.Y)))
+                _highlightId = _highlightId == r.Id ? 0 : r.Id;
+            RenderRowContextMenu(r);
+            ImGui.SetCursorPos(start);
+            ImGui.TextColored(DamageColor(r.DamageType), r.Line1);
+            ImGui.TextColored(LegacyDashboardRenderer.ColAmber, "  " + r.Line2);
+            if (r.UsesMax > 0 && r.UsesCur == 0) ImGui.TextColored(LegacyDashboardRenderer.ColHp, "  " + r.Line3);
+            else ImGui.TextDisabled("  " + r.Line3);
+
+            ImGui.TableNextColumn();
+            if (showArrows && r.Selected)
+            {
+                int id = r.Id;
+                if (ImGui.ArrowButton($"##pup{r.Id}", ImGuiDir.Up)) _ctx.Post(() => MovePriority(id, -1));
+                ImGui.SameLine();
+                if (ImGui.ArrowButton($"##pdn{r.Id}", ImGuiDir.Down)) _ctx.Post(() => MovePriority(id, +1));
+            }
+        }
+        ImGui.EndTable();
+    }
+
+    /// <summary>Right-click menu on a roster row: summon / move to another type / clear override.</summary>
+    private void RenderRowContextMenu(IltPetStats r)
+    {
+        if (!ImGui.BeginPopupContextItem($"##pctx{r.Id}")) return;
+        var row = r;
+        if (ImGui.MenuItem("Summon")) _ctx.Post(() => SummonPet(row.Id, row.Kind));
+        ImGui.Separator();
+        for (int i = 0; i < KindNames.Length; i++)
+        {
+            if (i == (int)r.Kind) continue;
+            var to = (IltPetKind)i;
+            if (ImGui.MenuItem("Move to " + KindNames[i])) _ctx.Post(() => SetKind(row.Id, row.Name, to));
+        }
+        if (r.KindAssigned && ImGui.MenuItem("Clear type override"))
+            _ctx.Post(() => SetKind(row.Id, row.Name, null));
+        ImGui.EndPopup();
+    }
+
+    /// <summary>Line-1 colour by the pet's damage type (white when unknown / not appraised).</summary>
+    private static Vector4 DamageColor(string damageType) => damageType switch
+    {
+        "Fire"      => new Vector4(1.00f, 0.55f, 0.30f, 1f),
+        "Cold"      => new Vector4(0.55f, 0.80f, 1.00f, 1f),
+        "Acid"      => new Vector4(0.55f, 0.95f, 0.45f, 1f),
+        "Lightning" => new Vector4(0.85f, 0.70f, 1.00f, 1f),
+        "Nether"    => new Vector4(0.75f, 0.50f, 0.90f, 1f),
+        _           => new Vector4(0.95f, 0.95f, 0.95f, 1f),
+    };
 
     private void RenderCharms()
     {
@@ -404,12 +816,12 @@ internal sealed class IltPets : IIltFeature
 
     private void RenderHealing()
     {
-        ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Healing pet");
+        if (!ImGui.CollapsingHeader("Healing pet settings")) return;
         bool en = S.HealingEnabled;
         if (ImGui.Checkbox("Summon heal pet when health is low", ref en)) S.HealingEnabled = en;
-        string name = S.HealPetName;
-        ImGui.SetNextItemWidth(240);
-        if (ImGui.InputTextWithHint("Heal-pet essence", "auto: Healing Buddy / Dule box", ref name, 128u)) S.HealPetName = name;
+        string healPet = S.HealPetName;
+        ImGui.TextDisabled("Heal pet: " + (string.IsNullOrWhiteSpace(healPet) ? "auto (Healing Buddy / Dule box)" : healPet)
+                           + "  — tick one under Type = Healing.");
         int thr = S.HealthThresholdPercent;
         ImGui.SetNextItemWidth(160);
         if (ImGui.SliderInt("Health % trigger", ref thr, 10, 99)) S.HealthThresholdPercent = thr;
