@@ -749,8 +749,24 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "hideui":       _hideUi = on; dash.SetUiHidden(on); break;  // applied each tick in OnTick
             case "sendchat":     if (!string.IsNullOrEmpty(value)) HandleRynthChatSubmit(value); break;
             case "setsetting":   ApplyRemoteSetting(value); break;   // one advanced setting from the phone (clamped + persisted)
+            case "hub":
+            case "quests":
+                // Dashboard Char launcher sends hub=show; value carries the "/ra hub|quests" arguments.
+                if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
+                _iltHub.HandleCommand(action.ToLowerInvariant(), value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+                break;
+            case "huds":
+            case "itemhud":
+            case "remote":
+            case "miniremote":
+                // Dashboard Hub launcher: left-click remote=toggle, right-click huds=show.
+                HandleHudCommand(action.ToLowerInvariant(), value);
+                break;
             // movestart/movestop are applied DIRECTLY by the RynthRemote plugin (pure Host.SetAutoRun/
             // SetMotion + its own dead-man watchdog) and are never forwarded here.
+            default:
+                Host.Log($"[RynthAi] ignored unknown remote command: {action}={value}");
+                return;
         }
         Host.Log($"[RynthAi] applied remote command: {action}={value}");
     }
