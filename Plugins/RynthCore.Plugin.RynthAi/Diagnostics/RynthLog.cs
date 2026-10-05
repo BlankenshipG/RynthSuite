@@ -667,9 +667,7 @@ internal static class RynthLog
 
                 if (!Writers.TryGetValue(path, out var writer))
                 {
-                    System.IO.Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                    var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-                    writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = false };
+                    writer = OpenWriter(path);
                     Writers[path] = writer;
                 }
 
@@ -687,6 +685,31 @@ internal static class RynthLog
         {
             // Logging must never throw into gameplay code (disk full, file locked, etc.).
         }
+    }
+
+    /// <summary>
+    /// Opens the writer for <paramref name="path"/>. Each file has one writing process: two
+    /// clients appending to one file each keep their own end-of-file offset and overwrite each
+    /// other's lines. When another client already holds the file, this process writes
+    /// <c>{name}.{pid}.txt</c> beside it instead (the engine's logs are per process the same way).
+    /// </summary>
+    private static StreamWriter OpenWriter(string path)
+    {
+        string folder = Path.GetDirectoryName(path)!;
+        System.IO.Directory.CreateDirectory(folder);
+        FileStream stream;
+        try
+        {
+            // FileShare.Read: readers (the launcher, editors) are fine; a second writer is refused.
+            stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+        }
+        catch (IOException)
+        {
+            string own = Path.Combine(folder,
+                $"{Path.GetFileNameWithoutExtension(path)}.{Environment.ProcessId}{Path.GetExtension(path)}");
+            stream = new FileStream(own, FileMode.Append, FileAccess.Write, FileShare.Read);
+        }
+        return new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = false };
     }
 
     /// <summary>Closes an oversized file and bumps its part number so the next write opens a fresh file.</summary>
