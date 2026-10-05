@@ -2286,6 +2286,8 @@ internal sealed partial class LegacyDashboardRenderer
                 ActiveNavIndex    = _settings.ActiveNavIndex,
                 NavFiles          = new List<string>(_navFiles),
                 Points            = points,
+                TrackBreadcrumbs  = _settings.NavOverlay.TrackBreadcrumbs,
+                ShowRouteOverlay  = _settings.NavOverlay.ShowRouteMarkers,
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.NavBridgePayload);
         }
@@ -2312,6 +2314,18 @@ internal sealed partial class LegacyDashboardRenderer
 
                 case "stopNav":
                     _settings.EnableNavigation = false;
+                    SaveSettings();
+                    break;
+
+                case "setBreadcrumbs":
+                    // Nav panel "Breadcrumbs": record (and draw) the walked trail.
+                    _settings.NavOverlay.TrackBreadcrumbs = cmd.On;
+                    SaveSettings();
+                    break;
+
+                case "setRouteOverlay":
+                    // Nav panel "Route overlay": route rings / lines, waypoint labels, guide line.
+                    _settings.NavOverlay.ShowRouteMarkers = cmd.On;
                     SaveSettings();
                     break;
 

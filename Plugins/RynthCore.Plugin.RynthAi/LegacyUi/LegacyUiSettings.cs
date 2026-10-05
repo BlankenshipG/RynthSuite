@@ -713,6 +713,10 @@ public sealed class NavBridgePayload
     public int               ActiveNavIndex   { get; set; }
     public List<string>      NavFiles         { get; set; } = new();
     public List<NavBridgePoint> Points        { get; set; } = new();
+    /// <summary>NavOverlaySettings.TrackBreadcrumbs (Nav panel "Breadcrumbs" toggle).</summary>
+    public bool              TrackBreadcrumbs { get; set; }
+    /// <summary>NavOverlaySettings.ShowRouteMarkers (Nav panel "Route overlay" toggle).</summary>
+    public bool              ShowRouteOverlay { get; set; }
 }
 
 /// <summary>One-shot command sent from the Avalonia NavPanel to the plugin.</summary>
@@ -726,6 +730,7 @@ public sealed class NavCommand
     public int    InsertAt  { get; set; } = -1;
     public string NavName   { get; set; } = string.Empty;
     public string Text      { get; set; } = string.Empty;   // addChat: the command or text
+    public bool   On        { get; set; }                   // setBreadcrumbs / setRouteOverlay
 }
 
 /// <summary>Bridge payload for the engine-side Avalonia SettingsPanel.</summary>

@@ -123,6 +123,10 @@ internal sealed class NavMarkerRenderer
         playerNS = playerEW = 0.0;
         ringRadius = 0f; heightOffset = 0f;
 
+        // Route overlay switched off (Nav panel / "/ra navoverlay off"): no rings or lines.
+        if (!_settings.NavOverlay.ShowRouteMarkers)
+            return false;
+
         var r = _settings.CurrentRoute;
         if (r?.Points == null || r.Points.Count == 0)
             return false;

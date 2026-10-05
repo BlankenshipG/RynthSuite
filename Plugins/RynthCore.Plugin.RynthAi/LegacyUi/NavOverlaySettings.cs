@@ -12,7 +12,10 @@ namespace RynthCore.Plugin.RynthAi.LegacyUi;
 public sealed class NavOverlaySettings
 {
     // ── Route markers (3D rings + lines) ─────────────────────────────────────
-    /// <summary>Draw the route's rings and connecting lines in the world.</summary>
+    /// <summary>
+    /// Route overlay master switch (Nav panel "Route overlay"): the route's rings and connecting
+    /// lines, the waypoint labels and the guide line. The waypoint HUD window has its own switch.
+    /// </summary>
     public bool ShowRouteMarkers = true;
     /// <summary>Upper bound on route points drawn around the active waypoint.</summary>
     public int MaxRouteMarkers = 128;
@@ -34,7 +37,10 @@ public sealed class NavOverlaySettings
     public uint ColorGuide = 0xFFFFDC28; // yellow
 
     // ── Breadcrumb trail ─────────────────────────────────────────────────────
-    /// <summary>Record where the character walks (independent of any route).</summary>
+    /// <summary>
+    /// Record where the character walks, independent of any route (Nav panel "Breadcrumbs").
+    /// While off, the trail is neither extended nor drawn.
+    /// </summary>
     public bool TrackBreadcrumbs = true;
     /// <summary>Draw the recorded trail on the ground.</summary>
     public bool ShowBreadcrumbs = true;
@@ -55,6 +61,17 @@ public sealed class NavOverlaySettings
     public bool RecordPortals = true;
     /// <summary>Pause added after an auto-recorded portal step, ms (0 = none).</summary>
     public int RecordPauseAfterPortalMs = 1500;
+
+    // Effective visibility (methods, not properties, so the settings JSON doesn't gain fields).
+
+    /// <summary>Breadcrumb trail is drawn: tracking on and the trail display on.</summary>
+    public bool TrailVisible() => TrackBreadcrumbs && ShowBreadcrumbs;
+
+    /// <summary>Guide line to the active waypoint is drawn (part of the route overlay).</summary>
+    public bool GuideLineVisible() => ShowRouteMarkers && ShowGuideLine;
+
+    /// <summary>Waypoint labels are drawn (part of the route overlay).</summary>
+    public bool LabelsVisible() => ShowRouteMarkers && ShowWaypointLabels;
 
     /// <summary>Clamp values a hand-edited or older profile could carry out of range.</summary>
     public void Sanitize()

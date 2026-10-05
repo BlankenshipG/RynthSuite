@@ -83,12 +83,12 @@ internal sealed class NavOverlayRenderer
             var o = _settings.NavOverlay;
             float lineThick = _settings.NavLineThickness * 0.01f;
 
-            if (o.ShowBreadcrumbs)
+            if (o.TrailVisible())
                 ForEachTrailSegment(f, o, (a, b, fade) =>
                     _host.Nav3DAddLine(a.X, a.Y, a.Z, b.X, b.Y, b.Z, lineThick * 0.7f,
                         NavOverlaySettings.ScaleAlpha(o.ColorBreadcrumb, fade)));
 
-            if (o.ShowGuideLine && ActivePoint(out _) is { Type: NavPointType.Point } ap)
+            if (o.GuideLineVisible() && ActivePoint(out _) is { Type: NavPointType.Point } ap)
             {
                 Vector3 me = new(f.Px, f.Pz + _settings.NavHeightOffset, f.Py);
                 Vector3 to = ToWorld(f, ap.NS, ap.EW, WaypointWorldY(ap));
@@ -132,8 +132,8 @@ internal sealed class NavOverlayRenderer
             var route = _settings.CurrentRoute;
             bool hasRoute = route?.Points is { Count: > 0 };
             bool navigating = _settings.IsMacroRunning && _settings.EnableNavigation;
-            bool wantFallback3D = !_host.HasNav3D && (o.ShowBreadcrumbs || o.ShowGuideLine);
-            bool wantLabels = o.ShowWaypointLabels && hasRoute;
+            bool wantFallback3D = !_host.HasNav3D && (o.TrailVisible() || o.GuideLineVisible());
+            bool wantLabels = o.LabelsVisible() && hasRoute;
             bool wantHud = o.ShowHud && (hasRoute || _settings.IsRecordingNav) && (!o.HudOnlyWhileNavigating || navigating);
             if (!wantFallback3D && !wantLabels && !wantHud) return;
             if (!TryGetFrame(out var f)) return;
@@ -167,7 +167,7 @@ internal sealed class NavOverlayRenderer
             float thick = Math.Max(1f, _settings.NavLineThickness * 0.5f);
             var frame = f;
 
-            if (fallback3D && o.ShowBreadcrumbs)
+            if (fallback3D && o.TrailVisible())
             {
                 ForEachTrailSegment(f, o, (a, b, fade) =>
                 {
@@ -175,7 +175,7 @@ internal sealed class NavOverlayRenderer
                         dl.AddLine(sa, sb, NavOverlaySettings.ArgbToImGui(NavOverlaySettings.ScaleAlpha(o.ColorBreadcrumb, fade)), thick);
                 });
             }
-            if (fallback3D && o.ShowGuideLine && ActivePoint(out _) is { Type: NavPointType.Point } ap
+            if (fallback3D && o.GuideLineVisible() && ActivePoint(out _) is { Type: NavPointType.Point } ap
                 && Project(new Vector3(f.Px, f.Pz + _settings.NavHeightOffset, f.Py), out var sMe)
                 && Project(ToWorld(frame, ap.NS, ap.EW, WaypointWorldY(ap)), out var sTo))
                 dl.AddLine(sMe, sTo, NavOverlaySettings.ArgbToImGui(o.ColorGuide), thick);

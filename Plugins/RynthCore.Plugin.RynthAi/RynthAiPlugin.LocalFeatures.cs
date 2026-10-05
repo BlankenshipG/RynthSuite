@@ -406,7 +406,7 @@ public sealed partial class RynthAiPlugin
         ChatLine($"[RynthAi] Nav HUD {(o.ShowHud ? "shown" : "hidden")}.");
     }
 
-    /// <summary>/ra navtrail [clear] — reports or wipes the breadcrumb trail.</summary>
+    /// <summary>/ra navtrail [on|off|toggle|clear] — breadcrumb tracking switch, wipe, or a status report.</summary>
     private void HandleNavTrailCommand(string[] parts)
     {
         string arg = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
@@ -416,8 +416,29 @@ public sealed partial class RynthAiPlugin
             ChatLine("[RynthAi] Breadcrumb trail cleared.");
             return;
         }
+        if (arg is "on" or "off" or "toggle")
+        {
+            if (_dashboard == null) return;
+            var o = _dashboard.Settings.NavOverlay;
+            o.TrackBreadcrumbs = arg switch { "on" => true, "off" => false, _ => !o.TrackBreadcrumbs };
+            _dashboard.SaveSettings();
+            ChatLine($"[RynthAi] Breadcrumb tracking {(o.TrackBreadcrumbs ? "on" : "off")}.");
+            return;
+        }
+        bool tracking = _dashboard?.Settings.NavOverlay.TrackBreadcrumbs ?? false;
         int n = _navBreadcrumbs?.Trail.Length ?? 0;
         double yd = _navBreadcrumbs?.TrailYards ?? 0;
-        ChatLine($"[RynthAi] Breadcrumbs: {n} points, {yd:F0} yd. Use /ra navtrail clear to wipe.");
+        ChatLine($"[RynthAi] Breadcrumbs {(tracking ? "on" : "off")}: {n} points, {yd:F0} yd. Use /ra navtrail on|off|clear.");
+    }
+
+    /// <summary>/ra navoverlay [on|off] — route overlay (rings / lines, waypoint labels, guide line); no argument toggles.</summary>
+    private void HandleNavOverlayCommand(string[] parts)
+    {
+        if (_dashboard == null) return;
+        var o = _dashboard.Settings.NavOverlay;
+        string arg = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
+        o.ShowRouteMarkers = arg switch { "on" => true, "off" => false, _ => !o.ShowRouteMarkers };
+        _dashboard.SaveSettings();
+        ChatLine($"[RynthAi] Route overlay {(o.ShowRouteMarkers ? "on" : "off")}.");
     }
 }

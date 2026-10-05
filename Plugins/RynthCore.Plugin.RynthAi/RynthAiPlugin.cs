@@ -2976,6 +2976,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "navrec":       HandleNavRecordCommand(parts); break;
             case "navhud":       HandleNavHudCommand(parts); break;
             case "navtrail":     HandleNavTrailCommand(parts); break;
+            case "navoverlay":   HandleNavOverlayCommand(parts); break;
             case "debug":        HandleDebugCommand(parts); break;
             case "trace":        HandleTraceCommand(parts); break;
             case "logs":         HandleLogsCommand(parts); break;
