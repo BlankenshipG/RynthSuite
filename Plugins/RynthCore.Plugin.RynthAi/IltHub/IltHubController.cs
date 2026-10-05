@@ -200,6 +200,20 @@ internal sealed class IltHubController
         _ctx.Store.SaveStateIfDirty(_ctx.State);
     }
 
+    /// <summary>
+    /// JSON for the engine Skills panel's Progression tab (RynthPluginGetProgressionJson).
+    /// "available" is false off ILT-like worlds; the panel then hides the ILT sections. Pump thread.
+    /// </summary>
+    public string BuildProgressionJson()
+    {
+        var sb = new System.Text.StringBuilder(2048);
+        sb.Append("{\"available\":").Append(Available ? "true" : "false");
+        sb.Append(",\"world\":\"").Append(RynthAiPlugin.JsonEscape(_ctx.Options.WorldName ?? string.Empty)).Append("\",");
+        Progression.AppendSnapshotJson(sb);
+        sb.Append('}');
+        return sb.ToString();
+    }
+
     /// <summary>Render thread: Hub window, confirm popups, games HUD.</summary>
     public void Render() => _ui.Render();
 
@@ -229,7 +243,8 @@ internal sealed class IltHubController
 
     /// <summary>
     /// "/ra hub [show|hide|toggle|refresh|bank|status|force on|off|profile save|load|list ...|suit list|test|load ...]"
-    /// and "/ra quests [refresh|check &lt;regex&gt;|window|favhud]". Pump thread. Returns false if not handled.
+    /// "/ra quests [refresh|check &lt;regex&gt;|window|favhud]" and "/ra pets [show|hide|toggle]".
+    /// Pump thread. Returns false if not handled.
     /// </summary>
     public bool HandleCommand(string verb, string[] args)
     {
@@ -260,6 +275,16 @@ internal sealed class IltHubController
             }
             return true;
         }
+        if (verb.Equals("pets", StringComparison.OrdinalIgnoreCase))
+        {
+            // "/ra pets [show|hide|toggle]": the undocked Pets window (Char right-click menu).
+            var cs = _ctx.State.Character;
+            cs.PetsWindowOpen = ResolveToggle(args.Length > 0 ? args[0].ToLowerInvariant() : "toggle", cs.PetsWindowOpen);
+            _ctx.Chat(cs.PetsWindowOpen
+                ? (Available ? "[ILT Hub] Pets window shown." : "[ILT Hub] Pets window will show on an ILT world.")
+                : "[ILT Hub] Pets window hidden.");
+            return true;
+        }
         if (!verb.Equals("hub", StringComparison.OrdinalIgnoreCase)) return false;
 
         string cmd = args.Length > 0 ? args[0].ToLowerInvariant() : "toggle";
@@ -287,7 +312,7 @@ internal sealed class IltHubController
             default:
                 _ctx.Chat("[ILT Hub] /ra hub show|hide|toggle|refresh|bank|status|force on|off|clap|confirm|cancel");
                 _ctx.Chat("[ILT Hub] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
-                _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]");
+                _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");
                 break;
         }
         return true;

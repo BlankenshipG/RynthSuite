@@ -611,6 +611,31 @@ public static unsafe class PluginExports
         }
     }
 
+    private static IntPtr _progressionPtr = IntPtr.Zero;
+
+    /// <summary>
+    /// Skills panel Progression tab (ILT augmentations / enlightenment). Same contract as
+    /// RynthPluginGetPatrolInfoJson: one static buffer, valid until the next call; the engine
+    /// polls it from its pump thread only.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetProgressionJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetProgressionJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildProgressionJson() ?? "{\"available\":false}";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _progressionPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
     // ── Items bridge (engine-side Avalonia ItemsPanel) ──────────────────────
 
     private static IntPtr _itemsPtr = IntPtr.Zero;

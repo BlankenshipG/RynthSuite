@@ -255,6 +255,16 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] " + _huds.HandleCommand(which, mode));
     }
 
+    /// <summary>Skills panel Progression tab snapshot (RynthPluginGetProgressionJson). Pump thread.</summary>
+    internal string BuildProgressionJson() => _iltHub?.BuildProgressionJson() ?? "{\"available\":false}";
+
+    /// <summary>"prog ..." remote command from the Skills panel's Progression tab. Pump thread.</summary>
+    private void HandleProgressionRemote(string value)
+    {
+        if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); return; }
+        _iltHub.Progression.HandleRemote(value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
     /// <summary>"/ra itemhud add &lt;name&gt;" and the inventory panel's "Add to item count HUD". Pump thread.</summary>
     private void HandleItemHudAdd(string name)
     {

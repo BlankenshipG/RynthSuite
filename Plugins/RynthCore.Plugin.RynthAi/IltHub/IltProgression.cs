@@ -1,16 +1,17 @@
-// IltProgression.cs — Augmentation, Enlightenment and XP planners (ILT Hub Character tab).
+// IltProgression.cs — Augmentation and Enlightenment planners, drawn by the engine's
+// Skills panel (Progression tab) from AppendSnapshotJson; edits arrive via HandleRemote.
 //
 // Augs  : "/aug" levels + the SERVER cost formula (per level n: base + n*(base*LP/100),
 //         times a soft-cap multiplier 1/4/8/16/24 at thresholds S1..S4), coins per level.
 // Enl   : tier material/luminance table, requirement checklist, "/enl" on confirm. The
 //         server pops its own Yes/No dialog — the host cannot (and must not) click it.
 //         Optional auto-enlighten is disarmed every session and needs a hard confirm.
-// XP    : "/xp all" next-level costs, multi-level estimates, "/attr" raises on confirm.
+// XP    : the Skills panel plans attribute/vital raises from the client's exact XP tables;
+//         this module only spends unassigned XP ("/attr") before an auto-enlighten.
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using ImGuiNET;
-using RynthCore.Plugin.RynthAi.LegacyUi;
+using System.Text;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -81,8 +82,6 @@ internal sealed class IltProgression : IIltFeature
     private readonly IltHubContext _ctx;
     private readonly Dictionary<string, int> _augLevels = new(StringComparer.OrdinalIgnoreCase);
     private volatile string _augStatus = "not loaded";
-    private readonly Dictionary<string, long> _xpCosts = new(StringComparer.OrdinalIgnoreCase);
-    private volatile string _xpStatus = "not loaded";
 
     // Cached player facts for the render thread (refreshed in Tick).
     private volatile int _enl, _level, _freeSlots;
@@ -104,9 +103,6 @@ internal sealed class IltProgression : IIltFeature
     private int _spendIdx, _spendSent, _spendNoProgress;
     private long _spendLastAt, _spendLastXp;
     private Action? _afterSpend;
-
-    // Render-thread inputs.
-    private int _xpLevels = 10;
 
     public IltProgression(IltHubContext ctx) => _ctx = ctx;
 
@@ -149,44 +145,6 @@ internal sealed class IltProgression : IIltFeature
             n++;
         }
         _augStatus = n > 0 ? $"{n} aug types @ {DateTime.Now:t}" : "no aug lines in reply";
-    }
-
-    public void RequestXpCosts()
-    {
-        RynthLog.Trace(LogCat.IltProgression, $"RequestXpCosts()");
-        if (_ctx.Options.IsOff(IltFeature.Xp) || _ctx.Capture.IsPending("/xp all")) return;
-        _xpStatus = "loading...";
-        _ctx.Capture.Enqueue(new IltChatRequest
-        {
-            Command = "/xp all",
-            IsResponseLine = t => t.StartsWith("[XP]", StringComparison.OrdinalIgnoreCase),
-            IdleEndMs = 1500,
-            FirstLineTimeoutMs = 5000,
-            Eat = true,
-            OnComplete = r =>
-            {
-                if (r.UnknownCommand) { _ctx.Options.Set(IltFeature.Xp, IltTri.Off); _xpStatus = "/xp not available"; return; }
-                int n = 0;
-                foreach (string l in r.Lines)
-                {
-                    var m = IltParse.XpCost.Match(l);
-                    if (!m.Success) continue;
-                    lock (_xpCosts) _xpCosts[m.Groups[1].Value] = IltParse.ParseLeadingLong(m.Groups[2].Value);
-                    n++;
-                }
-                _xpStatus = n > 0 ? $"{n} costs @ {DateTime.Now:t}" : "no cost lines in reply";
-            },
-        });
-    }
-
-    /// <summary>Sends "/attr abbr n" (n clamped 1..10). Pump thread, after the UI confirm.</summary>
-    public void RaiseStat(string abbr, int levels)
-    {
-        RynthLog.Trace(LogCat.IltProgression, $"RaiseStat(abbr={abbr}, levels={levels})");
-        levels = Math.Clamp(levels, 1, 10);
-        if (_ctx.Host.HasInvokeChatParser) _ctx.Host.InvokeChatParser($"/attr {abbr} {levels}");
-        // Costs change after a raise — re-read shortly.
-        RequestXpCosts();
     }
 
     /// <summary>Sends "/enl" (server shows the confirmation dialog). Pump thread.</summary>
@@ -235,7 +193,6 @@ internal sealed class IltProgression : IIltFeature
         _autoArmed = false;
         _spending = false;
         lock (_augLevels) _augLevels.Clear();
-        lock (_xpCosts) _xpCosts.Clear();
     }
 
     // ── Facts / auto ────────────────────────────────────────────────────────
@@ -334,87 +291,72 @@ internal sealed class IltProgression : IIltFeature
         _spendSent++;
     }
 
-    // ── UI (render thread) ──────────────────────────────────────────────────
+    // ── Engine Skills panel bridge (pump thread) ────────────────────────────
+    // The engine's Skills panel draws Augmentations and Enlightenment from this snapshot and
+    // sends edits back as "prog ..." remote commands (HandleRemote). Planner math stays here so
+    // the Hub and the Skills panel can never disagree. Numbers are preformatted for display.
 
-    public void RenderAugs()
+    /// <summary>Appends <c>"aug":{...},"enl":{...}</c> to <paramref name="sb"/>. Pump thread.</summary>
+    public void AppendSnapshotJson(StringBuilder sb)
     {
-        if (_ctx.Options.IsOff(IltFeature.Aug)) { ImGui.TextColored(LegacyDashboardRenderer.ColTextMute, "/aug is not available on this server."); return; }
-        if (ImGui.SmallButton("Load /aug")) _ctx.Post(RequestAugs);
-        ImGui.SameLine();
-        ImGui.TextDisabled(_augStatus);
+        AppendAugJson(sb);
+        sb.Append(',');
+        AppendEnlJson(sb);
+    }
 
-        long lumPerCoin = C.LumPerEnlightenedCoin;
-        ImGui.SetNextItemWidth(160);
-        string lpc = lumPerCoin.ToString();
-        if (ImGui.InputTextWithHint("Lum per Enlightened Coin", "0 = don't price coins", ref lpc, 24u)
-            && IltParse.TryParseAmount(lpc, out long parsed))
-            C.LumPerEnlightenedCoin = parsed;
-
+    private void AppendAugJson(StringBuilder sb)
+    {
         Dictionary<string, int> levels;
         lock (_augLevels) levels = new Dictionary<string, int>(_augLevels, StringComparer.OrdinalIgnoreCase);
 
+        sb.Append("\"aug\":{\"off\":").Append(Bool(_ctx.Options.IsOff(IltFeature.Aug)));
+        Str(sb, "status", _augStatus);
+        sb.Append(",\"lumPerCoin\":").Append(C.LumPerEnlightenedCoin).Append(",\"rows\":[");
         decimal totalLum = 0;
         long totalCoins = 0;
-        if (ImGui.BeginTable("##iltaugs", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV))
+        for (int i = 0; i < Augs.Length; i++)
         {
-            ImGui.TableSetupColumn("Aug");
-            ImGui.TableSetupColumn("Current", ImGuiTableColumnFlags.WidthFixed, 60);
-            ImGui.TableSetupColumn("Target", ImGuiTableColumnFlags.WidthFixed, 90);
-            ImGui.TableSetupColumn("Luminance");
-            ImGui.TableSetupColumn("Coins", ImGuiTableColumnFlags.WidthFixed, 70);
-            ImGui.TableHeadersRow();
-            foreach (var a in Augs)
-            {
-                int cur = levels.TryGetValue(a.Key, out int c) ? c : 0;
-                int tgt = C.AugTargets.TryGetValue(a.Key, out int t) ? t : cur;
-                ImGui.TableNextRow();
-                ImGui.TableNextColumn(); ImGui.TextUnformatted(a.Label);
-                ImGui.TableNextColumn(); ImGui.TextUnformatted(cur.ToString());
-                ImGui.TableNextColumn();
-                ImGui.SetNextItemWidth(80);
-                // The server can report a level above our cap (e.g. Specialization 280 > 266);
-                // Math.Clamp throws when min > max, and a throw mid-table breaks the ImGui frame.
-                int ceiling = Math.Max(cur, a.Cap);
-                if (ImGui.InputInt($"##tgt{a.Key}", ref tgt, 0)) C.AugTargets[a.Key] = Math.Clamp(tgt, 0, ceiling);
-                tgt = Math.Clamp(tgt, cur, ceiling);
-                decimal lum = AugLumCost(a, cur, tgt);
-                long coins = (long)(tgt - cur) * a.CoinsPerLevel;
-                totalLum += lum;
-                totalCoins += coins;
-                ImGui.TableNextColumn(); ImGui.TextUnformatted(lum > 0 ? IltParse.Compact((double)lum) : "-");
-                ImGui.TableNextColumn(); ImGui.TextUnformatted(coins > 0 ? coins.ToString() : "-");
-            }
-            ImGui.EndTable();
+            var a = Augs[i];
+            int cur = levels.TryGetValue(a.Key, out int c) ? c : 0;
+            int ceiling = Math.Max(cur, a.Cap);
+            int tgt = Math.Clamp(C.AugTargets.TryGetValue(a.Key, out int t) ? t : cur, cur, ceiling);
+            decimal lum = AugLumCost(a, cur, tgt);
+            long coins = (long)(tgt - cur) * a.CoinsPerLevel;
+            totalLum += lum;
+            totalCoins += coins;
+            if (i > 0) sb.Append(',');
+            sb.Append('{');
+            Str(sb, "key", a.Key, first: true);
+            Str(sb, "label", a.Label);
+            sb.Append(",\"cur\":").Append(cur).Append(",\"tgt\":").Append(tgt).Append(",\"cap\":").Append(ceiling);
+            Str(sb, "lum", lum > 0 ? IltParse.Compact((double)lum) : "-");
+            sb.Append(",\"coins\":").Append(coins).Append('}');
         }
-        ImGui.TextColored(LegacyDashboardRenderer.ColAmber, $"Total: {IltParse.Compact((double)totalLum)} luminance, {IltParse.N0(totalCoins)} coins");
+        sb.Append(']');
+        Str(sb, "total", $"Total: {IltParse.Compact((double)totalLum)} luminance, {IltParse.N0(totalCoins)} coins");
         long bankCoins = _ctx.State.Bank.EnlightenedCoins;
-        if (totalCoins > bankCoins)
-        {
-            long missing = totalCoins - bankCoins;
-            ImGui.TextUnformatted($"Coins short: {IltParse.N0(missing)}"
-                + (lumPerCoin > 0 ? $" (~{IltParse.Compact((double)missing * lumPerCoin)} luminance to buy)" : ""));
-        }
-        ImGui.TextDisabled($"Banked luminance: {IltParse.Compact(_ctx.State.Bank.Luminance)}");
+        long lumPerCoin = C.LumPerEnlightenedCoin;
+        string shortText = totalCoins > bankCoins
+            ? $"Coins short: {IltParse.N0(totalCoins - bankCoins)}"
+              + (lumPerCoin > 0 ? $" (~{IltParse.Compact((double)(totalCoins - bankCoins) * lumPerCoin)} luminance to buy)" : "")
+            : string.Empty;
+        Str(sb, "short", shortText);
+        Str(sb, "banked", $"Banked luminance: {IltParse.Compact(_ctx.State.Bank.Luminance)}");
+        sb.Append('}');
     }
 
-    public void RenderEnlightenment()
+    private void AppendEnlJson(StringBuilder sb)
     {
-        if (_ctx.Options.IsOff(IltFeature.Enl)) { ImGui.TextColored(LegacyDashboardRenderer.ColTextMute, "/enl is not available on this server."); return; }
         int enl = _enl;
-        ImGui.TextUnformatted($"Enlightenment {enl}   Level {_level}   Unassigned XP {IltParse.Compact(_unassignedXp)}");
-
-        // Next step
+        sb.Append("\"enl\":{\"off\":").Append(Bool(_ctx.Options.IsOff(IltFeature.Enl)));
+        Str(sb, "header", $"Enlightenment {enl}   Level {_level}   Unassigned XP {IltParse.Compact(_unassignedXp)}");
         var next = EnlStepCost(enl + 1);
-        ImGui.TextColored(LegacyDashboardRenderer.ColTeal, $"Next ({enl + 1}):");
-        ImGui.SameLine();
-        ImGui.TextUnformatted(next.Count > 0
+        Str(sb, "next", $"Next ({enl + 1}): " + (next.Count > 0
             ? $"{next.Count} {next.Item} (have {HaveFor(next.Wcid)})" + (next.Lum > 0 ? $" + {IltParse.Compact((double)next.Lum)} lum" : "")
-            : "no materials");
+            : "no materials"));
 
-        // Planner to a target
         int target = C.EnlTargetLevel <= enl ? enl + 5 : C.EnlTargetLevel;
-        ImGui.SetNextItemWidth(100);
-        if (ImGui.InputInt("Plan to level", ref target)) C.EnlTargetLevel = Math.Max(enl + 1, target);
+        sb.Append(",\"enl\":").Append(enl).Append(",\"target\":").Append(target).Append(",\"plan\":[");
         var totals = new Dictionary<string, long>();
         decimal lumTotal = 0;
         for (int t = enl + 1; t <= Math.Max(enl + 1, target) && t <= enl + 500; t++)
@@ -423,104 +365,95 @@ internal sealed class IltProgression : IIltFeature
             if (s.Count > 0) totals[s.Item] = (totals.TryGetValue(s.Item, out long v) ? v : 0) + s.Count;
             lumTotal += s.Lum;
         }
-        foreach (var kv in totals) ImGui.BulletText($"{IltParse.N0(kv.Value)} {kv.Key}");
-        if (lumTotal > 0) ImGui.BulletText($"{IltParse.Compact((double)lumTotal)} luminance (banked {IltParse.Compact(_ctx.State.Bank.Luminance)})");
+        bool firstLine = true;
+        foreach (var kv in totals) { StrItem(sb, $"{IltParse.N0(kv.Value)} {kv.Key}", ref firstLine); }
+        if (lumTotal > 0)
+            StrItem(sb, $"{IltParse.Compact((double)lumTotal)} luminance (banked {IltParse.Compact(_ctx.State.Bank.Luminance)})", ref firstLine);
+        sb.Append(']');
+
         int coinsPerToken = C.EnlightenedCoinsPerToken;
-        ImGui.SetNextItemWidth(100);
-        if (ImGui.InputInt("Coins per token (shop price)", ref coinsPerToken)) C.EnlightenedCoinsPerToken = Math.Max(0, coinsPerToken);
+        sb.Append(",\"coinsPerToken\":").Append(coinsPerToken);
+        string tokensShort = string.Empty;
         if (totals.TryGetValue("Enlightenment Tokens", out long tokNeed) && coinsPerToken > 0)
         {
             long shortTok = Math.Max(0, tokNeed - _enlHave[0]);
-            if (shortTok > 0) ImGui.TextDisabled($"Tokens short: {shortTok} (~{IltParse.N0(shortTok * coinsPerToken)} coins)");
+            if (shortTok > 0) tokensShort = $"Tokens short: {shortTok} (~{IltParse.N0(shortTok * coinsPerToken)} coins)";
         }
+        Str(sb, "tokensShort", tokensShort);
 
-        // Requirements
-        ImGui.Separator();
         var blockers = NextEnlBlockers();
-        if (blockers.Count == 0) ImGui.TextColored(LegacyDashboardRenderer.ColGreen, "Client-side checks pass.");
-        foreach (string b in blockers) ImGui.TextColored(LegacyDashboardRenderer.ColAmber, b);
-        ImGui.TextDisabled($"Server also checks: not in a dungeon, free pack slots ({(_freeSlots >= 0 ? _freeSlots.ToString() : "?")} free), "
-                           + "all luminance augs (past 10), society master (past 30).");
-
-        if (ImGui.Button("Enlighten now..."))
-            _ctx.Confirm("Enlighten",
-                "Send /enl now?\n\nEnlightening resets your level and wipes unassigned XP.\nThe server will show its own Yes/No dialog - you must click Yes there.",
-                () => SendEnlighten("manual"), "Send /enl");
-
-        // Auto-enlighten
-        ImGui.Separator();
-        bool auto = C.AutoEnlightenEnabled;
-        if (ImGui.Checkbox("Auto-enlighten when ready", ref auto))
-        {
-            if (auto)
-                _ctx.Confirm("Arm auto-enlighten",
-                    "Auto-enlighten will send /enl whenever the checks pass (peace mode, level, materials).\n"
-                    + "You still have to click Yes in the AC dialog each time.\n\nArm it for this session?",
-                    () => { C.AutoEnlightenEnabled = true; _autoArmed = true; _ctx.Chat("[ILT Hub] Auto-enlighten armed for this session."); },
-                    "Arm");
-            else { C.AutoEnlightenEnabled = false; _autoArmed = false; }
-        }
-        if (C.AutoEnlightenEnabled && !_autoArmed)
-        {
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Arm for this session..."))
-                _ctx.Confirm("Arm auto-enlighten", "Arm auto-enlighten for this session?", () => _autoArmed = true, "Arm");
-        }
-        bool spend = C.AutoEnlightenSpendXpFirst;
-        if (ImGui.Checkbox("Spend unassigned XP on attributes first", ref spend)) C.AutoEnlightenSpendXpFirst = spend;
-        int every = C.AutoEnlightenCheckSeconds;
-        ImGui.SetNextItemWidth(100);
-        if (ImGui.InputInt("Check every (s)", ref every)) C.AutoEnlightenCheckSeconds = Math.Max(10, every);
-        ImGui.TextDisabled(_autoArmed ? "Armed." : "Disarmed.");
-        if (_enlStatus.Length > 0) ImGui.TextWrapped(_enlStatus);
+        sb.Append(",\"blockers\":[");
+        bool firstBlocker = true;
+        foreach (string b in blockers) StrItem(sb, b, ref firstBlocker);
+        sb.Append(']');
+        Str(sb, "serverChecks", $"Server also checks: not in a dungeon, free pack slots ({(_freeSlots >= 0 ? _freeSlots.ToString() : "?")} free), "
+                                + "all luminance augs (past 10), society master (past 30).");
+        sb.Append(",\"auto\":").Append(Bool(C.AutoEnlightenEnabled))
+          .Append(",\"armed\":").Append(Bool(_autoArmed))
+          .Append(",\"spendFirst\":").Append(Bool(C.AutoEnlightenSpendXpFirst))
+          .Append(",\"checkEvery\":").Append(C.AutoEnlightenCheckSeconds);
+        Str(sb, "status", _enlStatus);
+        sb.Append('}');
     }
 
-    public void RenderXp()
+    private static string Bool(bool b) => b ? "true" : "false";
+
+    private static void Str(StringBuilder sb, string name, string value, bool first = false)
     {
-        if (_ctx.Options.IsOff(IltFeature.Xp)) { ImGui.TextColored(LegacyDashboardRenderer.ColTextMute, "/xp is not available on this server."); return; }
-        if (ImGui.SmallButton("Load /xp all")) _ctx.Post(RequestXpCosts);
-        ImGui.SameLine();
-        ImGui.TextDisabled(_xpStatus);
-        ImGui.TextUnformatted($"Unassigned XP: {IltParse.N0(_unassignedXp)}");
-        ImGui.SetNextItemWidth(120);
-        ImGui.SliderInt("Levels to estimate", ref _xpLevels, 1, 50);
+        if (!first) sb.Append(',');
+        sb.Append('"').Append(name).Append("\":\"").Append(RynthAiPlugin.JsonEscape(value ?? string.Empty)).Append('"');
+    }
 
-        Dictionary<string, long> costs;
-        lock (_xpCosts) costs = new Dictionary<string, long>(_xpCosts, StringComparer.OrdinalIgnoreCase);
+    private static void StrItem(StringBuilder sb, string value, ref bool first)
+    {
+        if (!first) sb.Append(',');
+        first = false;
+        sb.Append('"').Append(RynthAiPlugin.JsonEscape(value)).Append('"');
+    }
 
-        if (ImGui.BeginTable("##iltxp", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV))
+    /// <summary>
+    /// "prog" remote command from the engine Skills panel. Pump thread. The panel asks its own
+    /// confirmation before "enlighten" and "autoenl on|arm", so none is asked here.
+    /// </summary>
+    public void HandleRemote(string[] a)
+    {
+        if (a.Length == 0) return;
+        RynthLog.Trace(LogCat.IltProgression, $"HandleRemote({string.Join(" ", a)})");
+        string arg1 = a.Length > 1 ? a[1] : string.Empty;
+        int.TryParse(a.Length > 2 ? a[2] : arg1, out int n);
+        switch (a[0].ToLowerInvariant())
         {
-            ImGui.TableSetupColumn("Stat");
-            ImGui.TableSetupColumn("Next level");
-            ImGui.TableSetupColumn($"Next {_xpLevels}");
-            ImGui.TableSetupColumn("Raise", ImGuiTableColumnFlags.WidthFixed, 110);
-            ImGui.TableHeadersRow();
-            foreach (var s in Stats)
-            {
-                ImGui.TableNextRow();
-                ImGui.TableNextColumn(); ImGui.TextUnformatted(s.Name);
-                bool known = costs.TryGetValue(s.Name, out long next);
-                ImGui.TableNextColumn(); ImGui.TextUnformatted(known ? IltParse.Compact(next) : "-");
-                ImGui.TableNextColumn();
-                if (known)
+            case "augload": RequestAugs(); break;
+            case "augtarget" when a.Length > 2:
+                foreach (var def in Augs)
                 {
-                    double growth = s.Attr != 0 ? 1.077 : 1.075;
-                    double total = 0, c = next;
-                    for (int i = 0; i < _xpLevels; i++) { total += c; c *= growth; }
-                    ImGui.TextColored(total <= _unassignedXp ? LegacyDashboardRenderer.ColGreen : LegacyDashboardRenderer.ColTextDim,
-                        "~" + IltParse.Compact(total));
+                    if (!def.Key.Equals(arg1, StringComparison.OrdinalIgnoreCase)) continue;
+                    int cur;
+                    lock (_augLevels) cur = _augLevels.TryGetValue(def.Key, out int c) ? c : 0;
+                    C.AugTargets[def.Key] = Math.Clamp(n, 0, Math.Max(cur, def.Cap));
+                    break;
                 }
-                else ImGui.TextUnformatted("-");
-                ImGui.TableNextColumn();
-                var stat = s;
-                if (ImGui.SmallButton($"+1##{s.Abbr}"))
-                    _ctx.Confirm("Raise " + s.Name, $"Spend XP to raise {s.Name} by 1?", () => RaiseStat(stat.Abbr, 1), "Raise");
-                ImGui.SameLine();
-                if (ImGui.SmallButton($"+10##{s.Abbr}"))
-                    _ctx.Confirm("Raise " + s.Name, $"Spend XP to raise {s.Name} by 10?", () => RaiseStat(stat.Abbr, 10), "Raise");
-            }
-            ImGui.EndTable();
+                break;
+            case "lumpercoin":
+                if (IltParse.TryParseAmount(arg1, out long lpc)) C.LumPerEnlightenedCoin = Math.Max(0, lpc);
+                break;
+            case "enltarget": C.EnlTargetLevel = Math.Max(_enl + 1, n); break;
+            case "coinspertoken": C.EnlightenedCoinsPerToken = Math.Max(0, n); break;
+            case "enlighten": SendEnlighten("manual, Skills panel"); break;
+            case "autoenl":
+                switch (arg1.ToLowerInvariant())
+                {
+                    case "on":
+                        C.AutoEnlightenEnabled = true;
+                        _autoArmed = true;
+                        _ctx.Chat("[ILT Hub] Auto-enlighten armed for this session.");
+                        break;
+                    case "arm": if (C.AutoEnlightenEnabled) _autoArmed = true; break;
+                    default: C.AutoEnlightenEnabled = false; _autoArmed = false; break;
+                }
+                break;
+            case "spendfirst": C.AutoEnlightenSpendXpFirst = arg1.Equals("on", StringComparison.OrdinalIgnoreCase); break;
+            case "checkevery": C.AutoEnlightenCheckSeconds = Math.Max(10, n); break;
         }
-        ImGui.TextDisabled("Estimates grow each level by 7.7% (attributes) / 7.5% (vitals); the server's numbers win.");
     }
 }

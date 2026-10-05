@@ -174,6 +174,8 @@ public sealed class IltCharacterState
     public bool QuestFavoritesHudLocked;
     /// <summary>The quest tracker is undocked from the Hub into its own "Quests" window.</summary>
     public bool QuestTrackerPoppedOut;
+    /// <summary>The pet roster is undocked from the Hub into its own "Pets" window.</summary>
+    public bool PetsWindowOpen;
 }
 
 public sealed class IltItemConversion

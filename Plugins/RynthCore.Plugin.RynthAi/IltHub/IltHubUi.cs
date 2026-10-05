@@ -1,7 +1,8 @@
 // IltHubUi.cs — The ILT Hub ImGui window (render thread only).
 //
-// Tabs: Character · Pet · Banking · Gear · Games. A tab is hidden when every feature in
-// it is reported off by the server. A header strip shows the world / server-options
+// Tabs: Character · Quests · Pet · Banking · Gear · Games. A tab is hidden when every feature
+// in it is reported off by the server. Quests and Pets can also live in their own windows;
+// Augmentations / Enlightenment / XP planning moved to the engine Skills panel. A header strip shows the world / server-options
 // status with Refresh, the Force-ILT override and Hub profiles. All AC actions go
 // through IltHubContext.Post / Confirm so nothing here touches the game directly.
 using System;
@@ -13,7 +14,10 @@ namespace RynthCore.Plugin.RynthAi.IltHub;
 
 internal sealed class IltHubUi
 {
-    private static readonly string[] TabNames = { "Character", "Pet", "Banking", "Gear", "Games" };
+    // Indices are persisted (IltHubState.SelectedTab): append new tabs, reorder via TabOrder.
+    private static readonly string[] TabNames = { "Character", "Pet", "Banking", "Gear", "Games", "Quests" };
+    private static readonly int[] TabOrder = { 0, 5, 1, 2, 3, 4 };
+    private const int TabCharacter = 0, TabPet = 1, TabBanking = 2, TabGear = 3, TabGames = 4, TabQuests = 5;
     private const string ConfirmPopupId = "Confirm##iltconfirm";
 
     private readonly IltHubController _hub;
@@ -53,6 +57,7 @@ internal sealed class IltHubUi
         }
 
         if (drawn) RenderWindow();
+        RenderPetsWindow();
         _hub.Games.RenderHud();
         _hub.Quests.RenderFloatingWindows();
         RenderConfirm();
@@ -189,14 +194,14 @@ internal sealed class IltHubUi
         if (sel < 0 || sel >= TabNames.Length || !TabVisible(sel)) sel = 0;
 
         bool first = true;
-        for (int i = 0; i < TabNames.Length; i++)
+        foreach (int i in TabOrder)
         {
             if (!TabVisible(i)) continue;
             if (!first) ImGui.SameLine();
             first = false;
             bool active = i == sel;
             if (active) ImGui.PushStyleColor(ImGuiCol.Button, LegacyDashboardRenderer.ColBtnOn);
-            if (ImGui.Button(TabNames[i] + "##ilttab" + i, new Vector2(110, 0))) sel = i;
+            if (ImGui.Button(TabNames[i] + "##ilttab" + i, new Vector2(92, 0))) sel = i;
             if (active) ImGui.PopStyleColor();
         }
         _ctx.State.SelectedTab = sel;
@@ -209,38 +214,61 @@ internal sealed class IltHubUi
 
     private bool TabVisible(int tab) => tab switch
     {
-        2 => !_ctx.Options.IsOff(IltFeature.Bank),
-        4 => _hub.Games.AnyGameAvailable,
+        TabBanking => !_ctx.Options.IsOff(IltFeature.Bank),
+        TabGames => _hub.Games.AnyGameAvailable,
         _ => true,
     };
 
     private void RenderTab(int tab)
     {
+        var cs = _ctx.State.Character;
         switch (tab)
         {
-            case 0:
+            case TabCharacter:
                 if (ImGui.CollapsingHeader("Session rates", ImGuiTreeNodeFlags.DefaultOpen)) _hub.Rates.Render();
-                if (ImGui.CollapsingHeader("Quest tracker"))
-                {
-                    var cs = _ctx.State.Character;
-                    if (cs.QuestTrackerPoppedOut)
-                    {
-                        ImGui.TextDisabled("The quest tracker is open in its own window.");
-                        ImGui.SameLine();
-                        if (ImGui.SmallButton("Dock back##quests")) cs.QuestTrackerPoppedOut = false;
-                    }
-                    else _hub.Quests.RenderQuestTracker();
-                }
-                if (ImGui.CollapsingHeader("Quest bonus (/qb)")) _hub.Quests.RenderQb();
-                if (ImGui.CollapsingHeader("XP calculator")) _hub.Progression.RenderXp();
-                if (ImGui.CollapsingHeader("Augmentations")) _hub.Progression.RenderAugs();
-                if (ImGui.CollapsingHeader("Enlightenment")) _hub.Progression.RenderEnlightenment();
+                ImGui.Spacing();
+                ImGui.TextDisabled("XP planner, Augmentations and Enlightenment are on the Skills panel's Progression tab");
+                ImGui.TextDisabled("(right-click the dashboard's Char button > Progression).");
                 break;
-            case 1: _hub.Pets.Render(); break;
-            case 2: _hub.Banking.Render(); break;
-            case 3: _hub.Gear.Render(); break;
-            case 4: _hub.Games.Render(); break;
+            case TabQuests:
+                if (cs.QuestTrackerPoppedOut)
+                {
+                    ImGui.TextDisabled("Quests are open in their own window.");
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Dock back##quests")) cs.QuestTrackerPoppedOut = false;
+                    break;
+                }
+                if (ImGui.CollapsingHeader("Quest tracker", ImGuiTreeNodeFlags.DefaultOpen)) _hub.Quests.RenderQuestTracker();
+                if (ImGui.CollapsingHeader("Quest bonus (/qb)")) _hub.Quests.RenderQb();
+                break;
+            case TabPet:
+                if (cs.PetsWindowOpen)
+                {
+                    ImGui.TextDisabled("Pets are open in their own window.");
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Dock back##pets")) cs.PetsWindowOpen = false;
+                    break;
+                }
+                if (ImGui.SmallButton("Pop out##pets")) cs.PetsWindowOpen = true;
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Open the pet roster in its own window (/ra pets).");
+                _hub.Pets.Render();
+                break;
+            case TabBanking: _hub.Banking.Render(); break;
+            case TabGear: _hub.Gear.Render(); break;
+            case TabGames: _hub.Games.Render(); break;
         }
+    }
+
+    /// <summary>The undocked "Pets" window; closing it docks the roster back into the Pet tab.</summary>
+    private void RenderPetsWindow()
+    {
+        var cs = _ctx.State.Character;
+        if (!cs.PetsWindowOpen || !_hub.Available) return;
+        ImGui.SetNextWindowSize(new Vector2(560, 620), ImGuiCond.FirstUseEver);
+        bool open = true;
+        if (ImGui.Begin("Pets##iltpetswin", ref open)) _hub.Pets.Render();
+        ImGui.End();
+        if (!open) cs.PetsWindowOpen = false;
     }
 
     // ── Confirmation modal ──────────────────────────────────────────────────

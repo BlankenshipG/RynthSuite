@@ -751,7 +751,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "setsetting":   ApplyRemoteSetting(value); break;   // one advanced setting from the phone (clamped + persisted)
             case "hub":
             case "quests":
-                // Dashboard Char launcher sends hub=show; value carries the "/ra hub|quests" arguments.
+            case "pets":
+                // Dashboard Char launcher (hub=show) and its right-click menu (pets, quests window);
+                // value carries the "/ra hub|quests|pets" arguments.
                 if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
                 _iltHub.HandleCommand(action.ToLowerInvariant(), value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
                 break;
@@ -765,6 +767,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "itemhudadd":
                 // Inventory panel "Add to item count HUD"; value is the item name.
                 HandleItemHudAdd(value);
+                break;
+            case "prog":
+                // Skills panel Progression tab (augmentations / enlightenment edits).
+                HandleProgressionRemote(value);
                 break;
             // movestart/movestop are applied DIRECTLY by the RynthRemote plugin (pure Host.SetAutoRun/
             // SetMotion + its own dead-man watchdog) and are never forwarded here.
@@ -2973,6 +2979,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "logs":         HandleLogsCommand(parts); break;
             case "hub":
             case "quests":
+            case "pets":
                 if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
                 _iltHub.HandleCommand(cmd, parts.Length > 2 ? parts[2..] : Array.Empty<string>());
                 break;

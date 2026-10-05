@@ -239,7 +239,7 @@ internal sealed class IltQuests : IIltFeature
     // ── UI (render thread) ──────────────────────────────────────────────────
 
     /// <summary>
-    /// Quest tracker body. Drawn inside the Hub's Character tab, or filling the standalone
+    /// Quest tracker body. Drawn inside the Hub's Quests tab, or filling the standalone
     /// "Quests" window when <paramref name="poppedOut"/> (the table then uses the full height).
     /// </summary>
     public void RenderQuestTracker(bool poppedOut = false)
@@ -361,9 +361,14 @@ internal sealed class IltQuests : IIltFeature
     {
         ImGui.SetNextWindowSize(new Vector2(700, 520), ImGuiCond.FirstUseEver);
         bool open = true;
-        if (ImGui.Begin("Quests##iltquestswin", ref open)) RenderQuestTracker(poppedOut: true);
+        if (ImGui.Begin("Quests##iltquestswin", ref open))
+        {
+            // Quest bonus first (collapsed by default) so the tracker table can fill the rest.
+            if (ImGui.CollapsingHeader("Quest bonus (/qb)##qbwin")) RenderQb();
+            RenderQuestTracker(poppedOut: true);
+        }
         ImGui.End();
-        // Closing the window docks the tracker back into the Hub's Character tab.
+        // Closing the window docks quests back into the Hub's Quests tab.
         if (!open) cs.QuestTrackerPoppedOut = false;
     }
 
