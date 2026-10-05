@@ -42,6 +42,8 @@ public sealed class HudState
     public bool MiniShowRebuff = true;
     /// <summary>Chat translator row: on/off, receive / send language swap.</summary>
     public bool MiniShowTranslate = true;
+    /// <summary>Temple guardian row: the last riddle answer with a Give button (only while one is recent).</summary>
+    public bool MiniShowGuardian = true;
     /// <summary>Gem grid slots, row-major from the top-left (empty Name = unassigned).</summary>
     public List<HudItemEntry> MiniRemoteSlots = new();
 }

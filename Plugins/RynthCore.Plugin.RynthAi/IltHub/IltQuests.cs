@@ -46,6 +46,7 @@ internal sealed class IltQuests : IIltFeature
     private volatile string[] _qbIncomplete = Array.Empty<string>();
     private volatile string _qbStatus = "not loaded";
     private long _qbCount = -1;
+    private volatile int _qbGeneration; // bumped per successful "/qb list"; 0 = never loaded this session
     private bool _questsRescueChecked; // popped-out window's off-screen check done for the current show
 
     // Render-thread UI state.
@@ -211,6 +212,21 @@ internal sealed class IltQuests : IIltFeature
         _qbCompleted = done.ToArray();
         _qbIncomplete = todo.ToArray();
         _qbStatus = $"{done.Count} completed, {todo.Count} incomplete";
+        _qbGeneration++;
+    }
+
+    /// <summary>Increments each time a "/qb list" reply is parsed (0 = not loaded this session).</summary>
+    public int QbGeneration => _qbGeneration;
+
+    /// <summary>True when the last "/qb list" (completed or incomplete) contains the flag.</summary>
+    public bool QbHasFlag(string flag)
+    {
+        if (string.IsNullOrWhiteSpace(flag)) return false;
+        foreach (string f in _qbCompleted)
+            if (f.Equals(flag, StringComparison.OrdinalIgnoreCase)) return true;
+        foreach (string f in _qbIncomplete)
+            if (f.Equals(flag, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     /// <summary>Login probe tap: "/qb" (no args) prints the count line.</summary>
@@ -235,6 +251,7 @@ internal sealed class IltQuests : IIltFeature
         _qbIncomplete = Array.Empty<string>();
         _qbCount = -1;
         _qbStatus = "not loaded";
+        _qbGeneration = 0;
     }
 
     // ── UI (render thread) ──────────────────────────────────────────────────

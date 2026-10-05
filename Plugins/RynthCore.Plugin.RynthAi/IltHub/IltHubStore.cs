@@ -106,6 +106,10 @@ internal sealed class IltHubStore
         s.Gear.DispelInclusions ??= new();
         s.Gear.DispelExclusions ??= new();
         s.Games ??= new IltGamesState();
+        s.Guardian ??= new IltGuardianState();
+        s.Guardian.TurnInCounts = new Dictionary<string, int>(s.Guardian.TurnInCounts ?? new(), StringComparer.OrdinalIgnoreCase);
+        s.Guardian.CooldownUntilUtc = new Dictionary<string, DateTime>(s.Guardian.CooldownUntilUtc ?? new(), StringComparer.OrdinalIgnoreCase);
+        s.Guardian.CooldownHoursAssumed = Math.Clamp(s.Guardian.CooldownHoursAssumed, 1, 72);
         s.SelectedTab = Math.Clamp(s.SelectedTab, 0, 4);
         s.Gear.SplitArrowTarget = Math.Clamp(s.Gear.SplitArrowTarget, 0, 10);
     }

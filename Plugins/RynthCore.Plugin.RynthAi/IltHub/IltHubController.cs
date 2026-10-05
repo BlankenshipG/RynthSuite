@@ -39,6 +39,8 @@ internal sealed class IltHubController
     public IltGames Games { get; }
     /// <summary>Registry charm acquired / active / server state (Charms Tracking tab).</summary>
     public IltCharmTracker Charms { get; }
+    /// <summary>Temple guardians: riddle translator, hand-in, attribute turn-in tracker.</summary>
+    public IltGuardian Guardian { get; }
 
     public IltHubController(RynthCoreHost host, string charFolder, Func<WorldObjectCache?> cache,
                             Func<LegacyUiSettings?> settings, Func<QuestTracker?> quests, Action saveCombatSettings)
@@ -61,7 +63,8 @@ internal sealed class IltHubController
         Gear = new IltGear(_ctx);
         Games = new IltGames(_ctx);
         Charms = new IltCharmTracker(_ctx);
-        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Games });
+        Guardian = new IltGuardian(_ctx, quests, Quests);
+        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Games, Guardian });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
         options.ProbeReplyTap = OnProbeReply;
@@ -281,7 +284,8 @@ internal sealed class IltHubController
     /// <summary>
     /// "/ra hub [show|hide|toggle|open &lt;section&gt; [show|hide|toggle]|refresh|bank|status|force on|off|
     /// profile save|load|list ...|suit list|test|load ...]" (show/hide/toggle drive the Mini Remote),
-    /// "/ra quests [refresh|check &lt;regex&gt;|window|favhud]" and "/ra pets [show|hide|toggle]".
+    /// "/ra quests [refresh|check &lt;regex&gt;|window|favhud]", "/ra pets [show|hide|toggle]" and
+    /// "/ra guardian ..." (see IltGuardian.HandleCommand).
     /// Pump thread. Returns false if not handled.
     /// </summary>
     public bool HandleCommand(string verb, string[] args)
@@ -317,6 +321,15 @@ internal sealed class IltHubController
             OpenSection(IltSection.Pet, args.Length > 0 ? args[0] : "toggle");
             return true;
         }
+        if (verb.Equals("guardian", StringComparison.OrdinalIgnoreCase))
+        {
+            // "/ra guardian window [show|hide|toggle]" opens the window; everything else is the Guardian's.
+            if (args.Length > 0 && args[0].Equals("window", StringComparison.OrdinalIgnoreCase))
+                OpenSection(IltSection.Guardian, args.Length > 1 ? args[1] : "toggle");
+            else
+                Guardian.HandleCommand(args);
+            return true;
+        }
         if (!verb.Equals("hub", StringComparison.OrdinalIgnoreCase)) return false;
 
         string cmd = args.Length > 0 ? args[0].ToLowerInvariant() : "toggle";
@@ -333,7 +346,7 @@ internal sealed class IltHubController
             case "open":
                 if (args.Length < 2 || !IltSections.TryParse(args[1], out IltSection section))
                 {
-                    _ctx.Chat("[ILT Hub] Usage: /ra hub open character|quests|pets|banking|gear|games [show|hide|toggle]");
+                    _ctx.Chat("[ILT Hub] Usage: /ra hub open character|quests|pets|banking|gear|games|guardian [show|hide|toggle]");
                     break;
                 }
                 OpenSection(section, args.Length > 2 ? args[2] : "toggle");
@@ -355,9 +368,10 @@ internal sealed class IltHubController
                 break;
             default:
                 _ctx.Chat("[ILT Hub] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|force on|off|clap|confirm|cancel");
-                _ctx.Chat("[ILT Hub] /ra hub open character|quests|pets|banking|gear|games [show|hide|toggle]");
+                _ctx.Chat("[ILT Hub] /ra hub open character|quests|pets|banking|gear|games|guardian [show|hide|toggle]");
                 _ctx.Chat("[ILT Hub] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
                 _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");
+                _ctx.Chat("[ILT Hub] /ra guardian [window|translate <text>|handin|stop|chat on|off|auto on|off|buy on|off|refresh|status]");
                 break;
         }
         return true;

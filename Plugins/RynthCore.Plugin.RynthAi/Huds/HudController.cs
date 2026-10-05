@@ -66,6 +66,17 @@ internal sealed class HudController
     private long _lastSaveAt;
     private bool _scanRequested;
 
+    /// <summary>
+    /// How long a pack item the player selected stays assignable after the game selection moves
+    /// on (the combat bot re-selects monsters, so "the selected item" is often gone by the time
+    /// the player clicks a slot).
+    /// </summary>
+    private const long RememberSelectionMs = 120_000;
+    private uint _lastSeenSelection;
+    private int _lastPackSelId;
+    private long _lastPackSelAt;
+    private volatile string _assignCandidate = string.Empty;
+
     public HudController(RynthCoreHost host, string charFolder, Func<WorldObjectCache?> cache,
         LegacyDashboardRenderer dashboard, Func<IltHubController?> hub, HudIconCache icons, Func<int> attackTargetId)
     {
@@ -93,6 +104,12 @@ internal sealed class HudController
 
     /// <summary>Latest attack target / summon view (render thread safe).</summary>
     public CombatHudSnapshot Combat => _combat.Snapshot;
+
+    /// <summary>
+    /// Name of the pack item a slot click would assign (current or remembered selection); empty
+    /// when there is none. Render thread safe.
+    /// </summary>
+    public string AssignCandidate => _assignCandidate;
 
     /// <summary>Chat translator views for the Mini Remote row; null until the translator exists.</summary>
     public RynthCore.Plugin.RynthAi.Translate.TranslateUi? Translate { get; set; }
@@ -124,6 +141,7 @@ internal sealed class HudController
         }
 
         Icons.Tick();
+        if (State.ShowMiniRemote || State.ShowSetup || State.ShowItemHud) TrackPackSelection(now);
 
         // Target / summon polling sends health queries and appraisals, so it only runs while shown.
         if (State.ShowMiniRemote && (State.MiniShowTarget || State.MiniShowPet))
@@ -211,15 +229,59 @@ internal sealed class HudController
         RynthLog.Trace(LogCat.Huds, $"use {wo.Name} (0x{wo.Id:X8})");
     }
 
-    /// <summary>The item selected in the game, if it is in the player's pack.</summary>
-    private WorldObject? SelectedPackItem()
+    /// <summary>Carried item by object id, or null.</summary>
+    private WorldObject? PackItem(int id)
+        => id == 0 ? null : _cache()?.GetInventory().FirstOrDefault(w => w != null && w.Id == id);
+
+    /// <summary>
+    /// Remembers the last pack item selected in the game (native inventory, or the RynthCore
+    /// Inventory window, which mirrors its clicks to the game selection). Only re-checks the
+    /// pack when the selection changes.
+    /// </summary>
+    private void TrackPackSelection(long now)
     {
-        if (!_host.HasGetSelectedItemId) { Chat("[RynthAi] This client build can't read the selected item."); return null; }
-        int id = unchecked((int)_host.GetSelectedItemId());
-        var wo = _cache()?.GetInventory().FirstOrDefault(w => w != null && w.Id == id);
-        if (wo == null) Chat("[RynthAi] Select an item in your pack first.");
+        if (!_host.HasGetSelectedItemId) return;
+        uint sel = _host.GetSelectedItemId();
+        if (sel != _lastSeenSelection)
+        {
+            _lastSeenSelection = sel;
+            var wo = PackItem(unchecked((int)sel));
+            if (wo != null)
+            {
+                _lastPackSelId = wo.Id;
+                _lastPackSelAt = now;
+            }
+        }
+        // The candidate label only feeds tooltips / menus: refresh it a few times a second.
+        if (now - _lastCandidateAt < 250) return;
+        _lastCandidateAt = now;
+        var candidate = AssignablePackItem(quiet: true);
+        _assignCandidate = candidate?.Name ?? string.Empty;
+    }
+    private long _lastCandidateAt;
+
+    /// <summary>
+    /// The pack item to assign: the current game selection when it is carried, otherwise the
+    /// last carried item the player selected within <see cref="RememberSelectionMs"/>.
+    /// </summary>
+    private WorldObject? AssignablePackItem(bool quiet = false)
+    {
+        if (!_host.HasGetSelectedItemId)
+        {
+            if (!quiet) Chat("[RynthAi] This client build can't read the selected item.");
+            return null;
+        }
+        var wo = PackItem(unchecked((int)_host.GetSelectedItemId()));
+        if (wo == null && _lastPackSelId != 0 && NowMs - _lastPackSelAt <= RememberSelectionMs)
+            wo = PackItem(_lastPackSelId);
+        if (wo == null && !quiet)
+            Chat("[RynthAi] Click an item in your pack (game inventory or RynthCore Inventory) first, "
+                 + "or drag it from the RynthCore Inventory onto the slot.");
         return wo;
     }
+
+    /// <summary>The item to act on for "use the selected item" HUD actions.</summary>
+    private WorldObject? SelectedPackItem() => AssignablePackItem();
 
     public void AddSelectedToItemHud()
     {
@@ -269,15 +331,49 @@ internal sealed class HudController
         Chat(n > 0 ? $"[RynthAi] Removed {n} item(s) you no longer carry from the HUD." : "[RynthAi] Every HUD item is still in your pack.");
     }
 
-    /// <summary>Puts the selected pack item into Mini Remote slot <paramref name="slot"/>.</summary>
+    /// <summary>Puts the selected (or last selected) pack item into Mini Remote slot <paramref name="slot"/>.</summary>
     public void SetSlotFromSelection(int slot)
     {
         if (slot < 0 || slot >= State.MiniRemoteSlots.Count) return;
-        var wo = SelectedPackItem();
-        if (wo == null) return;
+        var wo = AssignablePackItem();
+        if (wo != null) AssignSlot(slot, wo);
+    }
+
+    /// <summary>
+    /// Puts carried item <paramref name="objectId"/> into <paramref name="slot"/> (-1 = first empty
+    /// slot). Used by drag-and-drop from the RynthCore Inventory and its "Add to Mini Remote" menu.
+    /// </summary>
+    public void SetSlotFromItemId(int slot, uint objectId)
+    {
+        var wo = PackItem(unchecked((int)objectId));
+        if (wo == null) { Chat("[RynthAi] That item is no longer in your pack."); return; }
+        if (slot < 0) slot = State.MiniRemoteSlots.FindIndex(e => e.IsEmpty);
+        if (slot < 0) { Chat("[RynthAi] Every Mini Remote slot is in use. Clear one first (right-click it)."); return; }
+        if (slot >= State.MiniRemoteSlots.Count) return;
+        AssignSlot(slot, wo);
+    }
+
+    private void AssignSlot(int slot, WorldObject wo)
+    {
         var row = _pack.ByName.TryGetValue(wo.Name, out var r) ? r : null;
         State.MiniRemoteSlots[slot] = new HudItemEntry { Name = wo.Name, Wcid = row?.Wcid ?? Wcid(wo), IconDid = row?.IconDid ?? IconOf(wo) };
         Chat($"[RynthAi] Mini Remote slot {slot + 1:00} = {wo.Name}.");
+    }
+
+    /// <summary>
+    /// Remote command "remoteslot &lt;slot|first&gt; &lt;objectId&gt;" (RynthCore Inventory menu).
+    /// Slot is 1-based. Returns false when the value can't be parsed.
+    /// </summary>
+    public bool HandleRemoteSlot(string value)
+    {
+        var parts = (value ?? string.Empty).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 2 || !uint.TryParse(parts[1], out uint id)) return false;
+        int slot;
+        if (parts[0].Equals("first", StringComparison.OrdinalIgnoreCase)) slot = -1;
+        else if (int.TryParse(parts[0], out int n) && n >= 1) slot = n - 1;
+        else return false;
+        SetSlotFromItemId(slot, id);
+        return true;
     }
 
     public void ClearSlot(int slot)

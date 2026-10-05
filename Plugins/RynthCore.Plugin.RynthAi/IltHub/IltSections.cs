@@ -4,6 +4,7 @@ using System;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
+/// <summary>Section windows. Values index per-section arrays, so new sections go at the end.</summary>
 internal enum IltSection
 {
     Character,
@@ -12,15 +13,16 @@ internal enum IltSection
     Banking,
     Gear,
     Games,
+    Guardian,
 }
 
 internal static class IltSections
 {
-    /// <summary>Menu order (the old Hub's tab order).</summary>
+    /// <summary>Menu order (the old Hub's tab order, then the Guardian window).</summary>
     public static readonly IltSection[] All =
     {
         IltSection.Character, IltSection.Quests, IltSection.Pet,
-        IltSection.Banking, IltSection.Gear, IltSection.Games,
+        IltSection.Banking, IltSection.Gear, IltSection.Games, IltSection.Guardian,
     };
 
     public static string Label(IltSection s) => s switch
@@ -31,6 +33,7 @@ internal static class IltSections
         IltSection.Banking => "Banking",
         IltSection.Gear => "Gear",
         IltSection.Games => "Games",
+        IltSection.Guardian => "Guardian",
         _ => s.ToString(),
     };
 
@@ -45,6 +48,7 @@ internal static class IltSections
             case "banking": case "bank": section = IltSection.Banking; return true;
             case "gear": section = IltSection.Gear; return true;
             case "games": case "game": section = IltSection.Games; return true;
+            case "guardian": case "temple": case "riddle": section = IltSection.Guardian; return true;
             default: section = IltSection.Character; return false;
         }
     }
@@ -57,6 +61,7 @@ internal static class IltSections
         IltSection.Banking => cs.BankingWindowOpen,
         IltSection.Gear => cs.GearWindowOpen,
         IltSection.Games => cs.GamesWindowOpen,
+        IltSection.Guardian => cs.GuardianWindowOpen,
         _ => false,
     };
 
@@ -70,6 +75,7 @@ internal static class IltSections
             case IltSection.Banking: cs.BankingWindowOpen = open; break;
             case IltSection.Gear: cs.GearWindowOpen = open; break;
             case IltSection.Games: cs.GamesWindowOpen = open; break;
+            case IltSection.Guardian: cs.GuardianWindowOpen = open; break;
         }
     }
 

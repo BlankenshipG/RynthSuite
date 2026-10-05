@@ -754,6 +754,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "hub":
             case "quests":
             case "pets":
+            case "guardian":
                 // Dashboard Char launcher (hub=show opens the Mini Remote) and its right-click menu
                 // (hub=open <section> toggle); value carries the "/ra hub|quests|pets" arguments.
                 if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
@@ -769,6 +770,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "itemhudadd":
                 // Inventory panel "Add to item count HUD"; value is the item name.
                 HandleItemHudAdd(value);
+                break;
+            case "remoteslot":
+                // Inventory panel "Add to Mini Remote"; value is "<slot 1-30|first> <objectId>".
+                if (_huds == null) { ChatLine("[RynthAi] HUDs not ready (log in first)."); break; }
+                if (!_huds.HandleRemoteSlot(value)) Host.Log($"[RynthAi] bad remoteslot value: {value}");
                 break;
             case "prog":
                 // Skills panel Progression tab (augmentations / enlightenment edits).
@@ -2983,6 +2989,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "hub":
             case "quests":
             case "pets":
+            case "guardian":
                 if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
                 _iltHub.HandleCommand(cmd, parts.Length > 2 ? parts[2..] : Array.Empty<string>());
                 break;

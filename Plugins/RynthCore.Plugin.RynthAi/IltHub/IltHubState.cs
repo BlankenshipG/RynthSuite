@@ -43,6 +43,7 @@ public sealed class IltHubState
     public IltCharacterState Character = new();
     public IltGearState Gear = new();
     public IltGamesState Games = new();
+    public IltGuardianState Guardian = new();
 }
 
 /// <summary>Cached result of the server-options check (see IltServerOptions).</summary>
@@ -189,6 +190,8 @@ public sealed class IltCharacterState
     public bool GearWindowOpen;
     /// <summary>The "Games" window is open.</summary>
     public bool GamesWindowOpen;
+    /// <summary>The "Guardian" window (riddle translator, attribute tracker) is open.</summary>
+    public bool GuardianWindowOpen;
 
     /// <summary>
     /// Registry charms this character has carried, keyed by charm name. Lets the Charms Tracking
@@ -260,4 +263,23 @@ public sealed class IltGamesState
     public long BlackjackBet = 1_000_000;
     public long FellowshipBlackjackBet = 1_000_000;
     public int PowerballQuantity = 1;
+}
+
+// ── Guardian (Temple of Enlightenment) ──────────────────────────────────────
+
+public sealed class IltGuardianState
+{
+    /// <summary>Translate incoming guardian tells and show the answer (Guardian window + Mini Remote).</summary>
+    public bool AutoDetectFromChat = true;
+    /// <summary>After a chat answer, give the item to the guardian automatically.</summary>
+    public bool AutoHandIn;
+    /// <summary>Temple guardian only: buy one of the item from the nearest vendor when none is carried.</summary>
+    public bool BuyMissingFromVendor = true;
+
+    /// <summary>Assumed attribute turn-in cooldown when only /qb wait stamps are known (hours).</summary>
+    public int CooldownHoursAssumed = 20;
+    /// <summary>Turn-ins counted from /qb wait-stamp transitions, keyed by attribute (fallback when /myquests lacks the flag).</summary>
+    public Dictionary<string, int> TurnInCounts = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Estimated end of each attribute's cooldown (UTC), keyed by attribute (same fallback).</summary>
+    public Dictionary<string, DateTime> CooldownUntilUtc = new(StringComparer.OrdinalIgnoreCase);
 }

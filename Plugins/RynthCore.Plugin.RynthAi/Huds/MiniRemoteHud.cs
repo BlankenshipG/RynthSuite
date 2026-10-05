@@ -1,7 +1,8 @@
 // MiniRemoteHud.cs — Floating Mini Remote (UtilityBelt-style) for RynthAi. Render thread only.
 //
 // The Mini Remote is the ILT Hub's main window: its Options menu (the Options button or a
-// right-click) opens the Hub's section windows (Character, Quests, Pets, Banking, Gear, Games).
+// right-click) opens the Hub's section windows (Character, Quests, Pets, Banking, Gear, Games,
+// Guardian).
 // The V/H button stacks the sections (vertical) or lays them out in three columns (horizontal).
 //
 // Sections (each can be hidden from the Options menu):
@@ -9,11 +10,14 @@
 //   Target   the creature combat is attacking: name, health bar, distance
 //   Pet      the summon that is out (health bar, time left), else the next combat essence and
 //            whether it is ready
-//   Slots    5 × 6 quick-use item grid; click uses the item, right-click assigns / clears
+//   Slots    5 × 6 quick-use item grid; click uses the item (an empty slot takes the selected
+//            pack item), right-click assigns / clears, and items dragged from the game's
+//            inventory or the RynthCore Inventory window drop straight into a slot
 //   Toggles  macro and subsystem switches (same as the dashboard buttons)
 //   Bank     ILT bank balances (pyreals, luminance, keys, coins)
 //   Rebuff   force rebuff / cancel rebuff
 //   Translate chat translator on/off and the receive <-> send language swap
+//   Guardian the last Temple guardian answer with a Give button (only while it is recent)
 // All game actions are posted to the pump thread.
 using System;
 using System.Linq;
@@ -125,7 +129,7 @@ internal sealed class MiniRemoteHud
             RenderActionSections(s);
             ImGui.EndChild();
         }
-        if (s.MiniShowBank || s.MiniShowRebuff || s.MiniShowTranslate)
+        if (s.MiniShowBank || s.MiniShowRebuff || s.MiniShowTranslate || s.MiniShowGuardian)
         {
             BeginColumn("##mrcoleconomy", colW);
             RenderEconomySections(s, hub);
@@ -169,6 +173,7 @@ internal sealed class MiniRemoteHud
         if (s.MiniShowBank) RenderBank(hub);
         if (s.MiniShowRebuff) RenderRebuff();
         if (s.MiniShowTranslate && _hud.Translate is { } translate) translate.RenderHubSection();
+        if (s.MiniShowGuardian && IltActive(hub)) hub!.Guardian.RenderRemoteLine();
     }
 
     // ── Sections ────────────────────────────────────────────────────────────
@@ -333,13 +338,19 @@ internal sealed class MiniRemoteHud
                 if (e.IsEmpty) ImGui.PopStyleColor();
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(e.IsEmpty ? $"Slot {i + 1:00}: empty\nRight-click to assign the selected item."
-                                           : $"{e.Name}\n{count:N0} carried\nClick to use, right-click for options.");
-            if (clicked && !e.IsEmpty)
+                ImGui.SetTooltip(e.IsEmpty ? EmptySlotTip(i) : $"{e.Name}\n{count:N0} carried\nClick to use, right-click for options.");
+            int slotIndex = i;
+            if (clicked)
             {
-                var entry = e;
-                _hud.Post(() => _hud.UseItem(entry));
+                // Empty slot: click assigns the selected (or last selected) pack item.
+                if (e.IsEmpty) _hud.Post(() => _hud.SetSlotFromSelection(slotIndex));
+                else
+                {
+                    var entry = e;
+                    _hud.Post(() => _hud.UseItem(entry));
+                }
             }
+            AcceptItemDrop(slotIndex, e.IsEmpty);
             if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
             {
                 _slotMenuIndex = i;
@@ -351,13 +362,53 @@ internal sealed class MiniRemoteHud
         ImGui.PopStyleVar();
     }
 
+    /// <summary>
+    /// ImGui drag-and-drop payload type for one inventory item (uint object id). Must match
+    /// InventoryFace.ItemPayloadType in RynthCore.Engine, which publishes it while dragging.
+    /// </summary>
+    private const string ItemPayloadType = "RYNTH_INV_ITEM";
+
+    /// <summary>
+    /// Payload type for an item dragged out of AC's own inventory (uint object id). Must match
+    /// ItemDragBridge.NativePayloadType in RynthCore.Engine. The engine can only infer it from the
+    /// game selection, so it is taken by empty slots only and never replaces an assigned one.
+    /// </summary>
+    private const string GameItemPayloadType = "RYNTH_GAME_ITEM";
+
+    /// <summary>
+    /// Makes the last slot button a drop target: RynthCore Inventory drags on any slot, game
+    /// inventory drags on <paramref name="empty"/> slots.
+    /// </summary>
+    private unsafe void AcceptItemDrop(int slot, bool empty)
+    {
+        if (!ImGui.BeginDragDropTarget()) return;
+        ImGuiPayloadPtr payload = ImGui.AcceptDragDropPayload(ItemPayloadType);
+        if (payload.NativePtr == null && empty) payload = ImGui.AcceptDragDropPayload(GameItemPayloadType);
+        if (payload.NativePtr != null && payload.Data != IntPtr.Zero && payload.DataSize >= sizeof(uint))
+        {
+            uint objectId = *(uint*)payload.Data;
+            _hud.Post(() => _hud.SetSlotFromItemId(slot, objectId));
+        }
+        ImGui.EndDragDropTarget();
+    }
+
+    private string EmptySlotTip(int index)
+    {
+        string candidate = _hud.AssignCandidate;
+        return candidate.Length > 0
+            ? $"Slot {index + 1:00}: empty\nClick to assign {candidate}.\nOr drag an item here from the game inventory or the RynthCore Inventory."
+            : $"Slot {index + 1:00}: empty\nClick an item in your pack, then click here to assign it.\nOr drag an item here from the game inventory or the RynthCore Inventory.";
+    }
+
     /// <summary>Per-slot right-click menu (opened inside the slot's ID scope).</summary>
     private void RenderSlotMenu(int index, HudItemEntry e)
     {
         if (!ImGui.BeginPopup(SlotPopup)) return;
         _slotMenuIndex = index;
         ImGui.TextDisabled(e.IsEmpty ? $"Slot {index + 1:00}" : $"Slot {index + 1:00}: {e.Name}");
-        if (ImGui.MenuItem("Assign selected item")) _hud.Post(() => _hud.SetSlotFromSelection(index));
+        string candidate = _hud.AssignCandidate;
+        if (ImGui.MenuItem(candidate.Length > 0 ? $"Assign {candidate}" : "Assign selected item"))
+            _hud.Post(() => _hud.SetSlotFromSelection(index));
         if (!e.IsEmpty && ImGui.MenuItem("Clear slot")) _hud.Post(() => _hud.ClearSlot(index));
         ImGui.EndPopup();
     }
@@ -426,6 +477,7 @@ internal sealed class MiniRemoteHud
         Flag("Bank", ref s.MiniShowBank);
         Flag("Rebuff", ref s.MiniShowRebuff);
         Flag("Translate", ref s.MiniShowTranslate);
+        Flag("Guardian answer", ref s.MiniShowGuardian);
         ImGui.Separator();
         Flag("Horizontal layout", ref s.MiniRemoteHorizontal);
         Flag("Lock position", ref s.MiniRemoteLocked);

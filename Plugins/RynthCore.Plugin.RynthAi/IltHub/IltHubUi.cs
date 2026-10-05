@@ -2,7 +2,8 @@
 //
 // The Mini Remote is the Hub. Each former tab is its own window, opened from the Mini Remote's
 // Options or "/ra hub open <section>": ILT Character (world status, Force-ILT, profiles, session
-// rates), Quests (IltQuests), Pets, Banking, Gear and Games. A section window draws only while the
+// rates), Quests (IltQuests), Pets, Banking, Gear, Games and Guardian (IltGuardian: Temple riddle
+// translator, hand-in, attribute turn-in tracker). A section window draws only while the
 // server reports its feature on. Augmentations / Enlightenment / XP planning live on the engine
 // Skills panel. All AC actions go through IltHubContext.Post / Confirm so nothing here touches
 // the game directly.
@@ -33,7 +34,7 @@ internal sealed class IltHubUi
     private readonly bool[] _rescueChecked = new bool[SectionCount];
 
     // Cached so the per-frame window calls don't allocate a delegate each time.
-    private readonly Action _characterBody, _petsBody, _bankingBody, _gearBody, _gamesBody;
+    private readonly Action _characterBody, _petsBody, _bankingBody, _gearBody, _gamesBody, _guardianBody;
 
     public IltHubUi(IltHubController hub, IltHubContext ctx)
     {
@@ -44,6 +45,7 @@ internal sealed class IltHubUi
         _bankingBody = () => _hub.Banking.Render();
         _gearBody = () => _hub.Gear.Render();
         _gamesBody = () => _hub.Games.Render();
+        _guardianBody = () => _hub.Guardian.Render();
     }
 
     public void Render()
@@ -54,6 +56,7 @@ internal sealed class IltHubUi
         RenderSectionWindow(IltSection.Banking, "Banking##iltbankwin", new Vector2(560, 560), new Vector2(80, 80), _bankingBody);
         RenderSectionWindow(IltSection.Gear, "Gear##iltgearwin", new Vector2(560, 560), new Vector2(120, 120), _gearBody);
         RenderSectionWindow(IltSection.Games, "Games##iltgameswin", new Vector2(520, 480), new Vector2(160, 160), _gamesBody);
+        RenderSectionWindow(IltSection.Guardian, "Guardian##iltguardianwin", new Vector2(540, 520), new Vector2(200, 120), _guardianBody);
         LogSectionTransition(IltSection.Quests, _ctx.State.Character.QuestTrackerPoppedOut && _hub.SectionAvailable(IltSection.Quests));
         _hub.Games.RenderHud();
         _hub.Quests.RenderFloatingWindows();
