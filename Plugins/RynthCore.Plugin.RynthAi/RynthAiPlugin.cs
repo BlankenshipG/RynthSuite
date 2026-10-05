@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.20-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.21-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -633,6 +633,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // "/ra hub <args>" from the Avalonia panel's ILT Hub button (value e.g. "show").
                 if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
                 _iltHub.HandleCommand("hub", value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+                break;
+            case "map":
+            case "lua":
+                // Avalonia panel's Map / Lua buttons (value "toggle"); same as "/ra map|lua".
+                HandleWindowCommand(action.ToLowerInvariant(), value);
                 break;
             // movestart/movestop are applied DIRECTLY by the RynthRemote plugin (pure Host.SetAutoRun/
             // SetMotion + its own dead-man watchdog) and are never forwarded here.
@@ -2329,6 +2334,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
                 _iltHub.HandleCommand(cmd, parts.Length > 2 ? parts[2..] : Array.Empty<string>());
                 break;
+            case "map":
+            case "lua":          HandleWindowCommand(cmd, parts.Length > 2 ? parts[2] : string.Empty); break;
             case "dunnav":        HandleDungeonNavCommand(parts); break;
             case "dunnav-patrol": HandleDungeonNavPatrolCommand(parts); break;
             case "hazard":        HandleHazardCommand(parts); break;
@@ -2481,7 +2488,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     /// <summary>
     /// RynthPluginRenderOverlay: called instead of <see cref="OnRender"/> when the engine's ImGui
     /// shell is off (Avalonia UI). Draws only the windows the Avalonia RynthAi panel doesn't
-    /// have: the ILT Hub (+ its confirm popups and games HUD) and the Item Info settings window.
+    /// have: the ILT Hub (+ its confirm popups and games HUD), the dungeon map, the Lua Scripts
+    /// editor and the Item Info settings window.
     /// They are separate windows that add to the Avalonia panel; macro/automation never depends
     /// on them, and any exception is swallowed here so it can't reach the engine.
     /// </summary>
@@ -2513,6 +2521,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             try { _iltHub?.Render(); }
             finally { ImGui.PopStyleColor(pushedColors); }
 
+            // Dungeon map only: the Avalonia Radar panel and RynthChat already cover radar/chat.
+            _dashboard?.RenderMapWindow(includeRadarAndChat: false);
+
             _dashboard?.RenderOverlayWindows();
         }
         catch (Exception ex)
@@ -2522,6 +2533,33 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         finally
         {
             ImGui.SetCurrentContext(previousContext);
+        }
+    }
+
+    /// <summary>
+    /// "/ra map|lua [show|hide|toggle]" and the matching remote commands from the Avalonia
+    /// panel's Map / Lua buttons. Both windows are ImGui windows drawn by OnRender (ImGui shell)
+    /// or OnRenderOverlay (Avalonia UI), so this only flips and persists their visibility.
+    /// </summary>
+    private void HandleWindowCommand(string which, string mode)
+    {
+        var dash = _dashboard;
+        if (dash == null) { ChatLine("[RynthAi] Dashboard not ready (log in first)."); return; }
+
+        if (which == "map")
+        {
+            bool shown = dash.SetDungeonMapVisible(mode);
+            if (!shown)
+                ChatLine("[RynthAi] Dungeon map hidden.");
+            else if (dash.IsDungeonMapAutoHidden)
+                ChatLine("[RynthAi] Dungeon map on — it appears when you are indoors.");
+            else
+                ChatLine("[RynthAi] Dungeon map shown.");
+        }
+        else
+        {
+            bool shown = dash.SetLuaWindowVisible(mode);
+            ChatLine(shown ? "[RynthAi] Lua Scripts window shown." : "[RynthAi] Lua Scripts window hidden.");
         }
     }
 

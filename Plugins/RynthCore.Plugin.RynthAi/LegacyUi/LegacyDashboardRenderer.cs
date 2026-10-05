@@ -1104,6 +1104,45 @@ internal sealed class LegacyDashboardRenderer
     }
 
     public void AddSelectedWeapon()     { _weaponsUi.AddSelectedWeapon();     SaveSettings(); }
+    /// <summary>True when the dungeon map is waiting for the player to go indoors (outdoors/portal space).</summary>
+    public bool IsDungeonMapAutoHidden => _dungeonMapUi.IsAutoHidden;
+
+    /// <summary>
+    /// Shows, hides or toggles the dungeon map ("/ra map", Avalonia Map button) and persists it.
+    /// <paramref name="mode"/>: show|on|1|true, hide|off|0|false, anything else (incl. empty) toggles.
+    /// Returns the new visibility.
+    /// </summary>
+    public bool SetDungeonMapVisible(string mode)
+    {
+        DashWindows.ShowDungeonMap = ResolveVisibility(mode, DashWindows.ShowDungeonMap);
+        SaveSettings();
+        return DashWindows.ShowDungeonMap;
+    }
+
+    /// <summary>
+    /// Shows, hides or toggles the Lua Scripts editor ("/ra lua", Avalonia Lua button) and persists it.
+    /// Same <paramref name="mode"/> values as <see cref="SetDungeonMapVisible"/>. Returns the new visibility.
+    /// </summary>
+    public bool SetLuaWindowVisible(string mode)
+    {
+        bool show = ResolveVisibility(mode, DashWindows.ShowLua);
+        if (show && !DashWindows.ShowLua)
+            _luaUi.RefreshLuaFiles(); // pick up scripts added on disk since the last open
+        DashWindows.ShowLua = show;
+        SaveSettings();
+        return show;
+    }
+
+    private static bool ResolveVisibility(string mode, bool current)
+    {
+        switch ((mode ?? string.Empty).Trim().ToLowerInvariant())
+        {
+            case "show": case "on": case "1": case "true":   return true;
+            case "hide": case "off": case "0": case "false": return false;
+            default:                                         return !current;
+        }
+    }
+
     /// <summary>Adds the inventory-selected shield as an off-hand entry (engine Items panel).</summary>
     public void AddSelectedShield()     { _weaponsUi.AddSelectedShield();     SaveSettings(); }
     public void AddSelectedConsumable() { _weaponsUi.AddSelectedConsumable(); SaveSettings(); }
@@ -1674,14 +1713,15 @@ internal sealed class LegacyDashboardRenderer
 
     /// <summary>
     /// Avalonia-mode (ImGui shell off) extras: only windows with no Avalonia panel, drawn as
-    /// separate windows beside the Avalonia RynthAi panel. Currently the Item Info window
-    /// (the ILT Hub renders itself from RynthAiPlugin.OnRenderOverlay).
+    /// separate windows beside the Avalonia RynthAi panel: the Lua Scripts editor and the
+    /// Item Info window. (The ILT Hub and the dungeon map are drawn by RynthAiPlugin.OnRenderOverlay.)
     /// </summary>
     public void RenderOverlayWindows()
     {
         int pushedColors = PushDashboardStyle();
         try
         {
+            _luaUi.Render();      // no-op unless DashWindows.ShowLua
             _itemInfoUi.Render(); // no-op unless ItemInfoSettings.ShowWindow
         }
         finally
@@ -1711,8 +1751,12 @@ internal sealed class LegacyDashboardRenderer
         return 11;
     }
 
-    // Rendered every frame regardless of whether the main dashboard is visible.
-    public void RenderMapWindow()
+    /// <summary>
+    /// Rendered every frame regardless of whether the main dashboard is visible.
+    /// <paramref name="includeRadarAndChat"/> is false in Avalonia mode, where the Radar
+    /// panel and RynthChat already exist — drawing the ImGui copies too would duplicate them.
+    /// </summary>
+    public void RenderMapWindow(bool includeRadarAndChat = true)
     {
         ImGui.PushStyleColor(ImGuiCol.FrameBg,        new Vector4(0.15f, 0.55f, 0.95f, 1.00f));
         ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(0.22f, 0.62f, 1.00f, 1.00f));
@@ -1722,8 +1766,11 @@ internal sealed class LegacyDashboardRenderer
         {
             if (DashWindows.ShowDungeonMap || _dungeonMapUi.IsAutoHidden)
                 _dungeonMapUi.Render();
-            _rynthRadarUi.Render();
-            _rynthChatUi.Render();
+            if (includeRadarAndChat)
+            {
+                _rynthRadarUi.Render();
+                _rynthChatUi.Render();
+            }
         }
         finally
         {

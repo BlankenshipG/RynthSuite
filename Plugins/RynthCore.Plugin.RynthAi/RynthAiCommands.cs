@@ -135,6 +135,8 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra trace <cat|all|ilt|list> [on|off|status] — per-function trace files (Logs\\Diagnostics\\Trace)");
         ChatLine("[RynthAi] /ra logs [open|prune|flush|file on|off] — diagnostics folder / housekeeping");
         ChatLine("[RynthAi] /ra hub [show|hide|refresh|status|bank|force on|off|profile ...|suit ...] — ILT Hub (ILT worlds)");
+        ChatLine("[RynthAi] /ra map [show|hide]  — toggle the dungeon map window (shows indoors only)");
+        ChatLine("[RynthAi] /ra lua [show|hide]  — toggle the Lua Scripts editor window");
         ChatLine("[RynthAi] /ra quests [refresh|check <regex>] — ILT Hub quest tracker");
         ChatLine("[RynthAi] /ra power <0-100|auto> — set attack power (auto = recklessness-aware)");
         ChatLine("[RynthAi] /ra cast <spellId> — cast spell on current target");
