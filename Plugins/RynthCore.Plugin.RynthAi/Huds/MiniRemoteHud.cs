@@ -9,6 +9,7 @@
 //   Toggles  macro and subsystem switches (same as the dashboard buttons)
 //   Bank     ILT bank balances (pyreals, luminance, keys, coins)
 //   Rebuff   force rebuff / cancel rebuff
+//   Translate chat translator on/off and the receive <-> send language swap
 // All game actions are posted to the pump thread.
 using System;
 using System.Linq;
@@ -64,6 +65,7 @@ internal sealed class MiniRemoteHud
         if (s.MiniShowToggles) RenderToggles(settings);
         if (s.MiniShowBank) RenderBank(hub);
         if (s.MiniShowRebuff) RenderRebuff();
+        if (s.MiniShowTranslate && _hud.Translate is { } translate) translate.RenderHubSection();
 
         // Right-click on the window body opens the options, unless a slot's own menu is open.
         if (_slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
@@ -325,6 +327,7 @@ internal sealed class MiniRemoteHud
         Flag("Toggles", ref s.MiniShowToggles);
         Flag("Bank", ref s.MiniShowBank);
         Flag("Rebuff", ref s.MiniShowRebuff);
+        Flag("Translate", ref s.MiniShowTranslate);
         ImGui.Separator();
         Flag("Lock position", ref s.MiniRemoteLocked);
         if (ImGui.MenuItem("Inventory HUDs setup...")) s.ShowSetup = true;

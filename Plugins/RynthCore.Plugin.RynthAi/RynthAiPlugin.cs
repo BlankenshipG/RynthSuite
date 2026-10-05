@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.31-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.32-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -101,6 +101,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     // icon textures they draw (kept across sessions).
     private Huds.HudController? _huds;
     private Huds.HudIconCache? _hudIcons;
+    // Chat translator: global settings, so it lives across logins (created on first login).
+    private Translate.ChatTranslator? _translator;
+    private Translate.TranslateUi? _translateUi;
     private InventoryManager? _inventoryManager;
     private SalvageManager? _salvageManager;
     private ManaStoneManager? _manaStoneManager;
@@ -227,6 +230,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _creatureStore = null;
         _damageStore = null;
         _mobSeedStore = null;
+        try { _translator?.Dispose(); } catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator dispose"); }
+        _translator = null;
+        _translateUi = null;
+        _dashboard?.SetTranslatePage(null);
         _objectCache = null;
         _initialized = false;
         _dashboard = null;
@@ -347,7 +354,33 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _dashboard.SetInventoryHudLauncher(() => { if (_huds != null) _huds.State.ShowSetup = true; });
         _dashboard.MiniRemoteVisible = () => _huds?.State.ShowMiniRemote == true;
         _dashboard.SetMiniRemoteVisible = v => { if (_huds != null) _huds.State.ShowMiniRemote = v; };
+        _huds.Translate = _translateUi;
     }
+
+    /// <summary>
+    /// Creates the chat translator on the first login and resets its session state on every login
+    /// (send language back to the default). Settings are global, so the instance survives logouts.
+    /// </summary>
+    private void EnsureTranslator()
+    {
+        try
+        {
+            if (_translator == null)
+            {
+                _translator = new Translate.ChatTranslator(Host, CurrentCharacterName);
+                _translateUi = new Translate.TranslateUi(_translator);
+            }
+            _translator.ResetSession();
+            var ui = _translateUi;
+            _dashboard?.SetTranslatePage(() => ui?.RenderSettings("##adv"));
+            if (_huds != null) _huds.Translate = _translateUi;
+        }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator init"); }
+    }
+
+    /// <summary>The logged-in character's name, or empty before login.</summary>
+    private string CurrentCharacterName()
+        => _playerId != 0 && Host.HasGetObjectName && Host.TryGetObjectName(_playerId, out string name) ? name ?? string.Empty : string.Empty;
 
     public override void OnLoginComplete()
     {
@@ -358,6 +391,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _loginComplete = true;
         _dashboard.OnLoginComplete();
         _dashboard.ChatSubmitHandler = HandleRynthChatSubmit;
+        EnsureTranslator();
         _navigationEngine = new NavigationEngine(Host, _dashboard.Settings);
         if (_objectCache != null) _navigationEngine.SetWorldObjectCache(_objectCache);
         _navMarkerRenderer = new NavMarkerRenderer(Host, _dashboard.Settings);
@@ -1200,6 +1234,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "Tick"); }
             try { _huds?.Tick(); }
             catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "Tick"); }
+            try { _translator?.Tick(); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator Tick"); }
             DrainGiveQueue();
             if (diag) RynthLog.Write(LogCat.General, "[RynthAi] OnTick: after drain give queue");
             _jumper?.Tick();
@@ -1711,7 +1747,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "OnChat"); }
         if (_questTracker?.OnChatLine(text) == true) hide = true;
         if (hide) eat = 1;
-        else _dashboard?.PushChatLine(text, chatType);
+        else
+        {
+            _dashboard?.PushChatLine(text, chatType);
+            try { _translator?.OnChatWindowText(text, chatType); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator inbound"); }
+        }
 
         _buffManager?.OnChatWindowText(text, chatType);
         _manaStoneManager?.OnChatWindowText(text);
@@ -2252,6 +2293,18 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             return;
         }
 
+        // Chat translator: chat lines on the ticked Send channels are swallowed here and resent
+        // translated from OnTick (the resend passes back through this hook untouched).
+        try
+        {
+            if (_translator != null && _translator.TryInterceptOutbound(trimmed))
+            {
+                eat = 1;
+                return;
+            }
+        }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator outbound"); }
+
         if (!trimmed.StartsWith("/ra", StringComparison.OrdinalIgnoreCase))
             return;
 
@@ -2398,6 +2451,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "itemhud":
             case "remote":
             case "miniremote":   HandleHudCommand(cmd, parts.Length > 2 ? parts[2] : string.Empty); break;
+            case "translate":
+            case "tr":           HandleTranslateCommand(parts); break;
             case "dunnav":        HandleDungeonNavCommand(parts); break;
             case "dunnav-patrol": HandleDungeonNavPatrolCommand(parts); break;
             case "hazard":        HandleHazardCommand(parts); break;
@@ -2531,6 +2586,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
             // Floating HUDs (item counts, Mini Remote, setup window).
             _huds?.Render();
+            RenderTranslateWindow();
 
             if (_windowVisible && _dashboard is not null)
             {
@@ -2595,8 +2651,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // Dungeon map only: the Avalonia Radar panel and RynthChat already cover radar/chat.
             _dashboard?.RenderMapWindow(includeRadarAndChat: false);
 
-            // Floating HUDs have no Avalonia counterpart either.
+            // Floating HUDs and the translator window have no Avalonia counterpart either.
             _huds?.Render();
+            RenderTranslateWindow();
 
             // Nav waypoint HUD / labels are ImGui-only too.
             _navOverlay?.Render();
@@ -2611,6 +2668,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         {
             ImGui.SetCurrentContext(previousContext);
         }
+    }
+
+    /// <summary>Chat Translate window in the dashboard colours (no-op while hidden). Render thread.</summary>
+    private void RenderTranslateWindow()
+    {
+        var ui = _translateUi;
+        if (ui == null || _translator?.Settings.ShowWindow != true) return;
+        int pushedColors = LegacyDashboardRenderer.PushDashboardStyle();
+        try { ui.RenderWindow(); }
+        finally { ImGui.PopStyleColor(pushedColors); }
     }
 
     /// <summary>

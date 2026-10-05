@@ -33,6 +33,11 @@ internal sealed class LegacyAdvancedSettingsUi
     /// <summary>Wires the Inventory Management "Inventory HUDs..." button.</summary>
     public void SetInventoryHudLauncher(Action open) => _openInventoryHuds = open;
 
+    private Action? _renderTranslatePage;
+
+    /// <summary>Wires the Translate page body (chat translator settings); null shows a "log in first" note.</summary>
+    public void SetTranslatePage(Action? render) => _renderTranslatePage = render;
+
     /// <summary>Wires the "Tools" row at the top of the Looting page (Loot Editor / Monster Editor buttons).</summary>
     public void SetToolLaunchers(Action openLootEditor, Action openMonsterEditor)
     {
@@ -880,6 +885,11 @@ internal sealed class LegacyAdvancedSettingsUi
 
             case "Vendoring":
                 RenderVendoring();
+                break;
+
+            case "Translate":
+                if (_renderTranslatePage != null) _renderTranslatePage();
+                else ImGui.TextDisabled("The chat translator starts after login.");
                 break;
 
             case "Diagnostics":

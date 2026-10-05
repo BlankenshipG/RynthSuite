@@ -3048,6 +3048,9 @@ internal sealed class LegacyDashboardRenderer
     /// <summary>Wires the Inventory Management "Inventory HUDs..." button to the HUD setup window.</summary>
     public void SetInventoryHudLauncher(Action open) => _advancedSettingsUi.SetInventoryHudLauncher(open);
 
+    /// <summary>Advanced Settings > Translate page body (chat translator settings).</summary>
+    public void SetTranslatePage(Action? render) => _advancedSettingsUi.SetTranslatePage(render);
+
     public void RequestForceRebuff() => OnForceRebuffRequested?.Invoke();
     public void RequestCancelForceRebuff() => OnCancelForceRebuffRequested?.Invoke();
     public void AdjustOpacity(float delta) => _bgOpacity = Math.Clamp(_bgOpacity + delta, 0.1f, 1f);

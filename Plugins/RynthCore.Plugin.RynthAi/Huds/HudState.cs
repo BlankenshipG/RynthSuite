@@ -38,6 +38,8 @@ public sealed class HudState
     public bool MiniShowToggles = true;
     public bool MiniShowBank = true;
     public bool MiniShowRebuff = true;
+    /// <summary>Chat translator row: on/off, receive / send language swap.</summary>
+    public bool MiniShowTranslate = true;
     /// <summary>Gem grid slots, row-major from the top-left (empty Name = unassigned).</summary>
     public List<HudItemEntry> MiniRemoteSlots = new();
 }

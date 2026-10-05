@@ -21,6 +21,13 @@ public sealed partial class RynthAiPlugin
         Host.WriteToChat(text, 1);
     }
 
+    /// <summary>/ra translate ... — forwards to the chat translator (see ChatTranslator.HandleCommand).</summary>
+    private void HandleTranslateCommand(string[] parts)
+    {
+        if (_translator == null) { ChatLine("[RynthAi] Chat translator not ready (log in first)."); return; }
+        _translator.HandleCommand(parts.Length > 2 ? parts[2..] : Array.Empty<string>(), ChatLine);
+    }
+
     // ── Diagnostics: /ra debug | /ra trace | /ra logs (UtilityBelt-style) ─────
 
     /// <summary>Parses an on/off word; returns null for anything else (caller treats it as status).</summary>
@@ -189,6 +196,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra lootcheck     — classify selected item (on|off = auto on click)");
         ChatLine("[RynthAi] /ra iteminfo (ii) — Mag-style item info (on|off = on select; click left|right|off; layout pet|line; settings = window)");
         ChatLine("[RynthAi]   ii fields | field <name> on|off | rating <tag> on|off | value|verbose on|off | reset");
+        ChatLine("[RynthAi] /ra translate (tr) — chat translator: on|off | in|out [on|off] | window | send|recv|default <lang> | swap | reset | test <text>");
         ChatLine("[RynthAi] /ra dumpinv       — dump all inventory items (cache + direct)");
         ChatLine("[RynthAi] /ra combat        — dump combat state machine snapshot");
         ChatLine("[RynthAi] /ra why           — one-glance diagnosis of why the bot is idle/attacking");
