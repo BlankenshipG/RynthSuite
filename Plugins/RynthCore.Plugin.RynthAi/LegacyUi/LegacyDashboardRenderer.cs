@@ -11,7 +11,7 @@ using RynthCore.Plugin.RynthAi.Meta;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
-internal sealed class LegacyDashboardRenderer
+internal sealed partial class LegacyDashboardRenderer
 {
     internal static readonly Vector4 ColTeal = new(0.15f, 0.85f, 0.90f, 1.00f);
     internal static readonly Vector4 ColAmber = new(0.91f, 0.70f, 0.20f, 1.00f);
@@ -2286,6 +2286,8 @@ internal sealed class LegacyDashboardRenderer
                 ActiveNavIndex    = _settings.ActiveNavIndex,
                 NavFiles          = new List<string>(_navFiles),
                 Points            = points,
+                TrackBreadcrumbs  = _settings.NavOverlay.TrackBreadcrumbs,
+                ShowRouteOverlay  = _settings.NavOverlay.ShowRouteMarkers,
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.NavBridgePayload);
         }
@@ -2312,6 +2314,18 @@ internal sealed class LegacyDashboardRenderer
 
                 case "stopNav":
                     _settings.EnableNavigation = false;
+                    SaveSettings();
+                    break;
+
+                case "setBreadcrumbs":
+                    // Nav panel "Breadcrumbs": record (and draw) the walked trail.
+                    _settings.NavOverlay.TrackBreadcrumbs = cmd.On;
+                    SaveSettings();
+                    break;
+
+                case "setRouteOverlay":
+                    // Nav panel "Route overlay": route rings / lines, waypoint labels, guide line.
+                    _settings.NavOverlay.ShowRouteMarkers = cmd.On;
                     SaveSettings();
                     break;
 

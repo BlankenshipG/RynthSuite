@@ -65,6 +65,19 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginTick", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void Tick() => Runtime.OnTick();
 
+    // Local ImGui windows (ILT Hub, HUDs, translator, item info, nav overlay). The engine
+    // calls this when the export exists; the main panels stay on the engine side.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginRender", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void Render() => Runtime.OnRender();
+
+    /// <summary>Engine calls this instead of RynthPluginRender while its ImGui shell is off.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderOverlay", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void RenderOverlay()
+    {
+        try { Runtime.Plugin?.OnRenderOverlay(); }
+        catch { /* an exception crossing UnmanagedCallersOnly would fail-fast the client */ }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnChatBarEnter", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnChatBarEnter(IntPtr textUtf16, IntPtr eatFlag) => Runtime.OnChatBarEnter(textUtf16, eatFlag);
 
@@ -588,6 +601,56 @@ public static unsafe class PluginExports
             string json = Runtime.Plugin?.BuildPatrolInfoJson() ?? "{}";
             IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
             IntPtr oldPtr = Interlocked.Exchange(ref _patrolInfoPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    private static IntPtr _progressionPtr = IntPtr.Zero;
+
+    /// <summary>
+    /// Skills panel Progression tab (ILT augmentations / enlightenment). Same contract as
+    /// RynthPluginGetPatrolInfoJson: one static buffer, valid until the next call; the engine
+    /// polls it from its pump thread only.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetProgressionJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetProgressionJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildProgressionJson() ?? "{\"available\":false}";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _progressionPtr, newPtr);
+            if (oldPtr != IntPtr.Zero)
+                Marshal.FreeHGlobal(oldPtr);
+            return newPtr;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    private static IntPtr _charmsPtr = IntPtr.Zero;
+
+    /// <summary>
+    /// Settings panel Charms Tracking tab (ACECustom registry charms: acquired / active / server
+    /// state). Same contract as RynthPluginGetProgressionJson: one static buffer, valid until the
+    /// next call; the engine polls it from its pump thread only.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetCharmsJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetCharmsJson()
+    {
+        try
+        {
+            string json = Runtime.Plugin?.BuildCharmsJson() ?? "{\"available\":false}";
+            IntPtr newPtr = Marshal.StringToHGlobalAnsi(json);
+            IntPtr oldPtr = Interlocked.Exchange(ref _charmsPtr, newPtr);
             if (oldPtr != IntPtr.Zero)
                 Marshal.FreeHGlobal(oldPtr);
             return newPtr;

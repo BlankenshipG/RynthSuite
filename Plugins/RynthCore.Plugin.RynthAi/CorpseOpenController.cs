@@ -526,15 +526,24 @@ public sealed partial class RynthAiPlugin
             if (IsLootingBlockedByPack(settings))
                 return;
 
-            if (!TryFindNearestCorpse(maxMeters, out WorldObject? corpse, out _))
+            // A ground pickup already sent finishes before a corpse is claimed.
+            if (GroundPickupInFlight)
             {
-                // No corpses in range. STEP 4: nothing to release. The "Looting"
-                // string used to be held here from a just-completed corpse and
-                // had to be handed back so nav could resume; now HasLootWork
-                // simply stops returning true and the arbiter moves on by itself
-                // on the next tick.
+                TickGroundLoot(settings, maxMeters);
                 return;
             }
+
+            if (!TryFindNearestCorpse(maxMeters, out WorldObject? corpse, out _))
+            {
+                // No corpses in range. Loose ground items that match the loot profile
+                // get their turn here; HasLootWork keeps Looting while any remain.
+                TickGroundLoot(settings, maxMeters);
+                return;
+            }
+
+            // A corpse outranks an unsent ground claim.
+            if (_groundTargetId != 0)
+                ResetGroundLoot(clearCaches: false);
 
             if (corpse == null)
                 return;
@@ -1475,7 +1484,7 @@ public sealed partial class RynthAiPlugin
         if (maxMeters <= 0.25)
             return false;
 
-        return HasUnlootedCorpsesInRange(maxMeters);
+        return HasUnlootedCorpsesInRange(maxMeters) || HasGroundLootWork(settings);
     }
 
     /// <summary>

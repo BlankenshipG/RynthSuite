@@ -3,6 +3,7 @@
     <Project Path="Plugins/RynthCore.Plugin.RynthAi/RynthCore.Plugin.RynthAi.csproj" />
     <Project Path="Plugins/RynthCore.Plugin.RynthChat/RynthCore.Plugin.RynthChat.csproj" />
     <Project Path="Plugins/RynthCore.Plugin.RynthNet/RynthCore.Plugin.RynthNet.csproj" />
+    <Project Path="Plugins/RynthCore.Plugin.RynthJuice/RynthCore.Plugin.RynthJuice.csproj" />
   </Folder>
   <Folder Name="/Shared/">
     <Project Path="Shared/RynthCore.LootSdk/RynthCore.LootSdk.csproj" />

@@ -75,6 +75,13 @@ internal sealed class PetManager
 
     private static long NowMs => Environment.TickCount64;
 
+    /// <summary>ILT Hub: summon an empty essence (server pyreal-refill charm tops it up).</summary>
+    public Func<bool>? AllowSummonOnEmpty { get; set; }
+    /// <summary>ILT Hub: do not start a new summon while this is true.</summary>
+    public Func<bool>? HoldSummons { get; set; }
+    /// <summary>ILT Hub: dismiss a cosmetic pet when monsters are nearby.</summary>
+    public Func<bool>? YieldPetForCombat { get; set; }
+
     public PetManager(RynthCoreHost host, LegacyUiSettings settings,
                       WorldObjectCache objectCache, CombatManager? combat,
                       CharacterSkills? skills)
@@ -159,6 +166,9 @@ internal sealed class PetManager
             if (text.Contains("enough charges", StringComparison.OrdinalIgnoreCase))
             {
                 _host.Log($"[RynthAi] Pet: essence 0x{(uint)_activeDeviceId:X8} reports empty; will refill.");
+                // No server-side refill: park the essence so an empty-summon path cannot spin on it.
+                if (AllowSummonOnEmpty?.Invoke() == true && _activeDeviceId != 0)
+                    _deviceCooldownUntil[_activeDeviceId] = NowMs + DeviceNoSpiritCooldownMs;
                 GoIdle();
                 return;
             }
@@ -183,7 +193,14 @@ internal sealed class PetManager
     {
         // A pet is already up (just summoned, or detected in the world) — done.
         if (now < _assumePetActiveUntil) return;
-        if (IsPetActive()) return;
+        if (IsPetActive())
+        {
+            // A cosmetic pet in the slot steps aside for the fight; wait for the dismiss to land.
+            if (YieldPetForCombat != null && MonstersNearby() && YieldPetForCombat())
+                _assumePetActiveUntil = now + 3000;
+            return;
+        }
+        if (HoldSummons?.Invoke() == true) return;
 
         // Only summon when mobs are near (the user's trigger).
         if (!MonstersNearby()) return;
@@ -211,7 +228,14 @@ internal sealed class PetManager
                 return;
             }
 
-            // charges == 0 → empty. Auto-refill from an Encapsulated Spirit.
+            // charges == 0 → empty. ILT shards with a pyreal-refill charm refill on use.
+            if (AllowSummonOnEmpty?.Invoke() == true)
+            {
+                IssueSummon(deviceId, charges);
+                return;
+            }
+
+            // Otherwise auto-refill from an Encapsulated Spirit.
             if (_settings.PetAutoRefill)
             {
                 int spiritId = FindEncapsulatedSpirit();

@@ -15,10 +15,22 @@ public class MonsterRule : INotifyPropertyChanged
     private bool _useArc, _useBolt = true, _useRing, _useStreak, _useBlast;
     private string _exVuln = "None";
     private int _offhandId;
+    private int _preferredAmmoItemId;
     private string _petDamage = "PAuto";
+    /// <summary>Dashboard-only label; optional (empty shows as "Default" in the game UI).</summary>
+    private string _category = string.Empty;
+    /// <summary>vTank-style match expression. Empty = for named rules, match on Name substring; for the Default row, it is the global fallback when nothing else matches.</summary>
+    private string _matchExpression = string.Empty;
 
     public string Name        { get => _name;        set { _name        = value; OnPropertyChanged(); } }
     public int    Priority    { get => _priority;    set { _priority    = value; OnPropertyChanged(); } }
+    public string Category    { get => _category;    set { _category    = value ?? string.Empty; OnPropertyChanged(); } }
+    /// <summary>vTank-style match expression. Empty matches on the rule name.</summary>
+    public string MatchExpression
+    {
+        get => _matchExpression;
+        set { _matchExpression = value ?? string.Empty; OnPropertyChanged(); }
+    }
     public string DamageType  { get => _damageType;  set { _damageType  = value; OnPropertyChanged(); } }
     public int    WeaponId    { get => _weaponId;    set { _weaponId    = value; OnPropertyChanged(); } }
     public bool   Fester      { get => _fester;      set { _fester      = value; OnPropertyChanged(); } }
@@ -34,10 +46,69 @@ public class MonsterRule : INotifyPropertyChanged
     public bool   UseBlast    { get => _useBlast;    set { _useBlast    = value; OnPropertyChanged(); } }
     public string ExVuln      { get => _exVuln;      set { _exVuln      = value; OnPropertyChanged(); } }
     public int    OffhandId   { get => _offhandId;   set { _offhandId   = value; OnPropertyChanged(); } }
+    /// <summary>Optional loose ammo stack id for missile combat while this rule matches (0 = auto).</summary>
+    public int    PreferredAmmoItemId { get => _preferredAmmoItemId; set { _preferredAmmoItemId = value; OnPropertyChanged(); } }
     public string PetDamage   { get => _petDamage;   set { _petDamage   = value; OnPropertyChanged(); } }
 
     [JsonIgnore]
+    /// <summary>True for the special row named "Default" — the catch-all when no other rule matches.</summary>
     public bool IsDefault => string.Equals(_name, "Default", System.StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Full copy (for import merge). Keeps UseBlast from the upstream rule schema.</summary>
+    public MonsterRule Clone()
+    {
+        return new MonsterRule
+        {
+            Name                = _name,
+            Category            = _category,
+            MatchExpression     = _matchExpression,
+            Priority            = _priority,
+            DamageType          = _damageType,
+            WeaponId            = _weaponId,
+            Fester              = _fester,
+            Broadside           = _broadside,
+            GravityWell         = _gravityWell,
+            Imperil             = _imperil,
+            Yield               = _yield,
+            Vuln                = _vuln,
+            UseArc              = _useArc,
+            UseBolt             = _useBolt,
+            UseRing             = _useRing,
+            UseStreak           = _useStreak,
+            UseBlast            = _useBlast,
+            ExVuln              = _exVuln,
+            OffhandId           = _offhandId,
+            PreferredAmmoItemId = _preferredAmmoItemId,
+            PetDamage           = _petDamage,
+        };
+    }
+
+    /// <summary>Overwrites combat fields (used to merge a VT Default row into the Rynth Default row).</summary>
+    public void CopyCombatSettingsFrom(MonsterRule? src)
+    {
+        if (src == null) return;
+        // Keep Name: must stay "Default". Use public setters so the grid updates.
+        Category            = src.Category;
+        MatchExpression     = src.MatchExpression;
+        Priority            = src.Priority;
+        DamageType          = src.DamageType;
+        WeaponId            = src.WeaponId;
+        Fester              = src.Fester;
+        Broadside           = src.Broadside;
+        GravityWell         = src.GravityWell;
+        Imperil             = src.Imperil;
+        Yield               = src.Yield;
+        Vuln                = src.Vuln;
+        UseArc              = src.UseArc;
+        UseBolt             = src.UseBolt;
+        UseRing             = src.UseRing;
+        UseStreak           = src.UseStreak;
+        UseBlast            = src.UseBlast;
+        ExVuln              = src.ExVuln;
+        OffhandId           = src.OffhandId;
+        PreferredAmmoItemId = src.PreferredAmmoItemId;
+        PetDamage           = src.PetDamage;
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     protected void OnPropertyChanged([CallerMemberName] string? name = null)
