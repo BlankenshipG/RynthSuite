@@ -35,6 +35,11 @@ internal sealed class IltGuardian : IIltFeature
     private const int MaxGiveAttempts = 5;
     /// <summary>How far (meters) to look for the guardian and a vendor.</summary>
     private const double SearchRangeMeters = 60.0;
+    /// <summary>
+    /// PublicWeenieDesc BF_VENDOR. The world cache files vendors as creatures (Monster / Npc), never
+    /// AcObjectClass.Vendor, so vendors are recognised by this weenie flag.
+    /// </summary>
+    private const uint BfVendor = 0x200;
     /// <summary>The Mini Remote shows the last answer for this long.</summary>
     public static readonly TimeSpan AnswerShownFor = TimeSpan.FromMinutes(10);
 
@@ -207,7 +212,7 @@ internal sealed class IltGuardian : IIltFeature
         {
             case Step.FindItem:
                 if (FindHandInItem() != null) { Next(Step.Give, nowMs); break; }
-                if (!IsTempleGuardian(_npc) || !S.BuyMissingFromVendor) { Fail($"no {_item} in your packs"); break; }
+                if (!IsTempleGuardian(_npc) || !S.BuyMissingFromVendor) { LogItemNearMisses(); Fail($"no {_item} in your packs"); break; }
                 Next(Step.OpenVendor, nowMs);
                 break;
 
@@ -215,8 +220,9 @@ internal sealed class IltGuardian : IIltFeature
             {
                 if (!host.HasVendorTrade) { Fail($"no {_item} carried and vendor buying needs a newer RynthCore engine"); break; }
                 if (host.TryGetVendorInfo(out var open)) { _vendorId = open.VendorId; Next(Step.Buy, nowMs); break; }
-                var vendor = Nearest(wo => wo.ObjectClass == AcObjectClass.Vendor);
-                if (vendor == null) { Fail($"no {_item} carried and no vendor nearby"); break; }
+                var vendor = Nearest(IsVendor);
+                if (vendor == null) { LogVendorSearch(); Fail($"no {_item} carried and no vendor within {SearchRangeMeters:0} m"); break; }
+                RynthLog.Write(LogCat.IltHub, $"[IltGuardian] vendor for '{_item}': {vendor.Name} 0x{(uint)vendor.Id:X8}");
                 SetStatus($"opening {vendor.Name} to buy {_item}...");
                 host.UseFor(unchecked((uint)vendor.Id), "IltGuardian", $"buy {_item} for the Temple guardian",
                             _asked ? UseKind.Asked : UseKind.Auto);
@@ -232,7 +238,8 @@ internal sealed class IltGuardian : IIltFeature
             {
                 if (!host.TryGetVendorInfo(out var v)) { Fail("the vendor closed"); break; }
                 if (v.TradeInFlight) { _nextStepAt = nowMs + BusyRetryMs; break; }
-                var match = host.GetVendorItems().FirstOrDefault(i => i.Name.Equals(_item, StringComparison.OrdinalIgnoreCase));
+                string want = NormalizeName(_item);
+                var match = host.GetVendorItems().FirstOrDefault(i => NormalizeName(i.Name) == want);
                 if (match == null) { Fail($"{v.Name} doesn't sell {_item}"); break; }
                 _buyRequest = host.VendorBuy(match.ObjectId, 1, v.VendorId);
                 if (_buyRequest == 0)
@@ -271,7 +278,7 @@ internal sealed class IltGuardian : IIltFeature
             return;
         }
         var item = FindHandInItem();
-        if (item == null) { Fail($"no {_item} in your packs"); return; }
+        if (item == null) { LogItemNearMisses(); Fail($"no {_item} in your packs"); return; }
         var npc = Nearest(wo => wo.Name.Contains(_npc, StringComparison.OrdinalIgnoreCase));
         if (npc == null) { Fail($"{_npc} isn't nearby"); return; }
 
@@ -300,10 +307,57 @@ internal sealed class IltGuardian : IIltFeature
     private static bool IsTempleGuardian(string npc) =>
         npc.Contains(IltGuardianPhrasebook.TempleGuardian, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>A carried (not wielded) item named exactly like the answer.</summary>
-    private WorldObject? FindHandInItem() =>
-        _ctx.Inventory.Items().FirstOrDefault(wo => wo.Name.Equals(_item, StringComparison.OrdinalIgnoreCase)
-                                                    && !_ctx.Inventory.IsEquipped(wo));
+    /// <summary>
+    /// A carried (not wielded) item named like the answer (case and spacing ignored). Reads AC's
+    /// live container contents: the cache's inventory set lags a purchase and also holds the open
+    /// vendor's stock, which can't be given.
+    /// </summary>
+    private WorldObject? FindHandInItem()
+    {
+        string want = NormalizeName(_item);
+        return CarriedItems().FirstOrDefault(wo => NormalizeName(wo.Name) == want && !_ctx.Inventory.IsEquipped(wo));
+    }
+
+    /// <summary>Live walk of the player's pack and side packs (falls back to the cache without the engine call).</summary>
+    private System.Collections.Generic.IReadOnlyList<WorldObject> CarriedItems()
+        => _ctx.Inventory.Cache?.GetDirectInventory(forceRefresh: true) ?? Array.Empty<WorldObject>();
+
+    /// <summary>Lower-case, trimmed, single-spaced name for comparisons.</summary>
+    private static string NormalizeName(string name)
+        => string.Join(' ', (name ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToLowerInvariant();
+
+    /// <summary>Logs carried items sharing a word with the answer, so a name mismatch shows in the log.</summary>
+    private void LogItemNearMisses()
+    {
+        var items = CarriedItems();
+        var words = NormalizeName(_item).Split(' ').Where(w => w.Length > 3).ToArray();
+        var similar = items.Where(wo => words.Any(w => wo.Name.Contains(w, StringComparison.OrdinalIgnoreCase)))
+                           .Take(8).Select(wo => $"'{wo.Name}' 0x{(uint)wo.Id:X8}").ToArray();
+        RynthLog.Write(LogCat.IltHub,
+            $"[IltGuardian] no '{_item}' among {items.Count} carried items; similar names: {(similar.Length > 0 ? string.Join(", ", similar) : "none")}");
+    }
+
+    /// <summary>A vendor (weenie BF_VENDOR flag, or a cache entry already classed Vendor).</summary>
+    private bool IsVendor(WorldObject wo)
+    {
+        if (wo.ObjectClass == AcObjectClass.Vendor) return true;
+        var host = _ctx.Host;
+        return host.HasGetObjectBitfield && host.TryGetObjectBitfield(unchecked((uint)wo.Id), out uint bf) && (bf & BfVendor) != 0;
+    }
+
+    /// <summary>Logs every vendor the cache sees with its distance (vendor search found none in range).</summary>
+    private void LogVendorSearch()
+    {
+        var cache = _ctx.Inventory.Cache;
+        int playerId = unchecked((int)_ctx.Inventory.PlayerId);
+        if (cache == null || playerId == 0) { RynthLog.Write(LogCat.IltHub, "[IltGuardian] vendor search: no world cache / player"); return; }
+        var landscape = cache.GetLandscapeObjects().ToList();
+        var vendors = landscape.Where(IsVendor).Take(8)
+                               .Select(wo => $"'{wo.Name}' 0x{(uint)wo.Id:X8} {cache.Distance(playerId, wo.Id):0.0} m").ToArray();
+        RynthLog.Write(LogCat.IltHub,
+            $"[IltGuardian] vendor search: {landscape.Count} landscape objects, bitfield={(_ctx.Host.HasGetObjectBitfield ? "yes" : "no")}, "
+            + $"vendors: {(vendors.Length > 0 ? string.Join(", ", vendors) : "none")}");
+    }
 
     /// <summary>Nearest landscape object matching <paramref name="match"/> within SearchRangeMeters.</summary>
     private WorldObject? Nearest(Func<WorldObject, bool> match)
