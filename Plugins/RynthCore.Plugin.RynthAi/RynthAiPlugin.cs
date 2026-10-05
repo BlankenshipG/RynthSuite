@@ -164,6 +164,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // and never reads Host.ImGuiContext.)
         ComponentDatabase.SetLog(msg => Log(msg));
         InitLocalDiagnostics();
+        // The overlay windows (OnRenderOverlay) must draw through the engine's cimgui module.
+        ImGuiNativeBinding.Ensure();
         _dashboard = new LegacyDashboardRenderer(Host);
         // Every use goes through Host.UseFor (Plugins/Shared/UseAudit.cs): one log line
         // each, and no automatic door/corpse use while the macro is off.
