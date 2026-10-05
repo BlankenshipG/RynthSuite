@@ -18,9 +18,53 @@ public enum MissileWeaponKind
 
 public static class MissileAmmoHelper
 {
-    /// <summary>Returns true when the item name looks like loose ammo (not bundles) for the given launcher kind.</summary>
+    /// <summary>EquipMask bit of the launcher slot (bow / crossbow / atlatl).</summary>
+    public const int MissileWeaponSlot = 0x00400000;
+
+    /// <summary>
+    /// EquipMask bit of the ammunition slot. The server refuses to wield ammo whose AmmoType
+    /// conflicts with the launcher, so anything in this slot is usable ammo whatever its name.
+    /// </summary>
+    public const int MissileAmmoSlot = 0x00800000;
+
+    /// <summary>STypeInt AMMO_TYPE: launcher/ammo family bits (see <see cref="KindFromAmmoType"/>).</summary>
+    public const int IntAmmoType = 50;
+
+    /// <summary>STypeInt COMBAT_USE; <see cref="CombatUseAmmo"/> marks a stack of ammunition.</summary>
+    public const int IntCombatUse = 51;
+
+    public const int CombatUseAmmo = 3;
+
+    /// <summary>True when the wield location includes the ammunition slot.</summary>
+    public static bool IsAmmoSlot(int wieldLocation) => (wieldLocation & MissileAmmoSlot) != 0;
+
+    /// <summary>
+    /// Maps AMMO_TYPE bits to a launcher kind (Arrow 0x1/0x8/0x40, Bolt 0x2/0x10/0x80,
+    /// Atlatl 0x4/0x20/0x100); null when the value is unset or unrecognized.
+    /// </summary>
+    public static MissileWeaponKind? KindFromAmmoType(int ammoType)
+    {
+        if ((ammoType & (0x1 | 0x8 | 0x40)) != 0) return MissileWeaponKind.Bow;
+        if ((ammoType & (0x2 | 0x10 | 0x80)) != 0) return MissileWeaponKind.Crossbow;
+        if ((ammoType & (0x4 | 0x20 | 0x100)) != 0) return MissileWeaponKind.Atlatl;
+        return null;
+    }
+
+    /// <summary>
+    /// True when the item is loose ammo for the launcher kind: by name, or (for server-custom
+    /// ammo names) by COMBAT_USE = Ammo with a matching or unreadable AMMO_TYPE.
+    /// </summary>
     public static bool IsLooseAmmoForKind(WorldObject item, MissileWeaponKind kind)
-        => IsLooseAmmoForKind(item.Name, kind);
+    {
+        if (IsLooseAmmoForKind(item.Name, kind)) return true;
+        if (item.Values(IntCombatUse, 0) != CombatUseAmmo) return false;
+        var typed = KindFromAmmoType(item.Values(IntAmmoType, 0));
+        return typed == null || typed == kind;
+    }
+
+    /// <summary>Wielded ammo check: anything in the ammo slot, else the loose-ammo rules.</summary>
+    public static bool IsWieldedAmmoForKind(WorldObject item, int wieldLocation, MissileWeaponKind kind)
+        => IsAmmoSlot(wieldLocation) || IsLooseAmmoForKind(item, kind);
 
     public static bool IsLooseAmmoForKind(string? itemName, MissileWeaponKind kind)
     {
@@ -61,6 +105,10 @@ public static class MissileAmmoHelper
         return MissileWeaponKind.Bow;
     }
 
+    /// <summary>Launcher kind from its AMMO_TYPE when readable, else from its name.</summary>
+    public static MissileWeaponKind GetKindFromMissileWeapon(WorldObject launcher)
+        => KindFromAmmoType(launcher.Values(IntAmmoType, 0)) ?? GetKindFromMissileWeaponName(launcher.Name);
+
     public static bool LooksLikeMissileWeapon(WorldObject item)
     {
         if (item.ObjectClass == AcObjectClass.MissileWeapon)
@@ -77,14 +125,15 @@ public static class MissileAmmoHelper
     {
         foreach (var item in inventory)
         {
-            if (!IsPlayerWielded(item, playerId))
+            int loc = PlayerWieldLocation(item, playerId);
+            if (loc <= 0)
                 continue;
             // Loose ammo stacks share AcObjectClass.MissileWeapon with launchers; never treat them as the launcher.
-            if (LooksLikeLooseAmmoForAnyKind(item))
+            if (IsAmmoSlot(loc) || LooksLikeLooseAmmoForAnyKind(item))
                 continue;
             if (!LooksLikeMissileWeapon(item))
                 continue;
-            kind = GetKindFromMissileWeaponName(item.Name);
+            kind = GetKindFromMissileWeapon(item);
             return true;
         }
 
@@ -92,7 +141,7 @@ public static class MissileAmmoHelper
         return false;
     }
 
-    /// <summary>True if any wielded stack is loose ammo compatible with the wielded missile weapon kind.</summary>
+    /// <summary>True if any wielded stack is ammo compatible with the wielded missile weapon kind.</summary>
     public static bool HasWieldedAmmoMatchingKind(IEnumerable<WorldObject> inventory, uint playerId, out MissileWeaponKind weaponKind)
     {
         if (!TryGetWieldedMissileKind(inventory, playerId, out weaponKind))
@@ -100,8 +149,9 @@ public static class MissileAmmoHelper
 
         foreach (var item in inventory)
         {
-            if (!IsPlayerWielded(item, playerId)) continue;
-            if (IsLooseAmmoForKind(item, weaponKind))
+            int loc = PlayerWieldLocation(item, playerId);
+            if (loc <= 0) continue;
+            if (IsWieldedAmmoForKind(item, loc, weaponKind))
                 return true;
         }
 
@@ -149,24 +199,40 @@ public static class MissileAmmoHelper
         return true;
     }
 
-    private static bool IsPlayerWielded(WorldObject item, uint playerId)
+    /// <summary>
+    /// The item's wield location when the player wields it, else 0. Prefers cache ownership and
+    /// falls back to the client's CurrentWieldedLocation when the ownership row lags.
+    /// </summary>
+    public static int PlayerWieldLocation(WorldObject item, uint playerId)
     {
-        // Prefer cache ownership; fall back to client LVK when wield slot is known but ownership row lags.
+        if (playerId == 0) return 0;
         int loc = item.WieldedLocation > 0
             ? item.WieldedLocation
             : item.Values(LongValueKey.CurrentWieldedLocation, 0);
-        if (loc <= 0) return false;
-        if (playerId == 0) return false;
+        if (loc <= 0) return 0;
         int pid = unchecked((int)playerId);
-        return item.Wielder == 0 || item.Wielder == pid;
+        return item.Wielder == 0 || item.Wielder == pid ? loc : 0;
     }
 
     /// <summary>True if the name matches loose ammo rules for any launcher (used to disambiguate launcher vs ammo).</summary>
     public static bool LooksLikeLooseAmmoForAnyKind(WorldObject item)
     {
-        return IsLooseAmmoForKind(item, MissileWeaponKind.Bow)
-            || IsLooseAmmoForKind(item, MissileWeaponKind.Crossbow)
-            || IsLooseAmmoForKind(item, MissileWeaponKind.Atlatl);
+        return IsLooseAmmoForKind(item.Name, MissileWeaponKind.Bow)
+            || IsLooseAmmoForKind(item.Name, MissileWeaponKind.Crossbow)
+            || IsLooseAmmoForKind(item.Name, MissileWeaponKind.Atlatl)
+            || item.Values(IntCombatUse, 0) == CombatUseAmmo;
+    }
+
+    /// <summary>
+    /// Launcher kind for a loose ammo stack: from its name, else from COMBAT_USE / AMMO_TYPE.
+    /// Null when the item isn't recognizable as ammo (or is ammo of an unreadable type).
+    /// </summary>
+    public static MissileWeaponKind? GetAmmoKind(WorldObject item)
+    {
+        var byName = GetAmmoKindFromName(item.Name);
+        if (byName != null) return byName;
+        if (item.Values(IntCombatUse, 0) != CombatUseAmmo) return null;
+        return KindFromAmmoType(item.Values(IntAmmoType, 0));
     }
 
     private static string NormalizeName(string value)

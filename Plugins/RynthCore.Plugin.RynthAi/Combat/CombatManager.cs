@@ -2468,6 +2468,14 @@ public class CombatManager : IDisposable
     private DateTime _lastEquipDiagAt = DateTime.MinValue;
     private DateTime _lastMissileAmmoEquipAttempt = DateTime.MinValue;
 
+    // HasWieldedAmmo's all-objects probe makes native reads per missile-class object, so its
+    // answer is reused for this long; the diag line is throttled separately.
+    private const int AmmoProbeIntervalMs = 750;
+    private const int AmmoDiagIntervalMs  = 15000;
+    private DateTime _ammoProbeAt = DateTime.MinValue;
+    private bool     _ammoProbeResult;
+    private DateTime _lastAmmoDiagAt = DateTime.MinValue;
+
     // Returns true when the correct weapon is wielded and combat mode matches — safe to attack.
     // Returns false when a weapon swap or stance change is in progress — caller should skip this tick.
     private bool EquipWeaponAndSetStance(WorldObject target, string monsterWeakness = "Auto")
@@ -3146,7 +3154,75 @@ public class CombatManager : IDisposable
     private bool HasWieldedAmmo()
     {
         var inv = _worldFilter.GetDirectInventory(false).ToList();
-        return MissileAmmoHelper.HasWieldedAmmoMatchingKind(inv, _playerId, out _);
+        if (MissileAmmoHelper.HasWieldedAmmoMatchingKind(inv, _playerId, out _))
+            return true;
+
+        // The direct snapshot only merges wielded gear the cache already filed as inventory with
+        // a readable wield slot, so ammo equipped before login can be missing from it.
+        if ((DateTime.Now - _ammoProbeAt).TotalMilliseconds < AmmoProbeIntervalMs)
+            return _ammoProbeResult;
+        _ammoProbeAt = DateTime.Now;
+
+        var found = FindWieldedAmmoInAllObjects(out var seen);
+        _ammoProbeResult = found != null;
+
+        if ((DateTime.Now - _lastAmmoDiagAt).TotalMilliseconds >= AmmoDiagIntervalMs)
+        {
+            _lastAmmoDiagAt = DateTime.Now;
+            bool launcher = MissileAmmoHelper.TryGetWieldedMissileKind(inv, _playerId, out var kind);
+            string head = found != null
+                ? $"[AmmoDiag] wielded ammo found outside the inventory snapshot: 0x{(uint)found.Id:X8} '{found.Name}'"
+                : $"[AmmoDiag] no wielded ammo (launcher={(launcher ? kind.ToString() : "none")})";
+            RynthLog.Write(LogCat.Combat, $"{head} | wielded missile-class: {(seen.Count == 0 ? "none" : string.Join("; ", seen))}");
+        }
+        return _ammoProbeResult;
+    }
+
+    /// <summary>
+    /// Scans every cache-known missile-class or ammo-named object and returns the first one the
+    /// player wields in the ammo slot (or wields with an ammo name), reading the wield slot through
+    /// the host. <paramref name="seen"/> describes each wielded candidate for the diag line.
+    /// </summary>
+    private WorldObject? FindWieldedAmmoInAllObjects(out List<string> seen)
+    {
+        seen = new List<string>();
+        uint pid = _playerId != 0 ? _playerId : _host.GetPlayerId();
+        if (pid == 0) return null;
+
+        var launcherKind = MissileWeaponKind.Bow;
+        if (_worldFilter[_equippedWeaponId] is { } weapon && MissileAmmoHelper.LooksLikeMissileWeapon(weapon))
+            launcherKind = MissileAmmoHelper.GetKindFromMissileWeapon(weapon);
+
+        WorldObject? found = null;
+        foreach (var item in _worldFilter.AllKnownObjects())
+        {
+            if (item.ObjectClass != AcObjectClass.MissileWeapon && MissileAmmoHelper.GetAmmoKindFromName(item.Name) == null)
+                continue;
+
+            int loc = ReadPlayerWieldLocation(item, pid);
+            if (loc <= 0) continue;
+
+            if (seen.Count < 8)
+                seen.Add($"0x{(uint)item.Id:X8} '{item.Name}' loc=0x{loc:X} use={item.Values(MissileAmmoHelper.IntCombatUse, 0)} ammoType=0x{item.Values(MissileAmmoHelper.IntAmmoType, 0):X}");
+
+            if (found == null && item.Id != _equippedWeaponId
+                && MissileAmmoHelper.IsWieldedAmmoForKind(item, loc, launcherKind))
+                found = item;
+        }
+        return found;
+    }
+
+    /// <summary>Player wield slot of an object from every source the host offers, else 0.</summary>
+    private int ReadPlayerWieldLocation(WorldObject item, uint pid)
+    {
+        uint uid = unchecked((uint)item.Id);
+        if (_host.HasGetObjectWielderInfo && _host.TryGetObjectWielderInfo(uid, out uint w1, out uint l1)
+            && w1 == pid && l1 > 0)
+            return unchecked((int)l1);
+        if (_host.HasGetObjectOwnershipInfo && _host.TryGetObjectOwnershipInfo(uid, out _, out uint w2, out uint l2)
+            && w2 == pid && l2 > 0)
+            return unchecked((int)l2);
+        return MissileAmmoHelper.PlayerWieldLocation(item, pid);
     }
 
     /// <summary>
@@ -3160,7 +3236,7 @@ public class CombatManager : IDisposable
         if (!MissileAmmoHelper.TryGetWieldedMissileKind(inv, _playerId, out var kind))
             return true;
 
-        if (MissileAmmoHelper.HasWieldedAmmoMatchingKind(inv, _playerId, out var mk) && mk == kind)
+        if (HasWieldedAmmo())
             return true;
 
         if ((DateTime.Now - _lastMissileAmmoEquipAttempt).TotalMilliseconds < 1200)

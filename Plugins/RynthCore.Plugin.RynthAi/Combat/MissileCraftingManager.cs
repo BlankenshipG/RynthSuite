@@ -364,12 +364,14 @@ public class MissileCraftingManager
 
     private bool TryGetWieldedMissileCategory(IEnumerable<WorldObject> inventory, out WeaponCategory category)
     {
+        uint pid = _host.GetPlayerId();
         foreach (var item in inventory)
         {
-            if (!IsPlayerWielded(item))
+            int loc = MissileAmmoHelper.PlayerWieldLocation(item, pid);
+            if (loc <= 0)
                 continue;
             // Same as combat: ammo stacks are often classified MissileWeapon — skip when resolving launcher type.
-            if (MissileAmmoHelper.LooksLikeLooseAmmoForAnyKind(item))
+            if (MissileAmmoHelper.IsAmmoSlot(loc) || MissileAmmoHelper.LooksLikeLooseAmmoForAnyKind(item))
                 continue;
             if (!LooksLikeMissileWeapon(item))
                 continue;
@@ -388,8 +390,9 @@ public class MissileCraftingManager
         uint pid = _host.GetPlayerId();
         foreach (var item in inventory)
         {
-            if (!IsPlayerWielded(item)) continue;
-            if (MissileAmmoHelper.IsLooseAmmoForKind(item, kind)) return true;
+            int loc = MissileAmmoHelper.PlayerWieldLocation(item, pid);
+            if (loc <= 0) continue;
+            if (MissileAmmoHelper.IsWieldedAmmoForKind(item, loc, kind)) return true;
         }
         return false;
     }
@@ -400,21 +403,6 @@ public class MissileCraftingManager
         WeaponCategory.Atlatl   => MissileWeaponKind.Atlatl,
         _                       => MissileWeaponKind.Bow,
     };
-
-    private bool IsPlayerWielded(WorldObject item)
-    {
-        int loc = item.WieldedLocation > 0
-            ? item.WieldedLocation
-            : item.Values(LongValueKey.CurrentWieldedLocation, 0);
-        if (loc <= 0)
-            return false;
-
-        uint playerId = _host.GetPlayerId();
-        if (playerId == 0)
-            return false;
-
-        return item.Wielder == 0 || item.Wielder == unchecked((int)playerId);
-    }
 
     private static bool LooksLikeMissileWeapon(WorldObject item)
     {

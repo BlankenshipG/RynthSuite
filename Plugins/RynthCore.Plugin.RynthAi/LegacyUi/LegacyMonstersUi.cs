@@ -353,7 +353,7 @@ internal sealed class LegacyMonstersUi
             {
                 uint sid = _host.GetSelectedItemId();
                 if (sid != 0 && _worldFilter != null && _worldFilter[(int)sid] is { } pick
-                    && MissileAmmoHelper.GetAmmoKindFromName(pick.Name) != null)
+                    && MissileAmmoHelper.GetAmmoKind(pick) != null)
                 {
                     rule.PreferredAmmoItemId = (int)sid;
                     _onMonstersChanged();

@@ -464,13 +464,13 @@ internal sealed class LegacyWeaponsUi
         var wo = _worldFilter[(int)selId];
         if (wo == null)
             _host.WriteToChat($"[RynthAi] Item 0x{selId:X8} not in cache — try again.", 1);
-        else if (MissileAmmoHelper.GetAmmoKindFromName(wo.Name) == null)
+        else if (MissileAmmoHelper.GetAmmoKind(wo) == null)
             _host.WriteToChat("[RynthAi] Selected item does not look like loose missile ammo.", 1);
         else if (_settings.AmmoRules.Any(x => x.Id == wo.Id))
             _host.WriteToChat($"[RynthAi] {wo.Name} is already listed as ammo.", 1);
         else
         {
-            var kind = MissileAmmoHelper.GetAmmoKindFromName(wo.Name)!.Value;
+            var kind = MissileAmmoHelper.GetAmmoKind(wo)!.Value;
             string cat = kind switch
             {
                 MissileWeaponKind.Bow      => "Bow",
