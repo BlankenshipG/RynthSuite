@@ -65,6 +65,19 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginTick", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void Tick() => Runtime.OnTick();
 
+    // Local ImGui windows (ILT Hub, HUDs, translator, item info, nav overlay). The engine
+    // calls this when the export exists; the main panels stay on the engine side.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginRender", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void Render() => Runtime.OnRender();
+
+    /// <summary>Engine calls this instead of RynthPluginRender while its ImGui shell is off.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderOverlay", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void RenderOverlay()
+    {
+        try { Runtime.Plugin?.OnRenderOverlay(); }
+        catch { /* an exception crossing UnmanagedCallersOnly would fail-fast the client */ }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnChatBarEnter", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnChatBarEnter(IntPtr textUtf16, IntPtr eatFlag) => Runtime.OnChatBarEnter(textUtf16, eatFlag);
 

@@ -163,6 +163,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // constructor does no ImGui work. (RynthAi no longer exports RynthPluginRender
         // and never reads Host.ImGuiContext.)
         ComponentDatabase.SetLog(msg => Log(msg));
+        InitLocalDiagnostics();
         _dashboard = new LegacyDashboardRenderer(Host);
         // Every use goes through Host.UseFor (Plugins/Shared/UseAudit.cs): one log line
         // each, and no automatic door/corpse use while the macro is off.
@@ -229,6 +230,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
         catch { }
         long tAfterGc = Environment.TickCount64;
+        try { _translator?.Dispose(); } catch { }
+        _translator = null;
+        _translateUi = null;
+        try { RynthLog.Shutdown(); } catch { }
         Log($"RynthAi: Shutdown done — SaveSettings={tAfterSettings - t0} ms, TeardownSession={tAfterTeardown - tAfterSettings} ms, SaveCreatureStore={tAfterStore - tAfterTeardown} ms, GC={tAfterGc - tGc} ms (heap now {GC.GetGCMemoryInfo().HeapSizeBytes / (1024 * 1024)} MB), total={tAfterGc - t0} ms");
     }
 
@@ -314,6 +319,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _autoVendor = null;
         _autoTrade?.Reset();
         _autoTrade = null;
+        TeardownLocalFeatures(disposeTranslator: false);
         _playerId = 0;
         _loginComplete = false;
         _pendingGives.Clear();
@@ -378,6 +384,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _loginComplete = true;
         _dashboard.OnLoginComplete();
         _dashboard.ChatSubmitHandler = HandleRynthChatSubmit;
+        EnsureTranslator();
+        EnsureItemInfoUi();
         _navigationEngine = new NavigationEngine(Host, _dashboard.Settings)
         {
             ChatSubmit = HandleRynthChatSubmit,
@@ -404,6 +412,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         {
             GeometrySource = () => _raycast is { IsInitialized: true } rc ? rc.GeometryLoader : null,
         };
+        CreateNavOverlay();
         _radarWallRenderer = new RadarWallRenderer(Host, _dashboard.Settings);
         _terrainOverlay = new TerrainPassabilityOverlay(Host);
         Log($"RynthAi: NavMarkerRenderer created, HasNav3D={Host.HasNav3D}, version={Host.Version}");
@@ -573,6 +582,16 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             _petManager        = new PetManager(Host, _dashboard.Settings, _objectCache, _combatManager, _charSkills);
             _combatManager.SummonOut = () => _petManager?.CurrentSummon();
         }
+
+        CreateIltHub();
+        if (_iltHub?.SkipLoginQuestRefresh == true)
+            Log("RynthAi: ILT Hub says /myquests is off on this server; login quest refresh already ran.");
+        try
+        {
+            string hubChar = CurrentCharacterName();
+            _iltHub?.OnLoginComplete(hubChar, _petManager);
+        }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "login"); }
 
         _salvageManager = new SalvageManager(Host, _dashboard.Settings, _objectCache);
         // Hand the salvage manager a live accessor for the loot profile's
@@ -1248,6 +1267,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                         _buffManager?.SetTimerPath(_dashboard.CharFolder);
                         _damageStore?.SetCharacter(_dashboard.CharFolder);
                         _patrolOnLoginPending = _dashboard.Settings.PatrolOnLogin;
+                        if (_iltHub == null)
+                        {
+                            CreateIltHub();
+                            try { _iltHub?.OnLoginComplete(lateName, _petManager); }
+                            catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "late login"); }
+                        }
                         Log($"RynthAi: per-character settings established late for '{lateName}' (early OnLoginComplete read had failed).");
                     }
                 }
@@ -1267,6 +1292,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // longer calls, so edits waited for the next login. A flag check when idle.
             _dashboard?.TickMonsterReload();
             _questTracker?.Tick();
+            TickLocalFeatures();
             if (diag) Host.Log("[RynthAi] OnTick: after quest tracker");
             DrainGiveQueue();
             if (diag) Host.Log("[RynthAi] OnTick: after drain give queue");
@@ -1803,7 +1829,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     // this fires even when an early return short-circuits the body
                     // (Buffing / missile-crafting / BoostNavPriority branches).
                     if (Host.HasNav3D)
+                    {
                         _navMarkerRenderer?.SubmitNav3D();
+                        _navOverlay?.SubmitNav3D();
+                    }
                 }
             }
         }
@@ -1842,7 +1871,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             WorldObject? obj = _objectCache?[sid];
             // Skip non-items (monsters, players, NPCs, doors, corpses, portals, etc.)
             if (obj != null && IsLootableClass(obj.ObjectClass))
+            {
                 InspectLootRuleForItem(sid, quiet: true);
+                var itemInfo = _dashboard?.Settings.ItemInfoSettings;
+                if (itemInfo != null && ItemInfoWantsClass(itemInfo, obj.ObjectClass))
+                    QueueAutoItemInfo(sid, requestId: false);
+            }
         }
     }
 
@@ -1867,6 +1901,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         try { mmEat = MetaScheduleChat(text); } catch { }
         if (mmEat) eat = 1;
         else _dashboard?.PushChatLine(text, chatType);
+        OnChatLocalFeatures(text, chatType, ref eat);
         _buffManager?.OnChatWindowText(text, chatType);
         _manaStoneManager?.OnChatWindowText(text);
         _petManager?.OnChatWindowText(text);
@@ -1888,6 +1923,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (string.IsNullOrEmpty(deathMessage)) return;
         _combatManager?.OnKillNotification(deathMessage);
         _dashboard?.RecordKill();   // feeds the kills/hour session stat
+        try { _iltHub?.RecordKill(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "kill"); }
     }
 
     public override void OnCreateObject(uint objectId)
@@ -2743,6 +2780,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             return;
 
         string trimmed = text.Trim();
+        if (TryEatOutboundTranslation(trimmed))
+        {
+            eat = 1;
+            return;
+        }
         NoteChatBarLineForMetaSchedule(trimmed);
 
         // Mag-Tools /mt command compatibility
@@ -2903,6 +2945,26 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "scan":         HandleScanCommand(); break;
             case "buildinfo":    HandleBuildInfoCommand(); break;
             case "navdebug":     HandleNavDebugCommand(); break;
+            case "navrec":       HandleNavRecordCommand(parts); break;
+            case "navhud":       HandleNavHudCommand(parts); break;
+            case "navtrail":     HandleNavTrailCommand(parts); break;
+            case "debug":        HandleDebugCommand(parts); break;
+            case "trace":        HandleTraceCommand(parts); break;
+            case "logs":         HandleLogsCommand(parts); break;
+            case "hub":
+            case "quests":
+                if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
+                _iltHub.HandleCommand(cmd, parts.Length > 2 ? parts[2..] : Array.Empty<string>());
+                break;
+            case "huds":
+            case "itemhud":
+            case "remote":
+            case "miniremote":   HandleHudCommand(cmd, parts.Length > 2 ? parts[2] : string.Empty); break;
+            case "translate":
+            case "tr":           HandleTranslateCommand(parts); break;
+            case "iteminfo":
+            case "ii":           HandleItemInfoCommand(parts); break;
+            case "groundloot":   HandleGroundLootCommand(parts); break;
             case "addnavpt":     HandleAddNavPointCommand(); break;
             case "nav":          HandleNavCommand(parts); break;
             case "lua":          ForwardLuaCommand(parts); break;

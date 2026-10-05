@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.RegularExpressions;
 using RynthCore.PluginSdk;
 
@@ -8,6 +9,8 @@ namespace RynthCore.Plugin.RynthAi.Meta;
 internal sealed class QuestRecord
 {
     public string Key = "";
+    /// <summary>Server-supplied description from /myquests (may be empty).</summary>
+    public string Description = "";
     public int Solves;
     public int MaxSolves;
     public DateTime CompletedOn = DateTime.MinValue;
@@ -23,6 +26,13 @@ internal sealed class QuestRecord
         if ((CompletedOn + RepeatTime) > DateTime.UtcNow)
             return false;
         return !(MaxSolves == 1 && Solves <= 1);
+    }
+
+    /// <summary>Time until the flag can be solved again (zero when ready).</summary>
+    public TimeSpan TimeUntilReady()
+    {
+        var left = (CompletedOn + RepeatTime) - DateTime.UtcNow;
+        return left > TimeSpan.Zero ? left : TimeSpan.Zero;
     }
 }
 
@@ -44,10 +54,26 @@ internal sealed class QuestTracker
 
     private bool _refreshing;
     private bool _gotFirstQuest;
+    private bool _quietRefresh;
     private DateTime _lastLineTime;
     private DateTime _refreshStarted;
 
     public bool IsRefreshing => _refreshing;
+
+    /// <summary>The server answered that /myquests is not enabled.</summary>
+    public bool Disabled { get; private set; }
+
+    /// <summary>UTC time the last refresh finished with data (MinValue = never).</summary>
+    public DateTime LastRefreshUtc { get; private set; } = DateTime.MinValue;
+
+    /// <summary>Last refresh outcome text for the ILT Hub ("12 flags", "rate limited", ...).</summary>
+    public string LastStatus { get; private set; } = "not refreshed";
+
+    /// <summary>Number of cached flags.</summary>
+    public int Count => _flags.Count;
+
+    /// <summary>Raised on the pump thread when a refresh ends. The ILT Hub reads Disabled and Count.</summary>
+    public event Action? RefreshCompleted;
 
     public QuestTracker(RynthCoreHost host) => _host = host;
 
@@ -55,10 +81,17 @@ internal sealed class QuestTracker
     /// Issues /myquests to the server to populate the quest flag cache.
     /// No-ops if already refreshing or InvokeChatParser is not available.
     /// </summary>
-    public void Refresh()
+    public void Refresh() => Refresh(quiet: false);
+
+    /// <summary>
+    /// Issues /myquests. <paramref name="quiet"/> asks <see cref="OnChatLine"/> to report
+    /// those lines as eatable so the ILT Hub can hide its own poll.
+    /// </summary>
+    public void Refresh(bool quiet)
     {
         if (_refreshing || !_host.HasInvokeChatParser)
             return;
+        _quietRefresh = quiet;
         ExpectReply();
         RefreshSent?.Invoke();
         _host.InvokeChatParser("/myquests");
@@ -83,33 +116,43 @@ internal sealed class QuestTracker
     /// Feed every incoming chat line here. Quest lines are parsed and cached;
     /// terminal lines (empty list, rate limit, etc.) end the refresh early.
     /// </summary>
-    public void OnChatLine(string text)
+    public bool OnChatLine(string text)
     {
         if (!_refreshing)
-            return;
+            return false;
 
-        if (text.Contains("Quest list is empty") ||
-            text.Contains("The command \"myquests\" is not currently enabled"))
+        if (text.Contains("Quest list is empty"))
         {
-            _refreshing = false;
-            return;
+            bool quiet = _quietRefresh;
+            Finish("quest list is empty", gotData: true);
+            return quiet;
+        }
+
+        if (text.Contains("The command \"myquests\" is not currently enabled"))
+        {
+            Disabled = true;
+            bool quiet = _quietRefresh;
+            Finish("/myquests is disabled on this server", gotData: false);
+            return quiet;
         }
 
         if (text.Contains("This command may only be run once every"))
         {
-            _refreshing = false;
-            return;
+            bool quiet = _quietRefresh;
+            Finish("rate limited by the server (try again in a minute)", gotData: false);
+            return quiet;
         }
 
         var m = QuestLineRegex.Match(text);
         if (!m.Success)
-            return;
+            return false;
 
         _gotFirstQuest = true;
         _lastLineTime = DateTime.UtcNow;
 
         var rec = new QuestRecord();
         rec.Key = m.Groups["key"].Value.ToLowerInvariant();
+        rec.Description = m.Groups["description"].Value.Trim().Trim('"');
         int.TryParse(m.Groups["solves"].Value, out rec.Solves);
         int.TryParse(m.Groups["maxSolves"].Value, out rec.MaxSolves);
 
@@ -126,6 +169,7 @@ internal sealed class QuestTracker
             rec.RepeatTime = TimeSpan.FromSeconds(rt);
 
         _flags[rec.Key] = rec;
+        return _quietRefresh;
     }
 
     /// <summary>
@@ -142,14 +186,31 @@ internal sealed class QuestTracker
         if (_gotFirstQuest)
         {
             if ((now - _lastLineTime).TotalSeconds >= 1.0)
-                _refreshing = false;
+                Finish($"{Count} flags", gotData: true);
         }
         else
         {
             if ((now - _refreshStarted).TotalSeconds >= 15.0)
-                _refreshing = false;
+                Finish("no reply from server", gotData: false);
         }
     }
+
+    private void Finish(string status, bool gotData)
+    {
+        _refreshing = false;
+        _quietRefresh = false;
+        LastStatus = status;
+        if (gotData)
+        {
+            Disabled = false;
+            LastRefreshUtc = DateTime.UtcNow;
+        }
+        try { RefreshCompleted?.Invoke(); }
+        catch (Exception ex) { _host.Log($"[RynthAi] QuestTracker RefreshCompleted threw: {ex.Message}"); }
+    }
+
+    /// <summary>Copy of every cached record for the ILT Hub quest list.</summary>
+    public QuestRecord[] Snapshot() => _flags.Values.ToArray();
 
     /// <summary>Returns true if the key exists in the cached quest flag list.</summary>
     public bool HasFlag(string key) => _flags.ContainsKey(key.ToLowerInvariant());

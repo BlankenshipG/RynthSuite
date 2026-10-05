@@ -5,6 +5,9 @@ namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
 internal static class NavCoordinateHelper
 {
+    /// <summary>World Z from the player pose is divided by this to match nav-file height.</summary>
+    public const double NavZScale = 240.0;
+
     public static bool TryGetNavCoords(RynthCoreHost host, out double northSouth, out double eastWest)
     {
         northSouth = 0;

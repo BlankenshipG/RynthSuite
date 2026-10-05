@@ -11,7 +11,7 @@ using RynthCore.Plugin.RynthAi.Meta;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
-internal sealed class LegacyDashboardRenderer
+internal sealed partial class LegacyDashboardRenderer
 {
     internal static readonly Vector4 ColTeal = new(0.15f, 0.85f, 0.90f, 1.00f);
     internal static readonly Vector4 ColAmber = new(0.91f, 0.70f, 0.20f, 1.00f);

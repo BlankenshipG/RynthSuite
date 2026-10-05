@@ -18,6 +18,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Install-folder resolver used by the ILT Hub, diagnostics, and chat translator. -->
+    <Compile Include="..\..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- UB damage-insights seed schema, shared with the Monster Editor importer. -->
+    <Compile Include="..\..\Shared\UbMobSeed.cs" Link="Shared\UbMobSeed.cs" />
     <!-- Interfaces shared with other RynthSuite plugins (RynthLua uses RynthAi.Script, RynthNet RynthAi.Status). -->
     <Compile Include="..\Shared\RynthAiScriptApi.cs" Link="Shared\RynthAiScriptApi.cs" />
     <!-- RynthNet reads the bot state through RynthAi.Status. -->
@@ -51,6 +55,8 @@
 
   <ItemGroup>
     <TrimmerRootAssembly Include="ImGui.NET" />
+    <!-- Lua editing moved to the RynthLua plugin. This window targeted settings fields that no longer exist. -->
+    <Compile Remove="LegacyUi\LegacuLuaUi.cs" />
   </ItemGroup>
 
   <ItemGroup>

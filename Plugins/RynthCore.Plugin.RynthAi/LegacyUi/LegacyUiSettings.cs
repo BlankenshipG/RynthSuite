@@ -13,6 +13,8 @@ public static class DashWindows
     public static bool ShowWeapons;
     public static bool ShowLua;
     public static bool ShowDungeonMap;
+    /// <summary>ILT Hub window (persisted in ilt-hub.json, not in the combat profile).</summary>
+    public static bool ShowIltHub;
 }
 
 public sealed class LegacyUiSettings
@@ -75,6 +77,10 @@ public sealed class LegacyUiSettings
     public bool CombineBagsDuringSalvage = true;
 
     public bool ShowTargetStaminaMana;
+
+    /// <summary>Mag-style item info (/ra iteminfo): on-select, per-field visibility, chat type, prefix.
+    /// Edited in the "RynthAi Item Info" window.</summary>
+    public RynthCore.Plugin.RynthAi.ItemInfo.MagItemInfoSettings ItemInfoSettings = new();
 
     public bool EnableMissileCrafting = true;
     public int MissileCraftAmmoThreshold = 1000;
@@ -158,6 +164,8 @@ public sealed class LegacyUiSettings
     public const float FollowNavMinLowest = 0.5f, FollowNavMinHighest = 20f;
     public static float ClampFollowNavMin(float yards) =>
         float.IsNaN(yards) ? 1.5f : Math.Clamp(yards, FollowNavMinLowest, FollowNavMinHighest);
+    /// <summary>Marker colours, waypoint HUD / labels, breadcrumb trail and recording options.</summary>
+    public NavOverlaySettings NavOverlay = new();
     public float NavRingThickness = 6.0f;
     public float NavLineThickness = 6.0f;
     public float NavHeightOffset = 0.05f;
@@ -181,6 +189,8 @@ public sealed class LegacyUiSettings
     public bool AutoUnlockDoors;
     public int LootOwnership;
     public bool LootOnlyRareCorpses;
+    /// <summary>Also pick up loose ground items that match the loot profile, within the corpse max range.</summary>
+    public bool EnableGroundLoot;
     public bool PeaceModeWhenIdle = true;
     public bool RebuffWhenIdle;
     /// <summary>
@@ -386,6 +396,8 @@ public sealed class LegacyUiSettings
 
     public List<MonsterRule> MonsterRules { get; set; } = new();
     public List<ItemRule> ItemRules { get; set; } = new();
+    /// <summary>Loose ammo the monster rules can prefer. Edited by the local monsters window.</summary>
+    public List<AmmoRule> AmmoRules { get; set; } = new();
     public List<ConsumableRule> ConsumableRules { get; set; } = new();
     public List<BuffRule> BuffRules { get; set; } = new();
     public List<MetaRule> MetaRules { get; set; } = new();
@@ -589,6 +601,8 @@ public sealed class MonsterRule
     /// 2 Shield, 3 Offhand weapon, 4 None (OffhandRules.Rule*); any other value is a listed
     /// item to wield there (the old per-rule picker).</summary>
     public int OffhandId { get; set; }
+    /// <summary>Optional loose ammo stack id for missile combat while this rule matches (0 = auto).</summary>
+    public int PreferredAmmoItemId { get; set; }
     public string PetDamage { get; set; } = "PAuto";
     /// <summary>Debuffs the player typed in (Damage panel), comma separated: a spell's base
     /// name ("Corrosion Vulnerability Other") casts its best known tier; a full name casts as is.</summary>
@@ -604,6 +618,11 @@ public sealed class BuffRule
 
 public sealed class ItemRule
 {
+    /// <summary>Action string for a listed weapon (VirindiTank import and the ILT gear importer).</summary>
+    public const string WeaponAction = "Weapon";
+    /// <summary>Action string for a listed shield.</summary>
+    public const string ShieldAction = "Shield";
+
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Action { get; set; } = "Loot";
@@ -613,6 +632,18 @@ public sealed class ItemRule
     /// (not known, or an entry from before sources were kept).</summary>
     public string ElementSource { get; set; } = "";
     public bool KeepBuffed { get; set; } = true;
+
+    /// <summary>True when this row is a shield (off hand), not a main-hand weapon.</summary>
+    public bool IsShield() => string.Equals(Action, ShieldAction, StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>Loose ammo the monster rules can prefer (bow, crossbow, atlatl, or Auto).</summary>
+public sealed class AmmoRule
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Bow, Crossbow, Atlatl, or Auto (match any launcher).</summary>
+    public string Category { get; set; } = "Auto";
 }
 
 /// <summary>JSON wire-format types used by the engine-side Avalonia MonstersPanel.</summary>
