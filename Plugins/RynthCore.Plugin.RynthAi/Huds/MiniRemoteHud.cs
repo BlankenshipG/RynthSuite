@@ -2,7 +2,9 @@
 //
 // Sections (each can be hidden from the right-click menu):
 //   Stats    session time and per-hour XP / luminance / kills / coins / pyreals (ILT Hub rates)
-//   Pet      the pet that is out, else the next combat essence and whether it is ready
+//   Target   the creature combat is attacking: name, health bar, distance
+//   Pet      the summon that is out (health bar, time left), else the next combat essence and
+//            whether it is ready
 //   Slots    5 × 6 quick-use item grid; click uses the item, right-click assigns / clears
 //   Toggles  macro and subsystem switches (same as the dashboard buttons)
 //   Bank     ILT bank balances (pyreals, luminance, keys, coins)
@@ -54,7 +56,9 @@ internal sealed class MiniRemoteHud
         var settings = _hud.Dashboard.Settings;
 
         if (s.MiniShowStats) RenderStats(hub);
-        if (s.MiniShowPet) RenderPet(hub);
+        var combat = _hud.Combat;
+        if (s.MiniShowTarget) RenderTarget(combat);
+        if (s.MiniShowPet) RenderPet(hub, combat);
         if (s.MiniShowStats) RenderStatButtons(hub);
         if (s.MiniShowGems) RenderSlots(s);
         if (s.MiniShowToggles) RenderToggles(settings);
@@ -92,15 +96,94 @@ internal sealed class MiniRemoteHud
         Stat("Pyr:", HudDraw.Compact(r.PyrealsPerHour) + "/h");
     }
 
-    private static void RenderPet(IltHubController? hub)
+    private static void RenderTarget(CombatHudSnapshot c)
     {
-        if (!IltActive(hub)) return;
+        if (c.TargetId == 0) { ImGui.TextDisabled("Target: none"); return; }
+        ImGui.TextColored(ColLabel, "Target:");
+        ImGui.SameLine();
+        ImGui.TextUnformatted(c.TargetName);
+        if (c.TargetDistance >= 0)
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled($"{c.TargetDistance:F0}yd");
+        }
+        HealthBar("##mrtargethp", c.TargetHealth);
+    }
+
+    /// <summary>The live summon when one is out, else the ILT Hub's next-essence line.</summary>
+    private static void RenderPet(IltHubController? hub, CombatHudSnapshot c)
+    {
+        if (c.PetId != 0)
+        {
+            RenderSummon(hub, c);
+            return;
+        }
+        if (!IltActive(hub)) { ImGui.TextDisabled("Summon: none"); return; }
         string name = hub!.Pets.HudPetName;
         string status = hub.Pets.HudPetStatus;
         if (name.Length == 0) { ImGui.TextDisabled("No combat pet set"); return; }
         ImGui.TextUnformatted(name);
         var col = status switch { "Ready" => ColReady, "Out" => ColOut, "Healing" => ColBusy, _ => ColEmpty };
         ImGui.TextColored(col, status);
+    }
+
+    private static void RenderSummon(IltHubController? hub, CombatHudSnapshot c)
+    {
+        ImGui.TextColored(ColLabel, "Summon:");
+        ImGui.SameLine();
+        ImGui.TextUnformatted(c.PetName);
+        if (IltActive(hub) && hub!.Pets.HudPetStatus == "Healing")
+        {
+            ImGui.SameLine();
+            ImGui.TextColored(ColBusy, "Healing");
+        }
+        HealthBar("##mrpethp", c.PetHealth);
+
+        long now = Environment.TickCount64;
+        if (c.PetExpiresAtMs != 0)
+        {
+            long leftMs = Math.Max(0, c.PetExpiresAtMs - now);
+            var left = TimeSpan.FromMilliseconds(leftMs);
+            string text = $"{FormatClock(left)} left";
+            if (c.PetLifespanSec > 0)
+            {
+                float frac = Math.Clamp(leftMs / (c.PetLifespanSec * 1000f), 0f, 1f);
+                var col = left.TotalSeconds <= 30 ? ColEmpty : left.TotalSeconds <= 90 ? ColBusy : ColOut;
+                Bar("##mrpettime", frac, text, col);
+            }
+            else
+            {
+                ImGui.TextColored(left.TotalSeconds <= 30 ? ColEmpty : ColOut, text);
+            }
+        }
+        else
+        {
+            // No RemainingLifespan from the server: show how long it has been out instead.
+            var up = TimeSpan.FromMilliseconds(Math.Max(0, now - c.PetSeenAtMs));
+            ImGui.TextDisabled($"Out {FormatClock(up)}");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("The server hasn't reported this summon's lifespan yet.");
+        }
+    }
+
+    private static string FormatClock(TimeSpan t)
+        => t.TotalHours >= 1 ? $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}" : $"{t.Minutes}:{t.Seconds:00}";
+
+    /// <summary>Health ratio bar coloured green / yellow / red; "--" until the first health update.</summary>
+    private static void HealthBar(string id, float ratio)
+    {
+        if (ratio < 0f) { Bar(id, 0f, "HP --", ColLabel); return; }
+        var col = ratio > 0.6f ? ColReady : ratio > 0.3f ? ColBusy : ColEmpty;
+        Bar(id, ratio, $"HP {ratio * 100f:F0}%", col);
+    }
+
+    private static void Bar(string id, float fraction, string overlay, Vector4 color)
+    {
+        float w = Math.Max(ImGui.GetContentRegionAvail().X, 140f);
+        ImGui.PushStyleColor(ImGuiCol.PlotHistogram, color with { W = 0.85f });
+        ImGui.PushID(id);
+        ImGui.ProgressBar(fraction, new Vector2(w, 14f), overlay);
+        ImGui.PopID();
+        ImGui.PopStyleColor();
     }
 
     private void RenderStatButtons(IltHubController? hub)
@@ -236,7 +319,8 @@ internal sealed class MiniRemoteHud
         if (!ImGui.BeginPopup(OptionsPopup)) return;
         ImGui.TextDisabled("Mini Remote sections");
         Flag("Session stats", ref s.MiniShowStats);
-        Flag("Pet", ref s.MiniShowPet);
+        Flag("Attack target", ref s.MiniShowTarget);
+        Flag("Pet / summon", ref s.MiniShowPet);
         Flag("Item slots", ref s.MiniShowGems);
         Flag("Toggles", ref s.MiniShowToggles);
         Flag("Bank", ref s.MiniShowBank);

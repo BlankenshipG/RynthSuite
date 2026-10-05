@@ -1,8 +1,9 @@
 // HudController.cs — Owner of RynthAi's floating HUD windows.
 //
 //   * Pack item count HUD (ItemCountHud): icon + carried count for pinned items.
-//   * Mini Remote (MiniRemoteHud): session stats, pet, 30 quick-use item slots, macro
-//     toggles, bank balances and rebuff buttons.
+//   * Mini Remote (MiniRemoteHud): session stats, attack target, summon (health / time
+//     left, fed by CombatHudTracker), 30 quick-use item slots, macro toggles, bank balances
+//     and rebuff buttons.
 //   * Inventory HUDs setup window (HudSetupUi): picks what the two HUDs show. Opened from
 //     the Inventory Management settings (ImGui Advanced Settings, the Avalonia Settings
 //     panel) or "/ra huds".
@@ -58,6 +59,7 @@ internal sealed class HudController
     private readonly ItemCountHud _itemHud;
     private readonly MiniRemoteHud _miniRemote;
     private readonly HudSetupUi _setup;
+    private readonly CombatHudTracker _combat;
 
     private volatile HudPackSnapshot _pack = HudPackSnapshot.Empty;
     private long _lastScanAt;
@@ -65,7 +67,7 @@ internal sealed class HudController
     private bool _scanRequested;
 
     public HudController(RynthCoreHost host, string charFolder, Func<WorldObjectCache?> cache,
-        LegacyDashboardRenderer dashboard, Func<IltHubController?> hub, HudIconCache icons)
+        LegacyDashboardRenderer dashboard, Func<IltHubController?> hub, HudIconCache icons, Func<int> attackTargetId)
     {
         _host = host;
         _cache = cache;
@@ -77,6 +79,7 @@ internal sealed class HudController
         _itemHud = new ItemCountHud(this);
         _miniRemote = new MiniRemoteHud(this);
         _setup = new HudSetupUi(this);
+        _combat = new CombatHudTracker(host, cache, attackTargetId);
     }
 
     public HudState State { get; }
@@ -87,6 +90,9 @@ internal sealed class HudController
 
     /// <summary>Latest pack view (render thread safe).</summary>
     public HudPackSnapshot Pack => _pack;
+
+    /// <summary>Latest attack target / summon view (render thread safe).</summary>
+    public CombatHudSnapshot Combat => _combat.Snapshot;
 
     /// <summary>Queues work for the next pump tick (safe from the render thread).</summary>
     public void Post(Action action) => _posted.Enqueue(action);
@@ -116,6 +122,10 @@ internal sealed class HudController
 
         Icons.Tick();
 
+        // Target / summon polling sends health queries and appraisals, so it only runs while shown.
+        if (State.ShowMiniRemote && (State.MiniShowTarget || State.MiniShowPet))
+            _combat.Tick();
+
         if (now - _lastSaveAt >= SaveIntervalMs)
         {
             _lastSaveAt = now;
@@ -128,6 +138,7 @@ internal sealed class HudController
         _store.SaveIfDirty(State);
         _pack = HudPackSnapshot.Empty;
         _iconById.Clear();
+        _combat.OnLogout();
     }
 
     /// <summary>Aggregates the pack by item name and refreshes pinned entries' icon / WCID.</summary>

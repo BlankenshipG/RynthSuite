@@ -63,7 +63,7 @@ internal sealed class InventoryContainerSnapshot
 public sealed partial class RynthAiPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer = Marshal.StringToHGlobalAnsi("RynthAi");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.30-legacy-ui");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.6.31-legacy-ui");
 
     /// <summary>
     /// Oldest engine RynthAi runs on. Players get plugin updates automatically but engine
@@ -342,7 +342,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         // The HUDs share the per-character folder, so they are created alongside the Hub.
         _hudIcons ??= new Huds.HudIconCache(Host, () => _raycast?.GeometryLoader?.PortalDat);
-        _huds = new Huds.HudController(Host, _dashboard.CharFolder, () => _objectCache, _dashboard, () => _iltHub, _hudIcons);
+        _huds = new Huds.HudController(Host, _dashboard.CharFolder, () => _objectCache, _dashboard, () => _iltHub, _hudIcons,
+            () => _combatManager?.activeTargetId ?? 0);
         _dashboard.SetInventoryHudLauncher(() => { if (_huds != null) _huds.State.ShowSetup = true; });
         _dashboard.MiniRemoteVisible = () => _huds?.State.ShowMiniRemote == true;
         _dashboard.SetMiniRemoteVisible = v => { if (_huds != null) _huds.State.ShowMiniRemote = v; };

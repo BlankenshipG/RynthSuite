@@ -30,6 +30,9 @@ public sealed class HudState
     public bool ShowMiniRemote;
     public bool MiniRemoteLocked;
     public bool MiniShowStats = true;
+    /// <summary>Attack target row: name, health bar, distance.</summary>
+    public bool MiniShowTarget = true;
+    /// <summary>Pet row: the summon that is out (health, time left), else the next combat essence.</summary>
     public bool MiniShowPet = true;
     public bool MiniShowGems = true;
     public bool MiniShowToggles = true;
