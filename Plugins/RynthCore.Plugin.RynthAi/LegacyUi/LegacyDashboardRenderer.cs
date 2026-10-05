@@ -1079,6 +1079,13 @@ internal sealed partial class LegacyDashboardRenderer
                 AutoVendorTriesTime        = s.AutoVendorTriesTime,
                 OffhandDefault             = s.OffhandDefault,
                 PreferDualWield            = s.PreferDualWield,
+                EnableGroundLoot           = s.EnableGroundLoot,
+                ItemInfoOnSelect           = s.ItemInfoSettings.OnSelect,
+                // Diagnostics (per PC, RynthLog)
+                DiagDebugToChat            = RynthLog.DebugToChat,
+                DiagFileLogAll             = RynthLog.FileLogAll,
+                DiagCategories             = RynthLog.FormatCategoryLevels(),
+                DiagFolder                 = RynthLog.Directory,
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.SettingsBridgePayload);
         }
@@ -1277,6 +1284,12 @@ internal sealed partial class LegacyDashboardRenderer
             // Off hand: only fields the sender actually included (the engine face doesn't draw them yet)
             if (p.OffhandDefault is string od && OffhandRules.TryParse(od, out var odMode)) s.OffhandDefault = OffhandRules.SettingValue(odMode);
             if (p.PreferDualWield            is bool pdw)     s.PreferDualWield            = pdw;
+            s.EnableGroundLoot           = p.EnableGroundLoot;
+            s.ItemInfoSettings.OnSelect  = p.ItemInfoOnSelect;
+            // Diagnostics: each setter rewrites diagnostics.json, so only touch what changed.
+            if (p.DiagDebugToChat != RynthLog.DebugToChat) RynthLog.DebugToChat = p.DiagDebugToChat;
+            if (p.DiagFileLogAll  != RynthLog.FileLogAll)  RynthLog.FileLogAll  = p.DiagFileLogAll;
+            RynthLog.ApplyCategoryLevels(p.DiagCategories);
             SaveSettings();
         }
         catch { }

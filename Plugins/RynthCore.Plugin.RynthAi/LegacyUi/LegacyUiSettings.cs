@@ -919,6 +919,21 @@ public sealed class SettingsBridgePayload
     // The off hand (only when the sender includes them; today's engine Settings face doesn't).
     public string? OffhandDefault { get; set; }
     public bool? PreferDualWield { get; set; }
+
+    // Ground loot (GroundLootController; also /ra groundloot on|off).
+    public bool EnableGroundLoot { get; set; }
+    // Item info: describe an item in chat when it is selected (/ra iteminfo onselect).
+    public bool ItemInfoOnSelect { get; set; }
+
+    // Diagnostics. Stored per PC in Logs\Diagnostics\diagnostics.json (RynthLog), not in
+    // the character profile; applied only when a value differs, so a save of other
+    // settings doesn't rewrite that file.
+    public bool DiagDebugToChat { get; set; }
+    public bool DiagFileLogAll { get; set; } = true;
+    /// <summary>Every trace category as "Name=Level" joined by ','; Level 0 = Off, 1 = Trace, 2 = Info.</summary>
+    public string DiagCategories { get; set; } = string.Empty;
+    /// <summary>Read-only: the diagnostics folder, shown under the switches.</summary>
+    public string DiagFolder { get; set; } = string.Empty;
 }
 
 public enum MetaConditionType

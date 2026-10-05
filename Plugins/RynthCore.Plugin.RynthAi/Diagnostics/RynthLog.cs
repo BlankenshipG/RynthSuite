@@ -500,6 +500,48 @@ internal static class RynthLog
         System.Threading.Volatile.Write(ref CategoryLevels[index], next);
     }
 
+    /// <summary>
+    /// Every category as "Name=Level" joined by ',', in enum order (Level: 0 Off, 1 Trace, 2 Info).
+    /// The engine Settings panel's Diagnostics tab draws its checkbox grid from this.
+    /// </summary>
+    public static string FormatCategoryLevels()
+    {
+        var sb = new StringBuilder();
+        foreach (LogCat cat in Enum.GetValues<LogCat>())
+        {
+            if (sb.Length > 0) sb.Append(',');
+            sb.Append(cat).Append('=').Append((int)GetCategoryLevel(cat));
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Applies a <see cref="FormatCategoryLevels"/> string. Unknown names and bad levels are
+    /// skipped, categories not listed keep their level, and diagnostics.json is written once,
+    /// only when something changed. Returns the number of categories changed.
+    /// </summary>
+    public static int ApplyCategoryLevels(string? levels)
+    {
+        if (string.IsNullOrWhiteSpace(levels)) return 0;
+        int changed = 0;
+        lock (ConfigLock)
+        {
+            SyncFromDiskIfChanged();
+            foreach (string entry in levels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                int eq = entry.IndexOf('=');
+                if (eq <= 0 || !TryParseCategory(entry[..eq], out LogCat cat)) continue;
+                if (!int.TryParse(entry[(eq + 1)..], out int level) || !Enum.IsDefined((LogEventLevel)level)) continue;
+                int i = (int)cat;
+                if (System.Threading.Volatile.Read(ref CategoryLevels[i]) == level) continue;
+                System.Threading.Volatile.Write(ref CategoryLevels[i], level);
+                changed++;
+            }
+            if (changed > 0) SaveConfig();
+        }
+        return changed;
+    }
+
     /// <summary>Parses a category name case-insensitively (e.g. "ilthub", "Combat").</summary>
     public static bool TryParseCategory(string name, out LogCat cat)
         => Enum.TryParse(name, ignoreCase: true, out cat) && Enum.IsDefined(cat);

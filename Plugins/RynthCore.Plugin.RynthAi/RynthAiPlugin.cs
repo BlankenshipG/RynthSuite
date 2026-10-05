@@ -780,6 +780,23 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // Skills panel Progression tab (augmentations / enlightenment edits).
                 HandleProgressionRemote(value);
                 break;
+            case "trace":
+            case "logs":
+            case "iteminfo":
+                // Settings panel buttons (Diagnostics tab, Item Info options); value carries the
+                // same arguments as "/ra trace|logs|iteminfo ...".
+                {
+                    var args = new List<string> { "/ra", action.ToLowerInvariant() };
+                    args.AddRange(value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+                    string[] parts = args.ToArray();
+                    switch (parts[1])
+                    {
+                        case "trace":    HandleTraceCommand(parts); break;
+                        case "logs":     HandleLogsCommand(parts); break;
+                        case "iteminfo": HandleItemInfoCommand(parts); break;
+                    }
+                }
+                break;
             // movestart/movestop are applied DIRECTLY by the RynthRemote plugin (pure Host.SetAutoRun/
             // SetMotion + its own dead-man watchdog) and are never forwarded here.
             default:
@@ -791,7 +808,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
     // Settings the phone must never write (engine-populated read-only status).
     private static readonly HashSet<string> ReadOnlySettingKeys = new(StringComparer.OrdinalIgnoreCase)
-        { "MissileCraftingState", "MissileCraftingActive", "MissileCraftingStatus" };
+        { "MissileCraftingState", "MissileCraftingActive", "MissileCraftingStatus", "DiagFolder" };
 
     // Authoritative server-side clamp (min,max) per numeric setting — a bad/garbage phone value can never
     // push a setting out of range and brick a client. Ranges mirror the in-AC SettingsPanel rows. Booleans
