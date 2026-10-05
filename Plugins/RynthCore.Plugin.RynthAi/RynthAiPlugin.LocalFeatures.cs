@@ -255,6 +255,14 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] " + _huds.HandleCommand(which, mode));
     }
 
+    /// <summary>"/ra itemhud add &lt;name&gt;" and the inventory panel's "Add to item count HUD". Pump thread.</summary>
+    private void HandleItemHudAdd(string name)
+    {
+        if (_huds == null) { ChatLine("[RynthAi] HUDs not ready (log in first)."); return; }
+        if (string.IsNullOrWhiteSpace(name)) { ChatLine("[RynthAi] Usage: /ra itemhud add <item name>"); return; }
+        ChatLine("[RynthAi] " + _huds.AddToItemHudAndShow(name));
+    }
+
     /// <summary>/ra translate ... — forwards to the chat translator.</summary>
     private void HandleTranslateCommand(string[] parts)
     {

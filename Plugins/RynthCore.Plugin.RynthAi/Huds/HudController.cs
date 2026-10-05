@@ -234,6 +234,20 @@ internal sealed class HudController
         State.ItemHudItems.Add(new HudItemEntry { Name = name, Wcid = row?.Wcid ?? 0, IconDid = row?.IconDid ?? 0 });
     }
 
+    /// <summary>
+    /// Adds <paramref name="name"/> to the item count HUD (if missing) and shows the HUD.
+    /// Icon and WCID fill in on the next pack scan. Returns the chat confirmation.
+    /// </summary>
+    public string AddToItemHudAndShow(string name)
+    {
+        name = name.Trim();
+        bool already = State.ItemHudItems.Any(e => e.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (!already) AddToItemHud(name);
+        State.ShowItemHud = true;
+        RequestScan();
+        return already ? $"{name} is already on the item count HUD." : $"Added {name} to the item count HUD.";
+    }
+
     public void RemoveFromItemHud(string name)
         => State.ItemHudItems.RemoveAll(e => e.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 

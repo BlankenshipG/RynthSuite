@@ -762,6 +762,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // Dashboard Hub launcher: left-click remote=toggle, right-click huds=show.
                 HandleHudCommand(action.ToLowerInvariant(), value);
                 break;
+            case "itemhudadd":
+                // Inventory panel "Add to item count HUD"; value is the item name.
+                HandleItemHudAdd(value);
+                break;
             // movestart/movestop are applied DIRECTLY by the RynthRemote plugin (pure Host.SetAutoRun/
             // SetMotion + its own dead-man watchdog) and are never forwarded here.
             default:
@@ -2971,6 +2975,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "quests":
                 if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
                 _iltHub.HandleCommand(cmd, parts.Length > 2 ? parts[2..] : Array.Empty<string>());
+                break;
+            case "itemhud" when parts.Length > 2 && parts[2].Equals("add", StringComparison.OrdinalIgnoreCase):
+                HandleItemHudAdd(string.Join(" ", parts, 3, parts.Length - 3));
                 break;
             case "huds":
             case "itemhud":
