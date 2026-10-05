@@ -369,9 +369,10 @@ internal sealed class MiniRemoteHud
     private const string ItemPayloadType = "RYNTH_INV_ITEM";
 
     /// <summary>
-    /// Payload type for an item dragged out of AC's own inventory (uint object id). Must match
-    /// ItemDragBridge.NativePayloadType in RynthCore.Engine. The engine can only infer it from the
-    /// game selection, so it is taken by empty slots only and never replaces an assigned one.
+    /// Payload type for an AC-inventory drag whose item the engine guessed from the game selection
+    /// (uint object id); engines that hook AC's drag start send the real item as ItemPayloadType
+    /// instead. Must match ItemDragBridge.NativePayloadType in RynthCore.Engine. A guess can be the
+    /// wrong item, so it is taken by empty slots only and never replaces an assigned one.
     /// </summary>
     private const string GameItemPayloadType = "RYNTH_GAME_ITEM";
 
