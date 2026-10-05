@@ -94,6 +94,9 @@ internal sealed class HudController
     /// <summary>Latest attack target / summon view (render thread safe).</summary>
     public CombatHudSnapshot Combat => _combat.Snapshot;
 
+    /// <summary>Chat translator views for the Mini Remote row; null until the translator exists.</summary>
+    public RynthCore.Plugin.RynthAi.Translate.TranslateUi? Translate { get; set; }
+
     /// <summary>Queues work for the next pump tick (safe from the render thread).</summary>
     public void Post(Action action) => _posted.Enqueue(action);
 

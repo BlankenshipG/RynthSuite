@@ -28,6 +28,8 @@ namespace RynthCore.Plugin.RynthAi;
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Huds.HudState))]
 // Diagnostics (Diagnostics/RynthLog.cs): persisted debug/trace switches.
 [JsonSerializable(typeof(RynthLogConfig))]
+// Chat translator (Translate/TranslateSettings.cs): shared translate.json.
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Translate.TranslateSettings))]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     IncludeFields = true,
