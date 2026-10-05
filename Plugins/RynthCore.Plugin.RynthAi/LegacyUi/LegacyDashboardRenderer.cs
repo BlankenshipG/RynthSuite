@@ -2301,6 +2301,10 @@ internal sealed partial class LegacyDashboardRenderer
                 Points            = points,
                 TrackBreadcrumbs  = _settings.NavOverlay.TrackBreadcrumbs,
                 ShowRouteOverlay  = _settings.NavOverlay.ShowRouteMarkers,
+                IsRecording       = _settings.IsRecordingNav,
+                TrailPoints       = NavBreadcrumbs?.Trail.Length ?? 0,
+                TrailYards        = NavBreadcrumbs?.TrailYards ?? 0,
+                EditStatus        = CurrentNavEditStatus(),
             };
             return JsonSerializer.Serialize(payload, RynthAiJsonContext.Default.NavBridgePayload);
         }
@@ -2417,6 +2421,11 @@ internal sealed partial class LegacyDashboardRenderer
                 case "loadNav":
                     int ni = _navFiles.IndexOf(cmd.NavName);
                     if (ni >= 0) { _selectedNavIdx = ni; LoadSelectedNav(); SaveSettings(); }
+                    break;
+
+                default:
+                    // Route editor commands (multi-select edits, pause / portal steps, trail -> route).
+                    HandleNavEditCommand(cmd);
                     break;
             }
         }

@@ -717,6 +717,13 @@ public sealed class NavBridgePayload
     public bool              TrackBreadcrumbs { get; set; }
     /// <summary>NavOverlaySettings.ShowRouteMarkers (Nav panel "Route overlay" toggle).</summary>
     public bool              ShowRouteOverlay { get; set; }
+    /// <summary>Route recording is on (/ra navrec).</summary>
+    public bool              IsRecording      { get; set; }
+    /// <summary>Breadcrumb trail since the last teleport: point count and walked yards.</summary>
+    public int               TrailPoints      { get; set; }
+    public double            TrailYards       { get; set; }
+    /// <summary>Result of the last route edit ("Route reversed."), empty once it is a few seconds old.</summary>
+    public string            EditStatus       { get; set; } = string.Empty;
 }
 
 /// <summary>One-shot command sent from the Avalonia NavPanel to the plugin.</summary>
@@ -730,7 +737,12 @@ public sealed class NavCommand
     public int    InsertAt  { get; set; } = -1;
     public string NavName   { get; set; } = string.Empty;
     public string Text      { get; set; } = string.Empty;   // addChat: the command or text
-    public bool   On        { get; set; }                   // setBreadcrumbs / setRouteOverlay
+    public bool   On        { get; set; }                   // setBreadcrumbs / setRouteOverlay / setRecording
+    public List<int> Indices { get; set; } = new();         // movePoints / duplicatePoints / deletePoints
+    public int    Delta     { get; set; }                   // movePoints: -1 up, +1 down
+    public double Seconds   { get; set; }                   // addPause
+    public double Yards     { get; set; }                   // simplifyRoute tolerance
+    public bool   Reverse   { get; set; }                   // trailToRoute: backtrack (walk the trail in reverse)
 }
 
 /// <summary>Bridge payload for the engine-side Avalonia SettingsPanel.</summary>

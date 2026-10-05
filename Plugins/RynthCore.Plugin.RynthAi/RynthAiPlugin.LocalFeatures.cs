@@ -62,6 +62,7 @@ public sealed partial class RynthAiPlugin
         if (_dashboard == null) return;
         _navBreadcrumbs = new NavBreadcrumbTracker(Host, _dashboard.Settings, DescribeNavPortal, ChatLine);
         _navOverlay = new NavOverlayRenderer(Host, _dashboard.Settings, _navBreadcrumbs);
+        _dashboard.NavBreadcrumbs = _navBreadcrumbs;   // Nav panel: trail -> route, trail stats
     }
 
     /// <summary>Nav recorder hook: (name, object class) when <paramref name="id"/> is a portal.</summary>
@@ -129,6 +130,7 @@ public sealed partial class RynthAiPlugin
         try { _navBreadcrumbs?.Shutdown(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Navigation, ex, "nav recorder shutdown"); }
         _navBreadcrumbs = null;
+        if (_dashboard != null) _dashboard.NavBreadcrumbs = null;
         _navOverlay = null;
         try { _iltHub?.OnLogout(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "logout"); }
