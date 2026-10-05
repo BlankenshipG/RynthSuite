@@ -46,6 +46,7 @@ internal sealed class IltQuests : IIltFeature
     private volatile string[] _qbIncomplete = Array.Empty<string>();
     private volatile string _qbStatus = "not loaded";
     private long _qbCount = -1;
+    private bool _questsRescueChecked; // popped-out window's off-screen check done for the current show
 
     // Render-thread UI state.
     private int _questView; // 0 timed, 1 kill tasks, 2 once, 3 all
@@ -354,15 +355,19 @@ internal sealed class IltQuests : IIltFeature
     {
         var cs = _ctx.State.Character;
         if (cs.QuestTrackerPoppedOut) RenderPoppedOutTracker(cs);
+        else _questsRescueChecked = false;
         if (cs.ShowQuestFavoritesHud) RenderFavoritesHud(cs);
     }
 
     private void RenderPoppedOutTracker(IltCharacterState cs)
     {
+        // Offset from the Pets window's first spot so the two don't open exactly stacked.
+        UiPlacement.CenterFirstUse(new Vector2(40, 40));
         ImGui.SetNextWindowSize(new Vector2(700, 520), ImGuiCond.FirstUseEver);
         bool open = true;
         if (ImGui.Begin("Quests##iltquestswin", ref open))
         {
+            UiPlacement.RescueOncePerShow(ref _questsRescueChecked);
             // Quest bonus first (collapsed by default) so the tracker table can fill the rest.
             if (ImGui.CollapsingHeader("Quest bonus (/qb)##qbwin")) RenderQb();
             RenderQuestTracker(poppedOut: true);

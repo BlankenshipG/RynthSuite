@@ -34,8 +34,12 @@ internal sealed class MiniRemoteHud
 
     private readonly HudController _hud;
     private int _slotMenuIndex = -1;
+    private bool _rescueChecked; // off-screen check done for the current show
 
     public MiniRemoteHud(HudController hud) => _hud = hud;
+
+    /// <summary>The remote was not drawn this frame: check its position again on the next show.</summary>
+    public void OnHidden() => _rescueChecked = false;
 
     public void Render()
     {
@@ -44,7 +48,8 @@ internal sealed class MiniRemoteHud
                     | ImGuiWindowFlags.NoFocusOnAppearing;
         if (s.MiniRemoteLocked) flags |= ImGuiWindowFlags.NoMove;
 
-        ImGui.SetNextWindowPos(new Vector2(20, 120), ImGuiCond.FirstUseEver);
+        // Left of and above centre, mirroring the Item HUD's first spot.
+        UiPlacement.CenterFirstUse(new Vector2(-220, -160));
         ImGui.SetNextWindowBgAlpha(0.70f);
         bool open = true;
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
@@ -52,6 +57,7 @@ internal sealed class MiniRemoteHud
         ImGui.PopStyleVar();
         if (!open) s.ShowMiniRemote = false;
         if (!visible) { ImGui.End(); return; }
+        UiPlacement.RescueOncePerShow(ref _rescueChecked);
 
         var hub = _hud.Hub();
         var settings = _hud.Dashboard.Settings;

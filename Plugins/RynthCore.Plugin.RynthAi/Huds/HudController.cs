@@ -326,8 +326,8 @@ internal sealed class HudController
         try
         {
             if (State.ShowSetup) _setup.Render();
-            if (State.ShowItemHud) _itemHud.Render();
-            if (State.ShowMiniRemote) _miniRemote.Render();
+            if (State.ShowItemHud) _itemHud.Render(); else _itemHud.OnHidden();
+            if (State.ShowMiniRemote) _miniRemote.Render(); else _miniRemote.OnHidden();
         }
         finally
         {

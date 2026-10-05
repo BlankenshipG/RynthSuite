@@ -30,6 +30,7 @@ internal sealed class IltHubUi
     private int _profileIdx;
     private bool _wasDrawn; // last frame's window state, for the shown/hidden log events
     private bool _drawLogged; // window geometry logged for the current show
+    private bool _petsRescueChecked; // Pets window's off-screen check done for the current show
 
     public IltHubUi(IltHubController hub, IltHubContext ctx)
     {
@@ -65,6 +66,7 @@ internal sealed class IltHubUi
 
     private void RenderWindow()
     {
+        UiPlacement.CenterFirstUse();
         ImGui.SetNextWindowSize(new Vector2(640, 720), ImGuiCond.FirstUseEver);
         bool open = true;
         bool expanded = ImGui.Begin("ILT Hub##ilthub", ref open);
@@ -86,25 +88,25 @@ internal sealed class IltHubUi
 
     /// <summary>
     /// First frame of each show (called between Begin and End): logs where the window is and, if a
-    /// saved imgui.ini position leaves it with less than 40 px on screen, moves it back to (40, 40).
+    /// saved imgui.ini position leaves it with less than 40 px on screen, moves it to the middle of
+    /// the game view (the top-left corner is where popped-out panels usually sit).
     /// </summary>
     private void LogAndRescueGeometry(bool expanded)
     {
         Vector2 pos = ImGui.GetWindowPos();
         Vector2 size = ImGui.GetWindowSize();
         Vector2 display = ImGui.GetIO().DisplaySize;
-        const float MinVisible = 40f;
-        bool onScreen = pos.X + size.X >= MinVisible && pos.Y + size.Y >= MinVisible
-                     && pos.X <= display.X - MinVisible && pos.Y <= display.Y - MinVisible;
+        bool onScreen = UiPlacement.IsOnScreen(pos, size, display);
 
         RynthLog.Write(LogCat.IltHub,
             $"[IltHub] window drawn: expanded={expanded} collapsed={ImGui.IsWindowCollapsed()} " +
             $"pos=({pos.X:0},{pos.Y:0}) size=({size.X:0},{size.Y:0}) display=({display.X:0},{display.Y:0}) onScreen={onScreen}");
 
-        if (!onScreen && display.X > MinVisible * 2 && display.Y > MinVisible * 2)
+        bool rescueChecked = false;
+        if (UiPlacement.RescueOncePerShow(ref rescueChecked))
         {
-            ImGui.SetWindowPos(new Vector2(MinVisible, MinVisible));
-            RynthLog.Write(LogCat.IltHub, "[IltHub] window was off-screen - moved to (40,40).");
+            Vector2 moved = ImGui.GetWindowPos();
+            RynthLog.Write(LogCat.IltHub, $"[IltHub] window was off-screen - moved to ({moved.X:0},{moved.Y:0}).");
         }
     }
 
@@ -263,10 +265,15 @@ internal sealed class IltHubUi
     private void RenderPetsWindow()
     {
         var cs = _ctx.State.Character;
-        if (!cs.PetsWindowOpen || !_hub.Available) return;
+        if (!cs.PetsWindowOpen || !_hub.Available) { _petsRescueChecked = false; return; }
+        UiPlacement.CenterFirstUse();
         ImGui.SetNextWindowSize(new Vector2(560, 620), ImGuiCond.FirstUseEver);
         bool open = true;
-        if (ImGui.Begin("Pets##iltpetswin", ref open)) _hub.Pets.Render();
+        if (ImGui.Begin("Pets##iltpetswin", ref open))
+        {
+            UiPlacement.RescueOncePerShow(ref _petsRescueChecked);
+            _hub.Pets.Render();
+        }
         ImGui.End();
         if (!open) cs.PetsWindowOpen = false;
     }
