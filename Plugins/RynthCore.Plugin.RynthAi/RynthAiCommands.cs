@@ -36,6 +36,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra attackable    — check if target is attackable");
         ChatLine("[RynthAi] /ra wielded       — show wielded items");
         ChatLine("[RynthAi] /ra dumpprops [0xId] — every property of the selection (else yourself)");
+        ChatLine("[RynthAi] /ra t11 [augs <n|auto>|refresh|item] — T11 loot: wield counters, aug override, parsed item");
         ChatLine("[RynthAi] /ra mexec <expr>  — evaluate meta expression");
         ChatLine("[RynthAi] /ra listvars      — show session variables");
         ChatLine("[RynthAi] /ra listpvars     — show persistent variables");

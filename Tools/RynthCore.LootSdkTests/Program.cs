@@ -44,6 +44,7 @@ internal static partial class Program
         TestMalformedInputs();
         RunLootEditTests(args);
         RunLootAddTests(args);
+        RunT11Tests();
 
         Console.WriteLine($"\nGolden tests: {_asserts} assertions, {_fails} failed.");
 

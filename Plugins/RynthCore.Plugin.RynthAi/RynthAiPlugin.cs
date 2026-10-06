@@ -2041,17 +2041,25 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             if (Host.HasQueryHealth) Host.QueryHealth(currentTargetId);
         }
 
-        if (_lootInspectMode && currentTargetId != 0)
+        if (currentTargetId != 0)
         {
             int sid = unchecked((int)currentTargetId);
             WorldObject? obj = _objectCache?[sid];
             // Skip non-items (monsters, players, NPCs, doors, corpses, portals, etc.)
             if (obj != null && IsLootableClass(obj.ObjectClass))
             {
-                InspectLootRuleForItem(sid, quiet: true);
                 var itemInfo = _dashboard?.Settings.ItemInfoSettings;
-                if (itemInfo != null && ItemInfoWantsClass(itemInfo, obj.ObjectClass))
+                bool infoWanted = itemInfo != null && ItemInfoWantsClass(itemInfo, obj.ObjectClass);
+                // Item info (on select or on click) is the answer for this item; the loot
+                // verdict line would print in its place. /ra lootcheck still prints it on demand.
+                bool infoHandles = infoWanted && (itemInfo!.OnSelect || itemInfo.ClickTrigger != ItemInfo.MagItemInfoSettings.ClickOff);
+                if (_lootInspectMode && !infoHandles)
+                    InspectLootRuleForItem(sid, quiet: true);
+                if (infoWanted && itemInfo!.OnSelect)
+                {
+                    ItemInfoLog($"select 0x{currentTargetId:X8} '{obj.Name}': on-select queue");
                     QueueAutoItemInfo(sid, requestId: false);
+                }
             }
         }
     }
@@ -2087,6 +2095,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _scrollLearner?.OnChat(text);
         _metaManager?.HandleChat(text, chatType);
         _questTracker?.OnChatLine(text);
+        // The "/aug" reply carries the T11 wield counters (ILT Hub requests it at login).
+        try { Loot.T11ItemSupport.OnChat(text); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Looting, ex, "T11 /aug parse"); }
         CheckChatForSafetyStops(text);
         try { OnOwnCorpseChat(text); } catch { }
     }
@@ -2120,6 +2131,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             _objectCache?.OnDeleteObject(objectId);
             _combatManager?.OnObjectDeleted(objectId);   // D7/D8: free per-id maps + clear cast-wait if it was our target
             _scrollLearner?.OnObjectDeleted(objectId);   // a read scroll is consumed
+            Loot.T11ItemSupport.Forget(unchecked((int)objectId));
             HandleCorpseObjectDeleted(objectId);
         }
         catch (Exception ex)
@@ -3121,6 +3133,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "listgvars":    HandleListGvarsCommand(); break;
             case "dumpprops":    HandleDumpPropsCommand(parts); break;
             case "version":      HandleVersionCommand(); break;
+            case "t11":          HandleT11Command(parts); break;
             case "wielded":      HandleWieldedCommand(); break;
             case "scan":         HandleScanCommand(); break;
             case "buildinfo":    HandleBuildInfoCommand(); break;

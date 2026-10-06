@@ -67,7 +67,7 @@ internal static partial class Program
         Eq(LootRuleText.Materials.First(m => m.Id == 15).Name, "Black Garnet", "material 15");
         Eq(LootRuleText.Materials.Length, 78, "materials 0..77");
         Eq(LootRuleText.WieldRequirements.First(w => w.Id == 2).Name, "Base Skill", "wield requirement 2 (RawSkill)");
-        Eq(LootRuleText.WieldRequirements.Length, 13, "wield requirements 0..12");
+        Eq(LootRuleText.WieldRequirements.Length, 14, "wield requirements 0..13 (13 = ACECustom Int64 Property)");
         Eq(LootRuleText.DamageTypes.First(d => d.Id == 64).Name, "Electric", "damage type 64");
 
         // Lookup and labels; unknown and odd values stay expressible.

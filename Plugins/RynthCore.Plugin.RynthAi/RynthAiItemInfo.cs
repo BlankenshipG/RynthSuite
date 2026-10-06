@@ -215,9 +215,13 @@ public sealed partial class RynthAiPlugin
             return;
         }
         if (requestId && Host.HasRequestId) Host.RequestId(uid);
+        ItemInfoLog($"0x{uid:X8}: waiting for ID data (requested={requestId && Host.HasRequestId})");
         _itemInfoPendingId = itemId;
         _itemInfoPendingSince = Environment.TickCount64;
     }
+
+    /// <summary>One "[ItemInfo]" line in the engine log and the daily RynthAi file per trigger decision.</summary>
+    private static void ItemInfoLog(string message) => RynthLog.Write(LogCat.UI, "[ItemInfo] " + message);
 
     /// <summary>
     /// Select / click triggers: <see cref="QueueItemInfo"/> unless the same item was queued
@@ -226,7 +230,11 @@ public sealed partial class RynthAiPlugin
     internal void QueueAutoItemInfo(int itemId, bool requestId)
     {
         long now = Environment.TickCount64;
-        if (itemId == _itemInfoLastAutoId && now - _itemInfoLastAutoAt < AutoDedupeMs) return;
+        if (itemId == _itemInfoLastAutoId && now - _itemInfoLastAutoAt < AutoDedupeMs)
+        {
+            ItemInfoLog($"0x{(uint)itemId:X8}: already queued by the other trigger");
+            return;
+        }
         _itemInfoLastAutoId = itemId;
         _itemInfoLastAutoAt = now;
         QueueItemInfo(itemId, requestId);
@@ -288,12 +296,19 @@ public sealed partial class RynthAiPlugin
 
         var s = ItemInfoSettings;
         if (s == null || s.ClickTrigger == MagItemInfoSettings.ClickOff || !Host.HasGetSelectedItemId) return;
+        string button = MagItemInfoCatalog.ClickTriggers[s.ClickTrigger];
         uint selected = Host.GetSelectedItemId();
-        if (selected == 0) return;
+        if (selected == 0) { ItemInfoLog($"{button}: nothing selected"); return; }
 
         int id = unchecked((int)selected);
         WorldObject? obj = _objectCache?[id];
-        if (obj == null || !IsLootableClass(obj.ObjectClass) || !ItemInfoWantsClass(s, obj.ObjectClass)) return;
+        if (obj == null) { ItemInfoLog($"{button}: 0x{selected:X8} not in the object cache"); return; }
+        if (!IsLootableClass(obj.ObjectClass) || !ItemInfoWantsClass(s, obj.ObjectClass))
+        {
+            ItemInfoLog($"{button}: '{obj.Name}' ({obj.ObjectClass}) skipped by the class filters");
+            return;
+        }
+        ItemInfoLog($"{button}: 0x{selected:X8} '{obj.Name}': click queue");
         QueueAutoItemInfo(id, requestId: true);
     }
 
@@ -344,8 +359,14 @@ public sealed partial class RynthAiPlugin
     private void PrintItemInfo(int itemId, bool identified)
     {
         List<string>? lines = BuildItemInfoLines(itemId, out string? error);
-        if (lines == null || lines.Count == 0) { ChatLine("[RynthAi] " + error); return; }
+        if (lines == null || lines.Count == 0)
+        {
+            ItemInfoLog($"0x{(uint)itemId:X8}: not printed: {error}");
+            ChatLine("[RynthAi] " + error);
+            return;
+        }
         if (!identified) lines[0] += " (not identified — stats may be incomplete)";
+        ItemInfoLog($"0x{(uint)itemId:X8}: printed {lines.Count} line(s), identified={identified}: {lines[0]}");
 
         var s = ItemInfoSettings;
         string prefix = s?.Prefix ?? "[RynthAi] ";

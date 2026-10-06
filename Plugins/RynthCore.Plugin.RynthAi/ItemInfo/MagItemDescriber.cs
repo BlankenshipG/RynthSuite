@@ -1,16 +1,25 @@
 // MagItemDescriber.cs — one-line "Mag-style" item info (Mag-Tools ItemInfo / UtilityBelt ub-IT ItemInfo).
 //
 //   Gold Ornate Long Sword (Slash Sword), Noble Relic Set, CS, Undead Slayer, Tinks 4,
-//   Applied: Steel x2, 152.48-236, 0.35v, +18%a, 12%md, Legendary Blood Thirst, Wield Lvl 180,
+//   Applied: Steel x2, 152-236, 0.35v, +18%a, +12%md, Legendary Blood Thirst, Wield Lvl 180,
 //   Heavy Weapons 375, Diff 270, Craft 8, [D 3, CD 2]
 //
 // The same fields can also print as the pet-roster layout (IltPetStats: identity line, stats
 // line, ratings/requirements line), plus a spells line:
 //
 //   Gold Ornate Long Sword (Slash Sword), Noble Relic Set, Tinks 4, Applied: Steel x2, Craft 8
-//     CS, Undead Slayer, 152.48-236, 0.35v, 18%a, 12%md
+//     CS, Undead Slayer, 152-236, 0.35v, +18%a, +12%md
 //     [D 3, CD 2]  Wield Lvl 180, Heavy Weapons 375, Diff 270
 //     Spells: Legendary Blood Thirst
+//
+// Values follow what the ACECustom appraisal panel shows: the low damage end is rounded like the
+// client, Crushing Blow is the dealt multiplier (1 + CriticalMultiplier), and imbue strengths,
+// the T11 weapon grade, procs, zone modifiers and item-aug wield gates come from the description
+// text because the server keeps those properties off the wire:
+//
+//   Flaming Quarter Staff (Fire Staff), Grade S (100%), Craft 9
+//     FireRend +176%, Crushing Blow 3.66x, 1790-2069, 0.135v, +20%a, +20%md
+//     [CD 24]  Wield 2,000 Item Augs
 //
 // Field order and per-class gating follow ub-IT (Tools/ItemInfo.cs ItemDescriptions.ToString,
 // Lib/ItemDescribeMagShorthand.cs, Lib/ItemInfoHelper/ItemIdentifyFieldSet.cs); labels and the
@@ -20,7 +29,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using RynthCore.Loot;
+using RynthCore.Loot.T11;
 
 namespace RynthCore.Plugin.RynthAi.ItemInfo;
 
@@ -186,7 +197,12 @@ internal static class MagItemDescriber
     private const uint FloatIgnoreArmor       = 155;  // armor cleaving
 
     // ── ACE PropertyString ids ───────────────────────────────────────────────
+    private const uint StringUse              = 14;   // ACECustom: T11 armor/jewelry "Modifiers:" block
+    private const uint StringLongDesc         = 16;   // ACECustom: "Property Details:" lines (imbue strengths, grade, gates)
     private const uint StringTinkerLog        = 9007; // ACECustom: CSV of applied material ids
+
+    /// <summary>ACECustom's WieldRequirement.Int64Stat: the client gets it as text, never as properties.</summary>
+    private const int WieldReqInt64Stat = 13;
 
     /// <summary>Gear ratings are small (1..~50). Anything above is a wrong key leaking through.</summary>
     private const int MaxPlausibleRating = 200;
@@ -270,6 +286,10 @@ internal static class MagItemDescriber
         const MagItemSection Id = MagItemSection.Identity, Cbt = MagItemSection.Combat, Req = MagItemSection.Requirements;
         string I(int v) => v.ToString(CultureInfo.InvariantCulture);
 
+        // Text-only appraisal data (empty until the item has been IDed).
+        string longDesc = item.GetString(StringLongDesc);
+        T11ItemInfo t11 = T11ItemInfo.Parse(item.Name, longDesc, item.GetString(StringUse));
+
         // ── Set ─────────────────────────────────────────────────────────────────
         int set = Int(IntEquipmentSet);
         if (set > 0 && Show(MagItemInfoField.Set))
@@ -281,18 +301,26 @@ internal static class MagItemDescriber
 
         // ── Imbues (ImbuedEffect 179 plus ImbuedEffect2..5 = 303..306) ─────────
         if (Show(MagItemInfoField.Imbues))
-            d.Add(Cbt, ImbueLabels(Int(IntImbued) | Int(303) | Int(304) | Int(305) | Int(306)));
+            d.Add(Cbt, ImbueLabels(Int(IntImbued) | Int(303) | Int(304) | Int(305) | Int(306), ImbueStrengths(longDesc)));
 
         if (Has(Field.ArmorCleave) && Show(MagItemInfoField.ArmorCleave) && Dbl(FloatIgnoreArmor, 0) != 0)
             d.Add(Cbt, "AC");
 
         if (Has(Field.CritStats) && Show(MagItemInfoField.CritStats))
         {
+            // A crit deals 1 + CriticalMultiplier; a stored 1.0 is a normal 2x crit, so ACE only
+            // calls it Crushing Blow above 1.0.
             double critMult = Dbl(FloatCritMultiplier, 0);
-            if (critMult > 0) d.Add(Cbt, $"CritMult ({Fmt(critMult)})");
+            if (critMult > 1) d.Add(Cbt, $"Crushing Blow {Fmt(critMult + 1)}x");
+            // Biting Strike replaces the base crit chance with this fraction.
             double critFreq = Dbl(FloatCritFrequency, 0);
-            if (critFreq > 0) d.Add(Cbt, $"CritFreq ({Fmt(critFreq)})");
+            if (critFreq > 0) d.Add(Cbt, $"Biting Strike {Math.Round(critFreq * 100).ToString(CultureInfo.InvariantCulture)}%");
         }
+
+        // T11 Cast on Strike procs: "Proc Force Arc 13%".
+        if (Show(MagItemInfoField.Imbues))
+            foreach (var (procName, chance) in t11.Procs)
+                d.Add(Cbt, $"Proc {procName} {Fmt(chance)}%");
 
         if (Has(Field.Splits) && Show(MagItemInfoField.Splits))
         {
@@ -333,6 +361,10 @@ internal static class MagItemDescriber
         }
 
         // ── Damage ──────────────────────────────────────────────────────────────
+        // T11 weapon grade sits with the identity fields: "Grade S (100%)".
+        if (Has(Field.Damage) && Show(MagItemInfoField.Damage) && t11.GradeRank > 0)
+            d.Add(Id, t11.DamagePercent >= 0 ? $"Grade {t11.Grade} ({I(t11.DamagePercent)}%)" : $"Grade {t11.Grade}");
+
         if (Has(Field.Damage) && Show(MagItemInfoField.Damage))
             AddDamage(d, cls, Int(IntMaxDamage), Dbl(FloatVariance, 0), Int(IntElementalBonus),
                 Dbl(FloatDamageMod, 1), Dbl(FloatVsMonsters, 1));
@@ -359,6 +391,9 @@ internal static class MagItemDescriber
         {
             AddWieldRequirement(d, Int(IntWieldReq), Int(IntWieldSkill), Int(IntWieldValue));
             AddWieldRequirement(d, Int(IntWieldReq2), Int(IntWieldSkill2), Int(IntWieldValue2));
+            // T11 gates (item augs, Triune Weave, charms) only exist as "Wield requires:" text.
+            foreach (T11WieldGate gate in t11.WieldGates)
+                d.Add(Req, $"Wield {gate.Amount.ToString("N0", CultureInfo.InvariantCulture)} {GateName(gate.Counter)}");
         }
 
         if (Show(MagItemInfoField.Activation))
@@ -418,7 +453,18 @@ internal static class MagItemDescriber
 
         // ── Ratings ─────────────────────────────────────────────────────────────
         if (Show(MagItemInfoField.Ratings))
+        {
             d.Add(MagItemSection.Ratings, RatingsCluster(item, options.HiddenRatings));
+            // T11 zone modifiers: the server drops a modifier's Gear* rating from the ratings it
+            // sends, so the modifier lines are the only place those values appear.
+            if (t11.Modifiers.Count > 0)
+            {
+                var mods = new List<string>(t11.Modifiers.Count);
+                foreach (T11Modifier m in t11.Modifiers)
+                    mods.Add(m.Value != 0 ? $"{m.Name} {(m.Value > 0 ? "+" : "")}{I(m.Value)}" : m.Name);
+                d.Add(MagItemSection.Ratings, "Mods: " + string.Join(", ", mods));
+            }
+        }
 
         if (cls == AcObjectClass.Misc && Show(MagItemInfoField.Keyring)
             && item.Name.Contains("Keyring", StringComparison.OrdinalIgnoreCase))
@@ -432,15 +478,18 @@ internal static class MagItemDescriber
 
     /// <summary>Mag imbue labels ("CS AR"), plus the ACE flags Mag predates (missile imbue, nether
     /// rend); empty when no known bit is set.</summary>
-    private static string ImbueLabels(int mask)
+    private static string ImbueLabels(int mask, IReadOnlyDictionary<int, string> strengths)
     {
         if (mask == 0) return string.Empty;
         var sb = new StringBuilder();
+        // Bare labels stay Mag-style "CS AR"; once a strength is shown, commas keep values readable.
+        string sep = strengths.Count > 0 ? ", " : " ";
         void Flag(int bit, string label)
         {
             if ((mask & bit) == 0) return;
-            if (sb.Length > 0) sb.Append(' ');
+            if (sb.Length > 0) sb.Append(sep);
             sb.Append(label);
+            if (strengths.TryGetValue(bit, out string? value)) sb.Append(' ').Append(value);
         }
         Flag(0x0001, "CS");
         Flag(0x0002, "CB");
@@ -461,6 +510,52 @@ internal static class MagItemDescriber
         return sb.ToString(); // only unknown bits → empty → field skipped
     }
 
+    // ACECustom "Property Details:" imbue lines, e.g. "- Fire Rending: +176% Dmg",
+    // "- Armor Rending: 12.5% Ignored", "- Crippling Blow: 2.5x Crit Dmg". The value may carry a
+    // culture space before '%' and group separators.
+    private static readonly Regex ImbueDetailLine = new(
+        @"^\s*-\s*(?<name>[A-Za-z' ]+?)\s*:\s*(?<value>[+-]?[\d.,]+\s?[%x])",
+        RegexOptions.Multiline | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Imbue bit → strength text ("+176%", "12.5%", "2.5x") from the description. Rendings are
+    /// matched by damage keyword because the server builds their names from DamageType.DisplayName.
+    /// </summary>
+    private static IReadOnlyDictionary<int, string> ImbueStrengths(string longDesc)
+    {
+        var result = new Dictionary<int, string>();
+        if (string.IsNullOrEmpty(longDesc)) return result;
+        foreach (Match m in ImbueDetailLine.Matches(longDesc))
+        {
+            int bit = ImbueBitForDetail(m.Groups["name"].Value);
+            if (bit != 0 && !result.ContainsKey(bit))
+                result[bit] = m.Groups["value"].Value.Replace(" ", "");
+        }
+        return result;
+    }
+
+    private static int ImbueBitForDetail(string name)
+    {
+        bool Has(string s) => name.Contains(s, StringComparison.OrdinalIgnoreCase);
+        if (Has("Critical Strike")) return 0x0001;
+        if (Has("Crippling Blow")) return 0x0002;
+        if (Has("Armor Rending")) return 0x0004;
+        if (!Has("Rending")) return 0;
+        if (Has("Slash")) return 0x0008;
+        if (Has("Pierc")) return 0x0010;
+        if (Has("Bludg")) return 0x0020;
+        if (Has("Acid")) return 0x0040;
+        if (Has("Cold") || Has("Frost")) return 0x0080;
+        if (Has("Electric") || Has("Lightning")) return 0x0100;
+        if (Has("Fire")) return 0x0200;
+        if (Has("Nether")) return 0x4000;
+        return 0;
+    }
+
+    /// <summary>Short wield-gate counter names: "Item Augs", "Triune Weave", charm names.</summary>
+    private static string GateName(T11Counter counter) =>
+        counter == T11Counter.ItemAugmentations ? "Item Augs" : T11Catalog.CounterName(counter);
+
     /// <summary>Melee "min-max", variance, "+elem", "+mod%", wand "+N% vs. Monsters" (combat line).</summary>
     private static void AddDamage(MagItemDescription d, AcObjectClass cls, int maxDmg, double variance,
         int elemBonus, double dmgMod, double vsMonsters)
@@ -469,12 +564,13 @@ internal static class MagItemDescriber
         if (cls != AcObjectClass.MissileWeapon && maxDmg > 0)
         {
             string max = maxDmg.ToString(CultureInfo.InvariantCulture);
-            d.Add(Cbt, variance > 0
-                ? (maxDmg - maxDmg * variance).ToString("N2", CultureInfo.InvariantCulture) + "-" + max
-                : max);
+            // The appraisal panel rounds the low end to a whole number (2069 * 0.865 → 1790).
+            long min = (long)Math.Round(maxDmg * (1 - variance), MidpointRounding.AwayFromZero);
+            d.Add(Cbt, variance > 0 ? min.ToString(CultureInfo.InvariantCulture) + "-" + max : max);
         }
+        // Three places: loot variances are often x.xx5 and two places would misreport them.
         if (variance > 0)
-            d.Add(Cbt, Math.Round(variance, 2).ToString(CultureInfo.InvariantCulture) + "v");
+            d.Add(Cbt, Math.Round(variance, 3).ToString("0.###", CultureInfo.InvariantCulture) + "v");
         if (elemBonus != 0)
             d.Add(Cbt, "+" + elemBonus.ToString(CultureInfo.InvariantCulture));
         // A missing/zero multiplier means "no bonus" (0 would print as -100%).
@@ -484,18 +580,21 @@ internal static class MagItemDescriber
             d.Add(Cbt, "+" + Math.Round((vsMonsters - 1) * 100).ToString(CultureInfo.InvariantCulture) + "% vs. Monsters");
     }
 
-    /// <summary>Mag "18%a" from a 1.0-based multiplier; skips missing (≤0) and neutral 1.0.</summary>
+    /// <summary>Mag "+18%a" from a 1.0-based multiplier; skips missing (≤0) and neutral 1.0.</summary>
     private static void AddPercent(MagItemDescription d, double multiplier, string suffix, int decimals)
     {
         if (multiplier <= 0 || multiplier == 1) return;
         double pct = Math.Round((multiplier - 1) * 100, decimals);
-        d.Add(MagItemSection.Combat, pct.ToString(CultureInfo.InvariantCulture) + suffix);
+        if (pct == 0) return; // rounds to nothing at this precision
+        // Signed like the appraisal panel ("Bonus to Attack Skill +20%"); penalties keep their '-'.
+        d.Add(MagItemSection.Combat, (pct > 0 ? "+" : "") + pct.ToString(CultureInfo.InvariantCulture) + suffix);
     }
 
     /// <summary>"Wield Lvl 180" for a level requirement, else "Heavy Weapons 375".</summary>
     private static void AddWieldRequirement(MagItemDescription d, int reqType, int skillOrAttr, int value)
     {
-        if (value <= 0) return;
+        // Int64 gates name a counter, not a skill; the T11 text supplies those.
+        if (value <= 0 || reqType == WieldReqInt64Stat) return;
         string v = value.ToString(CultureInfo.InvariantCulture);
         d.Add(MagItemSection.Requirements, reqType == 7 // WieldRequirement.Level
             ? "Wield Lvl " + v
