@@ -1493,6 +1493,7 @@ public sealed partial class RynthAiPlugin
                 _dashboard.Settings.CurrentLootPath = candidatePath;
 
             ChatLine($"[RynthAi] Loaded loot profile '{System.IO.Path.GetFileName(candidatePath)}' with {profile.Rules.Count} rule(s).");
+            ReportLootProfileProblems(profile, System.IO.Path.GetFileName(candidatePath));
             return true;
         }
         catch (Exception ex)
@@ -1500,6 +1501,42 @@ public sealed partial class RynthAiPlugin
             ChatLine($"[RynthAi] Failed to load loot profile: {ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Reports, in chat and the log, a header rule count that disagrees with the rules
+    /// found, and names the rules that use condition types RynthAi cannot evaluate. The
+    /// evaluator treats such a rule as never matching, so the items it was written for
+    /// stay on corpses with nothing in chat or the log to say why.
+    /// </summary>
+    private void ReportLootProfileProblems(VTankLootProfile profile, string fileName)
+    {
+        if (profile.DeclaredRuleCount >= 0 && profile.DeclaredRuleCount != profile.Rules.Count)
+        {
+            string countMessage = $"[RynthAi] Loot profile '{fileName}': header declares {profile.DeclaredRuleCount} rule(s) " +
+                                  $"but the file holds {profile.Rules.Count}; all {profile.Rules.Count} are in use. " +
+                                  "Re-save the profile in the loot editor to correct the header.";
+            ChatLine(countMessage);
+            RynthLog.Write(LogCat.Looting, countMessage);
+        }
+
+        var bad = new List<string>();
+        foreach (VTankLootRule rule in profile.Rules)
+        {
+            var types = rule.Conditions
+                .Select(c => c.NodeType)
+                .Where(t => VTankNodeTypes.GetDataLineCount(t) < 0)
+                .Distinct()
+                .ToList();
+            if (types.Count > 0)
+                bad.Add($"'{rule.Name.Trim()}' (type {string.Join("/", types)})");
+        }
+        if (bad.Count == 0) return;
+
+        string message = $"[RynthAi] Loot profile '{fileName}': {bad.Count} rule(s) use condition types " +
+                         $"RynthAi does not support and will never match: {string.Join(", ", bad)}.";
+        ChatLine(message);
+        RynthLog.Write(LogCat.Looting, message);
     }
 
     // ── Loot Editor (engine ImGui panel) ────────────────────────────────────
