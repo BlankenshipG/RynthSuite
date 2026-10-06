@@ -55,6 +55,7 @@ internal static class Program
         LootSalvageTests.Register(runner);
         LootCorpseTests.Register(runner);
         OwnCorpseTests.Register(runner);
+CorpseKillerTests.Register(runner);
         VitalsTests.Register(runner);
         CastSafetyTests.Register(runner);
         HealLatencyTests.Register(runner);

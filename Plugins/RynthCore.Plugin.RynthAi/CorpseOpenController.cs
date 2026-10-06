@@ -1001,7 +1001,13 @@ public sealed partial class RynthAiPlugin
         return trimmed.Trim();
     }
 
-    private static string? ExtractCorpseKillerName(string longDesc)
+    /// <summary>
+    /// X from the "Killed by X." line of a corpse's LongDesc, or null. Only that line counts:
+    /// the server appends more lines ("Corpse will decay in 56s") as a corpse ages, and reading
+    /// them as part of the name failed the own-kill match, so late-reached own kills were
+    /// skipped unopened (2026-10-06, Silentkelpie). Shared with the radar's killer column.
+    /// </summary>
+    internal static string? ExtractCorpseKillerName(string? longDesc)
     {
         if (string.IsNullOrWhiteSpace(longDesc))
             return null;
@@ -1012,8 +1018,11 @@ public sealed partial class RynthAiPlugin
             return null;
 
         string remainder = longDesc[(idx + prefix.Length)..];
-        remainder = remainder.TrimEnd('.', ' ', '\n', '\r');
-        return string.IsNullOrWhiteSpace(remainder) ? null : remainder;
+        int lineEnd = remainder.IndexOfAny(new[] { '\r', '\n' });
+        if (lineEnd >= 0)
+            remainder = remainder[..lineEnd];
+        remainder = remainder.Trim().TrimEnd('.').Trim();
+        return remainder.Length == 0 ? null : remainder;
     }
 
     private static string GetLootOwnershipModeName(int lootOwnership)
