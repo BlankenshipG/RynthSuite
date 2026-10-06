@@ -37,6 +37,8 @@ internal static class Program
         var runner = new Runner();
         NativeLootTests.Register(runner);
         VTankLootTests.Register(runner);
+        T11LootTests.Register(runner);
+        MagItemDescriberTests.Register(runner);
         ExpressionTests.Register(runner);
         MetaTests.Register(runner);
         MetaSchedulerTests.Register(runner);

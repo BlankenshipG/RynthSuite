@@ -39,6 +39,8 @@ public enum LongValueKey
 public enum StringValueKey
 {
     Name = 1,
+    // ACECustom puts the T11 "Modifiers:" block of armor, clothing and jewelry here.
+    Use = 14,
     ShortDesc = 15,
     LongDesc = 16,
     PluralName = 20,
@@ -117,13 +119,27 @@ public class WorldObject
 
     public int Values(int key, int defaultValue)
     {
+        // T11 virtual keys are computed from the item's text, never stored on the object.
+        if (RynthCore.Loot.T11.T11Keys.IsVirtual(key))
+            return Loot.T11ItemSupport.VirtualValue(this, key, defaultValue);
+
         var o = Overlay;
         if (o != null)
         {
             if (o.Ints.TryGetValue(unchecked((uint)key), out int v)) return v;
-            if (!o.LiveFallback) return defaultValue;
+            if (!o.LiveFallback) return Loot.T11ItemSupport.StrippedValue(this, key, defaultValue);
         }
-        return Cache?.GetIntProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+        if (Cache == null) return Loot.T11ItemSupport.StrippedValue(this, key, defaultValue);
+
+        // T11 appraisals omit the item-aug wield gate (158-160) and modifier-carried ratings
+        // (370-379); an absent or zero value there falls back to what the item's text says.
+        if (RynthCore.Loot.T11.T11Keys.IsStrippedKey(key))
+        {
+            int live = Cache.GetIntProperty(Id, (uint)key, int.MinValue);
+            if (live != int.MinValue && live != 0) return live;
+            return Loot.T11ItemSupport.StrippedValue(this, key, live == int.MinValue ? defaultValue : 0);
+        }
+        return Cache.GetIntProperty(Id, (uint)key, defaultValue);
     }
 
     public string Values(StringValueKey key, string defaultValue)

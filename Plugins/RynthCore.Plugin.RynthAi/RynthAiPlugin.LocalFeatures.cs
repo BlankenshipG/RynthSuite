@@ -140,6 +140,7 @@ public sealed partial class RynthAiPlugin
         catch (Exception ex) { RynthLog.Exception(LogCat.General, ex, "item info tick"); }
         try { _navBreadcrumbs?.Tick(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Navigation, ex, "nav breadcrumbs tick"); }
+        Loot.T11ItemSupport.SyncOverride(_dashboard?.Settings.T11ItemAugsOverride ?? -1);
     }
 
     /// <summary>Drop per-character feature objects. The translator is disposed only on plugin shutdown.</summary>
@@ -158,6 +159,7 @@ public sealed partial class RynthAiPlugin
         _huds = null;
         _itemInfoUi = null;
         ResetGroundLoot(clearCaches: true);
+        Loot.T11ItemSupport.Reset();
         if (!disposeTranslator) return;
         try { _translator?.Dispose(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator dispose"); }

@@ -38,17 +38,25 @@ public static class LootRuleText
 
     // ── Key tables (the common ones; unknown ids show as "key N") ──────────
 
-    public static readonly (int Id, string Name)[] LongKeys =
+    /// <summary>Retail / Decal long keys, then RynthAi's virtual T11 keys (T11Keys; RynthAi-only).</summary>
+    public static readonly (int Id, string Name)[] LongKeys = BuildLongKeys();
+
+    private static (int Id, string Name)[] BuildLongKeys()
     {
-        (5, "EncumbVal"), (9, "Locations"), (19, "Value"), (25, "Level"), (28, "ArmorLevel"), (44, "Damage"), (45, "DamageType"),
-        (48, "WeaponSkill"), (54, "MaxDamage"),
-        (87, "MaxStructure"), (88, "Structure"), (105, "ItemWorkmanship"), (107, "ItemMaxMana"),
-        (131, "MaterialType"), (158, "WieldRequirements"), (159, "WieldSkilltype"), (160, "WieldDifficulty"),
-        (218, "EquippedSlots"), (353, "ImbuedEffect"), (370, "DamageRating"), (371, "DamageResistRating"),
-        (372, "CritRating"), (373, "CritResistRating"), (374, "CritDamageRating"),
-        (375, "CritDamageResistRating"), (376, "HealBoostRating"), (379, "VitalityRating"),
-        (0x0D000000, "Type (WCID)"),   // Decal's synthetic key: the weenie class id
-    };
+        var keys = new List<(int, string)>
+        {
+            (5, "EncumbVal"), (9, "Locations"), (19, "Value"), (25, "Level"), (28, "ArmorLevel"), (44, "Damage"), (45, "DamageType"),
+            (48, "WeaponSkill"), (54, "MaxDamage"),
+            (87, "MaxStructure"), (88, "Structure"), (105, "ItemWorkmanship"), (107, "ItemMaxMana"),
+            (131, "MaterialType"), (158, "WieldRequirements"), (159, "WieldSkilltype"), (160, "WieldDifficulty"),
+            (218, "EquippedSlots"), (353, "ImbuedEffect"), (370, "DamageRating"), (371, "DamageResistRating"),
+            (372, "CritRating"), (373, "CritResistRating"), (374, "CritDamageRating"),
+            (375, "CritDamageResistRating"), (376, "HealBoostRating"), (377, "NetherResistRating"), (379, "VitalityRating"),
+            (0x0D000000, "Type (WCID)"),   // Decal's synthetic key: the weenie class id
+        };
+        keys.AddRange(T11.T11Keys.Names());
+        return keys.ToArray();
+    }
 
     public static readonly (int Id, string Name)[] DoubleKeys =
     {
@@ -56,9 +64,10 @@ public static class LootRuleText
         (63, "WeaponOffense"), (152, "ElementalDamageVsMonsters"), (167, "ManaRate"),
     };
 
+    /// <summary>String keys. Use (14) and LongDesc (16) hold the T11 "Modifiers:" / "Property Details:" text.</summary>
     public static readonly (int Id, string Name)[] StringKeys =
     {
-        (1, "Name"), (5, "Inscription"), (7, "Title"),
+        (1, "Name"), (5, "Inscription"), (7, "Title"), (14, "Use"), (16, "LongDesc"),
     };
 
     /// <summary>
@@ -85,12 +94,15 @@ public static class LootRuleText
 
     // ── Value tables (what a long key's number means) ──────────────────────
 
-    /// <summary>WieldRequirements (158): what WieldDifficulty is checked against (ACE's WieldRequirement enum).</summary>
+    /// <summary>
+    /// WieldRequirements (158): what WieldDifficulty is checked against (ACE's WieldRequirement
+    /// enum). 13 is ACECustom's Int64Stat, the T11 item-aug gate (RynthAi restores it on T11 items).
+    /// </summary>
     public static readonly (int Id, string Name)[] WieldRequirements =
     {
         (0, "Invalid"), (1, "Skill"), (2, "Base Skill"), (3, "Attribute"), (4, "Base Attribute"),
         (5, "Vital"), (6, "Base Vital"), (7, "Level"), (8, "Training"), (9, "Int Property"),
-        (10, "Bool Property"), (11, "Creature Type"), (12, "Heritage"),
+        (10, "Bool Property"), (11, "Creature Type"), (12, "Heritage"), (13, "Int64 Property"),
     };
 
     /// <summary>MaterialType (131): ACE's MaterialType enum, in id order (grouped cloth, gems, hides, metals, stone, wood).</summary>
@@ -134,6 +146,7 @@ public static class LootRuleText
         131 => Materials,
         158 => WieldRequirements,
         159 => Skills,
+        T11.T11Keys.WeaponGrade => T11.T11Catalog.Grades,
         _ => null,
     };
 
@@ -141,7 +154,7 @@ public static class LootRuleText
     public static bool ValueTableIsFlags(int longKey) => longKey == 45;
 
     /// <summary>The long keys that have a value table, for the vocabulary.</summary>
-    public static readonly int[] KeysWithValueTables = { 45, 48, 131, 158, 159 };
+    public static readonly int[] KeysWithValueTables = { 45, 48, 131, 158, 159, T11.T11Keys.WeaponGrade };
 
     /// <summary>
     /// True for the conditions whose value is picked by name when the key has a

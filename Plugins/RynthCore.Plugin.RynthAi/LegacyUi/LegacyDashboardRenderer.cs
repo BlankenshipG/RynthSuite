@@ -1773,6 +1773,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.YieldToVTank             = tmp.YieldToVTank;
         dst.ShowTerrainPassability   = tmp.ShowTerrainPassability;
         dst.GiveQueueIntervalMs      = tmp.GiveQueueIntervalMs;
+        dst.T11ItemAugsOverride      = tmp.T11ItemAugsOverride;
         dst.SpellCastIntervalMs      = tmp.SpellCastIntervalMs;
         dst.AttackSpellIntervalMs    = tmp.AttackSpellIntervalMs;
         dst.EmbeddedNavs             = tmp.EmbeddedNavs;
