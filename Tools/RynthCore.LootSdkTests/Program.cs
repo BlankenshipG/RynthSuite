@@ -45,6 +45,7 @@ internal static partial class Program
         RunLootEditTests(args);
         RunLootAddTests(args);
         RunT11Tests();
+        RunUnknownNodeTests();
 
         Console.WriteLine($"\nGolden tests: {_asserts} assertions, {_fails} failed.");
 
