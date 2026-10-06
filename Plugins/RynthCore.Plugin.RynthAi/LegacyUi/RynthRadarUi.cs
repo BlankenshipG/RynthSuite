@@ -582,13 +582,7 @@ internal sealed class RynthRadarUi
 
     /// <summary>"Killed by X." in a corpse's LongDesc: X, or "" (read as CorpseOpenController reads it).</summary>
     internal static string ExtractKiller(string? longDesc)
-    {
-        if (string.IsNullOrWhiteSpace(longDesc)) return string.Empty;
-        const string prefix = "Killed by ";
-        int idx = longDesc.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
-        if (idx < 0) return string.Empty;
-        return longDesc[(idx + prefix.Length)..].TrimEnd('.', ' ', '\n', '\r').Trim();
-    }
+        => RynthAiPlugin.ExtractCorpseKillerName(longDesc) ?? string.Empty;
 
     /// <summary>Without GM sigils (+, @, #): the server leaves them out of "Killed by X".</summary>
     private static string NormalizeCharName(string name)
