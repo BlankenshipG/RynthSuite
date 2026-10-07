@@ -50,7 +50,9 @@ internal sealed class IltHubController
         var capture = new IltChatCapture(host);
         var inventory = new IltInventory(host, cache);
         IltHubContext? ctxRef = null;
-        var options = new IltServerOptions(host, capture, state, text => ctxRef?.Chat(text));
+        var options = new IltServerOptions(host, capture, state, text => ctxRef?.Chat(text), settings);
+        // Settings > Misc shows whether the per-character Hub override is on too.
+        ServerFeatureGate.HubForceProvider = () => state.ForceLeaftideFeatures;
         _ctx = new IltHubContext(host, state, store, capture, options, inventory, settings) { SaveCombatSettings = saveCombatSettings };
         ctxRef = _ctx;
         _quests = quests;
@@ -361,6 +363,7 @@ internal sealed class IltHubController
             case "profile": HandleProfile(args.Skip(1).ToArray()); break;
             case "suit": HandleSuit(args.Skip(1).ToArray()); break;
             case "clap": Gear.ChunkClap.ClapNow(manual: true); break;
+            case "attr": HandleAttr(args.Skip(1).ToArray()); break;
             case "confirm": RunPending(); break;
             case "cancel":
                 _ctx.Chat(_pendingAction != null ? $"[ILT Hub] Cancelled '{_pendingLabel}'." : "[ILT Hub] Nothing to cancel.");
@@ -370,11 +373,35 @@ internal sealed class IltHubController
                 _ctx.Chat("[ILT Hub] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|force on|off|clap|confirm|cancel");
                 _ctx.Chat("[ILT Hub] /ra hub open character|quests|pets|banking|gear|games|guardian [show|hide|toggle]");
                 _ctx.Chat("[ILT Hub] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
+                _ctx.Chat("[ILT Hub] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
                 _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");
                 _ctx.Chat("[ILT Hub] /ra guardian [window|translate <text>|handin|stop|chat on|off|auto on|off|buy on|off|refresh|status]");
                 break;
         }
         return true;
+    }
+
+    /// <summary>"/ra hub attr ...": the attribute raiser from chat (same verbs as the Progression tab).</summary>
+    private void HandleAttr(string[] a)
+    {
+        var raiser = Progression.Attributes;
+        string sub = a.Length > 0 ? a[0].ToLowerInvariant() : "status";
+        switch (sub)
+        {
+            case "run": raiser.HandleRemote("attrrun", new[] { "attrrun" }); break;
+            case "stop": raiser.HandleRemote("attrstop", new[] { "attrstop" }); break;
+            case "costs": raiser.HandleRemote("attrcosts", new[] { "attrcosts" }); break;
+            case "auto": raiser.HandleRemote("attrauto", new[] { "attrauto", a.Length > 1 ? a[1] : "off" }); break;
+            case "every": raiser.HandleRemote("attrevery", new[] { "attrevery", a.Length > 1 ? a[1] : "5" }); break;
+            case "raise" when a.Length > 2: raiser.HandleRemote("attrraise", new[] { "attrraise", a[1], a[2] }); break;
+            default:
+                var c = _ctx.State.Character;
+                string blocked = raiser.Blocker() ?? "ready";
+                _ctx.Chat($"[ILT Hub] Attribute raiser: {blocked}; auto={(c.AttrAutoRaise ? $"on every {c.AttrAutoRaiseMinutes}m" : "off")} "
+                          + $"mode={(IltAttributeRaiser.Mode)c.AttrRaiseMode} keep={IltParse.Compact(c.AttrKeepXp)} "
+                          + $"stats={(c.AttrRaiseStats.Count > 0 ? string.Join(",", c.AttrOrder.Where(c.AttrRaiseStats.Contains)) : "none ticked")}");
+                return;
+        }
     }
 
     /// <summary>Applies show / hide / toggle to a section window and says what happened.</summary>

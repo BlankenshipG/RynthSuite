@@ -82,6 +82,9 @@ public sealed partial class RynthAiPlugin
             return;
 
         var dash = _dashboard;
+        // Settings > Misc "Server Features" status line names the current world.
+        IltHub.ServerFeatureGate.WorldNameProvider ??=
+            () => Host.HasGetWorldName && Host.TryGetWorldName(out string w) ? w ?? string.Empty : string.Empty;
         _iltHub = new IltHub.IltHubController(Host, dash.CharFolder,
             () => _objectCache, () => dash.Settings, () => _questTracker,
             () => dash.SaveSettings());
@@ -133,6 +136,7 @@ public sealed partial class RynthAiPlugin
         try { _iltHub?.OnLogout(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "logout"); }
         _iltHub = null;
+        IltHub.ServerFeatureGate.HubForceProvider = null;
         try { _huds?.OnLogout(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "logout"); }
         _huds = null;

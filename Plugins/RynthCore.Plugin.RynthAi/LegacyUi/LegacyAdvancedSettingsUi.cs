@@ -11,6 +11,8 @@ internal sealed class LegacyAdvancedSettingsUi
 
     // Scratch buffer for the "never attack" name entry box.
     private string _newBlacklistName = "";
+    // Server Features list being edited (committed on Enter / focus loss); null = show the saved list.
+    private string? _serverNamesEdit;
 
     private static readonly string[] AttackHeights = { "Low", "Medium", "High" };
     private static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
@@ -64,6 +66,35 @@ internal sealed class LegacyAdvancedSettingsUi
         }
 
         ImGui.End();
+    }
+
+    /// <summary>Settings > Misc "Server Features": the world list and the manual override (ServerFeatureGate).</summary>
+    private void RenderServerFeatures()
+    {
+        ImGui.Text("Server Features (ILT / infinite attributes)");
+        ImGui.TextDisabled(IltHub.ServerFeatureGate.Describe(_settings));
+
+        string text = _serverNamesEdit ?? IltHub.ServerFeatureGate.FormatList(_settings.FeatureServerNames);
+        ImGui.SetNextItemWidth(320);
+        bool enter = ImGui.InputTextWithHint("Servers##featureServers", "InfiniteLeaftide, *Leaftide*", ref text, 512,
+            ImGuiInputTextFlags.EnterReturnsTrue);
+        if (ImGui.IsItemActive() || enter) _serverNamesEdit = text;
+        if ((enter || ImGui.IsItemDeactivatedAfterEdit()) && _serverNamesEdit != null)
+        {
+            _settings.FeatureServerNames = IltHub.ServerFeatureGate.ParseList(_serverNamesEdit);
+            _serverNamesEdit = null;
+        }
+        else if (!ImGui.IsItemActive()) _serverNamesEdit = null;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Comma-separated world names that turn on the ILT Hub, the Progression\n" +
+                             "planners and the attribute raiser. * is a wildcard (*Leaftide* matches any\n" +
+                             "name containing Leaftide). Case does not matter.");
+
+        ImGui.Checkbox("Force enable on this server (manual override)", ref _settings.ForceServerFeatures);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Turn the features on for whatever world you are on, even if it is not in the list.\n" +
+                             "Each feature still follows what the server reports (for example /xp off keeps\n" +
+                             "the attribute raiser off).");
     }
 
     private void RenderVendoring()
@@ -265,6 +296,10 @@ internal sealed class LegacyAdvancedSettingsUi
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Automatically starts dungeon patrol when RynthAi loads.");
                 ImGui.Checkbox("Enable Raycasting", ref _settings.EnableRaycasting);
+
+                ImGui.Separator();
+                ImGui.Spacing();
+                RenderServerFeatures();
 
                 ImGui.Separator();
                 ImGui.Spacing();

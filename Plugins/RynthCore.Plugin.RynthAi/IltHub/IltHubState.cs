@@ -166,6 +166,19 @@ public sealed class IltCharacterState
     /// <summary>Spend unassigned XP with /attr before sending /enl (enlightening wipes unspent XP).</summary>
     public bool AutoEnlightenSpendXpFirst;
 
+    // ── Attribute raiser (IltAttributeRaiser; Skills panel > Progression) ──
+    /// <summary>Spend unassigned XP on the ticked attributes/vitals every AttrAutoRaiseMinutes.</summary>
+    public bool AttrAutoRaise;
+    public int AttrAutoRaiseMinutes = 5;
+    /// <summary>IltAttributeRaiser.Mode: 0 priority (top of the order first), 1 round robin, 2 cheapest first.</summary>
+    public int AttrRaiseMode;
+    /// <summary>Unassigned XP the raiser never spends.</summary>
+    public long AttrKeepXp;
+    /// <summary>/attr abbreviations in raise-priority order (all nine; repaired on load).</summary>
+    public List<string> AttrOrder = new(IltAttributeRaiser.DefaultOrder);
+    /// <summary>/attr abbreviations the raiser may spend on ("Raise now" and auto-raise).</summary>
+    public List<string> AttrRaiseStats = new();
+
     /// <summary>Quest Tracker search box contents.</summary>
     public string QuestFilter = string.Empty;
     public string QbFilter = string.Empty;

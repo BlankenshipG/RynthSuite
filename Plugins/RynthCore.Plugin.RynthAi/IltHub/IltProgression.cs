@@ -7,7 +7,9 @@
 //         server pops its own Yes/No dialog — the host cannot (and must not) click it.
 //         Optional auto-enlighten is disarmed every session and needs a hard confirm.
 // XP    : the Skills panel plans attribute/vital raises from the client's exact XP tables;
-//         this module only spends unassigned XP ("/attr") before an auto-enlighten.
+//         this module spends unassigned XP ("/attr") before an auto-enlighten, and owns the
+//         infinite-attribute raiser (IltAttributeRaiser: server costs from "/xp all", manual
+//         or timed raises in a chosen order) drawn in the same tab.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -104,7 +106,15 @@ internal sealed class IltProgression : IIltFeature
     private long _spendLastAt, _spendLastXp;
     private Action? _afterSpend;
 
-    public IltProgression(IltHubContext ctx) => _ctx = ctx;
+    /// <summary>Infinite-attribute raiser (Progression tab "Attribute raiser" section).</summary>
+    public IltAttributeRaiser Attributes { get; }
+
+    public IltProgression(IltHubContext ctx)
+    {
+        _ctx = ctx;
+        // Never two /attr spenders at once: the raiser waits while the spend-before-/enl loop runs.
+        Attributes = new IltAttributeRaiser(ctx) { HoldOff = () => _spending };
+    }
 
     private IltCharacterState C => _ctx.State.Character;
 
@@ -168,6 +178,7 @@ internal sealed class IltProgression : IIltFeature
             RefreshFacts();
         }
         TickSpend(nowMs);
+        Attributes.Tick(nowMs, holdOff: _spending);
 
         if (_autoArmed && C.AutoEnlightenEnabled && !_spending
             && nowMs - _lastAutoCheck >= Math.Max(10, C.AutoEnlightenCheckSeconds) * 1000L)
@@ -179,6 +190,7 @@ internal sealed class IltProgression : IIltFeature
 
     public bool OnChat(string text)
     {
+        Attributes.OnChat(text);
         if (text.Contains("You have become enlightened", StringComparison.OrdinalIgnoreCase)
             || text.Contains("You have risen to a higher tier of enlightenment", StringComparison.OrdinalIgnoreCase))
         {
@@ -192,6 +204,7 @@ internal sealed class IltProgression : IIltFeature
     {
         _autoArmed = false;
         _spending = false;
+        Attributes.OnLogout();
         lock (_augLevels) _augLevels.Clear();
     }
 
@@ -245,6 +258,7 @@ internal sealed class IltProgression : IIltFeature
     private void TryAutoEnlighten(long now)
     {
         if (_ctx.Options.IsOff(IltFeature.Enl)) return;
+        if (Attributes.Running) return;   // the raiser is spending XP; check again next interval
         if (now - _lastEnlSentAt < AutoEnlCooldownMs) return;
         if (NextEnlBlockers().Count > 0) return;
         if (C.AutoEnlightenSpendXpFirst && _unassignedXp > 0)
@@ -296,12 +310,14 @@ internal sealed class IltProgression : IIltFeature
     // sends edits back as "prog ..." remote commands (HandleRemote). Planner math stays here so
     // the Hub and the Skills panel can never disagree. Numbers are preformatted for display.
 
-    /// <summary>Appends <c>"aug":{...},"enl":{...}</c> to <paramref name="sb"/>. Pump thread.</summary>
+    /// <summary>Appends <c>"aug":{...},"enl":{...},"attr":{...}</c> to <paramref name="sb"/>. Pump thread.</summary>
     public void AppendSnapshotJson(StringBuilder sb)
     {
         AppendAugJson(sb);
         sb.Append(',');
         AppendEnlJson(sb);
+        sb.Append(',');
+        Attributes.AppendJson(sb);
     }
 
     private void AppendAugJson(StringBuilder sb)
@@ -421,7 +437,9 @@ internal sealed class IltProgression : IIltFeature
         RynthLog.Trace(LogCat.IltProgression, $"HandleRemote({string.Join(" ", a)})");
         string arg1 = a.Length > 1 ? a[1] : string.Empty;
         int.TryParse(a.Length > 2 ? a[2] : arg1, out int n);
-        switch (a[0].ToLowerInvariant())
+        string verb = a[0].ToLowerInvariant();
+        if (verb.StartsWith("attr", StringComparison.Ordinal) && Attributes.HandleRemote(verb, a)) return;
+        switch (verb)
         {
             case "augload": RequestAugs(); break;
             case "augtarget" when a.Length > 2:
