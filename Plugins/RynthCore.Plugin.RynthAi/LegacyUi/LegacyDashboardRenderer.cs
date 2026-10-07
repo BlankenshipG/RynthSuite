@@ -934,6 +934,9 @@ internal sealed partial class LegacyDashboardRenderer
                 StartMacroOnLogin          = s.StartMacroOnLogin,
                 PatrolOnLogin              = s.PatrolOnLogin,
                 YieldToVTank               = s.YieldToVTank,
+                FeatureServerNames         = IltHub.ServerFeatureGate.FormatList(s.FeatureServerNames),
+                ForceServerFeatures        = s.ForceServerFeatures,
+                ServerFeaturesStatus       = IltHub.ServerFeatureGate.Describe(s),
                 EnableRaycasting           = s.EnableRaycasting,
                 UseArcs                    = s.UseArcs,
                 BowArcVelocity             = s.BowArcVelocity,
@@ -1142,6 +1145,9 @@ internal sealed partial class LegacyDashboardRenderer
             s.StartMacroOnLogin          = p.StartMacroOnLogin;
             s.PatrolOnLogin              = p.PatrolOnLogin;
             s.YieldToVTank               = p.YieldToVTank;
+            if (p.FeatureServerNames != null)
+                s.FeatureServerNames     = IltHub.ServerFeatureGate.ParseList(p.FeatureServerNames);
+            s.ForceServerFeatures        = p.ForceServerFeatures;
             s.EnableRaycasting           = p.EnableRaycasting;
             s.UseArcs                    = p.UseArcs;
             s.BowArcVelocity             = p.BowArcVelocity;
@@ -1771,6 +1777,8 @@ internal sealed partial class LegacyDashboardRenderer
         dst.StartMacroOnLogin        = tmp.StartMacroOnLogin;
         dst.PatrolOnLogin            = tmp.PatrolOnLogin;
         dst.YieldToVTank             = tmp.YieldToVTank;
+        dst.FeatureServerNames       = tmp.FeatureServerNames ?? new(IltHub.ServerFeatureGate.DefaultServerNames);
+        dst.ForceServerFeatures      = tmp.ForceServerFeatures;
         dst.ShowTerrainPassability   = tmp.ShowTerrainPassability;
         dst.GiveQueueIntervalMs      = tmp.GiveQueueIntervalMs;
         dst.T11ItemAugsOverride      = tmp.T11ItemAugsOverride;

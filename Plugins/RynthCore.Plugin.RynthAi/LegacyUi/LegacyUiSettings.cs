@@ -241,6 +241,15 @@ public sealed class LegacyUiSettings
     /// </summary>
     public bool YieldToVTank = true;
 
+    /// <summary>
+    /// Server Features (Settings > Misc): world names that turn on the ILT Hub, the Skills
+    /// panel's Progression planners and the attribute raiser ('*' wildcard, case-insensitive).
+    /// See IltHub/ServerFeatureGate. A profile saved before this existed loads the defaults.
+    /// </summary>
+    public List<string> FeatureServerNames { get; set; } = new(IltHub.ServerFeatureGate.DefaultServerNames);
+    /// <summary>Manual override: treat the current world as feature-enabled whatever its name.</summary>
+    public bool ForceServerFeatures;
+
     public int BlacklistAttempts = 3;
     public int BlacklistTimeoutSec = 30;
     /// <summary>
@@ -801,6 +810,11 @@ public sealed class SettingsBridgePayload
     public bool PatrolOnLogin { get; set; }
     // Absent from an older engine's payload: must not read as off.
     public bool YieldToVTank { get; set; } = true;
+    // Server Features: the list travels as one comma-separated string (the engine's text row).
+    public string FeatureServerNames { get; set; } = string.Join(", ", IltHub.ServerFeatureGate.DefaultServerNames);
+    public bool ForceServerFeatures { get; set; }
+    // Read-only status line for Settings > Misc (ignored when the engine sends it back).
+    public string ServerFeaturesStatus { get; set; } = string.Empty;
     public bool EnableRaycasting { get; set; }
     public bool UseArcs { get; set; }
     public float BowArcVelocity { get; set; }

@@ -3,8 +3,9 @@
 // UB gated every Leaftide tool on a single test (WorldName == "InfiniteLeaftide" or a
 // Force checkbox). That lies on shards where the operator turned Powerball, /myquests or
 // a charm off. This module instead keeps one tri-state bit per feature:
-//   * World identity: Host.TryGetWorldName (or ForceLeaftideFeatures) decides whether we
-//     even ASK — it never switches a feature on by itself.
+//   * World identity: ServerFeatureGate (Settings > Misc server list, or its manual
+//     override / the Hub's ForceLeaftideFeatures) decides whether we even ASK — it never
+//     switches a feature on by itself.
 //   * Preferred source: a structured "/ilt features" dump (ILTFEATURE key=0|1 lines) once
 //     ACECustom ships it. Today the server prints "Coming Soon", so:
 //   * Fallback: a one-shot login probe of read-only commands (/bank, /aug, /qb, /pets,
@@ -16,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
@@ -58,6 +60,7 @@ internal sealed class IltServerOptions
     private readonly IltChatCapture _capture;
     private readonly IltHubState _state;
     private readonly Action<string> _chat;
+    private readonly Func<LegacyUiSettings?> _settings;
 
     /// <summary>Feeds probe replies to features that can reuse them (e.g. /bank → Banking balances).</summary>
     public Action<string, IltChatResult>? ProbeReplyTap;
@@ -77,12 +80,14 @@ internal sealed class IltServerOptions
     /// </summary>
     private const long WorldNameWaitMs = 60000;
 
-    public IltServerOptions(RynthCoreHost host, IltChatCapture capture, IltHubState state, Action<string> chat)
+    public IltServerOptions(RynthCoreHost host, IltChatCapture capture, IltHubState state, Action<string> chat,
+                            Func<LegacyUiSettings?>? settings = null)
     {
         _host = host;
         _capture = capture;
         _state = state;
         _chat = chat;
+        _settings = settings ?? (() => null);
     }
 
     // ── Identity ────────────────────────────────────────────────────────────
@@ -98,15 +103,18 @@ internal sealed class IltServerOptions
         }
     }
 
-    /// <summary>True when the world is (or is declared to be) an ACECustom/ILT shard.</summary>
+    /// <summary>
+    /// True when the world is (or is declared to be) an ACECustom/ILT shard: its name is in the
+    /// Settings > Misc server list, or an override is on (ServerFeatureGate).
+    /// </summary>
     public bool IsIltLikeWorld
     {
         get
         {
             if (_state.ForceLeaftideFeatures) return true;
-            string w = WorldName;
-            return w.Equals("InfiniteLeaftide", StringComparison.OrdinalIgnoreCase)
-                || w.Contains("leaftide", StringComparison.OrdinalIgnoreCase);
+            LegacyUiSettings? s;
+            try { s = _settings(); } catch { s = null; }
+            return ServerFeatureGate.IsEnabled(WorldName, s);
         }
     }
 
@@ -193,7 +201,7 @@ internal sealed class IltServerOptions
         }
         if (!IsIltLikeWorld)
         {
-            if (manual) _chat("[ILT Hub] This world is not an ILT/ACECustom shard (enable Force in the Hub to override).");
+            if (manual) _chat("[ILT Hub] This world is not in the Server Features list (Settings > Misc: add it, or tick the override).");
             return;
         }
 

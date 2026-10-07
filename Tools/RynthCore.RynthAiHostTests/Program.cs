@@ -67,6 +67,7 @@ CorpseKillerTests.Register(runner);
         LootAddItemTests.Register(runner);
         GiveTests.Register(runner);
         DungeonMapBakeTests.Register(runner);
+        AttributeRaiserTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }

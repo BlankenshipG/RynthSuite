@@ -101,6 +101,11 @@ internal sealed class IltHubStore
         s.Character.QuestFavorites ??= new();
         s.Character.QuestFavorites.RemoveAll(string.IsNullOrWhiteSpace);
         s.Character.AugTargets = new Dictionary<string, int>(s.Character.AugTargets ?? new(), StringComparer.OrdinalIgnoreCase);
+        s.Character.AttrOrder = IltAttributeRaiser.RepairOrder(s.Character.AttrOrder);
+        s.Character.AttrRaiseStats = IltAttributeRaiser.RepairSelection(s.Character.AttrRaiseStats);
+        s.Character.AttrAutoRaiseMinutes = Math.Clamp(s.Character.AttrAutoRaiseMinutes, 1, 1440);
+        s.Character.AttrRaiseMode = Math.Clamp(s.Character.AttrRaiseMode, 0, 2);
+        s.Character.AttrKeepXp = Math.Max(0, s.Character.AttrKeepXp);
         s.Character.CharmsSeen = new Dictionary<string, IltCharmSeen>(s.Character.CharmsSeen ?? new(), StringComparer.OrdinalIgnoreCase);
         s.Gear ??= new IltGearState();
         s.Gear.DispelInclusions ??= new();
