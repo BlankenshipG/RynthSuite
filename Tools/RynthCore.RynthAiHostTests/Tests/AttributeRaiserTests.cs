@@ -31,6 +31,87 @@ internal static class AttributeRaiserTests
         r.Add("attr raiser: safety (stale costs, another stat's reply, gate off mid-run, held off)", Safety);
         r.Add("attr raiser: by-hand +1 / +10 priced like UB, refused when unaffordable, costs read on tab open", ByHandPriced);
         r.Add("aug planner: /aug pulled on tab open, totals, reset targets, copy texts", AugPlanner);
+        r.Add("aug costs: UB's ILT model (tier starts at its S level) in closed form", AugCostModel);
+        r.Add("aug costs: per-server multipliers and rules, saved and reset", AugCostSettings);
+    }
+
+    /// <summary>UB Augs.cs GetCumulativeCost difference, level by level (the reference the closed form must match).</summary>
+    private static decimal UbLoop(IltAugCostRow r, double[] m, int cur, int tgt)
+    {
+        decimal step = r.Base * (decimal)r.LinearPercent / 100m, total = 0;
+        for (int i = cur + 1; i <= tgt; i++)
+        {
+            decimal b = r.Base + (i - 1) * step;
+            double mult = i < r.S1 ? m[0] : i < r.S2 ? m[1] : i < r.S3 ? m[2] : i < r.S4 ? m[3] : m[4];
+            total += b * (decimal)mult;
+        }
+        return total;
+    }
+
+    private static void AugCostModel()
+    {
+        var rows = IltAugCosts.DefaultRows().ToDictionary(x => x.Key);
+        var m = IltAugCosts.DefaultMultipliers;
+        var creature = rows["creature"];
+        Check.Eq(IltAugCosts.LumCost(creature, m, 2748, 2749), 750_000m + 2748 * 975_000m, "level 2749 (S1 - 1) is the last x1 level");
+        Check.Eq(IltAugCosts.LumCost(creature, m, 2749, 2750), (750_000m + 2749 * 975_000m) * 4, "level 2750 (S1) is the first x4 level");
+        Check.Eq(rows["specialization"].S2, 2500, "Specialization uses UB's 1750/2500/3000/3750");
+        Check.Eq(rows["summon"].S1, 1750, "Summon uses UB's 1750/2500/3000/3750");
+        Check.Eq(creature.Cap, 0, "no target cap by default (UB has none)");
+
+        foreach (var (key, cur, tgt) in new[] { ("creature", 0, 6000), ("item", 1200, 3600), ("specialization", 1700, 3800),
+                                                ("duration", 999, 1001), ("summon", 3749, 3751), ("life", 10, 10) })
+            Check.Eq(IltAugCosts.LumCost(rows[key], m, cur, tgt), UbLoop(rows[key], m, cur, tgt), $"{key} {cur}->{tgt} matches UB's loop");
+        var odd = new double[] { 1.5, 2, 3.25, 10, 0 };
+        Check.Eq(IltAugCosts.LumCost(rows["war"], odd, 1500, 4000), UbLoop(rows["war"], odd, 1500, 4000), "custom multipliers match the loop");
+        Check.Eq(IltAugCosts.LumCost(creature, m, 50, 40), 0m, "a target below current costs nothing");
+        Check.True(IltAugCosts.LumCost(creature, m, 0, IltAugCosts.NoCapLimit) > 0, "the largest uncapped target is priced without overflow");
+    }
+
+    private static void AugCostSettings()
+    {
+        string file = IltAugCosts.FilePath;
+        if (File.Exists(file)) File.Delete(file);
+        var settings = new LegacyUiSettings();
+        var hub = NewHub("InfiniteLeaftide", settings, "aug-costs", out _);
+        var prog = hub.Progression;
+        prog.ApplyAugLines(new List<string> { "War: 1700" });
+        hub.State.Character.AugTargets["war"] = 1800;
+
+        string Snapshot()
+        {
+            var sb = new System.Text.StringBuilder();
+            prog.AppendSnapshotJson(sb);
+            return "{" + sb + "}";
+        }
+        System.Text.Json.JsonElement Aug(string json) => System.Text.Json.JsonDocument.Parse(json).RootElement.GetProperty("aug");
+
+        var before = Aug(Snapshot());
+        Check.False(before.GetProperty("cfg").GetProperty("custom").GetBoolean(), "a world starts on the defaults");
+        Check.Eq(before.GetProperty("cfg").GetProperty("mults").GetArrayLength(), 5, "five tier multipliers in the snapshot");
+        string lumBefore = before.GetProperty("totLum").GetString() ?? "";
+
+        prog.HandleRemote(new[] { "augmult", "1", "2" });
+        var after = Aug(Snapshot());
+        Check.True(after.GetProperty("cfg").GetProperty("custom").GetBoolean(), "an edit gives the world its own rules");
+        Check.Eq(after.GetProperty("cfg").GetProperty("mults")[1].GetDouble(), 2.0, "multiplier saved");
+        Check.True((after.GetProperty("totLum").GetString() ?? "") != lumBefore, "the plan re-prices with the new multiplier");
+
+        prog.HandleRemote(new[] { "augcfg", "war", "s1", "1800" });
+        prog.HandleRemote(new[] { "augcfg", "war", "base", "1m" });
+        prog.HandleRemote(new[] { "augcfg", "war", "s2", "100" });
+        var war = prog.AugCosts.For("InfiniteLeaftide").Augs.First(x => x.Key == "war");
+        Check.Eq(war.S1, 1800, "S1 edited");
+        Check.Eq(war.Base, 1_000_000L, "base accepts k/m/b suffixes");
+        Check.Eq(war.S2, 1800, "S2 can't go below S1");
+        Check.Eq(prog.AugCosts.For("Aelrynth").Multipliers[1], 4.0, "another world keeps the defaults");
+
+        var reloaded = new IltAugCosts();
+        Check.Eq(reloaded.For("infiniteleaftide").Multipliers[1], 2.0, "rules are saved per world (name ignores case)");
+
+        prog.HandleRemote(new[] { "augcfgreset" });
+        Check.False(prog.AugCosts.IsCustom("InfiniteLeaftide"), "reset drops the world's rules");
+        Check.Eq(new IltAugCosts().For("InfiniteLeaftide").Multipliers[1], 4.0, "and the reset is saved");
     }
 
     private static void ByHandPriced()

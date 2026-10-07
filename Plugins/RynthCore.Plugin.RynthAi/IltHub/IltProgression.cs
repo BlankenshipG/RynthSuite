@@ -1,8 +1,8 @@
 // IltProgression.cs — Augmentation and Enlightenment planners, drawn by the engine's
 // Skills panel (Progression tab) from AppendSnapshotJson; edits arrive via HandleRemote.
 //
-// Augs  : "/aug" levels + the SERVER cost formula (per level n: base + n*(base*LP/100),
-//         times a soft-cap multiplier 1/4/8/16/24 at thresholds S1..S4), coins per level.
+// Augs  : "/aug" levels + the per-server cost rules in IltAugCosts (UB's ILT model by default:
+//         level i costs base + (i-1)*(base*LP/100), times 1/4/8/16/24 from S1..S4), coins per level.
 // Enl   : tier material/luminance table, requirement checklist, "/enl" on confirm. The
 //         server pops its own Yes/No dialog — the host cannot (and must not) click it.
 //         Optional auto-enlighten is disarmed every session and needs a hard confirm.
@@ -19,37 +19,13 @@ namespace RynthCore.Plugin.RynthAi.IltHub;
 
 internal sealed class IltProgression : IIltFeature
 {
-    // ── Augmentation table (server values) ──────────────────────────────────
+    // ── Augmentation cost rules ─────────────────────────────────────────────
 
-    private sealed record AugDef(string Key, string Label, long Base, int LinearPercent, int CoinsPerLevel,
-                                 int S1, int S2, int S3, int S4, int Cap);
+    /// <summary>Per-server aug cost rules (UB's ILT model unless this world was changed).</summary>
+    public IltAugCosts AugCosts { get; } = new();
 
-    private static readonly AugDef[] Augs =
-    {
-        new("creature",       "Creature",       750_000,   130, 3,  2750, 4000, 4750, 5250, 6000),
-        new("item",           "Item",           1_000_000, 165, 18, 1250, 2000, 3000, 3500, 4000),
-        new("life",           "Life",           975_000,   195, 12, 1000, 2000, 3000, 3750, 4000),
-        new("war",            "War",            750_000,   140, 5,  1750, 2500, 3000, 3750, 4000),
-        new("void",           "Void",           800_000,   160, 5,  1750, 2500, 3000, 3750, 4000),
-        new("duration",       "Duration",       400_000,   120, 5,  1000, 2000, 2500, 3000, 4000),
-        new("melee",          "Melee",          750_000,   140, 5,  1750, 2500, 3000, 3750, 4000),
-        new("missile",        "Missile",        750_000,   140, 5,  1750, 2500, 3000, 3750, 4000),
-        new("specialization", "Specialization", 3_000_000, 200, 50, 1750, 2000, 2250, 2750, 266),
-        new("summon",         "Summon",         500_000,   125, 36, 1250, 2000, 3000, 3500, 4000),
-    };
-
-    /// <summary>Luminance for raising one aug from <paramref name="cur"/> to <paramref name="tgt"/>.</summary>
-    private static decimal AugLumCost(AugDef a, int cur, int tgt)
-    {
-        decimal total = 0;
-        decimal step = a.Base * (decimal)a.LinearPercent / 100m;
-        for (int n = Math.Max(0, cur); n < tgt; n++)
-        {
-            int mult = n >= a.S4 ? 24 : n >= a.S3 ? 16 : n >= a.S2 ? 8 : n >= a.S1 ? 4 : 1;
-            total += (a.Base + n * step) * mult;
-        }
-        return total;
-    }
+    /// <summary>The rules for the world we're on.</summary>
+    private IltAugCostProfile AugProfile => AugCosts.For(_ctx.Options.WorldName);
 
     // ── Enlightenment ───────────────────────────────────────────────────────
 
@@ -338,7 +314,7 @@ internal sealed class IltProgression : IIltFeature
     }
 
     /// <summary>One aug's plan line: current level, clamped target, luminance and coins to get there.</summary>
-    private readonly record struct AugPlan(AugDef Def, int Cur, int Tgt, int Ceiling, decimal Lum, long Coins)
+    private readonly record struct AugPlan(IltAugCostRow Def, string Label, int Cur, int Tgt, int Ceiling, decimal Lum, long Coins)
     {
         public int Inc => Tgt - Cur;
     }
@@ -347,13 +323,15 @@ internal sealed class IltProgression : IIltFeature
     {
         Dictionary<string, int> levels;
         lock (_augLevels) levels = new Dictionary<string, int>(_augLevels, StringComparer.OrdinalIgnoreCase);
-        var plan = new List<AugPlan>(Augs.Length);
-        foreach (var a in Augs)
+        var profile = AugProfile;
+        var plan = new List<AugPlan>(profile.Augs.Count);
+        foreach (var a in profile.Augs)
         {
             int cur = levels.TryGetValue(a.Key, out int c) ? c : 0;
-            int ceiling = Math.Max(cur, a.Cap);
+            int ceiling = IltAugCosts.Ceiling(a, cur);
             int tgt = Math.Clamp(C.AugTargets.TryGetValue(a.Key, out int t) ? t : cur, cur, ceiling);
-            plan.Add(new AugPlan(a, cur, tgt, ceiling, AugLumCost(a, cur, tgt), (long)(tgt - cur) * a.CoinsPerLevel));
+            plan.Add(new AugPlan(a, IltAugCosts.Label(a.Key), cur, tgt, ceiling,
+                IltAugCosts.LumCost(a, profile.Multipliers, cur, tgt), (long)(tgt - cur) * a.CoinsPerLevel));
         }
         return plan;
     }
@@ -371,7 +349,7 @@ internal sealed class IltProgression : IIltFeature
             if (i > 0) sb.Append(',');
             sb.Append('{');
             Str(sb, "key", p.Def.Key, first: true);
-            Str(sb, "label", p.Def.Label);
+            Str(sb, "label", p.Label);
             sb.Append(",\"cur\":").Append(p.Cur).Append(",\"tgt\":").Append(p.Tgt).Append(",\"cap\":").Append(p.Ceiling)
               .Append(",\"inc\":").Append(p.Inc);
             Str(sb, "lum", p.Lum > 0 ? IltParse.Compact((double)p.Lum) : "-");
@@ -403,7 +381,64 @@ internal sealed class IltProgression : IIltFeature
         Str(sb, "banked", $"Banked luminance: {IltParse.Compact(_ctx.State.Bank.Luminance)}");
         Str(sb, "copyDiscord", AugDiscordText(plan));
         Str(sb, "copyIngame", AugIngameText(plan));
+        AppendAugCostJson(sb);
         sb.Append('}');
+    }
+
+    /// <summary><c>"cfg":{...}</c>: this world's cost rules for the "Cost settings" editor.</summary>
+    private void AppendAugCostJson(StringBuilder sb)
+    {
+        string world = _ctx.Options.WorldName;
+        var p = AugProfile;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        sb.Append(",\"cfg\":{");
+        Str(sb, "world", world.Length > 0 ? world : "unknown world", first: true);
+        sb.Append(",\"custom\":").Append(Bool(AugCosts.IsCustom(world))).Append(",\"mults\":[");
+        for (int i = 0; i < p.Multipliers.Length; i++)
+            sb.Append(i > 0 ? "," : "").Append(p.Multipliers[i].ToString("R", inv));
+        sb.Append("],\"rows\":[");
+        for (int i = 0; i < p.Augs.Count; i++)
+        {
+            var r = p.Augs[i];
+            if (i > 0) sb.Append(',');
+            sb.Append('{');
+            Str(sb, "key", r.Key, first: true);
+            Str(sb, "label", IltAugCosts.Label(r.Key));
+            sb.Append(",\"base\":").Append(r.Base)
+              .Append(",\"pct\":").Append(r.LinearPercent.ToString("R", inv))
+              .Append(",\"coins\":").Append(r.CoinsPerLevel)
+              .Append(",\"s1\":").Append(r.S1).Append(",\"s2\":").Append(r.S2)
+              .Append(",\"s3\":").Append(r.S3).Append(",\"s4\":").Append(r.S4)
+              .Append(",\"cap\":").Append(r.Cap).Append('}');
+        }
+        sb.Append("]}");
+    }
+
+    /// <summary>"augcfg &lt;aug&gt; &lt;field&gt; &lt;value&gt;": one cost-rule edit for this world.</summary>
+    private void EditAugRule(string key, string field, string value)
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        bool isInt = int.TryParse(value, System.Globalization.NumberStyles.Integer, inv, out int iv);
+        bool isNum = double.TryParse(value, System.Globalization.NumberStyles.Float, inv, out double dv);
+        long amount = 0;
+        bool isAmount = field == "base" && IltParse.TryParseAmount(value, out amount);
+        if (!isInt && !isNum && !isAmount) return;
+        AugCosts.Edit(_ctx.Options.WorldName, p =>
+        {
+            var r = p.Augs.FirstOrDefault(x => x.Key.Equals(key, StringComparison.OrdinalIgnoreCase));
+            if (r == null) return;
+            switch (field)
+            {
+                case "base": if (isAmount) r.Base = amount; break;
+                case "pct": if (isNum) r.LinearPercent = dv; break;
+                case "coins": if (isInt) r.CoinsPerLevel = iv; break;
+                case "s1": if (isInt) r.S1 = iv; break;
+                case "s2": if (isInt) r.S2 = iv; break;
+                case "s3": if (isInt) r.S3 = iv; break;
+                case "s4": if (isInt) r.S4 = iv; break;
+                case "cap": if (isInt) r.Cap = iv; break;
+            }
+        });
     }
 
     /// <summary>
@@ -420,7 +455,7 @@ internal sealed class IltProgression : IIltFeature
         {
             if (p.Cur <= 0 && p.Tgt <= 0) continue;
             string lum = p.Lum > 0 ? IltParse.Compact((double)p.Lum) : "-";
-            t.Append($"{p.Def.Label,-15} {p.Cur,-8} {p.Tgt,-8} {p.Inc,-5} {lum,-10} {p.Coins,-6}\n");
+            t.Append($"{p.Label,-15} {p.Cur,-8} {p.Tgt,-8} {p.Inc,-5} {lum,-10} {p.Coins,-6}\n");
         }
         decimal totalLum = plan.Sum(p => p.Lum);
         t.Append(rule).Append('\n');
@@ -535,18 +570,30 @@ internal sealed class IltProgression : IIltFeature
             case "augreset":
                 // UB's "Reset Target": every target back to the current level.
                 lock (_augLevels)
-                    foreach (var def in Augs)
-                        C.AugTargets[def.Key] = _augLevels.TryGetValue(def.Key, out int c) ? c : 0;
+                    foreach (var (key, _) in IltAugCosts.Labels)
+                        C.AugTargets[key] = _augLevels.TryGetValue(key, out int c) ? c : 0;
                 break;
             case "augtarget" when a.Length > 2:
-                foreach (var def in Augs)
+                foreach (var def in AugProfile.Augs)
                 {
                     if (!def.Key.Equals(arg1, StringComparison.OrdinalIgnoreCase)) continue;
                     int cur;
                     lock (_augLevels) cur = _augLevels.TryGetValue(def.Key, out int c) ? c : 0;
-                    C.AugTargets[def.Key] = Math.Clamp(n, 0, Math.Max(cur, def.Cap));
+                    C.AugTargets[def.Key] = Math.Clamp(n, 0, IltAugCosts.Ceiling(def, cur));
                     break;
                 }
+                break;
+            case "augmult" when a.Length > 2:
+                // "augmult <tier 0-4> <multiplier>": tier 0 is below S1, tier 4 is from S4 on.
+                if (int.TryParse(arg1, out int tier) && tier is >= 0 and <= 4
+                    && double.TryParse(a[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double mult))
+                    AugCosts.Edit(_ctx.Options.WorldName, p => p.Multipliers[tier] = mult);
+                break;
+            case "augcfg" when a.Length > 3:
+                EditAugRule(arg1, a[2].ToLowerInvariant(), a[3]);
+                break;
+            case "augcfgreset":
+                AugCosts.Reset(_ctx.Options.WorldName);
                 break;
             case "lumpercoin":
                 if (IltParse.TryParseAmount(arg1, out long lpc)) C.LumPerEnlightenedCoin = Math.Max(0, lpc);

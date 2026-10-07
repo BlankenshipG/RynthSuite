@@ -30,6 +30,7 @@ internal static class Program
         ExpressionEngine.ItemGiverDir = Path.Combine(TempRoot, "ItemGiver");
         // The dungeon map bake writes floor plans under C:\Games\RynthSuite\RynthAi\Maps.
         RynthCore.Plugin.RynthAi.Maps.DungeonMapBake.CacheDir = Path.Combine(TempRoot, "Maps");
+        RynthCore.Plugin.RynthAi.IltHub.IltAugCosts.FilePath = Path.Combine(TempRoot, "ilt-aug-costs.json");
 
         // Spell names (item spells, spell expiry by name) come from the plugin's embedded table.
         SpellDatabase.Load();
