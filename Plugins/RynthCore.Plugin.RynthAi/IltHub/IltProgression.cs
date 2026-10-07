@@ -84,6 +84,8 @@ internal sealed class IltProgression : IIltFeature
     private readonly IltHubContext _ctx;
     private readonly Dictionary<string, int> _augLevels = new(StringComparer.OrdinalIgnoreCase);
     private volatile string _augStatus = "not loaded";
+    // Opening the Progression tab pulls "/aug" once per login when nothing has loaded the levels yet.
+    private bool _augAutoTried;
 
     // Cached player facts for the render thread (refreshed in Tick).
     private volatile int _enl, _level, _freeSlots;
@@ -206,6 +208,8 @@ internal sealed class IltProgression : IIltFeature
         _spending = false;
         Attributes.OnLogout();
         lock (_augLevels) _augLevels.Clear();
+        _augAutoTried = false;
+        _augStatus = "not loaded";
     }
 
     // ── Facts / auto ────────────────────────────────────────────────────────
@@ -313,6 +317,9 @@ internal sealed class IltProgression : IIltFeature
     /// <summary>Appends <c>"aug":{...},"enl":{...},"attr":{...}</c> to <paramref name="sb"/>. Pump thread.</summary>
     public void AppendSnapshotJson(StringBuilder sb)
     {
+        // The snapshot is only polled while the Progression tab is open, so this is "on first view".
+        EnsureAugs();
+        Attributes.EnsureCosts();
         AppendAugJson(sb);
         sb.Append(',');
         AppendEnlJson(sb);
@@ -320,46 +327,129 @@ internal sealed class IltProgression : IIltFeature
         Attributes.AppendJson(sb);
     }
 
-    private void AppendAugJson(StringBuilder sb)
+    /// <summary>Pulls "/aug" once per login when the levels haven't been loaded (login probe or by hand).</summary>
+    private void EnsureAugs()
+    {
+        if (_augAutoTried || _ctx.Options.IsOff(IltFeature.Aug) || !_ctx.Host.HasInvokeChatParser) return;
+        bool loaded;
+        lock (_augLevels) loaded = _augLevels.Count > 0;
+        _augAutoTried = true;
+        if (!loaded) RequestAugs();
+    }
+
+    /// <summary>One aug's plan line: current level, clamped target, luminance and coins to get there.</summary>
+    private readonly record struct AugPlan(AugDef Def, int Cur, int Tgt, int Ceiling, decimal Lum, long Coins)
+    {
+        public int Inc => Tgt - Cur;
+    }
+
+    private List<AugPlan> BuildAugPlan()
     {
         Dictionary<string, int> levels;
         lock (_augLevels) levels = new Dictionary<string, int>(_augLevels, StringComparer.OrdinalIgnoreCase);
+        var plan = new List<AugPlan>(Augs.Length);
+        foreach (var a in Augs)
+        {
+            int cur = levels.TryGetValue(a.Key, out int c) ? c : 0;
+            int ceiling = Math.Max(cur, a.Cap);
+            int tgt = Math.Clamp(C.AugTargets.TryGetValue(a.Key, out int t) ? t : cur, cur, ceiling);
+            plan.Add(new AugPlan(a, cur, tgt, ceiling, AugLumCost(a, cur, tgt), (long)(tgt - cur) * a.CoinsPerLevel));
+        }
+        return plan;
+    }
+
+    private void AppendAugJson(StringBuilder sb)
+    {
+        var plan = BuildAugPlan();
 
         sb.Append("\"aug\":{\"off\":").Append(Bool(_ctx.Options.IsOff(IltFeature.Aug)));
         Str(sb, "status", _augStatus);
         sb.Append(",\"lumPerCoin\":").Append(C.LumPerEnlightenedCoin).Append(",\"rows\":[");
-        decimal totalLum = 0;
-        long totalCoins = 0;
-        for (int i = 0; i < Augs.Length; i++)
+        for (int i = 0; i < plan.Count; i++)
         {
-            var a = Augs[i];
-            int cur = levels.TryGetValue(a.Key, out int c) ? c : 0;
-            int ceiling = Math.Max(cur, a.Cap);
-            int tgt = Math.Clamp(C.AugTargets.TryGetValue(a.Key, out int t) ? t : cur, cur, ceiling);
-            decimal lum = AugLumCost(a, cur, tgt);
-            long coins = (long)(tgt - cur) * a.CoinsPerLevel;
-            totalLum += lum;
-            totalCoins += coins;
+            var p = plan[i];
             if (i > 0) sb.Append(',');
             sb.Append('{');
-            Str(sb, "key", a.Key, first: true);
-            Str(sb, "label", a.Label);
-            sb.Append(",\"cur\":").Append(cur).Append(",\"tgt\":").Append(tgt).Append(",\"cap\":").Append(ceiling);
-            Str(sb, "lum", lum > 0 ? IltParse.Compact((double)lum) : "-");
-            sb.Append(",\"coins\":").Append(coins).Append('}');
+            Str(sb, "key", p.Def.Key, first: true);
+            Str(sb, "label", p.Def.Label);
+            sb.Append(",\"cur\":").Append(p.Cur).Append(",\"tgt\":").Append(p.Tgt).Append(",\"cap\":").Append(p.Ceiling)
+              .Append(",\"inc\":").Append(p.Inc);
+            Str(sb, "lum", p.Lum > 0 ? IltParse.Compact((double)p.Lum) : "-");
+            sb.Append(",\"coins\":").Append(p.Coins).Append('}');
         }
         sb.Append(']');
-        Str(sb, "total", $"Total: {IltParse.Compact((double)totalLum)} luminance, {IltParse.N0(totalCoins)} coins");
+
+        decimal totalLum = plan.Sum(p => p.Lum);
+        long totalCoins = plan.Sum(p => p.Coins);
         long bankCoins = _ctx.State.Bank.EnlightenedCoins;
         long lumPerCoin = C.LumPerEnlightenedCoin;
-        string shortText = totalCoins > bankCoins
-            ? $"Coins short: {IltParse.N0(totalCoins - bankCoins)}"
-              + (lumPerCoin > 0 ? $" (~{IltParse.Compact((double)(totalCoins - bankCoins) * lumPerCoin)} luminance to buy)" : "")
-            : string.Empty;
-        Str(sb, "short", shortText);
+        long coinsShort = Math.Max(0, totalCoins - bankCoins);
+
+        // Totals row (UB's TOTALS line) and the e-coin summary under the table.
+        sb.Append(",\"totCur\":").Append(plan.Sum(p => p.Cur))
+          .Append(",\"totTgt\":").Append(plan.Sum(p => p.Tgt))
+          .Append(",\"totInc\":").Append(plan.Sum(p => p.Inc))
+          .Append(",\"totCoins\":").Append(totalCoins);
+        Str(sb, "totLum", totalLum > 0 ? IltParse.Compact((double)totalLum) : "-");
+        Str(sb, "coinsLine", $"E-coins needed: {IltParse.N0(totalCoins)}   banked: {IltParse.N0(bankCoins)}   short: {IltParse.N0(coinsShort)}");
+        Str(sb, "lumToBuy", coinsShort == 0 ? "Lum to buy e-coins: none needed"
+                            : lumPerCoin > 0 ? $"Lum to buy e-coins: ~{IltParse.Compact((double)coinsShort * lumPerCoin)}"
+                            : "Lum to buy e-coins: set Lum per coin");
+        // Older engine builds read these three.
+        Str(sb, "total", $"Total: {IltParse.Compact((double)totalLum)} luminance, {IltParse.N0(totalCoins)} coins");
+        Str(sb, "short", coinsShort > 0
+            ? $"Coins short: {IltParse.N0(coinsShort)}" + (lumPerCoin > 0 ? $" (~{IltParse.Compact((double)coinsShort * lumPerCoin)} luminance to buy)" : "")
+            : string.Empty);
         Str(sb, "banked", $"Banked luminance: {IltParse.Compact(_ctx.State.Bank.Luminance)}");
+        Str(sb, "copyDiscord", AugDiscordText(plan));
+        Str(sb, "copyIngame", AugIngameText(plan));
         sb.Append('}');
     }
+
+    /// <summary>
+    /// UB's "Copy Discord" table in a code block. ASCII only: the engine reads the snapshot as ANSI.
+    /// </summary>
+    private string AugDiscordText(List<AugPlan> plan)
+    {
+        string name = string.IsNullOrEmpty(_ctx.CharName) ? "character" : _ctx.CharName;
+        string rule = new('-', 56);
+        var t = new StringBuilder();
+        t.Append("```\n").Append("Augmentations - ").Append(name).Append('\n').Append(rule).Append('\n');
+        t.Append($"{"Type",-15} {"Current",-8} {"Target",-8} {"Inc",-5} {"Lum Cost",-10} {"Coins",-6}\n").Append(rule).Append('\n');
+        foreach (var p in plan)
+        {
+            if (p.Cur <= 0 && p.Tgt <= 0) continue;
+            string lum = p.Lum > 0 ? IltParse.Compact((double)p.Lum) : "-";
+            t.Append($"{p.Def.Label,-15} {p.Cur,-8} {p.Tgt,-8} {p.Inc,-5} {lum,-10} {p.Coins,-6}\n");
+        }
+        decimal totalLum = plan.Sum(p => p.Lum);
+        t.Append(rule).Append('\n');
+        t.Append($"{"TOTALS:",-15} {plan.Sum(p => p.Cur),-8} {plan.Sum(p => p.Tgt),-8} {plan.Sum(p => p.Inc),-5} "
+                 + $"{(totalLum > 0 ? IltParse.Compact((double)totalLum) : "-"),-10} {plan.Sum(p => p.Coins),-6}\n");
+        t.Append("```");
+        return t.ToString();
+    }
+
+    /// <summary>UB's "Copy In-Game": one line of current levels with short names, for pasting into chat.</summary>
+    private string AugIngameText(List<AugPlan> plan)
+    {
+        string name = string.IsNullOrEmpty(_ctx.CharName) ? "character" : _ctx.CharName;
+        var parts = plan.Where(p => p.Cur > 0).Select(p => $"{AugShortName(p.Def.Key)}: {IltParse.N0(p.Cur)}").ToList();
+        return parts.Count == 0
+            ? $"Augmentation Levels - {name}: none loaded"
+            : $"Augmentation Levels - {name} ({IltParse.N0(plan.Sum(p => p.Cur))} total): {string.Join(", ", parts)}";
+    }
+
+    private static string AugShortName(string key) => key switch
+    {
+        "creature" => "Crit",
+        "duration" => "Dur",
+        "specialization" => "Spec",
+        "summon" => "Sum",
+        "melee" => "Mel",
+        "missile" => "Mis",
+        _ => char.ToUpperInvariant(key[0]) + key.Substring(1),
+    };
 
     private void AppendEnlJson(StringBuilder sb)
     {
@@ -442,6 +532,12 @@ internal sealed class IltProgression : IIltFeature
         switch (verb)
         {
             case "augload": RequestAugs(); break;
+            case "augreset":
+                // UB's "Reset Target": every target back to the current level.
+                lock (_augLevels)
+                    foreach (var def in Augs)
+                        C.AugTargets[def.Key] = _augLevels.TryGetValue(def.Key, out int c) ? c : 0;
+                break;
             case "augtarget" when a.Length > 2:
                 foreach (var def in Augs)
                 {

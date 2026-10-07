@@ -29,6 +29,91 @@ internal static class AttributeRaiserTests
         r.Add("attr raiser: a run reads costs, raises in order, stops when nothing is affordable", FullRun);
         r.Add("attr raiser: off when the world is not in the Server Features list", GatedOff);
         r.Add("attr raiser: safety (stale costs, another stat's reply, gate off mid-run, held off)", Safety);
+        r.Add("attr raiser: by-hand +1 / +10 priced like UB, refused when unaffordable, costs read on tab open", ByHandPriced);
+        r.Add("aug planner: /aug pulled on tab open, totals, reset targets, copy texts", AugPlanner);
+    }
+
+    private static void ByHandPriced()
+    {
+        Check.Eq(IltAttributeRaiser.ProjectCost(1_000, 1), 1_000L, "one level costs the reported cost");
+        // 1000 * (1.077^10 - 1) / 0.077 = 14,281.7 (UB's EstimateMultiLevelCost).
+        Check.Eq(IltAttributeRaiser.ProjectCost(1_000, 10), 14_281L, "ten levels grow 7.7% each");
+        Check.Eq(IltAttributeRaiser.ProjectCost(0, 10), 0L, "unknown cost projects nothing");
+        Check.Eq(IltAttributeRaiser.ProjectCost(long.MaxValue / 2, 10), long.MaxValue, "saturates instead of overflowing");
+
+        var settings = new LegacyUiSettings();
+        var hub = NewHub("InfiniteLeaftide", settings, "attr-byhand", out _);
+        var raiser = hub.Progression.Attributes;
+        FakeHost.Quads[(Player, IltInventory.QuadAvailableXp)] = 5_000;
+        // Levels already known (as after the login probe), so the tab doesn't queue /aug ahead of /xp all.
+        hub.Progression.ApplyAugLines(new List<string> { "Creature: 1" });
+
+        // Opening the tab (a snapshot poll) reads the costs once per login.
+        var sb = new System.Text.StringBuilder();
+        hub.Progression.AppendSnapshotJson(sb);
+        Check.True(TickUntil(hub, () => FakeHost.ChatCommands.Contains("/xp all")), "the first snapshot reads the costs");
+        Reply(hub, "[XP] Your XP cost for next 1 Coordination level is: 1,000",
+                   "[XP] Your XP cost for next 1 Strength level is: 4,000");
+        TickUntil(hub, () => false, 400);
+        int reads = FakeHost.ChatCommands.Count(x => x == "/xp all");
+        hub.Progression.AppendSnapshotJson(new System.Text.StringBuilder());
+        TickUntil(hub, () => false, 400);
+        Check.Eq(FakeHost.ChatCommands.Count(x => x == "/xp all"), reads, "later snapshots don't read again");
+
+        sb.Clear();
+        raiser.AppendJson(sb);
+        string json = sb.ToString();
+        System.Text.Json.JsonDocument.Parse("{" + json + "}").Dispose();
+        Check.True(json.Contains("\"key\":\"coo\"") && json.Contains("\"afford1\":true") && json.Contains("\"cost10\":\"~14.3K\""),
+            $"Coordination: +1 affordable, +10 projected (got {json})");
+        Check.True(json.Contains("\"updated\":\"") && !json.Contains("\"updated\":\"-\""), "the last-updated time is set");
+
+        // +10 Coordination (~14.3K of 5K) is refused; +1 Strength (4K of 5K) goes out.
+        raiser.RaiseManual("coo", 10);
+        var status = new System.Text.StringBuilder();
+        raiser.AppendJson(status);
+        Check.True(status.ToString().Contains("Not enough unassigned XP"), "an unaffordable +10 is refused with the reason");
+        raiser.RaiseManual("str", 1);
+        Check.True(TickUntil(hub, () => FakeHost.ChatCommands.Contains("/attr str 1")), "an affordable +1 is sent");
+        Check.False(FakeHost.ChatCommands.Contains("/attr coo 10"), "the refused +10 was never sent");
+    }
+
+    private static void AugPlanner()
+    {
+        var settings = new LegacyUiSettings();
+        var hub = NewHub("InfiniteLeaftide", settings, "aug-planner", out _);
+        var prog = hub.Progression;
+
+        prog.AppendSnapshotJson(new System.Text.StringBuilder());
+        Check.True(TickUntil(hub, () => FakeHost.ChatCommands.Contains("/aug")), "opening the tab pulls /aug once");
+        prog.ApplyAugLines(new List<string> { "Creature: 100", "Specialize: 2", "Summon: 0" });
+
+        prog.HandleRemote(new[] { "augtarget", "creature", "110" });
+        var sb = new System.Text.StringBuilder();
+        prog.AppendSnapshotJson(sb);
+        string json = sb.ToString();
+        using (var doc = System.Text.Json.JsonDocument.Parse("{" + json + "}"))
+        {
+            var aug = doc.RootElement.GetProperty("aug");
+            Check.Eq(aug.GetProperty("totCur").GetInt64(), 102L, "totals: current");
+            Check.Eq(aug.GetProperty("totTgt").GetInt64(), 112L, "totals: target");
+            Check.Eq(aug.GetProperty("totInc").GetInt64(), 10L, "totals: increase");
+            Check.Eq(aug.GetProperty("totCoins").GetInt64(), 30L, "Creature costs 3 coins a level");
+            var creature = aug.GetProperty("rows").EnumerateArray().First(x => x.GetProperty("key").GetString() == "creature");
+            Check.Eq(creature.GetProperty("inc").GetInt32(), 10, "row: increase");
+            string discord = aug.GetProperty("copyDiscord").GetString() ?? "";
+            Check.True(discord.StartsWith("```", StringComparison.Ordinal) && discord.Contains("TOTALS:") && discord.Contains("Creature"),
+                "Discord copy is a code-block table with totals");
+            Check.True(discord.All(ch => ch < 128), "copy text is ASCII (the engine reads the snapshot as ANSI)");
+            string ingame = aug.GetProperty("copyIngame").GetString() ?? "";
+            Check.True(ingame.Contains("Crit: 100") && ingame.Contains("Spec: 2") && !ingame.Contains("Sum:"),
+                $"in-game copy lists current levels with short names (got '{ingame}')");
+        }
+
+        prog.HandleRemote(new[] { "augreset" });
+        Check.Eq(hub.State.Character.AugTargets["creature"], 100, "reset targets: back to current");
+        Check.Eq(hub.State.Character.AugTargets["summon"], 0, "reset targets: unloaded augs go to 0");
+        Check.Eq(FakeHost.ChatCommands.Count(x => x == "/aug"), 1, "levels loaded: no second automatic /aug");
     }
 
     private static void Patterns()

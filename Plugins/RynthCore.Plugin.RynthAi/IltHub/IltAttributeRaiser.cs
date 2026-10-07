@@ -14,7 +14,8 @@
 //   Priority    the first ticked stat in the order that is affordable (fills the top stat)
 //   RoundRobin  one level per ticked stat in order, then around again
 //   Cheapest    the ticked stat with the lowest next-level cost
-// Manual +N buttons send "/attr <abbr> N" straight to the server (its reply shows in chat).
+// Manual +1 / +10 buttons send "/attr <abbr> N" straight to the server (its reply shows in chat)
+// once the known (+1) or projected (+10, 7.7% per level as in UB) cost fits the unassigned XP.
 //
 // Gated on ServerFeatureGate (via IltServerOptions.IsIltLikeWorld) and on the server not
 // reporting /xp off. Everything here runs on the plugin pump thread.
@@ -45,6 +46,14 @@ internal sealed class IltAttributeRaiser
     public static readonly string[] DefaultOrder = { "coo", "qui", "str", "end", "foc", "sel", "hea", "sta", "man" };
 
     public const int MaxRaisesPerRun = 200;
+
+    /// <summary>
+    /// Per-level growth for projecting several levels from the one cost "/xp all" reports (UB's
+    /// Leaftide XP tab uses the same 7.7%). The server prices each level itself; this only labels
+    /// the +10 button and gates it on the XP you have.
+    /// </summary>
+    public const double ProjectedLevelGrowth = 0.077;
+
     private const long FirstAutoDelayMs = 30_000;   // after login / arming, before the first auto run
     private const int ReplyTimeoutMs = 8000;
     /// <summary>A run with no reply/step for this long is ended (a lost callback must not wedge it).</summary>
@@ -60,6 +69,9 @@ internal sealed class IltAttributeRaiser
     private Dictionary<string, long> _runCosts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _base = new(StringComparer.OrdinalIgnoreCase);
     private long _costsAtMs;
+    private DateTime _costsAtLocal;
+    // Opening the Progression tab reads the costs once per login, like UB's XP tab does on load.
+    private bool _autoCostsTried;
 
     // Run state. _runId guards against a capture that completes after Stop / a newer run.
     private enum Phase { Idle, ReadingCosts, Raising }
@@ -213,7 +225,7 @@ internal sealed class IltAttributeRaiser
         if (cost.Success)
         {
             Stat? s = Find(cost.Groups[1].Value);
-            if (s != null) { _cost[s.Abbr] = IltParse.ParseLeadingLong(cost.Groups[2].Value); _costsAtMs = IltHubContext.NowMs; }
+            if (s != null) { _cost[s.Abbr] = IltParse.ParseLeadingLong(cost.Groups[2].Value); MarkCostsRead(); }
             return;
         }
         var now = BaseNow.Match(text);
@@ -232,6 +244,7 @@ internal sealed class IltAttributeRaiser
         _runCosts.Clear();
         _base.Clear();
         _costsAtMs = 0;
+        _autoCostsTried = false;
         _nextAutoAtMs = 0;
         _status = "Idle.";
     }
@@ -272,7 +285,40 @@ internal sealed class IltAttributeRaiser
         ReadCosts(_runId, thenStep: false);
     }
 
-    /// <summary>"+N" button: sends "/attr abbr N" as-is; the server's reply shows in chat.</summary>
+    /// <summary>Reads the costs once per login when the Progression tab is first shown. Pump thread.</summary>
+    public void EnsureCosts()
+    {
+        if (_autoCostsTried || _costsAtMs != 0 || Running || Blocker() != null) return;
+        _autoCostsTried = true;
+        ReadCosts(_runId, thenStep: false);
+    }
+
+    /// <summary>
+    /// XP for <paramref name="levels"/> raises when the next one costs <paramref name="nextCost"/>,
+    /// each level <see cref="ProjectedLevelGrowth"/> dearer than the last. Saturates at long.MaxValue.
+    /// </summary>
+    public static long ProjectCost(long nextCost, int levels)
+    {
+        if (nextCost <= 0 || levels <= 0) return 0;
+        double total = 0, step = nextCost;
+        for (int i = 0; i < levels; i++)
+        {
+            total += step;
+            step *= 1 + ProjectedLevelGrowth;
+        }
+        return total >= long.MaxValue ? long.MaxValue : (long)total;
+    }
+
+    private void MarkCostsRead()
+    {
+        _costsAtMs = IltHubContext.NowMs;
+        _costsAtLocal = DateTime.Now;
+    }
+
+    /// <summary>
+    /// "+N" button: sends "/attr abbr N"; the server's reply shows in chat. Refused up front when
+    /// the known (or, for N &gt; 1, projected) cost is more than the unassigned XP, like UB's XP tab.
+    /// </summary>
     public void RaiseManual(string key, int levels)
     {
         Stat? s = Find(key);
@@ -282,6 +328,16 @@ internal sealed class IltAttributeRaiser
         if (blocked != null) { _status = blocked; return; }
         if (HeldOff) { _status = "Auto-enlighten is spending XP right now; try again when it finishes."; return; }
         levels = Math.Min(levels, 1000);
+        if (_cost.TryGetValue(s.Abbr, out long next) && next > 0)
+        {
+            long need = ProjectCost(next, levels);
+            long have = _ctx.Inventory.PlayerQuad(IltInventory.QuadAvailableXp);
+            if (need > have)
+            {
+                _status = $"Not enough unassigned XP for {s.Name} +{levels}: need {(levels > 1 ? "~" : "")}{IltParse.Compact(need)}, have {IltParse.Compact(have)}.";
+                return;
+            }
+        }
         RynthLog.Trace(LogCat.IltProgression, $"attr manual raise {s.Abbr} +{levels}");
         int run = _runId;
         _ctx.Capture.Enqueue(new IltChatRequest
@@ -334,7 +390,7 @@ internal sealed class IltAttributeRaiser
                     fresh[s.Abbr] = IltParse.ParseLeadingLong(m.Groups[2].Value);
                 }
                 foreach (var kv in fresh) _cost[kv.Key] = kv.Value;
-                if (fresh.Count > 0) _costsAtMs = IltHubContext.NowMs;
+                if (fresh.Count > 0) MarkCostsRead();
                 RynthLog.Trace(LogCat.IltProgression, $"attr costs: {fresh.Count} line(s) (timedOut={r.TimedOut})");
                 if (!thenStep || run != _runId || !Running) return;
                 if (fresh.Count == 0) { Finish(r.TimedOut ? "No reply to /xp all." : "No cost lines in the /xp all reply."); return; }
@@ -470,6 +526,10 @@ internal sealed class IltAttributeRaiser
                     : IltParse.Duration(TimeSpan.FromMilliseconds(Math.Max(0, _nextAutoAtMs - now)));
         Str(sb, "next", next);
         Str(sb, "costsAge", _costsAtMs == 0 ? "costs not read yet" : $"costs read {Ago(now - _costsAtMs)} ago");
+        Str(sb, "updated", _costsAtMs == 0 ? "-" : _costsAtLocal.ToString("HH:mm:ss"));
+        int level = _ctx.Inventory.PlayerInt(IltInventory.IntLevel);
+        long totalXp = _ctx.Inventory.PlayerQuad(IltInventory.QuadTotalXp);
+        Str(sb, "xpHeader", $"Level {(level > 0 ? level.ToString() : "?")}   Total XP {(totalXp > 0 ? IltParse.Compact(totalXp) : "?")}   Unassigned {IltParse.Compact(have)}");
 
         var ticked = new HashSet<string>(C.AttrRaiseStats, StringComparer.OrdinalIgnoreCase);
         sb.Append(",\"rows\":[");
@@ -489,6 +549,14 @@ internal sealed class IltAttributeRaiser
               .Append(",\"base\":").Append(_base.TryGetValue(s.Abbr, out int b) ? b : -1)
               .Append(",\"afford\":").Append(known && c <= budget ? "true" : "false");
             Str(sb, "cost", known ? IltParse.Compact(c) : "?");
+            // By hand (+1 / +10) only the unassigned XP limits, not the raiser's reserve.
+            long ten = known ? ProjectCost(c, 10) : 0;
+            sb.Append(",\"known\":").Append(known ? "true" : "false")
+              .Append(",\"afford1\":").Append(known && c <= have ? "true" : "false")
+              .Append(",\"afford10\":").Append(known && ten <= have ? "true" : "false");
+            Str(sb, "cost10", known ? "~" + IltParse.Compact(ten) : "?");
+            Str(sb, "costFull", known ? IltParse.N0(c) : "");
+            Str(sb, "cost10Full", known ? IltParse.N0(ten) : "");
             sb.Append('}');
         }
         sb.Append("]}");
