@@ -133,6 +133,11 @@ public sealed class LootEditItemRequest
     public string RuleName { get; set; } = string.Empty;
     /// <summary>True: the profile open in the Loot Editor; false: the one RynthAi loots with.</summary>
     public bool ToOpenProfile { get; set; }
+    /// <summary>
+    /// Also require the item's T11 attributes (LootItemRuleOptions.IncludeT11). Added
+    /// 2026-10-07; an older engine never sends it, so it reads false.
+    /// </summary>
+    public bool IncludeT11 { get; set; }
     /// <summary>Echoed in the draft so the popup knows the answer is to its latest ask.</summary>
     public int Seq { get; set; }
 }
@@ -156,6 +161,10 @@ public sealed class LootEditItemDraft
     public string Format { get; set; } = string.Empty;
     /// <summary>What was built (the defaults filled in).</summary>
     public int Match { get; set; }
+    /// <summary>The rule was asked to include the item's T11 attributes (added 2026-10-07).</summary>
+    public bool IncludeT11 { get; set; }
+    /// <summary>The item is T11 gear, so "Include T11 attributes" has something to add (added 2026-10-07).</summary>
+    public bool IsT11 { get; set; }
     public int Action { get; set; }
     public int KeepCount { get; set; }
     public string RuleName { get; set; } = string.Empty;

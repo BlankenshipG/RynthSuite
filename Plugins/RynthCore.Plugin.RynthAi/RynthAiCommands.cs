@@ -1638,8 +1638,12 @@ public sealed partial class RynthAiPlugin
         if (inUse) ReloadLootProfileInUse(d.TargetPath);
     }
 
-    /// <summary>What a loot rule can be built from: the item's name, class, stack and key properties, from the object cache.</summary>
-    private RynthCore.Loot.Editing.LootItemFacts? BuildLootItemFacts(uint itemId, bool like)
+    /// <summary>
+    /// What a loot rule can be built from: the item's name, class, stack, key properties and
+    /// T11 reading, from the object cache. <paramref name="like"/> adds its spells;
+    /// <paramref name="t11"/> asks for an ID when a T11 item's text hasn't arrived.
+    /// </summary>
+    private RynthCore.Loot.Editing.LootItemFacts? BuildLootItemFacts(uint itemId, bool like, bool t11)
     {
         WorldObject? wo = _objectCache?[unchecked((int)itemId)];
         if (wo == null) return null;
@@ -1669,6 +1673,10 @@ public sealed partial class RynthAiPlugin
             // Material, workmanship and spells need an ID: ask for one, so the next preview has them.
             if (Host.HasRequestId && Host.HasHasAppraisalData && !Host.HasAppraisalData(itemId)) Host.RequestId(itemId);
         }
+        // Always read (a cached parse), so the popup knows whether the T11 option applies.
+        f.T11 = Loot.T11ItemSupport.Get(wo);
+        // T11 tier, grade and modifiers are appraisal text: ask for it, so the next preview has them.
+        if (t11 && f.T11.IsT11 && !f.T11.HasText && Host.HasRequestId) Host.RequestId(itemId);
         return f;
     }
 
@@ -1691,17 +1699,18 @@ public sealed partial class RynthAiPlugin
     }
 
     /// <summary>
-    /// /ra loot add [keep|keep N|salvage|sell|read] [name|like] [preview]: a rule for
+    /// /ra loot add [keep|keep N|salvage|sell|read] [name|like] [t11] [preview]: a rule for
     /// the selected item, straight into the loot profile in use (the defaults: exact
     /// name and class; Read for scrolls, Keep # one full stack for stacks, else Keep).
+    /// t11 also requires the item's T11 attributes.
     /// </summary>
     private void HandleLootCommand(string[] parts)
     {
         string sub = parts.Length >= 3 ? parts[2].ToLowerInvariant() : string.Empty;
         if (sub != "add")
         {
-            ChatLine("[RynthAi] /ra loot add [keep|keep N|salvage|sell|read] [name|like] [preview] — add a loot rule for the selected item to the loot profile in use");
-            ChatLine("[RynthAi]   default: exact name + class; Read for scrolls, Keep # (one full stack) for stacks, else Keep. name = name only, like = items like this. preview = show it, add nothing.");
+            ChatLine("[RynthAi] /ra loot add [keep|keep N|salvage|sell|read] [name|like] [t11] [preview] — add a loot rule for the selected item to the loot profile in use");
+            ChatLine("[RynthAi]   default: exact name + class; Read for scrolls, Keep # (one full stack) for stacks, else Keep. name = name only, like = items like this. t11 = also require its T11 tier, grade and modifiers (at least this good). preview = show it, add nothing.");
             ChatLine("[RynthAi]   Also: right-click an item in the Inventory panel, or 'Add selected item' in the Loot Editor.");
             return;
         }
@@ -1721,6 +1730,7 @@ public sealed partial class RynthAiPlugin
                 case "name": req.Match = (int)RynthCore.Loot.Editing.LootItemMatch.Name; break;
                 case "like": req.Match = (int)RynthCore.Loot.Editing.LootItemMatch.Like; break;
                 case "exact": req.Match = (int)RynthCore.Loot.Editing.LootItemMatch.NameAndClass; break;
+                case "t11": req.IncludeT11 = true; break;
                 case "preview":
                 case "?": preview = true; break;
                 default:
@@ -1730,7 +1740,7 @@ public sealed partial class RynthAiPlugin
                         req.KeepCount = n;
                         break;
                     }
-                    ChatLine($"[RynthAi] loot add: '{parts[i]}'? Use keep, keep N, salvage, sell, read, name, like or preview.");
+                    ChatLine($"[RynthAi] loot add: '{parts[i]}'? Use keep, keep N, salvage, sell, read, name, like, t11 or preview.");
                     return;
             }
         }

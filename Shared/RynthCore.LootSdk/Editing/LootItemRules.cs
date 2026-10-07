@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using RynthCore.Loot.T11;
 using RynthCore.Loot.VTank;
 
 namespace RynthCore.Loot.Editing;
@@ -26,6 +27,11 @@ public sealed class LootItemFacts
     public Dictionary<int, double> Doubles { get; set; } = new();
     /// <summary>The item's spell names (empty when none or not identified).</summary>
     public List<string> Spells { get; set; } = new();
+    /// <summary>
+    /// The item's T11 reading (ACECustom tier 11+ text), or null when it wasn't asked for.
+    /// <see cref="T11ItemInfo.None"/> for an item that isn't T11 gear.
+    /// </summary>
+    public T11ItemInfo? T11 { get; set; }
 
     public bool Stackable => MaxStackSize > 1 || StackSize > 1;
 
@@ -53,6 +59,11 @@ public sealed class LootItemRuleOptions
     public int? KeepCount { get; set; }
     /// <summary>Null or blank: "Keep Copper Pea" and the like.</summary>
     public string? RuleName { get; set; }
+    /// <summary>
+    /// Also require the item's T11 attributes (tier, grade, damage %, each modifier, slot
+    /// special, Cast on Strike), each at least as good as this item's. Works with any match.
+    /// </summary>
+    public bool IncludeT11 { get; set; }
 }
 
 /// <summary>A built rule, ready to preview and insert.</summary>
@@ -155,6 +166,7 @@ public static class LootItemRules
         };
         bool hasClass = f.ObjectClass != (int)AcObjectClass.Unknown;
         LootItemMatch match = o.Match;
+        bool likeBare = false;
         if (match == LootItemMatch.NameAndClass && !hasClass)
         {
             match = LootItemMatch.Name;
@@ -177,12 +189,14 @@ public static class LootItemRules
                     return null;
                 }
                 rule.Conditions.Add(Cond(VTankNodeTypes.ObjectClass, Num(f.ObjectClass)));
-                int extra = AddLikeConditions(rule, f, notes);
-                if (extra == 0)
-                    notes.Add($"Nothing but the class to go on: this rule matches every {ClassName(f.ObjectClass)}."
-                        + (f.Ints.Count == 0 ? " (Assess the item first for its material, workmanship and stats.)" : string.Empty));
+                likeBare = AddLikeConditions(rule, f, notes) == 0;
                 break;
         }
+
+        int t11Added = o.IncludeT11 ? AddT11Conditions(rule, f, notes) : 0;
+        if (likeBare && t11Added == 0)
+            notes.Add($"Nothing but the class to go on: this rule matches every {ClassName(f.ObjectClass)}."
+                + (f.Ints.Count == 0 ? " (Assess the item first for its material, workmanship and stats.)" : string.Empty));
 
         string defaultName = DefaultRuleName(name.Length > 0 ? name : ClassName(f.ObjectClass), action, keep, match);
         string ruleName = OneLine(o.RuleName).Trim();
@@ -245,6 +259,59 @@ public static class LootItemRules
             rule.Conditions.Add(Cond(VTankNodeTypes.SpellNameMatch, ExactPattern(sn)));
             spells++;
         }
+        return rule.Conditions.Count - n;
+    }
+
+    /// <summary>
+    /// The T11 conditions, on RynthAi's virtual T11 keys: Is T11, then tier, grade, damage %,
+    /// every catalogued modifier, slot special and Cast on Strike count, each at least this
+    /// item's. Left out on purpose: Can Wield (the character, not the item), Zone Locked
+    /// (where it was appraised), the wield gates (they follow from the tier) and the modifier
+    /// count / rating total / roll % (they follow from the per-modifier values).
+    /// How many it added.
+    /// </summary>
+    private static int AddT11Conditions(VTankLootRule rule, LootItemFacts f, List<string> notes)
+    {
+        T11ItemInfo? t = f.T11;
+        if (t == null || !t.IsT11)
+        {
+            notes.Add("Not a T11 item, so there are no T11 attributes to add.");
+            return 0;
+        }
+
+        int n = rule.Conditions.Count;
+        void Equal(int key, int v) => rule.Conditions.Add(Cond(VTankNodeTypes.LongValKeyE, Num(v), Num(key)));
+        void AtLeast(int key, int v) { if (v > 0) rule.Conditions.Add(Cond(VTankNodeTypes.LongValKeyGE, Num(v), Num(key))); }
+
+        Equal(T11Keys.IsT11, 1);
+        if (!t.HasText)
+        {
+            notes.Add("The item hasn't been identified, so only \"Is T11\" could be added. Assess it and preview again for its tier, grade and modifiers.");
+            return rule.Conditions.Count - n;
+        }
+
+        AtLeast(T11Keys.EstimatedTier, t.EstimatedTier);
+        AtLeast(T11Keys.WeaponGrade, t.GradeRank);
+        AtLeast(T11Keys.DamagePercent, t.DamagePercent);
+
+        bool valuelessSpecial = false;
+        var unknown = new List<string>();
+        foreach (T11Modifier m in t.Modifiers)
+        {
+            if (T11Catalog.ModifierByKey(m.Key) == null)
+            {
+                unknown.Add(m.Name);
+                continue;
+            }
+            // A modifier's key reads 0 when it is absent, so a value-less one can't be required by value.
+            if (m.Value > 0) AtLeast(T11Keys.ForModifier(m.Key), m.Value);
+            else if (m.IsSlotSpecial) valuelessSpecial = true;
+        }
+        if (valuelessSpecial) Equal(T11Keys.HasSlotSpecial, 1);
+        AtLeast(T11Keys.CastOnStrikeCount, t.Procs.Count);
+
+        if (unknown.Count > 0)
+            notes.Add("Left out (RynthAi has no loot key for these modifiers yet): " + string.Join(", ", unknown) + ".");
         return rule.Conditions.Count - n;
     }
 

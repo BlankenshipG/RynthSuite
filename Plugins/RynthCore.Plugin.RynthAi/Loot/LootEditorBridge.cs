@@ -182,8 +182,10 @@ internal sealed class LootEditorBridge
         if (id == 0) return Refuse(d, "No item selected. Click an item first.");
         d.ItemId = id;
         var match = (LootItemMatch)Math.Clamp(req.Match, 0, 2);
-        LootItemFacts? facts = Items.Facts(id, match == LootItemMatch.Like);
+        d.IncludeT11 = req.IncludeT11;
+        LootItemFacts? facts = Items.Facts(id, match == LootItemMatch.Like, req.IncludeT11);
         if (facts == null) return Refuse(d, $"RynthAi doesn't know item 0x{id:X8} yet. Select it again in a moment.");
+        d.IsT11 = facts.T11?.IsT11 == true;
         d.ItemName = facts.Name;
         d.ClassName = LootItemRules.ClassName(facts.ObjectClass);
         d.Stackable = facts.Stackable;
@@ -207,6 +209,7 @@ internal sealed class LootEditorBridge
             Action = req.Action == 0 ? null : (VTankLootAction)req.Action,
             KeepCount = req.KeepCount < 0 ? null : req.KeepCount,
             RuleName = req.RuleName,
+            IncludeT11 = req.IncludeT11,
         };
         LootItemRuleDraft? draft = LootItemRules.Build(facts, options, out string error);
         if (draft == null) return Refuse(d, error);
@@ -336,8 +339,11 @@ internal sealed class LootItemHooks
 {
     /// <summary>The item selected in the game, or 0.</summary>
     public Func<uint> SelectedItemId { get; set; } = () => 0;
-    /// <summary>The item's facts from the object cache, or null. The bool: "items like this" (ask for an ID if it isn't identified).</summary>
-    public Func<uint, bool, LootItemFacts?> Facts { get; set; } = (_, _) => null;
+    /// <summary>
+    /// The item's facts from the object cache, or null. The bools: "items like this" and
+    /// "include T11 attributes"; either asks for an ID when the item isn't identified.
+    /// </summary>
+    public Func<uint, bool, bool, LootItemFacts?> Facts { get; set; } = (_, _, _) => null;
     /// <summary>The first rule of the .utl profile that matches the item now, or -1.</summary>
     public Func<uint, VTankLootProfile, int> FirstMatchUtl { get; set; } = (_, _) => -1;
     /// <summary>The first rule of the native profile that matches the item now, or -1.</summary>
