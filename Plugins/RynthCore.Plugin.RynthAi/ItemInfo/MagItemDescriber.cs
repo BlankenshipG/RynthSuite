@@ -14,10 +14,11 @@
 //
 // Values follow what the ACECustom appraisal panel shows: the low damage end is rounded like the
 // client, Crushing Blow is the dealt multiplier (1 + CriticalMultiplier), and imbue strengths,
-// the T11 weapon grade, procs, zone modifiers and item-aug wield gates come from the description
-// text because the server keeps those properties off the wire:
+// the T11 weapon / gear grades, property slots, procs, zone modifiers and item-aug wield gates
+// come from the description text because the server keeps those properties off the wire; the
+// T11 tier and weapon quality roll are real properties (ZcTier, WeaponAugScale*):
 //
-//   Flaming Quarter Staff (Fire Staff), Grade S (100%), Craft 9
+//   Flaming Quarter Staff (Fire Staff), T16, Quality 1000, Props 2/5, Grade S (100%), Craft 9
 //     FireRend +176%, Crushing Blow 3.66x, 1790-2069, 0.135v, +20%a, +20%md
 //     [CD 24]  Wield 2,000 Item Augs
 //
@@ -288,12 +289,29 @@ internal static class MagItemDescriber
 
         // Text-only appraisal data (empty until the item has been IDed).
         string longDesc = item.GetString(StringLongDesc);
-        T11ItemInfo t11 = T11ItemInfo.Parse(item.Name, longDesc, item.GetString(StringUse));
+        var t11Server = new T11ServerProps(
+            Int(T11Catalog.PropZcTier),
+            Int(T11Catalog.PropWeaponAugScaleTier),
+            item.TryGetInt(T11Catalog.PropWeaponAugScaleQuality, out int quality) ? quality : -1);
+        T11ItemInfo t11 = T11ItemInfo.Parse(item.Name, longDesc, item.GetString(StringUse), t11Server);
 
         // ── Set ─────────────────────────────────────────────────────────────────
         int set = Int(IntEquipmentSet);
         if (set > 0 && Show(MagItemInfoField.Set))
             d.Add(Id, MagItemInfoTables.EquipmentSets.TryGetValue(set, out string? setName) ? setName : $"Unknown set {set}");
+
+        // ── T11 state: "T16, Gear B+ (4 lines), Props 3/5, Tainted" ───────────
+        if (t11.IsT11 && Show(MagItemInfoField.T11))
+        {
+            // "~" marks a tier estimated from the wield gates (older server, or not yet IDed).
+            d.Add(Id, t11.TierIsExact ? "T" + I(t11.Tier) : "~T" + I(t11.Tier));
+            if (t11.WeaponQuality >= 0) d.Add(Id, "Quality " + I(t11.WeaponQuality));
+            if (t11.GearGradeRank > 0)
+                d.Add(Id, t11.GearGradeLines > 0 ? $"Gear {t11.GearGrade} ({I(t11.GearGradeLines)} lines)" : $"Gear {t11.GearGrade}");
+            if (t11.PropertySlots >= 0)
+                d.Add(Id, t11.PropertySlotCap > 0 ? $"Props {I(t11.PropertySlots)}/{I(t11.PropertySlotCap)}" : $"Props {I(t11.PropertySlots)}");
+            if (t11.Tainted) d.Add(Id, "Tainted");
+        }
 
         // ── Armor level ─────────────────────────────────────────────────────────
         int al = Int(IntArmorLevel);
@@ -461,7 +479,12 @@ internal static class MagItemDescriber
             {
                 var mods = new List<string>(t11.Modifiers.Count);
                 foreach (T11Modifier m in t11.Modifiers)
-                    mods.Add(m.Value != 0 ? $"{m.Name} {(m.Value > 0 ? "+" : "")}{I(m.Value)}" : m.Name);
+                {
+                    string mod = m.Value != 0 ? $"{m.Name} {(m.Value > 0 ? "+" : "")}{I(m.Value)}" : m.Name;
+                    if (m.Tinkered != 0) mod += $" ({(m.Tinkered > 0 ? "+" : "")}{I(m.Tinkered)} tink)";
+                    if (m.Locked) mod += " (Locked)";
+                    mods.Add(mod);
+                }
                 d.Add(MagItemSection.Ratings, "Mods: " + string.Join(", ", mods));
             }
         }

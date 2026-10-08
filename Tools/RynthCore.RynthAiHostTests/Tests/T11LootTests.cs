@@ -36,6 +36,7 @@ internal static class T11LootTests
         r.Add("loot t11: a live rating wins over the modifier text", LiveRatingWins);
         r.Add("loot t11: retail items are untouched", RetailUntouched);
         r.Add("loot t11: Can Wield from the /aug reply and the override", CanWield);
+        r.Add("loot t11: server tier and quality properties", ServerProps);
     }
 
     private static VTankLootCondition C(int node, params string[] data) => new(node, "0", data);
@@ -122,6 +123,30 @@ internal static class T11LootTests
         Check.Eq(w.Values(T11Keys.CanWield, -5), 0, "back to the /aug count");
         Check.Eq(new Item("T11 - Robe").Wo.Values(T11Keys.CanWield, -5), -1, "not appraised yet: unknown");
         Check.Eq(new Item("T11 - Robe").Str(16, "A robe.").Wo.Values(T11Keys.CanWield, -5), 1, "appraised, no gate: wieldable");
+        T11ItemSupport.Reset();
+    }
+
+    // ACECustom sends ZcTier (50109) and WeaponAugScaleTier / Quality (9061 / 9060) in the appraisal.
+    private static void ServerProps()
+    {
+        T11ItemSupport.Reset();
+        Item weapon = Weapon();
+        WorldObject w = weapon;
+        Check.Eq(w.Values(T11Keys.EstimatedTier, -5), 12, "before the props: gate estimate T12");
+        Check.Eq(w.Values(T11Keys.TierIsExact, -5), 0, "before the props: estimate");
+        weapon.Int(T11Catalog.PropWeaponAugScaleTier, 14).Int(T11Catalog.PropWeaponAugScaleQuality, 873);
+        Check.Eq(w.Values(T11Keys.EstimatedTier, -5), 14, "props arriving later re-parse: stamped T14");
+        Check.Eq(w.Values(T11Keys.TierIsExact, -5), 1, "stamped tier is exact");
+        Check.True(M(w, C(N.LongValKeyGE, "850", K(T11Catalog.PropWeaponAugScaleQuality))), "rule: raw quality >= 850");
+        Check.False(M(w, C(N.LongValKeyGE, "900", K(T11Catalog.PropWeaponAugScaleQuality))), "rule: raw quality >= 900");
+
+        // No name prefix: the stamped tier alone makes it T11 and turns on the stripped-key fallback.
+        WorldObject plain = new Item("Celdon Breastplate", AcObjectClass.Armor)
+            .Str(16, "Wield requires: 4,000 Item Augmentations\n").Str(14, ArmorUse).Int(T11Catalog.PropZcTier, 18);
+        Check.Eq(plain.Values(T11Keys.IsT11, -5), 1, "ZcTier 18 marks T11 without the prefix");
+        Check.Eq(plain.Values(T11Keys.EstimatedTier, -5), 18, "tier from ZcTier");
+        Check.Eq(plain.Values(160, 0), 4000, "stripped wield gate restored on a ZcTier item");
+        Check.Eq(plain.Values(371, 0), 6, "stripped rating restored on a ZcTier item");
         T11ItemSupport.Reset();
     }
 }

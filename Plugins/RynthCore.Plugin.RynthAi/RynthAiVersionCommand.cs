@@ -44,8 +44,8 @@ public sealed partial class RynthAiPlugin
     private static unsafe class PluginModule
     {
         /// <summary>RynthPluginVersion's hand-written string (it never changes between builds).</summary>
-        // Previous release: 0.5.23-legacy-ui.
-        public const string HandWrittenVersion = "0.5.24-legacy-ui";
+        // Previous release: 0.5.24-legacy-ui.
+        public const string HandWrittenVersion = "0.5.26-legacy-ui";
 
         private const uint FromAddress = 0x4, UnchangedRefCount = 0x2;
 

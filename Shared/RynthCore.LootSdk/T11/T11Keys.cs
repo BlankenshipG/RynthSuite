@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace RynthCore.Loot.T11;
@@ -18,7 +19,10 @@ public static class T11Keys
 
     /// <summary>1 when the item is T11 gear, else 0.</summary>
     public const int IsT11 = Base + 1;
-    /// <summary>Estimated loot tier from the wield gates (11-25; T16+ from the Triune Weave gate), 0 for non-T11.</summary>
+    /// <summary>
+    /// Loot tier (11-25), 0 for non-T11: the server's stamped tier (ZcTier 50109 / WeaponAugScaleTier 9061)
+    /// when the appraisal sent it, else estimated from the wield gates (T16+ from the Triune Weave gate).
+    /// </summary>
     public const int EstimatedTier = Base + 2;
     /// <summary>Weapon sub-grade rank: S = 16, A+ = 15 ... F- = 1, 0 = no grade.</summary>
     public const int WeaponGrade = Base + 3;
@@ -44,6 +48,18 @@ public static class T11Keys
     public const int ZoneLocked = Base + 13;
     /// <summary>Triune Weave required to wield (T16+ armor), 0 for none.</summary>
     public const int WieldTriuneWeave = Base + 14;
+    /// <summary>Gear Grade rank of armor / jewelry / clothing: S = 16, A+ = 15 ... F- = 1, 0 = no grade.</summary>
+    public const int GearGrade = Base + 15;
+    /// <summary>Property slots in use ("Properties: N of M"), 0 when not shown.</summary>
+    public const int PropertySlots = Base + 16;
+    /// <summary>The tier's property slot limit ("Properties: N of M"), 0 when unlimited or not shown.</summary>
+    public const int PropertySlotCap = Base + 17;
+    /// <summary>Free property slots (limit minus used), 0 without a known limit.</summary>
+    public const int FreePropertySlots = Base + 18;
+    /// <summary>1 when the item is Tainted (Gear Essence bags no longer work on it).</summary>
+    public const int Tainted = Base + 19;
+    /// <summary>1 when the tier is the server's stamped value, 0 when it is estimated from the wield gates.</summary>
+    public const int TierIsExact = Base + 20;
 
     /// <summary>
     /// Base of the per-modifier keys: <c>ModifierBase + catalog key</c> is that modifier's value
@@ -64,9 +80,15 @@ public static class T11Keys
     public static IEnumerable<(int Id, string Name)> Names()
     {
         yield return (IsT11, "T11: Is T11");
-        yield return (EstimatedTier, "T11: Tier (est.)");
+        yield return (EstimatedTier, "T11: Tier");
+        yield return (TierIsExact, "T11: Tier Is Exact");
         yield return (WeaponGrade, "T11: Weapon Grade");
         yield return (DamagePercent, "T11: Damage % of Max");
+        yield return (GearGrade, "T11: Gear Grade");
+        yield return (PropertySlots, "T11: Property Slots Used");
+        yield return (PropertySlotCap, "T11: Property Slot Limit");
+        yield return (FreePropertySlots, "T11: Free Property Slots");
+        yield return (Tainted, "T11: Tainted");
         yield return (WieldItemAugs, "T11: Wield Item Augs");
         yield return (WieldTriuneWeave, "T11: Wield Triune Weave");
         yield return (CanWield, "T11: Can Wield");
@@ -100,7 +122,13 @@ public static class T11Keys
         switch (key)
         {
             case IsT11: value = item.IsT11 ? 1 : 0; return true;
-            case EstimatedTier: value = item.EstimatedTier; return true;
+            case EstimatedTier: value = item.Tier; return true;
+            case TierIsExact: value = item.TierIsExact ? 1 : 0; return true;
+            case GearGrade: value = item.GearGradeRank; return true;
+            case PropertySlots: value = Math.Max(0, item.PropertySlots); return true;
+            case PropertySlotCap: value = item.PropertySlotCap; return true;
+            case FreePropertySlots: value = item.FreePropertySlots; return true;
+            case Tainted: value = item.Tainted ? 1 : 0; return true;
             case WeaponGrade: value = item.GradeRank; return true;
             case DamagePercent: value = item.DamagePercent < 0 ? 0 : item.DamagePercent; return true;
             case WieldItemAugs: value = item.WieldItemAugs; return true;

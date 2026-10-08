@@ -27,14 +27,37 @@ public sealed class T11Modifier
     public int RatingKey { get; init; }
     /// <summary>True for a one-per-slot special (Fortify Vitals, Battle Mending, ...).</summary>
     public bool IsSlotSpecial { get; init; }
+    /// <summary>"(Built-in)": the line uses no property slot (Always Rolled resists, slot specials).</summary>
+    public bool BuiltIn { get; init; }
+    /// <summary>"(Locked)": a Gear Essence locked this line, so bag rerolls leave it alone.</summary>
+    public bool Locked { get; init; }
+    /// <summary>"(+N tinkered)": what a tinker adds on top of <see cref="Value"/>, 0 for none.</summary>
+    public int Tinkered { get; init; }
 }
 
 /// <summary>
-/// What the client can learn about a T11 (tier 11+) ACECustom drop. The server keeps the
-/// T11 properties (weapon quality, loot tier, the Zone Control record, the item-aug wield
-/// gate) out of the appraisal and prints them as description text instead, so this is
-/// parsed from the name, LongDesc (key 16) and Use (key 14). See ACECustom AppraiseInfo
-/// (BuildProperties, BuildWeapon, PromoteZoneModifierLines) for the formats.
+/// T11 properties the server sends as real appraisal values (ACECustom marked them
+/// AssessmentProperty on 2026-09-29). 0 / -1 = not sent (older server, or not that kind of item).
+/// </summary>
+/// <param name="ZcTier">PropertyInt ZcTier (50109): the loot tier a Zone Control piece was stamped at.</param>
+/// <param name="WeaponTier">PropertyInt WeaponAugScaleTier (9061): the loot tier a T11+ weapon was stamped at.</param>
+/// <param name="WeaponQuality">PropertyInt WeaponAugScaleQuality (9060): the weapon's 0-1000 quality roll, -1 when absent.</param>
+public readonly record struct T11ServerProps(int ZcTier, int WeaponTier, int WeaponQuality)
+{
+    /// <summary>Nothing sent. Use this, not <c>default</c>: a 0 quality is a real (F-) roll.</summary>
+    public static readonly T11ServerProps None = new(0, 0, -1);
+
+    /// <summary>The stamped loot tier (ZcTier first, then the weapon tier), or 0 when neither was sent.</summary>
+    public int Tier => ZcTier > 0 ? ZcTier : WeaponTier > 0 ? WeaponTier : 0;
+}
+
+/// <summary>
+/// What the client can learn about a T11 (tier 11+) ACECustom drop. Most T11 state (the
+/// Zone Control record, the item-aug wield gate, grades, slot counts) only reaches the client
+/// as description text, so this is parsed from the name, LongDesc (key 16) and Use (key 14).
+/// The loot tier and the weapon quality roll are also sent as real properties
+/// (<see cref="T11ServerProps"/>), which win over the text estimates when present. See ACECustom
+/// AppraiseInfo (BuildProperties, BuildWeapon, PromoteZoneModifierLines) for the formats.
 /// </summary>
 public sealed class T11ItemInfo
 {
@@ -61,6 +84,28 @@ public sealed class T11ItemInfo
     public bool ZoneLocked { get; private set; }
     /// <summary>True when the item had appraisal text (false for a T11 name seen before its ID).</summary>
     public bool HasText { get; private set; }
+    /// <summary>Gear Grade label ("B+") of armor / jewelry / clothing / cloaks, or null.</summary>
+    public string? GearGrade { get; private set; }
+    /// <summary>Gear Grade rank, S = 16 ... F- = 1, 0 = no grade.</summary>
+    public int GearGradeRank { get; private set; }
+    /// <summary>How many rolled lines the Gear Grade averages, 0 when not shown.</summary>
+    public int GearGradeLines { get; private set; }
+    /// <summary>"Properties: N of M": property slots in use, -1 when the line isn't shown.</summary>
+    public int PropertySlots { get; private set; } = -1;
+    /// <summary>"Properties: N of M": the tier's slot limit, 0 when there is none or the line isn't shown.</summary>
+    public int PropertySlotCap { get; private set; }
+    /// <summary>"Tainted: bags no longer work on this item".</summary>
+    public bool Tainted { get; private set; }
+    /// <summary>The server-sent properties this item was parsed with.</summary>
+    public T11ServerProps Server { get; private set; } = T11ServerProps.None;
+    /// <summary>The weapon's 0-1000 quality roll (WeaponAugScaleQuality), -1 when not sent.</summary>
+    public int WeaponQuality => Server.WeaponQuality;
+    /// <summary>True when <see cref="Tier"/> is the server's stamped tier rather than an estimate.</summary>
+    public bool TierIsExact => IsT11 && Server.Tier > 0;
+    /// <summary>The loot tier: the server's stamped tier when sent, else <see cref="EstimatedTier"/>.</summary>
+    public int Tier => TierIsExact ? Server.Tier : EstimatedTier;
+    /// <summary>Free property slots (cap minus used), 0 without a known cap.</summary>
+    public int FreePropertySlots => PropertySlotCap > 0 && PropertySlots >= 0 ? Math.Max(0, PropertySlotCap - PropertySlots) : 0;
 
     private readonly List<T11WieldGate> _gates = new();
     private readonly List<T11Modifier> _modifiers = new();
@@ -167,8 +212,26 @@ public sealed class T11ItemInfo
     // A modifier's value: the first signed whole number after the name.
     private static readonly Regex FirstNumber = new(@"[+-]?\d+", RegexOptions.CultureInvariant);
 
-    // The roll band at the end of a modifier line: "[14-69]".
-    private static readonly Regex Band = new(@"\[(?<min>\d+)\s*-\s*(?<max>\d+)\]\s*$", RegexOptions.CultureInvariant);
+    // "- Gear Grade: B+ (average of 4 rolled lines)": armor / jewelry / clothing / cloaks, leads the Modifiers block.
+    private static readonly Regex GearGradeLine = new(
+        @"^-?\s*Gear Grade:\s*(?<g>S|[A-DF][+-]?)(?=\s|\(|$)(?:\s*\(average of (?<n>\d+) rolled lines?\))?", Opt);
+
+    // "- Properties: 3 of 5" (or "- Properties: 3" when the tier has no limit): Modifiers block or Property Details.
+    private static readonly Regex PropertiesLine = new(@"^-?\s*Properties:\s*(?<n>\d+)(?:\s+of\s+(?<cap>\d+))?\s*$", Opt);
+
+    // "- Tainted: bags no longer work on this item".
+    private static readonly Regex TaintedLine = new(@"^-?\s*Tainted:", Opt);
+
+    // The roll band of a modifier line: "[14-69]". Not anchored: markers and the jewelry proc follow it.
+    private static readonly Regex Band = new(@"\[(?<min>\d+)\s*-\s*(?<max>\d+)\]", RegexOptions.CultureInvariant);
+
+    // Markers the server appends to a modifier line, in this order after the value and band.
+    private static readonly Regex TinkeredMark = new(@"\s*\((?<n>[+-]\d+) tinkered\)", Opt);
+    private static readonly Regex BuiltInMark = new(@"\s*\(Built-in\)", Opt);
+    private static readonly Regex LockedMark = new(@"\s*\(Locked\)", Opt);
+    private static readonly Regex OffHereMark = new(@"\s*\(off here\)", Opt);
+    // Jewelry Cast on Strike (key 54): "Cast on Strike 75% power [50-100] - Force Arc, 13% per hit".
+    private static readonly Regex JewelProcTail = new(@"\s+-\s+(?<name>[^,\[\]]+?),\s*(?<pct>\d+(?:\.\d+)?)% per hit", Opt);
 
     // An uncatalogued modifier from a newer server: "Some Name +12 [5-20]" or "Modifier 60 +3 [1-5]".
     private static readonly Regex GenericModifier = new(@"^(?<name>.+?)\s+(?<val>[+-]?\d+)", RegexOptions.CultureInvariant);
@@ -181,17 +244,21 @@ public sealed class T11ItemInfo
     /// <summary>
     /// Parses an item. <paramref name="name"/>, <paramref name="longDesc"/> and
     /// <paramref name="use"/> may be null or empty (an item not yet appraised has no text;
-    /// the name prefix alone still marks it T11). Never throws.
+    /// the name prefix alone still marks it T11). <paramref name="server"/> carries the tier and
+    /// quality properties the appraisal sent (null = none). Never throws.
     /// </summary>
-    public static T11ItemInfo Parse(string? name, string? longDesc, string? use)
+    public static T11ItemInfo Parse(string? name, string? longDesc, string? use, T11ServerProps? server = null)
     {
+        T11ServerProps props = server ?? T11ServerProps.None;
         bool prefix = !string.IsNullOrEmpty(name) && name.StartsWith(T11Catalog.NamePrefix, StringComparison.Ordinal);
-        if (!prefix && string.IsNullOrEmpty(longDesc) && string.IsNullOrEmpty(use)) return None;
+        bool serverT11 = props.Tier >= T11Catalog.MinTier;
+        if (!prefix && !serverT11 && string.IsNullOrEmpty(longDesc) && string.IsNullOrEmpty(use)) return None;
 
         var info = new T11ItemInfo
         {
             HasNamePrefix = prefix,
             HasText = !string.IsNullOrEmpty(longDesc) || !string.IsNullOrEmpty(use),
+            Server = props,
         };
         try
         {
@@ -203,10 +270,50 @@ public sealed class T11ItemInfo
             // Malformed text never breaks loot evaluation; whatever parsed so far stands.
         }
 
-        // Grade, gates and banded modifiers only appear on T11 gear; Cast on Strike and the
-        // zone-lock line alone do not mark an item.
-        info.IsT11 = prefix || info.GradeRank > 0 || info._gates.Count > 0 || info._modifiers.Count > 0;
+        // Grades, gates, slot counts, banded modifiers and a stamped tier of 11+ only appear on
+        // T11 gear; Cast on Strike, Tainted and the zone-lock line alone do not mark an item.
+        info.IsT11 = prefix || serverT11 || info.GradeRank > 0 || info.GearGradeRank > 0 || info.PropertySlots >= 0
+            || info._gates.Count > 0 || info._modifiers.Count > 0;
         return info.IsT11 ? info : None;
+    }
+
+    /// <summary>
+    /// Reads a Gear Grade / Properties / Tainted line (with or without the leading dash).
+    /// Returns false for any other line.
+    /// </summary>
+    private bool TryParseItemLine(string line)
+    {
+        Match m = GearGradeLine.Match(line);
+        if (m.Success)
+        {
+            if (GearGradeRank == 0)
+            {
+                GearGrade = m.Groups["g"].Value.ToUpperInvariant();
+                GearGradeRank = T11Catalog.GradeRank(GearGrade);
+                if (m.Groups["n"].Success && int.TryParse(m.Groups["n"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int n))
+                    GearGradeLines = n;
+            }
+            return true;
+        }
+
+        m = PropertiesLine.Match(line);
+        if (m.Success)
+        {
+            if (PropertySlots < 0 && int.TryParse(m.Groups["n"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int used))
+            {
+                PropertySlots = used;
+                if (m.Groups["cap"].Success && int.TryParse(m.Groups["cap"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cap))
+                    PropertySlotCap = cap;
+            }
+            return true;
+        }
+
+        if (TaintedLine.IsMatch(line))
+        {
+            Tainted = true;
+            return true;
+        }
+        return false;
     }
 
     private void ParseText(string? text)
@@ -225,6 +332,8 @@ public sealed class T11ItemInfo
                 i = ParseModifierBlock(lines, i + 1) - 1;
                 continue;
             }
+
+            if (TryParseItemLine(line)) continue;
 
             Match m = GradeLine.Match(line);
             if (m.Success && GradeRank == 0)
@@ -261,13 +370,41 @@ public sealed class T11ItemInfo
             string body = line.Substring(1).Trim();
             if (body.Length == 0) continue;
             if (body.Contains(ZoneLockedText, StringComparison.OrdinalIgnoreCase)) { ZoneLocked = true; continue; }
-            _modifiers.Add(ParseModifier(body));
+            // Gear Grade, Properties and Tainted lead the block but describe the item, not a modifier.
+            if (TryParseItemLine(body)) continue;
+            _modifiers.Add(ParseModifier(body, out var proc));
+            if (proc is { } p) _procs.Add(p);
         }
         return i;
     }
 
-    private static T11Modifier ParseModifier(string body)
+    /// <summary>
+    /// One modifier line. <paramref name="proc"/> is the jewelry Cast on Strike's spell and
+    /// chance when the line carries one, else null.
+    /// </summary>
+    private static T11Modifier ParseModifier(string body, out (string Name, double ChancePercent)? proc)
     {
+        proc = null;
+        // Peel the server's markers off first so the name, value and band read as on a plain line.
+        int tinkered = 0;
+        Match tm = TinkeredMark.Match(body);
+        if (tm.Success)
+        {
+            int.TryParse(tm.Groups["n"].Value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out tinkered);
+            body = body.Remove(tm.Index, tm.Length);
+        }
+        bool builtIn = Strip(ref body, BuiltInMark);
+        bool locked = Strip(ref body, LockedMark);
+        Strip(ref body, OffHereMark);
+        Match jp = JewelProcTail.Match(body);
+        if (jp.Success)
+        {
+            if (double.TryParse(jp.Groups["pct"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double chance))
+                proc = (jp.Groups["name"].Value.Trim(), chance);
+            body = body.Remove(jp.Index, jp.Length);
+        }
+        body = body.Trim();
+
         T11ModifierDef? def = T11Catalog.MatchModifier(body);
         string name;
         string rest;
@@ -320,7 +457,19 @@ public sealed class T11ItemInfo
             RollPercent = roll,
             RatingKey = def?.RatingKey ?? 0,
             IsSlotSpecial = def?.SlotSpecial ?? false,
+            BuiltIn = builtIn,
+            Locked = locked,
+            Tinkered = tinkered,
         };
+    }
+
+    /// <summary>Removes the first match of <paramref name="mark"/>; true when there was one.</summary>
+    private static bool Strip(ref string body, Regex mark)
+    {
+        Match m = mark.Match(body);
+        if (!m.Success) return false;
+        body = body.Remove(m.Index, m.Length);
+        return true;
     }
 
     private void AddGate(T11Counter counter, int amount)

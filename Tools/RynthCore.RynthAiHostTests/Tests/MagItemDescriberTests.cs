@@ -17,6 +17,7 @@ internal static class MagItemDescriberTests
         r.Add("iteminfo: retail imbues stay bare labels without detail text", RetailImbuesBare);
         r.Add("iteminfo: Int64 wield requirement never prints as a skill", Int64WieldHidden);
         r.Add("iteminfo: T11 armor modifiers print on the ratings line", T11ArmorModifiers);
+        r.Add("iteminfo: T11 tier, gear grade, slots and tainted", T11GradedArmor);
     }
 
     /// <summary>In-memory property bag standing in for the client object cache.</summary>
@@ -54,6 +55,8 @@ internal static class MagItemDescriberTests
         staff.Doubles[62] = 1.20;   // attack
         staff.Doubles[29] = 1.20;   // melee defense
         staff.Doubles[136] = 2.66;  // CriticalMultiplier (Crushing Blow 3.66x)
+        staff.Ints[9061] = 11;      // WeaponAugScaleTier (sent since ACECustom 2026-09-29)
+        staff.Ints[9060] = 1000;    // WeaponAugScaleQuality: the S roll
         staff.Strings[16] =
             "Property Details:\n" +
             "- Weapon Grade: S (100% of max damage)\n" +
@@ -65,7 +68,7 @@ internal static class MagItemDescriberTests
 
         List<string> lines = Pet(staff);
         Check.Eq(lines.Count, 3, "line count");
-        Check.Eq(lines[0], "Flaming Quarter Staff (Fire Staff), Grade S (100%), Craft 9", "identity line");
+        Check.Eq(lines[0], "Flaming Quarter Staff (Fire Staff), T11, Quality 1000, Props 2/5, Grade S (100%), Craft 9", "identity line");
         Check.Eq(lines[1], "FireRend +176%, Crushing Blow 3.66x, 1790-2069, 0.135v, +20%a, +20%md", "combat line");
         Check.Eq(lines[2], "[CD 24]  Wield 2,000 Item Augs", "ratings / requirements line");
     }
@@ -121,5 +124,31 @@ internal static class MagItemDescriberTests
         string last = lines[^1];
         Check.True(last.Contains("Mods: Damage Resist +6, Max Health +100"), $"modifiers listed: {last}");
         Check.True(last.Contains("Wield 500 Triune Weave"), $"triune gate listed: {last}");
+    }
+
+    // Armor in the #543 appraisal format: Gear Grade, Properties and Tainted lead / close the
+    // block, markers follow the band. No tier property, so the tier is the gate estimate ("~").
+    private static void T11GradedArmor()
+    {
+        var helm = new FakeItem("T11 - Helm", AcObjectClass.Armor);
+        helm.Strings[16] = "Wield requires: 500 Triune Weave\n";
+        helm.Strings[14] =
+            "Modifiers:\n" +
+            "- Gear Grade: B+ (average of 2 rolled lines)\n" +
+            "- Properties: 2 of 5\n" +
+            "- Damage Resist +60 [35-69] (Built-in)\n" +
+            "- Max Health +50 [14-69] (+20 tinkered) (Locked)\n" +
+            "- Tainted: bags no longer work on this item\n";
+        string line = MagItemDescriber.Describe(helm, MagItemInfoOptions.Default);
+        Check.True(line.Contains("~T16, Gear B+ (2 lines), Props 2/5, Tainted"), $"T11 state listed: {line}");
+        Check.True(line.Contains("Mods: Damage Resist +60, Max Health +50 (+20 tink) (Locked)"), $"markers on mods: {line}");
+        Check.False(line.Contains("Gear Grade:") || line.Contains("Properties:"), $"item lines are not mods: {line}");
+
+        // The stamped tier wins over the estimate and drops the "~".
+        helm.Ints[50109] = 17;
+        line = MagItemDescriber.Describe(helm, MagItemInfoOptions.Default);
+        Check.True(line.Contains(", T17, Gear B+"), $"ZcTier shown exact: {line}");
+
+        Check.True(MagItemInfoCatalog.TryFindField("t11", out var field) && field == MagItemInfoField.T11, "t11 field found by name");
     }
 }

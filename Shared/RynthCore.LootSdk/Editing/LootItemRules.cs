@@ -60,8 +60,8 @@ public sealed class LootItemRuleOptions
     /// <summary>Null or blank: "Keep Copper Pea" and the like.</summary>
     public string? RuleName { get; set; }
     /// <summary>
-    /// Also require the item's T11 attributes (tier, grade, damage %, each modifier, slot
-    /// special, Cast on Strike), each at least as good as this item's. Works with any match.
+    /// Also require the item's T11 attributes (tier, weapon / gear grade, damage %, each modifier,
+    /// slot special, Cast on Strike), each at least as good as this item's. Works with any match.
     /// </summary>
     public bool IncludeT11 { get; set; }
 }
@@ -263,12 +263,13 @@ public static class LootItemRules
     }
 
     /// <summary>
-    /// The T11 conditions, on RynthAi's virtual T11 keys: Is T11, then tier, grade, damage %,
-    /// every catalogued modifier, slot special and Cast on Strike count, each at least this
-    /// item's. Left out on purpose: Can Wield (the character, not the item), Zone Locked
-    /// (where it was appraised), the wield gates (they follow from the tier) and the modifier
-    /// count / rating total / roll % (they follow from the per-modifier values).
-    /// How many it added.
+    /// The T11 conditions, on RynthAi's virtual T11 keys: Is T11, then tier (the server's
+    /// stamped tier when sent), weapon grade, damage %, gear grade, every catalogued modifier,
+    /// slot special and Cast on Strike count, each at least this item's. Left out on purpose:
+    /// Can Wield (the character, not the item), Zone Locked (where it was appraised), the wield
+    /// gates (they follow from the tier), the modifier count / rating total / roll % (they
+    /// follow from the per-modifier values), and the property slots and Tainted (bag state,
+    /// not quality). How many it added.
     /// </summary>
     private static int AddT11Conditions(VTankLootRule rule, LootItemFacts f, List<string> notes)
     {
@@ -290,9 +291,10 @@ public static class LootItemRules
             return rule.Conditions.Count - n;
         }
 
-        AtLeast(T11Keys.EstimatedTier, t.EstimatedTier);
+        AtLeast(T11Keys.EstimatedTier, t.Tier);
         AtLeast(T11Keys.WeaponGrade, t.GradeRank);
         AtLeast(T11Keys.DamagePercent, t.DamagePercent);
+        AtLeast(T11Keys.GearGrade, t.GearGradeRank);
 
         bool valuelessSpecial = false;
         var unknown = new List<string>();

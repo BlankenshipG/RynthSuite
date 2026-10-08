@@ -36,6 +36,8 @@ public enum MagItemInfoField
     Protections       = 1 << 22,
     Ratings           = 1 << 23,
     Keyring           = 1 << 24,
+    /// <summary>ACECustom T11 state: tier, weapon quality, Gear Grade, property slots, Tainted.</summary>
+    T11               = 1 << 25,
 }
 
 /// <summary>Persisted item-info options (JSON fields; see RynthAiJsonContext IncludeFields).</summary>
@@ -146,6 +148,7 @@ public static class MagItemInfoCatalog
         new(MagItemInfoField.Material,          "Material",             "Gold Ornate Long Sword"),
         new(MagItemInfoField.TypeMastery,       "Damage type / mastery","(Slash Sword)"),
         new(MagItemInfoField.Set,               "Equipment set",        "Noble Relic Set"),
+        new(MagItemInfoField.T11,               "T11 tier / grade / slots", "T16, Gear B+ (4 lines), Props 3/5, Tainted"),
         new(MagItemInfoField.ArmorLevel,        "Armor level",          "AL 650"),
         new(MagItemInfoField.Imbues,            "Imbues",               "CS, AR, FireRend"),
         new(MagItemInfoField.ArmorCleave,       "Armor cleaving",       "AC"),

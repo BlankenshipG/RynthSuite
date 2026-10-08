@@ -18,6 +18,34 @@ internal static partial class Program
         TestAddT11Weapon();
         TestAddT11Armor();
         TestAddT11EdgeCases();
+        TestAddT11GradedGear();
+    }
+
+    private static void TestAddT11GradedGear()
+    {
+        // Graded armor with a stamped tier: exact tier, gear grade, modifiers; no slots or Tainted.
+        LootItemFacts f = T11Facts("T11 - Celdon Breastplate", AcObjectClass.Armor, null, T11GradedArmorUse);
+        f.T11 = T11ItemInfo.Parse(f.Name, null, T11GradedArmorUse, new T11ServerProps(18, 0, -1));
+        LootItemRuleDraft? d = LootItemRules.Build(f, new LootItemRuleOptions { IncludeT11 = true }, out _);
+        Check(d != null, "add t11 graded: armor builds");
+        if (d == null) return;
+        List<string> t = T11Conds(d.Rule);
+        Check(t.Contains(GE(T11Keys.EstimatedTier, 18)), "add t11 graded: stamped tier");
+        Check(t.Contains(GE(T11Keys.GearGrade, 12)), "add t11 graded: gear grade B+");
+        Check(t.Contains(GE(T11Keys.ForModifier(50), 60)) && t.Contains(GE(T11Keys.ForModifier(19), 50)), "add t11 graded: modifiers");
+        Check(!t.Any(c => c.EndsWith("," + T11Keys.Tainted) || c.EndsWith("," + T11Keys.PropertySlots)
+            || c.EndsWith("," + T11Keys.FreePropertySlots)), "add t11 graded: no bag state");
+        Eq(d.Notes.Count, 0, "add t11 graded: no notes");
+        Check(LootItemRules.PreviewLines(d.Rule).Any(l => l.Contains("T11: Gear Grade")), "add t11 graded: preview names Gear Grade");
+
+        // Jewelry: the key-54 Cast on Strike is catalogued now, so it gets a condition instead of a note.
+        LootItemFacts ring = T11Facts("T11 - Ring", AcObjectClass.Jewelry, null, T11JewelryUse);
+        LootItemRuleDraft? r = LootItemRules.Build(ring, new LootItemRuleOptions { IncludeT11 = true }, out _);
+        List<string> rt = r == null ? new List<string>() : T11Conds(r.Rule);
+        Check(rt.Contains(GE(T11Keys.ForModifier(54), 75)), "add t11 graded: jewelry Cast on Strike power");
+        Check(rt.Contains(GE(T11Keys.CastOnStrikeCount, 1)), "add t11 graded: jewelry proc counted");
+        Check(rt.Contains(GE(T11Keys.GearGrade, 14)), "add t11 graded: jewelry gear grade A");
+        Check(r != null && r.Notes.Count == 0, "add t11 graded: jewelry has no unknown-modifier note");
     }
 
     /// <summary>A condition as "type:line,line" for order-sensitive comparisons.</summary>

@@ -52,6 +52,10 @@ public static class LootRuleText
             (218, "EquippedSlots"), (353, "ImbuedEffect"), (370, "DamageRating"), (371, "DamageResistRating"),
             (372, "CritRating"), (373, "CritResistRating"), (374, "CritDamageRating"),
             (375, "CritDamageResistRating"), (376, "HealBoostRating"), (377, "NetherResistRating"), (379, "VitalityRating"),
+            // ACECustom T11 properties sent in the appraisal: real keys, so VTank reads them too.
+            (T11.T11Catalog.PropWeaponAugScaleQuality, "WeaponAugScaleQuality"),
+            (T11.T11Catalog.PropWeaponAugScaleTier, "WeaponAugScaleTier"),
+            (T11.T11Catalog.PropZcTier, "ZcTier"),
             (0x0D000000, "Type (WCID)"),   // Decal's synthetic key: the weenie class id
         };
         keys.AddRange(T11.T11Keys.Names());
@@ -147,6 +151,7 @@ public static class LootRuleText
         158 => WieldRequirements,
         159 => Skills,
         T11.T11Keys.WeaponGrade => T11.T11Catalog.Grades,
+        T11.T11Keys.GearGrade => T11.T11Catalog.Grades,
         _ => null,
     };
 
@@ -154,7 +159,7 @@ public static class LootRuleText
     public static bool ValueTableIsFlags(int longKey) => longKey == 45;
 
     /// <summary>The long keys that have a value table, for the vocabulary.</summary>
-    public static readonly int[] KeysWithValueTables = { 45, 48, 131, 158, 159, T11.T11Keys.WeaponGrade };
+    public static readonly int[] KeysWithValueTables = { 45, 48, 131, 158, 159, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
 
     /// <summary>
     /// True for the conditions whose value is picked by name when the key has a

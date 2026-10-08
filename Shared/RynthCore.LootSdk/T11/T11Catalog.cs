@@ -32,7 +32,7 @@ public enum T11Counter
 public sealed record T11ModifierDef(int Key, string Name, int RatingKey, bool SlotSpecial);
 
 /// <summary>
-/// Static T11 tables mirrored from ACECustom: weapon sub-grades, the Zone Control
+/// Static T11 tables mirrored from ACECustom: sub-grades, the Zone Control
 /// modifier catalog, the wield-gate counter names and the tier-from-gate estimate.
 /// Pure data, shared by the RynthAi evaluator, the loot editor and the tests.
 /// </summary>
@@ -45,8 +45,8 @@ public static class T11Catalog
     public static readonly int[] TotalRatingKeys = { 370, 371, 372, 373, 374, 375, 376, 379 };
 
     /// <summary>
-    /// Weapon sub-grades best to worst with their rank (S = 16 ... F- = 1, 0 = no grade).
-    /// Order and labels follow WeaponScalingManager.SubGradeBands.
+    /// Sub-grades best to worst with their rank (S = 16 ... F- = 1, 0 = no grade). Order and
+    /// labels follow WeaponScalingManager.SubGradeBands; Weapon Grade and Gear Grade share them.
     /// </summary>
     public static readonly (int Id, string Name)[] Grades =
     {
@@ -81,7 +81,22 @@ public static class T11Catalog
         new(51, "Crit Damage Resist", 375, false),
         new(52, "Crit Resist", 373, false),
         new(53, "Nether Resist", 377, false),
+        // Jewelry only; the value is the rolled power percent ("Cast on Strike 75% power [50-100] - Force Arc, 13% per hit").
+        new(54, "Cast on Strike", 0, false),
     };
+
+    /// <summary>
+    /// PropertyInt WeaponAugScaleQuality (ACECustom 9060): a T11+ weapon's quality roll, 0-1000, the
+    /// number its Weapon Grade letter comes from. Sent in the appraisal since 2026-09-29.
+    /// </summary>
+    public const int PropWeaponAugScaleQuality = 9060;
+    /// <summary>PropertyInt WeaponAugScaleTier (ACECustom 9061): the loot tier a T11+ weapon was stamped at.</summary>
+    public const int PropWeaponAugScaleTier = 9061;
+    /// <summary>PropertyInt ZcTier (ACECustom 50109): the Zone Control loot tier a ZC-lined piece was stamped at.</summary>
+    public const int PropZcTier = 50109;
+
+    /// <summary>Lowest tier the server stamps T11 gear at (LootGenerationFactory.ZoneLootSetMinTier).</summary>
+    public const int MinTier = 11;
 
     // Longest names first, so "Max Health Pct" is tried before "Max Health".
     private static readonly T11ModifierDef[] ModifiersByNameLength = SortByNameLength(Modifiers);

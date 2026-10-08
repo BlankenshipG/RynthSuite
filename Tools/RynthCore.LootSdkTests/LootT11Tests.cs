@@ -38,6 +38,26 @@ internal static partial class Program
         "- Max Health Pct +2% [1-4]\n" +
         "- Modifier 60 +3 [1-5]\n";
 
+    // Armor as ACECustom appraises it since #543 (2026-10-06): zone lock, Gear Grade and Properties lead
+    // the block; markers follow a line's band; Tainted closes it.
+    private const string T11GradedArmorUse =
+        "Modifiers:\n" +
+        "- Zone Locked (Power Reduced)\n" +
+        "- Gear Grade: B+ (average of 4 rolled lines)\n" +
+        "- Properties: 3 of 5\n" +
+        "- Damage Resist +60 [35-69] (Built-in)\n" +
+        "- Max Health +50 [14-69] (+20 tinkered) (Locked)\n" +
+        "- Fortify Vitals +15% vitals (Built-in)\n" +
+        "- Tainted: bags no longer work on this item\n";
+
+    // Jewelry with the key-54 Cast on Strike line.
+    private const string T11JewelryUse =
+        "Modifiers:\n" +
+        "- Gear Grade: A (average of 1 rolled line)\n" +
+        "- Properties: 2\n" +
+        "- Cast on Strike 75% power [50-100] - Force Arc, 13% per hit\n" +
+        "- Life on Hit 2% HP per hit [1-3]\n";
+
     private static void RunT11Tests()
     {
         Console.WriteLine("\n-- T11 loot --");
@@ -48,6 +68,86 @@ internal static partial class Program
         TestT11AugReport();
         TestT11Keys();
         TestT11Editor();
+        TestT11GearGradeAndSlots();
+        TestT11JewelryProc();
+        TestT11ServerProps();
+    }
+
+    private static void TestT11GearGradeAndSlots()
+    {
+        T11ItemInfo a = T11ItemInfo.Parse("T11 - Celdon Breastplate", null, T11GradedArmorUse);
+        Eq(a.Modifiers.Count, 3, "graded: grade / properties / tainted / zone lock are not modifiers");
+        Eq(a.GearGrade, "B+", "graded: gear grade label");
+        Eq(a.GearGradeRank, 12, "graded: gear grade rank");
+        Eq(a.GearGradeLines, 4, "graded: gear grade line count");
+        Eq(a.Grade, null, "graded: no weapon grade on armor");
+        Eq((a.PropertySlots, a.PropertySlotCap, a.FreePropertySlots), (3, 5, 2), "graded: properties 3 of 5");
+        Check(a.Tainted && a.ZoneLocked, "graded: tainted and zone locked");
+        T11Modifier dr = a.Modifiers.First(m => m.Key == 50);
+        Check(dr.BuiltIn && !dr.Locked && dr.Tinkered == 0, "graded: Damage Resist built-in");
+        Eq(dr.RollPercent, 74, "graded: band read before the marker");
+        T11Modifier mh = a.Modifiers.First(m => m.Key == 19);
+        Eq((mh.Value, mh.Tinkered, mh.Locked), (50, 20, true), "graded: Max Health value, tinker, lock");
+        Eq(mh.RollPercent, 65, "graded: Max Health roll (50-14)/(69-14)");
+        Check(a.Modifiers.Any(m => m.Key == 41 && m.IsSlotSpecial && m.Value == 15), "graded: slot special with a marker");
+
+        int V(int key) => T11Keys.TryGetValue(a, key, null, out int v) ? v : int.MinValue;
+        Eq(V(T11Keys.GearGrade), 12, "graded key: gear grade");
+        Eq(V(T11Keys.PropertySlots), 3, "graded key: slots used");
+        Eq(V(T11Keys.PropertySlotCap), 5, "graded key: slot limit");
+        Eq(V(T11Keys.FreePropertySlots), 2, "graded key: free slots");
+        Eq(V(T11Keys.Tainted), 1, "graded key: tainted");
+        Eq(V(T11Keys.ModifierCount), 3, "graded key: modifier count");
+
+        // A weapon shows its slot count in Property Details, without a Modifiers block.
+        T11ItemInfo w = T11ItemInfo.Parse("Tachi",
+            "Property Details:\n- Weapon Grade: A (95% of max damage)\n- Properties: 2 of 5\n", null);
+        Check(w.IsT11, "graded: weapon grade marks T11");
+        Eq((w.PropertySlots, w.PropertySlotCap), (2, 5), "graded: weapon properties line");
+        Eq(w.Modifiers.Count, 0, "graded: weapon properties line is not a modifier");
+        Check(T11ItemInfo.Parse("Robe", null, "Modifiers:\n- Properties: 1 of 4\n").IsT11, "graded: a Properties line marks T11");
+        Check(!T11ItemInfo.Parse("Robe", null, "Modifiers:\n- Tainted: bags no longer work on this item\n").IsT11, "graded: Tainted alone doesn't mark T11");
+        Eq(T11ItemInfo.None.PropertySlots, -1, "graded: no properties line = -1");
+    }
+
+    private static void TestT11JewelryProc()
+    {
+        T11ItemInfo r = T11ItemInfo.Parse("T11 - Ring", null, T11JewelryUse);
+        Eq(r.Modifiers.Count, 2, "jewel: two modifiers");
+        T11Modifier cos = r.Modifiers.First(m => m.Key == 54);
+        Eq((cos.Name, cos.Value, cos.RollPercent), ("Cast on Strike", 75, 50), "jewel: Cast on Strike power and roll");
+        Eq(r.Procs.Count, 1, "jewel: proc from the modifier line");
+        Eq(r.Procs.Count > 0 ? r.Procs[0] : default, ("Force Arc", 13.0), "jewel: proc spell and chance");
+        Eq((r.PropertySlots, r.PropertySlotCap), (2, 0), "jewel: unlimited properties line");
+        Eq(r.GearGradeLines, 1, "jewel: singular rolled line");
+        Check(r.Modifiers.Any(m => m.Key == 48 && m.Value == 2 && m.RollPercent == 50), "jewel: Life on Hit");
+        Eq(T11Keys.TryGetValue(r, T11Keys.ForModifier(54), null, out int p) ? p : -1, 75, "jewel: per-modifier key for 54");
+        Check(LootRuleText.LongKeys.Any(k => k.Id == T11Keys.ForModifier(54) && k.Name == "T11 Mod: Cast on Strike"), "jewel: editor names key 54");
+    }
+
+    private static void TestT11ServerProps()
+    {
+        // No name prefix and no text: the stamped tier alone marks T11 and is exact.
+        T11ItemInfo z = T11ItemInfo.Parse("Celdon Breastplate", null, null, new T11ServerProps(18, 0, -1));
+        Check(z.IsT11 && z.TierIsExact, "server: ZcTier 18 marks T11, exact");
+        Eq(z.Tier, 18, "server: tier from ZcTier");
+        Eq(T11Keys.TryGetValue(z, T11Keys.EstimatedTier, null, out int t) ? t : 0, 18, "server: tier key reads ZcTier");
+        Eq(T11Keys.TryGetValue(z, T11Keys.TierIsExact, null, out int x) ? x : 0, 1, "server: Tier Is Exact");
+
+        // The weapon tier beats the gate estimate (3,000 item augs = T13), and the quality comes along.
+        T11ItemInfo w = T11ItemInfo.Parse("T11 - Tachi", T11WeaponLongDesc, null, new T11ServerProps(0, 14, 873));
+        Eq((w.EstimatedTier, w.Tier, w.WeaponQuality), (13, 14, 873), "server: weapon tier and quality");
+        Eq(T11ItemInfo.Parse("T11 - Tachi", T11WeaponLongDesc, null).TierIsExact, false, "server: no props = estimate");
+        Eq(T11ItemInfo.Parse("T11 - Tachi", T11WeaponLongDesc, null).WeaponQuality, -1, "server: no props = no quality");
+        Eq(T11ServerProps.None.WeaponQuality, -1, "server: None has no quality");
+
+        // A low stamped tier on a plain item doesn't make it T11.
+        Check(!T11ItemInfo.Parse("Celdon Breastplate", null, null, new T11ServerProps(7, 0, -1)).IsT11, "server: tier 7 is not T11");
+
+        Check(LootRuleText.LongKeys.Any(k => k.Id == T11Catalog.PropZcTier && k.Name == "ZcTier"), "server: editor names ZcTier");
+        Check(LootRuleText.LongKeys.Any(k => k.Id == T11Catalog.PropWeaponAugScaleQuality), "server: editor lists WeaponAugScaleQuality");
+        Check(LootRuleText.LongKeys.Any(k => k.Id == T11Catalog.PropWeaponAugScaleTier), "server: editor lists WeaponAugScaleTier");
+        Eq(LootRuleText.ValueName(T11Keys.GearGrade, "16"), "S", "server: gear grade value table");
     }
 
     private static void TestT11WeaponParse()

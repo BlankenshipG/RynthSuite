@@ -29,8 +29,15 @@ internal static class T11ItemSupport
         public string Name = string.Empty;
         public string LongDesc = string.Empty;
         public string Use = string.Empty;
+        public T11ServerProps Server = T11ServerProps.None;
         public T11ItemInfo Info = T11ItemInfo.None;
     }
+
+    /// <summary>The tier / quality properties the item's appraisal carried (ACECustom 50109, 9061, 9060).</summary>
+    public static T11ServerProps ServerProps(WorldObject item) => new(
+        item.Values(T11Catalog.PropZcTier, 0),
+        item.Values(T11Catalog.PropWeaponAugScaleTier, 0),
+        item.Values(T11Catalog.PropWeaponAugScaleQuality, -1));
 
     /// <summary>True when <paramref name="name"/> carries the server's T11 drop prefix.</summary>
     public static bool HasT11Name(string? name)
@@ -42,21 +49,23 @@ internal static class T11ItemSupport
         string name = item.Name.Length > 0 ? item.Name : item.Values(StringValueKey.Name, string.Empty);
         string longDesc = item.Values(StringValueKey.LongDesc, string.Empty);
         string use = item.Values(StringValueKey.Use, string.Empty);
+        T11ServerProps server = ServerProps(item);
 
         lock (Gate)
         {
             if (Parsed.TryGetValue(item.Id, out Entry? e)
                 && string.Equals(e.Name, name, StringComparison.Ordinal)
                 && string.Equals(e.LongDesc, longDesc, StringComparison.Ordinal)
-                && string.Equals(e.Use, use, StringComparison.Ordinal))
+                && string.Equals(e.Use, use, StringComparison.Ordinal)
+                && e.Server == server)
                 return e.Info;
         }
 
-        T11ItemInfo info = T11ItemInfo.Parse(name, longDesc, use);
+        T11ItemInfo info = T11ItemInfo.Parse(name, longDesc, use, server);
         lock (Gate)
         {
             if (Parsed.Count >= MaxEntries) Parsed.Clear();
-            Parsed[item.Id] = new Entry { Name = name, LongDesc = longDesc, Use = use, Info = info };
+            Parsed[item.Id] = new Entry { Name = name, LongDesc = longDesc, Use = use, Server = server, Info = info };
         }
         return info;
     }
@@ -76,8 +85,8 @@ internal static class T11ItemSupport
 
     /// <summary>
     /// The value a T11 appraisal stripped for a retail key (158/159/160, 370-379), else
-    /// <paramref name="fallback"/>. Only T11-named items are parsed, so other items pay a
-    /// string compare.
+    /// <paramref name="fallback"/>. Only T11-named or T11-stamped items are parsed, so other
+    /// items pay a string compare and one property read.
     /// </summary>
     public static int StrippedValue(WorldObject item, int key, int fallback)
     {
@@ -85,7 +94,7 @@ internal static class T11ItemSupport
         try
         {
             string name = item.Name.Length > 0 ? item.Name : item.Values(StringValueKey.Name, string.Empty);
-            if (!HasT11Name(name)) return fallback;
+            if (!HasT11Name(name) && ServerProps(item).Tier < T11Catalog.MinTier) return fallback;
             return T11Keys.TryGetStrippedValue(Get(item), key, out int value) ? value : fallback;
         }
         catch

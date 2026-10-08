@@ -101,14 +101,23 @@ public sealed partial class RynthAiPlugin
         }
 
         ChatLine($"[RynthAi] === T11: {item.Name} (0x{id:X8}) ===");
-        ChatLine($"[RynthAi]   Tier ~{info.EstimatedTier}" + (info.Grade != null ? $", grade {info.Grade} ({info.DamagePercent}% of max damage)" : string.Empty)
+        ChatLine($"[RynthAi]   Tier {(info.TierIsExact ? info.Tier.ToString(CultureInfo.InvariantCulture) : "~" + info.Tier.ToString(CultureInfo.InvariantCulture))}"
+            + (info.Grade != null ? $", grade {info.Grade} ({info.DamagePercent}% of max damage)" : string.Empty)
+            + (info.WeaponQuality >= 0 ? $", quality {info.WeaponQuality}/1000" : string.Empty)
+            + (info.GearGrade != null ? $", gear grade {info.GearGrade} ({info.GearGradeLines} lines)" : string.Empty)
             + (info.ZoneLocked ? ", zone locked" : string.Empty));
+        if (info.PropertySlots >= 0 || info.Tainted)
+            ChatLine("[RynthAi]   Properties "
+                + (info.PropertySlots < 0 ? "?" : info.PropertySlotCap > 0 ? $"{info.PropertySlots} of {info.PropertySlotCap}" : info.PropertySlots.ToString(CultureInfo.InvariantCulture))
+                + (info.Tainted ? ", tainted (bags no longer work)" : string.Empty));
         foreach (T11WieldGate g in info.WieldGates)
             ChatLine($"[RynthAi]   Wield requires {g.Amount:N0} {T11Catalog.CounterName(g.Counter)}");
         foreach (T11Modifier m in info.Modifiers)
         {
             string band = m.Min.HasValue && m.Max.HasValue ? $" [{m.Min}-{m.Max}] roll {m.RollPercent}%" : string.Empty;
-            ChatLine($"[RynthAi]   Mod {m.Name} {(m.IsSlotSpecial ? "(special)" : "+" + m.Value)}{band}");
+            string marks = (m.Tinkered != 0 ? $" ({m.Tinkered:+#;-#} tinkered)" : string.Empty)
+                + (m.BuiltIn ? " (built-in)" : string.Empty) + (m.Locked ? " (locked)" : string.Empty);
+            ChatLine($"[RynthAi]   Mod {m.Name} {(m.IsSlotSpecial ? "(special)" : "+" + m.Value)}{band}{marks}");
         }
         foreach ((string name, double chance) in info.Procs)
             ChatLine($"[RynthAi]   Cast on strike: {name} ({chance.ToString("0.#", CultureInfo.CurrentCulture)}%)");
