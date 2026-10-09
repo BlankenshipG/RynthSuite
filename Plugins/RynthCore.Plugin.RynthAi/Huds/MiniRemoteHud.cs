@@ -13,7 +13,7 @@
 //   Slots    5 × 6 quick-use item grid; click uses the item (an empty slot takes the selected
 //            pack item), right-click assigns / clears, and items dragged from the game's
 //            inventory or the RynthCore Inventory window drop straight into a slot
-//   Toggles  macro and subsystem switches (same as the dashboard buttons)
+//   Toggles  macro and subsystem switches (same as the dashboard buttons; floating window only)
 //   Bank     ILT bank balances (pyreals, luminance, keys, coins)
 //   Rebuff   force rebuff / cancel rebuff
 //   Translate chat translator on/off and the receive <-> send language swap
@@ -22,7 +22,8 @@
 //
 // RenderEmbedded draws the same sections and Options menu inside the engine's RynthAi dashboard
 // (its Mini Remote drawer, opened by the Hub launcher's right-click or the drawer tab) and
-// reports the size it wants; the drawer is sized from that.
+// reports the size it wants; the drawer is sized from that. The drawer leaves out Toggles: the
+// dashboard it sits on already has those switches, so they stay a floating-window section.
 using System;
 using System.Linq;
 using System.Numerics;
@@ -53,6 +54,7 @@ internal sealed class MiniRemoteHud
     private int _slotMenuIndex = -1;
     private bool _rescueChecked; // off-screen check done for the current show
     private bool _columnOpen; // horizontal layout: a column was already started this frame (next one goes SameLine)
+    private bool _embedded;   // true only inside RenderEmbedded (the dashboard drawer)
 
     public MiniRemoteHud(HudController hud) => _hud = hud;
 
@@ -99,6 +101,7 @@ internal sealed class MiniRemoteHud
     {
         var s = _hud.State;
         _slotMenuIndex = -1;
+        _embedded = true;
         float startY = ImGui.GetCursorPosY();
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
         try
@@ -119,20 +122,24 @@ internal sealed class MiniRemoteHud
         {
             ImGui.PopStyleVar();
             _slotMenuIndex = -1;
+            _embedded = false;
         }
     }
+
+    /// <summary>The Toggles section is drawn: chosen in Options, and never in the dashboard drawer.</summary>
+    private bool ShowToggles(HudState s) => s.MiniShowToggles && !_embedded;
 
     /// <summary>
     /// The width the sections need: one column stacked, else one per non-empty column side by side.
     /// Never measured from what was drawn, since widgets fill the width they are given.
     /// </summary>
-    private static float EmbeddedWidth(HudState s)
+    private float EmbeddedWidth(HudState s)
     {
         float colW = ColumnWidth();
         if (!s.MiniRemoteHorizontal) return colW;
         int cols = 0;
         if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet) cols++;
-        if (s.MiniShowGems || s.MiniShowToggles) cols++;
+        if (s.MiniShowGems || ShowToggles(s)) cols++;
         if (s.MiniShowBank || s.MiniShowRebuff || s.MiniShowTranslate || s.MiniShowGuardian) cols++;
         cols = Math.Max(1, cols);
         return cols * colW + (cols - 1) * ImGui.GetStyle().ItemSpacing.X;
@@ -175,7 +182,7 @@ internal sealed class MiniRemoteHud
             RenderStatusSections(s, hub);
             ImGui.EndChild();
         }
-        if (s.MiniShowGems || s.MiniShowToggles)
+        if (s.MiniShowGems || ShowToggles(s))
         {
             BeginColumn("##mrcolactions", colW);
             RenderActionSections(s);
@@ -217,7 +224,7 @@ internal sealed class MiniRemoteHud
     private void RenderActionSections(HudState s)
     {
         if (s.MiniShowGems) RenderSlots(s);
-        if (s.MiniShowToggles) RenderToggles(_hud.Dashboard.Settings);
+        if (ShowToggles(s)) RenderToggles(_hud.Dashboard.Settings);
     }
 
     private void RenderEconomySections(HudState s, IltHubController? hub)
@@ -530,7 +537,8 @@ internal sealed class MiniRemoteHud
         Flag("Attack target", ref s.MiniShowTarget);
         Flag("Pet / summon", ref s.MiniShowPet);
         Flag("Item slots", ref s.MiniShowGems);
-        Flag("Toggles", ref s.MiniShowToggles);
+        // The drawer's dashboard has these switches already; the setting is the floating window's.
+        if (!embedded) Flag("Toggles", ref s.MiniShowToggles);
         Flag("Bank", ref s.MiniShowBank);
         Flag("Rebuff", ref s.MiniShowRebuff);
         Flag("Translate", ref s.MiniShowTranslate);
