@@ -116,7 +116,7 @@ public sealed partial class RynthAiPlugin
         // while it is up the Hub keeps its bank / gear data fresh.
         var huds = _huds;
         _iltHub.MiniRemoteCommand = mode => "[ILT Hub] " + huds.HandleCommand("remote", mode);
-        _iltHub.MiniRemoteVisible = () => huds.State.ShowMiniRemote;
+        _iltHub.MiniRemoteVisible = () => huds.MiniRemoteActive;
         EnsureItemInfoUi();
     }
 
@@ -263,6 +263,36 @@ public sealed partial class RynthAiPlugin
         catch (Exception ex)
         {
             RynthLog.Exception(LogCat.UI, ex, "OnRenderOverlay");
+        }
+        finally
+        {
+            ImGui.SetCurrentContext(previousContext);
+        }
+    }
+
+    /// <summary>
+    /// RynthPluginRenderEmbed "miniremote": the Mini Remote inside the engine's RynthAi dashboard
+    /// drawer, drawn into the engine's current ImGui window. False (nothing drawn) until login and
+    /// the HUDs exist. Render thread.
+    /// </summary>
+    public bool RenderEmbeddedMiniRemote(out System.Numerics.Vector2 want)
+    {
+        want = default;
+        var huds = _huds;
+        if (!_initialized || !_loginComplete || Host.ImGuiContext == IntPtr.Zero || huds == null)
+            return false;
+
+        IntPtr previousContext = ImGui.GetCurrentContext();
+        ImGui.SetCurrentContext(Host.ImGuiContext);
+        try
+        {
+            want = huds.RenderEmbedded();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Exception(LogCat.UI, ex, "RenderEmbeddedMiniRemote");
+            return false;
         }
         finally
         {

@@ -7,6 +7,9 @@
 //   * Inventory HUDs setup window (HudSetupUi): picks what the two HUDs show. Opened from
 //     the Inventory Management settings (ImGui Advanced Settings, the Avalonia Settings
 //     panel) or "/ra huds".
+//   * The same Mini Remote inside the engine's RynthAi dashboard (its Mini Remote drawer,
+//     RynthPluginRenderEmbed "miniremote"): RenderEmbedded. Data polling runs while either
+//     the floating window or the drawer shows it (MiniRemoteActive).
 // Every HUD is an ordinary ImGui window, so it can be docked into / undocked from other
 // ImGui windows and dragged outside the game window (multi-viewport).
 //
@@ -119,6 +122,19 @@ internal sealed class HudController
 
     private static long NowMs => Environment.TickCount64;
 
+    /// <summary>
+    /// How long after its last frame in the RynthAi dashboard's Mini Remote drawer the remote
+    /// still counts as on screen (the drawer draws every frame while it is out).
+    /// </summary>
+    private const long EmbeddedVisibleMs = 1500;
+
+    /// <summary>When the Mini Remote last drew in the dashboard drawer (TickCount64); written on the render thread.</summary>
+    private long _embeddedDrawnAt = long.MinValue / 2;
+
+    /// <summary>The Mini Remote is on screen: the floating window or the dashboard drawer. Any thread.</summary>
+    public bool MiniRemoteActive =>
+        State.ShowMiniRemote || NowMs - System.Threading.Interlocked.Read(ref _embeddedDrawnAt) < EmbeddedVisibleMs;
+
     // ── Pump thread ─────────────────────────────────────────────────────────
 
     public void Tick()
@@ -132,7 +148,8 @@ internal sealed class HudController
 
         long now = NowMs;
         // The pack is only scanned while something shows it.
-        bool needPack = State.ShowItemHud || State.ShowMiniRemote || State.ShowSetup;
+        bool remote = MiniRemoteActive;
+        bool needPack = State.ShowItemHud || remote || State.ShowSetup;
         if (needPack && (_scanRequested || now - _lastScanAt >= PackScanIntervalMs))
         {
             _scanRequested = false;
@@ -141,10 +158,10 @@ internal sealed class HudController
         }
 
         Icons.Tick();
-        if (State.ShowMiniRemote || State.ShowSetup || State.ShowItemHud) TrackPackSelection(now);
+        if (needPack) TrackPackSelection(now);
 
         // Target / summon polling sends health queries and appraisals, so it only runs while shown.
-        if (State.ShowMiniRemote && (State.MiniShowTarget || State.MiniShowPet))
+        if (remote && (State.MiniShowTarget || State.MiniShowPet))
             _combat.Tick();
 
         if (now - _lastSaveAt >= SaveIntervalMs)
@@ -471,6 +488,24 @@ internal sealed class HudController
             if (State.ShowSetup) _setup.Render();
             if (State.ShowItemHud) _itemHud.Render(); else _itemHud.OnHidden();
             if (State.ShowMiniRemote) _miniRemote.Render(); else _miniRemote.OnHidden();
+        }
+        finally
+        {
+            ImGuiNET.ImGui.PopStyleColor(pushed);
+        }
+    }
+
+    /// <summary>
+    /// Draws the Mini Remote into the engine's current ImGui window (the RynthAi dashboard's
+    /// Mini Remote drawer) and returns the content size it wants. Render thread.
+    /// </summary>
+    public System.Numerics.Vector2 RenderEmbedded()
+    {
+        System.Threading.Interlocked.Exchange(ref _embeddedDrawnAt, NowMs);
+        int pushed = LegacyDashboardRenderer.PushDashboardStyle();
+        try
+        {
+            return _miniRemote.RenderEmbedded();
         }
         finally
         {

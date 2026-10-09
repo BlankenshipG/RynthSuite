@@ -78,6 +78,31 @@ public static unsafe class PluginExports
         catch { /* an exception crossing UnmanagedCallersOnly would fail-fast the client */ }
     }
 
+    /// <summary>
+    /// Engine dashboard drawers (RynthCore 2026.10.5.21+): draws the named UTF-8 surface into the
+    /// engine's current ImGui window on the render thread and reports the size it wants.
+    /// Surfaces: "miniremote" (the Mini Remote drawer). 1 = drawn, 0 = not ready / unknown.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderEmbed", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static int RenderEmbed(byte* surface, float width, float height, float* wantWidth, float* wantHeight)
+    {
+        try
+        {
+            if (surface == null) return 0;
+            ReadOnlySpan<byte> name = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(surface);
+            if (!name.SequenceEqual("miniremote"u8)) return 0;
+            var plugin = Runtime.Plugin;
+            if (plugin == null || !plugin.RenderEmbeddedMiniRemote(out System.Numerics.Vector2 want)) return 0;
+            if (wantWidth != null) *wantWidth = want.X;
+            if (wantHeight != null) *wantHeight = want.Y;
+            return 1;
+        }
+        catch
+        {
+            return 0;   // an exception crossing UnmanagedCallersOnly would fail-fast the client
+        }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnChatBarEnter", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnChatBarEnter(IntPtr textUtf16, IntPtr eatFlag) => Runtime.OnChatBarEnter(textUtf16, eatFlag);
 

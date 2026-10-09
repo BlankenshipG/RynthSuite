@@ -19,6 +19,10 @@
 //   Translate chat translator on/off and the receive <-> send language swap
 //   Guardian the last Temple guardian answer with a Give button (only while it is recent)
 // All game actions are posted to the pump thread.
+//
+// RenderEmbedded draws the same sections and Options menu inside the engine's RynthAi dashboard
+// (its Mini Remote drawer, opened by the Hub launcher's right-click or the drawer tab) and
+// reports the size it wants; the drawer is sized from that.
 using System;
 using System.Linq;
 using System.Numerics;
@@ -81,9 +85,57 @@ internal sealed class MiniRemoteHud
         // Right-click on the window body opens the options, unless a slot's own menu is open.
         if (_slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
             ImGui.OpenPopup(OptionsPopup);
-        RenderOptions(s);
+        RenderOptions(s, embedded: false);
         _slotMenuIndex = -1;
         ImGui.End();
+    }
+
+    /// <summary>
+    /// The same sections drawn into the caller's current window (the engine's RynthAi dashboard
+    /// drawer, which sizes itself from the result) instead of a window of their own. Returns the
+    /// content size it wants: the column layout's width, and the height drawn.
+    /// </summary>
+    public Vector2 RenderEmbedded()
+    {
+        var s = _hud.State;
+        _slotMenuIndex = -1;
+        float startY = ImGui.GetCursorPosY();
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
+        try
+        {
+            var hub = _hud.Hub();
+            RenderHeaderRow(s);
+            if (s.MiniRemoteHorizontal) RenderHorizontal(s, hub);
+            else RenderVertical(s, hub);
+
+            if (_slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
+                ImGui.OpenPopup(OptionsPopup);
+            RenderOptions(s, embedded: true);
+
+            float height = ImGui.GetCursorPosY() - startY - ImGui.GetStyle().ItemSpacing.Y;
+            return new Vector2(EmbeddedWidth(s), Math.Max(0f, height) + 2f);
+        }
+        finally
+        {
+            ImGui.PopStyleVar();
+            _slotMenuIndex = -1;
+        }
+    }
+
+    /// <summary>
+    /// The width the sections need: one column stacked, else one per non-empty column side by side.
+    /// Never measured from what was drawn, since widgets fill the width they are given.
+    /// </summary>
+    private static float EmbeddedWidth(HudState s)
+    {
+        float colW = ColumnWidth();
+        if (!s.MiniRemoteHorizontal) return colW;
+        int cols = 0;
+        if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet) cols++;
+        if (s.MiniShowGems || s.MiniShowToggles) cols++;
+        if (s.MiniShowBank || s.MiniShowRebuff || s.MiniShowTranslate || s.MiniShowGuardian) cols++;
+        cols = Math.Max(1, cols);
+        return cols * colW + (cols - 1) * ImGui.GetStyle().ItemSpacing.X;
     }
 
     // ── Layout ──────────────────────────────────────────────────────────────
@@ -464,7 +516,11 @@ internal sealed class MiniRemoteHud
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Cancel the running rebuff.");
     }
 
-    private void RenderOptions(HudState s)
+    /// <summary>
+    /// The Options popup. <paramref name="embedded"/>: drawn in the dashboard drawer, where the
+    /// window's lock and hide don't apply and the floating window is a separate choice.
+    /// </summary>
+    private void RenderOptions(HudState s, bool embedded)
     {
         if (!ImGui.BeginPopup(OptionsPopup)) return;
         RenderHubMenu(_hud.Hub());
@@ -481,9 +537,18 @@ internal sealed class MiniRemoteHud
         Flag("Guardian answer", ref s.MiniShowGuardian);
         ImGui.Separator();
         Flag("Horizontal layout", ref s.MiniRemoteHorizontal);
-        Flag("Lock position", ref s.MiniRemoteLocked);
-        if (ImGui.MenuItem("Inventory HUDs setup...")) s.ShowSetup = true;
-        if (ImGui.MenuItem("Hide Mini Remote")) s.ShowMiniRemote = false;
+        if (embedded)
+        {
+            Flag("Floating window too", ref s.ShowMiniRemote);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Also show the Mini Remote as its own window (/ra remote).");
+            if (ImGui.MenuItem("Inventory HUDs setup...")) s.ShowSetup = true;
+        }
+        else
+        {
+            Flag("Lock position", ref s.MiniRemoteLocked);
+            if (ImGui.MenuItem("Inventory HUDs setup...")) s.ShowSetup = true;
+            if (ImGui.MenuItem("Hide Mini Remote")) s.ShowMiniRemote = false;
+        }
         ImGui.EndPopup();
     }
 
