@@ -14,15 +14,16 @@ internal enum IltSection
     Gear,
     Games,
     Guardian,
+    Bounties,
 }
 
 internal static class IltSections
 {
-    /// <summary>Menu order (the old Hub's tab order, then the Guardian window).</summary>
+    /// <summary>Menu order (the old Hub's tab order, then the Guardian and Bounties windows).</summary>
     public static readonly IltSection[] All =
     {
         IltSection.Character, IltSection.Quests, IltSection.Pet,
-        IltSection.Banking, IltSection.Gear, IltSection.Games, IltSection.Guardian,
+        IltSection.Banking, IltSection.Gear, IltSection.Games, IltSection.Guardian, IltSection.Bounties,
     };
 
     public static string Label(IltSection s) => s switch
@@ -34,6 +35,7 @@ internal static class IltSections
         IltSection.Gear => "Gear",
         IltSection.Games => "Games",
         IltSection.Guardian => "Guardian",
+        IltSection.Bounties => "Bounties",
         _ => s.ToString(),
     };
 
@@ -49,6 +51,7 @@ internal static class IltSections
             case "gear": section = IltSection.Gear; return true;
             case "games": case "game": section = IltSection.Games; return true;
             case "guardian": case "temple": case "riddle": section = IltSection.Guardian; return true;
+            case "bounties": case "bounty": case "bountys": section = IltSection.Bounties; return true;
             default: section = IltSection.Character; return false;
         }
     }
@@ -62,6 +65,7 @@ internal static class IltSections
         IltSection.Gear => cs.GearWindowOpen,
         IltSection.Games => cs.GamesWindowOpen,
         IltSection.Guardian => cs.GuardianWindowOpen,
+        IltSection.Bounties => cs.BountiesWindowOpen,
         _ => false,
     };
 
@@ -76,6 +80,7 @@ internal static class IltSections
             case IltSection.Gear: cs.GearWindowOpen = open; break;
             case IltSection.Games: cs.GamesWindowOpen = open; break;
             case IltSection.Guardian: cs.GuardianWindowOpen = open; break;
+            case IltSection.Bounties: cs.BountiesWindowOpen = open; break;
         }
     }
 

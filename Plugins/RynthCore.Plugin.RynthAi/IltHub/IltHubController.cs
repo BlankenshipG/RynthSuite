@@ -5,7 +5,7 @@
 //   OnChatWindowText → OnChat() (pump thread; returns true to eat the line)
 //   OnKillNotification → RecordKill()
 //   OnRender → Render()      (render thread)
-//   /ra hub ..., /ra quests ... → HandleCommand()
+//   /ra hub ..., /ra quests ..., /ra bounty ... → HandleCommand()
 //   OnLogout / teardown → OnLogout()
 // The Hub only appears on ACECustom/ILT worlds where at least one server feature is on;
 // on every other world it stays dormant (no probes, no chat, no window).
@@ -41,6 +41,8 @@ internal sealed class IltHubController
     public IltCharmTracker Charms { get; }
     /// <summary>Temple guardians: riddle translator, hand-in, attribute turn-in tracker.</summary>
     public IltGuardian Guardian { get; }
+    /// <summary>ACECustom bounties: every area's reward and this character's progress ("/bounty list").</summary>
+    public IltBounties Bounties { get; }
 
     public IltHubController(RynthCoreHost host, string charFolder, Func<WorldObjectCache?> cache,
                             Func<LegacyUiSettings?> settings, Func<QuestTracker?> quests, Action saveCombatSettings)
@@ -66,7 +68,8 @@ internal sealed class IltHubController
         Games = new IltGames(_ctx);
         Charms = new IltCharmTracker(_ctx);
         Guardian = new IltGuardian(_ctx, quests, Quests);
-        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Games, Guardian });
+        Bounties = new IltBounties(_ctx);
+        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Games, Guardian, Bounties });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
         options.ProbeReplyTap = OnProbeReply;
@@ -227,10 +230,16 @@ internal sealed class IltHubController
         IltProgression => LogCat.IltProgression,
         IltGear => LogCat.IltGear,
         IltGames => LogCat.IltGames,
+        IltBounties => LogCat.IltBounties,
         _ => LogCat.IltHub,
     };
 
-    public void RecordKill() => Rates.RecordKill();
+    /// <summary>One of this character's kills: session rates, and a bounty re-read while that window is open.</summary>
+    public void RecordKill()
+    {
+        Rates.RecordKill();
+        if (_ctx.Options.IsIltLikeWorld) Bounties.OnKill();
+    }
 
     /// <summary>Logout / teardown: stop automation and flush to disk.</summary>
     public void OnLogout()
@@ -286,7 +295,8 @@ internal sealed class IltHubController
     /// <summary>
     /// "/ra hub [show|hide|toggle|open &lt;section&gt; [show|hide|toggle]|refresh|bank|status|force on|off|
     /// profile save|load|list ...|suit list|test|load ...]" (show/hide/toggle drive the Mini Remote),
-    /// "/ra quests [refresh|check &lt;regex&gt;|window|favhud]", "/ra pets [show|hide|toggle]" and
+    /// "/ra quests [refresh|check &lt;regex&gt;|window|favhud]", "/ra pets [show|hide|toggle]",
+    /// "/ra bounty [show|hide|toggle|refresh|list]" (aliases bounties / bountys) and
     /// "/ra guardian ..." (see IltGuardian.HandleCommand).
     /// Pump thread. Returns false if not handled.
     /// </summary>
@@ -323,6 +333,25 @@ internal sealed class IltHubController
             OpenSection(IltSection.Pet, args.Length > 0 ? args[0] : "toggle");
             return true;
         }
+        if (IsBountyVerb(verb))
+        {
+            string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "toggle";
+            switch (sub)
+            {
+                case "refresh":
+                case "read":
+                    _ctx.Chat("[Bounties] " + Bounties.RequestRefresh());
+                    break;
+                case "list":
+                case "print":
+                    Bounties.PrintList();
+                    break;
+                default:
+                    OpenSection(IltSection.Bounties, sub);
+                    break;
+            }
+            return true;
+        }
         if (verb.Equals("guardian", StringComparison.OrdinalIgnoreCase))
         {
             // "/ra guardian window [show|hide|toggle]" opens the window; everything else is the Guardian's.
@@ -348,7 +377,7 @@ internal sealed class IltHubController
             case "open":
                 if (args.Length < 2 || !IltSections.TryParse(args[1], out IltSection section))
                 {
-                    _ctx.Chat("[ILT Hub] Usage: /ra hub open character|quests|pets|banking|gear|games|guardian [show|hide|toggle]");
+                    _ctx.Chat("[ILT Hub] Usage: /ra hub open character|quests|pets|banking|gear|games|guardian|bounties [show|hide|toggle]");
                     break;
                 }
                 OpenSection(section, args.Length > 2 ? args[2] : "toggle");
@@ -371,11 +400,12 @@ internal sealed class IltHubController
                 break;
             default:
                 _ctx.Chat("[ILT Hub] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|force on|off|clap|confirm|cancel");
-                _ctx.Chat("[ILT Hub] /ra hub open character|quests|pets|banking|gear|games|guardian [show|hide|toggle]");
+                _ctx.Chat("[ILT Hub] /ra hub open character|quests|pets|banking|gear|games|guardian|bounties [show|hide|toggle]");
                 _ctx.Chat("[ILT Hub] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
                 _ctx.Chat("[ILT Hub] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
                 _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");
                 _ctx.Chat("[ILT Hub] /ra guardian [window|translate <text>|handin|stop|chat on|off|auto on|off|buy on|off|refresh|status]");
+                _ctx.Chat("[ILT Hub] /ra bounty [show|hide|toggle|refresh|list]  (Bounties window: every server bounty and your kills)");
                 break;
         }
         return true;
@@ -403,6 +433,12 @@ internal sealed class IltHubController
                 return;
         }
     }
+
+    /// <summary>"/ra bounty", "/ra bounties" and the "/ra bountys" spelling all reach the Bounties window.</summary>
+    public static bool IsBountyVerb(string verb)
+        => verb.Equals("bounty", StringComparison.OrdinalIgnoreCase)
+           || verb.Equals("bounties", StringComparison.OrdinalIgnoreCase)
+           || verb.Equals("bountys", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Applies show / hide / toggle to a section window and says what happened.</summary>
     private void OpenSection(IltSection section, string mode)

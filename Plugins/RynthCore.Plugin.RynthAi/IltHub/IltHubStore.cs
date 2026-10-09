@@ -115,6 +115,18 @@ internal sealed class IltHubStore
         s.Guardian.TurnInCounts = new Dictionary<string, int>(s.Guardian.TurnInCounts ?? new(), StringComparer.OrdinalIgnoreCase);
         s.Guardian.CooldownUntilUtc = new Dictionary<string, DateTime>(s.Guardian.CooldownUntilUtc ?? new(), StringComparer.OrdinalIgnoreCase);
         s.Guardian.CooldownHoursAssumed = Math.Clamp(s.Guardian.CooldownHoursAssumed, 1, 72);
+        s.Bounty ??= new IltBountyState();
+        s.Bounty.Entries ??= new();
+        s.Bounty.Entries.RemoveAll(e => e == null || string.IsNullOrWhiteSpace(e.Where));
+        foreach (var e in s.Bounty.Entries)
+        {
+            e.Item ??= string.Empty;
+            e.Status = Math.Clamp(e.Status, 0, 2);
+        }
+        s.Bounty.Filter ??= string.Empty;
+        s.Bounty.LastEvent ??= string.Empty;
+        s.Bounty.MinRefreshSeconds = Math.Clamp(s.Bounty.MinRefreshSeconds, IltBounties.MinRefreshFloorSeconds, 300);
+        s.Bounty.PeriodicRefreshMinutes = Math.Clamp(s.Bounty.PeriodicRefreshMinutes, 0, 60);
         s.SelectedTab = Math.Clamp(s.SelectedTab, 0, 4);
         s.Gear.SplitArrowTarget = Math.Clamp(s.Gear.SplitArrowTarget, 0, 10);
     }
@@ -211,6 +223,13 @@ internal sealed class IltHubStore
             target.Bank.AutoRefreshSeconds = p.Bank.AutoRefreshSeconds;
             target.ForceLeaftideFeatures = p.ForceLeaftideFeatures;
             target.GamesHudVisible = p.GamesHudVisible;
+            // Bounty progress is this character's; only the tracker's preferences come from a profile.
+            target.Bounty.RefreshOnKills = p.Bounty.RefreshOnKills;
+            target.Bounty.MinRefreshSeconds = p.Bounty.MinRefreshSeconds;
+            target.Bounty.PeriodicRefreshMinutes = p.Bounty.PeriodicRefreshMinutes;
+            target.Bounty.HideQbLocked = p.Bounty.HideQbLocked;
+            target.Bounty.SortByProgress = p.Bounty.SortByProgress;
+            target.Bounty.Filter = p.Bounty.Filter;
             return true;
         }
         catch (Exception ex) { error = ex.Message; return false; }
@@ -237,6 +256,11 @@ internal sealed class IltHubStore
         s.Pet.ShinyLog = new();
         s.UbSidecarsImported = false;
         s.WindowVisible = false;
+        s.Bounty.Entries = new();
+        s.Bounty.ListedUtc = default;
+        s.Bounty.NoneAnywhere = false;
+        s.Bounty.LastEvent = string.Empty;
+        s.Bounty.LastEventUtc = default;
     }
 
     private static string SanitizeName(string name)

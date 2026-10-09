@@ -55,6 +55,7 @@ internal enum LogCat
     IltRates,
     IltGear,
     IltGames,
+    IltBounties,
 }
 
 /// <summary>
@@ -224,6 +225,7 @@ internal static class LogEvents
         LogCat.IltRates => "ILT Hub: rates.",
         LogCat.IltGear => "ILT Hub: gear.",
         LogCat.IltGames => "ILT Hub: games.",
+        LogCat.IltBounties => "ILT Hub: bounty tracker (/bounty list reads and bounty chat).",
         _ => cat.ToString(),
     };
 }
