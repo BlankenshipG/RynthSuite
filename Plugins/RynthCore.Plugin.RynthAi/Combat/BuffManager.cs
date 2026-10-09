@@ -6,7 +6,7 @@ using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
-public class BuffManager : IDisposable
+public partial class BuffManager : IDisposable
 {
     private readonly RynthCoreHost _host;
     private readonly LegacyUiSettings _settings;
@@ -1986,7 +1986,7 @@ public class BuffManager : IDisposable
         DateTime now = DateTime.Now;
         foreach (string buffBaseName in desiredBuffs)
         {
-            AcSkillType castSkill = SkillForBuff(buffBaseName);
+            AcSkillType castSkill = SkillFor(buffBaseName);
             if (!IsSkillUsable(castSkill)) continue;
             int spellId = FindBestSpellId(buffBaseName, castSkill);
             if (spellId == 0) continue;
@@ -2028,7 +2028,7 @@ public class BuffManager : IDisposable
 
         foreach (string buffBaseName in desiredBuffs)
         {
-            AcSkillType castSkill = SkillForBuff(buffBaseName);
+            AcSkillType castSkill = SkillFor(buffBaseName);
             if (!IsSkillUsable(castSkill))
             {
                 LastBuffSkipReason = $"skill not usable: {buffBaseName} ({castSkill})";
@@ -2128,8 +2128,11 @@ public class BuffManager : IDisposable
         return false;
     }
 
-    private int FindBestSpellId(string baseName, AcSkillType skill)
-        => _spellManager.GetDynamicSelfBuffId(baseName, skill);
+    internal int FindBestSpellId(string baseName, AcSkillType skill)
+    {
+        int id = _spellManager.GetDynamicSelfBuffId(baseName, skill);
+        return id != 0 ? id : ResolveProfileFallback(baseName, skill);
+    }
 
     // True for enchantments that live on an ITEM (armor or weapon), NOT on the
     // player. These do NOT appear in ReadPlayerEnchantments, so they must be
@@ -2156,7 +2159,8 @@ public class BuffManager : IDisposable
         };
         foreach (string s in itemSpells)
             if (name.IndexOf(s, StringComparison.OrdinalIgnoreCase) >= 0) return true;
-        return false;
+        // Buff profiles can hold server-custom item spells the names above don't cover.
+        return SpellCatalog.IsItemSchoolBuff(name);
     }
 
     /// <summary>
@@ -2885,7 +2889,7 @@ public class BuffManager : IDisposable
 
         foreach (string baseName in desiredBuffs)
         {
-            AcSkillType skill = SkillForBuff(baseName);
+            AcSkillType skill = SkillFor(baseName);
             if (!IsSkillUsable(skill)) continue;
 
             // Skill summary line — print once per unique skill.
@@ -2944,6 +2948,17 @@ public class BuffManager : IDisposable
     }
 
     internal List<string> BuildDynamicBuffList()
+    {
+        // A chosen buff profile (Loaded Files → Buffs) replaces the built-in list.
+        return ProfileBuffList() ?? BuildBuiltInBuffList();
+    }
+
+    /// <summary>
+    /// Buffing's built-in list (no buff profile chosen): creature mastery, Focus, Willpower,
+    /// the other creature buffs for usable skills, life protections, weapon auras, armor banes.
+    /// Pump thread: it reads the character's skills.
+    /// </summary>
+    internal List<string> BuildBuiltInBuffList()
     {
         var step1_CreatureMastery = new List<string>();
         var step2_Focus           = new List<string>();

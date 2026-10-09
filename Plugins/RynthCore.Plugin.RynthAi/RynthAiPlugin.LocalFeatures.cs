@@ -118,6 +118,7 @@ public sealed partial class RynthAiPlugin
         _iltHub.MiniRemoteCommand = mode => "[ILT Hub] " + huds.HandleCommand("remote", mode);
         _iltHub.MiniRemoteVisible = () => huds.MiniRemoteActive;
         EnsureItemInfoUi();
+        EnsureSpellsUi();
     }
 
     /// <summary>Item Info window, created once settings exist.</summary>
@@ -141,6 +142,8 @@ public sealed partial class RynthAiPlugin
         catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator Tick"); }
         try { TickItemInfo(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.General, ex, "item info tick"); }
+        try { TickSpellsUi(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.General, ex, "spells window tick"); }
         try { _navBreadcrumbs?.Tick(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Navigation, ex, "nav breadcrumbs tick"); }
         Loot.T11ItemSupport.SyncOverride(_dashboard?.Settings.T11ItemAugsOverride ?? -1);
@@ -162,6 +165,7 @@ public sealed partial class RynthAiPlugin
         catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "logout"); }
         _huds = null;
         _itemInfoUi = null;
+        _spellsUi = null;
         ResetGroundLoot(clearCaches: true);
         Loot.T11ItemSupport.Reset();
         if (!disposeTranslator) return;
@@ -210,6 +214,7 @@ public sealed partial class RynthAiPlugin
             DetectItemInfoClick();
             _navOverlay?.Render();
             _itemInfoUi?.Render();
+            _spellsUi?.Render();
             _iltHub?.Render();
             _huds?.Render();
             RenderTranslateWindow();
@@ -259,6 +264,7 @@ public sealed partial class RynthAiPlugin
             RenderTranslateWindow();
             _navOverlay?.Render();
             _itemInfoUi?.Render();
+            _spellsUi?.Render();
         }
         catch (Exception ex)
         {

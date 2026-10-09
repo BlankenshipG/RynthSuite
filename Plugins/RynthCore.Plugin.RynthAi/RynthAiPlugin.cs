@@ -464,6 +464,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _dashboard.ChatSubmitHandler = HandleRynthChatSubmit;
         EnsureTranslator();
         EnsureItemInfoUi();
+        EnsureSpellsUi();
         _navigationEngine = new NavigationEngine(Host, _dashboard.Settings)
         {
             ChatSubmit = HandleRynthChatSubmit,
@@ -830,6 +831,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "lootprofile":     if (int.TryParse(value, out int li)) dash.SelectProfileAtIndex(1, li); break;
             case "metaprofile":     if (int.TryParse(value, out int mi)) dash.SelectProfileAtIndex(2, mi); break;
             case "settingsprofile": if (int.TryParse(value, out int si)) dash.SelectProfileAtIndex(3, si); break;
+            case "buffprofile":     if (int.TryParse(value, out int bi)) dash.SelectProfileAtIndex(4, bi); break;
+            case "spells":          HandleSpellsCommand(value); break;   // dashboard Spells button: toggle|show|hide
             case "forcerebuff":  dash.RequestForceRebuff(); break;
             case "cancelrebuff": dash.RequestCancelForceRebuff(); break;
             case "clearbusy":    HandleClearBusyCommand(); break;
@@ -3169,6 +3172,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "tr":           HandleTranslateCommand(parts); break;
             case "iteminfo":
             case "ii":           HandleItemInfoCommand(parts); break;
+            case "spells":       HandleSpellsCommand(parts.Length > 2 ? parts[2] : string.Empty); break;
+            case "buffprofile":  HandleBuffProfileCommand(parts); break;
             case "groundloot":   HandleGroundLootCommand(parts); break;
             case "addnavpt":     HandleAddNavPointCommand(); break;
             case "nav":          HandleNavCommand(parts); break;
