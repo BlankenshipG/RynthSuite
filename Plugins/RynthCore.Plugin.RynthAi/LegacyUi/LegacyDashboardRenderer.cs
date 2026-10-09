@@ -1561,7 +1561,9 @@ internal sealed partial class LegacyDashboardRenderer
         var tmp = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.LegacyUiSettings);
         if (tmp == null) return;
 
-        // Copy all serialized fields manually (the source generator guarantees coverage)
+        // Every serialized field must be listed here, or loading a profile silently drops it and
+        // the next autosave writes the default back. "profile: every saved setting survives
+        // loading" (RynthAiHostTests, ProfileLoadTests) fails for any field that is missing.
         dst.EnableBuffing            = tmp.EnableBuffing;
         dst.EnableCombat             = tmp.EnableCombat;
         dst.EnableNavigation         = tmp.EnableNavigation;
@@ -1602,6 +1604,12 @@ internal sealed partial class LegacyDashboardRenderer
         dst.EnableCombineSalvage     = tmp.EnableCombineSalvage;
         dst.CombineBagsDuringSalvage = tmp.CombineBagsDuringSalvage;
         dst.ShowTargetStaminaMana    = tmp.ShowTargetStaminaMana;
+        // Item info (/ra iteminfo, "Describe items when selected") and the nav overlay are whole
+        // option objects; a hand-edited profile can carry null or out-of-range values.
+        dst.ItemInfoSettings         = tmp.ItemInfoSettings ?? new();
+        dst.ItemInfoSettings.Sanitize();
+        dst.NavOverlay               = tmp.NavOverlay ?? new();
+        dst.NavOverlay.Sanitize();
         dst.EnableMissileCrafting    = tmp.EnableMissileCrafting;
         dst.MissileCraftAmmoThreshold= tmp.MissileCraftAmmoThreshold;
         dst.LootInterItemDelayMs     = tmp.LootInterItemDelayMs;
@@ -1663,6 +1671,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.SummonPets               = tmp.SummonPets;
         dst.CustomPetRange           = tmp.CustomPetRange;
         dst.PetMinMonsters           = tmp.PetMinMonsters;
+        dst.PetAutoRefill            = tmp.PetAutoRefill;
         dst.AdvancedOptions          = tmp.AdvancedOptions;
         dst.MineOnly                 = tmp.MineOnly;
         dst.ShowEditor               = tmp.ShowEditor;
@@ -1677,6 +1686,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.LootOwnCorpse            = tmp.LootOwnCorpse;
         dst.TravelToOwnCorpse        = tmp.TravelToOwnCorpse;
         dst.LootOnlyRareCorpses      = tmp.LootOnlyRareCorpses;
+        dst.EnableGroundLoot         = tmp.EnableGroundLoot;
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;
@@ -1709,7 +1719,9 @@ internal sealed partial class LegacyDashboardRenderer
         dst.TargetFPSBackground      = tmp.TargetFPSBackground;
         // MonsterRule deep-copy preserves Category + MatchExpression via JSON round-trip
         dst.MonsterRules             = tmp.MonsterRules;
+        dst.MonsterNameBlacklist     = tmp.MonsterNameBlacklist ?? new();
         dst.ItemRules                = tmp.ItemRules;
+        dst.AmmoRules                = tmp.AmmoRules ?? new();
         dst.ConsumableRules          = tmp.ConsumableRules;
         dst.BuffRules                = tmp.BuffRules;
         dst.MetaRules                = tmp.MetaRules;
@@ -1797,6 +1809,10 @@ internal sealed partial class LegacyDashboardRenderer
         dst.RadarWallPaintRadius     = tmp.RadarWallPaintRadius;
         dst.RadarCircular            = tmp.RadarCircular;
         dst.RadarClickThrough        = tmp.RadarClickThrough;
+        dst.RadarPosX                = tmp.RadarPosX;
+        dst.RadarPosY                = tmp.RadarPosY;
+        dst.RadarSizeX               = tmp.RadarSizeX;
+        dst.RadarSizeY               = tmp.RadarSizeY;
         dst.SuppressRetailPowerbar   = tmp.SuppressRetailPowerbar;
         dst.ShowRynthChat            = tmp.ShowRynthChat;
         dst.ChatOpacity              = tmp.ChatOpacity;
