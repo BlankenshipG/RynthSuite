@@ -26,6 +26,7 @@ namespace RynthCore.Plugin.RynthAi;
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.IltHub.IltHubState))]
 [JsonSerializable(typeof(System.Collections.Generic.List<RynthCore.Plugin.RynthAi.IltHub.IltBankTransaction>), TypeInfoPropertyName = "IltBankTransactionList")]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.IltHub.IltAugCostFile))]
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.BuffProfile))]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     IncludeFields = true,

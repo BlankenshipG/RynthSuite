@@ -120,6 +120,8 @@ public class SpellManager
                 SpellDatabase.Load(msg => _host.WriteToChat(msg, 2));
             SpellDictionary = SpellDatabase.BuildNameToIdMap();
             _nameToIds = SpellDatabase.BuildNameToIdsMap();
+            // ACECustom catalog: school/level/target for the Spells window and buff profiles.
+            SpellCatalog.EnsureLoaded(msg => _host.WriteToChat(msg, 2));
             _host.WriteToChat($"[RynthAi] Magic System Online: {SpellDictionary.Count} spells loaded.", 1);
         }
         catch (Exception ex)
@@ -307,6 +309,16 @@ public class SpellManager
     /// didn't execute (off-thread busy-count leak), NOT "unknown/no comps".
     /// </summary>
     public bool IsKnownSpellId(int id) => _knownSpellIds.Contains(id);
+
+    /// <summary>
+    /// Copy of the known-spell snapshot for the render thread (the Spells window). Call it on the
+    /// pump thread: RefreshKnownSpells refills the live set in place there.
+    /// </summary>
+    public HashSet<int> CopyKnownSpellIds()
+    {
+        RefreshKnownSpells();
+        return new HashSet<int>(_knownSpellIds);
+    }
 
     /// <summary>
     /// Refresh the known-spell inventory from the engine's main-thread

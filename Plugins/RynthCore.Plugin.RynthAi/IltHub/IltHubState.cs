@@ -44,6 +44,7 @@ public sealed class IltHubState
     public IltGearState Gear = new();
     public IltGamesState Games = new();
     public IltGuardianState Guardian = new();
+    public IltBountyState Bounty = new();
 }
 
 /// <summary>Cached result of the server-options check (see IltServerOptions).</summary>
@@ -205,6 +206,8 @@ public sealed class IltCharacterState
     public bool GamesWindowOpen;
     /// <summary>The "Guardian" window (riddle translator, attribute tracker) is open.</summary>
     public bool GuardianWindowOpen;
+    /// <summary>The "Bounties" window (every ACECustom bounty and this character's progress) is open.</summary>
+    public bool BountiesWindowOpen;
 
     /// <summary>
     /// Registry charms this character has carried, keyed by charm name. Lets the Charms Tracking
@@ -295,4 +298,55 @@ public sealed class IltGuardianState
     public Dictionary<string, int> TurnInCounts = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Estimated end of each attribute's cooldown (UTC), keyed by attribute (same fallback).</summary>
     public Dictionary<string, DateTime> CooldownUntilUtc = new(StringComparer.OrdinalIgnoreCase);
+}
+
+// ── Bounties (ACECustom /bounty list) ───────────────────────────────────────
+
+public sealed class IltBountyState
+{
+    /// <summary>Re-read "/bounty list" after this character's kills while the Bounties window is open.</summary>
+    public bool RefreshOnKills = true;
+    /// <summary>Fewest seconds between two automatic "/bounty list" reads (kills arrive faster than that).</summary>
+    public int MinRefreshSeconds = 10;
+    /// <summary>Re-read every this many minutes while the window is open, even without kills (0 = off).</summary>
+    public int PeriodicRefreshMinutes = 5;
+    /// <summary>Hide rewards this character's QB is too low for.</summary>
+    public bool HideQbLocked;
+    /// <summary>List the closest-to-complete bounties first instead of the server's order.</summary>
+    public bool SortByProgress;
+    /// <summary>Area / reward filter text.</summary>
+    public string Filter = string.Empty;
+
+    /// <summary>Last "/bounty list" result (server order), kept so the window fills right after login.</summary>
+    public List<IltBountyEntry> Entries = new();
+    /// <summary>When Entries was last read from the server (UTC; MinValue = never).</summary>
+    public DateTime ListedUtc;
+    /// <summary>True when the last full read said no bounty is active anywhere.</summary>
+    public bool NoneAnywhere;
+    /// <summary>Latest bounty chat event ("Bounty complete! +1 ... gained.") and when it arrived.</summary>
+    public string LastEvent = string.Empty;
+    public DateTime LastEventUtc;
+}
+
+/// <summary>One reward of one bounty area, as "/bounty list" last reported it.</summary>
+public sealed class IltBountyEntry
+{
+    /// <summary>Dungeon (optionally "(layer N)"), "All zones", a zone name or a region name.</summary>
+    public string Where = string.Empty;
+    public long Amount;
+    public string Item = string.Empty;
+    /// <summary>Kills per award.</summary>
+    public int KillsRequired;
+    /// <summary>Cooldown after an award before kills count again (0 = none).</summary>
+    public int CooldownSeconds;
+    /// <summary>IltBountyStatus as an int (Counting, Cooldown, NeedsQb).</summary>
+    public int Status;
+    /// <summary>Kills counted so far (Counting only).</summary>
+    public int Kills;
+    /// <summary>End of the cooldown (Cooldown only, UTC).</summary>
+    public DateTime UnlockAtUtc;
+    public long QbRequired;
+    public long QbHave;
+    /// <summary>Last time Kills went up or the bounty was awarded (UTC), for the window's highlight.</summary>
+    public DateTime ChangedUtc;
 }

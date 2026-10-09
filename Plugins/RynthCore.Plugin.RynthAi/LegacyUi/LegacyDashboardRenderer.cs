@@ -53,7 +53,8 @@ internal sealed partial class LegacyDashboardRenderer
     private readonly List<string> _navFiles = new();
     private readonly List<string> _lootFiles = new();
     private readonly List<string> _metaFiles = new();
-    // Guards the four profile-name lists above against the cross-thread race
+    private readonly List<string> _buffFiles = new();
+    // Guards the profile-name lists above against the cross-thread race
     // between BuildSnapshotJson (Avalonia panel poll thread, ~30 Hz) and the
     // Refresh*Files mutators (AC pump thread). Enumerating a List<string> while
     // another thread Clear()s it throws InvalidOperationException; when that
@@ -1561,7 +1562,9 @@ internal sealed partial class LegacyDashboardRenderer
         var tmp = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.LegacyUiSettings);
         if (tmp == null) return;
 
-        // Copy all serialized fields manually (the source generator guarantees coverage)
+        // Every serialized field must be listed here, or loading a profile silently drops it and
+        // the next autosave writes the default back. "profile: every saved setting survives
+        // loading" (RynthAiHostTests, ProfileLoadTests) fails for any field that is missing.
         dst.EnableBuffing            = tmp.EnableBuffing;
         dst.EnableCombat             = tmp.EnableCombat;
         dst.EnableNavigation         = tmp.EnableNavigation;
@@ -1596,12 +1599,21 @@ internal sealed partial class LegacyDashboardRenderer
         dst.NavProfileIdx            = tmp.NavProfileIdx;
         dst.LootProfileIdx           = tmp.LootProfileIdx;
         dst.MetaProfileIdx           = tmp.MetaProfileIdx;
+        dst.CurrentBuffProfilePath   = tmp.CurrentBuffProfilePath ?? string.Empty;
+        dst.BuffProfileIdx           = tmp.BuffProfileIdx;
+        dst.ShowSpellsWindow         = tmp.ShowSpellsWindow;
         dst.EnableAutostack          = tmp.EnableAutostack;
         dst.EnableAutocram           = tmp.EnableAutocram;
         dst.ReadUnknownScrolls       = tmp.ReadUnknownScrolls;
         dst.EnableCombineSalvage     = tmp.EnableCombineSalvage;
         dst.CombineBagsDuringSalvage = tmp.CombineBagsDuringSalvage;
         dst.ShowTargetStaminaMana    = tmp.ShowTargetStaminaMana;
+        // Item info (/ra iteminfo, "Describe items when selected") and the nav overlay are whole
+        // option objects; a hand-edited profile can carry null or out-of-range values.
+        dst.ItemInfoSettings         = tmp.ItemInfoSettings ?? new();
+        dst.ItemInfoSettings.Sanitize();
+        dst.NavOverlay               = tmp.NavOverlay ?? new();
+        dst.NavOverlay.Sanitize();
         dst.EnableMissileCrafting    = tmp.EnableMissileCrafting;
         dst.MissileCraftAmmoThreshold= tmp.MissileCraftAmmoThreshold;
         dst.LootInterItemDelayMs     = tmp.LootInterItemDelayMs;
@@ -1663,6 +1675,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.SummonPets               = tmp.SummonPets;
         dst.CustomPetRange           = tmp.CustomPetRange;
         dst.PetMinMonsters           = tmp.PetMinMonsters;
+        dst.PetAutoRefill            = tmp.PetAutoRefill;
         dst.AdvancedOptions          = tmp.AdvancedOptions;
         dst.MineOnly                 = tmp.MineOnly;
         dst.ShowEditor               = tmp.ShowEditor;
@@ -1677,6 +1690,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.LootOwnCorpse            = tmp.LootOwnCorpse;
         dst.TravelToOwnCorpse        = tmp.TravelToOwnCorpse;
         dst.LootOnlyRareCorpses      = tmp.LootOnlyRareCorpses;
+        dst.EnableGroundLoot         = tmp.EnableGroundLoot;
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;
@@ -1709,7 +1723,9 @@ internal sealed partial class LegacyDashboardRenderer
         dst.TargetFPSBackground      = tmp.TargetFPSBackground;
         // MonsterRule deep-copy preserves Category + MatchExpression via JSON round-trip
         dst.MonsterRules             = tmp.MonsterRules;
+        dst.MonsterNameBlacklist     = tmp.MonsterNameBlacklist ?? new();
         dst.ItemRules                = tmp.ItemRules;
+        dst.AmmoRules                = tmp.AmmoRules ?? new();
         dst.ConsumableRules          = tmp.ConsumableRules;
         dst.BuffRules                = tmp.BuffRules;
         dst.MetaRules                = tmp.MetaRules;
@@ -1797,6 +1813,10 @@ internal sealed partial class LegacyDashboardRenderer
         dst.RadarWallPaintRadius     = tmp.RadarWallPaintRadius;
         dst.RadarCircular            = tmp.RadarCircular;
         dst.RadarClickThrough        = tmp.RadarClickThrough;
+        dst.RadarPosX                = tmp.RadarPosX;
+        dst.RadarPosY                = tmp.RadarPosY;
+        dst.RadarSizeX               = tmp.RadarSizeX;
+        dst.RadarSizeY               = tmp.RadarSizeY;
         dst.SuppressRetailPowerbar   = tmp.SuppressRetailPowerbar;
         dst.ShowRynthChat            = tmp.ShowRynthChat;
         dst.ChatOpacity              = tmp.ChatOpacity;
@@ -2060,6 +2080,40 @@ internal sealed partial class LegacyDashboardRenderer
         RefreshNavFiles();
         RefreshLootFiles();
         RefreshMetaFiles();
+        RefreshBuffProfileFiles();
+    }
+
+    /// <summary>
+    /// Buff profile list for Loaded Files (Buffs): "Built-in" first (buffing's own list), then
+    /// every BuffProfiles\*.json. Re-selects the saved path; a missing file falls back to Built-in.
+    /// Public so the Spells window can refresh it after saving or deleting a profile.
+    /// </summary>
+    public void RefreshBuffProfileFiles()
+    {
+        var list = new List<string> { BuiltInBuffProfileLabel };
+        int idx = 0;
+        foreach (string file in BuffProfileStore.ListFileNames())
+        {
+            list.Add(file);
+            if (Path.Combine(BuffProfileStore.Folder, file).Equals(_settings.CurrentBuffProfilePath, StringComparison.OrdinalIgnoreCase))
+                idx = list.Count - 1;
+        }
+        lock (_profileListsLock) { _buffFiles.Clear(); _buffFiles.AddRange(list); }
+        _settings.BuffProfileIdx = idx;
+    }
+
+    /// <summary>Label of the first Buffs entry: no profile, buffing uses its built-in list.</summary>
+    public const string BuiltInBuffProfileLabel = "Built-in";
+
+    /// <summary>
+    /// Makes <paramref name="path"/> the buff profile buffing uses (empty = built-in list) and saves
+    /// the settings. BuffManager notices the path change on its next tick.
+    /// </summary>
+    public void SetActiveBuffProfile(string path)
+    {
+        _settings.CurrentBuffProfilePath = path ?? string.Empty;
+        RefreshBuffProfileFiles();
+        SaveSettings();
     }
 
     private void RefreshProfilesList()
@@ -2510,18 +2564,23 @@ internal sealed partial class LegacyDashboardRenderer
         // while a Refresh*Files mutator Clear()s it on the pump thread — that
         // race threw InvalidOperationException and, escaping this snapshot
         // poll's reverse-P/Invoke boundary, fail-fasted the NativeAOT runtime.
-        List<string> profilesCopy, navCopy, lootCopy, metaCopy;
+        List<string> profilesCopy, navCopy, lootCopy, metaCopy, buffCopy;
         lock (_profileListsLock)
         {
             profilesCopy = new List<string>(_profiles);
             navCopy      = new List<string>(_navFiles);
             lootCopy     = new List<string>(_lootFiles);
             metaCopy     = new List<string>(_metaFiles);
+            buffCopy     = new List<string>(_buffFiles);
         }
         AppendStringArray(sb, "profiles", profilesCopy); sb.Append(',');
         AppendStringArray(sb, "navProfiles", navCopy); sb.Append(',');
         AppendStringArray(sb, "lootProfiles", lootCopy); sb.Append(',');
         AppendStringArray(sb, "metaProfiles", metaCopy); sb.Append(',');
+        AppendStringArray(sb, "buffProfiles", buffCopy); sb.Append(',');
+        AppendString(sb, "currentBuffName",
+            string.IsNullOrEmpty(_settings.CurrentBuffProfilePath) ? BuiltInBuffProfileLabel : Path.GetFileNameWithoutExtension(_settings.CurrentBuffProfilePath)); sb.Append(',');
+        AppendInt(sb, "selectedBuffIdx", _settings.BuffProfileIdx); sb.Append(',');
         AppendString(sb, "currentNavName",
             string.IsNullOrEmpty(_settings.CurrentNavPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentNavPath)); sb.Append(',');
         AppendString(sb, "currentLootName",
@@ -2658,7 +2717,7 @@ internal sealed partial class LegacyDashboardRenderer
     }
 
     /// <summary>
-    /// Profile kinds: 0 = nav, 1 = loot, 2 = meta, 3 = settings profile.
+    /// Profile kinds: 0 = nav, 1 = loot, 2 = meta, 3 = settings profile, 4 = buff profile.
     /// Index is into the matching list returned in BuildSnapshotJson.
     /// </summary>
     public void SelectProfileAtIndex(int kind, int index)
@@ -2669,7 +2728,7 @@ internal sealed partial class LegacyDashboardRenderer
         // AddRange() on the pump thread — a torn read or
         // ArgumentOutOfRangeException. Snapshot the one list this call needs
         // under _profileListsLock first, mirroring BuildSnapshotJson.
-        string? navFile = null, lootFile = null, metaFile = null, profileName = null;
+        string? navFile = null, lootFile = null, metaFile = null, profileName = null, buffFile = null;
         lock (_profileListsLock)
         {
             switch (kind)
@@ -2678,6 +2737,7 @@ internal sealed partial class LegacyDashboardRenderer
                 case 1: if (index >= 0 && index < _lootFiles.Count) lootFile = _lootFiles[index]; break;
                 case 2: if (index >= 0 && index < _metaFiles.Count) metaFile = _metaFiles[index]; break;
                 case 3: if (index >= 0 && index < _profiles.Count) profileName = _profiles[index]; break;
+                case 4: if (index >= 0 && index < _buffFiles.Count) buffFile = _buffFiles[index]; break;
             }
         }
 
@@ -2705,6 +2765,10 @@ internal sealed partial class LegacyDashboardRenderer
                 break;
             case 3:
                 if (profileName != null) SwitchProfile(profileName);
+                break;
+            case 4:
+                if (buffFile != null)
+                    SetActiveBuffProfile(index == 0 ? string.Empty : Path.Combine(BuffProfileStore.Folder, buffFile));
                 break;
         }
     }

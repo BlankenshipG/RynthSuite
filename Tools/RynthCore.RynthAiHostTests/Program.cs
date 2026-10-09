@@ -34,6 +34,8 @@ internal static class Program
 
         // Spell names (item spells, spell expiry by name) come from the plugin's embedded table.
         SpellDatabase.Load();
+        // ACECustom spell catalog (Spells window, buff profiles), also embedded in the plugin.
+        SpellCatalog.EnsureLoaded(Console.WriteLine);
 
         var runner = new Runner();
         NativeLootTests.Register(runner);
@@ -46,6 +48,7 @@ internal static class Program
         NavEngineTests.Register(runner);
         PatrolDoorwayTests.Register(runner);
         BuffTests.Register(runner);
+        SpellCatalogTests.Register(runner);
         CombatMathTests.Register(runner);
         WeaponTests.Register(runner);
         RadarSnapshotTests.Register(runner);
@@ -69,6 +72,8 @@ CorpseKillerTests.Register(runner);
         GiveTests.Register(runner);
         DungeonMapBakeTests.Register(runner);
         AttributeRaiserTests.Register(runner);
+        ProfileLoadTests.Register(runner);
+        BountyTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }

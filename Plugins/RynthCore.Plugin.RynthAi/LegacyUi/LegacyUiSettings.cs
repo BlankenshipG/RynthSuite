@@ -71,6 +71,14 @@ public sealed class LegacyUiSettings
     public int LootProfileIdx;
     public int MetaProfileIdx = 1;
 
+    /// <summary>Buff profile buffing uses (BuffProfiles\*.json); empty = the built-in buff list.
+    /// Chosen under Loaded Files (Buffs) or with "Use for buffing" in the Spells window.</summary>
+    public string CurrentBuffProfilePath = string.Empty;
+    /// <summary>Index into the Buffs file list (0 = "Built-in").</summary>
+    public int BuffProfileIdx;
+    /// <summary>The Spells window (/ra spells) is open.</summary>
+    public bool ShowSpellsWindow;
+
     public bool EnableAutostack = true;
     public bool EnableAutocram = true;
     // VTank's ReadUnknownScrolls (default on): loot scrolls of spells the character doesn't
