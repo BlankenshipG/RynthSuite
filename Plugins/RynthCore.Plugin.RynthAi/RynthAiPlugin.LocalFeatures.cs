@@ -21,6 +21,8 @@ public sealed partial class RynthAiPlugin
     private Huds.HudIconCache? _hudIcons;
     private Translate.ChatTranslator? _translator;
     private Translate.TranslateUi? _translateUi;
+    private Discord.DiscordRelay? _discordRelay;
+    private Discord.DiscordRelayUi? _discordRelayUi;
     private LegacyItemInfoUi? _itemInfoUi;
     private CreatureData.UbMobSeedStore? _mobSeedStore;
 
@@ -68,6 +70,22 @@ public sealed partial class RynthAiPlugin
             if (_huds != null) _huds.Translate = _translateUi;
         }
         catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator init"); }
+        EnsureDiscordRelay();
+    }
+
+    /// <summary>Discord chat relay; like the translator it survives logout and is disposed on shutdown.</summary>
+    private void EnsureDiscordRelay()
+    {
+        try
+        {
+            if (_discordRelay == null)
+            {
+                _discordRelay = new Discord.DiscordRelay(CurrentCharacterName);
+                _discordRelayUi = new Discord.DiscordRelayUi(_discordRelay);
+            }
+            if (_discordRelayUi != null) _discordRelayUi.CurrentNameHint = CurrentCharacterName();
+        }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "discord relay init"); }
     }
 
     /// <summary>The logged-in character's name, or empty before login.</summary>
@@ -140,6 +158,8 @@ public sealed partial class RynthAiPlugin
         catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "Tick"); }
         try { _translator?.Tick(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator Tick"); }
+        try { _discordRelay?.Tick(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "discord relay Tick"); }
         try { TickItemInfo(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.General, ex, "item info tick"); }
         try { TickSpellsUi(); }
@@ -149,7 +169,7 @@ public sealed partial class RynthAiPlugin
         Loot.T11ItemSupport.SyncOverride(_dashboard?.Settings.T11ItemAugsOverride ?? -1);
     }
 
-    /// <summary>Drop per-character feature objects. The translator is disposed only on plugin shutdown.</summary>
+    /// <summary>Drop per-character feature objects. The translator and Discord relay are disposed only on plugin shutdown.</summary>
     private void TeardownLocalFeatures(bool disposeTranslator)
     {
         try { _navBreadcrumbs?.Shutdown(); }
@@ -173,6 +193,10 @@ public sealed partial class RynthAiPlugin
         catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator dispose"); }
         _translator = null;
         _translateUi = null;
+        try { _discordRelay?.Dispose(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "discord relay dispose"); }
+        _discordRelay = null;
+        _discordRelayUi = null;
     }
 
     /// <summary>ILT Hub may eat a server reply; the translator records the line either way.</summary>
@@ -185,6 +209,10 @@ public sealed partial class RynthAiPlugin
         catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "OnChat"); }
         try { _translator?.OnChatWindowText(text, chatType); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "translator inbound"); }
+        // Lines eaten above (ILT Hub / Meta Manager replies) are plugin traffic, not chat to relay.
+        if (eat != 0) return;
+        try { _discordRelay?.OnChatWindowText(text, chatType); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Chat, ex, "discord relay inbound"); }
     }
 
     /// <summary>True when the translator swallowed an outbound chat line (it will resend the translation).</summary>
@@ -218,6 +246,7 @@ public sealed partial class RynthAiPlugin
             _iltHub?.Render();
             _huds?.Render();
             RenderTranslateWindow();
+            RenderDiscordRelayWindow();
         }
         catch (Exception ex)
         {
@@ -262,6 +291,7 @@ public sealed partial class RynthAiPlugin
             finally { ImGui.PopStyleColor(pushedColors); }
             _huds?.Render();
             RenderTranslateWindow();
+            RenderDiscordRelayWindow();
             _navOverlay?.Render();
             _itemInfoUi?.Render();
             _spellsUi?.Render();
@@ -314,6 +344,23 @@ public sealed partial class RynthAiPlugin
         int pushedColors = LegacyDashboardRenderer.PushDashboardStyle();
         try { ui.RenderWindow(); }
         finally { ImGui.PopStyleColor(pushedColors); }
+    }
+
+    /// <summary>Discord Relay window in the dashboard colours (no-op while hidden).</summary>
+    private void RenderDiscordRelayWindow()
+    {
+        var ui = _discordRelayUi;
+        if (ui == null || _discordRelay?.Settings.ShowWindow != true) return;
+        int pushedColors = LegacyDashboardRenderer.PushDashboardStyle();
+        try { ui.RenderWindow(); }
+        finally { ImGui.PopStyleColor(pushedColors); }
+    }
+
+    /// <summary>/ra discord ... — forwards to the Discord chat relay.</summary>
+    private void HandleDiscordCommand(string[] parts)
+    {
+        if (_discordRelay == null) { ChatLine("[RynthAi] Discord relay not ready (log in first)."); return; }
+        _discordRelay.HandleCommand(parts.Length > 2 ? parts[2..] : Array.Empty<string>(), ChatLine);
     }
 
     /// <summary>"/ra huds|itemhud|remote|miniremote [show|hide|toggle]".</summary>

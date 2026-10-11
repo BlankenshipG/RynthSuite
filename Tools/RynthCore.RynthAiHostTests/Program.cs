@@ -76,6 +76,7 @@ CorpseKillerTests.Register(runner);
         BountyTests.Register(runner);
         SigilChainTests.Register(runner);
         LumIncomeTests.Register(runner);
+        DiscordRelayTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }
