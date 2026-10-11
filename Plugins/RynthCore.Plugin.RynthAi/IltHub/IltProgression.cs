@@ -68,6 +68,8 @@ internal sealed class IltProgression : IIltFeature
     private long _unassignedXp;
     private volatile bool _peace, _hasVitae;
     private readonly long[] _enlHave = new long[4]; // tokens, medallions, sigils, crests
+    // 301-325 sigil chain stock (pack items by name; EnlightenedCoins = bank + pack). Pump thread only.
+    private IltSigilStock _chain = new();
     private long _lastFactsAt;
     private readonly uint[] _enchIds = new uint[256];
     private readonly double[] _enchExp = new double[256];
@@ -202,6 +204,18 @@ internal sealed class IltProgression : IIltFeature
         _enlHave[1] = inv.CountByWcid(IltInventory.WcidEnlMedallion);
         _enlHave[2] = inv.CountByWcid(IltInventory.WcidEnlSigil);
         _enlHave[3] = inv.CountByWcid(IltInventory.WcidEnlCrest);
+        _chain = new IltSigilStock
+        {
+            Sigils = _enlHave[2],
+            EnlightenedCoins = _ctx.State.Bank.EnlightenedCoins + inv.CountByWcid(IltInventory.WcidEnlightenedCoin),
+            AscensionCoins = inv.CountByChainName(IltSigilChain.AscensionCoin),
+            LifebloodElixirs = inv.CountByChainName(IltSigilChain.LifebloodElixir),
+            LifebloomResins = inv.CountByChainName(IltSigilChain.LifebloomResin),
+            YalaniTrinkets = inv.CountByChainName(IltSigilChain.YalaniTrinket),
+            NecrolyticExtracts = inv.CountByChainName(IltSigilChain.NecrolyticExtract),
+            LifeSplitters = inv.CountByChainName(IltSigilChain.LifeSplitter),
+            Plants = inv.CountByChainName(IltSigilChain.Plant),
+        };
 
         _hasVitae = false;
         if (_ctx.Host.HasReadPlayerEnchantments)
@@ -230,7 +244,14 @@ internal sealed class IltProgression : IIltFeature
         if (!_peace) list.Add("Must be in peace mode.");
         if (_hasVitae) list.Add("Must not have vitae.");
         var cost = EnlStepCost(next);
-        if (cost.Count > 0 && HaveFor(cost.Wcid) < cost.Count) list.Add($"Need {cost.Count} {cost.Item} (have {HaveFor(cost.Wcid)}).");
+        if (cost.Count > 0 && HaveFor(cost.Wcid) < cost.Count)
+        {
+            // Sigils: the server takes finished sigils only, but say how many the craft chain could still make.
+            string craft = cost.Wcid == IltInventory.WcidEnlSigil
+                ? $"; the craft chain can make {IltParse.N0(IltSigilChain.Fulfillable(_chain) - _chain.Sigils)} more"
+                : string.Empty;
+            list.Add($"Need {cost.Count} {cost.Item} (have {HaveFor(cost.Wcid)}{craft}).");
+        }
         if (cost.Lum > 0 && _ctx.State.Bank.Luminance < cost.Lum) list.Add($"Need {IltParse.Compact((double)cost.Lum)} banked luminance.");
         return list;
     }
@@ -522,6 +543,8 @@ internal sealed class IltProgression : IIltFeature
         }
         Str(sb, "tokensShort", tokensShort);
 
+        AppendEnlCalculatorJson(sb, enl, target, totals, lumTotal);
+
         var blockers = NextEnlBlockers();
         sb.Append(",\"blockers\":[");
         bool firstBlocker = true;
@@ -536,6 +559,138 @@ internal sealed class IltProgression : IIltFeature
         Str(sb, "status", _enlStatus);
         sb.Append('}');
     }
+
+    /// <summary>Per-level rows the calculator lists at most (a bigger range is summarised in the totals).</summary>
+    private const int EnlLevelRowsMax = 100;
+
+    /// <summary>
+    /// UB-IT's Enlighten calculator: per-level table (green while stock lasts, the sigil chain counted),
+    /// material summary (still need / have), the 301-325 sigil chain, and the e-coin line shared with
+    /// token conversion. Appends "levels", "materials", "chain", "chainNote", "ecoins", "ecoinsLum".
+    /// </summary>
+    private void AppendEnlCalculatorJson(StringBuilder sb, int enl, int target, Dictionary<string, long> totals, decimal lumTotal)
+    {
+        // Simulated stock: tokens, medallions, crests on hand, sigils via the chain, banked luminance.
+        long tok = _enlHave[0], med = _enlHave[1], crest = _enlHave[3];
+        decimal lum = (decimal)_ctx.State.Bank.Luminance;
+        var chain = _chain.Clone();
+        long sigilCraftable = IltSigilChain.Fulfillable(chain);
+
+        sb.Append(",\"levels\":[");
+        int last = Math.Min(Math.Max(enl + 1, target), enl + EnlLevelRowsMax);
+        for (int t = enl + 1; t <= last; t++)
+        {
+            var s = EnlStepCost(t);
+            bool ok = lum >= s.Lum;
+            if (ok && s.Count > 0)
+            {
+                switch (s.Wcid)
+                {
+                    case IltInventory.WcidEnlToken: ok = tok >= s.Count; if (ok) tok -= s.Count; break;
+                    case IltInventory.WcidEnlMedallion: ok = med >= s.Count; if (ok) med -= s.Count; break;
+                    case IltInventory.WcidEnlSigil: ok = sigilCraftable >= s.Count; if (ok) sigilCraftable -= s.Count; break;
+                    default: ok = crest >= s.Count; if (ok) crest -= s.Count; break;
+                }
+            }
+            if (ok) lum -= s.Lum;
+            if (t > enl + 1) sb.Append(',');
+            sb.Append("{\"t\":").Append(t);
+            Str(sb, "item", ShortItem(s.Item));
+            sb.Append(",\"count\":").Append(s.Count);
+            Str(sb, "lum", s.Lum > 0 ? IltParse.Compact((double)s.Lum) : "-");
+            sb.Append(",\"ok\":").Append(Bool(ok)).Append('}');
+        }
+        sb.Append(']');
+
+        // Material summary: Still need = demand minus what is on hand.
+        long sigilsNeed = totals.TryGetValue("Enlightenment Sigils", out long sn) ? sn : 0;
+        var shortfall = IltSigilChain.Shortfall(sigilsNeed, _chain);
+        decimal bankLum = (decimal)_ctx.State.Bank.Luminance;
+        sb.Append(",\"materials\":[");
+        bool firstMat = true;
+        void Mat(string label, string need, string have, bool ok)
+        {
+            if (!firstMat) sb.Append(',');
+            firstMat = false;
+            sb.Append('{');
+            Str(sb, "label", label, first: true);
+            Str(sb, "need", need);
+            Str(sb, "have", have);
+            sb.Append(",\"ok\":").Append(Bool(ok)).Append('}');
+        }
+        if (lumTotal > 0)
+        {
+            decimal lumStill = Math.Max(0, lumTotal - bankLum);
+            Mat("Luminance", lumStill > 0 ? IltParse.Compact((double)lumStill) : "0", IltParse.Compact((double)bankLum), lumStill == 0);
+        }
+        void Item(string key, string label, long have, bool extraOk = false)
+        {
+            if (!totals.TryGetValue(key, out long need)) return;
+            long still = Math.Max(0, need - have);
+            Mat(label, IltParse.N0(still), IltParse.N0(have), still == 0 || extraOk);
+        }
+        Item("Enlightenment Tokens", "Tokens", _enlHave[0]);
+        Item("Enlightenment Medallions", "Medallions", _enlHave[1]);
+        Item("Enlightenment Sigils", "Sigils", _enlHave[2], extraOk: shortfall.Covered);
+        Item("Enlightenment Crests", "Crests", _enlHave[3]);
+        sb.Append(']');
+
+        // Sigil chain rows (only when the plan reaches 301-325).
+        sb.Append(",\"chain\":[");
+        if (sigilsNeed > 0)
+        {
+            bool firstRow = true;
+            void Row(string label, long need, long have, bool ok, bool craft)
+            {
+                if (!firstRow) sb.Append(',');
+                firstRow = false;
+                sb.Append('{');
+                Str(sb, "label", label, first: true);
+                sb.Append(",\"need\":").Append(need).Append(",\"have\":").Append(have)
+                  .Append(",\"ok\":").Append(Bool(ok)).Append(",\"craft\":").Append(Bool(craft)).Append('}');
+            }
+            Row("Ascension Coins", shortfall.AscensionToCraft, _chain.AscensionCoins,
+                shortfall.AscensionToCraft == 0 || (shortfall.CoinsShort == 0 && shortfall.TrinketsShort == 0), true);
+            Row("Lifeblood Elixirs", shortfall.ElixirsToCraft, _chain.LifebloodElixirs,
+                shortfall.ElixirsToCraft == 0 || (shortfall.ExtractsShort == 0 && shortfall.SplittersShort == 0 && shortfall.PlantsShort == 0), true);
+            Row("Lifebloom Resins", shortfall.ResinsToCraft, _chain.LifebloomResins,
+                shortfall.ResinsToCraft == 0 || (shortfall.SplittersShort == 0 && shortfall.PlantsShort == 0), true);
+            Row("E-coins", shortfall.CoinsShort, _chain.EnlightenedCoins, shortfall.CoinsShort == 0, false);
+            Row("Ancient Yalani Trinkets", shortfall.TrinketsShort, _chain.YalaniTrinkets, shortfall.TrinketsShort == 0, false);
+            Row("Necrolytic Extracts", shortfall.ExtractsShort, _chain.NecrolyticExtracts, shortfall.ExtractsShort == 0, false);
+            Row("Life Splitters", shortfall.SplittersShort, _chain.LifeSplitters, shortfall.SplittersShort == 0, false);
+            Row("Plants", shortfall.PlantsShort, _chain.Plants, shortfall.PlantsShort == 0, false);
+        }
+        sb.Append(']');
+        Str(sb, "chainNote", sigilsNeed > 0
+            ? $"Sigil = Lifeblood Elixir + Ascension Coin. {IltParse.N0(shortfall.SigilsToCraft)} to craft; "
+              + (shortfall.Covered ? "the chain covers them." : "Need = crafts left (in-between items) or mats to get (raw items).")
+            : string.Empty);
+
+        // E-coins: Ascension Coin crafts first, then token conversion at the shop price.
+        long tokNeed = totals.TryGetValue("Enlightenment Tokens", out long tn) ? tn : 0;
+        IltSigilChain.EcoinDemand(_chain.EnlightenedCoins, shortfall.CoinsForCraft, Math.Max(0, tokNeed - _enlHave[0]),
+            C.EnlightenedCoinsPerToken, out _, out long tokensStill, out long coinsNeeded);
+        Str(sb, "ecoins", tokNeed > 0 || shortfall.CoinsForCraft > 0
+            ? $"E-coins needed: {IltParse.N0(coinsNeeded)}   have {IltParse.N0(_chain.EnlightenedCoins)} (bank + pack)"
+              + (shortfall.CoinsForCraft > 0 ? $"   Ascension Coins use {IltParse.N0(shortfall.CoinsForCraft)}" : "")
+              + (tokensStill > 0 ? $"   tokens still {IltParse.N0(tokensStill)}" : "")
+            : string.Empty);
+        long lumPerCoin = C.LumPerEnlightenedCoin;
+        Str(sb, "ecoinsLum", coinsNeeded <= 0 ? string.Empty
+            : lumPerCoin > 0 ? $"Lum to buy e-coins: ~{IltParse.Compact((double)coinsNeeded * lumPerCoin)}"
+            : "Lum to buy e-coins: set Lum per e-coin (Augmentations)");
+    }
+
+    /// <summary>Short label for the per-level table's item column.</summary>
+    private static string ShortItem(string item) => item switch
+    {
+        "Enlightenment Tokens" => "Tokens",
+        "Enlightenment Medallions" => "Medallions",
+        "Enlightenment Sigils" => "Sigils",
+        "Enlightenment Crests" => "Crests",
+        _ => "-",
+    };
 
     private static string Bool(bool b) => b ? "true" : "false";
 
