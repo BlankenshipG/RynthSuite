@@ -289,7 +289,7 @@ public sealed partial class RynthAiPlugin
 
         if (cm == 0) { ChatLine($"[RynthAi] Unknown combat mode: {mode}"); return true; }
 
-        Host.ChangeCombatMode(cm);
+        Host.ChangeCombatModeFor(cm, "Command", "/mt combat", force: true);
         return true;
     }
 
@@ -379,7 +379,7 @@ public sealed partial class RynthAiPlugin
             targetId = Host.GetPlayerId();
         }
 
-        Host.CastSpell(targetId, spellId);
+        Host.CastSpellFor(targetId, spellId, "Command", $"spell {spellId} (/mt cast)", asked: true);
         return true;
     }
 

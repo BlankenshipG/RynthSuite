@@ -57,7 +57,7 @@ internal sealed class RynthNetCharacter
 
 internal sealed class RynthNetSettings
 {
-    public const string DefaultFolder = @"C:\Games\RynthSuite\RynthNet";
+    public static readonly string DefaultFolder = Path.Combine(RynthCore.Install.RynthInstallPaths.SuiteDir, "RynthNet"); // C:\Games\RynthSuite\RynthNet by default
     /// <summary>The settings folder; RYNTHNET_DIR overrides it (tests, portable setups).</summary>
     public static string Folder => Environment.GetEnvironmentVariable("RYNTHNET_DIR") is { Length: > 0 } dir ? dir : DefaultFolder;
     public static string FilePath => Path.Combine(Folder, "settings.json");

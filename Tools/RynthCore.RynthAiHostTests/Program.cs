@@ -17,6 +17,9 @@ internal static class Program
     /// <summary>Scratch folder next to the exe for files tests write. Emptied at start.</summary>
     public static string TempRoot { get; } = Path.Combine(AppContext.BaseDirectory, "scratch");
 
+    /// <summary>DungeonHazardStore's folder before Main pointed it at the scratch folder.</summary>
+    public static string LiveHazardFolder { get; private set; } = "";
+
     private static int Main(string[] args)
     {
         if (Directory.Exists(TempRoot)) Directory.Delete(TempRoot, recursive: true);
@@ -31,6 +34,9 @@ internal static class Program
         // The dungeon map bake writes floor plans under C:\Games\RynthSuite\RynthAi\Maps.
         RynthCore.Plugin.RynthAi.Maps.DungeonMapBake.CacheDir = Path.Combine(TempRoot, "Maps");
         RynthCore.Plugin.RynthAi.IltHub.IltAugCosts.FilePath = Path.Combine(TempRoot, "ilt-aug-costs.json");
+        // A sighted lava/acid hotspot is persisted under C:\Games\RynthSuite\RynthAi\DungeonHazards.
+        LiveHazardFolder = RynthCore.Plugin.RynthAi.DungeonHazardStore.Folder;
+        RynthCore.Plugin.RynthAi.DungeonHazardStore.Folder = Path.Combine(TempRoot, "DungeonHazards");
 
         // Spell names (item spells, spell expiry by name) come from the plugin's embedded table.
         SpellDatabase.Load();
@@ -44,8 +50,10 @@ internal static class Program
         MagItemDescriberTests.Register(runner);
         ExpressionTests.Register(runner);
         MetaTests.Register(runner);
+        NoKillTests.Register(runner);
         MetaSchedulerTests.Register(runner);
         NavEngineTests.Register(runner);
+        NavReachTests.Register(runner);
         PatrolDoorwayTests.Register(runner);
         BuffTests.Register(runner);
         SpellCatalogTests.Register(runner);
@@ -59,20 +67,34 @@ internal static class Program
         LootSalvageTests.Register(runner);
         LootCorpseTests.Register(runner);
         OwnCorpseTests.Register(runner);
-CorpseKillerTests.Register(runner);
+        UseRefusalTests.Register(runner);
+        CorpseKillerTests.Register(runner);
         VitalsTests.Register(runner);
+        MultiTargetTests.Register(runner);
         CastSafetyTests.Register(runner);
         HealLatencyTests.Register(runner);
         BlastTests.Register(runner);
         ArcWhenClearTests.Register(runner);
+        WallTests.Register(runner);
         UseAtLoginTests.Register(runner);
         LearnSpellsTests.Register(runner);
         AttackLatencyTests.Register(runner);
+        TargetingTests.Register(runner);
         LootAddItemTests.Register(runner);
         GiveTests.Register(runner);
         DungeonMapBakeTests.Register(runner);
-        AttributeRaiserTests.Register(runner);
+        MonsterEditorTests.Register(runner);
+        InstallPathsTests.Register(runner);
+        PetRefillTests.Register(runner);
+        WorldCacheTypedTests.Register(runner);
+        NavOverlayTests.Register(runner);
+        ActionPacingTests.Register(runner);
+        HazardEscapeTests.Register(runner);
+        ManaStoneChoiceTests.Register(runner);
+        CustomDebuffTests.Register(runner);
         ProfileLoadTests.Register(runner);
+        ActivityInterfaceTests.Register(runner);
+        AttributeRaiserTests.Register(runner);
         BountyTests.Register(runner);
         SigilChainTests.Register(runner);
         LumIncomeTests.Register(runner);

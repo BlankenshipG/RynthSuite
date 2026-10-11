@@ -50,7 +50,7 @@ internal sealed class RadarWallRenderer
     private readonly bool[] _inside = new bool[MaxPolyVerts];
 
     private static readonly string ExploredDir =
-        System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"ExploredDungeons");
+        System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "ExploredDungeons");
 
     public RadarWallRenderer(RynthCoreHost host, LegacyUiSettings settings)
     {

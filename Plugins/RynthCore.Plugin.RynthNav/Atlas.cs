@@ -22,7 +22,7 @@ internal sealed class AtlasLocation
     // A portal's destination.
     public bool HasDest, DestOnMap;
     public double DestNs, DestEw;
-    public string DestName = "", DestPlace = "";
+    public string DestName = "", DestPlace = "", DestCell = "";
     public int MinLevel, MaxLevel;
     public bool Quest, Closed;
 }
@@ -92,6 +92,7 @@ internal sealed class Atlas
                     l.DestOnMap = TryNum(d, "ns", out l.DestNs) & TryNum(d, "ew", out l.DestEw);
                     l.DestName = Str(d, "name");
                     l.DestPlace = Str(d, "place");
+                    l.DestCell = Str(d, "cell");
                 }
                 locs.Add(l);
             }
@@ -109,6 +110,36 @@ internal sealed class Atlas
     }
 
     public AtlasLocation? ById(int id) => _byId.TryGetValue(id, out var l) ? l : null;
+
+    /// <summary>
+    /// Landblocks that are dungeons: places (and portal destinations) the Atlas has in "dungeon"
+    /// cells, less any landblock with places on the map. A dungeon's nav_XXXX.tile holds only that
+    /// landblock's surface (a flat sheet; RynthNav.Baker leaves dungeon cells out), so it isn't
+    /// a navmesh for walking inside the dungeon.
+    /// </summary>
+    public HashSet<uint> DungeonLandblocks()
+    {
+        var dungeon = new HashSet<uint>();
+        var map = new HashSet<uint>();
+        foreach (AtlasLocation l in Locations)
+        {
+            if (TryLandblock(l.Cell, out uint lb))
+            {
+                if (l.OnMap) map.Add(lb);
+                else if (l.Place.Equals("dungeon", StringComparison.Ordinal)) dungeon.Add(lb);
+            }
+            if (l.HasDest && !l.DestOnMap && l.DestPlace.Equals("dungeon", StringComparison.Ordinal) && TryLandblock(l.DestCell, out uint dlb))
+                dungeon.Add(dlb);
+        }
+        dungeon.ExceptWith(map);
+        return dungeon;
+    }
+
+    private static bool TryLandblock(string cell, out uint lb)
+    {
+        lb = 0;
+        return cell.Length == 8 && uint.TryParse(cell.AsSpan(0, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out lb);
+    }
 
     // ── Search ───────────────────────────────────────────────────────────────
 

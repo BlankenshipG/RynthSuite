@@ -42,6 +42,13 @@
     <Compile Include="..\Shared\RynthNavPathApi.cs" Link="Shared\RynthNavPathApi.cs" />
     <!-- One logged, guarded way to use an object (who used what, and why). -->
     <Compile Include="..\Shared\UseAudit.cs" Link="Shared\UseAudit.cs" />
+    <!-- Text in the world on the Nav3D buffer (the path markers' labels; RynthAi's waypoint labels use it too). -->
+    <Compile Include="..\Shared\Nav3DText.cs" Link="Shared\Nav3DText.cs" />
+    <!-- Install folders (RynthAi's NavProfiles, where "save as nav route" writes). Read only. -->
+    <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- RynthAi's own nav file reader/writer (uTank2 NAV 1.2), so a saved route is written exactly
+         the way RynthAi writes its own. Self-contained (System.IO only). -->
+    <Compile Include="..\RynthCore.Plugin.RynthAi\LegacyUi\NavRouteParser.cs" Link="Shared\NavRouteParser.cs" />
   </ItemGroup>
 
   <ItemGroup>

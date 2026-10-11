@@ -28,7 +28,7 @@ namespace RynthCore.Plugin.RynthAi.CreatureData;
 /// </summary>
 internal sealed class CreatureProfileStore
 {
-    internal const string Folder = @"C:\Games\RynthSuite\RynthAi\CreatureData";
+    internal static readonly string Folder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "CreatureData");
     private const string FileName = "creatures.json";
 
     private readonly object _lock = new();

@@ -48,18 +48,9 @@ public sealed partial class RynthNavPlugin
         _nextAvoidMs = now + AvoidRefreshMs;
         if (!_avoidPortals) { _avoid.Clear(); return; }
 
-        Atlas atlas = _atlas;
-        if (!ReferenceEquals(atlas, _avoidAtlas))
-        {
-            var list = new List<PortalAvoid.Spot>();
-            foreach (AtlasLocation l in atlas.Locations)
-                if (l.OnMap && l.Type.Equals("Portal", StringComparison.Ordinal))
-                    list.Add(new PortalAvoid.Spot(NavCoords.WorldX(l.Ew), NavCoords.WorldY(l.Ns), PortalAvoid.MapRadius, l.Name));
-            _atlasPortals = list;
-            _avoidAtlas = atlas;
-        }
+        IReadOnlyList<PortalAvoid.Spot> atlasPortals = AtlasPortalSpots();
         var map = new List<PortalAvoid.Spot>();
-        foreach (PortalAvoid.Spot sp in _atlasPortals)
+        foreach (PortalAvoid.Spot sp in atlasPortals)
             if (Math.Abs(sp.X - _wx) < AvoidNearUnits && Math.Abs(sp.Y - _wy) < AvoidNearUnits) map.Add(sp);
 
         var live = new List<PortalAvoid.Spot>();

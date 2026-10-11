@@ -15,6 +15,7 @@ namespace RynthCore.Plugin.RynthAi;
 /// ported from UtilityBelt ub-IT / Mag-Tools ItemInfo. Partial class of RynthAiPlugin.
 ///
 ///   /ra iteminfo                      describe the selected item (IDs it first when needed)
+///   /ra iteminfo &lt;item name&gt;          describe an inventory item by name (exact, else partial)
 ///   /ra iteminfo on|off               describe every item you select
 ///   /ra iteminfo settings             open/close the Item Info settings window
 ///   /ra iteminfo fields               list fields and ratings with their on/off state
@@ -154,7 +155,58 @@ public sealed partial class RynthAiPlugin
             ChatLine($"[RynthAi] Item info on select: {OnOff(onSelect)}");
             return;
         }
-        ChatLine("[RynthAi] Usage: /ra iteminfo [on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|reset]");
+        if (sub is not ("help" or "?"))
+        {
+            // Anything else is an item name: the inventory item called that, else one containing it.
+            string name = string.Join(" ", parts, 2, parts.Length - 2).Trim();
+            uint found = FindInventoryItemByName(name);
+            if (found != 0) { QueueItemInfo(unchecked((int)found), requestId: true); return; }
+            ChatLine($"[RynthAi] Item info: no \"{name}\" in your inventory.");
+        }
+        ChatLine("[RynthAi] Usage: /ra iteminfo [<item name>|on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|reset]");
+    }
+
+    /// <summary>
+    /// An inventory item (carried or worn) whose name is <paramref name="name"/>, ignoring case;
+    /// else the first whose name contains it. 0 when none.
+    /// </summary>
+    private uint FindInventoryItemByName(string name)
+    {
+        if (_objectCache == null || name.Length == 0) return 0;
+        uint partial = 0;
+        foreach (WorldObject wo in _objectCache.GetInventory())
+        {
+            if (wo.Name.Length == 0) continue;
+            if (wo.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return unchecked((uint)wo.Id);
+            if (partial == 0 && wo.Name.Contains(name, StringComparison.OrdinalIgnoreCase)) partial = unchecked((uint)wo.Id);
+        }
+        return partial;
+    }
+
+    /// <summary>
+    /// " | Loot: [Keep] (A) MajorSkill Set": the looter's own verdict on the item, as a preview
+    /// (nothing recorded), so it says exactly what [LootEval] would. Item info replaces the
+    /// separate verdict line, so this is the only place it shows. "" when there's no loot
+    /// profile, or /ra lootcheck off.
+    /// </summary>
+    private string LootVerdictSuffix(int itemId)
+    {
+        try
+        {
+            LegacyUi.LegacyUiSettings? settings = _dashboard?.Settings;
+            WorldObject? wo = _objectCache?[itemId];
+            if (!_lootInspectMode || settings == null || wo == null || string.IsNullOrEmpty(settings.CurrentLootPath)) return "";
+            if (!ClassifyLootItem(wo, settings, preview: true, out string action, out _, out string rule, out string builtIn))
+                // A rule can match and still not take it (its Keep # reached, a Read rule on a non-scroll).
+                return rule.Length > 0 ? $" | Loot: leave ({rule} matched, not taken)" : " | Loot: no rule matched";
+            if (builtIn.Length > 0) return $" | Loot: [{action}] built-in - {builtIn}";
+            return $" | Loot: [{action}] {(rule.Length > 0 ? rule : "(unnamed rule)")}";
+        }
+        catch (Exception ex)
+        {
+            ItemInfoLog($"0x{(uint)itemId:X8}: loot verdict failed: {ex.GetType().Name}: {ex.Message}");
+            return "";
+        }
     }
 
     private static string OnOff(bool on) => on ? "ON" : "OFF";
@@ -366,10 +418,11 @@ public sealed partial class RynthAiPlugin
             return;
         }
         if (!identified) lines[0] += " (not identified — stats may be incomplete)";
+        lines[0] += LootVerdictSuffix(itemId);
         ItemInfoLog($"0x{(uint)itemId:X8}: printed {lines.Count} line(s), identified={identified}: {lines[0]}");
 
         var s = ItemInfoSettings;
-        string prefix = s?.Prefix ?? "[RynthAi] ";
+        string prefix = s?.Prefix ?? "[RynthAi Item] ";
         int headerType = s?.ChatType ?? 1;
         int detailType = s == null || s.DetailChatType == MagItemInfoSettings.SameAsHeader ? headerType : s.DetailChatType;
 
@@ -396,7 +449,7 @@ public sealed partial class RynthAiPlugin
     /// <summary>Item Info window "Test" button: sample line in the chosen chat type.</summary>
     private void TestItemInfoChatType(int chatType)
     {
-        string prefix = ItemInfoSettings?.Prefix ?? "[RynthAi] ";
+        string prefix = ItemInfoSettings?.Prefix ?? "[RynthAi Item] ";
         Host.WriteToChat($"{prefix}Item info chat test (type {chatType})", chatType);
     }
 }

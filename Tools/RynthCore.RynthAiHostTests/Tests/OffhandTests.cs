@@ -34,6 +34,8 @@ internal static class OffhandTests
         r.Add("offhand: two-hander -> the shield comes off first, back on with a one-hander", TwoHanderShieldOff);
         r.Add("offhand: bow -> the shield comes off, then the arrows still go on", BowShieldOffThenAmmo);
         r.Add("offhand: a caster -> the shield comes off first (swap gate held)", CasterShieldOff);
+        r.Add("swap speed: a weapon in hand -> one use of the wand (the client swaps); the pack move only as the fallback", CasterDirectSwap);
+        r.Add("swap speed: the gate lets the next step go once the server is done, else after 3 s", SwapGateSettles);
         r.Add("offhand: dual wield with the Dual Wield skill", DualWield);
         r.Add("offhand: no Dual Wield skill -> the shield", NoSkillShield);
         r.Add("offhand: None -> hands off (a worn shield is never taken off)", NoneHandsOff);
@@ -329,6 +331,61 @@ internal static class OffhandTests
         rig.Tick();
         Check.True(FakeHost.Uses.Contains(Wand), "the off hand empty: the wand goes on");
         Check.Eq(FakeHost.Wields.Count, 0, "no shield with a caster");
+    }
+
+    // 2026-10-06: Drakkon's axe -> wand took 4.2 s: the axe into the pack (1.2 s), then the swap
+    // gate's flat 3 s before the wand. A use of the wand (the client's double-click) swaps by itself.
+    private static void CasterDirectSwap()
+    {
+        var rig = new Rig();              // the sword in hand
+        rig.List(Wand);
+        rig.C.CanCastOverride = _ => true;
+        Check.False(rig.Tick(), "not ready");
+        Check.True(FakeHost.Uses.Contains(Wand), "UseObject(wand) with the sword still in hand");
+        Check.Eq(FakeHost.Moves.Count, 0, "no pack move first");
+
+        // The use didn't swap in 2 s (SwapTracker retries at 2.5 s): the sword goes into the pack first from now on.
+        var since = typeof(CombatManager).GetField("_combatDirectSwapSince", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        since.SetValue(rig.C, DateTime.Now.AddSeconds(-3));
+        rig.C.SwapTracker.Reset();          // its 2.5 s resolve time is up
+        rig.Tick();
+        Check.True(FakeHost.Moves.Any(m => m.Id == Sword), "fallback: the sword into the pack");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("from now on the weapon goes into a pack first")), "logged once");
+    }
+
+    private static void SwapGateSettles()
+    {
+        long t = 0;
+        bool idle = true;
+        var wielded = new Dictionary<int, bool> { [7] = true };
+        var g = new WeaponSwapGate { NowMs = () => t, ServerIdle = () => idle, IsWielded = id => wielded[id] };
+        Check.True(g.TryBeginSwap("shield off"), "first swap");
+        g.NoteMove(7, wieldedNow: true);
+        t = 500;
+        Check.False(g.TryBeginSwap("weapon"), "the shield is still in hand");
+        wielded[7] = false;
+        t = 2999;
+        Check.False(g.TryBeginSwap("weapon"), "a pack move: the full 3 s even once it reads done (the server's unwield motion, 13:58 wedge)");
+        t = 3000;
+        Check.True(g.TryBeginSwap("weapon"), "after 3 s");
+        long claims = g.Claims;
+        t = 3300;
+        Check.False(g.TryBeginSwap("off hand"), "a use (the weapon): under the 400 ms floor");
+        Check.Eq(g.Claims, claims, "a refused claim doesn't count");
+        t = 3600;
+        idle = false;
+        Check.False(g.TryBeginSwap("off hand"), "the weapon's use is still unanswered");
+        idle = true;
+        Check.True(g.TryBeginSwap("off hand"), "answered: the off hand goes");
+
+        // No pacing (ServerIdle unset): the flat 3 s, as before.
+        t = 0;
+        var flat = new WeaponSwapGate { NowMs = () => t };
+        Check.True(flat.TryBeginSwap("a"), "first");
+        t = 2999;
+        Check.False(flat.TryBeginSwap("b"), "inside 3 s");
+        t = 3000;
+        Check.True(flat.TryBeginSwap("b"), "after 3 s");
     }
 
     private static void DualWield()

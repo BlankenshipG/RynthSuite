@@ -87,8 +87,11 @@ public sealed class MagItemInfoSettings
     public int ChatType = 1;
     /// <summary>Chat type for pet-style lines 2+, or <see cref="SameAsHeader"/>.</summary>
     public int DetailChatType = SameAsHeader;
-    /// <summary>Text put in front of every line.</summary>
-    public string Prefix = "[RynthAi] ";
+    /// <summary>
+    /// Text put in front of every line. RynthChat files lines starting "[RynthAi Item] " under
+    /// its Items tab (ChatClassifier.IsItemInfo).
+    /// </summary>
+    public string Prefix = "[RynthAi Item] ";
 
     /// <summary>Item Info settings window open.</summary>
     public bool ShowWindow;

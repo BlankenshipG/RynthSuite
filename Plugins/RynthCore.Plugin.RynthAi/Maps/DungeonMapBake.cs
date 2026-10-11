@@ -33,7 +33,7 @@ internal static class DungeonMapBake
     private const int MaxDim = 8192;         // the agent refuses bigger rasters
 
     /// <summary>Where plans go. A test points this at its own folder.</summary>
-    internal static string CacheDir { get; set; } = @"C:\Games\RynthSuite\RynthAi\Maps";
+    internal static string CacheDir { get; set; } = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "Maps");
 
     // Pixel colours, as the old DungeonMapTexture (and DungeonMapUi's former ImGui colours).
     private static uint Argb(float r, float g, float b, float a) =>

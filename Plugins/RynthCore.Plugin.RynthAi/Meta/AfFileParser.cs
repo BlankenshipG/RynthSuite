@@ -476,6 +476,8 @@ internal static class AfFileParser
             case MetaConditionType.MainManaPHE:
             case MetaConditionType.MainStamLE:
             case MetaConditionType.VitaePHE:
+            // RynthAi only: NoKillsInMins 5 (minutes, decimals allowed).
+            case MetaConditionType.NoKillsWithinMinutes:
                 // These use bare numbers (no braces): e.g. MainSlotsLE 4, BlockE F6820033
                 rule.ConditionData = ExtractBareOrBrace(rest);
                 break;

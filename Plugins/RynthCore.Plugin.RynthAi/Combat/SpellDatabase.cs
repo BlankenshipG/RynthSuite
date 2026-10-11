@@ -8,9 +8,11 @@ namespace RynthCore.Plugin.RynthAi;
 public static class SpellDatabase
 {
     private static readonly Dictionary<int, string> _spellNames = new();
-    // Family + difficulty (power) per spell id, from SpellData.txt columns 3 and 7.
-    // Used by the Mag-style item info spell filter (cantrip / aura tiers).
-    private static readonly Dictionary<int, (int Family, int Difficulty)> _spellMeta = new();
+    // The data's category (ACE SpellCategory, column 3) and power (difficulty, column 7) per id,
+    // and the ids of each category. Read for wall spells (2026-10-08): they have no tier in their
+    // names ("Slithering Flames"), so a wall is found by its category and ranked by its power.
+    private static readonly Dictionary<int, (int Category, int Power)> _spellMeta = new();
+    private static readonly Dictionary<int, List<int>> _idsByCategory = new();
     private static bool _loaded = false;
 
     private static readonly Dictionary<int, string> _builtinSpells = new Dictionary<int, string>
@@ -42,6 +44,7 @@ public static class SpellDatabase
     {
         _spellNames.Clear();
         _spellMeta.Clear();
+        _idsByCategory.Clear();
         _loaded = false;
 
         try
@@ -65,10 +68,14 @@ public static class SpellDatabase
                 if (columns.Length >= 2 && int.TryParse(columns[0].Trim(), out int spellId))
                 {
                     _spellNames[spellId] = columns[1].Trim();
-                    if (columns.Length >= 7
-                        && int.TryParse(columns[2].Trim(), out int family)
-                        && int.TryParse(columns[6].Trim(), out int difficulty))
-                        _spellMeta[spellId] = (family, difficulty);
+                    if (columns.Length >= 7 && int.TryParse(columns[2].Trim(), out int category)
+                        && int.TryParse(columns[6].Trim(), out int power))
+                    {
+                        _spellMeta[spellId] = (category, power);
+                        if (!_idsByCategory.TryGetValue(category, out List<int>? ids))
+                            _idsByCategory[category] = ids = new List<int>();
+                        ids.Add(spellId);
+                    }
                 }
             }
 
@@ -92,8 +99,8 @@ public static class SpellDatabase
     {
         if (_spellMeta.TryGetValue(spellId, out var meta))
         {
-            family = meta.Family;
-            difficulty = meta.Difficulty;
+            family = meta.Category;
+            difficulty = meta.Power;
             return true;
         }
         family = 0;
@@ -120,6 +127,30 @@ public static class SpellDatabase
     {
         return _spellNames.ContainsKey(spellId) || _builtinSpells.ContainsKey(spellId);
     }
+
+    /// <summary>The spell's category (ACE SpellCategory) and power from the data; false when the
+    /// spell isn't in it.</summary>
+    public static bool TryGetCategoryAndPower(int spellId, out int category, out int power)
+    {
+        if (_spellMeta.TryGetValue(spellId, out var m)) { category = m.Category; power = m.Power; return true; }
+        category = 0; power = 0;
+        return false;
+    }
+
+    /// <summary>Every spell id of a category (ACE SpellCategory), in data order.</summary>
+    public static IReadOnlyList<int> IdsInCategory(int category)
+        => _idsByCategory.TryGetValue(category, out List<int>? ids) ? ids : Array.Empty<int>();
+
+    /// <summary>
+    /// A spell's level by ACE's server formula (Spell.Level): the highest level whose minimum power
+    /// it reaches, 1/50/100/150/200/250/300/400 for levels 1-8 (SpellFormula.MinPower). The tiered
+    /// war lines have exactly those powers (Flame Bolt V 200, the tier-7 lore 300, Incantations
+    /// 400; blasts +25), so it is the same tier limit the other shapes use. 0 = no power.
+    /// </summary>
+    public static int LevelFromPower(int power) => power switch
+    {
+        >= 400 => 8, >= 300 => 7, >= 250 => 6, >= 200 => 5, >= 150 => 4, >= 100 => 3, >= 50 => 2, >= 1 => 1, _ => 0,
+    };
 
     /// <summary>Builds a name→id reverse map for SpellManager initialisation.</summary>
     public static Dictionary<string, int> BuildNameToIdMap()

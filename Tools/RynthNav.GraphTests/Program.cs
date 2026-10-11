@@ -37,6 +37,8 @@ internal static class Program
             Run(nameof(EndToEndAroundAWall), EndToEndAroundAWall);
             Run(nameof(LandmassesAndSameLand), LandmassesAndSameLand);
             Run(nameof(PathGoesRoundAPortal), PathGoesRoundAPortal);
+            Run(nameof(TripWalkFromTileFiles), TripWalkFromTileFiles);
+            Run(nameof(RealTripWalk), RealTripWalk);
         }
         finally { try { Directory.Delete(_root, true); } catch { } }
         Console.WriteLine();
@@ -384,5 +386,73 @@ internal static class Program
         q.FindNearestPoly(new RcVec3f(96, 0, 96), new RcVec3f(8, 10, 8), new AvoidFilter(avoid), out long nearRef, out RcVec3f nearPt, out _);
         double d = Math.Sqrt((nearPt.X - 95) * (nearPt.X - 95) + (nearPt.Z - 96) * (nearPt.Z - 96));
         Check(nearRef != 0 && d >= PortalAvoid.LiveRadius - 0.01, $"a goal beside the portal snaps to ground outside its circle ({d:F2} u away)");
+    }
+
+    // ── A planned trip's walk, from the tile files (TilePathFinder, on a worker in the plugin) ──
+
+    private static void TripWalkFromTileFiles()
+    {
+        // The wall: from the south of tile 0 to the south of tile 2, the only way is round the north.
+        string dir = Bake("tripwall", (0, 0, 192, 192), (192, 150, 384, 192), (384, 0, 576, 192));
+        BuildGraph(dir, out NavGraph g);
+        var from = new RynthCore.Plugin.RynthNav.WorldPt(100, 20, 0);
+        var to = new RynthCore.Plugin.RynthNav.WorldPt(480, 20, double.NaN);
+        var finder = new TilePathFinder(dir, g, null);
+        var path = finder.Walk(from, to, false, out string note);
+        Check(path != null && path.Count >= 4, $"a path round the wall ({path?.Count} corners; {note})");
+        Check(note == "", "no gaps: " + note);
+        Check(path != null && path.Exists(p => p.Y > 150), "it goes north through the passage");
+        Check(path != null && Math.Abs(path[^1].X - 480) < 3 && Math.Abs(path[^1].Y - 20) < 3, "and ends at the goal");
+        Check(path != null && path.TrueForAll(p => !double.IsNaN(p.H) && Math.Abs(p.H) < 2), "heights from the navmesh");
+        Check(finder.TilesRead >= 3, $"read the tiles it needed ({finder.TilesRead})");
+        var thin = RynthCore.Plugin.RynthNav.TripPathBuilder.Thin(path!);
+        Check(thin.Exists(p => p.Y > 150), "thinned, it still goes round");
+
+        // Without the route graph, a short leg is planned on the tiles alone.
+        var direct = new TilePathFinder(dir, null, null).Walk(from, to, false, out string note2);
+        Check(direct != null && direct.Exists(p => p.Y > 150), "without the graph: the same way round (" + note2 + ")");
+        // No navmesh at the far end: none, and why.
+        var nowhere = new TilePathFinder(dir, g, null).Walk(from, new RynthCore.Plugin.RynthNav.WorldPt(2000, 2000, 0), false, out string why);
+        Check(nowhere == null && why.Length > 0, "no tile at the end: no path (" + why + ")");
+
+        // An Atlas portal on the straight line over open ground: kept out of, unless it's the leg's own.
+        string open = Bake("tripportal", (0, 0, 192, 192));
+        var spot = new[] { new PortalAvoid.Spot(95, 96, PortalAvoid.MapRadius, "Unwanted Portal") };
+        var round = new TilePathFinder(open, null, spot).Walk(new(30, 96, 0), new(160, 96, 0), false, out _);
+        double gap = double.MaxValue;
+        for (int i = 1; round != null && i < round.Count; i++) gap = Math.Min(gap, PortalAvoid.SegmentDistance(95, 96, round[i - 1].X, round[i - 1].Y, round[i].X, round[i].Y));
+        Check(round != null && gap >= PortalAvoid.MapRadius - 0.01, $"the walk keeps out of the portal's circle ({gap:F2} u)");
+        var own = new TilePathFinder(open, null, spot).Walk(new(30, 96, 0), new(95, 96, 0), true, out _);
+        Check(own != null && Math.Abs(own[^1].X - 95) < 3, "walking into that portal: it's the goal, not avoided");
+    }
+
+    /// <summary>
+    /// The real map (read only, when it's installed): Holtburg to Lytelthorpe, about 11k yd over
+    /// land, as the path markers and "save as nav route" would work it out. Prints the size and time.
+    /// </summary>
+    private static void RealTripWalk()
+    {
+        string dir = Environment.GetEnvironmentVariable("RYNTHNAV_NAVDATA") ?? @"C:\Games\RynthCore\NavData";
+        string graphFile = Path.Combine(dir, NavGraph.FileName);
+        if (!File.Exists(graphFile)) { Console.WriteLine("     (no real NavData here: skipped)"); return; }
+        NavGraph g = NavGraph.Load(graphFile);
+        var from = RynthCore.Plugin.RynthNav.WorldPt.FromMap(42.08, 33.6, double.NaN);
+        var to = RynthCore.Plugin.RynthNav.WorldPt.FromMap(-0.8, 51.2, double.NaN);
+        // Landmasses, as the plugin has them (LoadGraph): Lytelthorpe's centre probes onto a roof,
+        // a landmass of one region; the ground beside it is found instead.
+        g.BuildComponents();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var finder = new TilePathFinder(dir, g, null);
+        var path = finder.Walk(from, to, false, out string note);
+        long ms = sw.ElapsedMilliseconds;
+        Check(path != null, "Holtburg to Lytelthorpe on the real navmesh: " + note);
+        if (path == null) return;
+        var thin = RynthCore.Plugin.RynthNav.TripPathBuilder.Thin(path);
+        int corners = RynthCore.Plugin.RynthNav.TripPathBuilder.Thin(path, maxSpacing: 0).Count;
+        double len = 0;
+        for (int i = 1; i < thin.Count; i++) len += thin[i - 1].FlatDistance(thin[i]);
+        Console.WriteLine($"     Holtburg -> Lytelthorpe: {path.Count} corners, {corners} kept by thinning, {thin.Count} with a point every {RynthCore.Plugin.RynthNav.TripPathBuilder.MaxSpacing} yd, {len:F0} yd, {finder.TilesRead} tiles read, {ms} ms{(note.Length > 0 ? "; " + note : "")}");
+        Check(len > from.FlatDistance(to) * 0.98 && len < from.FlatDistance(to) * 2.5, $"a sensible length ({len:F0} vs {from.FlatDistance(to):F0} straight)");
+        Check(ms < 30000, $"worked out in reasonable time ({ms} ms)");
     }
 }

@@ -28,7 +28,7 @@ namespace RynthCore.Engine.UI.ScriptWindows
 
 namespace RynthInventory.Tests
 {
-    internal static class Program
+    internal static partial class Program
     {
         private static int _pass, _fail;
         private static string _temp = "";
@@ -64,6 +64,7 @@ namespace RynthInventory.Tests
                 Run("scheduler: unchanged content is not rewritten", SchedulerUnchanged);
                 Run("window display lists parse in the engine", Pages);
                 Run("window events", Events);
+                Run("vault feed (/mule-data)", VaultTests);
             }
             finally
             {

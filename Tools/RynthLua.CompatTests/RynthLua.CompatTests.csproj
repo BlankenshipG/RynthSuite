@@ -30,11 +30,18 @@
     <Compile Include="..\..\Plugins\Shared\RynthAiScriptApi.cs" Link="Plugin\Shared\RynthAiScriptApi.cs" />
     <Compile Include="..\..\Plugins\Shared\UseAudit.cs" Link="Plugin\Shared\UseAudit.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\*.cs" Link="Sdk\%(Filename)%(Extension)" />
+    <!-- The SDK takes CurrentApiVersion from the engine's constant since plugin manifests (API v79). -->
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\Plugins\PluginContractVersion.cs" Link="Sdk\PluginContractVersion.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.PluginCore\*.cs" Link="Sdk\%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>
     <None Include="Scripts\**\*.lua" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- RynthLuaPaths.cs uses the install-folder resolver. -->
+    <Compile Include="..\..\Plugins\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
   </ItemGroup>
 
 </Project>

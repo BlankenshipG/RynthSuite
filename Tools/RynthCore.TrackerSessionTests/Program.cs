@@ -11,7 +11,7 @@ namespace RynthCore.TrackerSessionTests;
 // Self-contained; fails on zero assertions.
 //
 // Run: dotnet run -c Release  (exit 0 = pass, 1 = fail)
-internal static class Program
+internal static partial class Program
 {
     private static int _asserts;
     private static int _fails;
@@ -45,6 +45,7 @@ internal static class Program
         TestFileNames();
         TestFiles();
         TestCleanup();
+        TestKillCounter();
 
         Console.WriteLine($"\n{_asserts} assertions, {_fails} failed.");
         if (_asserts == 0) { Console.WriteLine("ABORT: zero assertions ran."); return 1; }

@@ -45,27 +45,46 @@ public static class LootRuleText
     {
         var keys = new List<(int, string)>
         {
-            (5, "EncumbVal"), (9, "Locations"), (19, "Value"), (25, "Level"), (28, "ArmorLevel"), (44, "Damage"), (45, "DamageType"),
-            (48, "WeaponSkill"), (54, "MaxDamage"),
+            (5, "EncumbVal"), (9, "Locations"), (19, "Value"), (25, "Level"), (28, "ArmorLevel"), (44, "Damage (max)"), (45, "DamageType"),
+            (48, "WeaponSkill"), (54, "WeaponEncumbrance"),   // 54 was labelled MaxDamage until 2026-10-07; max damage is 44
             (87, "MaxStructure"), (88, "Structure"), (105, "ItemWorkmanship"), (107, "ItemMaxMana"),
             (131, "MaterialType"), (158, "WieldRequirements"), (159, "WieldSkilltype"), (160, "WieldDifficulty"),
             (218, "EquippedSlots"), (353, "ImbuedEffect"), (370, "DamageRating"), (371, "DamageResistRating"),
             (372, "CritRating"), (373, "CritResistRating"), (374, "CritDamageRating"),
             (375, "CritDamageResistRating"), (376, "HealBoostRating"), (377, "NetherResistRating"), (379, "VitalityRating"),
+            (0x0D000000, "Type (WCID)"),   // Decal's synthetic key: the weenie class id
+            // Decal's other synthetic keys (Decal.Adapter LongValueKey), as VTank's editor names them;
+            // RynthAi reads each as the game property it is (WorldObjectCache.GetDecalLongKey).
+            (0x0D000001, "Icon"), (0x0D000004, "ItemSlots"), (0x0D000005, "PackSlots"),
+            (0x0D000006, "StackCount"), (0x0D000007, "StackMax"), (0x0D000008, "AssociatedSpell"),
+            (0x0D00000B, "WieldingSlot"), (0x0D00000D, "Coverage"), (0x0D00000E, "EquipableSlots"),
+            (0x0D00000F, "EquipType"), (0x0D000010, "IconOutline"), (0x0D000011, "MissileType"),
+            (0x0D000012, "UsageMask"), (0x0D000014, "HookMask"), (0x0D000015, "HookType"),
+            (0x0D00001A, "Category"), (0x0D00001F, "WeapSpeed"), (0x0D000020, "EquipSkill"),
+            (0x0D000021, "DamageType (Decal)"), (0x0D000022, "MaxDamage"),
+            (0x0D000029, "IconOverlay"), (0x0D00002A, "IconUnderlay"),
             // ACECustom T11 properties sent in the appraisal: real keys, so VTank reads them too.
             (T11.T11Catalog.PropWeaponAugScaleQuality, "WeaponAugScaleQuality"),
             (T11.T11Catalog.PropWeaponAugScaleTier, "WeaponAugScaleTier"),
             (T11.T11Catalog.PropZcTier, "ZcTier"),
-            (0x0D000000, "Type (WCID)"),   // Decal's synthetic key: the weenie class id
         };
         keys.AddRange(T11.T11Keys.Names());
         return keys.ToArray();
     }
 
+    /// <summary>
+    /// STypeFloat ids (ACE's PropertyFloat), then the 0x0A0000xx keys VTank's own editor writes
+    /// for the appraisal's weapon profile (uTank2 LootPlugins.DoubleValueKey). 5, 29, 62, 63 and
+    /// 167 were labelled ApproachDistance, WeaponLength, WeaponDefense, WeaponOffense and ManaRate
+    /// until 2026-10-05.
+    /// </summary>
     public static readonly (int Id, string Name)[] DoubleKeys =
     {
-        (5, "ApproachDistance"), (22, "DamageVariance"), (29, "WeaponLength"), (62, "WeaponDefense"),
-        (63, "WeaponOffense"), (152, "ElementalDamageVsMonsters"), (167, "ManaRate"),
+        (5, "ManaRate"), (22, "DamageVariance"), (29, "WeaponDefense"), (62, "WeaponOffense"),
+        (63, "DamageMod"), (144, "ManaConversionMod"), (149, "WeaponMissileDefense"),
+        (150, "WeaponMagicDefense"), (152, "ElementalDamageVsMonsters"), (167, "CooldownDuration"),
+        (0x0A000009, "SalvageWorkmanship"), (0x0A00000B, "Variance"),
+        (0x0A00000C, "AttackBonus"), (0x0A00000E, "DamageBonus"),
     };
 
     /// <summary>String keys. Use (14) and LongDesc (16) hold the T11 "Modifiers:" / "Property Details:" text.</summary>
@@ -145,8 +164,8 @@ public static class LootRuleText
     /// </summary>
     public static (int Id, string Name)[]? ValueTableFor(int longKey) => longKey switch
     {
-        45 => DamageTypes,
-        48 => Skills,
+        45 or 0x0D000021 => DamageTypes,
+        48 or 0x0D000020 => Skills,
         131 => Materials,
         158 => WieldRequirements,
         159 => Skills,
@@ -156,10 +175,10 @@ public static class LootRuleText
     };
 
     /// <summary>True when the long key's value is a set of flags (a named value is one flag or a common pair).</summary>
-    public static bool ValueTableIsFlags(int longKey) => longKey == 45;
+    public static bool ValueTableIsFlags(int longKey) => longKey is 45 or 0x0D000021;
 
     /// <summary>The long keys that have a value table, for the vocabulary.</summary>
-    public static readonly int[] KeysWithValueTables = { 45, 48, 131, 158, 159, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
+    public static readonly int[] KeysWithValueTables = { 45, 48, 131, 158, 159, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
 
     /// <summary>
     /// True for the conditions whose value is picked by name when the key has a

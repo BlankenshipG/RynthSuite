@@ -37,6 +37,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra wielded       — show wielded items");
         ChatLine("[RynthAi] /ra dumpprops [0xId] — every property of the selection (else yourself)");
         ChatLine("[RynthAi] /ra t11 [augs <n|auto>|refresh|item] — T11 loot: wield counters, aug override, parsed item");
+        ChatLine("[RynthAi] /ra iteminfo [name] — the selected (or named) item's details, Mag-Tools style");
         ChatLine("[RynthAi] /ra mexec <expr>  — evaluate meta expression");
         ChatLine("[RynthAi] /ra listvars      — show session variables");
         ChatLine("[RynthAi] /ra listpvars     — show persistent variables");
@@ -69,6 +70,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra hazard add|del|list|near — mark current cell as lava/acid so patrol avoids it");
         ChatLine("[RynthAi] /ra jump[swzxc] [heading] [holdtime] — jump with optional face/direction (s=run w=fwd x=back z=strafeL c=strafeR)");
         ChatLine("[RynthAi] /ra corpseinfo    — show corpse range/open diagnostics");
+        ChatLine("[RynthAi] /ra pace          — what the server is still answering (one action at a time)");
         ChatLine("[RynthAi] /ra owncorpse [go|stop] — where your corpse is; travel back to it, or stop");
         ChatLine("[RynthAi] /ra corpsecheck   — explain whether a corpse would be looted");
         ChatLine("[RynthAi] /ra corpseopen    — force the nearest corpse open flow");
@@ -241,7 +243,7 @@ public sealed partial class RynthAiPlugin
             return;
         }
 
-        bool ok = Host.CastSpell(_currentTargetId, spellId);
+        bool ok = Host.CastSpellFor(_currentTargetId, spellId, "Command", $"spell {spellId} (/ra cast)", asked: true);
         ChatLine($"[RynthAi] CastSpell(target=0x{_currentTargetId:X8}, spell={spellId}) => {ok}");
     }
 
@@ -2196,6 +2198,8 @@ public sealed partial class RynthAiPlugin
     private void HandleClearBusyCommand()
     {
         int before = Host.HasGetBusyState ? Host.GetBusyState() : -1;
+        // You asked for it: forget what the pacing waits on too (ActionPacer).
+        RynthCore.Plugin.Shared.ActionPacer.Forget("/ra clearbusy");
         if (Host.HasForceResetBusyCount)
             Host.ForceResetBusyCount();
         if (Host.HasStopCompletely)
@@ -2219,9 +2223,10 @@ public sealed partial class RynthAiPlugin
     {
         int before = Host.HasGetBusyState ? Host.GetBusyState() : -1;
         ChatLine("[RynthAi] PANIC — full AC state reset");
+        RynthCore.Plugin.Shared.ActionPacer.Forget("/ra panic");
 
         if (Host.HasCancelAttack)      Host.CancelAttack();
-        if (Host.HasChangeCombatMode)  Host.ChangeCombatMode(CombatMode.NonCombat);
+        if (Host.HasChangeCombatMode)  Host.ChangeCombatModeFor(CombatMode.NonCombat, "Command", "/ra panic", force: true);
         if (Host.HasStopCompletely)    Host.StopCompletelyBy("Command");
         if (Host.HasForceResetBusyCount) Host.ForceResetBusyCount();
         // The item-action lock itself is not the busy count: AC refuses every use,
@@ -2660,7 +2665,7 @@ public sealed partial class RynthAiPlugin
         string playerPart = argStr.Substring(toIdx + 4).Trim();
 
         // Resolve profile path — bare name resolved from ItemGiver dir, .utl extension added if needed
-        const string itemGiverDir = @"C:\Games\RynthSuite\RynthAi\ItemGiver";
+        string itemGiverDir = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "ItemGiver");
         string profilePath = System.IO.Path.IsPathRooted(profileArg)
             ? profileArg
             : System.IO.Path.Combine(itemGiverDir, profileArg);
@@ -2804,6 +2809,25 @@ public sealed partial class RynthAiPlugin
     /// after a new hazard was sighted mid-patrol — it reroutes silently (no fresh
     /// "patrol started" chatter, just a one-line note) and never flips IsMacroRunning.
     /// </summary>
+    // One log line per patrol waypoint and a summary (diagnostics: which rule put each point
+    // where it is, e.g. the patrol walking into small rooms it should only look into).
+    private void LogPatrolWaypoints(NavRouteParser route, Dictionary<uint, DungeonNavNode> graph, DungeonGeometry? geometry,
+                                    IReadOnlySet<uint>? hazards, Dictionary<NavPoint, DungeonPathfinder.PatrolPointInfo> pointLog,
+                                    uint playerCell, uint startCell)
+    {
+        try
+        {
+            Host.Log($"[RynthAi] DunNav-Patrol wp build: player cell {playerCell:X8}, start cell {startCell:X8}, {route.Points.Count} points, geometry {(geometry != null ? "on" : "off")}"
+                     + (hazards is { Count: > 0 } ? $", hazards {string.Join(",", hazards.Where(c => c >> 16 == startCell >> 16).OrderBy(c => c).Select(c => (c & 0xFFFF).ToString("X4")))}" : ""));
+            foreach (string line in DungeonPathfinder.DescribePatrol(route, graph, geometry, hazards, pointLog))
+                Host.Log("[RynthAi] DunNav-Patrol " + line);
+        }
+        catch (Exception ex)
+        {
+            Host.Log($"[RynthAi] DunNav-Patrol wp log failed: {ex.Message}");
+        }
+    }
+
     private void BuildDunPatrol(bool isRebuild)
     {
         var settings = _dashboard?.Settings;
@@ -2889,11 +2913,21 @@ public sealed partial class RynthAiPlugin
         // The dungeon map geometry (doorways, floors, walls): doorways taken straight on and
         // big rooms crossed directly. Null (old cell walk) until DungeonLOS is up.
         var geometry = DungeonPathfinder.GetGeometry(landblockKey, cellDat, _raycast?.GeometryLoader?.DungeonLOS);
-        var route = DungeonPathfinder.BuildPatrolRoute(graph, startCell, hazards, geometry);
+        // Diagnostics: record which rule laid each waypoint (logged below, one line each).
+        var pointLog = new Dictionary<NavPoint, DungeonPathfinder.PatrolPointInfo>(ReferenceEqualityComparer.Instance);
+        DungeonPathfinder.PointLog = pointLog;
+        NavRouteParser route;
+        try { route = DungeonPathfinder.BuildPatrolRoute(graph, startCell, hazards, geometry); }
+        finally { DungeonPathfinder.PointLog = null; }
 
         // Lead the bot out of the hazard first.
         if (evacuate)
-            route.Points.Insert(0, new NavPoint { Type = NavPointType.Point, NS = evacNS, EW = evacEW, Z = evacZ });
+        {
+            var lead = new NavPoint { Type = NavPointType.Point, NS = evacNS, EW = evacEW, Z = evacZ };
+            route.Points.Insert(0, lead);
+            pointLog[lead] = new DungeonPathfinder.PatrolPointInfo { Kind = "evacuate", Cell = startCell, Why = "start cell is a hazard" };
+        }
+        LogPatrolWaypoints(route, graph, geometry, hazards, pointLog, playerCell, startCell);
 
         // Empty-route guard: a single-cell / hazard-locked start yields no waypoints. Do NOT claim the
         // patrol started or enable nav — the bot would just stand in place (in the hazard) taking damage.
@@ -2921,6 +2955,11 @@ public sealed partial class RynthAiPlugin
                 return;
             }
             settings.IsMacroRunning = true;
+            // The patrol picked its own start (the first waypoint in sight). Starting the macro
+            // here must not also trigger the macro-start "nearest waypoint" pick on the next
+            // tick: on a loop that is often a waypoint near the END (it comes back to the start),
+            // so the bot walked there, back to waypoint 0, and only then on (2026-10-08).
+            _macroWasRunning = true;
         }
         settings.CurrentNavPath   = string.Empty;
         settings.CurrentRoute     = route;
@@ -3023,7 +3062,7 @@ public sealed partial class RynthAiPlugin
         sb.Append("\"routes\":[");
         try
         {
-            const string navFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
+            string navFolder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "NavProfiles");
             if (System.IO.Directory.Exists(navFolder))
             {
                 var files = System.IO.Directory.GetFiles(navFolder, "*.nav");

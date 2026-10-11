@@ -15,6 +15,8 @@ internal sealed class LegacyAdvancedSettingsUi
     private string? _serverNamesEdit;
 
     private static readonly string[] AttackHeights = { "Low", "Medium", "High" };
+    private static readonly string[] NavLabelModeNames = { "Off", "Numbers", "Numbers and names" };
+    private static readonly string[] TargetSelectionNames = { "Lowest health", "Closest", "Farthest", "Least turning" };
     private static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
 
     public LegacyAdvancedSettingsUi(LegacyUiSettings settings)
@@ -214,6 +216,14 @@ internal sealed class LegacyAdvancedSettingsUi
         catch { return false; }
     }
 
+    /// <summary>One cell of the Protections and Banes grid: ticked = cast it.</summary>
+    private void BuffToggle((string Buff, string Label) toggle)
+    {
+        bool on = !_settings.IsBuffDisabled(toggle.Buff);
+        if (ImGui.Checkbox($"{toggle.Label}##buff_{toggle.Buff}", ref on))
+            _settings.SetBuffEnabled(toggle.Buff, on);
+    }
+
     private void RenderTabContent(int tabIndex)
     {
         if (tabIndex < 0 || tabIndex >= _settings.AdvancedTabs.Length)
@@ -295,6 +305,9 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Patrol On Login", ref _settings.PatrolOnLogin);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Automatically starts dungeon patrol when RynthAi loads.");
+                ImGui.Checkbox("Escape Acid and Lava", ref _settings.EscapeHazards);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("When acid or lava hurts you, stop everything (combat, buffs, healing, looting)\nand walk back out the way you came. The spot is remembered so the patrol avoids it.\nTurn off for a character that walks through acid on purpose.");
                 ImGui.Checkbox("Enable Raycasting", ref _settings.EnableRaycasting);
 
                 ImGui.Separator();
@@ -430,6 +443,9 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Re-stam At", ref _settings.RestamAt, 0, 100);
                 ImGui.SetNextItemWidth(120);
+                ImGui.SliderInt("Re-stam To", ref _settings.RestamTo, 0, 100);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Once a recharge starts under Re-stam At, keep recharging until stamina reaches this %.\n0 = one recharge, as before.");
+                ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Get Mana At", ref _settings.GetManaAt, 0, 100);
 
                 ImGui.Spacing();
@@ -527,12 +543,12 @@ internal sealed class LegacyAdvancedSettingsUi
                         "Below 200ms may cause fizzles or dropped casts on laggy servers.");
 
                 ImGui.SetNextItemWidth(180);
-                ImGui.SliderInt("Attack Spell Delay (ms)", ref _settings.AttackSpellIntervalMs, 250, 5000);
+                ImGui.SliderInt("Attack Spell Delay (ms)", ref _settings.AttackSpellIntervalMs, 0, 5000);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip(
-                        "Delay between offensive (war/void) COMBAT casts only.\n" +
-                        "Spacing casts ~1-2s (1500ms default) stops back-to-back\n" +
-                        "\"You're too busy!\" refusals that drop casts and cost kills.\n" +
+                        "Least time between offensive (war/void) COMBAT casts at one target.\n" +
+                        "The next cast also waits until the last one is finished (the server's\n" +
+                        "answer and the casting animation), so 0 = cast again as soon as it is.\n" +
                         "Does NOT affect buffing speed.");
 
                 ImGui.Spacing();
@@ -546,6 +562,12 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.InputInt("Min Blast Targets", ref _settings.MinBlastTargets);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("If this many monsters are within ring range, ring spells are used instead of arc/bolt/streak.");
+                ImGui.InputInt("Wall Range (0 = off)", ref _settings.WallRange);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Monster rules with Wall on cast their element's wall spell when enough monsters\n" +
+                                     "are within this many yards in the wall's path toward the target.\n" +
+                                     "The character turns to face the target first. 0 = no walls.");
+                ImGui.InputInt("Min Wall Targets", ref _settings.MinWallTargets);
 
                 ImGui.Spacing();
                 ImGui.Separator();
@@ -585,6 +607,17 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.InputInt("Approach Range", ref _settings.ApproachRange);
 
                 ImGui.Spacing();
+                ImGui.Text("Combat Targeting");
+                ImGui.Separator();
+                ImGui.SetNextItemWidth(160);
+                ImGui.Combo("Targeting", ref _settings.TargetSelection, TargetSelectionNames, TargetSelectionNames.Length);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Which monster to attack, among those of the highest priority inside Monster Range.\nLeast turning: the one needing the smallest turn to face. Unknown health counts as full.");
+                ImGui.Checkbox("Target Lock", ref _settings.TargetLock);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("On: keeps the target it picked until it dies, leaves Monster Range, or a higher-priority monster shows up.\nOff: switches whenever another monster is clearly better by the Targeting rule.");
+
+                ImGui.Spacing();
                 ImGui.Text("Corpse Acquisition (Yards)");
                 ImGui.Separator();
                 ImGui.SetNextItemWidth(180);
@@ -599,7 +632,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.InputFloat("Nav point reach (yd)", ref _settings.FollowNavMin, 0.1f, 1.0f, "%.1f");
                 _settings.FollowNavMin = LegacyUiSettings.ClampFollowNavMin(_settings.FollowNavMin);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("How close to get to each nav point before moving on to the next (yards). VTank calls it Follow/Nav Min Distance. Follow stops this close to its leader; the nav marker ring shows it.");
+                    ImGui.SetTooltip("How close to get to each nav point before moving on to the next (yards). VTank calls it Follow/Nav Min Distance. Up to 2 nav walks right up to each point before turning (tight dungeons); bigger values round corners. Follow stops this close to its leader; the nav marker ring shows it.");
 
                 ImGui.Spacing();
                 ImGui.Text("Nav Marker Display");
@@ -619,6 +652,11 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Show Terrain Passability", ref _settings.ShowTerrainPassability);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Highlight impassable terrain triangles in red.");
+                ImGui.SetNextItemWidth(160);
+                ImGui.Combo("Waypoint Labels", ref _settings.NavLabelMode, NavLabelModeNames, NavLabelModeNames.Length);
+                ImGui.Checkbox("Guide Line", ref _settings.NavGuideLine);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("A line from your character to the waypoint nav is heading for.");
 
                 ImGui.Spacing();
                 ImGui.Separator();
@@ -689,7 +727,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.InputFloat("Lookahead (yd)", ref _settings.NavLookaheadYards, 0.5f, 1f, "%.1f");
                 if (_settings.NavLookaheadYards < 0f) _settings.NavLookaheadYards = 0f;
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Within this distance of a waypoint, blend the aim point toward the next one to cut corners smoothly. 0 = off (aim straight at each waypoint).");
+                    ImGui.SetTooltip("Within this distance of a waypoint, blend the aim point toward the next one to round corners. The nav point reach limits it to 2 yd per yard of reach over 1 yd (no rounding up to a 2 yd reach), never more than this. 0 = off (aim straight at each waypoint).");
 
                 ImGui.SetNextItemWidth(80);
                 ImGui.InputFloat("Turn Rate (deg/s)", ref _settings.NavTurnRateDegPerSec, 15f, 45f, "%.0f");
@@ -755,6 +793,31 @@ internal sealed class LegacyAdvancedSettingsUi
 
                 ImGui.Spacing();
                 ImGui.Separator();
+                ImGui.Text("Protections and Banes");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Untick a protection or bane to stop the bot casting it.\n" +
+                        "Unticked buffs are skipped and never hold the bot in Buffing.\n" +
+                        "All on by default.");
+                if (ImGui.BeginTable("##protsBanes", 2, ImGuiTableFlags.SizingStretchSame))
+                {
+                    ImGui.TableSetupColumn("Protections");
+                    ImGui.TableSetupColumn("Banes");
+                    ImGui.TableHeadersRow();
+                    int rows = Math.Max(BuffManager.ToggleProtections.Length, BuffManager.ToggleBanes.Length);
+                    for (int i = 0; i < rows; i++)
+                    {
+                        ImGui.TableNextRow();
+                        ImGui.TableSetColumnIndex(0);
+                        if (i < BuffManager.ToggleProtections.Length) BuffToggle(BuffManager.ToggleProtections[i]);
+                        ImGui.TableSetColumnIndex(1);
+                        if (i < BuffManager.ToggleBanes.Length) BuffToggle(BuffManager.ToggleBanes[i]);
+                    }
+                    ImGui.EndTable();
+                }
+
+                ImGui.Spacing();
+                ImGui.Separator();
                 ImGui.Text("Buff Difficulty (Min Buffed Skill)");
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip(
@@ -802,6 +865,14 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Recover My Corpse", ref _settings.LootOwnCorpse);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("When your own corpse (\"Corpse of <you>\") is within loot range, open it and take\nevery item on it, whatever the loot profile and Loot From say.");
+                ImGui.Checkbox("Item Info On Select", ref _settings.ItemInfoSettings.OnSelect);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Selecting an item prints its details to chat (/ra iteminfo).");
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Options##iiOpts"))
+                    _settings.ItemInfoSettings.ShowWindow = !_settings.ItemInfoSettings.ShowWindow;
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Open the RynthAi Item Info window (fields, ratings, click trigger, layout).");
                 ImGui.Checkbox("Travel Back To My Corpse", ref _settings.TravelToOwnCorpse);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("After a death, travel back to where you died with RynthNav (outdoors only),\nfighting on the way, recover the corpse, then carry on. Needs the macro running.");

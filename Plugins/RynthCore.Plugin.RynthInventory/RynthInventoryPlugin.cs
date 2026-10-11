@@ -47,6 +47,11 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     private InventoryView? _view;
     private readonly ConcurrentQueue<string> _commands = new();
 
+    // The Aelrynth account vault (/mule-data), read a few seconds after login and every VaultRefreshMs.
+    private const long VaultFirstAskMs = 8_000, VaultRefreshMs = 10 * 60_000;
+    private VaultFeed? _vault;
+    private long _nextVaultAskMs;
+
     private bool _identityKnown;
     private long _loginMs;
     private long _nextIdentityTryMs;
@@ -82,6 +87,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _c.RequestReload = () => { _reloadWanted = true; _files.Clear(); };
         _c.Forget = ForgetCharacter;
         _ui.Log = msg => Host.Log(msg);
+        _vault = new VaultFeed(text => Host.InvokeChatParser(text));
 
         _view = new InventoryView(_c);
         _window = _ui.Add(new UiWindow("RynthInventory/Main", "Global Inventory")
@@ -106,6 +112,8 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _c.LastSavedUtc = default;
         _c.LastSaveError = string.Empty;
         _scanner.Reset();
+        _vault?.Reset();
+        _nextVaultAskMs = 0;
         CloseStorage();
         _lastViewed = 0;
         _lastWriteMs = 0;
@@ -215,6 +223,11 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
             case "keep":
                 KeepOpenContainer();
                 break;
+            case "vault":
+                if (_vault == null || !Host.HasInvokeChatParser) { _c.Print("This engine can't send commands for the plugin, so the vault can't be read."); break; }
+                _nextVaultAskMs = Environment.TickCount64 + VaultRefreshMs;
+                _c.Print(_vault.Ask(Environment.TickCount64, force: true) ? "Reading the vault (/mule-data)..." : "The vault is already being read: " + _vault.Describe());
+                break;
             case "reload":
                 _reloadWanted = true;
                 _files.Clear();
@@ -225,7 +238,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
                 break;
             case "help":
             case "?":
-                _c.Print("/ginv (window), /ginv <text> (search), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv reload, /ginv status");
+                _c.Print("/ginv (window), /ginv <text> (search), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv vault (read the Aelrynth account vault now), /ginv reload, /ginv status");
                 break;
             default:
                 _view?.SetSearch(arg);
@@ -245,6 +258,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         int items = _c.Live?.Items.Count ?? 0, storage = _c.Live?.Storage.Count ?? 0;
         string saved = _c.LastSavedUtc == default ? "not saved yet" : "saved " + InventoryIndex.Age(_c.LastSavedUtc, DateTime.UtcNow);
         _c.Print($"{who}: {items} items carried, {storage} storage container(s), {saved}. {_c.Index?.Characters.Count ?? 0} characters in {_c.Store.Root}.");
+        if (_vault != null) _c.Print("Aelrynth vault: " + _vault.Describe() + ".");
         if (_c.LastSaveError.Length > 0) _c.Print("Last save failed: " + _c.LastSaveError);
     }
 
@@ -327,6 +341,49 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
 
         if (_openStorage != 0 && now >= _nextStorageScanMs)
             ScanStorage(now, final: false);
+
+        TickVault(now);
+    }
+
+    // ── The account vault ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Asks the server for the vault after login and now and then, and files what comes back with the
+    /// character's storage (one record, the same id on every character of the account).
+    /// </summary>
+    private void TickVault(long now)
+    {
+        VaultFeed? v = _vault;
+        if (v == null || _c.Live == null || !Host.HasInvokeChatParser) return;
+
+        if (_nextVaultAskMs == 0) _nextVaultAskMs = now + VaultFirstAskMs;
+        else if (now >= _nextVaultAskMs && v.Status != VaultFeed.State.Unsupported)
+        {
+            _nextVaultAskMs = now + VaultRefreshMs;
+            v.Ask(now);
+        }
+
+        v.Tick(now, _c.Account);
+        if (v.TakeChanged() && v.Record != null) FileVault(v.Record, now);
+    }
+
+    private void FileVault(StorageRecord vault, long now)
+    {
+        if (_c.Live == null) return;
+        var storage = new List<StorageRecord>(_c.Live.Storage);
+        int i = storage.FindIndex(s => s.Id == vault.Id);
+        if (i >= 0) storage[i] = vault; else storage.Add(vault);
+        CharacterSnapshot snap = NewSnapshot(_c.Live.Items, storage);
+        snap.ScannedUtc = _c.Live.ScannedUtc;
+        _c.Live = snap;
+        _indexDirty = true;
+        _scheduler.ContentChanged(now, snap.ContentHash());
+    }
+
+    // May run on AC's thread: the feed only queues.
+    public override void OnChatWindowText(string? text, int chatType, ref int eat)
+    {
+        if (eat == 0 && _vault != null && _vault.ShouldEat(text)) eat = 1;
     }
 
     private void StartCharacter(long now, uint player, string server, string account, string character)

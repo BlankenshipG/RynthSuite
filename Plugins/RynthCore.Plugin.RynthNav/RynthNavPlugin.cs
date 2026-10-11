@@ -25,7 +25,7 @@ namespace RynthCore.Plugin.RynthNav;
 public sealed partial class RynthNavPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthNav");
-    internal const string PluginVersion = "0.6.5";
+    internal const string PluginVersion = "0.6.6";
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi(PluginVersion);
 
     // Where the tiles, portals.tsv, locations.json and the player's atlas.txt/recalls.txt live.
@@ -140,6 +140,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         _portalsEnabled = NavDataConfig.ReadSwitch("portals", false);
         _recallsEnabled = NavDataConfig.ReadSwitch("recalls", true);
         LoadAvoidSettings();
+        LoadMarkerSettings();
         Host.Log($"[RynthNav] Initialized v{PluginVersion} (tiled streaming + long-range goto + portal/recall routing + arrow + atlas). Panel: RynthNav. Tiles: {NavDataDir} ({NavConfig.Source})");
         InitTravel();
         LoadGraph();
@@ -180,6 +181,8 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         _tileRegions.Clear(); _tilePrints.Clear(); ResetCoarse();
         _chatOut.Clear();
         _goNote = "";
+        HideMarkers("logged out");
+        _trip = null; _tripPath = null;
         OnLogoutTravel();
     }
 
@@ -199,6 +202,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         TickTravel();
         ProcessRequests();
         ApplyMovement();
+        TickMarkers();
         UpdateGoLine();
         FlushChat();
     }
@@ -342,6 +346,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
             if (_gotoActive) _goNote = "stopped";   // the panel's status line (the d-pad and Stop say nothing in chat)
             _gotoActive = false; _route = null; _portalWait = false; if (_recallWait) EndRecall();
             ResetHub();
+            HideMarkers("cancelled");
         }
         if (load && _hasPose) RefreshTiles(CurrentLandblock);
         if (test) TestImpl();
@@ -427,9 +432,9 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
     {
         if (!_hasPose) { lock (_gate) _status = "no pose"; Note("goto: no player position yet"); return; }
         // A new goto (not the re-plan after "no route over land") may re-plan once again.
-        if (!landReplan) _landReplanned = false;
+        if (!landReplan) { _landReplanned = false; _enterPortal = enter.Length > 0 ? _nextEnterPortal : ""; _nextEnterPortal = ""; }
         // Whatever was running stops first: a refused goto must not leave the old one half-changed.
-        if (_gotoActive) { _gotoActive = false; _route = null; _portalWait = false; ResetHub(); Host.SetAutoRun(false); Host.StopCompletely(); }
+        if (_gotoActive) { _gotoActive = false; _route = null; _portalWait = false; ResetHub(); Host.SetAutoRun(false); Host.StopCompletely(); HideMarkers("a new goto"); }
         double twx = NavCoords.WorldX(tew), twy = NavCoords.WorldY(tns);
         int gLbX = (int)Math.Floor(twx / 192.0), gLbY = (int)Math.Floor(twy / 192.0);
         if (double.IsNaN(twx) || double.IsNaN(twy) || gLbX < 0 || gLbX > 255 || gLbY < 0 || gLbY > 255)
@@ -491,6 +496,15 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         // needs no navmesh here.
         bool recallFirst = _route != null && _route.Count > 0 && (_route[0].UseRecall || _route[0].IsHub);
         uint hereLb = CurrentLandblock;
+        // A dungeon's landblock has a tile too, but it's the surface's (dungeon cells aren't
+        // baked): walking on it inside the dungeon runs into walls. Say so instead.
+        if (!recallFirst && InDungeon(_cellId))
+        {
+            _route = null;
+            lock (_gate) { _status = $"in a dungeon (0x{hereLb:X4}): no navmesh"; _lastPath = ""; }
+            Note($"goto: no navmesh inside dungeons yet (landblock 0x{hereLb:X4}); walk out through its portal, or turn on recalls so the route can start with one");
+            return;
+        }
         if (!recallFirst && !File.Exists(Path.Combine(NavDataDir, $"nav_{hereLb:X4}.tile")))
         {
             _route = null;
@@ -503,6 +517,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         if (_route == null && !File.Exists(Path.Combine(NavDataDir, $"nav_{goalLb:X4}.tile")))
             Say($"goto: the target's landblock 0x{goalLb:X4} has no tile; walking as far as the navmesh goes");
 
+        SetTrip(_route, name, tns, tew, recalls, enter, live: true);
         _gotoActive = true;
         _gotoName = name; _gotoType = type;
         _walkHaveLast = false;
@@ -632,6 +647,15 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         // ArrivalUnits from the typed point. Standing on that spot is arriving.
         bool atMeshGoal = !isPortalLeg && _goalOnMesh &&
             Math.Sqrt((_goalMeshEw - _wx) * (_goalMeshEw - _wx) + (_goalMeshNs - _wy) * (_goalMeshNs - _wy)) < ArrivalUnits;
+        // A portal is run into straight from PortalArriveUnits: only with nothing between, as far as
+        // the navmesh shows. A portal round a corner (a wall within 14 u of it) is reached along
+        // the path first; it used to be run at through the wall, 12 s a try, five tries.
+        if (isPortalLeg && toGoal < arrive && toGoal > PortalContactUnits && !atMeshGoal)
+        {
+            bool pathLeft;
+            lock (_gotoGate) pathLeft = _gotoPath != null && _gotoIdx < _gotoPath.Count;
+            if (pathLeft && !StraightOnMesh(_gotoTew, _gotoTns)) arrive = PortalContactUnits;
+        }
         if (toGoal < arrive || atMeshGoal)
         {
             OnSubGoalReached();
@@ -644,7 +668,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         // Following a route over land, progress is what's left of the route (it can lead away
         // from the target for a while); otherwise the straight distance.
         double left = _coarse != null ? _coarse.Remaining(_wx, _wy) : toGoal;
-        if (left < _bestDist - ProgressUnits) { _bestDist = left; _bestTick = _legTicks; }
+        if (left < _bestDist - ProgressUnits) { _bestDist = left; _bestTick = _legTicks; _stuckTries = 0; }
         else if (_coarse != null && left > _bestDist + RouteLostUnits)
         {
             // Following a route but getting ever farther from it: stop rather than wander.
@@ -658,6 +682,8 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
             FinishGoto($"stopped: no progress for 30 s, {toGoal:F0}u short ({why})");
             return;
         }
+        // Running into something (RynthNavPlugin.Blocked.cs): turn away, plan again, or stop and say where.
+        if (StepBlocked()) return;
 
         // Plan at once, re-plan every 20 ticks, and every 5 while there is no plan.
         bool due = _gotoPath == null ? (_replanTick++ % 5) == 0 : (++_replanTick % 20) == 0;
@@ -703,7 +729,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
                 // Straight at the goal, or along the route at its next crossing.
                 double bh = (_coarse != null ? Math.Atan2(_aimEw - _wx, _aimNs - _wy) : Math.Atan2(fdew, fdns)) * 180.0 / Math.PI;
                 bh = SteerRoundPortals(bh < 0 ? bh + 360.0 : bh, 10.0);
-                DriveTo(bh);
+                WalkDrive(bh);
                 if (_blindTicks % 10 == 0) lock (_gotoGate) _gotoPath = null; // re-plan soon
             }
             else if (_blindTicks++ == BlindPushTicks)
@@ -722,7 +748,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         // hub portals' circles, a wall beside), it held 234 deg into the wall while the path wanted
         // 301 and re-planned every 0.6 s (10-01 20:07, "just spazzing"). Steering is for the
         // blind push and the last steps onto a portal, where there is no path.
-        DriveTo(desired);
+        WalkDrive(desired);
     }
 
     // ── Portal routing ───────────────────────────────────────────────────────────
@@ -770,6 +796,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         else { _gotoTew = _finalTew; _gotoTns = _finalTns; }
         // New leg: fresh progress watchdog, and the old leg's walkable end no longer counts.
         ResetHub();
+        ResetBlocked();
         _coarseHoldTicks = _graph != null ? CoarseHoldMaxTicks : 0;
         _nextAvoidMs = 0;
         _walkHaveLast = false;   // a new leg starts where the last step's teleport put us
@@ -784,12 +811,14 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         _gotoActive = false; _route = null; _portalWait = false;
         ResetHub();
         _avoid.Clear(); _coarseHoldTicks = 0;
+        ResetBlocked();
         Host.SetAutoRun(false); Host.StopCompletely();
         lock (_gate) _status = status;
         Host.Log($"[RynthNav] goto: {status}");
         Say(status == "arrived" && _gotoName.Length > 0 ? $"goto: arrived at {_gotoName}" : $"goto: {status}");
         _goNote = status == "arrived" && _gotoName.Length > 0 ? $"arrived at {_gotoName}" : status;
         _enterName = ""; _enterType = "";
+        HideMarkers(status == "arrived" ? "arrived" : "the goto ended");
     }
 
     // At a portal entrance, waiting for the teleport. A portal ALWAYS changes the
@@ -935,7 +964,11 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
 
         var filter = new DtQueryDefaultFilter();
         var startP = new RcVec3f((float)_wx, (float)_wz, (float)_wy);
-        _query.FindNearestPoly(startP, new RcVec3f(8, 64, 8), filter, out long sRef, out RcVec3f sPt, out _);
+        // The ground we stand on first: the mesh keeps the agent radius (2 m) from walls, so close
+        // up it's within that, at our height. Only then the wide search, which can pick ground on
+        // the far side of a thin wall or a roof overhead, and the walk then runs into that wall.
+        _query.FindNearestPoly(startP, new RcVec3f(2.5f, 4, 2.5f), filter, out long sRef, out RcVec3f sPt, out _);
+        if (sRef == 0) _query.FindNearestPoly(startP, new RcVec3f(8, 64, 8), filter, out sRef, out sPt, out _);
         // A failed plan drops the old one: StepGoto must not keep following a stale path.
         if (sRef == 0) { lock (_gate) _status = "off navmesh"; lock (_gotoGate) _gotoPath = null; return; }
 
@@ -1018,8 +1051,10 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
                 double ox = -(ux / ul + vx / vl), oy = -(uy / ul + vy / vl), ol = Math.Sqrt(ox * ox + oy * oy);
                 if (ol < 0.05) continue;                   // straight on: no corner to clear
                 double nx = px + ox / ol * _wallClearance, ny = py + oy / ol * _wallClearance;
-                q2.FindNearestPoly(new RcVec3f((float)nx, (float)_wz, (float)ny), new RcVec3f(0.3f, 24, 0.3f), filter, out long rr, out _, out _);
-                if (rr != 0) wps[i] = (nx, ny);
+                // Only onto walkable ground itself (inside a polygon), not merely near it: near it,
+                // the moved corner could sit closer to the wall than the body is wide.
+                q2.FindNearestPoly(new RcVec3f((float)nx, (float)_wz, (float)ny), new RcVec3f(0.3f, 24, 0.3f), filter, out long rr, out RcVec3f rp, out _);
+                if (rr != 0 && Math.Abs(rp.X - nx) < 0.05 && Math.Abs(rp.Z - ny) < 0.05) wps[i] = (nx, ny);
             }
         }
         lock (_gotoGate) { _gotoPath = wps; _gotoIdx = 0; }
@@ -1154,9 +1189,10 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         bool exists = File.Exists(Path.Combine(NavDataDir, $"nav_{lb:X4}.tile"));
         int onDisk = 0;
         try { if (Directory.Exists(NavDataDir)) onDisk = Directory.GetFiles(NavDataDir, "nav_*.tile").Length; } catch { }
-        bool indoors = (_cellId & 0xFFFF) >= 0x0100;
+        bool indoors = (_cellId & 0xFFFF) >= 0x0100, dungeon = InDungeon(_cellId);
         string status; lock (_gate) status = _status;
-        return $"landblock 0x{lb:X4}{(indoors ? " (indoors)" : "")} — tile {(exists ? "FOUND" : "MISSING")}, {_tileCount} loaded, "
+        return $"landblock 0x{lb:X4}{(dungeon ? " (a dungeon)" : indoors ? " (indoors)" : "")} — tile "
+             + $"{(dungeon ? (exists ? "surface only, no dungeon navmesh" : "MISSING") : exists ? "FOUND" : "MISSING")}, {_tileCount} loaded, "
              + $"{onDisk} tile(s) in {NavDataDir}; route graph: {_graphStatus}; Town Network: {_townNetStatus}; goto {(_gotoActive ? "ACTIVE" : "off")}"
              + $"{(_coarse != null ? $" (route {_coarse.Crossed}/{_coarse.Count})" : "")}, portals {(_portalsEnabled ? "on" : "off")}; status: {status}";
     }

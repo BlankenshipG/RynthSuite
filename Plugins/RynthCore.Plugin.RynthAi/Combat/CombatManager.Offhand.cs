@@ -285,6 +285,7 @@ public partial class CombatManager
         if (!gateHeld && _weaponSwapGate != null && !_weaponSwapGate.TryBeginSwap("combat-offhand-dequip")) return OffPrep.Busy;
 
         _host.MoveItemInternal(unchecked((uint)offId), unchecked((uint)packId), 0, 1);
+        _weaponSwapGate?.NoteMove(offId, wieldedNow: true);
         _offDequipPendingId = offId;
         _offDequipAt = now;
         _offDequipTries++;
@@ -379,6 +380,7 @@ public partial class CombatManager
         if (_host.HasGetLastUseDone && _host.TryGetLastUseDone(out int uSeq, out _)) _swapUseDoneSeq = uSeq;
         if (_host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out int wSeq, out _, out _, out _)) _swapWeenieSeq = wSeq;
         OffhandTracker.Sent(plan.Id, _offSwapFrom, now);
+        _weaponSwapGate?.NoteMove(plan.Id, wieldedNow: false);
         _offSwapFrom = 0;
         _lastEquipTime = now;
         if (plan.Id != _stowedOffhandId) _stowedOffhandId = 0;   // a listed one replaces what was taken off

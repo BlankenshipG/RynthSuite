@@ -15,8 +15,8 @@ namespace RynthCore.Plugin.RynthAi;
 /// they didn't know about each other, so cross-subsystem swaps still raced.
 ///
 /// This gate is a single shared instance both managers consult: a swap is only
-/// allowed if no other swap has been issued within MinIntervalMs. The loser
-/// yields and retries on a later tick. Spell casts and non-weapon item actions
+/// allowed once the last one is done on the server (or MinIntervalMs has passed).
+/// The loser yields and retries on a later tick. Spell casts and non-weapon item actions
 /// (loot moves, corpse opens) do NOT go through here.
 /// </summary>
 public sealed class WeaponSwapGate
@@ -24,37 +24,84 @@ public sealed class WeaponSwapGate
     private readonly object _lock = new();
     private long _lastSwapTickMs = long.MinValue / 4;
     private string _lastSwapBy = "";
+    private int _movingId;
+    private long _claims;
+
+    /// <summary>Swaps claimed so far: a caller can tell whether another swap went out after its own.</summary>
+    public long Claims { get { lock (_lock) { return _claims; } } }
 
     /// <summary>
-    /// Minimum milliseconds between two weapon swaps. ~3s comfortably covers
-    /// AC's equip + stance-change settle (matches the existing 3000ms cast
-    /// equip-gate in CombatManager) so a swap fully resolves before the next.
+    /// The longest one swap holds the next: a swap the server's answer can't be seen for (or
+    /// with no <see cref="ServerIdle"/>) waits this long, as before 2026-10-06.
     /// </summary>
     public int MinIntervalMs { get; set; } = 3000;
 
     /// <summary>
-    /// Atomically claim the swap slot. Returns true (recording the swap) when
-    /// no swap has occurred within MinIntervalMs; false when the caller must
-    /// wait. Only mutates state when it returns true, so a denied caller never
+    /// Swap speed (2026-10-06): the next swap may go once the last one is done on the server,
+    /// after at least this long. A weapon change takes up to three steps (a shield or arrows
+    /// into the pack, the weapon, the off hand); at a flat 3 s per step it took 6-9 s.
+    /// </summary>
+    public int FloorMs { get; set; } = 400;
+
+    /// <summary>True when no use or cast is waiting for the server's answer (ActionPacer).</summary>
+    public Func<bool>? ServerIdle { get; set; }
+
+    /// <summary>Reads whether the character wields an item (for a noted move, <see cref="NoteMove"/>).</summary>
+    public Func<int, bool>? IsWielded { get; set; }
+
+    public Func<long> NowMs { get; set; } = () => Environment.TickCount64;
+
+    /// <summary>
+    /// Atomically claim the swap slot. Returns true (recording the swap) when the last swap is
+    /// done on the server (see <see cref="FloorMs"/>) or MinIntervalMs has passed; false when
+    /// the caller must wait. Only mutates state when it returns true, so a denied caller never
     /// "wastes" the slot.
     /// </summary>
     public bool TryBeginSwap(string requestedBy)
     {
-        long now = Environment.TickCount64;
+        long now = NowMs();
         lock (_lock)
         {
-            if (now - _lastSwapTickMs < MinIntervalMs)
+            long since = now - _lastSwapTickMs;
+            if (since < MinIntervalMs && !LastSwapDone(since))
                 return false;
             _lastSwapTickMs = now;
             _lastSwapBy = requestedBy ?? "";
+            _movingId = 0;
+            _claims++;
             return true;
+        }
+    }
+
+    /// <summary>
+    /// The claimed swap moved <paramref name="itemId"/> into or out of a hand without a use (a
+    /// pack move or a slot wield): the next swap waits the full MinIntervalMs, as before.
+    /// Drakkon 2026-10-06 13:58: the wand went out 1.3 s after the axe's pack move (the axe read
+    /// out of hand) and the server then held the first cast open until a relog. The server's
+    /// unwield motion outlasts the item move, and nothing tells us when it ends.
+    /// </summary>
+    public void NoteMove(int itemId, bool wieldedNow)
+    {
+        lock (_lock) _movingId = itemId;
+    }
+
+    private bool LastSwapDone(long since)
+    {
+        if (since < FloorMs || ServerIdle == null || IsWielded == null) return false;
+        try
+        {
+            return _movingId == 0 && ServerIdle();
+        }
+        catch
+        {
+            return false;
         }
     }
 
     /// <summary>Milliseconds since the last successful swap (diagnostics).</summary>
     public long MsSinceLastSwap
     {
-        get { lock (_lock) { return Environment.TickCount64 - _lastSwapTickMs; } }
+        get { lock (_lock) { return NowMs() - _lastSwapTickMs; } }
     }
 
     /// <summary>Who last claimed a swap (diagnostics).</summary>

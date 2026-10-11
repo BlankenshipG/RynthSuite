@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginCore;
 
 namespace RynthCore.Plugin.RynthTracker;
@@ -8,7 +9,7 @@ namespace RynthCore.Plugin.RynthTracker;
 public sealed class RynthTrackerPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthTracker");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.1");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.3.0");
 
     private uint _playerId;
     private bool _loginComplete;
@@ -24,11 +25,27 @@ public sealed class RynthTrackerPlugin : RynthPluginBase
     // blow: a fellow's kill, a summon's kill or a mob someone else finished never counts,
     // and neither does the XP they bring (damage share, fellowship share, quests). That XP
     // still counts toward the totals and XP/hour.
+    //
+    // 0.3.0: plus the extra monsters a ring, wall, blast or chain spell kills when the
+    // server sends no notification for them (chain spells on Conquest): their corpse counts
+    // when you hit that monster with a multi-target spell just before (KillCounter.cs).
     private long _killXp;
     private int  _xpKills;               // kills that closed their window (the per-kill divisor)
     private int  _openKills;             // kills whose window is still open
     private DateTime _killWindowUntil;   // XP rises seen until then belong to those kills
     private const double KillWindowSec = 2.5;
+
+    // Kill notices, our damage lines and corpses, for the kills a notice doesn't cover.
+    private readonly KillCounter _killCounter = new();
+    // Corpses waiting for their name (the client may not have it on the create tick).
+    private readonly List<(uint Id, DateTime Seen)> _pendingCorpses = new();
+    private const double CorpseNameWaitSec = 3.0;
+    private const int MaxPendingCorpses = 256;
+    // XP that landed outside any kill window: a kill found by its corpse (seconds after the
+    // death animation) takes the XP of the few seconds before it.
+    private readonly List<(DateTime At, long Xp)> _unattributedXp = new();
+    private const double CorpseXpLookbackSec = 8.0;
+    private int _corpseLogCount;
 
     private int _tickCounter;
 
@@ -126,6 +143,76 @@ public sealed class RynthTrackerPlugin : RynthPluginBase
         _killsTotal++;
         _openKills++;
         _killWindowUntil = DateTime.UtcNow.AddSeconds(KillWindowSec);
+        _killCounter.OnKillNotice(deathMessage, DateTime.UtcNow);
+    }
+
+    // Our damage lines name each monster a spell hurt (one line per monster for rings, walls,
+    // blasts and chain spells): that is how a multi-target hit is recognised.
+    public override void OnChatWindowText(string? text, int chatType, ref int eat)
+    {
+        if (!_loginComplete) return;
+        if (CombatText.TryParseOutgoingHit(text, out string victim, out _))
+            _killCounter.OnHit(victim, DateTime.UtcNow);
+    }
+
+    // Corpses are read on the tick (their name may not be readable yet on the create).
+    public override void OnCreateObject(uint objectId)
+    {
+        if (!_loginComplete || objectId == 0) return;
+        if (_pendingCorpses.Count >= MaxPendingCorpses) _pendingCorpses.RemoveAt(0);
+        _pendingCorpses.Add((objectId, DateTime.UtcNow));
+    }
+
+    public override void OnDeleteObject(uint objectId)
+    {
+        for (int i = _pendingCorpses.Count - 1; i >= 0; i--)
+            if (_pendingCorpses[i].Id == objectId) _pendingCorpses.RemoveAt(i);
+    }
+
+    /// <summary>Reads the names of newly created objects; a "Corpse of X" goes to the kill counter.</summary>
+    private void CheckPendingCorpses()
+    {
+        if (_pendingCorpses.Count == 0) return;
+        if (!Host.HasGetObjectName) { _pendingCorpses.Clear(); return; }
+        DateTime now = DateTime.UtcNow;
+        for (int i = _pendingCorpses.Count - 1; i >= 0; i--)
+        {
+            var (id, seen) = _pendingCorpses[i];
+            if (!Host.TryGetObjectName(id, out string name) || string.IsNullOrEmpty(name))
+            {
+                if ((now - seen).TotalSeconds > CorpseNameWaitSec) _pendingCorpses.RemoveAt(i);
+                continue;
+            }
+            _pendingCorpses.RemoveAt(i);
+            string? monster = CombatText.CorpseOwnerName(name);
+            if (monster == null) continue;
+            var result = _killCounter.OnCorpse(monster, now);
+            if (result == KillCounter.CorpseResult.Counted)
+                CountCorpseKill(now);
+            if ((result == KillCounter.CorpseResult.Counted || result == KillCounter.CorpseResult.HitNotCounted)
+                && _corpseLogCount < 40)
+            {
+                _corpseLogCount++;
+                Host.Log(result == KillCounter.CorpseResult.Counted
+                    ? $"[RynthTracker] Kill counted from its corpse (no kill notice): '{name}' 0x{id:X8}, hit by a multi-target spell. Kills {_killsTotal}."
+                    : $"[RynthTracker] Not counted: '{name}' 0x{id:X8} - you hit it, single-target, and got no kill notice (someone else's kill?).");
+            }
+        }
+    }
+
+    /// <summary>A kill found by its corpse: one more kill, and the XP of the seconds before it.</summary>
+    private void CountCorpseKill(DateTime now)
+    {
+        _killsTotal++;
+        bool inKillWindow = _openKills > 0 && now <= _killWindowUntil;
+        if (inKillWindow) _openKills++;   // closes with the window, its XP already in it
+        else _xpKills++;
+        for (int i = _unattributedXp.Count - 1; i >= 0; i--)
+        {
+            if ((now - _unattributedXp[i].At).TotalSeconds > CorpseXpLookbackSec) continue;
+            _killXp += _unattributedXp[i].Xp;
+            _unattributedXp.RemoveAt(i);
+        }
     }
 
     public override void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth)
@@ -147,6 +234,8 @@ public sealed class RynthTrackerPlugin : RynthPluginBase
             if (_loginComplete) { SaveSession(); _nextSaveUtc = DateTime.UtcNow + SaveInterval; }
             Host.Log("[RynthTracker] Session reset.");
         }
+
+        if (_loginComplete) CheckPendingCorpses();
 
         if (++_tickCounter < 30) return; // rebuild every ~0.5s at 60Hz
         _tickCounter = 0;
@@ -171,6 +260,12 @@ public sealed class RynthTrackerPlugin : RynthPluginBase
             long gained = _xpRise.Take(xp);
             _xpTotal += gained;
             if (inKillWindow) _killXp += gained;
+            else if (gained > 0)
+            {
+                DateTime now = DateTime.UtcNow;
+                _unattributedXp.RemoveAll(e => (now - e.At).TotalSeconds > CorpseXpLookbackSec);
+                _unattributedXp.Add((now, gained));
+            }
             // Capped only when past retail's 275 total AND kills keep bringing nothing: an
             // awakened character's cap is higher (Aelrynth), so the total alone can't say.
             _maxLevel = xp >= MaxLevelXp && _xpKills >= 3 && _xpTotal == 0;
@@ -213,6 +308,9 @@ public sealed class RynthTrackerPlugin : RynthPluginBase
         _xpKills = 0;
         _openKills = 0;
         _radTotal = 0;
+        _killCounter.Reset();
+        _pendingCorpses.Clear();
+        _unattributedXp.Clear();
         // The next read of each is the new baseline.
         _xpRise.Clear(); _lumRise.Clear(); _radRise.Clear(); _bankedRise.Clear(); _drawnRise.Clear();
         _snapshot = EmptySnapshot;

@@ -38,4 +38,9 @@
     <Compile Include="..\..\..\RynthCore\src\RynthCore.StatusAgent\Dat\DxtUtil.cs" Link="Engine\DxtUtil.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- RynthLuaPaths.cs uses the install-folder resolver. -->
+    <Compile Include="..\..\Plugins\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+  </ItemGroup>
+
 </Project>

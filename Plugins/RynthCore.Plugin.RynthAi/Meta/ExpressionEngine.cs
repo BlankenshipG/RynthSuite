@@ -62,7 +62,7 @@ internal sealed class ExpressionEngine
     // The three data paths are settable only so offline tests can point them at a scratch
     // folder before anything reads or writes them; the plugin never changes them.
     internal static string ItemGiverDir { get; set; }
-        = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "ItemGiver");
+        = Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "ItemGiver");
 
     /// <summary>Millisecond tick for delayexec and the var-flush throttle. Tests swap it for a
     /// fake clock; the plugin never changes it.</summary>
@@ -107,8 +107,8 @@ internal sealed class ExpressionEngine
     private long _lastVarFlushMs;
     private string? _pvarPathCached;
     private const long VarFlushIntervalMs = 2000;
-    internal static string PvarsDir  { get; set; } = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "pvars");
-    internal static string GvarsPath { get; set; } = Path.Combine(@"C:\Games\RynthSuite\RynthAi", "gvars.txt");
+    internal static string PvarsDir  { get; set; } = Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "pvars");
+    internal static string GvarsPath { get; set; } = Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "gvars.txt");
     private Dictionary<string, (Func<string> Get, Action<string> Set)>? _settingsMap;
 
     public IReadOnlyDictionary<string, string> Variables => _variables;
@@ -155,6 +155,11 @@ internal sealed class ExpressionEngine
 
     private CreatureProfileStore? _creatureStore;
     public void SetCreatureStore(CreatureProfileStore? store) => _creatureStore = store;
+
+    // secondssincelastkill[]: the plugin's kill clock. Null (not wired) reads as 0, i.e.
+    // "just killed", so a "no kills for a while" test never holds by mistake.
+    private KillClock? _killClock;
+    public void SetKillClock(KillClock? clock) => _killClock = clock;
 
     // ── Backward-compat shim ──────────────────────────────────────────────────
 
@@ -327,6 +332,8 @@ internal sealed class ExpressionEngine
             "getdatetimelocal"  => DateTime.Now.ToString(A(0)),
             "getdatetimeutc"    => DateTime.UtcNow.ToString(A(0)),
             "getunixtime"       => DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture),
+            // Whole seconds since our last kill; before the first, since the macro start (or login).
+            "secondssincelastkill" => (_killClock?.SecondsSinceLastKill() ?? 0).ToString(CultureInfo.InvariantCulture),
 
             // ── World object queries ──────────────────────────────────────────
             "wobjectfindnearestbytemplatetype"        => EvalWobjectFindNearestByTemplateType(A(0)),
@@ -342,7 +349,8 @@ internal sealed class ExpressionEngine
             "wobjectfindallinventorybynamerx"         => EvalWobjectFindAllInventoryByNameRx(Tmpl(0)),
             "wobjectfindininventorybyname"             => EvalWobjectFindInInventoryByName(Tmpl(0)),
             "wobjectfindininventorybynamerx"          => EvalWobjectFindInInventoryByNameRx(Tmpl(0)),
-            "wobjectfindalllandscapebytemplatetype"   => EvalWobjectFindAllLandscapeByTemplateType(A(0)),
+            "wobjectfindalllandscapebyobjectclass"    => EvalWobjectFindAllLandscapeByObjectClass(A(0)),
+            "wobjectfindalllandscapebytemplatetype"   =>EvalWobjectFindAllLandscapeByTemplateType(A(0)),
             "wobjectfindalllandscapebynamerx"         => EvalWobjectFindAllLandscapeByNameRx(Tmpl(0)),
             "wobjectfindallbycontainer"               => EvalWobjectFindAllByContainer(A(0)),
             "wobjectgetselection"          => EvalWobjectGetSelection(),
@@ -1066,15 +1074,78 @@ internal sealed class ExpressionEngine
         return NewList(items);
     }
 
+    // List text: "[item,item,...]". An item that is itself a whole list is written as is, so
+    // lists nest ("[a,[b,c]]"); any other item has '\', ',', '[' and ']' escaped with '\'.
+    // Items without those characters are written exactly as before ("[a,b]").
     private static string NewList(IEnumerable<string>? items = null)
-        => items != null ? "[" + string.Join(",", items) + "]" : "[]";
+    {
+        if (items == null) return "[]";
+        var sb = new System.Text.StringBuilder("[");
+        bool first = true;
+        foreach (string? item in items)
+        {
+            if (!first) sb.Append(',');
+            first = false;
+            AppendListItem(sb, item ?? "");
+        }
+        return sb.Append(']').ToString();
+    }
+
+    private static void AppendListItem(System.Text.StringBuilder sb, string item)
+    {
+        if (IsWholeList(item)) { sb.Append(item); return; }
+        foreach (char c in item)
+        {
+            if (c is '\\' or ',' or '[' or ']') sb.Append('\\');
+            sb.Append(c);
+        }
+    }
+
+    /// <summary>True when <paramref name="s"/> is one list: its first '[' closes on the last character (escapes skipped).</summary>
+    private static bool IsWholeList(string s)
+    {
+        if (s.Length < 2 || s[0] != '[' || s[s.Length - 1] != ']') return false;
+        int depth = 0;
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == '\\') { i++; continue; }
+            if (c == '[') depth++;
+            else if (c == ']' && --depth == 0) return i == s.Length - 1;
+        }
+        return false;
+    }
 
     private static List<string>? GetList(string handle)
     {
         handle = handle.Trim();
         if (handle.Length < 2 || handle[0] != '[' || handle[handle.Length - 1] != ']') return null;
         string inner = handle.Substring(1, handle.Length - 2);
-        return inner.Length == 0 ? new List<string>() : new List<string>(inner.Split(','));
+        var items = new List<string>();
+        if (inner.Length == 0) return items;
+
+        // Split on commas outside nested lists. Escapes are undone for this list's own items;
+        // a nested list keeps them for when it is read as a list itself. Only "\\", "\,", "\["
+        // and "\]" are escapes (all NewList writes); any other backslash is plain text, so a
+        // list saved before escaping existed ("[c:\d]") reads back unchanged.
+        var cur = new System.Text.StringBuilder();
+        int depth = 0;
+        for (int i = 0; i < inner.Length; i++)
+        {
+            char c = inner[i];
+            if (c == '\\' && i + 1 < inner.Length && inner[i + 1] is '\\' or ',' or '[' or ']')
+            {
+                if (depth > 0) cur.Append(c);
+                cur.Append(inner[++i]);
+                continue;
+            }
+            if (c == '[') depth++;
+            else if (c == ']' && depth > 0) depth--;
+            else if (c == ',' && depth == 0) { items.Add(cur.ToString()); cur.Clear(); continue; }
+            cur.Append(c);
+        }
+        items.Add(cur.ToString());
+        return items;
     }
 
     private static string StripBackticks(string s)
@@ -1632,6 +1703,24 @@ internal sealed class ExpressionEngine
             if (seen.Add(wo.Id))
                 items.Add(MakeWobjectHandle(unchecked((uint)wo.Id), wo.Name));
 
+        return NewList(items);
+    }
+
+    private string EvalWobjectFindAllLandscapeByObjectClass(string arg)
+    {
+        if (_worldObjectCache == null) return "[]";
+        if (!int.TryParse(arg.Trim(), out int targetClass)) return "[]";
+
+        var items = new List<string>();
+        var seen = new System.Collections.Generic.HashSet<int>();
+        void Check(WorldObject wo)
+        {
+            if (!seen.Add(wo.Id)) return;
+            if (ResolveEffectiveObjectClass(wo) == targetClass)
+                items.Add(MakeWobjectHandle(unchecked((uint)wo.Id), wo.Name));
+        }
+        foreach (var wo in _worldObjectCache.GetLandscapeObjects()) Check(wo);
+        foreach (var wo in _worldObjectCache.GetLandscape()) Check(wo);
         return NewList(items);
     }
 
@@ -2412,8 +2501,8 @@ internal sealed class ExpressionEngine
     {
         if (!TryParseWobjectHandle(arg, out uint uid, out _) || uid == 0) return "0";
         if (!_host.HasSelectItem) return "0";
-        _host.SelectItem(uid);
-        return "0";
+        RynthCore.Plugin.RynthAi.ItemInfo.SelfSelect.Mark(uid);
+        return _host.SelectItem(uid) ? "1" : "0";
     }
 
     private string EvalActionTryUseItem(string arg)
@@ -2440,7 +2529,7 @@ internal sealed class ExpressionEngine
 
         if (!EnsureMagicModeForCast()) return "0";
 
-        _host.CastSpell(targetId, spellId);
+        _host.CastSpellFor(targetId, spellId, "Meta", $"spell {spellId} (meta)", asked: true);
         return "1";
     }
 
@@ -2486,7 +2575,7 @@ internal sealed class ExpressionEngine
         if (!_host.HasGetCurrentCombatMode)
         {
             // Can't read mode — best-effort flip and bail.
-            if (_host.HasChangeCombatMode) _host.ChangeCombatMode(CombatMode.Magic);
+            if (_host.HasChangeCombatMode) _host.ChangeCombatModeFor(CombatMode.Magic, "Meta", "meta cast: Magic mode", force: true);
             return false;
         }
 
@@ -2509,7 +2598,7 @@ internal sealed class ExpressionEngine
         if (wandId == 0 || !_host.HasUseObject)
         {
             // No wand (or no UseObject) — try bare-handed magic.
-            if (_host.HasChangeCombatMode) _host.ChangeCombatMode(CombatMode.Magic);
+            if (_host.HasChangeCombatMode) _host.ChangeCombatModeFor(CombatMode.Magic, "Meta", "meta cast: Magic mode", force: true);
             return false;
         }
 
@@ -2613,7 +2702,7 @@ internal sealed class ExpressionEngine
         if (_host.HasChangeCombatMode
             && (now - _castStanceLastFlipAt).TotalMilliseconds > CastStanceFlipGateMs)
         {
-            _host.ChangeCombatMode(CombatMode.Magic);
+            _host.ChangeCombatModeFor(CombatMode.Magic, "Meta", "meta cast: Magic mode", force: true);
             _castStanceLastFlipAt = now;
         }
         return false;
@@ -2717,7 +2806,7 @@ internal sealed class ExpressionEngine
         if (targetId == 0) targetId = _host.GetPlayerId();
         if (targetId == 0) return "2";
 
-        _host.CastSpell(targetId, spellId);
+        _host.CastSpellFor(targetId, spellId, "Meta", $"spell {spellId} (meta)", asked: true);
         return "1";
     }
 
@@ -2867,7 +2956,11 @@ internal sealed class ExpressionEngine
             _ => 0,
         };
         if (mode == 0) return "0";
-        return _host.ChangeCombatMode(mode) ? "1" : "0";
+        if (!_host.HasChangeCombatMode) return "0";
+        int seq = _host.HasUseDoneSeq ? _host.GetUseDoneSeq() : 0;
+        bool ok = _host.ChangeCombatMode(mode);
+        if (ok) ActionPacer.Begin(_host, PacedKind.CombatMode, 0, ActionPacer.ModeName(mode), "RynthAi/Meta (asked)", seq, mode);
+        return ok ? "1" : "0";
     }
 
     private string EvalGetBusyState()
@@ -3306,7 +3399,9 @@ internal sealed class ExpressionEngine
             ["StopMacroOnNoComponents"] = (() => B(s.StopMacroOnNoComponents), v => s.StopMacroOnNoComponents = ToDouble(v) != 0),
             ["StopLootingWhenPackFull"] = (() => B(s.StopLootingWhenPackFull), v => s.StopLootingWhenPackFull = ToDouble(v) != 0),
             ["LootOwnCorpse"] = (() => B(s.LootOwnCorpse), v => s.LootOwnCorpse = ToDouble(v) != 0),
+            ["EscapeHazards"] = (() => B(s.EscapeHazards), v => s.EscapeHazards = ToDouble(v) != 0),
             ["TravelToOwnCorpse"] = (() => B(s.TravelToOwnCorpse), v => s.TravelToOwnCorpse = ToDouble(v) != 0),
+            ["ItemInfoOnSelect"] = (() => B(s.ItemInfoSettings.OnSelect), v => s.ItemInfoSettings.OnSelect = ToDouble(v) != 0),
             ["StopMacroWhenPackFull"] = (() => B(s.StopMacroWhenPackFull), v => s.StopMacroWhenPackFull = ToDouble(v) != 0),
             ["SummonPets"]          = (() => B(s.SummonPets),          v => s.SummonPets          = ToDouble(v) != 0),
             ["MineOnly"]            = (() => B(s.MineOnly),            v => s.MineOnly            = ToDouble(v) != 0),
@@ -3320,13 +3415,19 @@ internal sealed class ExpressionEngine
             ["OffhandDefault"]      = (() => s.OffhandDefault,         v => { if (OffhandRules.TryParse(v, out var m)) s.OffhandDefault = OffhandRules.SettingValue(m); }),
             ["PreferDualWield"]     = (() => B(s.PreferDualWield),     v => s.PreferDualWield     = ToDouble(v) != 0),
             ["MonsterRange"]        = (() => I(s.MonsterRange),        v => { if (int.TryParse(v, out int i)) s.MonsterRange     = i; }),
+            // Targeting: 0 lowest health, 1 closest, 2 farthest, 3 least turning.
+            ["TargetSelection"]     = (() => I(s.TargetSelection),     v => { if (int.TryParse(v, out int i)) s.TargetSelection  = Math.Clamp(i, 0, 3); }),
+            ["TargetLock"]          = (() => B(s.TargetLock),          v => s.TargetLock          = ToDouble(v) != 0),
             ["RingRange"]           = (() => I(s.RingRange),           v => { if (int.TryParse(v, out int i)) s.RingRange        = i; }),
             ["ApproachRange"]       = (() => I(s.ApproachRange),       v => { if (int.TryParse(v, out int i)) s.ApproachRange    = i; }),
             ["MinRingTargets"]      = (() => I(s.MinRingTargets),      v => { if (int.TryParse(v, out int i)) s.MinRingTargets   = i; }),
             ["BlastRange"]          = (() => I(s.BlastRange),      v => { if (int.TryParse(v, out int i)) s.BlastRange   = i; }),
             ["MinBlastTargets"]     = (() => I(s.MinBlastTargets),      v => { if (int.TryParse(v, out int i)) s.MinBlastTargets   = i; }),
+            ["WallRange"]           = (() => I(s.WallRange),           v => { if (int.TryParse(v, out int i)) s.WallRange        = i; }),
+            ["MinWallTargets"]      = (() => I(s.MinWallTargets),      v => { if (int.TryParse(v, out int i)) s.MinWallTargets   = i; }),
             ["HealAt"]              = (() => I(s.HealAt),              v => { if (int.TryParse(v, out int i)) s.HealAt           = i; }),
             ["RestamAt"]            = (() => I(s.RestamAt),            v => { if (int.TryParse(v, out int i)) s.RestamAt         = i; }),
+            ["RestamTo"]            = (() => I(s.RestamTo),            v => { if (int.TryParse(v, out int i)) s.RestamTo         = i; }),
             ["GetManaAt"]           = (() => I(s.GetManaAt),           v => { if (int.TryParse(v, out int i)) s.GetManaAt        = i; }),
             ["TopOffHP"]            = (() => I(s.TopOffHP),            v => { if (int.TryParse(v, out int i)) s.TopOffHP         = i; }),
             ["TopOffStam"]          = (() => I(s.TopOffStam),          v => { if (int.TryParse(v, out int i)) s.TopOffStam       = i; }),
@@ -3371,6 +3472,8 @@ internal sealed class ExpressionEngine
             ["MaxMonRange"]         = (() => D(s.MaxMonRange),         v => { if (double.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out double d)) s.MaxMonRange = d; }),
             ["NavRingThickness"]    = (() => F(s.NavRingThickness),    v => { if (float.TryParse(v,  System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f))  s.NavRingThickness = f; }),
             ["NavLineThickness"]    = (() => F(s.NavLineThickness),    v => { if (float.TryParse(v,  System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f))  s.NavLineThickness = f; }),
+            ["NavLabelMode"]        = (() => I(s.NavLabelMode),        v => { if (int.TryParse(v, out int i)) s.NavLabelMode = NavLabelModes.Clamp(i); }),
+            ["NavGuideLine"]        = (() => B(s.NavGuideLine),        v => s.NavGuideLine    = ToDouble(v) != 0),
             ["CurrentNavPath"]      = (() => s.CurrentNavPath,         v => s.CurrentNavPath  = v),
             ["CurrentLootPath"]     = (() => s.CurrentLootPath,        v => s.CurrentLootPath = v),
             ["CurrentMetaPath"]     = (() => s.CurrentMetaPath,        v => s.CurrentMetaPath = v),

@@ -54,11 +54,131 @@ internal static class MetaTests
         r.Add("meta: state snapshot", Snapshot);
         r.Add("meta: VendorClosed fires after a vendor closes", VendorClosedFires);   // was a known failure; fixed by ef68455
         r.Add("meta: InventoryItemCount counts stack sizes", InventoryCountsStacks);   // was a known failure; fixed by 716f16d
-        r.KnownFailure("meta: SecondsInStateP keeps counting across a call and return",
-            "SecondsInStateP_GE survives a macro stop/start since 1ee6145, but still restarts whenever the state is re-entered (SetState, Call, Return), as VTank documents it; RynthScript says it survives re-entry. Open compatibility call (2026-09-30 audit, question 16)",
-            SecondsInStatePPersists);
+        r.Add("meta: SecondsInStateP keeps counting across a call and return", SecondsInStatePPersists);   // was a known failure (2026-09-30 audit, question 16: RynthScript's re-entry rule)
+        r.Add("meta: SecondsInStateP pauses in a call, survives SetState to itself, restarts on a new state or meta", SecondsInStatePRules);
         r.Add("meta: MainHealthPHE / MainManaPHE mean 'percent >='", PercentConditionsAreGE);   // was a known failure; fixed by a7c4618
         r.Add("meta: a negative vital threshold never holds", NegativeVitalThreshold);   // was a known failure; fixed by 6f72b67
+        r.Add("meta edit: saving a rule keeps the running meta's state, clocks and latch", EditKeepsRunningMeta);
+        r.Add("meta edit: a saved rule keeps CallState's return state and ChatCapture's colours", EditKeepsHiddenFields);
+        r.Add("meta edit: the editor's Set current text matches the landblock / landcell", SetCurrentMatches);
+        r.Add("meta edit: a new state's Never -> None rule keeps it through a save and reload", NewStateSurvivesReload);
+    }
+
+    private static void SetCurrentMatches()
+    {
+        FakeHost.Reset();
+        foreach (uint cell in new uint[] { 0xA9B4001Cu, 0x00070143u, 0x8B370105u, 0x0001FFFEu })
+        {
+            FakeHost.PlayerPose = (cell, 10f, 10f, 0f);
+            var rig = new Rig(FakeHost.Create(), Player);
+            string block = RynthCore.Engine.UI.Data.MetaLocation.Text(RynthCore.Engine.UI.Data.MetaLocation.LandblockCondition, cell)!;
+            string here = RynthCore.Engine.UI.Data.MetaLocation.Text(RynthCore.Engine.UI.Data.MetaLocation.LandcellCondition, cell)!;
+            Check.True(rig.Holds(C.Landblock_EQ, block), $"Landblock == {block} holds at {cell:X8}");
+            Check.True(rig.Holds(C.Landcell_EQ, here), $"Landcell == {here} holds at {cell:X8}");
+            FakeHost.PlayerPose = (cell + 0x00010000u, 10f, 10f, 0f);
+            Check.False(rig.Holds(C.Landblock_EQ, block), $"not in the next landblock ({cell:X8})");
+            FakeHost.PlayerPose = (cell + 1, 10f, 10f, 0f);
+            Check.False(rig.Holds(C.Landcell_EQ, here), $"not in the next cell ({cell:X8})");
+        }
+    }
+
+    private static void NewStateSurvivesReload()
+    {
+        // What "+ New state..." adds (engine MetaRuleEdit.Placeholder): Never -> None in the new state.
+        var rules = new List<MetaRule>
+        {
+            Rule("Default", C.Always, "", A.SetMetaState, "Loot"),
+            new() { State = "Loot", Condition = C.Never, Action = A.None },
+        };
+        string text = AfFileWriter.SaveToString(rules, new Dictionary<string, List<string>>());
+        var back = AfFileParser.LoadFromText(text);
+        Check.Eq(back.Rules.Count, 2, "both rules back");
+        var loot = back.Rules.FirstOrDefault(x => x.State == "Loot");
+        Check.NotNull(loot, "the new state is still there");
+        if (loot != null)
+        {
+            Check.Eq(loot.Condition, C.Never, "Never");
+            Check.Eq(loot.Action, A.None, "None");
+        }
+
+        // It never fires, and SetState into it just sits there.
+        var rig = new Rig(rules: new[] { Rule("Default", C.Always, "", A.SetMetaState, "Loot"), Mark("Loot", C.Never, "", "x") });
+        rig.Tick();
+        rig.Tick(5);
+        Check.Eq(rig.S.CurrentState, "Loot", "moved into the new state");
+        Check.False(rig.Has("x"), "its Never rule never fires");
+    }
+
+    // ── Panel edits on a running meta (MetaRuleEdits, update_rule; 2026-10-05 autosave) ─────
+
+    private static void EditKeepsRunningMeta()
+    {
+        var rig = new Rig(rules: new[]
+        {
+            Mark("Default", C.Always, "", "a"),
+            Mark("Default", C.SecondsInState_GE, "10", "t"),
+        });
+        rig.Tick();
+        Check.Eq(rig.Var("a"), "1", "the Always rule fired on entry");
+        rig.Tick(6);
+
+        // What the editor's autosave sends: an edited copy of rule 0, then the structural bump
+        // TryAutoSaveMetaCmd makes.
+        MetaRule edited = Mark("Default", C.Always, "", "a");
+        edited.ActionData = "setvar[a, getvar[a]+10]";
+        Check.True(MetaRuleEdits.Replace(rig.S.MetaRules, 0, edited), "replaced");
+        rig.S.MetaRulesStructuralVersion++;
+        rig.Tick();
+        Check.Eq(rig.Var("a"), "1", "the edited rule did not fire again (latch kept)");
+        Check.Eq(rig.S.CurrentState, "Default", "state unchanged");
+        Check.Near(rig.M.GetStateSnapshot().SecondsInState, 6, 1e-9, "seconds in state not restarted");
+        rig.Tick(4.5);
+        Check.Eq(rig.Var("t"), "1", "the 10 s rule fired on the original clock");
+
+        // A real state entry re-arms it, now with the edited action.
+        rig.S.ForceStateReset = true;
+        rig.Tick();
+        Check.Eq(rig.Var("a"), "11", "re-armed by a state entry, runs the edited action");
+
+        // Out of range: nothing changes.
+        Check.False(MetaRuleEdits.Replace(rig.S.MetaRules, 5, Mark("Default", C.Never, "", "z")), "bad index refused");
+        Check.Eq(rig.S.MetaRules.Count, 2, "rule count unchanged");
+
+        // Before the fix (a plain replace) the same edit fired the rule again.
+        var old = new Rig(rules: new[] { Mark("Default", C.Always, "", "a") });
+        old.Tick();
+        old.S.MetaRules[0] = Mark("Default", C.Always, "", "a");
+        old.S.MetaRulesStructuralVersion++;
+        old.Tick();
+        Check.Eq(old.Var("a"), "2", "a plain replace re-fires (what MetaRuleEdits prevents)");
+    }
+
+    private static void EditKeepsHiddenFields()
+    {
+        var call = new MetaRule
+        {
+            State = "Default", Condition = C.ChatMessageCapture, ConditionData = "x", ChatColors = "2;4",
+            Action = A.CallMetaState, ActionData = "Buff", CallReturnState = "Hunt",
+        };
+        var rules = new List<MetaRule> { call };
+        // The panel's DTO carries neither field.
+        var edited = new MetaRule { State = "Default", Condition = C.ChatMessageCapture, ConditionData = "y", Action = A.CallMetaState, ActionData = "Buff2" };
+        MetaRuleEdits.Replace(rules, 0, edited);
+        Check.Eq(rules[0].CallReturnState, "Hunt", "CallState return kept");
+        Check.Eq(rules[0].ChatColors, "2;4", "ChatCapture colours kept");
+        Check.Eq(rules[0].ActionData, "Buff2", "the edit applied");
+
+        // Changing the action / condition drops them.
+        var other = new MetaRule { State = "Default", Condition = C.Always, Action = A.SetMetaState, ActionData = "Buff" };
+        MetaRuleEdits.Replace(rules, 0, other);
+        Check.Eq(rules[0].CallReturnState, "", "not a CallState any more");
+        Check.Eq(rules[0].ChatColors, "", "not a ChatCapture any more");
+
+        // Nested: an All's ChatCapture child by position.
+        var parent = new MetaRule { Condition = C.All, Children = { new MetaRule { Condition = C.ChatMessageCapture, ChatColors = "7" } } };
+        var parentEdit = new MetaRule { Condition = C.All, Children = { new MetaRule { Condition = C.ChatMessageCapture, ConditionData = "z" } } };
+        MetaRuleEdits.KeepHidden(parent, parentEdit);
+        Check.Eq(parentEdit.Children[0].ChatColors, "7", "child colours kept");
     }
 
     // ── Rig ───────────────────────────────────────────────────────────────────
@@ -982,6 +1102,78 @@ internal static class MetaTests
         rig.Tick();      //         Default re-entered
         rig.Tick(5);     // T0+26: 25 s in Default (26 s since first entering it)
         Check.Eq(rig.Var("p"), "1", "SecondsInStateP_GE 25 after 25 s spent in Default around a 1 s call");
+    }
+
+    private static void SecondsInStatePRules()
+    {
+        // Paused while Default has Called Sub: 25 s of wall time is only 15 s in Default.
+        var call = new Rig(rules: new[]
+        {
+            Mark("Default", C.SecondsInStateP_GE, "20", "p"),
+            Rule("Default", C.SecondsInState_GE, "10", A.CallMetaState, "Sub"),
+            Rule("Sub", C.SecondsInState_GE, "10", A.ReturnFromCall, ""),
+        });
+        call.Tick();          // T0: Default
+        call.Tick(10);        // T0+10: call Sub
+        call.Tick();
+        call.Tick(10);        // T0+20: return
+        call.Tick();
+        call.Tick(5);         // T0+25: 15 s in Default
+        Check.False(call.Has("p"), "15 s in Default (10 s in Sub not counted)");
+        call.Tick(5);         // T0+30: 20 s in Default
+        Check.Eq(call.Var("p"), "1", "20 s in Default");
+
+        // In the called state the P clock is that state's own, from its entry.
+        var inSub = new Rig(rules: new[]
+        {
+            Rule("Default", C.SecondsInState_GE, "30", A.CallMetaState, "Sub"),
+            Mark("Sub", C.SecondsInStateP_GE, "5", "sub"),
+        });
+        inSub.Tick();
+        inSub.Tick(30);       // call Sub after 30 s in Default
+        inSub.Tick();
+        inSub.Tick(4);
+        Check.False(inSub.Has("sub"), "4 s into Sub");
+        inSub.Tick(1);
+        Check.Eq(inSub.Var("sub"), "1", "5 s into Sub");
+
+        // SetState to the state it is already in: the plain clock restarts, the P clock does not.
+        var self = new Rig(rules: new[]
+        {
+            Mark("Default", C.SecondsInStateP_GE, "15", "p"),
+            Rule("Default", C.SecondsInState_GE, "10", A.SetMetaState, "Default"),
+        });
+        self.Tick();
+        self.Tick(10);        // SetState Default
+        self.Tick();
+        self.Tick(5);         // 15 s since Default was entered
+        Check.Eq(self.Var("p"), "1", "SetState to the same state keeps the P clock");
+
+        // A move to another state restarts it.
+        var move = new Rig(rules: new[]
+        {
+            Rule("Default", C.SecondsInState_GE, "10", A.SetMetaState, "Hunt"),
+            Mark("Hunt", C.SecondsInStateP_GE, "3", "h"),
+        });
+        move.Tick();
+        move.Tick(10);
+        move.Tick();
+        move.Tick(2.9);
+        Check.False(move.Has("h"), "2.9 s into Hunt (restarted on the move)");
+        move.Tick(0.1);
+        Check.Eq(move.Var("h"), "1", "3 s into Hunt");
+
+        // Loading a meta restarts it, even when the start state has the same name.
+        var load = new Rig(rules: Mark("Default", C.SecondsInStateP_GE, "15", "p"));
+        load.Tick();
+        load.Tick(10);
+        load.S.ForceStateReset = true;
+        load.S.MetaCallStackReset = true;   // what a meta load sets
+        load.Tick();
+        load.Tick(10);        // 20 s in Default, 10 s since the load
+        Check.False(load.Has("p"), "10 s since the meta load");
+        load.Tick(5);
+        Check.Eq(load.Var("p"), "1", "15 s since the meta load");
     }
 
     private static void PercentConditionsAreGE()

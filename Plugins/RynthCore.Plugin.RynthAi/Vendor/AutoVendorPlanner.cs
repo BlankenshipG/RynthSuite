@@ -254,7 +254,9 @@ internal static class AutoVendorPlanner
         if (f.IsRare) return "rare";
         if (onlyFromMainPack && !f.InMainPack) return "not in main pack";
         if (f.Attuned != 0) return "attuned";
-        if (f.Bonded != 0) return "bonded";
+        // Not Bonded: on ACE it only decides what a death keeps (PropertyInt.Bonded, Player_Death);
+        // it never stops a sale. Peas, trade notes and salvage bags are bonded so a death keeps
+        // them, and AutoVendor held them all back (2026-10-07). Quest items are not sellable anyway.
         if (f.Retained) return "retained";
         if (f.TimesTinkered > 0) return "tinkered";
         if (f.Imbued != 0) return "imbued";

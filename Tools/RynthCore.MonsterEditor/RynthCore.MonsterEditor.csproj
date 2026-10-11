@@ -25,7 +25,7 @@
 
   <ItemGroup>
     <!-- Install-location resolver (installer-chosen RynthCore / RynthSuite folders). -->
-    <Compile Include="..\..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
     <!-- UB damage-insights seed schema, shared with the RynthAi plugin. -->
     <Compile Include="..\..\Shared\UbMobSeed.cs" Link="Shared\UbMobSeed.cs" />
   </ItemGroup>

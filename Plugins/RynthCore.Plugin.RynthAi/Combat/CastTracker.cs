@@ -156,6 +156,8 @@ internal sealed class CastTracker
     private void Close(Cast c, string kind)
     {
         c.Done = true;
+        // The server is in the cast's recoil now: one heal may be queued behind it (ActionPacer).
+        RynthCore.Plugin.Shared.ActionPacer.NoteCastResult();
         DateTime now = Now;
         string nudged = c.Nudged ? " (after the movement nudge)" : "";
         if (c.HasIncantation)

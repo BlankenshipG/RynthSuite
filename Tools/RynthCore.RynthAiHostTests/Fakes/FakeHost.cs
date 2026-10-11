@@ -48,6 +48,9 @@ internal static unsafe class FakeHost
     /// <summary>Item id -> container id. When it has entries at Create() time the host also gets
     /// GetObjectOwnershipInfo (opt-in, so tests written without it see no ownership, as before).</summary>
     public static readonly Dictionary<uint, uint> Containers = new();
+    /// <summary>Item id -> the creature wielding it (GetObjectOwnershipInfo's wielder). Entries here
+    /// also install GetObjectOwnershipInfo; an id in neither map reads as unknown ownership.</summary>
+    public static readonly Dictionary<uint, uint> Wielders = new();
     /// <summary>Object id -> PublicWeenieDesc bitfield (0x2000 corpse, 0x8 player, ...). When it has
     /// entries at Create() time the host also gets GetObjectBitfield (opt-in, as Containers).</summary>
     public static readonly Dictionary<uint, uint> Bitfields = new();
@@ -79,12 +82,18 @@ internal static unsafe class FakeHost
     public static readonly List<bool> AutoRunCalls = new();
     public static bool AutoRun;
     public static int Jumps;
+    /// <summary>Opt-in: wires TapJump (the keyboard jump, 0xF61B); calls land in <see cref="TapJumps"/>.</summary>
+    public static bool TapJumpCalls;
+    public static int TapJumps;
     public static int Turns;
     public static readonly List<(uint Target, int SpellId)> Casts = new();
     /// <summary>Opt-in: wires GiveObjectTo (AC's give action); every call lands in <see cref="Gives"/>.</summary>
     public static bool GiveCalls;
     /// <summary>Every GiveObjectTo (item, target, amount; 0 = the whole object), in order.</summary>
     public static readonly List<(uint Item, uint Target, int Amount)> Gives = new();
+    /// <summary>When true (the default) a give lands at once, as the server does when it isn't busy:
+    /// the item goes to the target. False = the server hasn't taken it (still carried).</summary>
+    public static bool GiveLands = true;
     /// <summary>Opt-in: wires StopCompletely (off by default so no other test sees it).</summary>
     public static bool StopCalls;
     /// <summary>StopCompletely calls (opt-in with <see cref="StopCalls"/>).</summary>
@@ -118,6 +127,9 @@ internal static unsafe class FakeHost
     public static int CastBusy;
     public static int VTankSeq;
     public static int CombatModeValue = 1;
+    /// <summary>Opt-in (set before Create): ChangeCombatMode, recorded in <see cref="CombatModeRequests"/>.</summary>
+    public static bool CombatModeCalls;
+    public static readonly List<int> CombatModeRequests = new();
     /// <summary>Opt-in (set before Create): WieldItem (a wield into a named slot, API v70+). The
     /// host then reports API version 73, so only tests that ask for it see the newer calls.</summary>
     public static bool WieldCalls;
@@ -149,28 +161,45 @@ internal static unsafe class FakeHost
     public static uint GroundContainer;
     /// <summary>The item selected in the game (GetSelectedItemId); 0 = none.</summary>
     public static uint SelectedItem;
+    /// <summary>Opt-in (set before Create): UseObjectOn (an item used on another, e.g. a spirit on a
+    /// pet essence); every call lands in <see cref="UsesOn"/>.</summary>
+    public static bool UseOnCalls;
+    /// <summary>Every UseObjectOn (source, target), in order (opt-in with <see cref="UseOnCalls"/>).</summary>
+    public static readonly List<(uint Source, uint Target)> UsesOn = new();
     /// <summary>Opt-in: install SendPluginCommand (the engine's plugin-command broker, API v64).</summary>
     public static bool PluginCommandCalls;
     /// <summary>What SendPluginCommand answers: true = delivered (the target plugin is loaded).</summary>
     public static bool PluginCommandDelivered = true;
     /// <summary>Every SendPluginCommand (plugin, action, value), in order.</summary>
     public static readonly List<(string Plugin, string Action, string Value)> PluginCommands = new();
+    /// <summary>Opt-in (set before Create): ForceResetBusyCount (counted in <see cref="ForceResets"/>)
+    /// and GetBusyState (answering <see cref="BusyStateValue"/>).</summary>
+    public static bool BusyCalls;
+    public static int ForceResets;
+    public static int BusyStateValue;
 
     // ANSI strings handed back to tested code stay alive for the whole run.
     private static readonly Dictionary<string, IntPtr> _ansi = new();
 
+    /// <summary>Opt-in: install the Nav3D calls (clear, ring, line, triangle) and record them.</summary>
+    public static bool Nav3DCalls;
+    public static readonly List<(float X, float Y, float Z, float Radius, uint Color)> Nav3DRings = new();
+    public static readonly List<(float X1, float Y1, float Z1, float X2, float Y2, float Z2, float Thick, uint Color)> Nav3DLines = new();
+    public static readonly List<(float X1, float Y1, float Z1, float X2, float Y2, float Z2, float X3, float Y3, float Z3, uint Color)> Nav3DTriangles = new();
+
     public static void Reset()
     {
+        Nav3DCalls = false; Nav3DRings.Clear(); Nav3DLines.Clear(); Nav3DTriangles.Clear();
         Names.Clear(); Positions.Clear(); ItemTypes.Clear();
         Ints.Clear(); Doubles.Clear(); Quads.Clear(); Bools.Clear(); Strings.Clear();
         Skills.Clear(); SkillLevels.Clear(); Attributes.Clear();
         SpellIds.Clear(); DataIds.Clear(); Palettes.Clear(); KnownSpells.Clear(); NotAttackable.Clear(); Enchantments.Clear();
-        Containers.Clear(); Bitfields.Clear();
+        Containers.Clear(); Wielders.Clear(); Bitfields.Clear();
         ServerTime = 0; Vitae = 1.0f; Portaling = false; PlayerPose = default; HasPose = true;
         Vitals = default; BaseVitals = default; WorldName = ""; AccountName = "";
         HeadingDeg = 0; Wcids.Clear(); Spellbook.Clear(); PlayerIdValue = 0;
         Logs.Clear(); Chat.Clear(); ChatCommands.Clear();
-        AutoRunCalls.Clear(); AutoRun = false; Jumps = 0; Turns = 0; Casts.Clear(); StopCalls = false; Stops = 0; GiveCalls = false; Gives.Clear();
+        AutoRunCalls.Clear(); AutoRun = false; Jumps = 0; TapJumpCalls = false; TapJumps = 0; Turns = 0; Casts.Clear(); StopCalls = false; Stops = 0; GiveCalls = false; Gives.Clear(); GiveLands = true;
         Uses.Clear(); IdRequests.Clear(); Moves.Clear(); Appraised.Clear(); WeaponCalls = false; CombatModeValue = 1;
         VTankFlags = -1; VTankSeq = 0; LogCostMicros = 0;
         ServerGates = false; UseDoneSeq = 0; CastBusy = 0; LastUseDoneError = 0; LastUseDoneCalls = false;
@@ -179,7 +208,10 @@ internal static unsafe class FakeHost
         RefuseSalvageAdd.Clear(); OnSalvageExecute = null; Wielded.Clear(); _panelItems.Clear();
         CloseContainerCalls = false; Closes.Clear(); GroundContainer = 0;
         SelectedItem = 0;
+        UseOnCalls = false; UsesOn.Clear();
         PluginCommandCalls = false; PluginCommandDelivered = true; PluginCommands.Clear();
+        CombatModeCalls = false; CombatModeRequests.Clear();
+        BusyCalls = false; ForceResets = 0; BusyStateValue = 0;
     }
 
     /// <summary>
@@ -212,16 +244,25 @@ internal static unsafe class FakeHost
         PlayerIdValue = playerId;
         if (playerId != 0)
             api.GetPlayerIdFn       = (IntPtr)(delegate* unmanaged[Cdecl]<uint>)&GetPlayerId;
-        if (Containers.Count > 0)
+        if (Containers.Count > 0 || Wielders.Count > 0)
             api.GetObjectOwnershipInfoFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint*, uint*, uint*, int>)&GetObjectOwnershipInfo;
         if (Bitfields.Count > 0)
             api.GetObjectBitfieldFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint>)&GetObjectBitfield;
         api.SetAutoRunFn            = (IntPtr)(delegate* unmanaged[Cdecl]<int, int>)&SetAutoRun;
         api.TurnToHeadingFn         = (IntPtr)(delegate* unmanaged[Cdecl]<float, int>)&TurnToHeading;
         api.JumpNonAutonomousFn     = (IntPtr)(delegate* unmanaged[Cdecl]<float, int>)&JumpNonAutonomous;
+        if (TapJumpCalls)
+            api.TapJumpFn           = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&TapJump;
         api.CastSpellFn             = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int>)&CastSpell;
         if (StopCalls)
             api.StopCompletelyFn    = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&StopCompletely;
+        if (Nav3DCalls)
+        {
+            api.Nav3DClearFn       = (IntPtr)(delegate* unmanaged[Cdecl]<void>)&Nav3DClear;
+            api.Nav3DAddRingFn     = (IntPtr)(delegate* unmanaged[Cdecl]<float, float, float, float, float, uint, void>)&Nav3DAddRing;
+            api.Nav3DAddLineFn     = (IntPtr)(delegate* unmanaged[Cdecl]<float, float, float, float, float, float, float, uint, void>)&Nav3DAddLine;
+            api.Nav3DAddTriangleFn = (IntPtr)(delegate* unmanaged[Cdecl]<float, float, float, float, float, float, float, float, float, uint, void>)&Nav3DAddTriangle;
+        }
         if (GiveCalls)
             api.GiveObjectToFn      = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint, int, int>)&GiveObjectTo;
         if (WeaponCalls)
@@ -241,6 +282,15 @@ internal static unsafe class FakeHost
             api.SalvagePanelExecuteFn  = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&SalvagePanelExecute;
             api.GetObjectWielderInfoFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint*, uint*, int>)&GetObjectWielderInfo;
         }
+        if (CombatModeCalls)
+            api.ChangeCombatModeFn  = (IntPtr)(delegate* unmanaged[Cdecl]<int, int>)&ChangeCombatMode;
+        if (BusyCalls)
+        {
+            api.ForceResetBusyCountFn = (IntPtr)(delegate* unmanaged[Cdecl]<void>)&ForceResetBusyCount;
+            api.GetBusyStateFn        = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&GetBusyState;
+        }
+        if (UseOnCalls)
+            api.UseObjectOnFn       = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint, int>)&UseObjectOn;
         if (WieldCalls)
         {
             api.Version     = 73;
@@ -402,9 +452,11 @@ internal static unsafe class FakeHost
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int GetObjectOwnershipInfo(uint id, uint* container, uint* wielder, uint* location)
     {
-        if (!Containers.TryGetValue(id, out uint c)) return 0;
+        bool inPack = Containers.TryGetValue(id, out uint c);
+        bool worn = Wielders.TryGetValue(id, out uint w);
+        if (!inPack && !worn) return 0;
         *container = c;
-        *wielder = 0;
+        *wielder = w;
         *location = 0;
         return 1;
     }
@@ -544,6 +596,20 @@ internal static unsafe class FakeHost
     private static uint GetPlayerId() => PlayerIdValue;
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void Nav3DClear() { Nav3DRings.Clear(); Nav3DLines.Clear(); Nav3DTriangles.Clear(); }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void Nav3DAddRing(float x, float y, float z, float radius, float thick, uint color) => Nav3DRings.Add((x, y, z, radius, color));
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void Nav3DAddLine(float x1, float y1, float z1, float x2, float y2, float z2, float thick, uint color)
+        => Nav3DLines.Add((x1, y1, z1, x2, y2, z2, thick, color));
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void Nav3DAddTriangle(float x1, float y1, float z1, float x2, float y2, float z2, float x3, float y3, float z3, uint color)
+        => Nav3DTriangles.Add((x1, y1, z1, x2, y2, z2, x3, y3, z3, color));
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static uint GetSelectedItemId() => SelectedItem;
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -557,17 +623,34 @@ internal static unsafe class FakeHost
     private static int JumpNonAutonomous(float extent) { Jumps++; return 1; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int TapJump() { TapJumps++; return 1; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int CastSpell(uint target, int spellId) { Casts.Add((target, spellId)); return 1; }
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int StopCompletely() { Stops++; return 1; }
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    private static int GiveObjectTo(uint item, uint target, int amount) { Gives.Add((item, target, amount)); return 1; }
+    private static void ForceResetBusyCount() { ForceResets++; BusyStateValue = 0; }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetBusyState() => BusyStateValue;
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GiveObjectTo(uint item, uint target, int amount)
+    {
+        Gives.Add((item, target, amount));
+        if (GiveLands && amount == 0) Containers[item] = target;
+        return 1;
+    }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int GetCurrentCombatMode() => CombatModeValue;
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int ChangeCombatMode(int mode) { CombatModeRequests.Add(mode); return 1; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int UseObject(uint id) { Uses.Add(id); return 1; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int UseObjectOn(uint source, uint target) { UsesOn.Add((source, target)); return 1; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int WieldItem(uint id, uint mask) { Wields.Add((id, mask)); return 1; }

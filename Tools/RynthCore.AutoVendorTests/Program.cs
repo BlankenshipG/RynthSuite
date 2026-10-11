@@ -480,7 +480,6 @@ internal static class Program
             (new SafetyFacts { Appraised = true, Value = 100, CanBeSold = false }, "not sellable"),
             (new SafetyFacts { Appraised = true, Value = 100, IsRare = true }, "rare"),
             (new SafetyFacts { Appraised = true, Value = 100, Attuned = 1 }, "attuned"),
-            (new SafetyFacts { Appraised = true, Value = 100, Bonded = 1 }, "bonded"),
             (new SafetyFacts { Appraised = true, Value = 100, Retained = true }, "retained"),
             (new SafetyFacts { Appraised = true, Value = 100, TimesTinkered = 1 }, "tinkered"),
             (new SafetyFacts { Appraised = true, Value = 100, Imbued = 1 }, "imbued"),
@@ -495,6 +494,8 @@ internal static class Program
 
         var side = new SafetyFacts { Appraised = true, Class = AcObjectClass.Salvage, Value = 100, InMainPack = false };
         Eq(AutoVendorPlanner.UnsafeReason(side, false), null, "side pack ok by default");
+        // Bonded only decides what a death keeps on ACE: peas, trade notes and salvage are bonded and sell (2026-10-07).
+        Eq(AutoVendorPlanner.UnsafeReason(new SafetyFacts { Appraised = true, Value = 12500, Bonded = 1 }, false), null, "bonded (kept on death) still sells");
         Eq(AutoVendorPlanner.UnsafeReason(side, true), "not in main pack", "OnlyFromMainPack");
     }
 

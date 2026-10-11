@@ -54,7 +54,7 @@ internal static class NavEngineTests
 
         r.Add("nav point reach: values under 1.5 yd work (it used to be floored at 1.5)", ReachBelowOneAndAHalf);
         r.Add("nav point reach: a doorway point is reached within 1 yd, its sweep pass within 1.5 yd", DoorwayPointTight);
-        r.Add("nav point reach: no lookahead corner cut at a doorway point", DoorwayNoLookahead);
+        r.Add("nav point reach: no lookahead corner cut at a doorway point (or at a small reach)", DoorwayNoLookahead);
         r.Add("nav point reach: Follow stops within it and moves again 3 yd farther out", FollowUsesReach);
         r.Add("nav point reach: metas set it as FollowNavMin (yd) or VTank's NavCloseStopRange (x240)", ReachFromMetas);
 
@@ -746,18 +746,27 @@ internal static class NavEngineTests
 
     private static void DoorwayNoLookahead()
     {
-        // 3 yd short of a point, the next one due east: a plain point blends the aim east
-        // (4 yd lookahead), a doorway point keeps aiming straight at itself.
+        // 3 yd short of a point, the next one due east, with a 2.8 yd reach (big enough to round
+        // corners: 3.6 yd of lookahead): a plain point blends the aim east, a doorway point keeps
+        // aiming straight at itself. At the 1.5 yd default reach there is no rounding at all
+        // (the lookahead scales with the reach since 2026-10-05, see NavReachTests).
         foreach (bool doorway in new[] { false, true })
         {
             FakeHost.Reset(); At(7, 0); Face(10, 0);
             var first = doorway ? Door(10, 0) : Pt(10, 0);
             var nav = new Nav(Route(RT.Circular, first, Pt(10, 10)));
+            nav.S.FollowNavMin = 2.8f;
             nav.Tick();
             double h = FakeHost.HeadingDeg;
             if (doorway) Check.True(h < 1.0 || h > 359.0, $"doorway point: still heading north ({h:F1})");
             else Check.True(h > 3.0 && h < 90.0, $"plain point: turning east early ({h:F1})");
         }
+
+        FakeHost.Reset(); At(8, 0); Face(10, 0);
+        var dflt = new Nav(Route(RT.Circular, Pt(10, 0), Pt(10, 10)));
+        dflt.Tick();
+        double hd = FakeHost.HeadingDeg;
+        Check.True(hd < 1.0 || hd > 359.0, $"1.5 yd default reach, 2 yd short: a plain point is walked straight at too ({hd:F1})");
     }
 
     private static void FollowUsesReach()

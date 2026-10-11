@@ -21,7 +21,7 @@ namespace RynthCore.RynthAiHostTests.Tests;
 internal static class BuffTests
 {
     private const uint Player = 0x50000B01;
-    private const uint STypeCreature = 31, STypeItem = 32;
+    private const uint STypeCreature = 31, STypeItem = 32, STypeLife = 33;
 
     /// <summary>Buff/tier pairs the name tables used to miss (fixed by 940cb21); NameGapsResolve checks them by name.</summary>
     private static readonly HashSet<(string Buff, int Tier)> NameGaps = new()
@@ -54,14 +54,15 @@ internal static class BuffTests
         r.Add("rebuff: our own lower tier under an expiring higher one counts as on", RebuffUnderExpiringHigherTier);
         r.Add("rebuff: cast over item-granted buffs (CastBuffsOverItemBuffs on)", RebuffOverItemBuffs);
         r.Add("rebuff: CastBuffsOverItemBuffs defaults on, loads, saves, bridges", OverItemBuffsSetting);
+        r.Add("buff toggles: by default every prot and bane is cast", TogglesDefaultAllOn);
+        r.Add("buff toggles: an unticked prot or bane is never cast and never holds NeedsAnyBuff", UntickedSkipped);
+        r.Add("buff toggles: an old profile loads all on; the list saves, copies and bridges", TogglesSetting);
 
         r.Add("buff choice: spell names the tables miss (Bludgeon Bane, Nuhmudira's, T'ing, Celdiseth's)", NameGapsResolve);   // was a known failure; fixed by 940cb21
         r.Add("buff choice: a mastery whose name has several spell ids", MultiIdMastery);   // was a known failure; fixed by 0aedcee
         r.Add("buff timers: tier-8 weapon auras last 90 minutes", TierEightAuras);   // was a known failure; fixed by 9a317a8
         r.Add("buff chat: another player's speech can't record a buff timer", SpeechIsNotACast);   // was a known failure; fixed by 0e384d2
-        r.KnownFailure("buff school: Armor Tinkering Expertise is a Creature Enchantment spell",
-            "SkillForBuff matches \"Armor\" first and files it under Life Magic: its tier comes from Life Magic, and a character without Life Magic never casts it (not fixed on any branch)",
-            ArmorTinkeringSchool);
+        r.Add("buff school: Armor Tinkering Expertise is a Creature Enchantment spell", ArmorTinkeringSchool);   // was a known failure
     }
 
     // ── Rig ───────────────────────────────────────────────────────────────────
@@ -398,7 +399,12 @@ internal static class BuffTests
 
     private static void ArmorTinkeringSchool()
     {
-        Check.Eq(BuffManager.SkillForBuff("Armor Tinkering Expertise"), AcSkillType.CreatureEnchantment, "Armor Tinkering Expertise");
+        foreach (string n in new[] { "Armor Tinkering Expertise", "Item Tinkering Expertise", "Weapon Tinkering Expertise",
+                                     "Magic Item Tinkering Expertise", "Prodigal Armor Expertise", "Incantation of Armor Tinkering Expertise" })
+            Check.Eq(BuffManager.SkillForBuff(n), AcSkillType.CreatureEnchantment, n);
+        // The "Armor" keyword still files real Life Magic armor buffs under Life.
+        foreach (string n in new[] { "Armor", "Incantation of Armor", "Prodigal Armor", "Blade Protection", "Regeneration" })
+            Check.Eq(BuffManager.SkillForBuff(n), AcSkillType.LifeMagic, n);
     }
 
     private static void ItemEnchantments()
@@ -594,6 +600,129 @@ internal static class BuffTests
         Check.False(s.CastBuffsOverItemBuffs, "a save without the field leaves it off");
         dash.ApplySettingsJson("{\"CastBuffsOverItemBuffs\":true}");
         Check.True(s.CastBuffsOverItemBuffs, "a save with it on turns it on");
+    }
+
+    // ── Prot and bane toggles (Buffing settings, DisabledBuffs) ───────────────
+
+    private static readonly MethodInfo CastSelfBuffs =
+        typeof(BuffManager).GetMethod("CheckAndCastSelfBuffs", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+    /// <summary>Tier 6 Life and Item Magic, in Magic stance, knowing two prots and two banes.</summary>
+    private static BuffRig ProtBaneRig()
+    {
+        FakeHost.Reset();
+        Know("Fire Protection Self VI", "Cold Protection Self VI", "Flame Bane VI", "Frost Bane VI");
+        FakeHost.Skills[(Player, STypeLife)] = (300, 2);
+        FakeHost.Skills[(Player, STypeItem)] = (300, 2);
+        FakeHost.WeaponCalls = true;   // GetCurrentCombatMode answers CombatModeValue
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        return new BuffRig();
+    }
+
+    /// <summary>Runs the buff cast loop until it casts nothing, confirming each cast by chat as the
+    /// server would. Returns the spells cast in order; <paramref name="done"/> = the loop's last
+    /// answer was "nothing to do" (what ends a batch in the heartbeat).</summary>
+    private static List<string> CastAll(BuffRig rig, out bool done)
+    {
+        var cast = new List<string>();
+        done = false;
+        for (int i = 0; i < 20; i++)
+        {
+            int before = FakeHost.Casts.Count;
+            bool acted = (bool)CastSelfBuffs.Invoke(rig.B, null)!;
+            if (FakeHost.Casts.Count == before) { done = !acted; break; }
+            string name = NameOf(FakeHost.Casts.Last().SpellId);
+            cast.Add(name);
+            rig.B.OnChatWindowText($"You cast {name} on {(name.Contains("Bane") ? "Rune Robe" : "yourself")}", 7);
+        }
+        return cast;
+    }
+
+    private static void TogglesDefaultAllOn()
+    {
+        var rig = ProtBaneRig();
+        Check.Eq(rig.S.DisabledBuffs.Count, 0, "a new profile unticks nothing");
+        foreach (var (buff, _) in BuffManager.ToggleProtections.Concat(BuffManager.ToggleBanes))
+            Check.True(rig.B.BuildDynamicBuffList().Contains(buff), $"every toggle names a buff in the list: {buff}");
+        rig.Live(("Strength Self I", 3000));   // a registry read, with none of ours on
+        Check.True(rig.B.NeedsAnyBuff(), "nothing on: needs buffs");
+        var cast = CastAll(rig, out bool done);
+        Check.Eq(string.Join(", ", cast), "Fire Protection Self VI, Cold Protection Self VI, Flame Bane VI, Frost Bane VI", $"all four are cast (last skip: {rig.B.LastBuffSkipReason})");
+        Check.True(done, "then the loop has nothing left");
+    }
+
+    private static void UntickedSkipped()
+    {
+        var rig = ProtBaneRig();
+        rig.S.SetBuffEnabled("Fire Protection Self", false);
+        rig.S.SetBuffEnabled("flame bane", false);   // names match case-insensitively
+        Check.False(rig.B.BuildDynamicBuffList().Contains("Fire Protection Self"), "an unticked prot leaves the list");
+        Check.False(rig.B.BuildDynamicBuffList().Contains("Flame Bane"), "an unticked bane leaves the list");
+        rig.Live(("Strength Self I", 3000));
+        var cast = CastAll(rig, out bool done);
+        Check.Eq(string.Join(", ", cast), "Cold Protection Self VI, Frost Bane VI", "only the ticked ones are cast");
+        Check.True(done, "the loop ends with the unticked ones still off: the batch can finish");
+
+        // A fresh look, the ticked ones on and the unticked ones never cast: nothing is due.
+        var idle = ProtBaneRig();
+        idle.S.SetBuffEnabled("Fire Protection Self", false);
+        idle.S.SetBuffEnabled("Flame Bane", false);
+        idle.Live(("Cold Protection Self VI", 3000));
+        idle.B.OnChatWindowText("You cast Frost Bane VI on Rune Robe", 7);
+        Check.False(idle.B.NeedsAnyBuff(), "unticked and off doesn't hold Buffing");
+        idle.S.SetBuffEnabled("Fire Protection Self", true);
+        Check.True(idle.B.NeedsAnyBuff(), "ticked again: Fire Protection is due");
+        Check.False(idle.S.IsBuffDisabled("Fire Protection Self"), "and leaves the list");
+
+        // Force Rebuff recasts everything, still not the unticked ones.
+        var fr = ProtBaneRig();
+        fr.S.SetBuffEnabled("Cold Protection Self", false);
+        fr.S.SetBuffEnabled("Frost Bane", false);
+        fr.Live(("Strength Self I", 3000));
+        fr.B.ForceFullRebuff();
+        cast = CastAll(fr, out done);
+        Check.Eq(string.Join(", ", cast), "Fire Protection Self VI, Flame Bane VI", "Force Rebuff skips the unticked ones too");
+        Check.True(done, "and finishes");
+        Check.False(FakeHost.Casts.Any(c => NameOf(c.SpellId) is "Cold Protection Self VI" or "Frost Bane VI"), "never cast");
+    }
+
+    private static void TogglesSetting()
+    {
+        var old = JsonSerializer.Deserialize("{\"EnableBuffing\":true,\"RebuffSecondsRemaining\":300}", RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(old != null && old.DisabledBuffs.Count == 0, "a profile saved before the setting: all on");
+        var nul = JsonSerializer.Deserialize("{\"DisabledBuffs\":null}", RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(nul != null && nul.DisabledBuffs.Count == 0, "a null list: all on");
+        var some = new LegacyUiSettings();
+        some.SetBuffEnabled("Acid Bane", false);
+        some.SetBuffEnabled("Blade Protection Self", false);
+        var back = JsonSerializer.Deserialize(JsonSerializer.Serialize(some, RynthAiJsonContext.Default.LegacyUiSettings),
+            RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(back != null && back.IsBuffDisabled("Acid Bane") && back.IsBuffDisabled("Blade Protection Self") && back.DisabledBuffs.Count == 2,
+            "unticked ones are saved and loaded");
+
+        // Profile switch/load copies it (CopySettings is the hand-written field list).
+        var copy = typeof(LegacyDashboardRenderer).GetMethod("CopySettings", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var dst = new LegacyUiSettings();
+        copy.Invoke(null, new object[] { some, dst });
+        Check.True(dst.IsBuffDisabled("Acid Bane") && dst.DisabledBuffs.Count == 2, "a profile with unticked ones loads them");
+        copy.Invoke(null, new object[] { old!, dst });
+        Check.Eq(dst.DisabledBuffs.Count, 0, "an old profile loads all on");
+
+        // Engine Settings face: the payload carries the list; an engine without the field leaves it alone.
+        var payload = JsonSerializer.Deserialize("{\"PatrolOnLogin\":false}", RynthAiJsonContext.Default.SettingsBridgePayload);
+        Check.True(payload != null && payload.DisabledBuffs == null, "an older engine's payload has no list");
+        var s = new LegacyUiSettings();
+        s.SetBuffEnabled("Frost Bane", false);
+        var dash = (LegacyDashboardRenderer)RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+        typeof(LegacyDashboardRenderer).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(dash, s);
+        typeof(LegacyDashboardRenderer).GetField("_advancedSettingsUi", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(dash, new LegacyAdvancedSettingsUi(s));
+        var sent = JsonSerializer.Deserialize(dash.BuildSettingsJson(), RynthAiJsonContext.Default.SettingsBridgePayload);
+        Check.True(sent?.DisabledBuffs != null && sent.DisabledBuffs.SequenceEqual(new[] { "Frost Bane" }), "sent to the engine face");
+        dash.ApplySettingsJson("{\"PatrolOnLogin\":false}");
+        Check.True(s.IsBuffDisabled("Frost Bane"), "a save without the list leaves it alone");
+        dash.ApplySettingsJson("{\"DisabledBuffs\":[]}");
+        Check.Eq(s.DisabledBuffs.Count, 0, "a save with an empty list ticks everything");
     }
 
     private static BuffRig ArmorRig()

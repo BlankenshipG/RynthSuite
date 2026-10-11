@@ -380,13 +380,16 @@ public sealed partial class RynthAiPlugin
         return "no-state";
     }
 
-    private ConsumableRule? FindLockpickInConsumables()
+    /// <summary>The first listed lockpick still carried: its own stack, else one of the same name (ConsumableLookup).</summary>
+    private WorldObject? FindLockpickInConsumables()
     {
         var settings = _dashboard?.Settings;
         if (settings == null || _objectCache == null) return null;
 
-        return settings.ConsumableRules
-            .Where(r => r.Type.Equals("Lockpick", StringComparison.OrdinalIgnoreCase))
-            .FirstOrDefault(r => _objectCache[r.Id] != null);
+        foreach (var r in settings.ConsumableRules)
+            if (r.Type.Equals("Lockpick", StringComparison.OrdinalIgnoreCase)
+                && ConsumableLookup.Resolve(_objectCache, r) is WorldObject pick)
+                return pick;
+        return null;
     }
 }

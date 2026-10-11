@@ -728,6 +728,19 @@ getunixtime[]
     Example: setvar[t, getunixtime[]]                    →  snapshot a timestamp
     Example: getunixtime[] - getvar[t] > 60              →  true if 60s have elapsed
 
+secondssincelastkill[]
+    Returns the whole number of seconds since your character's last kill.
+    Only kills credited to you count (the server's "you killed it" notice);
+    deaths you only see in chat, and your fellows' kills, do not.
+    Before your first kill this session it counts from when the macro was last
+    started, or from login (or a RynthAi reload) if the macro hasn't been started
+    since, so a meta can still react when nothing has been killed at all.
+    After a kill it is always the time since that kill, also across a macro stop/start.
+    The meta condition "No Kills Within Minutes" (.af: NoKillsInMins 5) uses the same clock.
+    Test in chat:  /ra mexec secondssincelastkill[]
+    Example: secondssincelastkill[]                 →  e.g. "42"
+    Example: secondssincelastkill[] >= 300          →  true after 5 minutes without a kill
+
 getaccounthash[]
     Returns a lowercase MD5 hex string of the current account name.
     Returns "" (empty string) if the account name is not yet available.

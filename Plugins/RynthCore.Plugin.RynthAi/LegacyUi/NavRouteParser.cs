@@ -74,12 +74,24 @@ public sealed class NavPoint
     /// </summary>
     public bool Doorway { get; set; }
 
+    /// <summary>"Lifestone Recall": a recall step by its spell's name (it showed "Spell 1635",
+    /// 2026-10-08); the id when the spell table doesn't know it.</summary>
+    internal static string RecallName(int spellId)
+    {
+        string? name = SpellNameLookup?.Invoke(spellId);
+        return string.IsNullOrEmpty(name) ? $"Spell {spellId}" : name;
+    }
+
+    /// <summary>The spell table's name for an id; RynthAi sets it (this file is also compiled into
+    /// tools without the spell table, which keep "Spell N").</summary>
+    internal static Func<int, string?>? SpellNameLookup { get; set; }
+
     public override string ToString()
     {
         return Type switch
         {
             NavPointType.Point      => $"[Point] {NS:F3}, {EW:F3}",
-            NavPointType.Recall     => $"[Recall] Spell {SpellId}",
+            NavPointType.Recall     => $"[Recall] {RecallName(SpellId)}",
             NavPointType.Pause      => $"[Pause] {PauseTimeMs / 1000.0:F1}s",
             NavPointType.Chat       => $"[Chat] {ChatCommand}",
             NavPointType.OpenVendor => $"[Vendor] {TargetName}",

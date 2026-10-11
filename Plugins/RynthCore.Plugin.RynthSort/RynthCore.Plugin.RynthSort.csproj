@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    RynthSort: keeps a character's packs sorted while they play or while RynthAi hunts. New
+    items that land in the main pack move to the side pack their rule names, after a settle
+    time; Tidy, Clean and Unpack on demand; /rsort. Replaces the RynthSort Lua script (its saved
+    rules are imported on first run). Pack moves wait for RynthAi through its read-only
+    "RynthAi.Activity" interface (Shared/RynthAiActivityApi.cs). UI: the engine's script
+    windows (ImGui), no Avalonia.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <OutputType>Library</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+    <StripSymbols>false</StripSymbols>
+    <RootNamespace>RynthCore.Plugin.RynthSort</RootNamespace>
+    <AssemblyName>RynthCore.Plugin.RynthSort</AssemblyName>
+    <Platforms>x86</Platforms>
+    <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
+         highest API use NOT behind a Has*/version check. Script windows (v71, HasUi) draw the
+         window; vendor info (v67), plugin interfaces (v68), refusals (v70) and trade (v72) are
+         each checked first. Below v71 it still sorts (/rsort on|off|now|tidy|clean|unpack). -->
+    <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
+    <RynthPluginDescription>Keeps your packs sorted: new loot goes to the pack its rule names.</RynthPluginDescription>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- What RynthAi is doing (read only), so pack moves stay out of its way. -->
+    <Compile Include="..\Shared\RynthAiActivityApi.cs" Link="Shared\RynthAiActivityApi.cs" />
+    <!-- An older RynthAi without RynthAi.Activity: its RynthAi.Status bot state instead. -->
+    <Compile Include="..\Shared\RynthAiStatusApi.cs" Link="Shared\RynthAiStatusApi.cs" />
+    <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file as RynthCore src\Shared. -->
+    <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
+    <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -29,6 +29,8 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\DungeonPathfinder.cs" Link="Linked\DungeonPathfinder.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\DungeonPathfinder.Rooms.cs" Link="Linked\DungeonPathfinder.Rooms.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\DungeonGeometry.cs" Link="Linked\DungeonGeometry.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\DungeonHazardSurfaces.cs" Link="Linked\DungeonHazardSurfaces.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthInstallPaths.cs" Link="Linked\RynthInstallPaths.cs" />
   </ItemGroup>
 
   <ItemGroup>

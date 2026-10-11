@@ -75,7 +75,16 @@ internal sealed class NavigationEngine
     private bool   _inPause;
     private int    _pauseIdx = -1;     // the Pause waypoint _pauseUntil belongs to
     private long   _pauseUntil;
-    private double _prevDist = double.MaxValue;
+    // Closest the character has come to the current waypoint since it became the target (or
+    // since a pause / escape / teleport reset it). It used to hold only the previous tick's
+    // distance, so a "sweep pass" needed the distance to grow 0.3 yd in ONE 33 ms tick (over
+    // 9 yd/s straight away from the point): just past a point the distance grows slowly, the
+    // pass was never seen, and nav turned round and walked back to the point (2026-10-05).
+    private double _closestDist = double.MaxValue;
+    // Where the character stood when it started on the current waypoint (NaN = take it on the
+    // next steering tick). With the waypoint it gives the way the route arrives at the point,
+    // for the pass-through rule (PassedThrough).
+    private double _legStartNs = double.NaN, _legStartEw = double.NaN;
 
     // ── Portal/Recall state machine ──────────────────────────────────────────
     private enum PortalState
@@ -147,7 +156,7 @@ internal sealed class NavigationEngine
         public int    Doorways;
         public long   StartedAt;
         public long   DeadlineAt;
-        public double PrevDist = double.MaxValue;
+        public double ClosestDist = double.MaxValue;   // closest to the current detour point so far
         public bool   Paused;          // nav was stopped (combat, loot, buff, door) mid-detour
         public long   PausedAt;
         public double PausedNs = double.NaN, PausedEw = double.NaN;
@@ -244,10 +253,39 @@ internal sealed class NavigationEngine
     private double ReachFor(NavPoint p) => p.Doorway ? Math.Min(ArrivalYards, DoorwayReachYd) : ArrivalYards;
     private double SweepFor(NavPoint p) => ReachFor(p) * (p.Doorway ? Math.Min(SweepMult, DoorwaySweepMult) : SweepMult);
 
-    // Lookahead: within this distance of a waypoint, blend the aim point toward
-    // the next one so corners are cut smoothly. 0 = off (aim straight at each
-    // waypoint). Tunable in Advanced ▸ Navigation ▸ Steering.
-    private double LookaheadYards => Math.Max(0.0, _settings.NavLookaheadYards);
+    // Lookahead (corner rounding): within this distance of a waypoint, blend the aim point
+    // toward the next one so corners are rounded. It used to be the Lookahead setting alone
+    // (4 yd), whatever the nav point reach: at a 1 yd reach the aim was already 75% of the way
+    // down the next leg when the character got to 1 yd, so it cut the corner, never got within
+    // the reach, and ran into the wall at the corner (2026-10-05). Now the reach decides how
+    // much rounding there is: none at or under CornerRoundFreeReachYd, then CornerRoundPerReachYd
+    // per yard of reach above it, never more than the Lookahead setting (Advanced > Navigation >
+    // Steering; 0 = off). Blending only matters where it starts outside the reach, so there is
+    // none up to a 2 yd reach (the 1.5 yd default gives 1 yd, inside it); it reaches the 4 yd
+    // setting at a 3 yd reach, so 3-5 yd round corners as before. Doorway points never blend.
+    internal const double CornerRoundFreeReachYd = 1.0, CornerRoundPerReachYd = 2.0;
+    internal static double CornerLookaheadYards(double lookaheadSetting, double reachYd)
+        => Math.Clamp(CornerRoundPerReachYd * (reachYd - CornerRoundFreeReachYd), 0.0, Math.Max(0.0, lookaheadSetting));
+    private double LookaheadYards => CornerLookaheadYards(_settings.NavLookaheadYards, ArrivalYards);
+
+    // Pass-through: a plain waypoint the character has gone past (it is beyond the point along
+    // the way it came, and no farther to the side than the sweep radius) counts as reached,
+    // so nav doesn't turn round to walk back to it. "Beyond along the way it came" means the
+    // point is behind the character: a corner cut toward the next point never qualifies.
+    // Doorway points keep their own tight reach and sweep and never use it.
+    private const double PassMinLegYd = 1.0;   // shorter approach: no reliable direction
+    private bool PassedThrough(NavPoint pt, double ns, double ew)
+    {
+        if (pt.Doorway || double.IsNaN(_legStartNs)) return false;
+        double ux = (pt.NS - _legStartNs) * 240.0, uy = (pt.EW - _legStartEw) * 240.0;
+        double len = Math.Sqrt(ux * ux + uy * uy);
+        if (len < PassMinLegYd) return false;
+        ux /= len; uy /= len;
+        double ax = (ns - pt.NS) * 240.0, ay = (ew - pt.EW) * 240.0;
+        double along = ax * ux + ay * uy;
+        double side  = Math.Abs(ax * uy - ay * ux);
+        return along > 0.0 && side <= SweepFor(pt);
+    }
 
 
     // Mode 0 heading servo: cap the heading change we command per tick so the
@@ -411,7 +449,7 @@ internal sealed class NavigationEngine
         {
             _lastRoute      = route;
             _inPause        = false;
-            _prevDist       = double.MaxValue;
+            _closestDist    = double.MaxValue;
             _linearDir      = 1;
             _watchdogNs     = double.NaN;
             _watchdogEw     = double.NaN;
@@ -462,7 +500,7 @@ internal sealed class NavigationEngine
                     _watchdogNs     = double.NaN;
                     _watchdogEw     = double.NaN;
                     _watchdogNext   = Now + (long)WatchdogMs;
-                    _prevDist       = double.MaxValue;
+                    _closestDist    = double.MaxValue;
                     _globalSettling = false;
                     ResetRecovery("teleported");
                 }
@@ -582,7 +620,7 @@ internal sealed class NavigationEngine
         if (dist < ReachFor(pt))
         {
             _host.Log($"Nav: arrived at [{idx}] dist={dist:F1}yd → advancing");
-            _prevDist = double.MaxValue;
+            _closestDist = double.MaxValue;
             UpdateStatusLine(idx, dist, route, 0.0);
             // Advance before the jump: the Jumper pauses nav and later restores what it
             // saw, so jumping first turned a finished Once route back on (re-run from [0]).
@@ -591,17 +629,33 @@ internal sealed class NavigationEngine
             return;
         }
 
-        // Closest-approach detection — prevents circling.
-        // Matches old NavigationManager exactly.
-        if (_prevDist < SweepFor(pt) && dist > _prevDist + 0.3)
+        // First tick on this waypoint (or after a pause / escape / teleport): remember where
+        // the approach starts, for the pass-through rule.
+        if (_closestDist == double.MaxValue) { _legStartNs = ns; _legStartEw = ew; }
+
+        // Went past it: the point is behind, close enough to the side. Counts as reached
+        // instead of turning round to walk back to it.
+        if (PassedThrough(pt, ns, ew))
         {
-            _host.Log($"Nav: sweep-pass [{idx}] prev={_prevDist:F1} now={dist:F1}yd → advancing");
-            _prevDist = double.MaxValue;
+            _host.Log($"Nav: passed [{idx}] dist={dist:F1}yd → advancing");
+            _closestDist = double.MaxValue;
+            UpdateStatusLine(idx, dist, route, 0.0);
             Advance(route);
             if (pt.Type == NavPointType.Jump) FireJump(pt, idx);
             return;
         }
-        _prevDist = dist;
+
+        // Closest-approach detection — prevents circling: within the sweep radius, then
+        // 0.3 yd farther out than the closest it came.
+        if (_closestDist < SweepFor(pt) && dist > _closestDist + 0.3)
+        {
+            _host.Log($"Nav: sweep-pass [{idx}] closest={_closestDist:F1} now={dist:F1}yd → advancing");
+            _closestDist = double.MaxValue;
+            Advance(route);
+            if (pt.Type == NavPointType.Jump) FireJump(pt, idx);
+            return;
+        }
+        _closestDist = Math.Min(_closestDist, dist);
 
         SteerToWaypoint(idx, pt, route, ns, ew, dist);
     }
@@ -622,7 +676,7 @@ internal sealed class NavigationEngine
         // closest-approach reading from before the pause says nothing about where we
         // are now; kept, the first tick back reads the displacement as a sweep-pass
         // and advances past a waypoint that was never reached.
-        _prevDist        = double.MaxValue;
+        _closestDist     = double.MaxValue;
         _stopRequestedAt = long.MaxValue;
         // A detour survives the pause: it re-plans on the way back if the pause
         // moved us. Whatever moved us, being far off the route afterwards is not
@@ -689,7 +743,7 @@ internal sealed class NavigationEngine
 
         _host.Log($"Nav: macro start — {how} waypoint [{best}] ({Math.Sqrt(Sq(route.Points[best].NS - ns) + Sq(route.Points[best].EW - ew)) * 240.0:F0}yd) instead of [{cur}]");
         _settings.ActiveNavIndex = best;
-        _prevDist   = double.MaxValue;
+        _closestDist = double.MaxValue;
         _stuckCount = 0;
         _watchdogNs = double.NaN;
         _watchdogEw = double.NaN;
@@ -747,7 +801,7 @@ internal sealed class NavigationEngine
         _linearDir      = 1;
         _stuckCount     = 0;
         _recoveryKind   = RecoveryKind.Jump;
-        _prevDist       = double.MaxValue;
+        _closestDist    = double.MaxValue;
         _watchdogNs     = double.NaN;
         _watchdogEw     = double.NaN;
         _hasGoodHeading = false;
@@ -1146,7 +1200,7 @@ internal sealed class NavigationEngine
     private void Advance(NavRouteParser route)
     {
         int oldIdx = _settings.ActiveNavIndex;
-        _prevDist    = double.MaxValue;
+        _closestDist = double.MaxValue;
         _portalState = PortalState.None;
         // Reaching a waypoint is progress: the next snag gets a fresh detour budget.
         _detourAttempts       = 0;
@@ -1238,7 +1292,7 @@ internal sealed class NavigationEngine
     /// current route's iteration direction. Used by the dense-waypoint
     /// skip loop in <see cref="Advance"/>. Mirrors the single-step logic
     /// in the main switch; factored out so the skip loop can call it
-    /// without re-clearing _prevDist / _portalState.
+    /// without re-clearing _closestDist / _portalState.
     /// </summary>
     private void AdvanceOneIndex(NavRouteParser route)
     {
@@ -1352,7 +1406,7 @@ internal sealed class NavigationEngine
     private void HoldAtCampRoute(int idx, double dist, NavRouteParser route)
     {
         if (_isMovingForward || _isTurning) StopMovement();
-        _prevDist = double.MaxValue;
+        _closestDist = double.MaxValue;
         UpdateStatusLine(idx, dist, route, 0.0);
         if (!_campHoldAnnounced)
         {
@@ -1448,7 +1502,7 @@ internal sealed class NavigationEngine
             _host.Log($"Nav: no player id — cannot fire recall {pt.SpellId}");
             return;
         }
-        _host.CastSpell(target, pt.SpellId);
+        _host.CastSpellFor(target, pt.SpellId, "Nav", $"recall spell {pt.SpellId}");
         _host.Log($"Nav: CastSpell(recall {pt.SpellId}) on player 0x{target:X8}");
     }
 
@@ -1707,7 +1761,7 @@ internal sealed class NavigationEngine
                 // teleport happened but wasn't seen, or the route stays on this side).
                 if (NextWalkTargetBeyond(route, _settings.ActiveNavIndex, OffTrackYards, out int farIdx, out double farYd))
                 {
-                    string what = pt.Type == NavPointType.Recall ? $"the recall (spell {pt.SpellId})" : $"the portal '{pt.TargetName}'";
+                    string what = pt.Type == NavPointType.Recall ? $"the recall ({NavPoint.RecallName(pt.SpellId)})" : $"the portal '{pt.TargetName}'";
                     string msg = $"Nav: {what} didn't teleport within {ActionTimeoutMs / 1000:F0}s, and the next waypoint [{farIdx}] is {farYd:F0}yd away - navigation stopped.";
                     _host.Log(msg);
                     _host.WriteToChat(msg, 1);
@@ -2229,7 +2283,7 @@ internal sealed class NavigationEngine
         // The escape moves us off the approach line, so the closest-approach
         // tracker's last reading is meaningless — reset it or the next steer
         // tick reads the retreat as a sweep-pass and advances the index.
-        _prevDist = double.MaxValue;
+        _closestDist = double.MaxValue;
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -2577,7 +2631,7 @@ internal sealed class NavigationEngine
 
         StopMovement();
         _inRecovery          = false;
-        _prevDist            = double.MaxValue;
+        _closestDist         = double.MaxValue;
         _settings.NavIsStuck = true;
         return true;
     }
@@ -2604,7 +2658,7 @@ internal sealed class NavigationEngine
                   + $"reached {Math.Min(d.Index, d.Points.Count)}/{d.Points.Count}, door requests {d.DoorRequestCount}, re-plans {d.Replans}, "
                   + $"{(Now - d.StartedAt) / 1000.0:F1}s - result: {result}");
 
-        _prevDist = double.MaxValue;
+        _closestDist = double.MaxValue;
         if (!_inRecovery) _settings.NavIsStuck = false;
     }
 
@@ -2635,7 +2689,7 @@ internal sealed class NavigationEngine
             // against the deadline; if the pause moved us, plan again from here.
             d.Paused      = false;
             d.DeadlineAt += Now - d.PausedAt;
-            d.PrevDist    = double.MaxValue;
+            d.ClosestDist = double.MaxValue;
             double moved  = double.IsNaN(d.PausedNs) ? 0.0 : NavYd(ns - d.PausedNs, ew - d.PausedEw);
             if (moved > DetourReplanMovedYd && !ReplanDetour(route, d, moved)) return;
         }
@@ -2650,10 +2704,10 @@ internal sealed class NavigationEngine
 
         var p = d.Points[d.Index];
         double dist = NavYd(p.NS - ns, p.EW - ew);
-        if (dist < ReachFor(p) || (d.PrevDist < SweepFor(p) && dist > d.PrevDist + 0.3))
+        if (dist < ReachFor(p) || (d.ClosestDist < SweepFor(p) && dist > d.ClosestDist + 0.3))
         {
             d.Index++;
-            d.PrevDist = double.MaxValue;
+            d.ClosestDist = double.MaxValue;
             if (d.Index >= d.Points.Count)
             {
                 // Back on the route: resume at the rejoin waypoint; normal nav walks the last leg.
@@ -2662,7 +2716,7 @@ internal sealed class NavigationEngine
             }
             return;
         }
-        d.PrevDist = dist;
+        d.ClosestDist = Math.Min(d.ClosestDist, dist);
 
         // Aim point: blend toward the following point near arrival, but less than the
         // route does (doorways are narrow).

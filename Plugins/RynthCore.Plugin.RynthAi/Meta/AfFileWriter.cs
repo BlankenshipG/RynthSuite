@@ -139,6 +139,9 @@ internal static class AfFileWriter
             case MetaConditionType.MainManaPHE:
             case MetaConditionType.MainStamLE:
             case MetaConditionType.VitaePHE:
+            // RynthAi only (NoKillsInMins 5): metaf can't compile it to a .met, and an older
+            // RynthAi loads it as Never with an "unknown condition keyword" warning.
+            case MetaConditionType.NoKillsWithinMinutes:
                 // Bare values (no braces): MainSlotsLE 4, MainHealthLE 50
                 writer.Write($"{keyword} {data}");
                 break;
@@ -341,7 +344,7 @@ internal static class AfFileWriter
             5543 => "Neftet Recall",
             6321 => "Rynthid Recall",
             6322 => "Viridian Rise Recall",
-            _    => $"Spell {spellId}"
+            _    => NavPoint.RecallName(spellId)
         };
     }
 }

@@ -40,6 +40,10 @@ public static unsafe class PluginExports
     public static void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth)
         => Runtime.OnUpdateHealth(targetId, healthRatio, currentHealth, maxHealth);
 
+    // Corpses (0.3.0): a kill a ring, wall or chain spell made without a kill notice is found by its corpse.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnCreateObject", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void OnCreateObject(uint objectId) => Runtime.OnCreateObject(objectId);
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnDeleteObject", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnDeleteObject(uint objectId) => Runtime.OnDeleteObject(objectId);
 

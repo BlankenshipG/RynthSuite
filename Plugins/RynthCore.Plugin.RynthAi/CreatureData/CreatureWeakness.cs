@@ -283,7 +283,7 @@ internal static class CreatureWeakness
     }
 
     /// <summary>The on-disk copy of the weakness table next to RynthAi (optional; the DLL has one built in).</summary>
-    internal const string WeaknessFile = @"C:\Games\RynthSuite\RynthAi\Data\creature_weakness.json";
+    internal static readonly string WeaknessFile = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "Data", "creature_weakness.json");
 
     // JSON keys → Elements index (the table spells Lightning "electric").
     private static readonly (string Key, int Index)[] JsonKeys =

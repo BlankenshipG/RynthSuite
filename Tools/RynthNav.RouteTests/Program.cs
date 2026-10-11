@@ -39,6 +39,10 @@ internal static partial class Program
         Run(nameof(RecallListColdSpellbook), RecallListColdSpellbook);
         Run(nameof(RecallMemoryRoundTrip), RecallMemoryRoundTrip);
         Run(nameof(RecallMessages), RecallMessages);
+        Run(nameof(HandCastOnALifestone), HandCastOnALifestone);
+        Run(nameof(HandCastPortalTie), HandCastPortalTie);
+        Run(nameof(RecallNotLinked), RecallNotLinked);
+        Run(nameof(DungeonLandblocksFromTheAtlas), DungeonLandblocksFromTheAtlas);
         Run(nameof(AtlasSearchAndBestMatch), AtlasSearchAndBestMatch);
         Run(nameof(ArrowSingleTarget), ArrowSingleTarget);
         Run(nameof(ArrowAlongRoute), ArrowAlongRoute);
@@ -53,6 +57,7 @@ internal static partial class Program
         RunTownNet();
         RunAvoid();
         RunTravelPlan();
+        RunTripExport();
 
         Console.WriteLine();
         Console.WriteLine(_fails == 0 && _asserts > 0
@@ -248,6 +253,128 @@ internal static partial class Program
         Check(RecallMemory.Classify("", "Tom") == RecallEvent.None, "empty");
         Check(RecallMemory.SlotFor(RecallEvent.RecallingHome, out var slot) && slot == RecallSlot.House, "house slot");
         Check(!RecallMemory.SlotFor(RecallEvent.RecallingMarketplace, out _), "marketplace has no slot");
+        // Your spell words (Spellcasting, 17) start a hand cast; the same words typed in local chat don't.
+        Check(RecallMemory.Classify("You say, \"Zojak Ququ\"", "Tom", RecallMemory.ChatTypeSpellcasting) == RecallEvent.OwnSpellWords, "own spell words");
+        Check(RecallMemory.Classify("You say, \"Zojak Ququ\"", "Tom", 2) == RecallEvent.None, "typed in local chat");
+        Check(RecallMemory.Classify("You say, \"Zojak Ququ\"", "Tom") == RecallEvent.None, "chat type unknown");
+        Check(RecallMemory.Classify("Ann says, \"Zojak Ququ\"", "Tom", RecallMemory.ChatTypeSpellcasting) == RecallEvent.None, "someone else casting");
+    }
+
+    // ── A recall cast by hand: which one, from where it landed ───────────────
+
+    private const string Me = "Aelrynth|Tom";
+
+    private static RecallSpot At(double ns, double ew, string label = "") => new() { OnMap = true, Ns = ns, Ew = ew, Label = label };
+
+    private static void HandCastOnALifestone()
+    {
+        var mem = new RecallMemory();
+        var known = new HashSet<int> { RecallPlanner.LifestoneRecall, RecallPlanner.PrimaryPortalTieRecall };
+        var k = RecallPlanner.GuessHandCast(At(42.1, 33.6), atLifestone: true, known, mem, Me, 30, out var slot, out _);
+        Check(k == RecallPlanner.HandCast.Learn && slot == RecallSlot.Lifestone, "on a lifestone: Lifestone Recall");
+
+        mem.Set(Me, RecallSlot.Lifestone, At(42.1, 33.6));
+        k = RecallPlanner.GuessHandCast(At(42.11, 33.6), true, known, mem, Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "the same lifestone again: nothing new");
+        k = RecallPlanner.GuessHandCast(At(-30.0, 70.0), true, known, mem, Me, 30, out slot, out _);
+        Check(k == RecallPlanner.HandCast.Learn && slot == RecallSlot.Lifestone, "tied somewhere else since: learned again");
+
+        k = RecallPlanner.GuessHandCast(At(42.1, 33.6), true, new HashSet<int> { RecallPlanner.PrimaryPortalTieRecall }, new RecallMemory(), Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "no Lifestone Recall in the spellbook: not it");
+
+        // On the @lifestone lifestone with Recall the Sanctuary known: either spell, can't tell.
+        var mem2 = new RecallMemory();
+        mem2.Set(Me, RecallSlot.Sanctuary, At(42.1, 33.6));
+        var known2 = new HashSet<int> { RecallPlanner.LifestoneRecall, RecallPlanner.RecallTheSanctuary };
+        k = RecallPlanner.GuessHandCast(At(42.1, 33.6), true, known2, mem2, Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "Recall the Sanctuary could land there too");
+        k = RecallPlanner.GuessHandCast(At(10, 10), true, null, mem2, Me, 30, out _, out var why);
+        Check(k == RecallPlanner.HandCast.Nothing && why.Contains("spellbook"), "a cold spellbook teaches nothing");
+    }
+
+    private static void HandCastPortalTie()
+    {
+        var oneTie = new HashSet<int> { RecallPlanner.SecondaryPortalTieRecall };
+        var k = RecallPlanner.GuessHandCast(At(-33.5, 72.8), false, oneTie, new RecallMemory(), Me, 30, out var slot, out _);
+        Check(k == RecallPlanner.HandCast.Learn && slot == RecallSlot.Tie2, "the only tie recall known");
+
+        var both = new HashSet<int> { RecallPlanner.PrimaryPortalTieRecall, RecallPlanner.SecondaryPortalTieRecall };
+        k = RecallPlanner.GuessHandCast(At(-33.5, 72.8), false, both, new RecallMemory(), Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.AskTie, "both tie recalls known: ask which");
+
+        var mem = new RecallMemory();
+        mem.Set(Me, RecallSlot.Tie1, At(-33.5, 72.8));
+        k = RecallPlanner.GuessHandCast(At(-33.51, 72.8), false, both, mem, Me, 30, out slot, out _);
+        Check(k == RecallPlanner.HandCast.Nothing && slot == RecallSlot.Tie1, "a known tie's landing: nothing new");
+
+        // Portal Recall: lands where the last portal went (known: nothing; unknown: ask).
+        var withPortalRecall = new HashSet<int> { RecallPlanner.PrimaryPortalTieRecall, RecallPlanner.PortalRecall };
+        var mem2 = new RecallMemory();
+        mem2.Set(Me, RecallSlot.LastPortal, At(12, 34));
+        k = RecallPlanner.GuessHandCast(At(12, 34), false, withPortalRecall, mem2, Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "the last portal's landing: Portal Recall");
+        k = RecallPlanner.GuessHandCast(At(-33.5, 72.8), false, withPortalRecall, mem2, Me, 30, out slot, out _);
+        Check(k == RecallPlanner.HandCast.Learn && slot == RecallSlot.Tie1, "elsewhere, last portal known: the one tie");
+        k = RecallPlanner.GuessHandCast(At(-33.5, 72.8), false, withPortalRecall, new RecallMemory(), Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.AskTie, "last portal unknown: could be Portal Recall, ask");
+
+        k = RecallPlanner.GuessHandCast(At(1, 1), false, new HashSet<int> { RecallPlanner.LifestoneRecall }, new RecallMemory(), Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "off a lifestone with no tie recall: not one RynthNav knows");
+
+        // A dungeon landing (off the map) is learned too, and matched by its label.
+        var dungeon = new RecallSpot { OnMap = false, Label = "a dungeon (landblock 6145)" };
+        k = RecallPlanner.GuessHandCast(dungeon, false, oneTie, new RecallMemory(), Me, 30, out slot, out _);
+        Check(k == RecallPlanner.HandCast.Learn && slot == RecallSlot.Tie2, "a tie into a dungeon");
+        var mem3 = new RecallMemory();
+        mem3.Set(Me, RecallSlot.Tie2, new RecallSpot { OnMap = false, Label = "a dungeon (landblock 6145)" });
+        k = RecallPlanner.GuessHandCast(dungeon, false, oneTie, mem3, Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "the same dungeon again: nothing new");
+
+        // Once learned, the planner uses it.
+        var plannerMem = new RecallMemory();
+        plannerMem.Set(Me, RecallSlot.Tie2, At(-33.5, 72.8, "Shoushi"));
+        var list = RecallPlanner.Build(Atlas.Empty, oneTie, plannerMem, Me, new List<string>());
+        Check(list.Exists(o => o.SpellId == RecallPlanner.SecondaryPortalTieRecall && Math.Abs(o.Ns + 33.5) < 1e-9), "the learned tie is planned");
+    }
+
+    private static void DungeonLandblocksFromTheAtlas()
+    {
+        // A dungeon landblock's tile is its surface (dungeon cells aren't baked): the walk must
+        // know it's in one. Dungeon places and dungeon portal destinations count; a landblock
+        // with places on the map (a town, its cellars) never does.
+        Atlas atlas = Atlas.Parse(@"{""locations"":[
+            {""name"":""Surface"",""type"":""Portal"",""cell"":""000102C8"",""place"":""dungeon"",""dest"":{""cell"":""26E5001D"",""place"":""outdoor"",""ns"":81.68,""ew"":-71.16}},
+            {""name"":""Holtburg Dungeon Portal"",""type"":""Portal"",""cell"":""A9B40021"",""place"":""outdoor"",""ns"":42.0,""ew"":33.0,""dest"":{""cell"":""01F60230"",""place"":""dungeon""}},
+            {""name"":""Shoushi"",""type"":""Town"",""cell"":""DA55001D"",""place"":""outdoor"",""ns"":-33.5,""ew"":72.8},
+            {""name"":""Cellar Vendor"",""type"":""Vendor"",""cell"":""DA550105"",""place"":""dungeon""},
+            {""name"":""Odd"",""type"":""Landmark"",""cell"":""zz"",""place"":""dungeon""}
+        ]}");
+        HashSet<uint> d = atlas.DungeonLandblocks();
+        Check(d.Contains(0x0001), "a dungeon place's landblock");
+        Check(d.Contains(0x01F6), "a portal's dungeon destination");
+        Check(!d.Contains(0x26E5) && !d.Contains(0xA9B4), "outdoor landblocks aren't dungeons");
+        Check(!d.Contains(0xDA55), "a town landblock with a dungeon cell isn't one");
+        Check(d.Count == 2, "nothing else (a bad cell is skipped)");
+    }
+
+    private static void RecallNotLinked()
+    {
+        Check(RecallPlanner.SlotUnlinked(RecallPlanner.ErrorMustLinkLifestone, 0) == RecallSlot.Lifestone, "no lifestone tie: Lifestone Recall");
+        Check(RecallPlanner.SlotUnlinked(RecallPlanner.ErrorMustLinkPortal, RecallPlanner.PrimaryPortalTieRecall) == RecallSlot.Tie1, "no primary tie");
+        Check(RecallPlanner.SlotUnlinked(RecallPlanner.ErrorMustLinkPortal, RecallPlanner.SecondaryPortalTieRecall) == RecallSlot.Tie2, "no secondary tie");
+        Check(RecallPlanner.SlotUnlinked(RecallPlanner.ErrorMustLinkPortal, RecallPlanner.PortalRecall) == RecallSlot.LastPortal, "no last portal");
+        Check(RecallPlanner.SlotUnlinked(RecallPlanner.ErrorMustLinkPortal, 0) == null, "a portal recall cast by hand: can't tell which");
+        Check(RecallPlanner.SlotUnlinked(0x0402, RecallPlanner.LifestoneRecall) == null, "a fizzle isn't a missing tie");
+        Check(RecallPlanner.SpellFor(RecallSlot.Tie2) == RecallPlanner.SecondaryPortalTieRecall && RecallPlanner.SpellFor(RecallSlot.House) == 0, "slot spells");
+
+        var mem = new RecallMemory();
+        mem.Set(Me, RecallSlot.Lifestone, At(42.1, 33.6));
+        int v = mem.Version;
+        mem.Clear(Me, RecallSlot.Lifestone);
+        Check(mem.Get(Me, RecallSlot.Lifestone) == null && mem.Version > v, "forgotten (and saved)");
+        var notes = new List<string>();
+        RecallPlanner.Build(Atlas.Empty, new HashSet<int> { RecallPlanner.LifestoneRecall }, mem, Me, notes);
+        Check(notes.Exists(n => n.Contains("Lifestone Recall") && n.Contains("cast Lifestone Recall once")), "the note says how to teach it");
     }
 
     // ── Atlas ────────────────────────────────────────────────────────────────

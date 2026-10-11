@@ -37,7 +37,7 @@ namespace RynthCore.Plugin.RynthAi;
 internal static class DungeonHazardSurfaces
 {
     // Sibling of NavProfiles / DungeonHazards (LegacyDashboardRenderer._navFolder family).
-    private static readonly string Folder  = RynthInstallPaths.RynthAiDir;
+    private static readonly string Folder  = RynthCore.Install.RynthInstallPaths.RynthAiDir;
     private static readonly string SetPath = System.IO.Path.Combine(Folder, "HazardTextures.txt");
 
     private static readonly object _gate = new();

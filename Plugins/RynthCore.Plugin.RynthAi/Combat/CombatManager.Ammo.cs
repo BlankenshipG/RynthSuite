@@ -220,6 +220,7 @@ public partial class CombatManager
         var wo = _worldFilter[wielded.Id];
         int amount = Math.Max(1, wo?.Values(LongValueKey.StackCount, 1) ?? 1);   // the whole stack, not one arrow
         _host.MoveItemInternal(unchecked((uint)wielded.Id), unchecked((uint)packId), 0, amount);
+        _weaponSwapGate?.NoteMove(wielded.Id, wieldedNow: true);
         _ammoDequipPendingId = wielded.Id;
         _ammoDequipAt = now;
         _ammoDequipTries++;

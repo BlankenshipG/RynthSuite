@@ -465,6 +465,88 @@ internal static partial class DungeonPathfinder
         Dictionary<uint, DungeonNavNode> graph, uint startCell,
         IReadOnlySet<uint>? hazardCells = null)
     {
+        var (reachable, pruned) = ReachableAndCore(graph, startCell, hazardCells);
+        int originalCount = reachable.Count;
+
+        // Fall back to full reachable set if pruning collapsed the graph - judged on the dungeon
+        // itself, not on what the hazards left. 2026-10-10, 0x6146: 3 acid cells + 35 lava-floor
+        // cells cut the loops (2-core 277 -> 68, under 20% of reachable), the fallback fired and
+        // the patrol walked into every dead-end 1-cell room. A dungeon with loops keeps its
+        // (smaller) 2-core around the hazards; only a dungeon that is linear without hazards, or
+        // a core under PatrolMinKeepNodes, falls back.
+        bool collapsed = pruned.Count < PatrolMinKeepNodes || pruned.Count < originalCount * PatrolMinKeepFraction;
+        HashSet<uint> result = pruned;
+        string how = "2-core used";
+        if (collapsed && hazardCells != null && hazardCells.Count > 0)
+        {
+            var (freeReach, freeCore) = ReachableAndCore(graph, startCell, null);
+            bool dungeonIsLinear = freeCore.Count < PatrolMinKeepNodes || freeCore.Count < freeReach.Count * PatrolMinKeepFraction;
+            if (!dungeonIsLinear)
+            {
+                // The hazards cut the loops; the rest of the dungeon hangs off them as long branches.
+                // Walk those, but not the short spurs (closets, 1-2 cell rooms behind a door).
+                result = TrimShortSpurs(graph, reachable, startCell, PatrolMaxSpurCells);
+                how = $"hazards cut the loops: all reachable cells but spurs of <= {PatrolMaxSpurCells} cells ({result.Count} kept)";
+            }
+            else { result = reachable; how = $"FALLBACK: patrol uses all {originalCount} reachable cells, dead ends included"; }
+        }
+        else if (collapsed) { result = reachable; how = $"FALLBACK: patrol uses all {originalCount} reachable cells, dead ends included"; }
+        if (PointLog != null)
+            MainRouteNote = $"main route from {startCell:X8}: {originalCount} reachable cells, 2-core {pruned.Count} "
+                          + $"({hazardCells?.Count ?? 0} hazard cells) -> " + how;
+        return result;
+    }
+
+    /// <summary>Dead-end spurs this short (cells from the tip to the first junction) are left out
+    /// when the hazards collapsed the 2-core.</summary>
+    internal const int PatrolMaxSpurCells = 3;
+
+    /// <summary>
+    /// <paramref name="cells"/> without every dead-end spur of at most <paramref name="maxSpur"/> cells:
+    /// from each tip (one walkable neighbour) walk inward through corridor cells (two neighbours)
+    /// to the first junction; a chain that short goes. One pass, so a long branch keeps its far end.
+    /// </summary>
+    internal static HashSet<uint> TrimShortSpurs(Dictionary<uint, DungeonNavNode> graph, HashSet<uint> cells, uint keep, int maxSpur)
+    {
+        int Degree(uint id)
+        {
+            if (!graph.TryGetValue(id, out var n)) return 0;
+            int d = 0;
+            foreach (uint nb in n.Neighbors)
+                if (cells.Contains(nb) && graph.TryGetValue(nb, out var o) && !IsDropEdge(n, o)) d++;
+            return d;
+        }
+        var drop = new HashSet<uint>();
+        foreach (uint tip in cells)
+        {
+            if (tip == keep || Degree(tip) != 1) continue;
+            var chain = new List<uint> { tip };
+            uint prev = 0, cur = tip;
+            bool shortSpur = false;
+            while (true)
+            {
+                uint next = 0;
+                foreach (uint nb in graph[cur].Neighbors)
+                    if (nb != prev && cells.Contains(nb) && graph.TryGetValue(nb, out var o) && !IsDropEdge(graph[cur], o)) { next = nb; break; }
+                if (next == 0) break;                       // an isolated pair: leave it
+                int d = Degree(next);
+                if (d >= 3) { shortSpur = true; break; }   // reached a junction
+                if (d <= 1 || next == keep) break;         // the whole thing is a line, or runs into the start
+                chain.Add(next);
+                if (chain.Count > maxSpur) break;          // long branch: keep it
+                prev = cur; cur = next;
+            }
+            if (shortSpur && chain.Count <= maxSpur) foreach (uint c in chain) drop.Add(c);
+        }
+        var result = new HashSet<uint>(cells);
+        result.ExceptWith(drop);
+        return result;
+    }
+
+    /// <summary>The cells reachable from startCell (no drops, no hazards) and their 2-core.</summary>
+    private static (HashSet<uint> Reachable, HashSet<uint> Core) ReachableAndCore(
+        Dictionary<uint, DungeonNavNode> graph, uint startCell, IReadOnlySet<uint>? hazardCells)
+    {
         // BFS to collect all cells reachable from startCell without drops or hazards.
         // The start cell is always kept (player is already standing there) even if
         // it's somehow marked hazardous — we can't refuse to start the patrol.
@@ -490,7 +572,6 @@ internal static partial class DungeonPathfinder
             }
         }
 
-        int originalCount = reachable.Count;
         var pruned = new HashSet<uint>(reachable);
 
         // Prune to convergence: repeatedly remove every node whose effective
@@ -521,12 +602,7 @@ internal static partial class DungeonPathfinder
             foreach (uint id in toRemove) pruned.Remove(id);
         }
 
-        // Fall back to full reachable set if pruning collapsed the graph.
-        if (pruned.Count < PatrolMinKeepNodes ||
-            pruned.Count < originalCount * PatrolMinKeepFraction)
-            return reachable;
-
-        return pruned;
+        return (reachable, pruned);
     }
 
     /// <summary>

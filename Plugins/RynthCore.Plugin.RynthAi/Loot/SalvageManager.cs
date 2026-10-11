@@ -173,6 +173,26 @@ public sealed class SalvageManager
         _cache = cache;
     }
 
+    private const long HasUstCacheMs = 3000;
+    private long _hasUstCheckedAt = long.MinValue / 2;
+    private bool _hasUst;
+
+    /// <summary>
+    /// A UST is carried (cached 3 s; FindUst can force an inventory walk). Without one there is
+    /// nothing to salvage with: looting leaves items that only a Salvage rule wants, and the
+    /// combine sweep doesn't run (2026-10-10).
+    /// </summary>
+    public bool HasUst()
+    {
+        long now = NowMs;
+        if (now - _hasUstCheckedAt >= HasUstCacheMs)
+        {
+            _hasUstCheckedAt = now;
+            _hasUst = FindUst() != 0;
+        }
+        return _hasUst;
+    }
+
     /// <summary>Returns true while a salvage operation is in flight.</summary>
     public bool IsBusy => _phase != Phase.Idle || _queue.Count > 0;
 
@@ -310,7 +330,7 @@ public sealed class SalvageManager
             {
                 _pendingCombineScan = false;
                 _lastCombineSweepAt = now;
-                BeginCombineSalvage(now);
+                if (HasUst()) BeginCombineSalvage(now);
                 return;
             }
             // Periodic standalone sweep: if 30s have passed since the last
@@ -323,7 +343,7 @@ public sealed class SalvageManager
                 && now - _lastCombineSweepAt >= CombineSweepIntervalMs)
             {
                 _lastCombineSweepAt = now;
-                BeginCombineSalvage(now);
+                if (HasUst()) BeginCombineSalvage(now);
             }
             return;
         }
@@ -344,6 +364,7 @@ public sealed class SalvageManager
             return;
 
         uint ustId = FindUst();
+        _hasUstCheckedAt = now; _hasUst = ustId != 0;
         if (ustId == 0)
         {
             // Keep the items (they used to be dropped here for good) and look again later.

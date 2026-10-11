@@ -17,6 +17,8 @@
 
   <ItemGroup>
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthTracker\TrackerSessionStore.cs" Link="Linked\TrackerSessionStore.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthTracker\KillCounter.cs" Link="Linked\KillCounter.cs" />
+    <Compile Include="..\..\Plugins\Shared\CombatText.cs" Link="Linked\CombatText.cs" />
   </ItemGroup>
 
 </Project>

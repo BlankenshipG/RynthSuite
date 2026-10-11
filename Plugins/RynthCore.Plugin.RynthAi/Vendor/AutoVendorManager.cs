@@ -34,7 +34,7 @@ namespace RynthCore.Plugin.RynthAi.Vendor;
 /// </summary>
 internal sealed class AutoVendorManager
 {
-    public const string MainProfileDir = @"C:\Games\RynthSuite\RynthAi\AutoVendor";
+    public static readonly string MainProfileDir = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "AutoVendor");
     public const string ProfileSubfolder = "AutoVendor";
 
     private const long BailMs = 60_000;          // UB bailTimer
@@ -76,6 +76,7 @@ internal sealed class AutoVendorManager
     private long _nextPollAt;
     private int _failures;
     private readonly HashSet<uint> _sessionSkip = new();   // items the engine refused to sell
+    private readonly HashSet<string> _sellSkipLogged = new(StringComparer.OrdinalIgnoreCase); // names logged as held back this session
 
     private readonly List<uint> _idQueue = new();
     private readonly Dictionary<uint, (int Attempts, long LastAt)> _idState = new();
@@ -457,6 +458,7 @@ internal sealed class AutoVendorManager
         _profilePath = path;
         _failures = 0;
         _sessionSkip.Clear();
+        _sellSkipLogged.Clear();
         _bailAt = Now();
         _nextActionAt = 0;
         _host.Log($"[RynthAi] AutoVendor: {_vendorName} [0x{merchantId:X8}] profile '{path}' ({_profile.Rules.Count} rules)");
@@ -853,14 +855,36 @@ internal sealed class AutoVendorManager
             SafetyFacts safety = ReadSafety(wo, player);
             string? unsafeWhy = AutoVendorPlanner.UnsafeReason(safety, _settings.AutoVendorOnlyFromMainPack);
             if (unsafeWhy != null && heldBack == null)
+            {
+                if (!_sellSkipLogged.Contains(wo.Name))
+                {
+                    ProfileVerdict uv = AutoVendorRules.Decide(_profile.Rules, Judge(EvalObject(wo), InventoryFacts(wo, safety.Appraised), ctx));
+                    // "Not identified" is usually just not yet (the IDs are on their way): only a
+                    // certain Sell match is worth a line.
+                    if (uv.Rule?.Action == VTankLootAction.Sell && uv.Certain && _sellSkipLogged.Add(wo.Name))
+                        _host.Log($"[RynthAi] AutoVendor: not selling '{wo.Name}' (rule '{uv.RuleName}'): {unsafeWhy}.");
+                }
                 continue;
+            }
 
             uint type = ItemType(wo);
             int stack = StackOf(wo);
             bool isNote = wo.ObjectClass == AcObjectClass.TradeNote || (type & AutoVendorPlanner.ItemTypePromissoryNote) != 0;
             int unitValue = stack > 1 ? safety.Value / stack : safety.Value;
             if (unsafeWhy == null && !AutoVendorPlanner.VendorWillBuy(v, type, isNote, unitValue))
+            {
+                // A Sell rule wanted it and the vendor won't take it: say why, once per name a
+                // session (peas not sold at Aun Amanaualuan, 2026-10-07, with nothing logged).
+                if (heldBack == null && !_sellSkipLogged.Contains(wo.Name))
+                {
+                    ProfileVerdict sv = AutoVendorRules.Decide(_profile.Rules, Judge(EvalObject(wo), InventoryFacts(wo, safety.Appraised), ctx));
+                    if (sv.Rule?.Action == VTankLootAction.Sell && sv.Certain && _sellSkipLogged.Add(wo.Name))
+                        _host.Log(!v.Buys(type)
+                            ? $"[RynthAi] AutoVendor: not selling '{wo.Name}' (rule '{sv.RuleName}'): this vendor doesn't buy {AutoVendorPlanner.CategoryName(type)} (item type 0x{type:X}, vendor buys 0x{v.ItemTypes:X})."
+                            : $"[RynthAi] AutoVendor: not selling '{wo.Name}' (rule '{sv.RuleName}'): worth {unitValue:n0} each, this vendor pays for items up to {v.MaxValue:n0}.");
+                }
                 continue;
+            }
 
             ItemFacts f = InventoryFacts(wo, safety.Appraised);
             ProfileVerdict verdict = AutoVendorRules.Decide(_profile.Rules, Judge(EvalObject(wo), f, ctx));
@@ -876,6 +900,8 @@ internal sealed class AutoVendorManager
             {
                 if (heldBack != null && verdict.Rule?.Action == VTankLootAction.Sell)
                     heldBack.Add($"{wo.Name} - {sd.Reason}");
+                else if (heldBack == null && verdict.Rule?.Action == VTankLootAction.Sell && _sellSkipLogged.Add(wo.Name))
+                    _host.Log($"[RynthAi] AutoVendor: not selling '{wo.Name}': {sd.Reason}.");
                 continue;
             }
 

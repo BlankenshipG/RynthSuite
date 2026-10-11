@@ -42,6 +42,7 @@ internal static class LootSalvageTests
         r.Add("salvage: an item queued before it reaches the pack waits, then is salvaged", SalvageWaitsForArrival);
         r.Add("salvage: a pickup whose confirm was lost is still salvaged (tracked + sweep)", SalvageLostConfirm);
         r.Add("salvage: no UST keeps the items until one is in the pack", SalvageNoUstKeepsItems);
+        r.Add("salvage: no UST - HasUst false, no combine sweep; a UST in the pack turns both on", SalvageNoUstNoSweep);
         r.Add("salvage: skipped items are logged with their reason, once per batch", SalvageSkipReasonsLogged);
         r.Add("salvage: an item that keeps failing rests, retries, and is given up with a log line", SalvageGiveUpIsBounded);
     }
@@ -291,6 +292,24 @@ internal static class LootSalvageTests
         w.Run(15_000);
         Check.Eq(FakeHost.SalvageExecutes.Count, 1, "salvaged once a UST is there");
         Check.True(items.All(id => !w.InWorld(id)), "every item salvaged");
+    }
+
+    private static void SalvageNoUstNoSweep()
+    {
+        var w = new World(Items(0), withUst: false);
+        w.Settings.EnableCombineSalvage = true;
+        Check.False(w.Mgr.HasUst(), "no UST carried");
+        w.Run(65_000, step: 500);
+        Check.False(w.SalvageLogs.Any(l => l.Contains("Combine sweep", StringComparison.Ordinal)), "no combine sweep without a UST");
+        Check.Eq(FakeHost.Uses.Count, 0, "nothing used");
+
+        var ids = new List<uint>();
+        World.AddUst(ids);
+        _ = w.Cache[unchecked((int)Ust)];
+        w.Run(4_000, step: 500);
+        Check.True(w.Mgr.HasUst(), "a UST in the pack is seen (within the 3 s cache)");
+        w.Run(31_000, step: 500);
+        Check.True(w.SalvageLogs.Any(l => l.Contains("Combine sweep", StringComparison.Ordinal)), "the combine sweep runs again");
     }
 
     private static void SalvageSkipReasonsLogged()

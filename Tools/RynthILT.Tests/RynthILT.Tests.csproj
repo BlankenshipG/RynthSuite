@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Tests for the RynthILT plugin's ACECustom bounty tracker (Bounty/BountyParse.cs and
+    Bounty/BountyTracker.cs, ported from SilentKelpie's rynth/RynthSuite PR #11 with his
+    BountyTests). The plugin is a NativeAOT x86 library, so its host-agnostic sources are
+    compiled in here directly instead of referencing the project. File tests use a scratch
+    folder next to the exe, never %APPDATA%\RynthCore.
+    Run: dotnet run -c Release   (exit 0 = pass, 1 = fail; an argument filters by test name)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>RynthILT.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\Bounty\BountyParse.cs" Link="Plugin\BountyParse.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\Bounty\BountyTracker.cs" Link="Plugin\BountyTracker.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\RynthILTJsonContext.cs" Link="Plugin\RynthILTJsonContext.cs" />
+    <!-- The RynthAi test tools' check/runner harness (no plugin code in it). -->
+    <Compile Include="..\RynthCore.RynthAiTests\Harness\Check.cs" Link="Harness\Check.cs" />
+    <Compile Include="..\RynthCore.RynthAiTests\Harness\Runner.cs" Link="Harness\Runner.cs" />
+  </ItemGroup>
+
+  <!-- The engine's Bounties snapshot reader (self-contained DTOs), so BountyTests checks the plugin's
+       JSON against the engine's own reader. Optional, so this builds before the engine side is
+       merged: without the file the round-trip check is compiled out (ENGINE_BOUNTIES). -->
+  <PropertyGroup Condition="Exists('..\..\..\RynthCore\src\RynthCore.Engine\UI\Data\BountiesSnapshotJson.cs')">
+    <DefineConstants>$(DefineConstants);ENGINE_BOUNTIES</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('..\..\..\RynthCore\src\RynthCore.Engine\UI\Data\BountiesSnapshotJson.cs')">
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\Data\BountiesSnapshotJson.cs" Link="Engine\BountiesSnapshotJson.cs" />
+  </ItemGroup>
+
+</Project>

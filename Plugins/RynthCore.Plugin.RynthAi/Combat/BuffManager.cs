@@ -158,6 +158,15 @@ public partial class BuffManager : IDisposable
     private readonly Dictionary<int, DateTime> _buffFailCooldownUntil = new();
     private const double BuffFailCooldownSec = 120.0;
 
+    // A vital spell LEVEL the server refused for missing components (Revitalize, Heal, Stamina
+    // to Mana...): that level is passed over for NoComponentsLevelSec and the next lower level
+    // with components is cast instead. It used to park the whole family, then retry the same
+    // top level the character had no components for (2026-10-08).
+    private readonly Dictionary<int, DateTime> _noComponentsUntil = new();
+    private const double NoComponentsLevelSec = 600.0;
+    private bool LevelLacksComponents(int spellId)
+        => _noComponentsUntil.TryGetValue(spellId, out DateTime until) && DateTime.Now < until;
+
     // Per-family SILENT no-show counter. Distinct from _buffFailCooldownUntil
     // (which catches chat-explicit hard rejects). This catches the /god case:
     // skill is Trained → IsSkillUsable says yes → BuildDynamicBuffList includes
@@ -328,6 +337,16 @@ public partial class BuffManager : IDisposable
     // stow the bow into a capacity-verified open pack FIRST (AutoCram pattern), then wield
     // the wand. All paths are bounded so a stale/no-op dequip or unwieldable wand can never
     // loop forever; on exhaustion the buff family is parked and the bot fights unbuffed.
+    // Switch like a player (2026-10-06): a use of the wand goes through ClientUISystem::UseObject,
+    // the client's double-click, which puts the weapon in hand away by itself (ACE's
+    // DoHandleActionGetAndWieldItem: "the client handles dequipping a lot of conflicting items
+    // automatically"). Drakkon's axe -> wand took 4.2 s with the pack move first (1.2 s for it,
+    // then the swap gate's flat 3 s). The pack move stays as the fallback: once a use hasn't
+    // got the wand into the hand in WieldResolveTimeoutMs, this session moves the weapon first.
+    private bool _directWandSwapFailed;
+    // The swap gate's claim count when the wand's use went out: a later claim means another swap
+    // (combat putting the axe back, 12:39 on 10-06) changed the hands, so the result says nothing.
+    private long _pendingWieldClaim;
     private int _bowDequipPendingId;
     private DateTime _bowDequipAt = DateTime.MinValue;
     private int _bowDequipAttempts;
@@ -464,6 +483,27 @@ public partial class BuffManager : IDisposable
         { AcSkillType.WarMagic, "War Magic Mastery" },
         { AcSkillType.VoidMagic, "Void Magic Mastery" },
         { AcSkillType.Summoning, "Summoning Mastery" },
+    };
+
+    /// <summary>
+    /// The prots and banes the Buffing settings let the player untick (LegacyUiSettings.DisabledBuffs),
+    /// paired by element for the two-column grid: (buff base name, label). Armor Self and
+    /// Impenetrability head the columns. The cast order stays BuildDynamicBuffList's.
+    /// </summary>
+    internal static readonly (string Buff, string Label)[] ToggleProtections =
+    {
+        ("Armor Self", "Armor"), ("Fire Protection Self", "Fire"), ("Cold Protection Self", "Cold"),
+        ("Acid Protection Self", "Acid"), ("Lightning Protection Self", "Lightning"),
+        ("Blade Protection Self", "Blade"), ("Piercing Protection Self", "Piercing"),
+        ("Bludgeoning Protection Self", "Bludgeoning"),
+    };
+
+    internal static readonly (string Buff, string Label)[] ToggleBanes =
+    {
+        ("Impenetrability", "Impenetrability"), ("Flame Bane", "Flame"), ("Frost Bane", "Frost"),
+        ("Acid Bane", "Acid"), ("Lightning Bane", "Lightning"),
+        ("Blade Bane", "Blade"), ("Piercing Bane", "Piercing"),
+        ("Bludgeoning Bane", "Bludgeoning"),
     };
 
     public BuffManager(RynthCoreHost host, LegacyUiSettings settings, SpellManager spellManager, PlayerVitalsCache vitals)
@@ -1117,6 +1157,18 @@ public partial class BuffManager : IDisposable
             return;
         }
 
+        // One server action at a time (2026-10-06, Plugins/Shared/ActionPacer.cs): no kit, potion,
+        // wand, stance change or cast while the server hasn't answered the last one (its UseDone;
+        // a buff's enchantment lands before that). Heals keep their priority (ActionPacer's heal
+        // rules). And not while RynthAi still has the character running: the arbiter's stop goes
+        // out this tick, the cast the next one (a stop mid-windup disturbs the cast).
+        if (!PacerAllows(out string paceWhy))
+        {
+            LastBuffSkipReason = "server answering the last action: " + paceWhy;
+            Hold("server answering the last action", paceWhy);
+            return;
+        }
+
         // Don't issue a cast while the previous cast GESTURE is still animating.
         // CanCastNow is the engine's CMotionInterp gesture gate (the REAL cast
         // gate). AC refuses a cast issued mid-gesture with a server-driven
@@ -1135,6 +1187,7 @@ public partial class BuffManager : IDisposable
         // everything else still waits for the count to drop.
         bool gateOpen = CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s));
         bool busyHolds = BusyCount > 0
+            && !_pacerLetHealAhead   // the pacing let this heal go ahead of an unanswered corpse use (its rules)
             && (ActiveHealLine(_vitals.HealthPct, _vitals.StaminaPct, out _, out _).Length == 0 || BusyHoldsHeal());
         if (!gateOpen || busyHolds)
         {
@@ -1154,6 +1207,14 @@ public partial class BuffManager : IDisposable
         if (buffsHeldForRefresh)
         {
             Hold("login buff refresh");
+            return;
+        }
+
+        // Health floor: no buff while health is under a heal line that nothing could heal
+        // (Drakkon, 2026-10-06 04:51: recasting Swift Killer at 19% health, dead 10 s later).
+        if (_vitals.MaxHealth > 0 && HealthUnderAnyLine(_vitals.HealthPct, _vitals.StaminaPct))
+        {
+            Hold("health under a heal line");
             return;
         }
 
@@ -1392,7 +1453,7 @@ public partial class BuffManager : IDisposable
         bool inCombat = _combatManager?.HasCloseThreat(System.Math.Max(1, _settings.MonsterRange)) == true;
         int hpThreshold   = inCombat ? _settings.HealAt    : _settings.TopOffHP;
         int manaThreshold = inCombat ? _settings.GetManaAt : _settings.TopOffMana;
-        int stamThreshold = inCombat ? _settings.RestamAt  : _settings.TopOffStam;
+        int stamThreshold = StaminaLine(inCombat, curStamPct, _settings, ref _restamRun, ref _restamRunCasts);
 
         // A flag is set only when something was actually done about the vital.
         // WantsVitalRecharge holds the arbiter on Buffing, above combat and nav, so
@@ -1409,6 +1470,16 @@ public partial class BuffManager : IDisposable
             if (!healed) { _vitalWhy = ""; healed = AttemptVitalCast("Heal Self"); }
             string spellWhy = _vitalWhy;
             if (!healed) { _vitalWhy = ""; healed = AttemptPotion("HealthPotion"); }
+            // Last resort: the kit Kit Min Success skipped. A low chance beats no heal at all
+            // (Drakkon, 2026-10-06: 29% kit skipped, no spell, no potion, dead 6 s later).
+            if (!healed && kitWhy.EndsWith("under Kit Min Success %", StringComparison.Ordinal))
+            {
+                string potionWhy = _vitalWhy;
+                _vitalWhy = "";
+                healed = AttemptHealthKitUse(ignoreMinSuccess: true);
+                if (healed) _host.Log("[RynthAi] Vitals: no spell or potion could heal; using the kit despite Kit Min Success %.");
+                else _vitalWhy = potionWhy;
+            }
             if (healed)
             {
                 _isHealingSelf = true;
@@ -1438,14 +1509,52 @@ public partial class BuffManager : IDisposable
         }
         // Stamina kits first, like healing kits for health: Lucy carried Greater Stamina Kits
         // and cast Revitalize/Robustification instead, because stamina never looked for a kit.
-        if (curStamPct < stamThreshold && (AttemptStaminaKitUse() || AttemptVitalCast("Revitalize Self")
-                                           || AttemptPotion("StaminaPotion", "Stamina")))
+        // Melee first (Tom, 2026-10-06): out of Magic stance, Revitalize means switching the weapon
+        // for the wand and back (slow, and the 10-06 stalls began at those switches), so a stamina
+        // potion listed in Consumables goes before it. A potion drunk under 2.5 s ago: no Revitalize
+        // on top of it. In Magic stance (a caster) Revitalize stays first.
+        bool potionFirst = CurrentCombatMode != CombatMode.Magic;
+        if (curStamPct < stamThreshold)
         {
-            _isRechargingStamina = true;
-            return true;
+            bool potionJustDrunk = potionFirst && _settings.UsePotions
+                && (DateTime.Now - _lastPotionAt).TotalMilliseconds < 2500
+                && HasListedPotion("StaminaPotion", "Stamina");
+            if (!potionJustDrunk
+                && (AttemptStaminaKitUse()
+                    || (potionFirst && AttemptPotion(true, "StaminaPotion", "Stamina"))
+                    || AttemptVitalCast("Revitalize Self")
+                    || AttemptPotion("StaminaPotion", "Stamina")))
+            {
+                _isRechargingStamina = true;
+                if (_restamRun) _restamRunCasts++;
+                return true;
+            }
         }
 
         return false;
+    }
+
+    // Re-stam To (2026-10-06): a recharge started under Re-stam At carries on until stamina
+    // reaches Re-stam To; one Revitalize often doesn't get far. Capped so a recharge that
+    // never gains can't loop: it ends after RestamRunMaxCasts.
+    private bool _restamRun;
+    private int _restamRunCasts;
+    internal const int RestamRunMaxCasts = 4;
+
+    /// <summary>The stamina % to recharge under now (see the fields above).</summary>
+    internal static int StaminaLine(bool inCombat, int stamPct, LegacyUiSettings s, ref bool run, ref int casts)
+    {
+        if (!inCombat) { run = false; return s.TopOffStam; }
+        if (s.RestamTo <= s.RestamAt) { run = false; return s.RestamAt; }
+        if (stamPct < s.RestamAt)
+        {
+            if (!run) { run = true; casts = 0; }
+        }
+        else if (stamPct >= s.RestamTo || casts >= RestamRunMaxCasts)
+        {
+            run = false;
+        }
+        return run ? s.RestamTo : s.RestamAt;
     }
 
     /// <summary>True when Stamina To Health At / Min Stamina allow Stamina to Health Self now.</summary>
@@ -1485,6 +1594,7 @@ public partial class BuffManager : IDisposable
         if ((DateTime.Now - _lastPendingEmergencyHealAt).TotalMilliseconds < 2500) return;
         if (IsAwaitingCastResolution() || BusyHoldsHeal() || KitPending()) return;
         if (!CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s))) return;
+        if (!ActionPacer.MayStart(_host, "Buff", HealNeed.Emergency, out _)) return;
         if (AttemptHealthKitUse() || AttemptPotion("HealthPotion"))
         {
             _lastPendingEmergencyHealAt = DateTime.Now;
@@ -1540,7 +1650,19 @@ public partial class BuffManager : IDisposable
             _healWaitKind = "server finishing the last cast";
             return true;
         }
-        int spellId = FindBestSpellId(baseName, AcSkillType.LifeMagic);
+        int spellId = _spellManager.GetDynamicSelfBuffId(baseName, AcSkillType.LifeMagic, LevelLacksComponents);
+        // A heal with nothing known at the allowed tiers: the lowest known tier above them.
+        // Vitae can drop Life Magic under a tier line while only higher tiers are known.
+        if (spellId == 0 && baseName is "Heal Self" or "Stamina to Health Self")
+        {
+            spellId = _spellManager.GetSelfSpellIdAboveAllowedTier(baseName, AcSkillType.LifeMagic);
+            if (spellId != 0 && (DateTime.Now - _lastAboveTierLog).TotalSeconds >= 30)
+            {
+                _lastAboveTierLog = DateTime.Now;
+                _host.Log($"[RynthAi] Vitals: no '{baseName}' at the tiers Life Magic allows now; " +
+                          $"trying {SpellTableStub.GetById(spellId)?.Name ?? spellId.ToString()} (may fizzle).");
+            }
+        }
         if (spellId == 0) return VitalNo($"no known '{baseName}' spell at the allowed tiers");
         // Parked after a hard server refusal (see OnChatWindowText) — the same
         // per-family cooldown the buff selectors honour.
@@ -1566,7 +1688,8 @@ public partial class BuffManager : IDisposable
         _pendingSpellId = spellId;
         _pendingVitalSpellId = spellId;   // instant: confirmed by chat, never by the registry
         _pendingVitalLabel = VitalLabel(baseName);
-        bool castOk = _host.CastSpell((uint)_host.GetPlayerId(), spellId);
+        bool castOk = _host.CastSpellFor((uint)_host.GetPlayerId(), spellId, "Buff",
+            SpellTableStub.GetById(spellId)?.Name ?? baseName);
         _lastCastAttempt = DateTime.Now;
         if (!castOk)
         {
@@ -1589,22 +1712,37 @@ public partial class BuffManager : IDisposable
     /// Drinks the first potion of <paramref name="types"/> from the Items panel.
     /// "Stamina" is the older name for stamina potions. Off with UsePotions.
     /// </summary>
-    private bool AttemptPotion(params string[] types)
+    private bool AttemptPotion(params string[] types) => AttemptPotion(false, types);
+
+    /// <summary>A potion of one of <paramref name="types"/> listed in Consumables and in the pack.</summary>
+    private bool HasListedPotion(params string[] types)
+    {
+        if (_worldObjectCache == null) return false;
+        foreach (var rule in _settings.ConsumableRules)
+            if (Array.FindIndex(types, t => t.Equals(rule.Type, StringComparison.OrdinalIgnoreCase)) >= 0
+                && ConsumableLookup.Resolve(_worldObjectCache, rule) != null)
+                return true;
+        return false;
+    }
+
+    /// <summary><paramref name="listedOnly"/>: only the Consumables list, not any potion in the pack.</summary>
+    private bool AttemptPotion(bool listedOnly, params string[] types)
     {
         if (!_settings.UsePotions || _worldObjectCache == null) return VitalNo("Use Potions is off");
         if ((DateTime.Now - _lastPotionAt).TotalMilliseconds < 2500) return VitalNo("one drunk under 2.5 s ago");
         foreach (var rule in _settings.ConsumableRules)
         {
             if (Array.FindIndex(types, t => t.Equals(rule.Type, StringComparison.OrdinalIgnoreCase)) < 0) continue;
-            if (_worldObjectCache[rule.Id] == null) continue;
+            if (ConsumableLookup.Resolve(_worldObjectCache, rule) is not WorldObject potion) continue;
             if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
-            _host.Log($"[RynthAi] Vitals: drinking {rule.Name} ({rule.Type}).");
-            _host.UseFor(unchecked((uint)rule.Id), "Buff", $"vitals: drink {rule.Name} ({rule.Type}) from the Items list");
+            _host.Log($"[RynthAi] Vitals: drinking {rule.Name} ({rule.Type})" + (potion.Id != rule.Id ? " from a new stack." : "."));
+            _host.UseFor(unchecked((uint)potion.Id), "Buff", $"vitals: drink {rule.Name} ({rule.Type}) from the Items list");
             _lastPotionAt = DateTime.Now;
             _lastCastAttempt = DateTime.Now;
             if (IsHealthPotionType(types)) _healLatency.HealSent(Now, rule.Name);
             return true;
         }
+        if (listedOnly) return VitalNo("none listed in Consumables");
         // Nothing on the Items panel: anything in the pack of that kind (Field Rations
         // weren't used unless someone added them by hand, 2026-09-29).
         foreach (var wo in _worldObjectCache.GetDirectInventory(forceRefresh: false))
@@ -1726,7 +1864,9 @@ public partial class BuffManager : IDisposable
     }
     private DateTime _lastPotionAt = DateTime.MinValue;
 
-    private bool AttemptHealthKitUse()
+    private DateTime _lastAboveTierLog = DateTime.MinValue;
+
+    private bool AttemptHealthKitUse(bool ignoreMinSuccess = false)
     {
         if (_worldObjectCache == null) return false;
         // VTank's kit options: skip kits in magic mode unless allowed; optionally
@@ -1739,16 +1879,16 @@ public partial class BuffManager : IDisposable
         WorldObject? kit = null;
         bool fromPack = false;
         foreach (var r in _settings.ConsumableRules)
-            if (r.Type.Equals("HealthKit", StringComparison.OrdinalIgnoreCase) && _worldObjectCache[r.Id] is WorldObject wo) { kit = wo; break; }
+            if (r.Type.Equals("HealthKit", StringComparison.OrdinalIgnoreCase) && ConsumableLookup.Resolve(_worldObjectCache, r) is WorldObject wo) { kit = wo; break; }
         if (kit == null) { kit = BestPackHealingKit(); fromPack = true; }
         if (kit == null) return VitalNo("no healing kit");
         if (KitRetryWait(out string kitWait)) return VitalNo(kitWait);
         // Too likely to fail on what's missing (KitMinSuccessPct): let the spell have it.
         uint missing = _vitals.MaxHealth > _vitals.CurrentHealth ? _vitals.MaxHealth - _vitals.CurrentHealth : 0;
-        if (!KitChanceOk(kit.Id, kit.Name ?? "", missing, _settings.PeaceModeForKits)) return VitalNo($"{kit.Name} under Kit Min Success %");
+        if (!ignoreMinSuccess && !KitChanceOk(kit.Id, kit.Name ?? "", missing, _settings.PeaceModeForKits)) return VitalNo($"{kit.Name} under Kit Min Success %");
         if (_settings.PeaceModeForKits && mode != CombatMode.NonCombat && _host.HasChangeCombatMode)
         {
-            _host.ChangeCombatMode(CombatMode.NonCombat);
+            _host.ChangeCombatModeFor(CombatMode.NonCombat, "Buff", "peace mode for the healing kit");
             _lastCastAttempt = DateTime.Now;
             _healWaitKind = "peace mode for the kit";
             return true;   // use the kit next tick, once in peace mode
@@ -1781,7 +1921,7 @@ public partial class BuffManager : IDisposable
         if (!KitChanceOk(kit.Id, kit.Name ?? "", missing, _settings.PeaceModeForKits)) return false;
         if (_settings.PeaceModeForKits && mode != CombatMode.NonCombat && _host.HasChangeCombatMode)
         {
-            _host.ChangeCombatMode(CombatMode.NonCombat);
+            _host.ChangeCombatModeFor(CombatMode.NonCombat, "Buff", "peace mode for the stamina kit");
             _lastCastAttempt = DateTime.Now;
             return true;   // use the kit next tick, once in peace mode
         }
@@ -2102,7 +2242,7 @@ public partial class BuffManager : IDisposable
             // buffed when it wasn't and never retried the known tier.
 
             if (diagnose) _host.Log($"[FR] CAST '{buffBaseName}' resolvedSpellId={spellId} (pending now set)");
-            bool castOk = _host.CastSpell((uint)_host.GetPlayerId(), spellId);
+            bool castOk = _host.CastSpellFor((uint)_host.GetPlayerId(), spellId, "Buff", spellInfo?.Name ?? buffBaseName);
             _lastCastAttempt = DateTime.Now;
             if (castOk) NoteCastIssued(spellId);
             if (castOk && buffFamily != 0 && spellInfo != null)
@@ -3012,6 +3152,12 @@ public partial class BuffManager : IDisposable
         final.AddRange(step5_LifeAndItem);
         final.AddRange(step6_WeaponAuras);
         final.AddRange(step7_ArmorBanes);
+
+        // Buffs the player unticked (Buffing settings: prots and banes) leave the list here, so
+        // the cast loop never casts them and NeedsAnyBuff never waits on them: a skipped buff
+        // can't hold the bot in Buffing.
+        if (_settings.DisabledBuffs.Count > 0)
+            final.RemoveAll(_settings.IsBuffDisabled);
         return final;
     }
 
@@ -3221,7 +3367,15 @@ public partial class BuffManager : IDisposable
             if (_pendingSpellId != 0)
             {
                 var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
-                if (pendingSpell != null)
+                bool noCompsVital = _pendingSpellId == _pendingVitalSpellId
+                    && (lower.Contains("components") || lower.Contains("missing some required"));
+                if (pendingSpell != null && noCompsVital)
+                {
+                    // A vital spell: pass over this level only; the next lower one goes next.
+                    _noComponentsUntil[_pendingSpellId] = DateTime.Now.AddSeconds(NoComponentsLevelSec);
+                    _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: using a lower level for {NoComponentsLevelSec / 60:0} min.", 2);
+                }
+                else if (pendingSpell != null)
                 {
                     if (IsItemEnchantment(pendingSpell.Name))
                     {
@@ -3379,6 +3533,50 @@ public partial class BuffManager : IDisposable
         _onCastResolved?.Invoke($"cast '{spellName}'");
     }
 
+    /// <summary>What a heal needs from the pacing now: none, a heal line, or Emergency Heal At.</summary>
+    internal HealNeed HealNeedNow()
+    {
+        if (_vitals.MaxHealth <= 0) return HealNeed.None;
+        int hp = _vitals.HealthPct;
+        int emergencyAt = _settings.EmergencyHealAt;
+        if (emergencyAt > 0 && hp <= emergencyAt) return HealNeed.Emergency;
+        return HealthUnderAnyLine(hp, _vitals.StaminaPct) ? HealNeed.Heal : HealNeed.None;
+    }
+
+    /// <summary>Times the vitals/buff step waited for the server's answer (tests, status).</summary>
+    internal int PacerHolds { get; private set; }
+
+    /// <summary>
+    /// The pacing gate of the vitals/buff step (see HeartbeatCore): false while the server is still
+    /// answering the last action (ActionPacer.MayStart, with the heal rules) or while RynthAi still
+    /// has the character running (the arbiter's stop goes out first).
+    /// </summary>
+    private bool _pacerLetHealAhead;
+
+    private bool PacerAllows(out string why)
+    {
+        why = "";
+        _pacerLetHealAhead = false;
+        if (!ActionPacer.Enabled) return true;
+        if (MoveAudit.OwnMovementActive)
+        {
+            why = "the character is still moving (the stop goes out first)";
+            PacerHolds++;
+            return false;
+        }
+        HealNeed need = HealNeedNow();
+        bool outstanding = ActionPacer.Current(_host) != null;
+        if (ActionPacer.MayStart(_host, "Buff", need, out why))
+        {
+            // A heal let ahead of an unanswered action: the busy count still counts that action,
+            // so the busy gate below must not hold the heal again.
+            _pacerLetHealAhead = outstanding && need != HealNeed.None;
+            return true;
+        }
+        PacerHolds++;
+        return false;
+    }
+
     /// <summary>Record that a cast just went out, so the next one waits for the
     /// server to report the action finished rather than a blind interval.</summary>
     private void NoteCastIssued(int spellId)
@@ -3506,6 +3704,7 @@ public partial class BuffManager : IDisposable
         var held = _cast.Open;
         string name = held?.Name ?? "?";
         double secs = _cast.HeldSeconds;
+        FlightRecorderSignal.Dump(_host, $"held cast nudge: '{name}' {secs:0.0} s");
         if (!_host.HasSetAutoRun)
         {
             _host.Log($"[CastSafe] '{name}' held open {secs:0.0} s after its incantation, but this engine has no SetAutoRun: no nudge.");
@@ -3570,6 +3769,11 @@ public partial class BuffManager : IDisposable
             name.Contains("Defender") || name.Contains("Impenetrability") ||
             name.Contains("Bane"))
             return AcSkillType.ItemEnchantment;
+
+        // Tinkering skill buffs (Armor Tinkering Expertise, Prodigal Armor Expertise) are Creature
+        // Enchantment; checked before the Life Magic "Armor" match below.
+        if (name.Contains("Tinkering") || name.Contains("Armor Expertise"))
+            return AcSkillType.CreatureEnchantment;
 
         if (name.Contains("Protection") || name.Contains("Armor") ||
             name.Contains("Regeneration") || name.Contains("Rejuvenation") ||
@@ -3755,9 +3959,9 @@ public partial class BuffManager : IDisposable
             // _lastBuffStanceAttempt), while buffing held the bot.
             int noWandShift = Math.Min(_buffStanceConsecutiveFails, 5);
             int noWandGateMs = Math.Min(1000 << noWandShift, 30000);
-            if ((DateTime.Now - _lastBuffStanceAttempt).TotalMilliseconds > noWandGateMs)
+            if ((DateTime.Now - _lastBuffStanceAttempt).TotalMilliseconds > noWandGateMs
+                && _host.ChangeCombatModeFor(CombatMode.Magic, "Buff", "no wand: Magic mode bare-handed"))
             {
-                _host.ChangeCombatMode(CombatMode.Magic);
                 NoteStanceRequest();
                 _lastBuffStanceAttempt = DateTime.Now;
                 _lastCastAttempt = DateTime.Now;
@@ -3816,6 +4020,20 @@ public partial class BuffManager : IDisposable
                 if ((now - _pendingWieldAt).TotalMilliseconds < WieldResolveTimeoutMs)
                     return false;
 
+                if (_weaponSwapGate != null && _weaponSwapGate.Claims != _pendingWieldClaim)
+                {
+                    _pendingWieldId = 0;   // another swap since ours: not a failed wield
+                    return false;
+                }
+                int stillInHand = _directWandSwapFailed ? 0 : FindWieldedNonWandWeapon(wandId);
+                if (stillInHand != 0 && IsWieldedLive(stillInHand))
+                {
+                    _directWandSwapFailed = true;
+                    _pendingWieldId = 0;
+                    _host.Log($"[WieldGate] using the wand didn't put 0x{(uint)stillInHand:X8} away in {WieldResolveTimeoutMs:0} ms; " +
+                              "from now on the weapon goes into a pack first");
+                    return false;
+                }
                 _host.Log($"[WieldGate] UseObject(0x{(uint)_pendingWieldId:X8}) not confirmed in " +
                           $"{WieldResolveTimeoutMs:0}ms — cooling down {WieldCooldownMs:0}ms");
                 _pendingWieldId = 0;
@@ -3853,7 +4071,7 @@ public partial class BuffManager : IDisposable
             // non-wand weapon into a capacity-verified open pack FIRST (AutoCram pattern,
             // AV-safe), then UseObject(wand) once the hand is free. Fully bounded.
             int bowId = FindWieldedNonWandWeapon(wandId);
-            if (bowId != 0)
+            if (bowId != 0 && (_directWandSwapFailed || !IsWieldedLive(bowId)))   // else the use swaps (see _directWandSwapFailed)
             {
                 if (_bowDequipPendingId == bowId
                     && (now - _bowDequipAt).TotalMilliseconds < WieldResolveTimeoutMs
@@ -3876,6 +4094,7 @@ public partial class BuffManager : IDisposable
                     if (_worldObjectCache?[bowId] is WorldObject blocker && IsInOffhandSlot(blocker))
                         OffhandStowed?.Invoke(bowId);   // a shield: combat puts it back after
                     _host.MoveItemInternal((uint)bowId, (uint)openPack, 0, 1); // amount>=1 (engine rejects 0)
+                    _weaponSwapGate?.NoteMove(bowId, wieldedNow: true);
                     _bowDequipPendingId = bowId;
                     _bowDequipAt = now;
                     _lastCastAttempt = now;
@@ -3885,8 +4104,9 @@ public partial class BuffManager : IDisposable
                 _bowDequipPendingId = 0; // bow confirmed unwielded — fall through to wield the wand
             }
 
-            _host.UseFor((uint)wandId, "Buff", "buffing: wield the wand");
+            _host.UseFor((uint)wandId, "Buff", bowId != 0 && !_directWandSwapFailed ? "buffing: switch to the wand" : "buffing: wield the wand");
             NoteStanceRequest();
+            _pendingWieldClaim = _weaponSwapGate?.Claims ?? 0;
             _pendingWieldId = wandId;
             _pendingWieldAt = now;
             _lastCastAttempt = now;
@@ -3939,9 +4159,9 @@ public partial class BuffManager : IDisposable
         if (shift > 5) shift = 5;
         int gateMs = 1000 << shift;        // 1s, 2s, 4s, 8s, 16s, 32s
         if (gateMs > 30000) gateMs = 30000; // cap at 30s
-        if ((DateTime.Now - _lastBuffStanceAttempt).TotalMilliseconds > gateMs)
+        if ((DateTime.Now - _lastBuffStanceAttempt).TotalMilliseconds > gateMs
+            && _host.ChangeCombatModeFor(CombatMode.Magic, "Buff", "wand wielded: Magic mode"))
         {
-            _host.ChangeCombatMode(CombatMode.Magic);
             NoteStanceRequest();
             _lastBuffStanceAttempt = DateTime.Now;
             _lastCastAttempt = DateTime.Now;

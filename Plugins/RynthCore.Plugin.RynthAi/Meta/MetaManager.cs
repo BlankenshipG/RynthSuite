@@ -37,8 +37,15 @@ internal sealed class MetaManager
     /// for a fake clock; the plugin never changes it.</summary>
     internal Func<DateTime> Clock { get; set; } = static () => DateTime.Now;
     private bool _lastMacroRunning;
-    // PSecsInStateGE's clock: restarts on a real state entry, not on macro stop/start.
+    // PSecsInStateGE's clock: seconds spent in the current state. Restarts when the meta moves to
+    // a different state or a meta is loaded; keeps running over a macro stop/start and a SetState
+    // to the same state; pauses while the state has Called another and resumes on the Return.
     private DateTime _statePStartTime = DateTime.Now;
+    // Seconds the calling state had on its P clock, one entry per _stateStack entry (null when the
+    // Return goes to a different state than the one that called).
+    private readonly Stack<double?> _statePPaused = new();
+    // Set by ReturnFromCall; applied when the tick sees the state change.
+    private double? _statePResume;
 
     // Observability (GetStateSnapshot / §3.4). Written on the plugin-tick thread
     // inside the locked rule-eval pass; read by the bridge under the same lock.
@@ -71,6 +78,17 @@ internal sealed class MetaManager
 
     // ── Call stack (CallMetaState / ReturnFromCall) ──────────────────────────
     private readonly Stack<string> _stateStack = new();
+
+    /// <summary>
+    /// Pushes the state a Return goes back to, with the calling state's P seconds when the Return
+    /// goes back to that same state (so PSecsInStateGE resumes there instead of restarting).
+    /// </summary>
+    private void PushCall(string returnState)
+    {
+        _stateStack.Push(returnState);
+        bool backHere = string.Equals(returnState, _settings.CurrentState, StringComparison.OrdinalIgnoreCase);
+        _statePPaused.Push(backHere ? (Clock() - _statePStartTime).TotalSeconds : null);
+    }
 
     // ── Watchdog ─────────────────────────────────────────────────────────────
     private bool _watchdogActive;
@@ -145,6 +163,15 @@ internal sealed class MetaManager
         _expressions?.SetCreatureStore(store);
     }
 
+    // The plugin's kill clock (secondssincelastkill[], No Kills Within Minutes). Without one
+    // (never in the plugin) the condition is false and the function says 0: fail closed.
+    private KillClock? _killClock;
+    public void SetKillClock(KillClock? clock)
+    {
+        _killClock = clock;
+        _expressions?.SetKillClock(clock);
+    }
+
     public void SetPlayerId(uint id)
     {
         _playerId = id;
@@ -201,6 +228,7 @@ internal sealed class MetaManager
         engine.SetQuestTracker(_questTracker);
         engine.SetSettings(_settings);
         engine.SetCreatureStore(_creatureStore);
+        engine.SetKillClock(_killClock);
         return engine;
     }
 
@@ -251,10 +279,11 @@ internal sealed class MetaManager
             return;
         }
 
-        // A real state entry (anything but a bare macro stop/start) restarts the
-        // persistent seconds-in-state clock too.
-        bool realStateEntry = _settings.ForceStateReset
-            || !string.Equals(_settings.CurrentState, _lastState, StringComparison.OrdinalIgnoreCase);
+        // A real state entry (anything but a bare macro stop/start) is logged. The persistent
+        // seconds-in-state clock only restarts on a move to another state or a meta load.
+        bool stateChanged = !string.Equals(_settings.CurrentState, _lastState, StringComparison.OrdinalIgnoreCase);
+        bool realStateEntry = _settings.ForceStateReset || stateChanged;
+        bool metaReloaded = _settings.MetaCallStackReset;
 
         // Macro just started — force reset so rules re-evaluate even if state
         // name matches where we stopped. Otherwise HasFired stays latched across
@@ -269,6 +298,7 @@ internal sealed class MetaManager
         {
             _settings.MetaCallStackReset = false;
             _stateStack.Clear();
+            _statePPaused.Clear();
         }
 
         // ── State change / forced reset ──────────────────────────────────────
@@ -283,7 +313,11 @@ internal sealed class MetaManager
                 _host.Log($"[Meta] state '{_lastState}' -> '{_settings.CurrentState}' after {(Clock() - _stateStartTime).TotalSeconds:0}s");
             _stateStartTime = Clock();
             _watchdogActive = false;
-            if (realStateEntry) _statePStartTime = Clock();
+            if (metaReloaded)
+                _statePStartTime = Clock();
+            else if (stateChanged)
+                _statePStartTime = _statePResume is double resumed ? Clock().AddSeconds(-resumed) : Clock();
+            _statePResume = null;
             _settings.ForceStateReset = false;
             lock (_settings.MetaRulesLock)
                 foreach (var r in _settings.MetaRules) r.HasFired = false;
@@ -321,7 +355,7 @@ internal sealed class MetaManager
                 {
                     _watchdogActive = false;
                     // VTank calls the watchdog state: a Return in it re-enters this one.
-                    _stateStack.Push(_settings.CurrentState);
+                    PushCall(_settings.CurrentState);
                     _settings.CurrentState = _watchdogState;
                     _settings.ForceStateReset = true;
                     _host.WriteToChat($"[RynthAi] WATCHDOG TRIGGERED \u2192 {_watchdogState}", 1);
@@ -473,8 +507,9 @@ internal sealed class MetaManager
             case MetaConditionType.SecondsInState_GE:
                 return double.TryParse(rule.ConditionData, out double reqSecs) && secondsInState >= reqSecs;
 
-            // VTank: "Persistent timer; does not reset if meta is stopped/started."
-            // It still restarts when the state is entered again (SetState, Call, Return).
+            // VTank: "Persistent timer; does not reset if meta is stopped/started." As RynthScript
+            // documents it, it also survives re-entry: a SetState to the same state, and a Call
+            // and Return (paused while away). See _statePStartTime.
             case MetaConditionType.SecondsInStateP_GE:
                 return double.TryParse(rule.ConditionData, out double reqPSecs)
                     && (Clock() - _statePStartTime).TotalSeconds >= reqPSecs;
@@ -728,6 +763,14 @@ internal sealed class MetaManager
             case MetaConditionType.NeedToBuff:
                 return _buffManager != null && _buffManager.NeedsAnyBuff();
 
+            // ── No kills within N minutes (RynthAi only) ──────────────────────
+            // The secondssincelastkill[] clock: our last kill (KillerNotification), or before
+            // the first one the last macro start / login. Bad or missing minutes never hold.
+            case MetaConditionType.NoKillsWithinMinutes:
+                return _killClock != null
+                    && KillClock.TryParseMinutes(rule.ConditionData, out double noKillMins)
+                    && _killClock.NoKillsFor(noKillMins);
+
             default: return false;
         }
     }
@@ -833,7 +876,7 @@ internal sealed class MetaManager
                 {
                     // VTank pushes the rule's ReturnState; empty (older RynthAi rules) = this state.
                     string ret = ProcessData(rule.CallReturnState);
-                    _stateStack.Push(string.IsNullOrEmpty(ret) ? _settings.CurrentState : ret);
+                    PushCall(string.IsNullOrEmpty(ret) ? _settings.CurrentState : ret);
                     _settings.CurrentState = callState;
                     _settings.ForceStateReset = true;
                 }
@@ -843,6 +886,7 @@ internal sealed class MetaManager
                 if (_stateStack.Count > 0)
                 {
                     _settings.CurrentState = _stateStack.Pop();
+                    _statePResume = _statePPaused.Count > 0 ? _statePPaused.Pop() : null;
                     _settings.ForceStateReset = true;
                 }
                 break;
@@ -893,7 +937,7 @@ internal sealed class MetaManager
                     }
 
                     // Fallback: a standalone .nav file in NavProfiles.
-                    string navFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"NavProfiles");
+                    string navFolder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "NavProfiles");
                     string fullPath = Path.Combine(navFolder, routeName + ".nav");
                     if (File.Exists(fullPath))
                     {
@@ -1092,7 +1136,7 @@ internal sealed class MetaManager
             parts[2].Equals("load", StringComparison.OrdinalIgnoreCase))
         {
             string name = string.Join(" ", parts, 3, parts.Length - 3);
-            string metaDir = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
+            string metaDir = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "MetaFiles");
             string afPath = Path.Combine(metaDir, name + ".af");
             string metPath = Path.Combine(metaDir, name + ".met");
 
@@ -1156,7 +1200,7 @@ internal sealed class MetaManager
             string path = name;
             if (!File.Exists(path))
             {
-                string folder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
+                string folder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "LootProfiles");
                 string stem = name.EndsWith(".utl", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
                     ? name : name + ".utl";
                 string candidate = Path.Combine(folder, stem);

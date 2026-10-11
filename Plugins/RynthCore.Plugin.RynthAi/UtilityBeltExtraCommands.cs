@@ -170,7 +170,7 @@ public sealed partial class RynthAiPlugin
     {
         string n = name.Trim().Trim('"');
         if (File.Exists(n)) return n;
-        const string folder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
+        string folder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "LootProfiles");
         foreach (string cand in new[] { n, n + ".utl", n + ".json" })
         {
             string p = Path.Combine(folder, cand);
@@ -236,7 +236,7 @@ public sealed partial class RynthAiPlugin
         int sp = args.IndexOf(' ');
         if (sp > 0 && int.TryParse(args.AsSpan(0, sp), out _)) file = args.Substring(sp + 1).Trim();
         file = file.Trim('"');
-        if (!Path.IsPathRooted(file)) file = Path.Combine(@"C:\Games\RynthSuite\RynthAi", file);
+        if (!Path.IsPathRooted(file)) file = Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, file);
         if (!File.Exists(file)) { ChatLine($"[RynthAi] Sound file not found: {file}"); return; }
         try { PlaySound(file, IntPtr.Zero, 0x00020000 /*SND_FILENAME*/ | 0x0001 /*SND_ASYNC*/); }
         catch (Exception ex) { ChatLine($"[RynthAi] playsound failed: {ex.Message}"); }
@@ -352,7 +352,7 @@ public sealed partial class RynthAiPlugin
             ChatLine("[RynthAi] Usage: /ub translateroute <startLandblock> <routeToLoad> <endLandblock> <routeToSaveAs> [force]");
             return;
         }
-        const string navFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
+        string navFolder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "NavProfiles");
         string inPath = Path.IsPathRooted(w[1]) ? w[1] : Path.Combine(navFolder, w[1]);
         string outPath = Path.IsPathRooted(w[3]) ? w[3] : Path.Combine(navFolder, w[3]);
         if (!outPath.EndsWith(".nav", StringComparison.OrdinalIgnoreCase)) outPath += ".nav";

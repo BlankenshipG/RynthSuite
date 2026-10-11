@@ -388,8 +388,9 @@ internal static partial class DungeonPathfinder
             if (prev != null)
             {
                 // Only the patrol looks into rooms; a path to somewhere (dunnav, a detour) doesn't.
-                bool revisit = i > 0 && (closed ? LooksIn(graph, rooms, lookedInto, steps[i - 1], steps[i], prev, approach) : steps[i - 1].Key == steps[i].Key);
-                CrossRoom(pts, graph, geo, rooms, rooms.RoomOf[steps[i].From], prev, prevCell, approach, steps[i].From, revisit);
+                string? why = null;
+                bool revisit = i > 0 && (closed ? LooksIn(graph, rooms, lookedInto, steps[i - 1], steps[i], prev, approach, out why) : steps[i - 1].Key == steps[i].Key);
+                CrossRoom(pts, graph, geo, rooms, rooms.RoomOf[steps[i].From], prev, prevCell, approach, steps[i].From, revisit, why);
             }
             else firstApproach = approach;
             Append(pts, approach);
@@ -402,8 +403,8 @@ internal static partial class DungeonPathfinder
 
         if (closed && firstApproach != null && prev != null)
         {
-            bool revisit = LooksIn(graph, rooms, lookedInto, steps[steps.Count - 1], steps[0], prev, firstApproach);
-            CrossRoom(pts, graph, geo, rooms, rooms.RoomOf[steps[0].From], prev, prevCell, firstApproach, steps[0].From, revisit);
+            bool revisit = LooksIn(graph, rooms, lookedInto, steps[steps.Count - 1], steps[0], prev, firstApproach, out string why);
+            CrossRoom(pts, graph, geo, rooms, rooms.RoomOf[steps[0].From], prev, prevCell, firstApproach, steps[0].From, revisit, why);
         }
         if (!closed && dest != null && prev != null && rooms.RoomOf.TryGetValue(destCell, out int rd))
             CrossRoom(pts, graph, geo, rooms, rd, prev, prevCell, dest, destCell, revisit: false);
@@ -521,13 +522,28 @@ internal static partial class DungeonPathfinder
     // Once per room per lap: a hub room with many doorways was otherwise walked to its middle
     // again every time the patrol passed between two of its doorways.
     private static bool LooksIn(Dictionary<uint, DungeonNavNode> graph, DungeonRooms rooms, HashSet<int> lookedInto,
-                                Step inStep, Step outStep, NavPoint entered, NavPoint leaving)
+                                Step inStep, Step outStep, NavPoint entered, NavPoint leaving, out string why)
     {
+        why = "cross";
         if (!rooms.RoomOf.TryGetValue(outStep.From, out int r)) return false;
-        bool big = RoomSpreadMeters(graph, rooms.Cells[r]) >= LookInMinSpreadMeters;
-        bool look = (inStep.Key == outStep.Key && (big || rooms.Cells[r].Count == 1))
-                 || (big && NavPointYd(entered, leaving) < LookInMaxSkirtMeters);
-        return look && lookedInto.Add(r);
+        double spread = RoomSpreadMeters(graph, rooms.Cells[r]);
+        bool big = spread >= LookInMinSpreadMeters;
+        bool sameDoor = inStep.Key == outStep.Key;
+        double skirt = NavPointYd(entered, leaving);
+        bool look = (sameDoor && (big || rooms.Cells[r].Count == 1))
+                 || (big && skirt < LookInMaxSkirtMeters);
+        bool first = look && lookedInto.Add(r);
+        if (PointLog != null)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            string what = sameDoor && (big || rooms.Cells[r].Count == 1)
+                ? (big ? "same-doorway,big" : "same-doorway,1-cell")
+                : "big,skirt" + skirt.ToString("F1", inv) + "m";
+            why = !look ? (sameDoor ? "cross(same-doorway,small)" : "cross(" + (big ? "big," : "small,") + "other-doorway)")
+                : first ? "look-in(" + what + ",spread" + spread.ToString("F0", inv) + "m)"
+                : "cross(already-looked-in)";
+        }
+        return first;
     }
 
     // The diagonal of the box round a room's cell origins: 0 for the pieces of one junction
@@ -602,7 +618,7 @@ internal static partial class DungeonPathfinder
             int prevStep = -1;
             foreach (var (d, _, k) in doors)
             {
-                var m = Tag(WorldPoint(d.X, d.Y, d.Z, !d.IsWide), "run-opening");
+                var m = Note(Tag(WorldPoint(d.X, d.Y, d.Z, !d.IsWide), "run-opening"), steps[k].From, steps[k].From, steps[k].To, "doorway-run");
                 if (prevM != null && k == prevStep + 1
                     && rooms.RoomOf.TryGetValue(steps[prevStep].To, out int ra) && rooms.RoomOf.TryGetValue(steps[k].From, out int rb) && ra == rb)
                     PullThrough(middle, graph, geo, rooms, rooms.Cells[ra], prevM, steps[prevStep].To, m, steps[k].From);
@@ -630,8 +646,8 @@ internal static partial class DungeonPathfinder
         {
             var (nx, ny) = d.NormalFrom(a);
             narrow = !d.IsWide;
-            approach = Tag(DoorwayPoint(geo, rooms, a, d, -nx, -ny, narrow), "approach");
-            exit     = Tag(DoorwayPoint(geo, rooms, b, d, nx, ny, narrow), "exit");
+            approach = Note(Tag(DoorwayPoint(geo, rooms, a, d, -nx, -ny, narrow), "approach"), a, a, b, "doorway");
+            exit     = Note(Tag(DoorwayPoint(geo, rooms, b, d, nx, ny, narrow), "exit"), b, a, b, "doorway");
             return true;
         }
 
@@ -639,6 +655,7 @@ internal static partial class DungeonPathfinder
         double dNS = nb.NS - na.NS, dEW = nb.EW - na.EW, dZ = nb.Z - na.Z;
         approach = Tag(new NavPoint { Type = NavPointType.Point, NS = na.NS + dNS * 0.3, EW = na.EW + dEW * 0.3, Z = (na.Z + dZ * 0.3) / 240.0 }, "cell-fallback");
         exit     = Tag(new NavPoint { Type = NavPointType.Point, NS = na.NS + dNS * 0.5, EW = na.EW + dEW * 0.5, Z = (na.Z + dZ * 0.5) / 240.0 }, "cell-fallback");
+        Note(approach, a, a, b, "doorway(no-opening)"); Note(exit, 0, a, b, "doorway(no-opening)");
         PushOffWalls(geo, approach, RoomCells(rooms, a), CornerPushMax);
         PushOffWalls(geo, exit, null, CornerPushMax);   // on the line between the two rooms
         return false;
@@ -704,7 +721,7 @@ internal static partial class DungeonPathfinder
     /// </summary>
     private static void CrossRoom(List<NavPoint> pts, Dictionary<uint, DungeonNavNode> graph, DungeonGeometry geo,
                                   DungeonRooms rooms, int room, NavPoint from, uint fromCell, NavPoint to, uint toCell,
-                                  bool revisit)
+                                  bool revisit, string? why = null)
     {
         var cells = rooms.Cells[room];
         Trace?.Invoke($"cross room {room} ({cells.Count}) revisit={revisit} from={fromCell:X8} to={toCell:X8}");
@@ -713,13 +730,18 @@ internal static partial class DungeonPathfinder
             var mid = RoomMiddle(graph, geo, cells, out uint midCell);
             if (mid != null)
             {
+                int before = pts.Count;
+                Note(mid, midCell);
                 PullThrough(pts, graph, geo, rooms, cells, from, fromCell, mid, midCell);
                 Append(pts, mid);
                 PullThrough(pts, graph, geo, rooms, cells, mid, midCell, to, toCell);
+                NoteCrossing(pts, before, room, why ?? "look-in");
                 return;
             }
         }
+        int start = pts.Count;
         PullThrough(pts, graph, geo, rooms, cells, from, fromCell, to, toCell);
+        NoteCrossing(pts, start, room, why ?? "cross");
     }
 
     internal static Action<string>? Trace;
@@ -740,11 +762,11 @@ internal static partial class DungeonPathfinder
         {
             uint a = cellPath[i], b = cellPath[i + 1];
             NavPoint corner;
-            if (geo.TryGetDoorway(a, b, out var d)) corner = Tag(WorldPoint(d.X, d.Y, d.Z, false), "pull-opening");
+            if (geo.TryGetDoorway(a, b, out var d)) corner = Note(Tag(WorldPoint(d.X, d.Y, d.Z, false), "pull-opening"), a, a, b);
             else
             {
                 var na = graph[a]; var nb = graph[b];
-                corner = Tag(new NavPoint { Type = NavPointType.Point, NS = (na.NS + nb.NS) * 0.5, EW = (na.EW + nb.EW) * 0.5, Z = (na.Z + nb.Z) * 0.5 / 240.0 }, "pull-midpoint");
+                corner = Note(Tag(new NavPoint { Type = NavPointType.Point, NS = (na.NS + nb.NS) * 0.5, EW = (na.EW + nb.EW) * 0.5, Z = (na.Z + nb.Z) * 0.5 / 240.0 }, "pull-midpoint"), a, a, b);
             }
             PushOffWalls(geo, corner, cells, CornerPushMax);
             corners.Add(corner);
@@ -861,10 +883,130 @@ internal static partial class DungeonPathfinder
     /// cell-fallback.</summary>
     internal static Dictionary<NavPoint, string>? KindLog;
 
+    /// <summary>Why one patrol point is where it is (diagnostics only; filled while
+    /// <see cref="PointLog"/> is set, never read by the route itself).</summary>
+    internal sealed class PatrolPointInfo
+    {
+        public string Kind = "";        // the rule that laid it (as KindLog)
+        public uint   Cell;             // the cell the rule put it in (0 = not known)
+        public uint   OpenFrom, OpenTo; // the opening it belongs to (doorway-type points)
+        public int    Room = -1;        // the room being crossed, for points laid while crossing one
+        public string Why = "";         // doorway / cross / look-in reason
+    }
+
+    /// <summary>Set (per thread) around a route build to record a <see cref="PatrolPointInfo"/>
+    /// for every point laid: BuildDunPatrol's waypoint log, PatrolProof "waypoints".</summary>
+    [ThreadStatic] internal static Dictionary<NavPoint, PatrolPointInfo>? PointLog;
+
+    /// <summary>GetMainRouteNodes' sizes for the last build while <see cref="PointLog"/> was set.</summary>
+    [ThreadStatic] internal static string? MainRouteNote;
+
     private static NavPoint Tag(NavPoint p, string kind)
     {
         if (KindLog != null) KindLog[p] = kind;
+        if (PointLog != null) Info(p).Kind = kind;
         return p;
+    }
+
+    private static PatrolPointInfo Info(NavPoint p)
+    {
+        if (!PointLog!.TryGetValue(p, out var info)) PointLog[p] = info = new PatrolPointInfo();
+        return info;
+    }
+
+    // Records the cell (and opening) a point was laid for, when the point log is on.
+    private static NavPoint Note(NavPoint p, uint cell, uint openFrom = 0, uint openTo = 0, string? why = null)
+    {
+        if (PointLog == null) return p;
+        var info = Info(p);
+        info.Cell = cell;
+        if (openFrom != 0) { info.OpenFrom = openFrom; info.OpenTo = openTo; }
+        if (why != null) info.Why = why;
+        return p;
+    }
+
+    // Points added to pts from index `from` on were laid crossing `room` for `why`.
+    private static void NoteCrossing(List<NavPoint> pts, int from, int room, string why)
+    {
+        if (PointLog == null) return;
+        for (int k = Math.Max(0, from); k < pts.Count; k++)
+        {
+            var info = Info(pts[k]);
+            if (info.Room < 0) { info.Room = room; info.Why = why; }
+        }
+    }
+
+    /// <summary>The cell whose floor is under a point, else the nearest cell centre.</summary>
+    internal static uint CellAt(Dictionary<uint, DungeonNavNode> graph, DungeonGeometry? geo, NavPoint p)
+    {
+        if (geo != null)
+        {
+            double x = DungeonGeometry.NavToWorld(p.EW), y = DungeonGeometry.NavToWorld(p.NS), z = p.Z * 240.0;
+            uint best = 0; double bestD = double.MaxValue;
+            foreach (var n in graph.Values)
+            {
+                if (!geo.OnCellFloor(n.CellId, x, y, z)) continue;
+                double d = Math.Abs(n.Z - z);
+                if (d < bestD) { bestD = d; best = n.CellId; }
+            }
+            if (best != 0) return best;
+        }
+        return NearestCell(graph, p.NS, p.EW, (float)(p.Z * 240.0));
+    }
+
+    /// <summary>
+    /// One line per patrol waypoint (index, world x/y/z, cell, room and its size, the rule that
+    /// laid it, the opening for doorway points, why) and a summary line, from the point log of
+    /// the build. Rooms are BuildRooms(graph, geo, hazards), as the builder used them.
+    /// Lines carry no prefix; the plugin adds "[RynthAi] DunNav-Patrol ".
+    /// </summary>
+    internal static List<string> DescribePatrol(NavRouteParser route, Dictionary<uint, DungeonNavNode> graph,
+                                                DungeonGeometry? geo, IReadOnlySet<uint>? hazards,
+                                                Dictionary<NavPoint, PatrolPointInfo>? log, int tinyMaxCells = 5)
+    {
+        var lines = new List<string>();
+        var rooms = geo != null ? BuildRooms(graph, geo, hazards) : null;
+        int tiny = 0, tinyEntered = 0, tinyLooked = 0;
+        var tinyRooms = new SortedDictionary<int, (int Cells, int Entered, int Looked)>();
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        for (int i = 0; i < route.Points.Count; i++)
+        {
+            var p = route.Points[i];
+            PatrolPointInfo? info = null;
+            log?.TryGetValue(p, out info);
+            uint cell = info != null && info.Cell != 0 ? info.Cell : CellAt(graph, geo, p);
+            int room = rooms != null && rooms.RoomOf.TryGetValue(cell, out int rr) ? rr : -1;
+            int size = room >= 0 ? rooms!.Cells[room].Count : 0;
+            string kind = info?.Kind is { Length: > 0 } k ? k : "unlogged";
+            string why = info?.Why ?? "";
+            string open = "";
+            if (info != null && info.OpenFrom != 0)
+            {
+                string w = geo != null && geo.TryGetDoorway(info.OpenFrom, info.OpenTo, out var d)
+                    ? (d.IsWide ? " wide " : " narrow ") + d.Width.ToString("F1", inv) + "m" : "";
+                open = $" open {info.OpenFrom:X8}>{info.OpenTo:X8}{w}";
+            }
+            string crossed = info != null && info.Room >= 0 && info.Room != room && rooms != null
+                ? $" crossing room {info.Room} ({rooms.Cells[info.Room].Count})" : "";
+            bool haz = hazards != null && hazards.Contains(cell);
+            lines.Add(string.Format(inv, "wp {0} ({1:F1},{2:F1},{3:F1}) cell {4:X8} room {5} ({6} cells){7} {8}{9}{10}{11}{12}",
+                i, DungeonGeometry.NavToWorld(p.EW), DungeonGeometry.NavToWorld(p.NS), p.Z * 240.0,
+                cell, room, size, haz ? " HAZARD" : "", kind, p.Doorway ? " [door]" : "", open, crossed,
+                why.Length > 0 ? " why=" + why : ""));
+            if (room >= 0 && size <= tinyMaxCells)
+            {
+                tiny++;
+                bool looked = why.StartsWith("look-in", StringComparison.Ordinal) && info!.Room == room;
+                if (looked) tinyLooked++; else tinyEntered++;
+                tinyRooms.TryGetValue(room, out var t);
+                tinyRooms[room] = (size, t.Entered + (looked ? 0 : 1), t.Looked + (looked ? 1 : 0));
+            }
+        }
+        string roomList = string.Join(" ", tinyRooms.Select(kv => $"{kv.Key}({kv.Value.Cells}c:{kv.Value.Entered}e/{kv.Value.Looked}l)"));
+        if (MainRouteNote != null) lines.Add("wp " + MainRouteNote);
+        lines.Add($"wp summary: {route.Points.Count} points, {rooms?.Cells.Count ?? 0} rooms, {hazards?.Count ?? 0} hazard cells; " +
+                  $"in rooms of <= {tinyMaxCells} cells: {tiny} (entered {tinyEntered}, looked into {tinyLooked}) in {tinyRooms.Count} rooms: {roomList}");
+        return lines;
     }
 
     private static NavPoint WorldPoint(double wx, double wy, double wz, bool doorway) => new()

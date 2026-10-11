@@ -87,7 +87,9 @@ internal static class AttackLatencyTests
         Check.Eq(CombatManager.AttackIntervalMs(Missile, 1500, true, true), 1000.0, "missile: 1000 ms");
         Check.Eq(CombatManager.AttackIntervalMs(Magic, 1500, true, false), 1500.0, "magic, same target: the setting");
         Check.Eq(CombatManager.AttackIntervalMs(Magic, 2500, true, false), 2500.0, "magic, same target: a slower setting is kept");
-        Check.Eq(CombatManager.AttackIntervalMs(Magic, 0, true, false), 1500.0, "magic, setting 0 (old file): 1500");
+        Check.Eq(CombatManager.AttackIntervalMs(Magic, 0, true, false), 0.0, "magic, setting 0: no delay of its own (the server gates hold the cast)");
+        Check.Eq(CombatManager.AttackIntervalMs(Magic, 0, false, false), CombatManager.NoGatesAttackFloorMs, "setting 0 without the server gates: the 250 ms floor");
+        Check.Eq(CombatManager.AttackIntervalMs(Magic, -1, true, false), 1500.0, "unset: 1500");
         Check.Eq(CombatManager.AttackIntervalMs(Magic, 1500, true, true), CombatManager.NewTargetCastFloorMs,
             "magic, new target, server gates: the short floor (UseDone + gesture hold the cast)");
         Check.Eq(CombatManager.AttackIntervalMs(Magic, 1500, false, true), 1500.0,

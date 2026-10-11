@@ -22,9 +22,14 @@ internal static class VitalsTests
     {
         r.Add("vitals: Stamina to Health follows its own health line and stamina floor", StaminaToHealthThresholds);
         r.Add("vitals: profiles without the Stamina to Health keys load today's 30 / 20", StaminaToHealthDefaults);
+        r.Add("vitals: Re-stam To keeps a started recharge going to its line; off = one recharge as before", RestamTo);
+        r.Add("vitals: out of Magic stance a listed stamina potion goes before Revitalize; a caster casts first", StaminaPotionFirst);
+        r.Add("vitals: a listed potion whose stack ran out is drunk from the next stack of that name", ListedPotionNextStack);
         r.Add("vitals: after a kit, nothing else heals until the kit's result line lands", KitResultWait);
+        r.Add("vitals: Heal Self known only above the tier Life Magic allows (vitae) is still cast", HealAboveAllowedTier);
         r.Add("vitals: low health wins the arbiter even on a busy tick; backs off when nothing can heal", HealthWinsArbiter);
         r.Add("vitals: 'You're too busy!' paces vital casts, and a long streak stops the character once", TooBusyVitals);
+        r.Add("vitals: no components for the top level - the next lower level is cast, not the same one again", NoComponentsFallsBack);
         // Drakkon's death, 2026-10-05 13:43:20 (ops\overnight\2026-10-05-death-fixes.md).
         r.Add("vitals: a hot reload's login refresh trusts its first read; a real login waits for two equal reads", HotReloadRefresh);
         r.Add("vitals: RynthAi tells the engine a reload is unsafe while engaged, under a heal line or casting", ReloadBlockerReport);
@@ -64,6 +69,42 @@ internal static class VitalsTests
         Check.Eq(FakeHost.Stops, 1, "4 refusals in a row: one StopCompletely to clear the stuck gesture");
         for (int i = 0; i < 4; i++) b.OnChatWindowText("You're too busy!", 26);
         Check.Eq(FakeHost.Stops, 1, "only once per streak");
+    }
+
+    // 2026-10-08: with no components for the highest Stamina to Mana / Revitalize / Heal the
+    // character knew, RynthAi kept retrying that one level; it parked the whole family, then
+    // tried the same level again. Now that level is passed over and the next lower one is cast.
+    private static void NoComponentsFallsBack()
+    {
+        FakeHost.Reset();
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        foreach (var row in SpellTable.Rows) FakeHost.Spellbook.Add((uint)row.Id);
+        FakeHost.Skills[(Player, STypeLife)] = (400, 2);
+        var host = FakeHost.Create();
+        var s = new LegacyUiSettings { IsMacroRunning = true, HealAt = 0, TopOffHP = 0, EmergencyHealAt = 0, StaminaToHealthAt = 0,
+                                       GetManaAt = 50, TopOffMana = 50, RestamAt = 0, TopOffStam = 0, UsePotions = false };
+        var skills = new CharacterSkills(host);
+        skills.SetPlayerId(Player);
+        var sm = new SpellManager(host, s);
+        sm.InitializeNatively();
+        sm.SetCharacterSkills(skills);
+        var vitals = new PlayerVitalsCache { MaxHealth = 100, CurrentHealth = 100, MaxStamina = 100, CurrentStamina = 100, MaxMana = 100, CurrentMana = 10 };
+        var b = new BuffManager(host, s, sm, vitals);
+        b.SetCharacterSkills(skills);
+
+        Check.True(b.CheckVitals(), "10% mana: Stamina to Mana is cast");
+        int top = FakeHost.Casts[^1].SpellId;
+        b.OnChatWindowText("You don't have all the components for this spell.", 0);
+        for (int i = 0; i < 50 && FakeHost.Casts.Count < 2; i++)
+        {
+            b.CheckVitals();
+            System.Threading.Thread.Sleep(20);
+        }
+        Check.Eq(FakeHost.Casts.Count, 2, "a second cast goes out");
+        int next = FakeHost.Casts[^1].SpellId;
+        Check.True(next != top, $"a different level ({SpellTableStub.GetById(top)?.Name} -> {SpellTableStub.GetById(next)?.Name})");
+        Check.True(SpellTableStub.GetById(next)?.Family == SpellTableStub.GetById(top)?.Family, "the same spell, one level down");
     }
 
     // 2026-10-04, "nav and looting have priority over healing, almost dying in packs": the
@@ -147,6 +188,29 @@ internal static class VitalsTests
         Check.False(BuffManager.IsKitResultLine("bob heals you for 40 health points."), "someone else's kit doesn't");
     }
 
+    private static void HealAboveAllowedTier()
+    {
+        FakeHost.Reset();
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        int heal6 = SpellTable.Rows.First(r => r.Name == "Heal Self VI").Id;
+        FakeHost.Spellbook.Add((uint)heal6);              // the only Heal Self known
+        FakeHost.Skills[(Player, STypeLife)] = (120, 2);  // vitae: Life Magic under the tier 6 line
+        var host = FakeHost.Create();
+        var s = new LegacyUiSettings { HealAt = 60, TopOffHP = 60, RestamAt = 0, TopOffStam = 0, GetManaAt = 0, TopOffMana = 0, UsePotions = false };
+        var skills = new CharacterSkills(host);
+        skills.SetPlayerId(Player);
+        var sm = new SpellManager(host, s);
+        sm.InitializeNatively();
+        sm.SetCharacterSkills(skills);
+        Check.True(sm.GetHighestBuffSpellTier(AcSkillType.LifeMagic) < 6, "the rig: Life Magic 120 allows less than tier 6");
+        var vitals = new PlayerVitalsCache { MaxHealth = 100, CurrentHealth = 30, MaxStamina = 100, CurrentStamina = 100, MaxMana = 100, CurrentMana = 100 };
+        var b = new BuffManager(host, s, sm, vitals);
+        b.SetCharacterSkills(skills);
+        Check.True(b.CheckVitals(), "health 30% under Heal At 60%: the vitals step acts");
+        Check.True(FakeHost.Casts.Any(c => c.SpellId == heal6), "Heal Self VI is cast: " + string.Join(",", FakeHost.Casts.Select(c => c.SpellId)));
+    }
+
     /// <summary>One CheckVitals on a fresh BuffManager; true when it cast a Stamina to Health spell.</summary>
     private static bool CastsStamToHealth(int healthPct, int staminaPct, System.Action<LegacyUiSettings>? tweak = null)
     {
@@ -184,6 +248,105 @@ internal static class VitalsTests
         bool cast = FakeHost.Casts.Any(c => c.SpellId == stamToHealth);
         Check.Eq(handled, cast, $"hp {healthPct} stam {staminaPct}: CheckVitals reports handled exactly when it cast");
         return cast;
+    }
+
+    // Tom, 2026-10-06: a melee character should drink its listed stamina potions before Revitalize
+    // (which means switching the weapon for the wand and back).
+    private static void StaminaPotionFirst()
+    {
+        const uint Tincture = 0x80001234;
+        foreach (int mode in new[] { CombatMode.Melee, CombatMode.Magic })
+        {
+            FakeHost.Reset();
+            FakeHost.WeaponCalls = true;
+            FakeHost.CombatModeValue = mode;
+            foreach (var row in SpellTable.Rows) FakeHost.Spellbook.Add((uint)row.Id);
+            FakeHost.Skills[(Player, STypeLife)] = (400, 2);
+            FakeHost.Names[Tincture] = "Stamina Tincture";
+            var host = FakeHost.Create();
+            var s = new LegacyUiSettings { IsMacroRunning = true, HealAt = 0, TopOffHP = 0, EmergencyHealAt = 0, StaminaToHealthAt = 0,
+                                           GetManaAt = 0, TopOffMana = 0, RestamAt = 30, TopOffStam = 95, UsePotions = true, EnableBuffing = false };
+            s.ConsumableRules.Add(new ConsumableRule { Id = unchecked((int)Tincture), Name = "Stamina Tincture", Type = "Stamina" });
+            var skills = new CharacterSkills(host);
+            skills.SetPlayerId(Player);
+            var sm = new SpellManager(host, s);
+            sm.InitializeNatively();
+            sm.SetCharacterSkills(skills);
+            var vitals = new PlayerVitalsCache { MaxHealth = 100, CurrentHealth = 100, MaxStamina = 100, CurrentStamina = 20, MaxMana = 100, CurrentMana = 100 };
+            var b = new BuffManager(host, s, sm, vitals);
+            b.SetCharacterSkills(skills);
+            b.SetWorldObjectCache(FakeHost.MakeCache(host, Player, new[] { Tincture }));
+            Check.True(b.CheckVitals(), $"mode {mode}: stamina 20% acts");
+            bool drank = FakeHost.Uses.Contains(Tincture);
+            if (mode == CombatMode.Melee)
+            {
+                Check.True(drank, "melee: the tincture is drunk");
+                Check.Eq(FakeHost.Casts.Count, 0, "melee: no Revitalize (no wand switch)");
+            }
+            else
+            {
+                Check.False(drank, "caster in Magic stance: no potion first");
+                Check.True(FakeHost.Casts.Count > 0, "caster: Revitalize is cast");
+            }
+        }
+    }
+
+    // Report 2026-10-10: 200+ Stamina Tinctures, and RynthAi stopped drinking them whenever the stack
+    // the rule was added from ran out, until the player added the next stack by hand.
+    private static void ListedPotionNextStack()
+    {
+        const uint Listed = 0x80001234, NextStack = 0x80005678;
+        FakeHost.Reset();
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        foreach (var row in SpellTable.Rows) FakeHost.Spellbook.Add((uint)row.Id);
+        FakeHost.Skills[(Player, STypeLife)] = (400, 2);
+        FakeHost.Names[NextStack] = "Stamina Tincture";   // the listed stack (Listed) is gone
+        var host = FakeHost.Create();
+        var s = new LegacyUiSettings { IsMacroRunning = true, HealAt = 0, TopOffHP = 0, EmergencyHealAt = 0, StaminaToHealthAt = 0,
+                                       GetManaAt = 0, TopOffMana = 0, RestamAt = 30, TopOffStam = 95, UsePotions = true, EnableBuffing = false };
+        s.ConsumableRules.Add(new ConsumableRule { Id = unchecked((int)Listed), Name = "Stamina Tincture", Type = "Stamina" });
+        var skills = new CharacterSkills(host);
+        skills.SetPlayerId(Player);
+        var sm = new SpellManager(host, s);
+        sm.InitializeNatively();
+        sm.SetCharacterSkills(skills);
+        var vitals = new PlayerVitalsCache { MaxHealth = 100, CurrentHealth = 100, MaxStamina = 100, CurrentStamina = 20, MaxMana = 100, CurrentMana = 100 };
+        var b = new BuffManager(host, s, sm, vitals);
+        b.SetCharacterSkills(skills);
+        b.SetWorldObjectCache(FakeHost.MakeCache(host, Player, new[] { NextStack }));
+        Check.True(b.CheckVitals(), "stamina 20% acts");
+        Check.True(FakeHost.Uses.Contains(NextStack), "the next stack of Stamina Tinctures is drunk");
+        Check.False(FakeHost.Uses.Contains(Listed), "not the stack that ran out");
+        Check.Eq(FakeHost.Casts.Count, 0, "no Revitalize while a tincture is carried");
+    }
+
+    // Tom, 2026-10-06: one Revitalize often doesn't recover enough stamina.
+    private static void RestamTo()
+    {
+        var s = new LegacyUiSettings { RestamAt = 30, RestamTo = 0, TopOffStam = 95 };
+        bool run = false; int casts = 0;
+        Check.Eq(BuffManager.StaminaLine(true, 25, s, ref run, ref casts), 30, "off: Re-stam At");
+        Check.Eq(BuffManager.StaminaLine(true, 40, s, ref run, ref casts), 30, "off: at 40% no recharge");
+
+        s.RestamTo = 70;
+        Check.Eq(BuffManager.StaminaLine(true, 40, s, ref run, ref casts), 30, "above Re-stam At with no recharge started: nothing new");
+        Check.Eq(BuffManager.StaminaLine(true, 25, s, ref run, ref casts), 70, "under Re-stam At: recharge to 70");
+        casts++;
+        Check.Eq(BuffManager.StaminaLine(true, 45, s, ref run, ref casts), 70, "one cast got it to 45%: still recharging (the second cast)");
+        casts++;
+        Check.Eq(BuffManager.StaminaLine(true, 72, s, ref run, ref casts), 30, "reached 70: done");
+        Check.False(run, "the recharge ended");
+
+        // A recharge that never gains stops after the cap.
+        Check.Eq(BuffManager.StaminaLine(true, 20, s, ref run, ref casts), 70, "new recharge");
+        casts = BuffManager.RestamRunMaxCasts;
+        Check.Eq(BuffManager.StaminaLine(true, 35, s, ref run, ref casts), 30, "cap reached above Re-stam At: back to Re-stam At");
+
+        // Out of combat the top-off line applies, as before.
+        Check.Eq(BuffManager.StaminaLine(false, 50, s, ref run, ref casts), 95, "idle: Top Stam");
+        s.RestamTo = 20;
+        Check.Eq(BuffManager.StaminaLine(true, 25, s, ref run, ref casts), 30, "Re-stam To not above Re-stam At: ignored");
     }
 
     private static void StaminaToHealthThresholds()

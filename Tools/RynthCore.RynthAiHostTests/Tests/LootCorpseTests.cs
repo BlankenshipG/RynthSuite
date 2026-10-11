@@ -50,6 +50,8 @@ internal static class LootCorpseTests
         r.Add("corpse close: an engine without CloseContainer leaves it to the next open (no close)", FinishedCorpseNotClosedOnOldEngine);
         r.Add("corpse close: an abandoned open corpse is closed once", AbandonedCorpseClosed);
         r.Add("corpse close: stopping the macro mid-loot closes the open corpse, not marked completed", MacroStopClosesCorpse);
+        r.Add("loot pacing: a pickup waits for the last bend-down, and no retry is timed while it plays", PickupWaitsForAnimation);
+        r.Add("corpse close: not while the last item is between the corpse and the pack - it closes once the item is in the inventory", CloseWaitsForInventory);
     }
 
     // ── World set-up ──────────────────────────────────────────────────────────
@@ -439,5 +441,79 @@ internal static class LootCorpseTests
         // No open corpse: nothing to close.
         bot.Call("CloseOpenCorpseOnMacroStop");
         Check.Eq(FakeHost.Closes.Count, 1, "a stop with no corpse open closes nothing");
+    }
+
+    // 2026-10-07, Drakkon: picking up an item plays a bend-down, and the engine holds queued
+    // moves until it ends (about 2.2 s). RynthAi retried every 0.5 s from the send and gave up
+    // after 3 tries, so items were skipped while their first move had not even gone out.
+    private static void PickupWaitsForAnimation()
+    {
+        BaseWorld(corpsePositioned: true);
+        FakeHost.ServerGates = true; // GetCastBusyState
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        bot.Tick(BotActivity.Looting);
+        Check.True(FakeHost.Uses.Contains(Corpse), "the corpse is opened");
+
+        // The last pickup is still animating when the corpse's contents arrive.
+        FakeHost.CastBusy = 1;
+        bot.Cache.OnCreateObject(Gem);
+        bot.Cache.Tick();
+        bot.P.OnViewObjectContents(Corpse);
+        TickFor(bot, 500);
+        Check.False(FakeHost.ExternalMoves.Any(m => m.Id == Gem), "no pickup sent while the character animates");
+
+        FakeHost.CastBusy = 0;
+        for (int i = 0; i < 100 && !FakeHost.ExternalMoves.Any(m => m.Id == Gem); i++)
+        {
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "the pickup goes out once the character is still");
+
+        // Its own bend-down plays for longer than 3 retry windows: no retry, no give-up.
+        FakeHost.CastBusy = 1;
+        TickFor(bot, 1800);
+        Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "no retry while the pickup animates");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("pickup failed")), "the item is not given up on");
+
+        // Still again and the item still on the corpse: the retry window starts now.
+        FakeHost.CastBusy = 0;
+        TickFor(bot, 250);
+        Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "the retry window counts from when the character is still");
+        TickFor(bot, 500);
+        Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 2, "then one retry");
+    }
+
+    // 2026-10-07: the client takes an item off the corpse list as soon as the move is sent; the
+    // corpse was closed then, and the character picked the item up after the corpse closed.
+    private static void CloseWaitsForInventory()
+    {
+        var bot = OpenCorpseAndSendPickup(closeSupported: true);
+        FakeHost.Containers[Gem] = 0x7FFFFFF0;   // off the corpse, not in a pack yet
+        TickFor(bot, 1500);
+        Check.Eq(FakeHost.Closes.Count, 0, "not closed while the item is on its way");
+        Check.False(Completed(bot), "not completed either");
+
+        FakeHost.Containers[Gem] = Player;       // in the main pack
+        for (int i = 0; i < 200 && FakeHost.Closes.Count == 0; i++)
+        {
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        Check.Eq(FakeHost.Closes.Count, 1, "closed once the item is in the inventory");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("pickup confirmed")), "and the pickup confirmed");
+    }
+
+    private static void TickFor(Bot bot, int ms)
+    {
+        long end = Environment.TickCount64 + ms;
+        while (Environment.TickCount64 < end)
+        {
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
     }
 }

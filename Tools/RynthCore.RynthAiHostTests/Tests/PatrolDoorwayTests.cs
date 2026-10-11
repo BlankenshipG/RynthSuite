@@ -26,6 +26,33 @@ namespace RynthCore.RynthAiHostTests.Tests;
 //     inside corner gets a corner.
 internal static class PatrolDoorwayTests
 {
+    // 2026-10-10, 0x6146: hazards cut the loops and the patrol fell back to every dead end. Now,
+    // in that case, only short spurs (closets) go: a junction J with a 1-cell closet, a 3-cell
+    // spur and a 5-cell branch hanging off a loop.
+    private static void TrimShortSpurs()
+    {
+        var g = new Dictionary<uint, DungeonNavNode>();
+        void Link(uint a, uint b)
+        {
+            foreach (uint c in new[] { a, b })
+                if (!g.ContainsKey(c)) g[c] = new DungeonNavNode { CellId = c, NS = (c & 0xFF) * 0.01, EW = (c >> 8 & 0xFF) * 0.01 };
+            g[a].Neighbors.Add(b); g[b].Neighbors.Add(a);
+        }
+        // Loop 1-2-3-4, J = 1.
+        Link(0x01, 0x02); Link(0x02, 0x03); Link(0x03, 0x04); Link(0x04, 0x01);
+        Link(0x01, 0x10);                                                // closet
+        Link(0x01, 0x20); Link(0x20, 0x21); Link(0x21, 0x22);            // 3-cell spur
+        Link(0x02, 0x30); Link(0x30, 0x31); Link(0x31, 0x32); Link(0x32, 0x33); Link(0x33, 0x34); // 5-cell branch
+        var all = new HashSet<uint>(g.Keys);
+        var kept = DungeonPathfinder.TrimShortSpurs(g, all, 0x03, DungeonPathfinder.PatrolMaxSpurCells);
+        Check.False(kept.Contains(0x10), "the 1-cell closet goes");
+        Check.False(kept.Overlaps(new uint[] { 0x20, 0x21, 0x22 }), "the 3-cell spur goes");
+        Check.True(kept.IsSupersetOf(new uint[] { 0x30, 0x31, 0x32, 0x33, 0x34 }), "the 5-cell branch stays whole");
+        Check.True(kept.IsSupersetOf(new uint[] { 1, 2, 3, 4 }), "the loop stays");
+        var keepStart = DungeonPathfinder.TrimShortSpurs(g, all, 0x10, DungeonPathfinder.PatrolMaxSpurCells);
+        Check.True(keepStart.Contains(0x10), "the start cell is never trimmed");
+    }
+
     public static void Register(Runner r)
     {
         r.Add("dungeon doorways: an opening's centre, facing and width come from its portal polygons", DoorwayFromPortals);
@@ -38,6 +65,7 @@ internal static class PatrolDoorwayTests
         r.Add("dungeon patrol: a loop through a big room: no points inside it, every doorway taken", PatrolLoop);
         r.Add("dungeon patrol: a big dead-end room is looked into, not skirted", PatrolLooksIntoDeadEndRoom);
         r.Add("dungeon floors: a ceiling (facing down) is not a floor", CeilingIsNotFloor);
+        r.Add("dungeon patrol: spurs of up to 3 cells trimmed, a long branch kept whole", TrimShortSpurs);
         r.Add("dungeon clearance: walls, floor edges and slopes too steep to stand on bound it; a face high above doesn't", ClearanceMeasure);
         r.Add("dungeon clearance: a point next to a wall (or past the floor's edge) is pushed out to 1 m", PushedOffWall);
         r.Add("dungeon clearance: a point in a corridor narrower than 2 m ends on its middle line", NarrowCorridorCentred);

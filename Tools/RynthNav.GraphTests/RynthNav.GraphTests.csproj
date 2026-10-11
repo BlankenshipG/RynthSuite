@@ -22,6 +22,13 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PortalAvoid.cs" Link="Linked\PortalAvoid.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\AvoidFilter.cs" Link="Linked\AvoidFilter.cs" />
     <Compile Include="..\RynthNav.Baker\GraphBuild.cs" Link="Linked\GraphBuild.cs" />
+    <!-- A planned trip's walk from the tile files (TilePathFinder) and what it needs. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TilePathFinder.cs" Link="Linked\TilePathFinder.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripPlan.cs" Link="Linked\TripPlan.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripPath.cs" Link="Linked\TripPath.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavCoords.cs" Link="Linked\NavCoords.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TownNet.cs" Link="Linked\TownNet.cs" />
+    <Compile Include="..\RynthNav.PortalGraph\PortalRoute.cs" Link="Linked\PortalRoute.cs" />
   </ItemGroup>
 
   <ItemGroup>

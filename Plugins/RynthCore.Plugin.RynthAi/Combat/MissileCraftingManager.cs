@@ -223,7 +223,7 @@ public class MissileCraftingManager
         _combinesCompleted = 0;
         _allCombinesDone = false;
 
-        try { _host.ChangeCombatMode(CombatMode.NonCombat); } catch { }
+        try { _host.ChangeCombatModeFor(CombatMode.NonCombat, "Crafting", "missile crafting needs peace mode"); } catch { }
 
         var headItems  = inv.Where(i => recipe.IsHead(i.Name)).ToList();
         var shaftItems = inv.Where(i => recipe.IsShaft(i.Name)).ToList();

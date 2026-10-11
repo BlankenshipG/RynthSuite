@@ -42,7 +42,7 @@ internal static class LootAddItemTests
         r.Add("loot add: the popup's item_preview / item_add / item_close through the editor bridge", BridgePopupFlow);
         r.Add("loot add: unsaved edits in the Loot Editor block the add (nothing saved behind them)", BridgeRefusesUnderEdits);
         r.Add("loot add: the popup says when RynthAi's built-in looting takes the item (Mana Tap, mana stones)", BuiltInReasons);
-        r.Add("loot: Mana Tap never loots a wand (ACE won't drain one, so it was kept for good)", ManaTapSkipsWands);
+        r.Add("loot: Mana Tap takes a high-mana wand like any other item (they drain)", ManaTapTakesWands);
     }
 
     // ── World and plugin ──────────────────────────────────────────────────────
@@ -445,16 +445,13 @@ internal static class LootAddItemTests
         Check.Eq(File.ReadAllText(path), SellGems, "preview saves nothing");
     }
 
-    private static void ManaTapSkipsWands()
+    private static void ManaTapTakesWands()
     {
         var bot = TapWorld();
         bot.S.CurrentLootPath = Temp("wand.utl", SellGems);
         var wand = LootEval(bot, Sceptre);
-        Check.False(wand.Taken, $"a 3,001-mana sceptre is left: [{wand.Action}] {wand.Rule}");
-        Check.Eq(bot.Get<System.Collections.Generic.HashSet<int>>("_pendingManaTapIds")?.Count, 0, "not counted against the tap quota");
+        Check.True(wand.Taken && wand.Action == "ManaTap", $"a 3,001-mana sceptre is tapped: [{wand.Action}] {wand.Rule}");
         var ring = LootEval(bot, Ring);
-        Check.True(ring.Taken && ring.Action == "ManaTap", "a ring with the same mana is still tapped: " + ring.Action);
-        Send(bot.P.LootEditor, new LootEditCommand { Op = "item_preview", Item = new LootEditItemRequest { ItemId = Sceptre, Seq = 1 } });
-        Check.Eq(State(bot.P.LootEditor).ItemDraft?.BuiltInReason, "", "the popup has no built-in reason for the wand");
+        Check.False(ring.Taken, "the one empty stone is now spoken for by the wand, so the ring waits: " + ring.Action);
     }
 }

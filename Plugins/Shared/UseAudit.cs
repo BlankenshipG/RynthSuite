@@ -80,6 +80,10 @@ internal static class UseAudit
             _windowStart = long.MinValue;
             _windowLines = 0;
             _windowDropped = 0;
+            _worldUseId = 0;
+            _worldUseSentMs = 0;
+            _worldUseSeqAtSend = 0;
+            AfterSend = null;
         }
     }
 
@@ -93,7 +97,95 @@ internal static class UseAudit
             return false;
         }
         Write(host, objectId, subsystem, $"0x{objectId:X8} {what} macro={MacroText} {KindText(kind)} - {why}", force: false);
-        return host.UseObject(objectId);
+        int seqBefore = 0;
+        bool track = TrackWorldUses && doorOrCorpse;
+        var after = AfterSend;
+        if (track || after != null)
+        {
+            try { seqBefore = host.HasUseDoneSeq ? host.GetUseDoneSeq() : 0; } catch { }
+        }
+        bool sent = host.UseObject(objectId);
+        if (track && sent)
+            MarkWorldUse(objectId, seqBefore);
+        if (sent && after != null)
+        {
+            try { after(host, new SentUse(objectId, 0, subsystem, what, doorOrCorpse, seqBefore, kind)); } catch { }
+        }
+        return sent;
+    }
+
+    /// <summary>What went out (for <see cref="AfterSend"/>).</summary>
+    internal readonly record struct SentUse(uint ObjectId, uint TargetId, string Subsystem, string What,
+        bool DoorOrCorpse, int UseDoneSeqBefore, UseKind Kind);
+
+    /// <summary>
+    /// Called after every use / use-on this plugin sent (RynthAi records it as the server action it
+    /// waits on, Plugins/Shared/ActionPacer.cs). Null in plugins that don't pace. Cleared by Reset.
+    /// </summary>
+    public static Action<RynthCoreHost, SentUse>? AfterSend;
+
+    // ── A door or corpse use the server hasn't answered yet (2026-10-06) ──────────
+    // The server walks/turns the character to a used door or corpse, and any movement packet
+    // from the client cancels that (ACE: a MoveToState stops the move-to chain, and a combat
+    // mode change cancels the move-to too). MoveAudit holds the plugin's own movement while
+    // one is in flight. Opt-in per plugin (TrackWorldUses); off = nothing changes.
+
+    /// <summary>Opt-in: remember door/corpse uses so MoveAudit can hold movement until the server answers.</summary>
+    public static volatile bool TrackWorldUses;
+
+    /// <summary>Longest a use counts as in flight when the server doesn't answer (a long walk to it).</summary>
+    public const long WorldUseInFlightMaxMs = 1500;
+
+    private static uint _worldUseId;
+    private static long _worldUseSentMs;
+    private static int _worldUseSeqAtSend;
+
+    /// <summary>Records a door/corpse use that went out (internal for the tests).</summary>
+    internal static void MarkWorldUse(uint objectId, int useDoneSeqBefore)
+    {
+        lock (Gate)
+        {
+            _worldUseId = objectId;
+            _worldUseSentMs = NowMs();
+            _worldUseSeqAtSend = useDoneSeqBefore;
+        }
+    }
+
+    /// <summary>
+    /// True while the last door/corpse use is waiting for the server: sent less than
+    /// WorldUseInFlightMaxMs ago and no UseDone has arrived since (when the engine counts them;
+    /// without the count, the time alone). Always false unless TrackWorldUses.
+    /// </summary>
+    public static bool WorldUseInFlight(RynthCoreHost host, out uint objectId)
+    {
+        objectId = 0;
+        if (!TrackWorldUses) return false;
+        long sentMs; int seqAtSend; uint id;
+        lock (Gate)
+        {
+            sentMs = _worldUseSentMs;
+            seqAtSend = _worldUseSeqAtSend;
+            id = _worldUseId;
+        }
+        if (sentMs == 0 || NowMs() - sentMs >= WorldUseInFlightMaxMs) return false;
+        try
+        {
+            if (host.HasUseDoneSeq && host.GetUseDoneSeq() != seqAtSend) return false;
+        }
+        catch { }
+        objectId = id;
+        return true;
+    }
+
+    /// <summary>Forget the in-flight use (Reset, tests).</summary>
+    internal static void ClearWorldUse()
+    {
+        lock (Gate)
+        {
+            _worldUseId = 0;
+            _worldUseSentMs = 0;
+            _worldUseSeqAtSend = 0;
+        }
     }
 
     /// <summary>UseObjectOn (item on a target) with a log line and the same guard on the target.</summary>
@@ -107,7 +199,18 @@ internal static class UseAudit
             return false;
         }
         Write(host, targetId, subsystem, $"0x{sourceId:X8} {src} on 0x{targetId:X8} {tgt} macro={MacroText} {KindText(kind)} - {why}", force: false);
-        return host.UseObjectOn(sourceId, targetId);
+        var after = AfterSend;
+        int seqBefore = 0;
+        if (after != null)
+        {
+            try { seqBefore = host.HasUseDoneSeq ? host.GetUseDoneSeq() : 0; } catch { }
+        }
+        bool sent = host.UseObjectOn(sourceId, targetId);
+        if (sent && after != null)
+        {
+            try { after(host, new SentUse(sourceId, targetId, subsystem, $"{src} on {tgt}", doorOrCorpse, seqBefore, kind)); } catch { }
+        }
+        return sent;
     }
 
     private static string MacroText => MacroRunning switch { true => "on", false => "off", null => "n/a" };

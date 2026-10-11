@@ -12,10 +12,11 @@ internal static class ChatClassifier
     internal const string System   = "System";
     internal const string Combat   = "Combat";
     internal const string Rynth    = "Rynth";     // Any RynthCore/RynthAi/RynthChat plugin output ("[Rynth…]")
+    internal const string Items    = "Items";     // RynthAi's item info ("[RynthAi Item] ", on select or /ra iteminfo)
     internal const string Other    = "Other";
 
     internal static readonly string[] AllChannels =
-        { Chat, Channels, System, Combat, Rynth, Other };
+        { Chat, Channels, System, Combat, Rynth, Items, Other };
 
     /// <summary>
     /// True for output emitted by the Rynth stack itself — every Rynth plugin tags
@@ -26,6 +27,10 @@ internal static class ChatClassifier
     /// </summary>
     internal static bool IsRynthOutput(string text) =>
         text.StartsWith("[Rynth", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>RynthAi's item info (RynthAiPlugin.ItemPrefix): its own Items tab (2026-10-09).</summary>
+    internal static bool IsItemInfo(string text) =>
+        text.StartsWith("[RynthAi Item] ", StringComparison.Ordinal);
 
     // ── Channel classification ─────────────────────────────────────────────
 

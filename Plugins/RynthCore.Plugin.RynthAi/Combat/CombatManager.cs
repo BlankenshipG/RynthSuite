@@ -113,6 +113,12 @@ public partial class CombatManager : IDisposable
     // Combat must stow the bow into an open pack FIRST, then UseObject(wand), and
     // only request Magic once the wand is actually wielded (handled by the
     // alreadyWielded branch). Mirrors the proven BuffManager.EnsureMagicMode path.
+    // Switch like a player (2026-10-06, see BuffManager._directWandSwapFailed): the wand's use
+    // puts the weapon in hand away by itself; the pack move first is the fallback once a use
+    // hasn't done it in DirectWandSwapFallbackMs.
+    private bool _combatDirectWandSwapFailed;
+    private DateTime _combatDirectSwapSince = DateTime.MinValue;
+    private const double DirectWandSwapFallbackMs = 2000;   // SwapTracker retries at 2500: that retry is the pack move
     private int _combatBowDequipPendingId;
     private int _combatBowDequipAttempts;
     private DateTime _combatBowDequipAt = DateTime.MinValue;
@@ -146,6 +152,7 @@ public partial class CombatManager : IDisposable
         _combatBowDequipPendingId = 0;
         _combatBowDequipAttempts = 0;
         _combatSwapTeardownDone = false;
+        _combatDirectSwapSince = DateTime.MinValue;
     }
 
     // ── Face-before-attack state ─────────────────────────────────────────
@@ -177,6 +184,60 @@ public partial class CombatManager : IDisposable
     private DateTime _faceSettledAt = DateTime.MinValue;
     private const double FACE_SETTLE_MS   = 140.0;   // let the turn-stop reach the server (≥ one 30Hz tick) before the cast packet
 
+    // ── Wall facing (2026-10-08) ─────────────────────────────────────────────
+    // A wall is untargeted: ACE launches it along the caster's facing and never turns the caster
+    // for it (see CountMonstersInWallPath). So before a wall the bot turns the character itself:
+    // an instant heading snap (TurnToHeading) when it is more than WallFaceToleranceDeg off the
+    // target, then no cast until WallFaceSettleMs later so the server has the new heading. The
+    // snap changes only the client's heading; the client tells the server in its next position
+    // event, which goes out at most once per second while the position or heading keeps
+    // changing (CommandInterpreter::ShouldSendPositionEvent 0x006B5520; the 1.0 s interval is set
+    // in the constructor 0x006B4D80), so the settle covers a full second plus a frame. Only ever
+    // inside AttackWithMagic, i.e. after the cadence guard and the gesture gate: never while a
+    // cast is resolving, and nothing turns during the wall's windup. Targeted shapes are unchanged.
+    // Always face the target exactly before a wall (owner, 2026-10-08: "for walls he always has to
+    // turn to the target"): a wall flies straight, so a few degrees off misses at range. Only a
+    // facing within WallFaceToleranceDeg casts without a turn.
+    internal const double WallFaceToleranceDeg = 1.0;
+    internal const double WallFaceSettleMs     = 1100.0;
+    // After the settle the wall goes if the target is still within this of the snapped heading;
+    // further (it moved during the second) the bot turns again, at most WallFaceMaxSnaps times
+    // per wall, then casts anyway rather than chase a running monster forever.
+    internal const double WallFaceDriftDeg     = 5.0;   // the most allowed (close in)
+    internal const int    WallFaceMaxSnaps     = 3;
+    // How far to the side of the wall's centre line the target may have moved during the settle
+    // (metres): at 70 yd, 5 degrees is 6 m off - wider than half the wall (owner, 2026-10-08).
+    internal const double WallAimSlackMeters   = 1.8;
+
+    /// <summary>The drift allowed after the settle for a target this far away: the angle that puts
+    /// it <see cref="WallAimSlackMeters"/> to the side, between the tolerance and WallFaceDriftDeg.</summary>
+    internal static double WallDriftAllowedDeg(double distanceMeters)
+    {
+        if (distanceMeters <= 0.1) return WallFaceDriftDeg;
+        double deg = Math.Atan2(WallAimSlackMeters, distanceMeters) * 180.0 / Math.PI;
+        return Math.Clamp(deg, WallFaceToleranceDeg, WallFaceDriftDeg);
+    }
+
+    private double WallDriftAllowedDeg(int targetId)
+    {
+        try
+        {
+            if (_host.TryGetPlayerPose(out _, out float px, out float py, out _, out _, out _, out _, out _)
+                && _host.TryGetObjectPosition((uint)targetId, out _, out float tx, out float ty, out _))
+                return WallDriftAllowedDeg(Math.Sqrt((tx - px) * (tx - px) + (ty - py) * (ty - py)));
+        }
+        catch { }
+        return WallFaceToleranceDeg;
+    }
+    private int _wallFaceSnaps;
+    private int _wallFaceTarget;
+    private DateTime _wallFaceAt = DateTime.MinValue;
+    // Set by AttackWithMagic when it held a wall for its turn: Think then ends the tick without
+    // counting it as an attack (no attack interval starts, so the wall goes once settled).
+    private bool _wallFaceHeld;
+    /// <summary>Tests: the clock the wall facing reads.</summary>
+    internal Func<DateTime> WallClock { get; set; } = () => DateTime.Now;
+
     // ── Magic cast cadence guard ────────────────────────────────────────────
     // Don't issue the next combat cast until the previous one's server windup
     // has resolved (a UseDone arrived, or a hard timeout). Re-casting into the
@@ -195,9 +256,9 @@ public partial class CombatManager : IDisposable
     private DateTime _targetLostScanTime = DateTime.MinValue;
     private const double TARGET_SCAN_GRACE_MS = 1500.0;
 
-    // Target lock — once committed to a mob, hold it until confirmed dead/gone.
-    // Prevents spinning caused by target thrashing when world-filter has a transient null
-    // or when a second mob briefly becomes slightly closer between scan ticks.
+    // The locked target (see HandleCombatTrigger: with Target Lock on it is held until it dies,
+    // leaves Monster Range or a higher-priority monster shows up). Prevents spinning caused by
+    // target thrashing when the world filter has a transient null.
     private int _lockedTargetId = 0;
 
     private bool _wasMacroRunning;
@@ -207,7 +268,7 @@ public partial class CombatManager : IDisposable
     private DateTime _lastNoSpellChatAt = DateTime.MinValue;
     private readonly Dictionary<string, DateTime> _ringMissingChatAt = new(StringComparer.OrdinalIgnoreCase);
     private const double NoSpellChatIntervalMs = 30_000;
-    private bool _lastCastWasRing = false;
+    private bool _lastCastWasRing = false;   // the last attack hit an area: a ring, or a wall (2026-10-08)
     private const double ATTACK_SPELL_COOLDOWN_MS = 100.0;
 
     private bool _returnToPhysicalCombat = false;
@@ -220,6 +281,14 @@ public partial class CombatManager : IDisposable
     // equips can't fire in one tick.
     private WeaponSwapGate? _weaponSwapGate;
     public void SetWeaponSwapGate(WeaponSwapGate gate) => _weaponSwapGate = gate;
+
+    /// <summary>
+    /// True = hold the idle peace-mode swap (PeaceModeWhenIdle) for now. RynthAi answers true while
+    /// looting has work: on ACE a combat-mode change cancels the server's walk/turn to a corpse
+    /// being opened (2026-10-06). Null = never hold.
+    /// </summary>
+    public Func<bool>? HoldIdlePeace { get; set; }
+    private bool _idlePeaceHeldLogged;
 
     /// <summary>Current combat mode — read live from AC client each access to avoid event-drop drift.</summary>
     public int CurrentCombatMode =>
@@ -305,7 +374,7 @@ public partial class CombatManager : IDisposable
     private DateTime _lastSwingEvidenceAt = DateTime.MinValue;
     private DateTime _lastHitAt  = DateTime.MinValue;
     private DateTime _lastMissAt = DateTime.MinValue;
-    private DateTime _lastKillAt = DateTime.MinValue;
+    private DateTime _lastKillAt = DateTime.MinValue;   // stall-watchdog evidence only; metas and the status feed read the plugin's KillClock
     private string   _lastSwingEvidenceKind = "none";
 
     private readonly CombatStallWatchdog _stallWatch = new();
@@ -452,25 +521,26 @@ public partial class CombatManager : IDisposable
     private DateTime _lastScanTime = DateTime.MinValue;
     private const int SCAN_INTERVAL_MS = 50;
 
-    // Utility-AI target switching: every candidate is scored each tick.
-    // The currently-locked target gets this bonus so we don't flap on near-ties —
-    // an alternative must beat (locked_score + STICKINESS) to take over.
-    private const double TARGET_SWITCH_STICKINESS = 25.0;
+    // Target selection (2026-10-10): the Targeting setting (TargetSelection) ranks the
+    // candidates by one rule (lowest health, closest, farthest, least turning) and Target
+    // Lock keeps a pick until it is no longer valid. It replaced a blended utility score
+    // (distance + health + threat + facing, plus a stickiness and a commitment bonus for the
+    // incumbent), which still switched targets mid-fight. See HandleCombatTrigger.
+    //
+    // With Target Lock off, a monster must beat the incumbent by these margins under the
+    // Targeting rule to take over, so near-ties don't flap.
+    private const float  MoreWoundedMargin    = 0.05f;   // Lowest health: 5 percentage points
+    private const double CloserFartherMarginM = 1.5;     // Closest / Farthest: metres
+    private const double LessTurningMarginDeg = 20.0;    // Least turning: degrees of facing change
 
-    // Extra hold applied ON TOP of stickiness once we have actually landed damage
-    // on the locked target — "finish what you started". Stickiness alone only
-    // breaks near-ties; this is what stops combat walking away from a half-dead
-    // mob because something undamaged wandered closer. Cleared with the rest of
-    // the fight state on switch/DropTarget. See HandleCombatTrigger.
-    private const double DAMAGE_COMMITMENT_BONUS = 20.0;
-    // A monster this much lower in health than the wounded target takes over (a predicted kill
-    // that survived). See HandleCombatTrigger.
-    private const float MoreWoundedMargin = 0.15f;
+    /// <summary>The Targeting setting's choices (LegacyUiSettings.TargetSelection).</summary>
+    internal enum TargetScheme { LowestHealth = 0, Closest = 1, Farthest = 2, LeastTurning = 3 }
 
     // Monster priority is a strict tier, not a score bonus: when a monster of a higher
     // Priority is in range (MonsterRange), only monsters of that Priority are candidates,
-    // and a lower-priority target is left for it at once. As a +5-per-level bonus it lost
-    // to stickiness (+25) and commitment (+20) and did "little to nothing" (2026-10-03).
+    // and a lower-priority target is left for it at once, Target Lock or not. As a
+    // +5-per-level score bonus it lost to the incumbent's bonuses and did "little to
+    // nothing" (2026-10-03).
     // Priority comes from GetRuleForTarget (name, match expression, else the DEFAULT row),
     // cached per monster for PriorityCacheMs because match expressions aren't free and
     // HandleCombatTrigger runs every tick over every scanned monster.
@@ -479,53 +549,54 @@ public partial class CombatManager : IDisposable
     private const double PriorityCacheMs = 1000;
     private int _lockedPriority;
 
-    /// <summary>How long a cast-issue commitment arm survives without damage
-    /// landing. Covers a projectile's flight (Force Arc confirms at a ~650ms
-    /// median, damage follows) without granting open-ended immunity to a target
-    /// that never takes damage. See the arming block in HandleCombatTrigger.</summary>
+    /// <summary>With Target Lock off, an attack at the locked target this recent, with no
+    /// damage landed since, is still on its way: no switch until it lands or this passes.
+    /// Covers a projectile's flight (Force Arc has ~2 s of travel; switching with a bolt in
+    /// the air walked away from the mob it was about to hit, 2026-09-03). See
+    /// <see cref="AttackInFlightAtLocked"/>.</summary>
     private const double CastCommitmentWindowMs = 4000.0;
 
-    /// <summary>Ceiling on how long a target that has never taken damage may keep
-    /// the commitment bonus after being locked. Past this it competes on its own
-    /// merits again, so an unkillable or unreachable mob cannot hold the lock
-    /// forever — the 2026-09-05 stall, where one Olthoi absorbed 5+ hours and
-    /// ~3,100 casts because commitment never expired and
-    /// TargetNoProgressTimeoutSec defaults to 0 (disabled).</summary>
+    /// <summary>Ceiling on the in-flight hold: once nothing has landed on the locked target
+    /// for this long (since its last damage, or since the lock when it never took any), an
+    /// attack at it no longer holds off a switch. Without a ceiling the hold refreshes on
+    /// every cast, so a target that never takes damage could keep it forever (the
+    /// 2026-09-05 stall: one Olthoi, 5+ hours, ~3,100 casts, no damage).</summary>
     private const double UndamagedCommitmentMaxMs = 15000.0;
 
     /// <summary>When the last offensive action was issued at
-    /// <see cref="_lastAttackedTargetId"/>. Bounds the cast-issue commitment arm.</summary>
+    /// <see cref="_lastAttackedTargetId"/>. Bounds the in-flight hold.</summary>
     private DateTime _lastAttackedAt = DateTime.MinValue;
-
-    // Distance (m) at which the melee-threat bonus reaches full value. The bonus
-    // ramps continuously to this range instead of switching on at a hard edge —
-    // as a step it was worth more than TARGET_SWITCH_STICKINESS, so a mob
-    // drifting across the line flipped the winner every tick. See ScoreCandidate.
-    private const double THREAT_RANGE_M = 5.0;
 
     // Incumbent continuity across scan gaps. ScanNearbyTargets drops a target on
     // a single bad LOS result or a transient miss — the candidate list has been
-    // observed oscillating 14<->17 entries tick to tick. HandleCombatTrigger
-    // scores only what is in the list, so an incumbent that blinks out scores
-    // NOTHING and loses to any challenger. That is the "score=gone" switch, and
-    // it defeats TARGET_SCAN_GRACE_MS, whose stated job is that "one bad LOS
-    // result or scan gap shouldn't hand control to navigation" — it protected
-    // the target from being DROPPED but not from being OUTSCORED while absent.
-    // Carry the last computed score for the grace window instead.
-    private double   _lockedLastScore     = double.MinValue;
+    // observed oscillating 14<->17 entries tick to tick. Picking only from what is
+    // in the list handed the fight to whoever was visible that tick and back again
+    // the next (the A->B->A flapping of 2026-09-03, logged as "score=gone"). The
+    // incumbent stays valid for TARGET_SCAN_GRACE_MS at its last seen values instead.
+    private ScannedTarget _lockedLastSeen;
     private DateTime _lockedLastSeenInScan = DateTime.MinValue;
+
+    /// <summary>Tests: the clock target selection reads (scan grace, in-flight hold).</summary>
+    internal Func<DateTime> TargetClock { get; set; } = () => DateTime.Now;
 
     public struct ScannedTarget
     {
         public int Id;
         public double Distance;
         public double Angle;   // absolute facing error to target, degrees (0 = directly ahead)
+        public double Bearing; // heading from the player to it, degrees (0 = north, clockwise); NaN = unknown
         public string Name;
     }
 
     /// <summary>List of nearby, attackable, LOS-clear creatures. Re-scanned every tick (≤50 ms).
-    /// Sorted by distance — selection itself is score-based via HandleCombatTrigger.</summary>
+    /// Sorted by distance — HandleCombatTrigger picks from it by the Targeting setting.</summary>
     public IReadOnlyList<ScannedTarget> ScannedTargets => _scannedTargets;
+    /// <summary>Tests: replace the scan list (distances and facing angles as given).</summary>
+    internal void SetScannedTargetsForTests(IEnumerable<ScannedTarget> targets)
+    {
+        _scannedTargets.Clear();
+        _scannedTargets.AddRange(targets);
+    }
     internal MonsterDamageStore?   DamageStore   => _damageStore;    // per-monster pet choice (PetManager)
     internal CreatureProfileStore? CreatureStore => _creatureStore;  // learned resists (PetManager)
 
@@ -845,16 +916,18 @@ public partial class CombatManager : IDisposable
             }
 
             double angle = 180.0;
+            double bearing = double.NaN;
             if (hasPose && hasMobPos) // the mob's position was read for the distance above
             {
                 double desired = Math.Atan2(tx - ppx, ty - ppy) * (180.0 / Math.PI);
                 if (desired < 0) desired += 360.0;
+                bearing = desired;
                 double err = desired - playerHeadingDeg;
                 while (err > 180.0) err -= 360.0;
                 while (err < -180.0) err += 360.0;
                 angle = Math.Abs(err);
             }
-            _scannedTargets.Add(new ScannedTarget { Id = wo.Id, Distance = dist, Angle = angle, Name = wo.Name });
+            _scannedTargets.Add(new ScannedTarget { Id = wo.Id, Distance = dist, Angle = angle, Bearing = bearing, Name = wo.Name });
         }
 
         // Primary: closest first. Tiebreaker within 0.5yd: smallest facing angle first.
@@ -907,6 +980,7 @@ public partial class CombatManager : IDisposable
     {
         int id = (int)objectId;
         _recentlyKilled.Remove(id);
+        _hitAt.Remove(id);
         _blacklistManager.ForgetTarget(id);
 
         if (id == activeTargetId || id == _lockedTargetId || id == _lastAttackedTargetId)
@@ -1007,8 +1081,22 @@ public partial class CombatManager : IDisposable
         { "Yield",     new[] { "Magic Yield Other",               "Yield" } },
     };
 
-    // Shape index into the SpellShapes / VoidSpellShapes rows.
-    internal const int ShapeArc = 0, ShapeRing = 1, ShapeStreak = 2, ShapeBolt = 3, ShapeBlast = 4;
+    // Shape index into the SpellShapes / VoidSpellShapes rows. ShapeWall (2026-10-08) has no row:
+    // walls have no tiered base names and are found by spell category (WallCategories).
+    internal const int ShapeArc = 0, ShapeRing = 1, ShapeStreak = 2, ShapeBolt = 3, ShapeBlast = 4, ShapeWall = 5;
+
+    // Wall spells per element: ACE SpellCategory AcidWall 229, BludgeoningWall 230, ColdWall 231,
+    // ElectricWall 232, FireWall 233, PiercingWall 234, SlashingWall 235 (column 3 of SpellData.txt).
+    // Retail has one per element (Blistering Creeper, Hammering Crawler, Foon-Ki's Glacial Floe,
+    // Os' Wall, Slithering Flames, Spike Strafe, Bed of Blades: power 200, so level 5 by ACE's
+    // server formula); the categories also hold other spells (Demon's Tongues, Burning Earth, the
+    // "... Whip" spells) that a character on some server may know, so a wall is picked by category,
+    // not by name. Void (Nether) has no walls.
+    private static readonly Dictionary<string, int> WallCategories = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "Acid", 229 }, { "Bludgeon", 230 }, { "Cold", 231 }, { "Lightning", 232 },
+        { "Fire", 233 }, { "Pierce", 234 }, { "Blade", 235 }, { "Slash", 235 },
+    };
 
     // Base names per element, by shape: Arc, Ring, Streak, Bolt, Blast. Every non-ring base has
     // "{base} I".."VI" (blasts: III-VI only, retail has no blast I/II) and "Incantation of {base}"
@@ -1186,20 +1274,36 @@ public partial class CombatManager : IDisposable
         bool critLine = text.IndexOf("critical", StringComparison.OrdinalIgnoreCase) >= 0;
         if (critLine) _lastCritChatAt = now;
 
-        if (!TryParseOutgoingDamage(text, out int amount)) return;
+        if (!CombatText.TryParseOutgoingHit(text, out string victim, out int amount)) return;
         bool crit = critLine || (now - _lastCritChatAt).TotalMilliseconds <= CRIT_WINDOW_MS;
 
-        // Attribute to the current fight; if it's already cleared (we one-shot and
-        // moved on before the damage line landed), fall back to the last-fight
-        // snapshot — same wcid as the bolt, so the crit/non-crit average is right.
-        bool cur  = _fightTargetWcid != 0;
-        uint wcid = cur ? _fightTargetWcid : _lastFightWcid;
+        // Which monster the line is about. One spell can hurt several (rings, walls, blasts,
+        // chain spells): each sends its own line naming its victim, and only the selected target
+        // gets health from the server. A line naming the fight target is the fight's; any other
+        // goes to the monster it names (CreditHitToOther), never to the fight target.
+        int victimId = ResolveHitVictim(victim, now);
+        bool cur = _fightTargetWcid != 0;
+        bool onFight = cur && (victimId != 0
+            ? victimId == _fightTargetId
+            : victim.Equals(_fightTargetName, StringComparison.OrdinalIgnoreCase));
+        // Fight already cleared (we one-shot and moved on before the line landed): the line
+        // belongs to the last fight when it names it.
+        bool onLastFight = !onFight && !cur && _lastFightWcid != 0
+            && victim.Equals(_lastFightName, StringComparison.OrdinalIgnoreCase);
 
         if (_dmgDbgCount < 15)
         {
             _dmgDbgCount++;
-            _host.Log($"[DmgDbg] amt={amount} crit={crit} wcid={wcid} mode={CurrentCombatMode} text='{text}'");
+            _host.Log($"[DmgDbg] amt={amount} crit={crit} victim='{victim}' id=0x{(uint)victimId:X8} fight={(onFight ? 1 : onLastFight ? 2 : 0)} mode={CurrentCombatMode} text='{text}'");
         }
+
+        if (!onFight && !onLastFight)
+        {
+            CreditHitToOther(victimId, victim, amount, crit);
+            return;
+        }
+
+        uint wcid = onFight ? _fightTargetWcid : _lastFightWcid;
 
         // MAGIC-ONLY: melee/missile get the structured 0x01B1 event (OnCombatDamage),
         // so parsing chat for them too would double-count.
@@ -1209,14 +1313,145 @@ public partial class CombatManager : IDisposable
         // line is the ONLY damage signal for casters — without accumulating it,
         // _fightDamage stayed 0: EvaluateKillShot path B always saw a full-HP
         // target and RecordKill(totalDamage:0) never learned HP pools.
-        if (cur)
+        if (onFight)
             _fightDamage += amount;
 
-        uint   weapon = cur ? _lastCastWeaponId : _lastFightWeaponId;
-        string nm     = cur ? _fightTargetName  : _lastFightName;
-        string elem   = cur ? _lastCastElement  : _lastFightElement;
-        int    tier   = cur ? _lastCastTier     : _lastFightTier;
+        uint   weapon = onFight ? _lastCastWeaponId : _lastFightWeaponId;
+        string nm     = onFight ? _fightTargetName  : _lastFightName;
+        string elem   = onFight ? _lastCastElement  : _lastFightElement;
+        int    tier   = onFight ? _lastCastTier     : _lastFightTier;
         _damageStore.RecordHit(weapon, wcid, nm, elem, tier, amount, crit);
+    }
+
+    // ── Hits on monsters other than the fight target ─────────────────────────
+    // A ring, wall, blast or chain spell hurts several monsters with one cast; each gets a
+    // damage line naming it. Same-named monsters (a swarm) are told apart by order: within one
+    // volley (lines no more than VolleyWindowMs apart) a monster is hit once, so the fight
+    // target takes the first line with its name and every further one goes to the nearest
+    // other monster of that name not yet hit in the volley.
+    private readonly Dictionary<int, DateTime> _hitAt = new();   // last line credited to each id
+    private const double VolleyWindowMs = 800;
+    private const double HitMemoryMs = 15000;                    // hits older than this are forgotten
+    private const double KillMatchRecentHitMs = 5000;            // a kill notice is matched to hits this recent
+
+    /// <summary>
+    /// The object a damage line naming <paramref name="name"/> is about, or 0 when no live monster
+    /// of that name is known. Stamps the hit so the next same-named line of the volley goes elsewhere.
+    /// </summary>
+    internal int ResolveHitVictim(string name, DateTime now)
+    {
+        if (string.IsNullOrEmpty(name)) return 0;
+        PruneHits(now);
+        int fight = _fightTargetId;
+        if (fight != 0 && !HitInVolley(fight, now)
+            && string.Equals(_worldFilter[fight]?.Name, name, StringComparison.OrdinalIgnoreCase))
+        {
+            _hitAt[fight] = now;
+            return fight;
+        }
+
+        int anchor = fight != 0 ? fight : unchecked((int)_playerId);
+        int best = 0, any = 0;
+        double bestD = double.MaxValue, anyD = double.MaxValue;
+        foreach (var wo in _worldFilter.GetLandscape())
+        {
+            if (wo.ObjectClass != AcObjectClass.Monster) continue;
+            if (!string.Equals(wo.Name, name, StringComparison.OrdinalIgnoreCase)) continue;
+            if (_worldFilter.GetHealthRatio(wo.Id) == 0f) continue;   // the server said dead
+            double d = anchor != 0 ? _worldFilter.Distance(anchor, wo.Id) : 0.0;
+            if (any == 0 || d < anyD) { any = wo.Id; anyD = d; }
+            if (wo.Id == fight || HitInVolley(wo.Id, now)) continue;
+            if (best == 0 || d < bestD) { best = wo.Id; bestD = d; }
+        }
+        int id = best != 0 ? best : any;
+        if (id != 0) _hitAt[id] = now;
+        return id;
+    }
+
+    private bool HitInVolley(int id, DateTime now)
+        => _hitAt.TryGetValue(id, out DateTime t) && (now - t).TotalMilliseconds <= VolleyWindowMs;
+
+    private readonly List<int> _hitPruneScratch = new();
+    private void PruneHits(DateTime now)
+    {
+        if (_hitAt.Count < 64) return;
+        _hitPruneScratch.Clear();
+        foreach (var kv in _hitAt)
+            if ((now - kv.Value).TotalMilliseconds > HitMemoryMs) _hitPruneScratch.Add(kv.Key);
+        foreach (int id in _hitPruneScratch) _hitAt.Remove(id);
+    }
+
+    /// <summary>
+    /// A hit on a monster that isn't the fight target (another target of a ring, wall or chain
+    /// spell): lower its health estimate (the server sends it none), count it as damage for the
+    /// blacklist, and learn the hit against its own monster type.
+    /// </summary>
+    private void CreditHitToOther(int victimId, string victim, int amount, bool crit)
+    {
+        uint wcid = 0;
+        if (victimId != 0)
+        {
+            if (_host.HasGetObjectWcid) _host.TryGetObjectWcid(unchecked((uint)victimId), out wcid);
+            double maxHp = ResolveMaxHpFor(victimId, wcid, victim);
+            _worldFilter.ApplyDamageEstimate(victimId, maxHp > 0 ? amount / maxHp : 0.0);
+            ReportDamageOnTarget(victimId);
+        }
+        if (wcid == 0) wcid = WcidForName(victim);
+        if (_damageStore != null && wcid != 0 && CurrentCombatMode == CombatMode.Magic)
+            _damageStore.RecordHit(_lastCastWeaponId, wcid, victim, _lastCastElement, _lastCastTier, amount, crit);
+    }
+
+    /// <summary>A monster's max health from what we know: the manual override, the engine's vitals,
+    /// the shared creature profiles, the learned damage-to-kill. 0 when none says.</summary>
+    private double ResolveMaxHpFor(int id, uint wcid, string name)
+    {
+        if (_damageStore != null && wcid != 0)
+        {
+            double manual = _damageStore.GetManualHp(wcid);
+            if (manual > 0) return manual;
+        }
+        if (_host.HasGetTargetVitals
+            && _host.TryGetTargetVitals(unchecked((uint)id), out _, out uint maxHealth, out _, out _, out _, out _)
+            && maxHealth > 0)
+            return maxHealth;
+        if (_creatureStore != null && !string.IsNullOrEmpty(name))
+        {
+            CreatureProfile? prof = null;
+            bool found = wcid != 0 ? _creatureStore.TryGet(name, wcid, out prof) : _creatureStore.TryGetByName(name, out prof);
+            if (found && prof != null && prof.MaxHealth > 0) return prof.MaxHealth;
+        }
+        if (_damageStore != null && wcid != 0)
+        {
+            double hp = _damageStore.GetLearnedHp(wcid);
+            if (hp > 0) return hp;
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// The monster a kill notice is about, among those we hit in the last few seconds (other than
+    /// <paramref name="exclude"/>): the longest name the message contains, then the most hurt,
+    /// then the most recently hit. 0 when none fits.
+    /// </summary>
+    private int FindRecentlyHitVictim(string deathMessage, int exclude, DateTime now)
+    {
+        int best = 0, bestLen = 0;
+        float bestHp = 2f;
+        DateTime bestAt = DateTime.MinValue;
+        foreach (var kv in _hitAt)
+        {
+            if (kv.Key == exclude || (now - kv.Value).TotalMilliseconds > KillMatchRecentHitMs) continue;
+            if (_recentlyKilled.ContainsKey(kv.Key)) continue;
+            string n = _worldFilter[kv.Key]?.Name ?? "";
+            if (n.Length == 0 || deathMessage.IndexOf(n, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            float hp = _worldFilter.GetHealthRatio(kv.Key);
+            if (hp < 0f) hp = 1f;
+            bool better = n.Length > bestLen
+                || (n.Length == bestLen && (hp < bestHp || (hp == bestHp && kv.Value > bestAt)));
+            if (!better) continue;
+            best = kv.Key; bestLen = n.Length; bestHp = hp; bestAt = kv.Value;
+        }
+        return best;
     }
 
     /// <summary>
@@ -1226,56 +1461,13 @@ public partial class CombatManager : IDisposable
     ///       (ACEmulator's SpellProjectile.DamageTarget emits "for {amount} points with
     ///        {Spell.Name}" — NOT "points of <element> damage" — so the old retail-only
     ///        parser matched nothing on ACE and the Crit/NonCrit columns stayed empty.)
-    /// Returns false for incoming ("... you for N points ...") and non-damage
-    /// "points of &lt;vital&gt;" lines (heals / mana / stamina drains). Allocation-free (hot path).
+    /// Returns false for incoming lines ("... you for N points ...", "... your lower leg for ..."):
+    /// the sentence must start with "You" after any "Critical hit!"-style prefix. Also false for
+    /// non-damage "points of &lt;vital&gt;" lines (heals / mana / stamina drains).
+    /// Shared with RynthTracker (Plugins/Shared/CombatText.cs), which also reads the victim's name.
     /// </summary>
     internal static bool TryParseOutgoingDamage(string text, out int amount)
-    {
-        amount = 0;
-
-        // Anchor on the word "points" (shared by both wordings). The number is the run
-        // of digits immediately before it; the word right AFTER it disambiguates:
-        //   "points with ..."             → ACE damage cast (only the projectile msg uses this)
-        //   "points of ... damage"        → retail damage
-        //   "points of mana/stamina/..."  → vital drain/heal (no "damage") → reject
-        int pts = text.IndexOf("points", StringComparison.OrdinalIgnoreCase);
-        if (pts < 0) return false;
-
-        int w = pts + 6;                                   // first char after "points"
-        while (w < text.Length && text[w] == ' ') w++;
-        bool nextWith = WordAt(text, w, "with");
-        bool nextOf   = WordAt(text, w, "of");
-        bool isDamage = nextWith
-                     || (nextOf && text.IndexOf("damage", w, StringComparison.OrdinalIgnoreCase) >= 0);
-        if (!isDamage) return false;
-
-        // Incoming (we got hit) lines read "... you for N points ..." — not our damage.
-        if (text.IndexOf("you for", StringComparison.OrdinalIgnoreCase) >= 0) return false;
-
-        int i = pts - 1;
-        while (i >= 0 && text[i] == ' ') i--;
-        long val = 0, mult = 1; bool any = false;
-        while (i >= 0 && (char.IsDigit(text[i]) || text[i] == ','))
-        {
-            if (text[i] != ',') { val += (text[i] - '0') * mult; mult *= 10; any = true; }
-            i--;
-        }
-        if (!any || val <= 0 || val > 1_000_000) return false;
-        amount = (int)val;
-        return true;
-    }
-
-    /// <summary>Case-insensitive whole-word match of <paramref name="word"/> (passed lowercase)
-    /// at <paramref name="pos"/> in <paramref name="text"/>, bounded by end-of-string or a
-    /// non-letter. Allocation-free.</summary>
-    private static bool WordAt(string text, int pos, string word)
-    {
-        if (pos < 0 || pos + word.Length > text.Length) return false;
-        for (int k = 0; k < word.Length; k++)
-            if (char.ToLowerInvariant(text[pos + k]) != word[k]) return false;
-        int end = pos + word.Length;
-        return end >= text.Length || !char.IsLetter(text[end]);
-    }
+        => CombatText.TryParseOutgoingHit(text, out _, out amount);
 
     public void HandleChatForDebuffs(string text)
     {
@@ -1542,6 +1734,36 @@ public partial class CombatManager : IDisposable
     /// consecutive misses → blacklist. Called every combat cycle and before
     /// recording a new cast so the last cast is still judged.
     /// </summary>
+    // ── No-damage casts: evidence for an intermittent report (2026-10-09) ─────────────
+    // A player's mage cast Nether Arc VII again and again (components used, every cast answered)
+    // and the target's health never moved; it comes and goes, so it can't be caught by asking
+    // for a dump afterwards. When the judge counts BlacklistAttempts no-damage casts in a row,
+    // this writes the flight recorder (the casts sent, their targets and every server answer)
+    // and one line with what the casts were and where things stood, before the blacklist moves on.
+    private string _lastOffensiveCastLine = "";
+    private DateTime _lastNoDamageReportAt = DateTime.MinValue;
+    private const double NoDamageReportGapMs = 10 * 60_000;   // one report per 10 min per client
+
+    private void ReportNoDamageCasts(int tid)
+    {
+        DateTime now = DateTime.Now;
+        if ((now - _lastNoDamageReportAt).TotalMilliseconds < NoDamageReportGapMs) return;
+        _lastNoDamageReportAt = now;
+        try
+        {
+            int me = (int)_host.GetPlayerId();
+            WorldObject? t = tid != 0 ? _worldFilter[tid] : null;
+            double dist = me != 0 && tid != 0 ? _worldFilter.Distance(me, tid) : -1;
+            _host.Log($"[CombatCast] NO DAMAGE: {_consecutiveCastMisses} casts in a row at 0x{(uint)tid:X8} '{t?.Name ?? "?"}' " +
+                      $"landed nothing (no hit, resist or evade line within {_settings.BlacklistCastSettleMs} ms each). " +
+                      $"Last: {_lastOffensiveCastLine}; distance {dist:0.0} m, target {(t == null ? "gone from the client" : "still known")}, " +
+                      $"active=0x{(uint)activeTargetId:X8} mode={CurrentCombatMode} busy={BusyCount} castsSinceKill={CastsSinceLastKill}. " +
+                      "Flight recorder written (Logs/flight-*.txt).");
+        }
+        catch { }
+        FlightRecorderSignal.Dump(_host, $"casts with no damage at 0x{(uint)tid:X8}");
+    }
+
     private void JudgePendingCast()
     {
         if (_pendingJudgeCastAt == DateTime.MinValue) return;
@@ -1558,6 +1780,7 @@ public partial class CombatManager : IDisposable
         _consecutiveCastMisses++;
         if (_consecutiveCastMisses >= _settings.BlacklistAttempts)
         {
+            if (CurrentCombatMode == CombatMode.Magic) ReportNoDamageCasts(tid);
             _blacklistManager.ReportFailure(tid);
             if (_blacklistManager.IsBlacklisted(tid))
             {
@@ -1611,7 +1834,7 @@ public partial class CombatManager : IDisposable
     /// "N real attacks with no damage" for casts, missile shots, and melee
     /// swings alike — never raw interval ticks.
     /// </summary>
-    private void RecordOffensiveCast(int targetId)
+    internal void RecordOffensiveCast(int targetId)   // internal for tests
     {
         if (_lastAttackedTargetId != targetId)
         {
@@ -1622,10 +1845,10 @@ public partial class CombatManager : IDisposable
         }
 
         // Stamped on EVERY offensive action, not just a target change, so the
-        // cast-issue commitment window tracks the most recent cast. Stamping only
-        // on change would expire commitment mid-fight while still casting at the
-        // same mob — reintroducing the in-flight abandonment this exists to stop.
-        _lastAttackedAt = DateTime.Now;
+        // in-flight hold (Target Lock off, AttackInFlightAtLocked) tracks the most
+        // recent cast. Stamping only on change would end the hold mid-fight while
+        // still casting at the same mob — the in-flight abandonment it exists to stop.
+        _lastAttackedAt = TargetClock();   // DateTime.Now outside tests
 
         JudgePendingCast(); // verdict on the prior attack if its settle window elapsed
 
@@ -1666,7 +1889,7 @@ public partial class CombatManager : IDisposable
         _returnToPhysicalCombat = false;
         _targetLockedAt    = DateTime.MinValue;
         _lastDamageDealtAt = DateTime.MinValue;
-        _lockedLastScore      = double.MinValue;
+        _lockedLastSeen       = default;
         _lockedLastSeenInScan = DateTime.MinValue;
         _targetLostScanTime = DateTime.MinValue;
         _pendingJudgeCastAt = DateTime.MinValue;
@@ -1867,12 +2090,26 @@ public partial class CombatManager : IDisposable
         // a late death notice killed a neighbour. Dropping it also hid it from the scan for
         // 4 s, and with no other mob in range the bot went to peace mid-fight.
         bool noticeForSwappedMob = pendingKillId != 0 && pendingKillId != tid;
-        bool curAttacked = _fightTargetId != tid || _fightCastCount > 0 || _pendingOffensiveTargetId == tid;
-        if (tid != 0 && curMatches && (noticeForSwappedMob || !curAttacked))
+        // A damage line naming the target (ResolveHitVictim stamped it) is an attack too.
+        bool curAttacked = _fightTargetId != tid || _fightCastCount > 0 || _pendingOffensiveTargetId == tid
+                           || (tid != 0 && _hitAt.ContainsKey(tid));
+        // A ring, wall or chain spell kills neighbours too. The server's health for the fight
+        // target lands before its kill notice (ACE sends the 0 with the lethal hit), so a fight
+        // target the server still says is alive didn't die: the notice is a same-named
+        // neighbour's we hit in the last few seconds.
+        int otherVictim = (!curMatches || noticeForSwappedMob) ? 0 : FindRecentlyHitVictim(deathMessage, tid, nowKill);
+        float curHp = tid != 0 ? _worldFilter.GetHealthRatio(tid) : -1f;
+        bool curServerAlive = curHp > 0f && !_worldFilter.IsHealthEstimated(tid);
+        bool noticeForNeighbour = otherVictim != 0 && curServerAlive;
+        if (tid != 0 && curMatches && (noticeForSwappedMob || !curAttacked || noticeForNeighbour))
         {
             _host.Log($"[RynthAi] Kill notice names 0x{tid:X8} '{curName}' but " +
-                      (noticeForSwappedMob ? $"belongs to predicted kill 0x{pendingKillId:X8}" : "it hasn't been attacked yet") +
+                      (noticeForSwappedMob ? $"belongs to predicted kill 0x{pendingKillId:X8}"
+                       : noticeForNeighbour ? $"it is alive ({curHp:0.00}); a neighbour we hit died (0x{otherVictim:X8})"
+                       : "it hasn't been attacked yet") +
                       " — keeping the target");
+            if (noticeForNeighbour)
+                _recentlyKilled[otherVictim] = nowKill.AddMilliseconds(RECENTLY_KILLED_SUPPRESS_MS);
         }
         else if (tid != 0 && curMatches)
         {
@@ -1880,7 +2117,26 @@ public partial class CombatManager : IDisposable
             ForgetScanned(tid);
             DropTarget("killed (KillerNotification)");
         }
+        else if (pendingKillId == 0)
+        {
+            // Another monster died, not the fight target: one we hit with a ring, wall or chain.
+            // Keep the scan off it while its corpse forms.
+            int victim = FindRecentlyHitVictim(deathMessage, tid, nowKill);
+            if (victim != 0)
+                _recentlyKilled[victim] = nowKill.AddMilliseconds(RECENTLY_KILLED_SUPPRESS_MS);
+        }
     }
+
+    /// <summary>Test seam: engage <paramref name="targetId"/> as the fight target, as a target lock does.</summary>
+    internal void EngageForTest(int targetId)
+    {
+        activeTargetId = targetId;
+        _lockedTargetId = targetId;
+        BeginFight(targetId);
+    }
+
+    /// <summary>Test seam: true while the scan is kept off <paramref name="id"/> after a kill.</summary>
+    internal bool IsKillSuppressed(int id) => _recentlyKilled.ContainsKey(id);
 
     /// <summary>Record the just-stamped _lastFight* context into the recent-fights ring,
     /// keyed by the live object id (refreshed per hit, capped, TTL-pruned). Lets a kill that
@@ -2137,6 +2393,9 @@ public partial class CombatManager : IDisposable
     /// the full interval anyway.</summary>
     internal const double NewTargetCastFloorMs = 300;
 
+    /// <summary>The least Attack Spell Delay on an engine without the server gates.</summary>
+    internal const double NoGatesAttackFloorMs = 250;
+
     /// <summary>True when <see cref="BusyCount"/> is positive only because AC lowered it inline at a
     /// server UseDone the busy hook can't see (see <see cref="CombatBusyGate"/>).</summary>
     internal bool BusyIsLeftover()
@@ -2161,7 +2420,12 @@ public partial class CombatManager : IDisposable
     internal static double AttackIntervalMs(int combatMode, int attackSpellIntervalMs, bool hasServerGates, bool newTarget)
     {
         if (combatMode != CombatMode.Magic) return 1000.0;
-        double interval = attackSpellIntervalMs > 0 ? attackSpellIntervalMs : 1500;
+        // 0 is allowed (2026-10-08): no delay of its own, the server gates (UseDone and the cast
+        // gesture) alone hold the next cast until the last one is done. A file without the setting
+        // keeps 1500 (the payload is nullable). An engine without those gates keeps a 250 ms floor,
+        // the old slider minimum, so casts can't be sent back to back into "You're too busy!".
+        double interval = attackSpellIntervalMs >= 0 ? attackSpellIntervalMs : 1500;
+        if (!hasServerGates) interval = Math.Max(interval, NoGatesAttackFloorMs);
         if (newTarget && hasServerGates) return Math.Min(interval, NewTargetCastFloorMs);
         return interval;
     }
@@ -2303,8 +2567,8 @@ public partial class CombatManager : IDisposable
             // the stillScanned grace period below will handle a truly dead/vanished mob.
         }
 
-        // Score every candidate every tick — handles initial pick AND switching when
-        // a meaningfully better target appears (stickiness bonus prevents flapping).
+        // Pick every tick: the initial pick, and a switch when the target is no longer valid,
+        // a higher-priority monster is in range, or (Target Lock off) another is clearly better.
         HandleCombatTrigger();
 
         if (activeTargetId == 0)
@@ -2314,7 +2578,20 @@ public partial class CombatManager : IDisposable
             // prevents ChangeCombatMode spam while idling between spawns.
             if (CurrentCombatMode == CombatMode.NonCombat)
                 _idlePeaceAttempts = 0;   // reached peace — the next idle request starts fresh
+            bool peaceHeld = false;
             if (_settings.PeaceModeWhenIdle && CurrentCombatMode != CombatMode.NonCombat
+                && _scannedTargets.Count == 0 && BusyCount == 0
+                && DateTime.Now >= _navMagicWantedUntil)   // a nav recall wants Magic mode
+            {
+                try { peaceHeld = HoldIdlePeace?.Invoke() == true; } catch { peaceHeld = false; }
+                if (peaceHeld && !_idlePeaceHeldLogged)
+                {
+                    _idlePeaceHeldLogged = true;
+                    _host.Log($"[EquipDiag] idle peace-mode swap held: looting is working (a mode change would cancel the server's walk/turn to the corpse); it goes out once looting is done.");
+                }
+            }
+            if (!peaceHeld) _idlePeaceHeldLogged = false;
+            if (!peaceHeld && _settings.PeaceModeWhenIdle && CurrentCombatMode != CombatMode.NonCombat
                 && _scannedTargets.Count == 0 && BusyCount == 0
                 && DateTime.Now >= _navMagicWantedUntil)   // a nav recall wants Magic mode
             {
@@ -2325,9 +2602,9 @@ public partial class CombatManager : IDisposable
                 // 4 after that up to 15 s. An unbounded ChangeCombatMode stream is the
                 // 2026-05-25 stance-spam crash class; this used to retry every 500 ms forever.
                 double peaceDelayMs = Math.Min(15_000, 500 * Math.Pow(2, Math.Min(5, _idlePeaceAttempts / 4)));
-                if ((DateTime.Now - _lastPeaceAttempt).TotalMilliseconds > peaceDelayMs && !IsCastInFlight())
+                if ((DateTime.Now - _lastPeaceAttempt).TotalMilliseconds > peaceDelayMs && !IsCastInFlight()
+                    && _host.ChangeCombatModeFor(CombatMode.NonCombat, "Combat", "idle: no target (Peace Mode When Idle)"))
                 {
-                    _host.ChangeCombatMode(CombatMode.NonCombat);
                     _lastPeaceAttempt = DateTime.Now;
                     _idlePeaceAttempts++;
                     if (_idlePeaceAttempts == 16)
@@ -2410,6 +2687,22 @@ public partial class CombatManager : IDisposable
         // one of its steps is settling.
         if (RunStallWatchdog(targetObj, currentDist))
             return true;
+
+        // One server action at a time (2026-10-06, Plugins/Shared/ActionPacer.cs): no stance change,
+        // wield, attack or cast while the server is still answering the last action (a kit, a corpse
+        // use, a buff, the last stance change). On ACE a mode change cancels a pending use's walk
+        // and fails a cast in progress; that interleaving began every stuck-use stall on record.
+        // Melee/missile attack repeats skip the animation gate (gestureGate false): the server swings
+        // on its own timers, a swing can't land inside a use's server turn because the use above holds
+        // every attack until it is answered, and waiting for each swing animation would cost DPS. A
+        // stance change still waits (ChangeCombatModeFor), and so does everything in peace/magic.
+        bool attackRepeat = CurrentCombatMode == CombatMode.Melee || CurrentCombatMode == CombatMode.Missile;
+        if (!ActionPacer.MayStart(_host, "Combat", HealNeed.None, out _, gestureGate: !attackRepeat))
+        {
+            LastCombatSkipReason = "server-answering"; // D4 record-only
+            _tickWait = CombatLatencyTracker.Wait.Busy;
+            return true;
+        }
 
         // While a targeted combat cast is still resolving on the server, do NOT re-assert
         // stance/weapon here: EquipWeaponAndSetStance can emit ChangeCombatMode/UseObject,
@@ -2505,6 +2798,9 @@ public partial class CombatManager : IDisposable
             // MELEE the same: ACE's HandleActionTargetedMeleeAttack_Inner rotates to the
             // target (past melee_max_angle) before the swing, so the servo made the same
             // swing-spin-swing with a knife in an Olthoi swarm (2026-09-29, Lucy).
+            // The one exception is a WALL spell (2026-10-08): untargeted, so the server doesn't
+            // turn for it. AttackWithMagic snaps the heading before a wall (HoldForWallFacing),
+            // behind the cadence guard above, and never during a windup.
             if (CurrentCombatMode == CombatMode.Magic || CurrentCombatMode == CombatMode.Missile
                 || CurrentCombatMode == CombatMode.Melee)
             {
@@ -2593,6 +2889,15 @@ public partial class CombatManager : IDisposable
 
                 AttackWithMagic(targetObj);
 
+                // A wall held for its turn (2026-10-08): nothing was sent but a heading snap. End
+                // the tick here so it doesn't count as an attack: the attack interval doesn't start
+                // and the wall goes the first tick after the settle (HoldForWallFacing).
+                if (_wallFaceHeld)
+                {
+                    _tickWait = CombatLatencyTracker.Wait.Face;
+                    return true;
+                }
+
                 // Don't restore the physical weapon on top of a cast just issued this tick
                 // (AttackWithMagic → MarkCombatCastIssued): the UseObject + re-equip below would
                 // truncate the in-flight gesture and strand Player.IsBusy. Defer one windup
@@ -2648,7 +2953,9 @@ public partial class CombatManager : IDisposable
                             _returnToPhysicalCombat = true;
                             _host.UseFor((uint)wandId, "Combat", "wield the wand to cast");
                             _lastEquipTime = DateTime.Now; // gate AttackWithMagic until wand is wielded
-                            _host.ChangeCombatMode(CombatMode.Magic);
+                            // Held by the pacing until the wield is answered; the wielded branch of
+                            // EquipWeaponAndSetStance sends it then (2026-10-06).
+                            _host.ChangeCombatModeFor(CombatMode.Magic, "Combat", "debuff: Magic mode after the wand");
                             lastAttackCmd = DateTime.Now;
                             _lastAttackCmdTargetId = activeTargetId;
                             return true;
@@ -2813,7 +3120,7 @@ public partial class CombatManager : IDisposable
                 // Same effect on the server as the wand heal: a mode change runs
                 // HandleActionCancelAttack. EquipWeaponAndSetStance flips back after its
                 // stance retry delay (~1 s with the flip backoff reset).
-                _host.ChangeCombatMode(CombatMode.NonCombat);
+                _host.ChangeCombatModeFor(CombatMode.NonCombat, "Combat/Stall", "stall watchdog: toggle the mode", force: true);
                 _stallToggleAt = now;
                 ResetStanceFlipBackoff();
                 lastStanceAttempt = now;
@@ -3091,18 +3398,21 @@ public partial class CombatManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Target selection, every tick. Candidates are the top monster-rule Priority among monsters
+    /// inside MonsterRange (or among all scanned ones when none is inside it), ranked by the
+    /// Targeting setting (<see cref="TargetScheme"/>). Target Lock on: a valid incumbent is kept,
+    /// full stop. Off: it is kept unless another candidate beats it by the scheme's margin, and
+    /// never while an attack at it is still in flight. A higher-priority monster in range always
+    /// takes over at once (the tier filter: the incumbent is no longer a candidate).
+    /// </summary>
     public void HandleCombatTrigger()
     {
-        // Utility-AI selection: score every visible candidate, pick the highest.
-        // The locked target carries a stickiness bonus so we only switch when a
-        // genuinely better option appears — no flapping on near-ties.
         if (_scannedTargets.Count == 0) return;
 
-        int bestId = 0;
-        double bestScore = double.MinValue;
-        double heldScore = double.MinValue;   // scored total for the incumbent, for the switch log
-        bool incumbentSeen = false;
+        DateTime now = TargetClock();
         double acquireRange = Math.Max(1.0, _settings.MonsterRange);
+        var scheme = (TargetScheme)Math.Clamp(_settings.TargetSelection, 0, 3);
 
         // Strict priority: the highest Priority among monsters inside MonsterRange (or among
         // all scanned ones when none is inside it) is the only tier that may be picked.
@@ -3113,149 +3423,87 @@ public partial class CombatManager : IDisposable
             if (p > topAnyRange) topAnyRange = p;
             if (c.Distance <= acquireRange && p > topPriority) topPriority = p;
         }
-        if (topPriority == int.MinValue) topPriority = topAnyRange;
+        bool anyInRange = topPriority != int.MinValue;
+        if (!anyInRange) topPriority = topAnyRange;
 
-        // Finish what you started: a target we have damaged (or whose health is known to be below
-        // full) is kept while it's within MonsterRange and in the top priority tier, whatever a
-        // closer fresh monster scores. As a score bonus (stickiness 25 + commitment 20) it lost to
-        // a fresh monster ~2 m closer (20 points a metre at Monster Range 5): Mob A hit twice,
-        // Mob B killed, back to A (2026-10-04). Only a clearly more wounded monster in range takes
-        // over: a predicted kill that survived. Stuck targets are still dropped by the stall
-        // watchdog (it suppresses them out of the scan).
-        int forcedId = 0;
-        if (_lockedTargetId != 0)
-        {
-            ScannedTarget? inc = null;
-            foreach (var c in _scannedTargets) if (c.Id == _lockedTargetId) { inc = c; break; }
-            if (inc is { } held && held.Distance <= acquireRange && PriorityOf(held.Id) >= topPriority)
-            {
-                float heldHp = _worldFilter.GetHealthRatio(held.Id);
-                bool wounded = _lastDamageDealtAt != DateTime.MinValue || (heldHp >= 0f && heldHp < 0.99f);
-                if (wounded)
-                {
-                    float best = heldHp >= 0f ? heldHp : 1f;
-                    foreach (var c in _scannedTargets)
-                    {
-                        if (c.Id == held.Id || c.Distance > acquireRange || PriorityOf(c.Id) < topPriority) continue;
-                        float r = _worldFilter.GetHealthRatio(c.Id);
-                        if (r > 0f && r < best - MoreWoundedMargin) { best = r; forcedId = c.Id; }
-                    }
-                    if (forcedId == 0)
-                    {
-                        _lockedLastSeenInScan = DateTime.Now;
-                        return;   // keep the wounded target
-                    }
-                }
-            }
-        }
-
+        // The best candidate by the scheme. Only monsters inside MonsterRange when any is: the
+        // scan holds a locked target out to DisengageDistance (MonsterRange+3 by default) so a
+        // lone mob at the edge doesn't flip engage/peace, not so it can hold off monsters inside
+        // the range the user set (2026-09-27, Olthoi swarm: a target at 5-8 m kept for over a
+        // minute while mobs stood at 3-5 m with Monster Range 5).
+        ScannedTarget best = default;
+        double bestKey = 0;
+        bool haveBest = false;
+        ScannedTarget? incInScan = null;
         foreach (var c in _scannedTargets)
         {
+            if (c.Id == _lockedTargetId) incInScan = c;
             if (PriorityOf(c.Id) < topPriority) continue;   // a higher-priority monster is in range
-            double s = ScoreCandidate(c);
-            // The incumbent keeps stickiness and commitment only inside MonsterRange. The
-            // scan holds a locked target out to DisengageDistance (MonsterRange+3 by default)
-            // so a lone mob at the edge doesn't flip engage/peace, not so it can out-score
-            // mobs inside the range the user set. Beyond MonsterRange it competes on its
-            // merits, and any reasonable in-range mob takes over. Before this a target at
-            // 5-8 m kept +45 and could hold off mobs at 3-5 m (2026-09-27, Olthoi swarm:
-            // Monster Range 5, one target kept for over a minute, never out of range).
-            if (c.Id == _lockedTargetId)
-            {
-                double meritScore = s;
-                s += TARGET_SWITCH_STICKINESS;
-                // Commitment: once we have COMMITTED to the locked target,
-                // finishing it outranks any small positional edge a fresh mob
-                // holds. Stickiness alone only settles near-ties — it loses to a
-                // full-health mob that simply walked closer, which is how the bot
-                // left a trail of half-dead mobs.
-                //
-                // Armed at cast ISSUE as well as on confirmed damage, because
-                // Force Arc has ~2s of travel time and keying only on damage
-                // landing left that window looking "untouched" — a 2.4-point
-                // margin could walk away from a mob with a bolt already in the
-                // air (observed 2026-09-03 02:22:45).
-                //
-                // The cast-issue arm MUST expire. The first version keyed on
-                // _lastAttackedTargetId alone, which is set at issue and never
-                // cleared while the lock holds — granting a permanent +20 on top
-                // of the +25 stickiness to a target that had never taken damage
-                // and might never take any. With TargetNoProgressTimeoutSec
-                // defaulting to 0 (disabled) nothing else breaks that loop: on
-                // 2026-09-05 the bot held one Olthoi for 5+ hours, ~3,100 casts,
-                // zero damage, zero kills, switches down from 126 to 3 per 4h.
-                //
-                // Bounded to the projectile flight window instead: long enough to
-                // cover a bolt in the air, short enough that a target which never
-                // takes damage returns to competing on its merits.
-                // Two bounds, and BOTH are needed:
-                //   * since the last cast — covers the bolt currently in flight;
-                //   * since the target was locked — caps how long we extend that
-                //     courtesy to a target that has never actually taken damage.
-                // The second bound is the important one. Without it the window
-                // refreshes on every cast, so a target under continuous fire keeps
-                // the bonus indefinitely, which is the same permanent-immunity bug
-                // in a different guise.
-                //
-                // Once damage HAS landed, _lastDamageDealtAt grants commitment with
-                // no time bound — finishing a wounded mob is exactly the intent.
-                bool undamaged = _lastDamageDealtAt == DateTime.MinValue;
-                bool withinFlightWindow =
-                    _lastAttackedTargetId == c.Id
-                    && _lastAttackedAt != DateTime.MinValue
-                    && (DateTime.Now - _lastAttackedAt).TotalMilliseconds <= CastCommitmentWindowMs;
-                bool withinUndamagedGrace =
-                    _targetLockedAt != DateTime.MinValue
-                    && (DateTime.Now - _targetLockedAt).TotalMilliseconds <= UndamagedCommitmentMaxMs;
-
-                if (!undamaged || (withinFlightWindow && withinUndamagedGrace))
-                    s += DAMAGE_COMMITMENT_BONUS;
-                if (c.Distance > acquireRange)
-                    s = meritScore;   // beyond MonsterRange: no stickiness, no commitment (see above)
-                heldScore = s;
-                incumbentSeen = true;
-                _lockedLastScore = s;
-                _lockedLastSeenInScan = DateTime.Now;
-            }
-            if (s > bestScore) { bestScore = s; bestId = c.Id; }
+            if (anyInRange && c.Distance > acquireRange) continue;
+            double key = SchemeKey(scheme, c);
+            if (!haveBest || BetterCandidate(key, c, bestKey, best)) { best = c; bestKey = key; haveBest = true; }
         }
+        if (!haveBest) return;
 
-        // Incumbent briefly absent from the scan: keep it in the running at its
-        // last known score for the grace window rather than letting it score
-        // nothing. Without this a transient scan gap hands the fight to whoever
-        // happens to be visible this tick, then the next tick hands it back —
-        // the A->B->A flapping seen repeatedly on 2026-09-03.
-        if (!incumbentSeen
-            && _lockedTargetId != 0
-            && _lockedPriority >= topPriority
-            && _lockedLastScore > double.MinValue
-            && _lockedLastSeenInScan != DateTime.MinValue
-            && (DateTime.Now - _lockedLastSeenInScan).TotalMilliseconds <= TARGET_SCAN_GRACE_MS)
-        {
-            heldScore = _lockedLastScore;
-            if (heldScore >= bestScore)
-                return; // incumbent still wins on its last known score — no switch
-        }
-
-        if (forcedId != 0) { bestId = forcedId; bestScore = double.NaN; heldScore = double.MinValue; }
-
-        if (bestId == 0 || bestId == _lockedTargetId) return;
-
-        // One line per real switch. After the scoring fixes a switch should be a
-        // genuine event (target died, left, or something decisively better showed
-        // up) — if this floods the log, selection is thrashing again and the two
-        // scores say by how much.
-        int bestPriority = PriorityOf(bestId);
+        // Is the incumbent still valid? In the scan (or briefly out of it, within the scan
+        // grace, at its last seen values), in the top tier, inside MonsterRange, not
+        // blacklisted or suppressed by a watchdog.
+        string? invalidWhy = null;
+        ScannedTarget inc = default;
         if (_lockedTargetId != 0)
         {
-            string held = forcedId != 0 ? "wounded, but another is more wounded"
-                        : _lockedPriority < bestPriority ? $"priority {_lockedPriority} < {bestPriority}"
-                        : heldScore == double.MinValue ? "gone" : heldScore.ToString("0.0");
-            _host.Log($"[CombatTarget] switch 0x{_lockedTargetId:X8} '{_worldFilter[_lockedTargetId]?.Name}' (score={held}, {DescribeTargetPos(_lockedTargetId)}) " +
-                      $"-> 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' (score={bestScore:0.0}, priority {bestPriority}, {DescribeTargetPos(bestId)})");
+            bool gone = false;
+            if (incInScan is { } seen)
+            {
+                inc = seen;
+                _lockedPriority = PriorityOf(seen.Id);
+                _lockedLastSeen = seen;
+                _lockedLastSeenInScan = now;
+            }
+            else
+            {
+                inc = _lockedLastSeen;   // its priority stays the last one seen (_lockedPriority)
+                gone = _lockedLastSeenInScan == DateTime.MinValue || inc.Id != _lockedTargetId
+                    || (now - _lockedLastSeenInScan).TotalMilliseconds > TARGET_SCAN_GRACE_MS;
+            }
+            invalidWhy = gone ? "gone"
+                : _lockedPriority < topPriority ? $"priority {_lockedPriority} < {topPriority}"
+                : inc.Distance > acquireRange ? $"out of Monster Range, {inc.Distance:0.0} m"
+                : _blacklistManager.IsBlacklisted(_lockedTargetId) ? "blacklisted"
+                : _recentlyKilled.ContainsKey(_lockedTargetId) ? "suppressed"
+                : null;
         }
+
+        string? switchWhy = null;
+        if (_lockedTargetId != 0 && invalidWhy == null)
+        {
+            // Target Lock on: keep it until it is no longer valid. Nothing to log.
+            if (_settings.TargetLock || best.Id == _lockedTargetId) return;
+
+            // Target Lock off: switch only to a clearly better one, and never with an attack
+            // at the incumbent still on its way.
+            double incKey = SchemeKey(scheme, inc);
+            if (incKey - bestKey < SchemeMargin(scheme)) return;
+            if (AttackInFlightAtLocked(now)) return;
+            switchWhy = $"{SchemeName(scheme)}: {DescribeSchemeValue(scheme, inc)}, another is clearly better";
+        }
+        else if (_lockedTargetId != 0)
+        {
+            if (best.Id == _lockedTargetId) return;   // its own tier's only choice (e.g. alone past the range)
+            switchWhy = invalidWhy;
+        }
+
+        // One line per real switch. A switch should be a genuine event (target died, left,
+        // or a higher priority showed up; with the lock off, something clearly better). If
+        // this floods the log, selection is thrashing again.
+        int bestId = best.Id;
+        int bestPriority = PriorityOf(bestId);
+        string picked = $"{SchemeName(scheme)}: {DescribeSchemeValue(scheme, best)}, priority {bestPriority}, {DescribeTargetPos(bestId)}";
+        if (_lockedTargetId != 0)
+            _host.Log($"[CombatTarget] switch 0x{_lockedTargetId:X8} '{_worldFilter[_lockedTargetId]?.Name}' ({switchWhy}, {DescribeTargetPos(_lockedTargetId)}) " +
+                      $"-> 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' ({picked})");
         else
-            _host.Log($"[CombatTarget] lock 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' (score={bestScore:0.0}, priority {bestPriority}, {DescribeTargetPos(bestId)})");
+            _host.Log($"[CombatTarget] lock 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' ({picked})");
 
         // [CombatLatency]: time this engagement from the lock to its first attack.
         double lockMs = Environment.TickCount64;
@@ -3267,8 +3515,8 @@ public partial class CombatManager : IDisposable
         _lockedPriority     = bestPriority;
         _targetLockedAt     = DateTime.Now;
         _lastDamageDealtAt  = DateTime.MinValue;
-        _lockedLastScore      = double.MinValue;   // new incumbent — no carried score yet
-        _lockedLastSeenInScan = DateTime.MinValue;
+        _lockedLastSeen       = best;   // it was in this tick's scan: the grace covers a blink next tick
+        _lockedLastSeenInScan = now;
         _consecutiveCastMisses = 0;
         _pendingJudgeCastAt = DateTime.MinValue;
         _facingTarget       = false;
@@ -3289,41 +3537,84 @@ public partial class CombatManager : IDisposable
         // inventory selection and drops an off-thread SetSelectedObject mutation.
     }
 
-    private double ScoreCandidate(in ScannedTarget c)
+    /// <summary>
+    /// A candidate's rank under <paramref name="scheme"/>: lower is better. Health that isn't
+    /// known (-1) counts as full. Combat is selection-free (SelectItem removed 2026-06-03), so
+    /// ACE pushes health only for the mob we are fighting and every other candidate reads -1;
+    /// reading that as 0 ("at death's door") made every untouched mob look nearly dead, and a
+    /// target's rank collapsed the moment we hit it and its real health arrived: pick, turn,
+    /// hit once, re-pick, turn again (the spin). An un-engaged mob is almost certainly at full
+    /// health.
+    /// </summary>
+    internal double SchemeKey(TargetScheme scheme, in ScannedTarget c) => scheme switch
     {
-        double maxDist = Math.Max(1.0, _settings.MonsterRange);
-        double distScore   = Math.Clamp((maxDist - c.Distance) / maxDist, 0.0, 1.0) * 100.0;
+        TargetScheme.LowestHealth => HealthOrFull(c.Id),
+        TargetScheme.Farthest     => -c.Distance,
+        TargetScheme.LeastTurning => c.Angle,
+        _                         => c.Distance,
+    };
 
-        // GetHealthRatio returns -1 for "no vitals received for this mob yet".
-        // Combat is selection-free (SelectItem removed 2026-06-03), so ACE only
-        // pushes health for the mob we are actually fighting — every other
-        // candidate reads -1. Math.Clamp(-1, 0, 1) folded that to 0.0, i.e. "at
-        // death's door", so every untouched mob collected the FULL 50-point
-        // wounded bonus while the mob we were burning down scored its real,
-        // smaller one.
-        //
-        // The nastier half: a target's score COLLAPSED by up to 45 points the
-        // instant we hit it and its true health finally arrived. Engaging a mob
-        // made it a worse choice than the untouched mob standing next to it, so
-        // combat was pushed off whatever it had just committed to and onto the
-        // next one — pick, turn, hit once, re-pick, turn again. That is the spin.
-        //
-        // Unknown health means "not engaged yet", and an un-engaged mob is almost
-        // certainly at full health. Score it that way.
-        float  hpRatio     = _worldFilter.GetHealthRatio(c.Id);
-        double hpScore     = hpRatio < 0f ? 0.0 : (1.0 - Math.Clamp(hpRatio, 0f, 1f)) * 50.0;
+    private double HealthOrFull(int id)
+    {
+        float r = _worldFilter.GetHealthRatio(id);
+        return r < 0f ? 1.0 : Math.Clamp(r, 0f, 1f);
+    }
 
-        // Continuous ramp rather than a hard step at 3.0m. As a step this was
-        // worth 30 points the moment a mob crossed the line — more than
-        // TARGET_SWITCH_STICKINESS (25) — so a mob jittering either side of 3.0m
-        // could flip the winner every tick regardless of our commitment.
-        double threatScore = Math.Clamp((THREAT_RANGE_M - c.Distance) / THREAT_RANGE_M, 0.0, 1.0) * 30.0;
+    /// <summary>Ranks <paramref name="c"/> ahead of the best so far: a lower key, ties to the
+    /// closer one, then the lower id (so the pick is stable tick to tick).</summary>
+    private static bool BetterCandidate(double key, in ScannedTarget c, double bestKey, in ScannedTarget best)
+    {
+        if (key != bestKey) return key < bestKey;
+        if (c.Distance != best.Distance) return c.Distance < best.Distance;
+        return (uint)c.Id < (uint)best.Id;
+    }
 
-        double facingScore = (1.0 - Math.Min(1.0, c.Angle / 180.0)) * 10.0;
+    /// <summary>With Target Lock off, how much better (in <see cref="SchemeKey"/> units) another
+    /// candidate must be than the incumbent to take over.</summary>
+    private static double SchemeMargin(TargetScheme scheme) => scheme switch
+    {
+        TargetScheme.LowestHealth => MoreWoundedMargin,
+        TargetScheme.LeastTurning => LessTurningMarginDeg,
+        _                         => CloserFartherMarginM,
+    };
 
-        // Monster priority is not scored here: HandleCombatTrigger only scores monsters of
-        // the top Priority in range (see PriorityOf), so within the field it's a constant.
-        return distScore + hpScore + threatScore + facingScore;
+    internal static string SchemeName(TargetScheme scheme) => scheme switch
+    {
+        TargetScheme.LowestHealth => "lowest health",
+        TargetScheme.Closest      => "closest",
+        TargetScheme.Farthest     => "farthest",
+        _                         => "least turning",
+    };
+
+    private string DescribeSchemeValue(TargetScheme scheme, in ScannedTarget c)
+    {
+        switch (scheme)
+        {
+            case TargetScheme.LowestHealth:
+                float r = _worldFilter.GetHealthRatio(c.Id);
+                return r < 0f ? "health unknown (as full)" : $"health {Math.Clamp(r, 0f, 1f) * 100:0}%";
+            case TargetScheme.LeastTurning:
+                return $"turn {c.Angle:0} deg";
+            default:
+                return $"{c.Distance:0.0} m";
+        }
+    }
+
+    /// <summary>
+    /// True while an attack at the locked target is still on its way: issued at it within
+    /// <see cref="CastCommitmentWindowMs"/> with no damage landed since. Capped by
+    /// <see cref="UndamagedCommitmentMaxMs"/> since the last damage (or the lock, when it never
+    /// took any), so continuous fire at a target that never takes damage can't hold it forever.
+    /// Only Target Lock off asks: with the lock on nothing switches a valid target anyway.
+    /// </summary>
+    private bool AttackInFlightAtLocked(DateTime now)
+    {
+        if (_lockedTargetId == 0 || _lastAttackedTargetId != _lockedTargetId || _lastAttackedAt == DateTime.MinValue)
+            return false;
+        if ((now - _lastAttackedAt).TotalMilliseconds > CastCommitmentWindowMs) return false;
+        if (_lastDamageDealtAt != DateTime.MinValue && _lastDamageDealtAt >= _lastAttackedAt) return false;   // it landed
+        DateTime progress = _lastDamageDealtAt != DateTime.MinValue ? _lastDamageDealtAt : _targetLockedAt;
+        return progress != DateTime.MinValue && (now - progress).TotalMilliseconds <= UndamagedCommitmentMaxMs;
     }
 
     /// <summary>The Priority of the monster rule that applies to <paramref name="id"/> (its own
@@ -3731,9 +4022,9 @@ public partial class CombatManager : IDisposable
             ResetStanceFlipBackoff();
             return true;
         }
-        if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
+        if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+            && _host.ChangeCombatModeFor(CombatMode.Melee, "Combat", "stance"))
         {
-            _host.ChangeCombatMode(CombatMode.Melee);
             lastStanceAttempt = DateTime.Now;
             NoteStanceFlipSent();
         }
@@ -3941,7 +4232,6 @@ public partial class CombatManager : IDisposable
                 _lastStanceRecoverAt = DateTime.Now;
                 _stanceReEquipAttempts++;
                 _host.Log($"[EquipDiag] STANCE STUCK {stuckMs:0}ms mode={CurrentCombatMode}≠{desiredMode} (wielded reads true) — re-equip attempt {_stanceReEquipAttempts}/{StanceReEquipMaxAttempts} 0x{targetWeaponId:X8}");
-                if (_host.HasForceResetBusyCount) _host.ForceResetBusyCount();
                 _host.UseFor((uint)targetWeaponId, "Combat", "stance stuck: equip again");
                 _lastEquipTime = DateTime.Now;
                 lastStanceAttempt = DateTime.MinValue; // let ChangeCombatMode re-fire next tick
@@ -3958,10 +4248,10 @@ public partial class CombatManager : IDisposable
                 _host.WriteToChat($"[RynthAi] Stance wedged: wand wielded but AC won't enter {(desiredMode == CombatMode.Magic ? "Magic" : "combat")} mode after {stuckMs / 1000:0}s. Re-equip stopped (was jamming item actions). Try /ra clearbusy, or relog if it persists.", 2);
             }
 
-            if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
+            if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+                && _host.ChangeCombatModeFor(desiredMode, "Combat", "stance"))
             {
                 if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=true mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource}) — sending ChangeCombatMode"); }
-                _host.ChangeCombatMode(desiredMode);
                 lastStanceAttempt = DateTime.Now;
                 NoteStanceFlipSent();
             }
@@ -4008,9 +4298,9 @@ public partial class CombatManager : IDisposable
             // mode bare-handed (throttled) and send no wield.
             if (!allowWield)
             {
-                if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
+                if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+                    && _host.ChangeCombatModeFor(desiredMode, "Combat", "stance"))
                 {
-                    _host.ChangeCombatMode(desiredMode);
                     lastStanceAttempt = DateTime.Now;
                     NoteStanceFlipSent();
                 }
@@ -4045,10 +4335,12 @@ public partial class CombatManager : IDisposable
             // nothing when the wand genuinely isn't wielded: ACE just denies it, and the
             // gated UseObject below still does the wielding. Mirrors the non-wand branch,
             // which has always sent both.
-            if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
+            // A weapon still in hand: the wand's use swaps it and the server then puts us in Magic.
+            if (FindWieldedNonWandWeapon(targetWeaponId) == 0
+                && (DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+                && _host.ChangeCombatModeFor(desiredMode, "Combat", "stance"))
             {
                 if (diagNow) _host.Log($"[EquipDiag] hand clear — ChangeCombatMode({desiredMode}) alongside wand equip (mode={CurrentCombatMode})");
-                _host.ChangeCombatMode(desiredMode);
                 lastStanceAttempt = DateTime.Now;
                 NoteStanceFlipSent();
             }
@@ -4102,13 +4394,10 @@ public partial class CombatManager : IDisposable
         //    OnCombatModeChange). Request both a mode change and an equip — these go in the
         //    main hand, which AC swaps in place (no held-slot collision). ChangeCombatMode
         //    succeeds if already wielded (fixes hot-reload next tick); UseObject equips it if not.
-        if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
-        {
-            if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=FALSE mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource} class={weaponObj.ObjectClass}) — ChangeCombatMode"); }
-            _host.ChangeCombatMode(desiredMode);
-            lastStanceAttempt = DateTime.Now;
-            NoteStanceFlipSent();
-        }
+        //    The wield goes first (2026-10-06): both went out within 3 ms (07:13:16.446/.453), a
+        //    mode change on top of an unanswered action. With the pacing on, the mode change waits
+        //    for the wield's answer (and once the weapon reads wielded, the wielded branch above
+        //    sends it); off, both still go in this tick, as before.
         if (allowWield && (DateTime.Now - _lastEquipTime).TotalMilliseconds > 2000
             && ClearOffhandFor(targetWeaponId, _curOffhandMode) == OffPrep.Ready   // a shield off before a two-hander / launcher
             && (desiredMode != CombatMode.Missile || PrepareAmmoFor(targetWeaponId) == AmmoPrep.Ready)
@@ -4118,6 +4407,13 @@ public partial class CombatManager : IDisposable
             _host.UseFor((uint)targetWeaponId, "Combat", "equip the weapon");
             MarkWieldSent(targetWeaponId, inHand);
             _lastEquipTime = DateTime.Now;
+        }
+        if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+            && _host.ChangeCombatModeFor(desiredMode, "Combat", "stance"))
+        {
+            if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=FALSE mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource} class={weaponObj.ObjectClass}) — ChangeCombatMode"); }
+            lastStanceAttempt = DateTime.Now;
+            NoteStanceFlipSent();
         }
         return false;
     }
@@ -4129,6 +4425,16 @@ public partial class CombatManager : IDisposable
     private bool EnsureHandClearForWand(int wandId, bool diagNow)
     {
         int bowId = FindWieldedNonWandWeapon(wandId);
+        DateTime now = DateTime.Now;
+        if (bowId != 0 && !_combatDirectWandSwapFailed && IsWieldedLive(bowId))
+        {
+            if (_combatDirectSwapSince == DateTime.MinValue) _combatDirectSwapSince = now;
+            if ((now - _combatDirectSwapSince).TotalMilliseconds <= DirectWandSwapFallbackMs)
+                return true;   // the wand's use swaps
+            _combatDirectWandSwapFailed = true;
+            _host.Log($"[EquipDiag] using the wand didn't put 0x{(uint)bowId:X8} away in {DirectWandSwapFallbackMs:0} ms; from now on the weapon goes into a pack first");
+        }
+        _combatDirectSwapSince = DateTime.MinValue;
         if (bowId == 0)
         {
             _combatBowDequipPendingId = 0; _combatBowDequipAttempts = 0;
@@ -4138,7 +4444,6 @@ public partial class CombatManager : IDisposable
             return ClearOffhandFor(wandId, _curOffhandMode, gateHeld: true) == OffPrep.Ready;
         }
 
-        DateTime now = DateTime.Now;
         if (_combatBowDequipPendingId == bowId
             && (now - _combatBowDequipAt).TotalMilliseconds < WandSwapWieldResolveMs
             && IsWieldedLive(bowId))
@@ -4146,7 +4451,7 @@ public partial class CombatManager : IDisposable
 
         if (IsWieldedLive(bowId))
         {
-            int openPack = WorldObjectCache.FindPackFor(_host, _worldFilter, includeMainPack: true, requireFree: 1);
+            int openPack = OpenPackOverride?.Invoke() ?? WorldObjectCache.FindPackFor(_host, _worldFilter, includeMainPack: true, requireFree: 1);
             if (openPack == 0 || _combatBowDequipAttempts >= CombatBowDequipMaxAttempts)
             {
                 // No verified-open pack to receive the bow, or repeated failures — the swap
@@ -4165,6 +4470,7 @@ public partial class CombatManager : IDisposable
             }
             _combatBowDequipAttempts++;
             _host.MoveItemInternal((uint)bowId, (uint)openPack, 0, 1); // amount>=1 (engine rejects 0)
+            _weaponSwapGate?.NoteMove(bowId, wieldedNow: true);
             _combatBowDequipPendingId = bowId;
             _combatBowDequipAt = now;
             _host.Log($"[EquipDiag] dequip bow 0x{(uint)bowId:X8} -> pack 0x{(uint)openPack:X8} (attempt {_combatBowDequipAttempts}/{CombatBowDequipMaxAttempts}) before wand equip");
@@ -4235,9 +4541,9 @@ public partial class CombatManager : IDisposable
             // for good, even in Magic mode, so a Recall waypoint never cast and sat
             // out the whole portal timeout.
             if (CurrentCombatMode == CombatMode.Magic) { ResetStanceFlipBackoff(); return true; }
-            if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
+            if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+                && _host.ChangeCombatModeFor(CombatMode.Magic, "Combat", "stance"))
             {
-                _host.ChangeCombatMode(CombatMode.Magic);
                 lastStanceAttempt = DateTime.Now;
                 NoteStanceFlipSent();
             }
@@ -4254,9 +4560,9 @@ public partial class CombatManager : IDisposable
         if (alreadyWielded)
         {
             if (CurrentCombatMode == CombatMode.Magic) { ResetWandSwapState(); ResetStanceFlipBackoff(); return true; }
-            if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
+            if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+                && _host.ChangeCombatModeFor(CombatMode.Magic, "Combat", "stance"))
             {
-                _host.ChangeCombatMode(CombatMode.Magic);
                 lastStanceAttempt = DateTime.Now;
                 NoteStanceFlipSent();
             }
@@ -4434,6 +4740,64 @@ public partial class CombatManager : IDisposable
             }
         }
         catch { }
+    }
+
+    /// <summary>
+    /// Before a wall at <paramref name="targetId"/>: true = don't cast this tick. Facing within
+    /// <see cref="WallFaceToleranceDeg"/>: false, cast (no turn). Further off: snap the heading to
+    /// the target and hold for <see cref="WallFaceSettleMs"/>, then cast, unless the target has
+    /// since drifted more than <see cref="WallFaceDriftDeg"/> off (then snap again).
+    /// </summary>
+    internal bool HoldForWallFacing(int targetId)
+    {
+        DateTime now = WallClock();
+        if (_wallFaceAt != DateTime.MinValue && _wallFaceTarget == targetId)
+        {
+            if ((now - _wallFaceAt).TotalMilliseconds < WallFaceSettleMs) return true;   // the server catching up
+            _wallFaceAt = DateTime.MinValue;
+            if (GetFacingError(targetId) <= WallDriftAllowedDeg(targetId) || _wallFaceSnaps >= WallFaceMaxSnaps)
+            {
+                _wallFaceSnaps = 0;
+                return false;                                                              // turned and settled: cast
+            }
+        }
+        else _wallFaceSnaps = 0;
+        _wallFaceAt = DateTime.MinValue;
+
+        if (!TryGetHeadingTo(targetId, out double desiredDeg, out double error)) return false;   // can't tell: cast as is
+        if (error <= WallFaceToleranceDeg) return false;
+        if (!_host.HasTurnToHeading) return false;     // FindBestShapedSpell doesn't pick a wall then
+        if (!_host.TurnToHeadingBy("Combat", (float)desiredDeg)) return true;   // held by the pacer: next tick
+        _wallFaceTarget = targetId;
+        _wallFaceAt = now;
+        _wallFaceSnaps++;
+        _host.Log($"[CombatCast] wall: facing 0x{(uint)targetId:X8} first ({error:0} deg off), casting in {WallFaceSettleMs:0} ms");
+        return true;
+    }
+
+    /// <summary>The heading from the player to <paramref name="targetId"/> (0 = north, clockwise)
+    /// and how far the player's facing is off it (absolute degrees).</summary>
+    private bool TryGetHeadingTo(int targetId, out double desiredDeg, out double absError)
+    {
+        desiredDeg = 0; absError = 180.0;
+        try
+        {
+            if (!_host.TryGetPlayerPose(out _, out float px, out float py, out _,
+                    out float qw, out _, out _, out float qz))
+                return false;
+            if (!_host.TryGetObjectPosition((uint)targetId, out _, out float tx, out float ty, out _))
+                return false;
+            desiredDeg = Math.Atan2(tx - px, ty - py) * (180.0 / Math.PI);
+            if (desiredDeg < 0) desiredDeg += 360.0;
+            double physYawDeg = 2.0 * Math.Atan2(qz, qw) * (180.0 / Math.PI);
+            double currentDeg = ((-physYawDeg) % 360.0 + 720.0) % 360.0;
+            double error = desiredDeg - currentDeg;
+            while (error > 180.0) error -= 360.0;
+            while (error < -180.0) error += 360.0;
+            absError = Math.Abs(error);
+            return true;
+        }
+        catch { return false; }
     }
 
     private void ClearCombatTurnMotions()
@@ -4652,6 +5016,7 @@ public partial class CombatManager : IDisposable
             else
                 _host.MeleeAttack(targetId, acHeight, power);
 
+            RynthCore.Plugin.Shared.ActionPacer.NoteAttackSent();   // nothing else starts before this swing plays
             _serverAttackTargetId = activeTargetId;
             LastCombatSkipReason = "attack"; // D4 record-only: physical attack sent this tick
             return true;
@@ -4698,6 +5063,7 @@ public partial class CombatManager : IDisposable
 
     private void AttackWithMagic(WorldObject target)
     {
+        _wallFaceHeld = false;
         if (_spellManager == null || target == null) return;
 
         // Hard safety veto: never cast offensive magic at something AC's combat
@@ -4780,7 +5146,7 @@ public partial class CombatManager : IDisposable
 
                 try
                 {
-                    _host.CastSpell((uint)activeTargetId, spellId);
+                    _host.CastSpellFor((uint)activeTargetId, spellId, "Combat", SpellTableStub.GetById(spellId)?.Name ?? $"spell {spellId}");
                     MarkCombatCastIssued();
                     _lastSpellCast = DateTime.Now;
                     _lastCastWasRing = false;
@@ -4798,7 +5164,7 @@ public partial class CombatManager : IDisposable
 
         if (rule != null && PickBaseShape(rule) < 0)
         {
-            _host.Log($"[CombatCast] rule '{rule.Name}' has no attack shapes enabled (UseArc/Ring/Streak/Bolt/Blast all false) — no offensive cast");
+            _host.Log($"[CombatCast] rule '{rule.Name}' has no attack shapes enabled (UseArc/Ring/Streak/Bolt/Blast/Wall all false) — no offensive cast");
             LastCombatSkipReason = "no-attack-shapes"; // D4 record-only
             return;
         }
@@ -4823,22 +5189,34 @@ public partial class CombatManager : IDisposable
             }
         }
         LogArcChoice(rule, target, castShape);
+        // A wall flies along the caster's facing and the server doesn't turn the caster for it:
+        // face the target first and let the new heading reach the server (2026-10-08).
+        if (offensiveSpellId != 0 && castShape == ShapeWall && HoldForWallFacing(activeTargetId))
+        {
+            _wallFaceHeld = true;
+            LastCombatSkipReason = "wall-face"; // D4 record-only
+            return;
+        }
+        // A ring or a wall hits several monsters: its damage isn't the fight target's alone.
+        bool multiTarget = isRing || castShape == ShapeWall;
         if (offensiveSpellId != 0)
         {
             LastCombatSkipReason = "cast"; // D4 record-only: offensive cast issued this tick
             // Visibility: log exactly what war/void spell we're about to cast
             // (id + resolved name + element/tier/target). Diagnostic only.
-            _host.Log($"[CombatCast] offensive id={offensiveSpellId} " +
+            _lastOffensiveCastLine = $"offensive id={offensiveSpellId} " +
                       $"'{SpellTableStub.GetById(offensiveSpellId)?.Name}' elem={element} " +
-                      $"shape={ShapeName(castShape)} ring={isRing} warTier={warTier} voidTier={voidTier} target='{target.Name}'");
+                      $"shape={ShapeName(castShape)} ring={isRing} warTier={warTier} voidTier={voidTier} target='{target.Name}'";
+            _host.Log("[CombatCast] " + _lastOffensiveCastLine);
             try
             {
-                _host.CastSpell((uint)activeTargetId, offensiveSpellId);
+                _host.CastSpellFor((uint)activeTargetId, offensiveSpellId, "Combat", SpellTableStub.GetById(offensiveSpellId)?.Name ?? $"spell {offensiveSpellId}");
                 MarkCombatCastIssued();
                 SessionAttackCasts++;      // D6: offensive attack-cast tally for the casts-per-kill signal
                 CastsSinceLastKill++;      //     reset in OnKillNotification when a kill lands
                 _lastSpellCast = DateTime.Now;
-                _lastCastWasRing = isRing;
+                _lastCastWasRing = multiTarget;   // walls too: area casts (2026-10-08)
+                _wallFaceAt = DateTime.MinValue;  // the next wall checks its facing afresh
                 // _offensiveCastThisCycle is NOT set here anymore — a cast
                 // attempt that the server refuses (e.g. "You're too busy!")
                 // must not count toward the blacklist miss streak. The
@@ -4861,10 +5239,16 @@ public partial class CombatManager : IDisposable
                 // castable tier (which made every magic kill record tier 8). Fall back to the
                 // old max-tier only if the level can't be derived, so it never regresses to blank.
                 int castLevel = SpellTableStub.GetById(offensiveSpellId)?.Level ?? 0;
+                // Walls have no tier in their names: their level from their power (2026-10-08).
+                if (castLevel <= 0 && SpellDatabase.TryGetCategoryAndPower(offensiveSpellId, out _, out int castPower))
+                    castLevel = SpellDatabase.LevelFromPower(castPower);
                 int castTierMag = castLevel > 0 ? castLevel : Math.Max(warTier, voidTier);
                 // Ring spells are stored as a NEGATIVE tier so the Damage tab can render them as
                 // "R<level>" (e.g. a level-2 ring = -2 -> "R2"); non-ring stays positive; 0 = none.
-                _lastCastTier     = isRing ? -castTierMag : castTierMag;
+                // Walls are filed with the rings (2026-10-08): an area cast's kills and casts-to-kill
+                // must not mix with the single-target tier of the same level. (The Damage tab shows
+                // them as "R<level>" until it has a label of its own for walls.)
+                _lastCastTier     = multiTarget ? -castTierMag : castTierMag;
                 // Record the latest tier used vs this monster so the Damage tab's collapsed row
                 // reflects it immediately (covers ring casts, which skip RecordHit).
                 if (_fightTargetWcid != 0) _damageStore?.NoteCast(_fightTargetWcid, _lastCastTier, _fightTargetName);
@@ -4881,7 +5265,7 @@ public partial class CombatManager : IDisposable
                     _lastFightCount    = _fightCastCount;
                     StampRecentFight();
                 }
-                EvaluateKillShot(_lastCastWeaponId, element, _lastCastTier, isRing);
+                EvaluateKillShot(_lastCastWeaponId, element, _lastCastTier, multiTarget);
             }
             catch { }
         }
@@ -5024,7 +5408,11 @@ public partial class CombatManager : IDisposable
         name = name.Trim();
         int id = TrySpellByName(name);
         if (id != 0) return id;
-        int maxTier = Math.Max(EffectiveMaxTier(AcSkillType.CreatureEnchantment), EffectiveMaxTier(AcSkillType.LifeMagic));
+        // Void too (2026-10-08): "Corruption" with Corruption V and VII known cast V, because only
+        // Creature and Life set the cap and the search started below VII. Debuffs come from these
+        // three schools; a level the character doesn't know is never picked.
+        int maxTier = Math.Max(Math.Max(EffectiveMaxTier(AcSkillType.CreatureEnchantment), EffectiveMaxTier(AcSkillType.LifeMagic)),
+                               EffectiveMaxTier(AcSkillType.VoidMagic));
         if (maxTier >= 8) { id = TrySpellByName($"Incantation of {name}"); if (id != 0) { tier = 8; return id; } }
         for (int t = Math.Min(maxTier, 7); t >= 1; t--)
         {
@@ -5155,7 +5543,8 @@ public partial class CombatManager : IDisposable
     /// <summary>
     /// The base shape a rule asks for when no ring is due: Arc, then Streak, then Blast, then
     /// Bolt (the first one on wins; Blast beats Bolt so turning Blast on next to the default Bolt
-    /// does something). A ring-only rule casts Bolt between rings. -1 = no shape on at all.
+    /// does something). A ring-only rule casts Bolt between rings, and a wall-only rule (or ring and
+    /// wall only) Bolt between walls. -1 = no shape on at all.
     /// </summary>
     internal static int PickBaseShape(MonsterRule? rule)
     {
@@ -5164,7 +5553,7 @@ public partial class CombatManager : IDisposable
         if (rule.UseStreak) return ShapeStreak;
         if (rule.UseBlast)  return ShapeBlast;
         if (rule.UseBolt)   return ShapeBolt;
-        return rule.UseRing ? ShapeBolt : -1;
+        return rule.UseRing || rule.UseWall ? ShapeBolt : -1;
     }
 
     /// <summary>
@@ -5195,9 +5584,83 @@ public partial class CombatManager : IDisposable
         return count;
     }
 
+    // ── Wall spells (2026-10-08) ─────────────────────────────────────────────────
+    // A wall is 10 projectiles in a block 5 wide and 2 high (ACE spell table: dims 5x1x2, padding
+    // 0.8, created 2 m ahead of the caster) that fly straight along the caster's facing: it is an
+    // UNTARGETED spell (the client sends CastUntargetedSpell for it even with a target selected,
+    // and ACE launches it along the caster's forward vector), so the server never turns the caster
+    // to the target as it does for bolts and blasts. Its swath is therefore a corridor a few metres
+    // wide, not a fan: monsters are counted when they are ahead of the caster, within the range,
+    // and within WallHalfWidth of the line to the target (the target included). We turn to face
+    // the target before the cast (HoldForWallFacing), so that line is where the wall goes.
+    internal const double WallHalfWidth = 4.0;
+
+    /// <summary>Tests: the wall-path count instead of the scan (the scan needs a live world).</summary>
+    internal Func<int>? WallPathCountOverride { get; set; }
+
+    /// <summary>Monsters (the target included) in a wall's path toward <paramref name="targetId"/>:
+    /// ahead of the caster, within <paramref name="rangeYards"/>, and within <see cref="WallHalfWidth"/>
+    /// of the line to the target. From the combat scan: LOS-clear and attackable. 0 when the target
+    /// isn't in the scan (its bearing is unknown).</summary>
+    private int CountMonstersInWallPath(double rangeYards, int targetId)
+    {
+        if (WallPathCountOverride != null) return WallPathCountOverride();
+        double toTarget = double.NaN;
+        foreach (var c in _scannedTargets)
+            if (c.Id == targetId) { toTarget = c.Bearing; break; }
+        if (double.IsNaN(toTarget)) return 0;
+        int count = 0;
+        foreach (var c in _scannedTargets)
+        {
+            if (c.Distance > rangeYards || double.IsNaN(c.Bearing) || _recentlyKilled.ContainsKey(c.Id)) continue;
+            if (InWallPath(c.Distance, c.Bearing - toTarget)) count++;
+        }
+        return count;
+    }
+
+    /// <summary>Is a monster <paramref name="distance"/> away, <paramref name="offDeg"/> degrees off the
+    /// line to the target, in the wall's path: ahead of the caster and within <see cref="WallHalfWidth"/>
+    /// of that line.</summary>
+    internal static bool InWallPath(double distance, double offDeg)
+    {
+        double rad = offDeg * (Math.PI / 180.0);
+        double ahead = distance * Math.Cos(rad);
+        double aside = Math.Abs(distance * Math.Sin(rad));
+        return ahead >= 0 && aside <= WallHalfWidth;
+    }
+
+    /// <summary>
+    /// The wall of <paramref name="element"/> to cast: among the known spells of its wall category
+    /// (<see cref="WallCategories"/>), the highest level the War tier allows (the level by ACE's
+    /// server formula from the spell's power, <see cref="SpellDatabase.LevelFromPower"/>: the same
+    /// tier limit the tiered shapes use), then the highest power, then the lowest id (the retail
+    /// wall). 0 = none: Nether, an element without walls, War untrained, or no wall known.
+    /// </summary>
+    internal int FindBestWallSpell(string element)
+    {
+        if (_spellManager == null || !_spellManager.IsKnownSnapshotWarm) return 0;   // cold: don't guess
+        if (!WallCategories.TryGetValue(element, out int category)) return 0;
+        if (_charSkills != null && _charSkills[AcSkillType.WarMagic].Training < 2) return 0;
+        int maxTier = EffectiveMaxTier(AcSkillType.WarMagic);
+        int best = 0, bestLevel = 0, bestPower = -1;
+        foreach (int id in SpellDatabase.IdsInCategory(category))
+        {
+            if (!_spellManager.IsKnownSpellId(id)) continue;
+            SpellDatabase.TryGetCategoryAndPower(id, out _, out int power);
+            int level = SpellDatabase.LevelFromPower(power);
+            if (level < 1 || level > maxTier) continue;
+            if (level > bestLevel || (level == bestLevel && power > bestPower))
+            {
+                best = id; bestLevel = level; bestPower = power;
+            }
+        }
+        return best;
+    }
+
     internal static string ShapeName(int shape) => shape switch
     {
-        ShapeArc => "Arc", ShapeRing => "Ring", ShapeStreak => "Streak", ShapeBolt => "Bolt", ShapeBlast => "Blast", _ => "?",
+        ShapeArc => "Arc", ShapeRing => "Ring", ShapeStreak => "Streak", ShapeBolt => "Bolt", ShapeBlast => "Blast",
+        ShapeWall => "Wall", _ => "?",
     };
 
     /// <summary>
@@ -5251,16 +5714,24 @@ public partial class CombatManager : IDisposable
     ///   2. Blast override (Blast Range on): Blast when its fan count is met, else the rule's
     ///      other shape (<paramref name="blastConditional"/>, <paramref name="blastFanMet"/>);
     ///   3. Ring override (Ring Range on): Ring when its count is met (<paramref name="ringDue"/>);
+    ///   3b. Wall override (Wall Range on, 2026-10-08): Wall when its path count is met and a wall
+    ///      is known (<paramref name="wallDue"/>), unless a ring is due. So with several due: Ring,
+    ///      then Wall, then Blast, then the base shape. A ring hits all around and needs no turn;
+    ///      a wall reaches further along a line but costs a turn, and outdoes a blast's 3 bolts;
     ///   4. Arc when clear: an Arc whose flight path to the target is blocked (a wall, or a
     ///      ceiling the arc rises into) gives way to the rule's other shape: Streak, then Blast
     ///      (when Blast isn't conditional), then Bolt. An Arc-only rule casts Bolt, as a ring-only
     ///      rule does between rings.
-    /// <paramref name="arcBlocked"/> is asked only in step 4, so a ring or a non-arc rule costs
-    /// no ray test; null (no test, or it can't tell: raycasting off or not ready) casts the Arc
-    /// as before. <paramref name="arcGaveWay"/> says step 4 replaced the Arc.
+    /// <paramref name="arcBlocked"/> is asked only in step 4, so a ring, a wall or a non-arc rule
+    /// costs no ray test; null (no test, or it can't tell: raycasting off or not ready) casts the
+    /// Arc as before. <paramref name="arcGaveWay"/> says step 4 replaced the Arc.
     /// </summary>
     internal static int ChooseCastShape(MonsterRule? rule, bool blastConditional, bool blastFanMet, bool ringDue,
         Func<bool?>? arcBlocked, out bool arcGaveWay)
+        => ChooseCastShape(rule, blastConditional, blastFanMet, ringDue, wallDue: false, arcBlocked, out arcGaveWay);
+
+    internal static int ChooseCastShape(MonsterRule? rule, bool blastConditional, bool blastFanMet, bool ringDue,
+        bool wallDue, Func<bool?>? arcBlocked, out bool arcGaveWay)
     {
         arcGaveWay = false;
         int shape = PickBaseShape(rule);
@@ -5269,6 +5740,8 @@ public partial class CombatManager : IDisposable
             shape = blastFanMet ? ShapeBlast : PickBaseShapeWithoutBlast(rule);
         if (ringDue)
             return ShapeRing;
+        if (wallDue)
+            return ShapeWall;
         if (shape == ShapeArc && arcBlocked != null && arcBlocked() == true)
         {
             arcGaveWay = true;
@@ -5359,7 +5832,7 @@ public partial class CombatManager : IDisposable
             _host.Log($"[CombatCast] rule '{rule.Name}': Arc when its flight path is clear, else {other}" +
                       (_settings.EnableRaycasting ? "" : " (raycasting off: arcs are always cast)"));
         }
-        if (castShape == ShapeRing) return;   // the ring override won: no arc question this cast
+        if (castShape == ShapeRing || castShape == ShapeWall) return;   // an override won: no arc question this cast
         string state = _lastShapeArcGaveWay
             ? $"arc blocked ({(ArcBlockedOverride != null ? "test" : DescribeArcBlock(in _arcVerdictDetail))}): {(castShape >= 0 ? ShapeName(castShape) : "nothing")} instead"
             : "arc clear";
@@ -5406,9 +5879,30 @@ public partial class CombatManager : IDisposable
         bool ringDue = rule != null && rule.UseRing && _settings.RingRange > 0
             && CountMonstersInRange(_settings.RingRange) >= Math.Max(1, _settings.MinRingTargets);
 
-        int shapeIdx = ChooseCastShape(rule, blastConditional, blastFanMet, ringDue,
+        // Wall override (Wall Range on): a wall when enough monsters are in its path toward the
+        // target and the character knows a wall of this element (none for Nether). Asked only for a
+        // real cast (an element probe has no target, so no path), and only when no ring is due.
+        // Without the host's heading snap the character can't be turned, so a wall is cast only
+        // when it already faces the target.
+        int wallId = 0;
+        bool wallDue = false;
+        if (!ringDue && arcTargetId != 0 && rule != null && rule.UseWall && _settings.WallRange > 0
+            && CountMonstersInWallPath(_settings.WallRange, arcTargetId) >= Math.Max(1, _settings.MinWallTargets)
+            && (_host.HasTurnToHeading || GetFacingError(arcTargetId) <= WallFaceToleranceDeg))
+        {
+            wallId = FindBestWallSpell(element);
+            wallDue = wallId != 0;
+        }
+
+        int shapeIdx = ChooseCastShape(rule, blastConditional, blastFanMet, ringDue, wallDue,
             arcTargetId != 0 ? () => IsArcBlockedTo(arcTargetId) : null, out bool arcGaveWay);
         if (arcTargetId != 0) _lastShapeArcGaveWay = arcGaveWay;
+
+        if (shapeIdx == ShapeWall)
+        {
+            castShape = ShapeWall;
+            return wallId;
+        }
 
         if (!TryGetShapeBase(element, shapeIdx, useVoid, out string baseName, out string? t7, out bool forcedWar)) return 0;
         if (forcedWar) skill = AcSkillType.WarMagic;

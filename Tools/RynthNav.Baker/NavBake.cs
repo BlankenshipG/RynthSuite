@@ -106,6 +106,13 @@ internal static class NavBake
     /// </summary>
     public static float AgentMaxClimb = 1.0f;
 
+    /// <summary>
+    /// How far a wall outline may be simplified. 1.3 m was fine inside the old 2 m agent margin;
+    /// with a body-sized radius (0.6 m: gaps under about 4 m no longer close, Shoushi 2026-10-08)
+    /// a 1.3 m simplification could cut a corner through the margin, so it follows the radius.
+    /// </summary>
+    internal static float EdgeMaxError(float radius) => Math.Min(1.3f, radius + 0.15f);
+
     private static RcNavMeshBuildSettings Settings(float radius, bool tiled, float cellSize)
     {
         float slopeDeg = (float)(Math.Acos(TerrainSampler.FloorZ) * 180.0 / Math.PI);
@@ -115,7 +122,7 @@ internal static class NavBake
             agentHeight = 2.0f, agentRadius = radius, agentMaxClimb = AgentMaxClimb, agentMaxSlope = slopeDeg,
             minRegionSize = 8, mergedRegionSize = 20, partitioning = (int)RcPartition.WATERSHED,
             filterLowHangingObstacles = true, filterLedgeSpans = true, filterWalkableLowHeightSpans = true,
-            edgeMaxLen = 12f, edgeMaxError = 1.3f, vertsPerPoly = VertsPerPoly, detailSampleDist = 6f, detailSampleMaxError = 1f,
+            edgeMaxLen = 12f, edgeMaxError = EdgeMaxError(radius), vertsPerPoly = VertsPerPoly, detailSampleDist = 6f, detailSampleMaxError = 1f,
             // The solo bake reads the intermediate results (the .obj export); the tiled bake only
             // needs the finished navmesh, and keeping every tile's heightfields cost 1.5-2.7 GB a chunk.
             tiled = tiled, tileSize = tiled ? TiledTileSize : 0, keepInterResults = !tiled, buildAll = true,

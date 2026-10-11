@@ -114,13 +114,14 @@ public sealed partial class RynthNavPlugin
         long now = NowMs;
         if (landblockChanged && _hasPose)
         {
-            try { _tileHere = File.Exists(Path.Combine(NavDataDir, $"nav_{CurrentLandblock:X4}.tile")) ? 1 : 0; } catch { _tileHere = -1; }
+            // A dungeon's tile is its landblock's surface: no navmesh here (RynthNavPlugin.InDungeon).
+            try { _tileHere = !InDungeon(_cellId) && File.Exists(Path.Combine(NavDataDir, $"nav_{CurrentLandblock:X4}.tile")) ? 1 : 0; } catch { _tileHere = -1; }
         }
         if (now < _nextInfoMs || now - Interlocked.Read(ref _lastStatusPollMs) > PanelPollWindowMs) return;
         _nextInfoMs = now + InfoRefreshMs;
         if (Interlocked.Exchange(ref _infoBusy, 1) != 0) return;
         uint lb = CurrentLandblock;
-        bool hasPose = _hasPose;
+        bool hasPose = _hasPose, dungeon = InDungeon(_cellId);
         Task.Run(() =>
         {
             try
@@ -129,7 +130,7 @@ public sealed partial class RynthNavPlugin
                 if (Directory.Exists(NavDataDir))
                     foreach (string _ in Directory.EnumerateFiles(NavDataDir, "nav_*.tile")) n++;
                 _tilesOnDisk = n;
-                if (hasPose) _tileHere = File.Exists(Path.Combine(NavDataDir, $"nav_{lb:X4}.tile")) ? 1 : 0;
+                if (hasPose) _tileHere = !dungeon && File.Exists(Path.Combine(NavDataDir, $"nav_{lb:X4}.tile")) ? 1 : 0;
             }
             catch { }
             finally { Interlocked.Exchange(ref _infoBusy, 0); }
@@ -152,6 +153,14 @@ public sealed partial class RynthNavPlugin
           .Append("\",\"tileHere\":").Append(_tileHere).Append(",\"indoors\":").Append(_hasPose && (cell & 0xFFFF) >= 0x100 ? 1 : 0)
           .Append(",\"onDisk\":").Append(_tilesOnDisk)
           .Append(",\"townNet\":").Append(_townNet != null ? 1 : 0).Append(",\"townNetStatus\":\"").Append(Esc(_townNetStatus)).Append("\"}");
+        // Path markers (RynthNavPlugin.Markers.cs) and "save as nav route" (RynthNavPlugin.SaveRoute.cs), 0.6.6+.
+        PlannedTrip? trip = _trip;
+        sb.Append(",\"markers\":{\"on\":").Append(_markersOn ? 1 : 0).Append(",\"labels\":").Append(_markerLabels ? 1 : 0)
+          .Append(",\"guide\":").Append(_markerGuide ? 1 : 0).Append(",\"shown\":").Append(trip != null && _tripShown ? 1 : 0)
+          .Append(",\"status\":\"").Append(Esc(_markerStatus)).Append("\"}");
+        sb.Append(",\"save\":{\"can\":").Append(trip != null ? 1 : 0).Append(",\"for\":\"").Append(Esc(trip?.Goal ?? ""))
+          .Append("\",\"name\":\"").Append(Esc(_saveDefault)).Append("\",\"conflict\":\"").Append(Esc(_saveConflict))
+          .Append("\",\"busy\":").Append(_saveBusy ? 1 : 0).Append(",\"last\":\"").Append(Esc(_saveLast)).Append("\"}");
     }
 
     // ── The character's own recall spots, for the Recalls section (travel JSON) ──

@@ -50,6 +50,17 @@
          RynthAi's JSON against the engine's real reader. Same relative engine path the plugin
          itself references. -->
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\Data\RadarSnapshotJson.cs" Link="Engine\RadarSnapshotJson.cs" />
+    <!-- The Meta editor's "Set current" landblock / landcell text (self-contained), so MetaTests
+         check that MetaManager matches what the editor writes (engine 2026-10-05). -->
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\Data\MetaLocation.cs" Link="Engine\MetaLocation.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The standalone Monster Editor's model and file code (no Avalonia in these), so its
+         load/save is checked against the plugin's own serializer (MonsterEditorTests). -->
+    <Compile Include="..\RynthCore.MonsterEditor\Models.cs" Link="MonsterEditor\Models.cs" />
+    <Compile Include="..\RynthCore.MonsterEditor\JsonContext.cs" Link="MonsterEditor\JsonContext.cs" />
+    <Compile Include="..\RynthCore.MonsterEditor\MonsterRulesFile.cs" Link="MonsterEditor\MonsterRulesFile.cs" />
   </ItemGroup>
 
   <ItemGroup>

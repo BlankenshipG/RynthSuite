@@ -3,7 +3,7 @@
         xmlns:local="clr-namespace:RynthCore.MonsterEditor"
         x:Class="RynthCore.MonsterEditor.MainWindow"
         Title="RynthAi — Monster Rules Editor"
-        Width="1060" Height="520" MinWidth="800" MinHeight="300">
+        Width="1300" Height="520" MinWidth="800" MinHeight="300">
 
     <DockPanel LastChildFill="True">
 
@@ -124,6 +124,14 @@
                     </DataTemplate></DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
 
+                <DataGridTemplateColumn Header="Wl" Width="26" CanUserResize="False" CanUserSort="False">
+                    <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                        <ToggleButton Classes="light" Content="Wl"
+                                      IsChecked="{Binding UseWall, Mode=TwoWay}"
+                                      ToolTip.Tip="Wall — War wall spells (a row of projectiles straight ahead; turns to face the target first). Needs Wall Range in the settings."/>
+                    </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+
                 <!-- Name -->
                 <DataGridTemplateColumn Header="Name" Width="*" MinWidth="100">
                     <DataGridTemplateColumn.CellTemplate><DataTemplate>
@@ -135,6 +143,28 @@
                     </DataTemplate></DataGridTemplateColumn.CellTemplate>
                     <DataGridTemplateColumn.CellEditingTemplate><DataTemplate>
                         <TextBox Text="{Binding Name, Mode=TwoWay}" Padding="3,1"/>
+                    </DataTemplate></DataGridTemplateColumn.CellEditingTemplate>
+                </DataGridTemplateColumn>
+
+                <!-- Category (the plugin's rule group label) -->
+                <DataGridTemplateColumn Header="Category" Width="90" MinWidth="60">
+                    <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                        <TextBlock Text="{Binding Category}" Padding="3,1" VerticalAlignment="Center"/>
+                    </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                    <DataGridTemplateColumn.CellEditingTemplate><DataTemplate>
+                        <TextBox Text="{Binding Category, Mode=TwoWay}" Padding="3,1"/>
+                    </DataTemplate></DataGridTemplateColumn.CellEditingTemplate>
+                </DataGridTemplateColumn>
+
+                <!-- Match expression (empty = match by name only) -->
+                <DataGridTemplateColumn Header="Match" Width="150" MinWidth="80">
+                    <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                        <TextBlock Text="{Binding MatchExpression}" Padding="3,1" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"
+                                   ToolTip.Tip="Match expression: when set, the rule matches when it is true (and the name, if any, is in the target's name). Empty = by name only."/>
+                    </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                    <DataGridTemplateColumn.CellEditingTemplate><DataTemplate>
+                        <TextBox Text="{Binding MatchExpression, Mode=TwoWay}" Padding="3,1"/>
                     </DataTemplate></DataGridTemplateColumn.CellEditingTemplate>
                 </DataGridTemplateColumn>
 

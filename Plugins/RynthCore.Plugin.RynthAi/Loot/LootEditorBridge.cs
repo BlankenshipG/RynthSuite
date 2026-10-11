@@ -20,7 +20,7 @@ namespace RynthCore.Plugin.RynthAi.Loot;
 /// </summary>
 internal sealed class LootEditorBridge
 {
-    public const string LootFolder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
+    public static readonly string LootFolder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "LootProfiles");
 
     private readonly object _sync = new();
     private readonly LootEditSession _session = new();

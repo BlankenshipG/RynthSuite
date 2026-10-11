@@ -131,6 +131,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     // Give queue — drained one item per tick with a cooldown (interval comes from settings)
     private readonly Queue<(uint itemId, uint targetId, int stackSize)> _pendingGives = new();
     private DateTime _lastGiveAt = DateTime.MinValue;
+    // The give the server hasn't answered yet (0 = none): the next one waits for it.
+    private uint _giveInFlightId, _giveInFlightTarget;
+    private int _giveInFlightAmount, _giveInFlightStack, _giveInFlightTries;
+    private long _giveInFlightAt;
+    private const long GiveConfirmMs = 3000;
+    private const int GiveMaxTries = 2;
     private RynthCore.Loot.LootProfile? _nativeLootProfile;
     private string _nativeLootProfilePath = string.Empty;
     private DateTime _nativeLootProfileTime = DateTime.MinValue;
@@ -168,11 +174,21 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // The overlay windows (OnRenderOverlay) must draw through the engine's cimgui module.
         ImGuiNativeBinding.Ensure();
         _dashboard = new LegacyDashboardRenderer(Host);
+        _killClock.MacroRunning = () => _dashboard?.Settings.IsMacroRunning == true;
+        _dashboard.KillClock = _killClock;
         // Every use goes through Host.UseFor (Plugins/Shared/UseAudit.cs): one log line
         // each, and no automatic door/corpse use while the macro is off.
         RynthCore.Plugin.Shared.UseAudit.Reset("RynthAi", () => _dashboard?.Settings.IsMacroRunning == true);
         // Every movement call is logged with its subsystem (Plugins/Shared/MoveAudit.cs).
         RynthCore.Plugin.Shared.MoveAudit.Reset();
+        // A door/corpse use the server is still answering holds RynthAi's own moves and turns
+        // (moving would cancel the server's walk/turn to it; 2026-10-06).
+        RynthCore.Plugin.Shared.UseAudit.TrackWorldUses = true;
+        // One server action at a time (Plugins/Shared/ActionPacer.cs, 2026-10-06): every use,
+        // use-on, cast and combat-mode change waits for the server's answer to the last one.
+        RynthCore.Plugin.Shared.ActionPacer.Reset();
+        RynthCore.Plugin.Shared.ActionPacer.Enabled = true;
+        RynthCore.Plugin.Shared.UseAudit.AfterSend = RecordUseForPacing;
         _objectCache = new WorldObjectCache(Host); // must exist before CreateObject events fire during login
         // Items we use (or use something on) get re-identified before a meta reads them.
         // ObjectUsed is a static event and Shutdown never unsubscribes: when the engine
@@ -220,6 +236,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _dashboard = null;
         // Don't let the static audit hold this instance once it's gone (a reused module).
         RynthCore.Plugin.Shared.UseAudit.MacroOn = static () => false;
+        RynthCore.Plugin.Shared.UseAudit.AfterSend = null;
+        RynthCore.Plugin.Shared.ActionPacer.Enabled = false;
+        RynthCore.Plugin.Shared.ActionPacer.Forget("shutdown");
 
         // Give the heap back. When a changed RynthAi is deployed, the engine loads
         // it as a new copy and this one is abandoned for good (a NativeAOT DLL can't
@@ -252,6 +271,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         Log("RynthAi: logout — tearing down session.");
         try { _dashboard?.SaveSettings(); } catch { }
+        Loot.T11ItemSupport.Reset();
         // A real logout: the next OnLoginComplete is a fresh login, not a hot reload.
         ClearInGameMarker();
         TeardownSession();
@@ -352,6 +372,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private void TeardownSession()
     {
         ObjectChangeTracker.Clear();
+        // The server drops whatever it was doing for this character at logout.
+        RynthCore.Plugin.Shared.ActionPacer.Forget("logout");
         _navigationEngine?.Stop();
         _navigationEngine = null;
         // The dungeon cell graph is a static single-landblock cache; nothing may outlive the session.
@@ -372,6 +394,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
         _combatManager?.Dispose();
         _combatManager = null;
+        // A relog is what clears a server that refuses every use: start the next session clean.
+        ResetUseRefusalState();
         Log($"RynthAi: TeardownSession — RadarWallFlush={tFlushMs} ms, RaycastDispose={tRayMs} ms");
         _fellowshipTracker?.Dispose();
         _fellowshipTracker = null;
@@ -460,6 +484,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         _loginCompletedAt = DateTime.Now;
         _loginComplete = true;
+        _killClock.SessionStarted();
         _dashboard.OnLoginComplete();
         _dashboard.ChatSubmitHandler = HandleRynthChatSubmit;
         EnsureTranslator();
@@ -579,6 +604,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // other (the collision behind "you can only move or use one item at a
         // time" and the object-teardown AV).
         _weaponSwapGate ??= new WeaponSwapGate();
+        // The next swap goes once the server is done with the last one (not a flat 3 s).
+        _weaponSwapGate.ServerIdle = () => RynthCore.Plugin.Shared.ActionPacer.Enabled && RynthCore.Plugin.Shared.ActionPacer.Current(Host) == null;
+        _weaponSwapGate.IsWielded = id => RynthCore.Plugin.Shared.ActionPacer.IsWieldedByPlayer(Host, unchecked((uint)id));
 
         _buffManager = new BuffManager(Host, _dashboard.Settings, _spellManager, _vitals);
         _inGameMarkerSet = false;
@@ -619,6 +647,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         _combatManager = new CombatManager(Host, _dashboard.Settings, _objectCache!, _spellManager);
         _combatManager.SetWeaponSwapGate(_weaponSwapGate);
+        _combatManager.HoldIdlePeace = LootHoldsIdlePeace;
         _combatManager.SetStaleBusyCallback(OnCombatBusyStale);
         _buffManager?.SetStaleBusyCallback(OnCombatBusyStale);   // a heal ahead of a leftover busy count
         if (_buffManager != null)
@@ -659,6 +688,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _metaManager.SetQuestTracker(_questTracker);
         if (_buffManager != null) _metaManager.SetBuffManager(_buffManager);
         _metaManager.SetCreatureStore(_creatureStore);
+        _metaManager.SetKillClock(_killClock);
         if (_dashboard != null)
             _dashboard.MetaSnapshotProvider = () => _metaManager?.GetStateSnapshot();
 
@@ -666,6 +696,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         {
             _inventoryManager  = new InventoryManager(Host, _dashboard.Settings, _objectCache);
             _manaStoneManager  = new ManaStoneManager(Host, _dashboard.Settings, _objectCache);
+            LegacyUi.NavPoint.SpellNameLookup = id => SpellTableStub.GetById(id)?.Name;   // recall steps by name
             _manaStoneManager.IsLootKept = IsKeptByLootProfile;
             _petManager        = new PetManager(Host, _dashboard.Settings, _objectCache, _combatManager, _charSkills);
             _combatManager.SummonOut = () => _petManager?.CurrentSummon();
@@ -721,6 +752,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     // decides whether nav runs at all. One edge-detect replaces the cascade.
     private BotActivity _activity = BotActivity.Idle;   // last arbiter decision
     private bool _macroWasRunning;                      // edge: release held turns when the macro stops
+
+    // Time since our last kill (KillerNotification only): secondssincelastkill[], the
+    // No Kills Within Minutes meta condition and the status feed. Counts from login / plugin
+    // load, then from each macro start, until the first kill.
+    private readonly KillClock _killClock = new();
+    internal KillClock Kills => _killClock;
     private BotActivity _navStoppedFor = BotActivity.Idle; // activity we last issued a nav Stop() for
     private bool _navStopIssued;
     // Buffing-coma watchdog (see the Priority-1 block): how long BotAction has
@@ -756,8 +793,15 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _navStopIssued = true;
         _navStoppedFor = owner;
 
+        bool ownMovement = RynthCore.Plugin.Shared.MoveAudit.OwnMovementActive;   // before nav's own stops clear it
         _navigationEngine?.Stop();
-        if (Host.HasStopCompletely)
+        // A StopCompletely only when RynthAi itself has the character moving (2026-10-06): with
+        // nothing of ours moving it is one more movement packet on the server's motion - 116 in 46
+        // minutes on 10-06, on every change of activity - and it cut off movement another plugin
+        // (RynthNav, RynthLua) had just started (analysis by Silentkelpie). RynthNav's travel is
+        // stopped by its own command (TickOwnCorpseTravel). Without the pacing, as before.
+        if (Host.HasStopCompletely
+            && (!RynthCore.Plugin.Shared.ActionPacer.Enabled || ownMovement))
             Host.StopCompletelyBy("Arbiter");
 
         // Combat taking the tick invalidates any in-progress door interaction.
@@ -911,19 +955,19 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ["TargetNoProgressTimeoutSec"] = (0, 300), ["GiveQueueIntervalMs"] = (50, 2000),
         ["BowArcVelocity"] = (10, 60), ["CrossbowArcVelocity"] = (10, 80), ["AtlatlArcVelocity"] = (10, 60), ["MagicArcVelocity"] = (10, 60), ["MissileArcClearance"] = (0, 3),
         ["HealAt"] = (0, 100), ["EmergencyHealAt"] = (0, 100),
-        ["StaminaToHealthAt"] = (0, 100), ["StaminaToHealthMinStamina"] = (0, 100), ["RestamAt"] = (0, 100), ["GetManaAt"] = (0, 100),
+        ["StaminaToHealthAt"] = (0, 100), ["StaminaToHealthMinStamina"] = (0, 100), ["RestamAt"] = (0, 100), ["RestamTo"] = (0, 100), ["GetManaAt"] = (0, 100),
         ["TopOffHP"] = (0, 100), ["TopOffStam"] = (0, 100), ["TopOffMana"] = (0, 100),
         ["HealOthersAt"] = (0, 100), ["RestamOthersAt"] = (0, 100), ["InfuseOthersAt"] = (0, 100),
         ["MeleeAttackPower"] = (-1, 100), ["MissileAttackPower"] = (-1, 100),
         ["MeleeAttackHeight"] = (0, 2), ["MissileAttackHeight"] = (0, 2),
         ["PetMinMonsters"] = (1, 20),
-        ["SpellCastIntervalMs"] = (100, 1500), ["AttackSpellIntervalMs"] = (250, 5000), ["MinRingTargets"] = (1, 20), ["MinBlastTargets"] = (1, 20), ["BlastRange"] = (0, 100),
+        ["SpellCastIntervalMs"] = (100, 1500), ["AttackSpellIntervalMs"] = (0, 5000), ["MinRingTargets"] = (1, 20), ["MinBlastTargets"] = (1, 20), ["BlastRange"] = (0, 100), ["MinWallTargets"] = (1, 20), ["WallRange"] = (0, 100),
         ["MinSkillLevelTier1"] = (1, 500), ["MinSkillLevelTier2"] = (1, 500), ["MinSkillLevelTier3"] = (1, 500), ["MinSkillLevelTier4"] = (1, 500),
         ["MinSkillLevelTier5"] = (1, 500), ["MinSkillLevelTier6"] = (1, 500), ["MinSkillLevelTier7"] = (1, 500), ["MinSkillLevelTier8"] = (1, 500),
-        ["MonsterRange"] = (1, 200), ["MonsterDisengageRange"] = (0, 200), ["RingRange"] = (1, 50), ["ApproachRange"] = (1, 50),
+        ["MonsterRange"] = (1, 200), ["MonsterDisengageRange"] = (0, 200), ["TargetSelection"] = (0, 3), ["RingRange"] = (1, 50), ["ApproachRange"] = (1, 50),
         ["CorpseApproachRangeMax"] = (0.5, 50), ["CorpseApproachRangeMin"] = (0.5, 20),
         ["FollowNavMin"] = (0.5, 20), ["NavRingThickness"] = (1, 16), ["NavLineThickness"] = (1, 16),
-        ["NavHeightOffset"] = (-5, 5), ["NavSlopeSink"] = (0, 8), ["OpenDoorRange"] = (0.1, 70), ["MovementMode"] = (0, 0),
+        ["NavHeightOffset"] = (-5, 5), ["NavSlopeSink"] = (0, 8), ["NavLabelMode"] = (0, 2), ["OpenDoorRange"] = (0.1, 70), ["MovementMode"] = (0, 0),
         ["NavStopTurnAngle"] = (1, 90), ["NavResumeTurnAngle"] = (1, 45), ["NavDeadZone"] = (0.5, 20), ["NavSweepMult"] = (0.5, 10),
         ["NavLookaheadYards"] = (0, 30), ["NavShortcutYards"] = (0, 10), ["NavTurnRateDegPerSec"] = (30, 720), ["NavTier1TurnSpeed"] = (0.5, 15), ["PostPortalDelaySec"] = (0, 30),
         ["NavOffTrackYards"] = (160, 1000), ["NavMaxDetourAttempts"] = (1, 10),
@@ -1441,11 +1485,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // to run only inside the legacy dashboard's Render(), which the engine no
             // longer calls, so edits waited for the next login. A flag check when idle.
             _dashboard?.TickMonsterReload();
+            // A nav saved into NavProfiles from outside (RynthNav's "save as nav route"): list it.
+            _dashboard?.TickNavFolder();
             _questTracker?.Tick();
             TickLocalFeatures();
             if (diag) Host.Log("[RynthAi] OnTick: after quest tracker");
             DrainGiveQueue();
             if (diag) Host.Log("[RynthAi] OnTick: after drain give queue");
+            Loot.T11ItemSupport.SyncOverride(_dashboard?.Settings.T11ItemAugsOverride ?? -1);
             _jumper?.Tick();
             if (diag) Host.Log("[RynthAi] OnTick: after jumper tick");
 
@@ -1519,6 +1566,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // finally below still submits the nav markers.
                 if (HoldForDeath())
                     return;
+                // Standing in acid or lava: nothing but getting out (RynthAiPlugin.HazardEscape.cs).
+                RecordHazardTrail();
+                if (HoldForHazardEscape())
+                    return;
 
                 if (diag) Host.Log("[RynthAi] OnTick: before CheckBusyTimeout");
                 CheckBusyTimeout();
@@ -1571,6 +1622,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 if (!_macroWasRunning && settings.IsMacroRunning)
                     _navigationEngine?.ResumeFromNearestWaypoint();
                 _macroWasRunning = settings.IsMacroRunning;
+                _killClock.ObserveMacro(settings.IsMacroRunning);   // a start counts even if nothing reads the clock meanwhile
 
                 if (_patrolOnLoginPending && _raycast?.GeometryLoader?.CellDat?.IsLoaded == true)
                 {
@@ -1673,6 +1725,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                         _combatEndedAt = nowMs;
 
                     bool wantLoot = HasLootWork(settings, nowMs);
+                    _lastWantLoot = wantLoot;
                     bool wantSalvage = _salvageManager != null && _salvageManager.IsBusy;
                     bool routeLoaded = settings.CurrentRoute != null && settings.CurrentRoute.Points.Count > 0;
 
@@ -1819,7 +1872,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     && _openedContainerId == 0
                     && _targetCorpseId == 0)
                 {
-                    _inventoryManager.OnHeartbeat(_busyCount);
+                    _inventoryManager.OnHeartbeat(PacedBusy);
                 }
 
                 // Status feed: main-pack empty slots (cache-based, off-thread-safe). Throttled to
@@ -1892,7 +1945,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // combine work while a threat is up so it doesn't contend with
                 // combat over SelectItem; it resumes the moment the threat clears.
                 if (inventorySettled && !combatThreat)
-                    _salvageManager?.OnTick(_busyCount);
+                    _salvageManager?.OnTick(PacedBusy);
                 if (diag) Host.Log("[RynthAi] OnTick: before manaStoneManager");
 
                 // STEP 4: the salvage gap-fill that used to pin/release
@@ -1905,8 +1958,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // decision from scratch every tick.
 
                 // Mana stone tapping — runs after salvage, independent of looting state.
-                _manaStoneManager?.OnHeartbeat(_busyCount);
-                _petManager?.OnHeartbeat(_busyCount);
+                _manaStoneManager?.OnHeartbeat(PacedBusy);
+                _petManager?.OnHeartbeat(PacedBusy);
                 if (diag) Host.Log("[RynthAi] OnTick: before combatManager");
 
                 // Missile crafting runs before combat — blocks everything while active.
@@ -2055,7 +2108,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             if (obj != null && IsLootableClass(obj.ObjectClass))
             {
                 var itemInfo = _dashboard?.Settings.ItemInfoSettings;
-                bool infoWanted = itemInfo != null && ItemInfoWantsClass(itemInfo, obj.ObjectClass);
+                // RynthAi's own picks (the looter, a meta's selectitem) are not described.
+                bool infoWanted = itemInfo != null && ItemInfoWantsClass(itemInfo, obj.ObjectClass)
+                                  && !ItemInfo.SelfSelect.IsOurs(currentTargetId);
                 // Item info (on select or on click) is the answer for this item; the loot
                 // verdict line would print in its place. /ra lootcheck still prints it on demand.
                 bool infoHandles = infoWanted && (itemInfo!.OnSelect || itemInfo.ClickTrigger != ItemInfo.MagItemInfoSettings.ClickOff);
@@ -2092,6 +2147,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (mmEat) eat = 1;
         else _dashboard?.PushChatLine(text, chatType);
         OnChatLocalFeatures(text, chatType, ref eat);
+        try { NoteHotspotChat(text, chatType); } catch (Exception ex) { Host.Log($"[RynthAi] Hazard chat check failed: {ex.Message}"); }
         _buffManager?.OnChatWindowText(text, chatType);
         _manaStoneManager?.OnChatWindowText(text);
         _petManager?.OnChatWindowText(text);
@@ -2115,6 +2171,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     public override void OnKillNotification(string? deathMessage)
     {
         if (string.IsNullOrEmpty(deathMessage)) return;
+        _killClock.RecordKill();    // the only kill source: KillerNotification goes to the killer alone
         _combatManager?.OnKillNotification(deathMessage);
         _dashboard?.RecordKill();   // feeds the kills/hour session stat
         try { _iltHub?.RecordKill(); }
@@ -3070,13 +3127,48 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         int count = _pendingGives.Count;
         _pendingGives.Clear();
+        _giveInFlightId = 0;
         ChatLine(count > 0
             ? $"[RynthAi] Give queue cancelled ({count} item(s) remaining)."
             : "[RynthAi] Give queue is already empty.");
     }
 
+    /// <summary>
+    /// One give at a time, each after the server has taken the last: the item has left the
+    /// inventory (or its stack shrank, for part of a stack). The queue used to send a give
+    /// every 150 ms; the server takes one give at a time and answers the rest "too busy",
+    /// so /ub give handed over one item and dropped the rest (2026-10-08). A give with no
+    /// answer in GiveConfirmMs is sent once more, then skipped.
+    /// </summary>
     private void DrainGiveQueue()
     {
+        long now = Environment.TickCount64;
+        if (_giveInFlightId != 0)
+        {
+            if (GiveLanded())
+            {
+                _giveInFlightId = 0;
+                _lastGiveAt = DateTime.UtcNow;
+                if (_pendingGives.Count == 0)
+                    ChatLine("[RynthAi] Give queue complete.");
+            }
+            else if (now - _giveInFlightAt < GiveConfirmMs)
+                return;
+            else if (_giveInFlightTries < GiveMaxTries)
+            {
+                GiveItem(_giveInFlightId, _giveInFlightTarget, _giveInFlightAmount, _giveInFlightStack);
+                _giveInFlightTries++;
+                _giveInFlightAt = now;
+                return;
+            }
+            else
+            {
+                ChatLine($"[RynthAi] Give: the server didn't take 0x{_giveInFlightId:X8} - skipping it.");
+                _giveInFlightId = 0;
+                if (_pendingGives.Count == 0) return;
+            }
+        }
+
         if (_pendingGives.Count == 0) return;
         int intervalMs = _dashboard?.Settings.GiveQueueIntervalMs ?? 150;
         if ((DateTime.UtcNow - _lastGiveAt).TotalMilliseconds < intervalMs) return;
@@ -3087,9 +3179,21 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         int whole = _objectCache?[unchecked((int)itemId)] is WorldObject wo ? Math.Max(1, wo.Values(LongValueKey.StackCount, 1)) : stackSize;
         GiveItem(itemId, targetId, stackSize, whole);
         _lastGiveAt = DateTime.UtcNow;
+        _giveInFlightId = itemId;
+        _giveInFlightTarget = targetId;
+        _giveInFlightAmount = stackSize;
+        _giveInFlightStack = whole;
+        _giveInFlightTries = 1;
+        _giveInFlightAt = now;
+    }
 
-        if (_pendingGives.Count == 0)
-            ChatLine("[RynthAi] Give queue complete.");
+    /// <summary>The in-flight give went through: the item left the inventory, or part of its stack did.</summary>
+    private bool GiveLanded()
+    {
+        if (_objectCache?[unchecked((int)_giveInFlightId)] is not WorldObject wo) return true;
+        if (!InPlayerInventory(wo.Container)) return true;
+        return _giveInFlightAmount < _giveInFlightStack
+               && Math.Max(1, wo.Values(LongValueKey.StackCount, 1)) < _giveInFlightStack;
     }
 
     /// <summary>
@@ -3198,6 +3302,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "lootcheck":    HandleLootCheckSelectedCommand(parts); break;
             case "loot":         HandleLootCommand(parts); break;
             case "corpseinfo":   HandleCorpseInfoCommand(); break;
+            case "pace":         HandlePaceCommand(); break;
             case "corpsecheck":  HandleCorpseCheckCommand(parts); break;
             case "corpseopen":   HandleCorpseOpenCommand(); break;
             case "owncorpse":

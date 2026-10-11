@@ -14,7 +14,9 @@ public static unsafe class PluginExports
     internal static readonly RynthPluginRuntime<RynthAiPlugin> Runtime = new();
 
     // Typed interfaces for other plugins (host GetPluginInterface, API v68): "RynthAi.Script" v1
-    // for RynthLua, "RynthAi.Status" v1 for RynthNet (the bot state it shares with the other clients). Fixed signature: void* (const char* iface, uint version).
+    // for RynthLua, "RynthAi.Status" v1 for RynthNet (the bot state it shares with the other clients),
+    // "RynthAi.Activity" v1 for RynthSort (what the bot is doing, so pack moves stay out of its way).
+    // Fixed signature: void* (const char* iface, uint version).
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginQueryInterface", CallConvs = new[] { typeof(CallConvCdecl) })]
     private static IntPtr QueryInterface(IntPtr ifaceAnsi, uint version)
     {
@@ -22,7 +24,8 @@ public static unsafe class PluginExports
         {
             string iface = ifaceAnsi == IntPtr.Zero ? "" : Marshal.PtrToStringAnsi(ifaceAnsi) ?? "";
             IntPtr table = ScriptInterface.Query(iface, version);
-            return table != IntPtr.Zero ? table : StatusInterface.Query(iface, version);
+            if (table == IntPtr.Zero) table = StatusInterface.Query(iface, version);
+            return table != IntPtr.Zero ? table : ActivityInterface.Query(iface, version);
         }
         catch
         {
@@ -38,6 +41,7 @@ public static unsafe class PluginExports
     {
         Runtime.Shutdown();
         StatusInterface.Release();
+        ActivityInterface.Release();
         // The loot editor's state can be a few hundred KB (LootSnobV4): don't leave it behind on a reload.
         foreach (IntPtr p in new[] { Interlocked.Exchange(ref _lootStatePtr, IntPtr.Zero),
                      Interlocked.Exchange(ref _lootRulePtr, IntPtr.Zero), Interlocked.Exchange(ref _lootVocabPtr, IntPtr.Zero) })

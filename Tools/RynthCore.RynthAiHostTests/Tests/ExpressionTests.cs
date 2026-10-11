@@ -53,9 +53,8 @@ internal static class ExpressionTests
         r.Add("expr: chat and echo", ChatFunctions);
         r.Add("expr: $name reads an unset variable like getvar[name]", DollarMatchesGetvar);   // was a known failure; fixed by 79a39b7
         r.Add("expr: arithmetic that gives negative zero is false", NegativeZeroIsFalse);   // was a known failure; fixed by 92a6318
-        r.KnownFailure("expr: list items may contain commas or be lists",
-            "lists are stored as \"[a,b]\" and split on every comma, so an item with a comma (or a nested list) becomes several items",
-            ListItemsWithCommas);
+        r.Add("expr: list items may contain commas or be lists", ListItemsWithCommas);   // was a known failure
+        r.Add("expr: list text saved before escaping reads the same", OldListTextReadsTheSame);
         r.Add("expr: # takes a regex pattern without backticks, as documented", RegexOperatorUnquoted);   // was a known failure; fixed by c34b39c
         r.Add("expr: vitae[] reports no penalty when it cannot read vitae", VitaeWithoutHost);   // was a known failure; fixed by 33f23f7
     }
@@ -914,6 +913,48 @@ internal static class ExpressionTests
         var e = Engine();
         Check.Eq(e.Evaluate("listcount[listcreate[`a,b`, c]]"), "2", "an item holding a comma");
         Check.Eq(e.Evaluate("listcount[listadd[listcreate[a], listcreate[b,c]]]"), "2", "a list added to a list");
+
+        // The items come back whole, and a nested list reads as a list again.
+        Check.Eq(e.Evaluate("listgetitem[listcreate[`a,b`, c], 0]"), "a,b", "the comma item reads back unescaped");
+        Check.Eq(e.Evaluate("listgetitem[listadd[listcreate[a], listcreate[b,c]], 1]"), "[b,c]", "the nested list reads back as a list");
+        Check.Eq(e.Evaluate("listcount[listgetitem[listadd[listcreate[a], listcreate[b,c]], 1]]"), "2", "and has its own two items");
+        Check.Eq(e.Evaluate("listcontains[listcreate[`a,b`, c], `a,b`]"), "1", "listcontains finds the comma item");
+        Check.Eq(e.Evaluate("listindexof[listcreate[x, `a,b`], `a,b`]"), "1", "listindexof finds it at 1");
+
+        // Brackets and backslashes in plain text survive too; plain lists keep their old text.
+        Check.Eq(e.Evaluate("listgetitem[listcreate[`x[1`, `c:\\d`], 0]"), "x[1", "an unbalanced bracket");
+        Check.Eq(e.Evaluate("listgetitem[listcreate[`x[1`, `c:\\d`], 1]"), "c:\\d", "a backslash");
+        Check.Eq(e.Evaluate("listcreate[a, b, c]"), "[a,b,c]", "a plain list is written as before");
+
+        // A nested list holding a comma item: the escape survives the nesting.
+        e.Evaluate("setvar[inner, listcreate[`p,q`, r]]");
+        e.Evaluate("setvar[outer, listadd[listcreate[z], getvar[inner]]]");
+        Check.Eq(e.Evaluate("listgetitem[listgetitem[getvar[outer], 1], 0]"), "p,q", "two levels down");
+    }
+
+    private static void OldListTextReadsTheSame()
+    {
+        // List text a meta built by hand, or saved in a pvar before escaping existed, reads the same.
+        var e = Engine();
+        e.Evaluate("setvar[old, `[a,b,c]`]");
+        Is(e, "listcount[getvar[old]]", "3");
+        Is(e, "listgetitem[getvar[old], 1]", "b");
+        Is(e, "listcount[`[a,,b,]`]", "4");                 // empty items kept, as with Split
+        Is(e, "listgetitem[`[a,,b,]`, 1]", "");
+        Is(e, "listreduce[`[1,2,3]`, `$2 + $1`]", "6");
+        Is(e, "listsort[`[b,a,c]`]", "[a,b,c]");
+        Is(e, "listmap[`[1,2]`, `$1 * 2`]", "[2,4]");
+        Is(e, "listadd[`[a,b]`, c]", "[a,b,c]");
+        Is(e, "listremove[`[a,b,c]`, b]", "[a,c]");
+        Is(e, "listreverse[`[1,2,3]`]", "[3,2,1]");
+        Is(e, "listfromrange[1, 3]", "[1,2,3]");
+
+        // A backslash that is not an escape is plain text (a path saved before escaping existed)...
+        Is(e, "listcount[`[c:\\d,x]`]", "2");
+        Is(e, "listgetitem[`[c:\\d,x]`, 0]", "c:\\d");
+        // ...and writing the list again escapes it, which reads back the same.
+        Is(e, "listadd[`[c:\\d]`, y]", "[c:\\\\d,y]");
+        Is(e, "listgetitem[listadd[`[c:\\d]`, y], 0]", "c:\\d");
     }
 
     private static void RegexOperatorUnquoted()

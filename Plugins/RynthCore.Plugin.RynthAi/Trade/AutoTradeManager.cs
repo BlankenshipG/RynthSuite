@@ -45,7 +45,7 @@ namespace RynthCore.Plugin.RynthAi.Trade;
 /// </summary>
 internal sealed class AutoTradeManager
 {
-    public const string MainProfileDir = @"C:\Games\RynthSuite\RynthAi\AutoTrade";
+    public static readonly string MainProfileDir = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "AutoTrade");
     public const string ProfileSubfolder = "AutoTrade";
     public const string AutoAcceptListFileName = "autoAcceptList.json";
     public const uint RequiredApiVersion = 72;

@@ -29,20 +29,26 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Install-folder resolver used by the ILT Hub, diagnostics, and chat translator. -->
-    <Compile Include="..\..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
     <!-- UB damage-insights seed schema, shared with the Monster Editor importer. -->
     <Compile Include="..\..\Shared\UbMobSeed.cs" Link="Shared\UbMobSeed.cs" />
     <!-- Interfaces shared with other RynthSuite plugins (RynthLua uses RynthAi.Script, RynthNet RynthAi.Status). -->
     <Compile Include="..\Shared\RynthAiScriptApi.cs" Link="Shared\RynthAiScriptApi.cs" />
     <!-- RynthNet reads the bot state through RynthAi.Status. -->
     <Compile Include="..\Shared\RynthAiStatusApi.cs" Link="Shared\RynthAiStatusApi.cs" />
+    <!-- RynthSort reads what the bot is doing through RynthAi.Activity (read only). -->
+    <Compile Include="..\Shared\RynthAiActivityApi.cs" Link="Shared\RynthAiActivityApi.cs" />
     <!-- RynthNav's navmesh path queries (stuck-recovery detours outdoors). -->
     <Compile Include="..\Shared\RynthNavPathApi.cs" Link="Shared\RynthNavPathApi.cs" />
+    <!-- Reading our hits out of the combat log (victim + amount); RynthTracker reads the same lines. -->
+    <Compile Include="..\Shared\CombatText.cs" Link="Shared\CombatText.cs" />
     <!-- One logged, guarded way to use an object (who used what, and why). -->
     <Compile Include="..\Shared\UseAudit.cs" Link="Shared\UseAudit.cs" />
     <!-- Movement calls logged with the subsystem that sent them (stuck-cast diagnosis, 2026-10-05). -->
     <Compile Include="..\Shared\MoveAudit.cs" Link="Shared\MoveAudit.cs" />
+    <!-- One server action at a time, paced on the server's answers (stuck use/cast, 2026-10-06). -->
+    <Compile Include="..\Shared\ActionPacer.cs" Link="Shared\ActionPacer.cs" />
+    <!-- Text in the world on the Nav3D buffer (waypoint labels; RynthNav's path markers use it too). -->
+    <Compile Include="..\Shared\Nav3DText.cs" Link="Shared\Nav3DText.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -98,5 +104,10 @@
   <Target Name="RemoveBundledImGuiNativeFromPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
     <Delete Files="$(PublishDir)cimgui.dll" Condition="Exists('$(PublishDir)cimgui.dll')" />
   </Target>
+
+  <ItemGroup>
+    <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file as RynthCore src\Shared. -->
+    <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+  </ItemGroup>
 
 </Project>

@@ -143,7 +143,7 @@ internal sealed class LegacyNavigationUi
 
             for (int ri = 0; ri < ids.Length; ri++)
             {
-                string name = $"Spell {ids[ri]}";
+                string name = NavPoint.RecallName(ids[ri]);
                 if (ImGui.Selectable($"{name} ({ids[ri]})"))
                 {
                     if (_host.HasGetPlayerPose && _host.TryGetPlayerPose(out _, out float x, out float y, out float z, out _, out _, out _, out _))

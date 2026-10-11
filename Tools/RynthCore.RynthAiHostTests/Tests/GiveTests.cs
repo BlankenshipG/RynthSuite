@@ -27,6 +27,7 @@ internal static class GiveTests
         r.Add("give: /ub give with a count hands over that many", UbGiveCount);
         r.Add("give: /mt give hands over only the first match", MtGivesFirst);
         r.Add("give: /ub givep matches part of the name", UbGivePartial);
+        r.Add("give: the next give waits until the server took the last (it answers extra gives 'too busy')", WaitsForServer);
     }
 
     private sealed class World
@@ -117,5 +118,21 @@ internal static class GiveTests
         w.Run("/ub givep Mana Mote to Town");
         Check.Eq(FakeHost.Gives.Count, 4, "partial: the three Mana Motes and the Lesser Mana Mote");
         Check.False(w.GivenItems.Contains(WornMote), "still not the worn one");
+    }
+
+    // 2026-10-08: the queue sent a give every 150 ms; the server takes one at a time and the
+    // rest came back "too busy", so /ub give handed over one item.
+    private static void WaitsForServer()
+    {
+        var w = new World();
+        FakeHost.GiveLands = false;            // the server hasn't taken the first yet
+        w.Run("/ub give Mana Mote to Town Crier");
+        Check.Eq(FakeHost.Gives.Count, 1, "one give, then it waits for the server");
+
+        FakeHost.Containers[FakeHost.Gives[0].Item] = Npc;   // the server took it
+        FakeHost.GiveLands = true;
+        for (int i = 0; i < 20; i++) w.Call("DrainGiveQueue");
+        Check.Eq(FakeHost.Gives.Count, 3, "then the other two, each after the last landed");
+        Check.Eq(FakeHost.Gives.Select(g => g.Item).Distinct().Count(), 3, "no item sent twice");
     }
 }

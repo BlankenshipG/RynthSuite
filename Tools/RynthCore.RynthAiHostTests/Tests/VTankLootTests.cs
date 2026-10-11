@@ -26,7 +26,9 @@ internal static class VTankLootTests
         r.Add("loot vtank: string value match", StringValueMatch);
         r.Add("loot vtank: long keys LE/GE/E/NE and flag, at the boundary", LongKeys);
         r.Add("loot vtank: Decal's Type key (0x0D000000) is the WCID - 'loot everything that isn't retail'", WcidKey);
+        r.Add("loot vtank: Decal's long keys (MaxDamage, Coverage, EquipType, IconOverlay) read the game property", DecalLongKeys);
         r.Add("loot vtank: double keys LE/GE", DoubleKeys);
+        r.Add("loot vtank: VTank's 0x0A0000xx double keys (AttackBonus, DamageBonus, Variance) read 62/63/22", VTankDoubleKeys);
         r.Add("loot vtank: object class", ObjectClass);
         r.Add("loot vtank: value and workmanship requirements", ValueAndWorkmanship);
         r.Add("loot vtank: damage nodes (min, median, missile, tinked, percent)", DamageNodes);
@@ -165,6 +167,33 @@ internal static class VTankLootTests
         Check.True(M(retail, C(N.LongValKeyE, "20646", type)), "an exact WCID match works too");
     }
 
+    // 2026-10-07: LootSnobV4's "(2H) Cleaving MAX 350" (Buffed Long Key >= on 218103842) never kept
+    // anything: Decal's synthetic keys were read as STypeInt ids no object has. 336 of its rules
+    // use MaxDamage, 109 Coverage, 83 IconOverlay.
+    private static void DecalLongKeys()
+    {
+        var axe = new Item("Greataxe", AcObjectClass.MeleeWeapon).Int(44, 30).Int(51, 5).Int(48, 41);
+        Check.True(M(axe, C(N.BuffedLongValKeyGE, "25", "218103842")), "MaxDamage 30 >= 25");
+        Check.False(M(axe, C(N.BuffedLongValKeyGE, "31", "218103842")), "MaxDamage 30 < 31");
+        Check.True(M(axe, C(N.LongValKeyGE, "30", "218103842")), "plain Long Key too");
+        Check.True(M(axe, C(N.LongValKeyE, "5", "218103823")), "EquipType = CombatUse (5, two-handed)");
+        Check.True(M(axe, C(N.LongValKeyE, "41", "218103840")), "EquipSkill = WeaponSkill");
+        var shirt = new Item("Shirt", AcObjectClass.Clothing).Int(4, 0x1A);
+        Check.True(M(shirt, C(N.LongValKeyFlagExists, "2", "218103821")), "Coverage flag reads ClothingPriority");
+        Check.False(M(shirt, C(N.LongValKeyFlagExists, "1", "218103821")), "a flag it lacks");
+        Check.Eq(new Item("Stick").Wo.Values(218103820, -7), -7, "an unmapped Decal key (Monarch) answers the default");
+
+        FakeHost.Reset();
+        var host = FakeHost.Create();
+        var cache = new WorldObjectCache(host);
+        const uint Rare = 0x80001101;
+        FakeHost.DataIds[(Rare, 50)] = 0x06006C38;
+        var rare = new WorldObject(unchecked((int)Rare), "Pearl of Blood Drinking", AcObjectClass.Misc) { Cache = cache };
+        Check.Eq(rare.Values(218103849, 0), 27704, "IconOverlay is the overlay's portal index, as Decal gives it");
+        Check.True(M(rare, C(N.LongValKeyE, "27704", "218103849")), "an IconOverlay rule matches");
+        Check.Eq(rare.Values(218103850, -1), -1, "no underlay: the default");
+    }
+
     private static void DoubleKeys()
     {
         var item = new Item("x").Dbl(29, 1.25);
@@ -173,6 +202,27 @@ internal static class VTankLootTests
         Check.True(M(item, C(N.DoubleValKeyLE, "1.25", "29")), "LE equal");
         Check.False(M(item, C(N.DoubleValKeyLE, "1.24", "29")), "LE below");
         Check.True(M(item, C(N.DoubleValKeyGE, "1e0", "29")), "exponent notation parses");
+    }
+
+    // VTank's editor writes the weapon profile's attack/damage mods under Decal's synthetic keys
+    // (uTank2 LootPlugins.DoubleValueKey AttackBonus 0x0A00000C, DamageBonus 0x0A00000E,
+    // Variance 0x0A00000B). LootSnobV4's "(H) Axe (AT +8)" rules are BuffedDoubleValKeyGE
+    // 1.31 on 167772172; read raw the key was never set, so they could not match.
+    private static void VTankDoubleKeys()
+    {
+        var axe = new Item("Axe").Dbl(62, 1.31).Dbl(63, 1.2).Dbl(22, 0.4);
+        const string attack = "167772172", damage = "167772174", variance = "167772171";
+        Check.True(M(axe, C(N.BuffedDoubleValKeyGE, "1.31", attack)), "LootSnob AT rule: attack 1.31 >= 1.31");
+        Check.False(M(axe, C(N.BuffedDoubleValKeyGE, "1.32", attack)), "attack just above");
+        Check.True(M(axe, C(N.DoubleValKeyGE, "1.2", damage)), "DamageBonus reads DamageMod 63");
+        Check.False(M(axe, C(N.DoubleValKeyGE, "1.21", damage)), "not WeaponOffense");
+        Check.True(M(axe, C(N.DoubleValKeyLE, "0.4", variance)), "Variance reads DamageVariance 22");
+        Check.False(M(axe, C(N.DoubleValKeyLE, "0.39", variance)), "variance below");
+        Check.False(M(new Item("Stick"), C(N.DoubleValKeyGE, "0.1", attack)), "no attack mod: reads 0");
+
+        var armor = new Item("Coat").Dbl(13, 1.6).Dbl(19, 0.8);
+        Check.True(M(armor, C(N.DoubleValKeyGE, "1.6", "167772160")), "SlashProt reads ArmorModVsSlash 13");
+        Check.True(M(armor, C(N.DoubleValKeyLE, "0.8", "167772164")), "LightningProt reads ArmorModVsElectric 19");
     }
 
     private static void ObjectClass()
@@ -199,7 +249,7 @@ internal static class VTankLootTests
 
     private static void DamageNodes()
     {
-        var sword = new Item("Sword").Int(54, 40).Dbl(22, 0.5);   // min 20, median 30
+        var sword = new Item("Sword").Int(44, 40).Dbl(22, 0.5);   // min 20, median 30
         Check.True(M(sword, C(N.MinDamageGE, "20")), "min 20");
         Check.False(M(sword, C(N.MinDamageGE, "20.5")), "min above");
         Check.True(M(sword, C(N.BuffedMedianDamageGE, "30")), "median 30");
@@ -211,10 +261,10 @@ internal static class VTankLootTests
         Check.False(M(nodmg, C(N.BuffedMedianDamageGE, "0")), "no max damage: median fails");
         Check.False(M(nodmg, C(N.BuffedMissileDamageGE, "0")), "no max damage: missile fails");
 
-        var bow = new Item("Bow").Int(54, 50).Dbl(152, 1.2);
+        var bow = new Item("Bow").Int(44, 50).Dbl(152, 1.2);
         Check.True(M(bow, C(N.BuffedMissileDamageGE, "60")), "50 * elemental 1.2 = 60");
         Check.False(M(bow, C(N.BuffedMissileDamageGE, "60.1")), "just above");
-        var weakBow = new Item("Bow").Int(54, 50).Dbl(152, 0.5);
+        var weakBow = new Item("Bow").Int(44, 50).Dbl(152, 0.5);
         Check.True(M(weakBow, C(N.BuffedMissileDamageGE, "50")), "an elemental bonus below 1 counts as 1");
     }
 

@@ -72,7 +72,7 @@ public static class LootEvaluator
 
     private static double EvalMinDamage(WorldObject item)
     {
-        int maxDamage    = item.Values(54, 0); // STypeInt MAX_DAMAGE
+        int maxDamage    = item.Values(44, 0); // Damage, the weapon profile's max (was 54, WeaponEncumbrance, until 2026-10-07)
         double variance  = item.Values(DoubleValueKey.DamageVariance, 0.0);
         return maxDamage - variance * maxDamage;
     }

@@ -28,6 +28,14 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TownNet.cs" Link="Linked\TownNet.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PortalAvoid.cs" Link="Linked\PortalAvoid.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TravelPlan.cs" Link="Linked\TravelPlan.cs" />
+    <!-- The planned trip, its path, the path markers and "save as nav route" (TripExportTests). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripPlan.cs" Link="Linked\TripPlan.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripPath.cs" Link="Linked\TripPath.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PathMarkers.cs" Link="Linked\PathMarkers.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavRouteExport.cs" Link="Linked\NavRouteExport.cs" />
+    <Compile Include="..\..\Plugins\Shared\Nav3DText.cs" Link="Linked\Nav3DText.cs" />
+    <!-- RynthAi's own nav reader/writer: the saved route is read back the way RynthAi reads it. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\LegacyUi\NavRouteParser.cs" Link="Linked\NavRouteParser.cs" />
   </ItemGroup>
 
 </Project>
