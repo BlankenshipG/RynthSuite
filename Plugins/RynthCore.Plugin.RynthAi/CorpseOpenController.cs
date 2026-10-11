@@ -47,6 +47,9 @@ public sealed partial class RynthAiPlugin
     private const long BUSY_TIMEOUT_MS = 10_000; // safety: force-clear if stuck >10s
     private const long NameWaitMs = 3_000;       // extra wait past the assess window for a corpse item's name
     private const long AppraisalWaitMs = 3_000;  // extra wait past the assess window for an item's appraisal
+    private const long ContentsSweepMs = 500;    // how often an open corpse's contents are checked for items the cache missed
+    private long _lastContentsSweepAt;
+    private int _lastContentsSweepCorpse;
     private const long AppraisalHoldTimeoutMarginMs = 1_000; // stop holding this long before the corpse timeout
 
     // Wedge detection: when AC's item-action state locks up (server-side, e.g.
@@ -1207,6 +1210,24 @@ public sealed partial class RynthAiPlugin
         // so an item picks its name up as soon as the engine's snapshot has it).
         for (int i = 0; i < containedItems.Count; i++)
             containedItems[i] = _objectCache.RefreshIdentity(containedItems[i]);
+
+        // Items the client has inside the corpse that the cache never classified (no create
+        // processed for them) are not in containedItems at all, so they were never judged
+        // and the corpse was finished without them. Ask the client what the corpse holds,
+        // at most every ContentsSweepMs, and look the missing ones up.
+        if (now - _lastContentsSweepAt >= ContentsSweepMs || _lastContentsSweepCorpse != corpseId)
+        {
+            _lastContentsSweepAt = now;
+            _lastContentsSweepCorpse = corpseId;
+            List<WorldObject> missed = _objectCache.RescueContainedItems(corpseId, containedItems);
+            if (missed.Count > 0)
+            {
+                foreach (WorldObject wo in missed)
+                    containedItems.Add(_objectCache.RefreshIdentity(wo));
+                LootDiag($"[RynthAi] Corpse loot: found {missed.Count} item(s) on 0x{(uint)corpseId:X8} the object cache had missed: " +
+                         string.Join(", ", missed.Select(w => $"0x{(uint)w.Id:X8} '{w.Name}' {w.ObjectClass}")) + ".");
+            }
+        }
 
         // Fast path: items for this corpse are already in the cache. AC's CreateObject
         // burst populates the corpse's contents during the landscape sweep that precedes

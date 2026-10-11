@@ -44,6 +44,8 @@ internal static class LootCorpseTests
         r.Add("corpse: a corpse named late (stored nameless) becomes a Corpse on access", CorpseNamedLateOnAccess);
         r.Add("loot chain: own corpse appears -> claimed -> opened -> item moved into the pack", FullLootChain);
         r.Add("loot chain: 'My Kills Only' loots your kill and skips another player's", OwnershipModes);
+        r.Add("loot chain: an item the cache never saw created is found in the corpse's contents and looted", UnseenItemRescued);
+        r.Add("loot chain: without GetContainerContents an unseen item stays unseen (no crash)", UnseenItemOldEngine);
         r.Add("loot starvation: a corpse waiting behind far-off combat gets a turn, a close monster keeps combat", LootStarvation);
         r.Add("loot logging: a corpse held by combat is logged once, with the reason", HeldByCombatLoggedOnce);
         r.Add("corpse close: a finished corpse is closed once (CloseContainer, API v76)", FinishedCorpseClosedOnce);
@@ -241,6 +243,48 @@ internal static class LootCorpseTests
         Check.True(FakeHost.ExternalMoves.Contains((Gem, Player, 0)),
             "the gem is moved into the main pack (moves: " + string.Join(",", FakeHost.ExternalMoves.Select(m => $"{m.Id:X8}->{m.Target:X8}")) + ")");
         Check.False(FakeHost.Uses.Contains(Gem), "never used (a use can wield)");
+    }
+
+    // 2026-10-11, Silentkelpie: a Necrolytic Extract on his own kill, a Keep rule for it, left on
+    // the corpse with no [LootEval] line. The cache never processed a create for it, so it was
+    // in neither the inventory nor the landscape set and GetContainedItems never returned it.
+    private static void UnseenItemRescued()
+    {
+        BaseWorld(corpsePositioned: true);
+        FakeHost.ContentsCalls = true;
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        Check.True(bot.HasLootWork(), "looting wants the tick");
+        bot.Tick(BotActivity.Looting);
+        Check.Eq(bot.Get<int>("_targetCorpseId"), unchecked((int)Corpse), "the corpse is claimed");
+
+        // The gem is in the corpse but its create never reaches the cache.
+        bot.P.OnViewObjectContents(Corpse);
+        Check.False(bot.Cache.GetContainedItems(unchecked((int)Corpse)).Any(), "the cache has nothing for the corpse (the bug's state)");
+
+        for (int i = 0; i < 100 && !FakeHost.ExternalMoves.Any(m => m.Id == Gem); i++)
+        {
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        Check.True(FakeHost.Logs.Any(l => l.Contains("the object cache had missed") && l.Contains("Black Opal")), "the rescue is logged with the item");
+        Check.True(FakeHost.ExternalMoves.Contains((Gem, Player, 0)), "the unseen gem is looted");
+    }
+
+    private static void UnseenItemOldEngine()
+    {
+        BaseWorld(corpsePositioned: true);
+        var host = FakeHost.Create(Player);   // no GetContainerContents
+        var bot = new Bot(host);
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        bot.Tick(BotActivity.Looting);
+        bot.P.OnViewObjectContents(Corpse);
+        for (int i = 0; i < 20; i++) { bot.Tick(BotActivity.Looting); Thread.Sleep(5); }
+        Check.False(FakeHost.ExternalMoves.Any(m => m.Id == Gem), "nothing to find it with: not looted");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("the object cache had missed")), "no rescue line");
     }
 
     private static void OwnershipModes()

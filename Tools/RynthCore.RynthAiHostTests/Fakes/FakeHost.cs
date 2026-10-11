@@ -109,6 +109,9 @@ internal static unsafe class FakeHost
     /// GetCurrentCombatMode (answering <see cref="CombatModeValue"/>). Tests written without
     /// them keep seeing those calls as absent.</summary>
     public static bool WeaponCalls;
+    /// <summary>Opt-in GetContainerContents answering from <see cref="Containers"/> (item -> container),
+    /// in insertion order. Off by default: see the class note.</summary>
+    public static bool ContentsCalls;
     /// <summary>The engine's VTank signal (API v74 GetVTankState flags: 1 = watching, 2 = running);
     /// -1 = not installed (an engine before v74). Opt-in: set before Create().</summary>
     public static int VTankFlags = -1;
@@ -200,7 +203,7 @@ internal static unsafe class FakeHost
         HeadingDeg = 0; Wcids.Clear(); Spellbook.Clear(); PlayerIdValue = 0;
         Logs.Clear(); Chat.Clear(); ChatCommands.Clear();
         AutoRunCalls.Clear(); AutoRun = false; Jumps = 0; TapJumpCalls = false; TapJumps = 0; Turns = 0; Casts.Clear(); StopCalls = false; Stops = 0; GiveCalls = false; Gives.Clear(); GiveLands = true;
-        Uses.Clear(); IdRequests.Clear(); Moves.Clear(); Appraised.Clear(); WeaponCalls = false; CombatModeValue = 1;
+        Uses.Clear(); IdRequests.Clear(); Moves.Clear(); Appraised.Clear(); WeaponCalls = false; ContentsCalls = false; CombatModeValue = 1;
         VTankFlags = -1; VTankSeq = 0; LogCostMicros = 0;
         ServerGates = false; UseDoneSeq = 0; CastBusy = 0; LastUseDoneError = 0; LastUseDoneCalls = false;
         WieldCalls = false; Wields.Clear();
@@ -246,6 +249,8 @@ internal static unsafe class FakeHost
             api.GetPlayerIdFn       = (IntPtr)(delegate* unmanaged[Cdecl]<uint>)&GetPlayerId;
         if (Containers.Count > 0 || Wielders.Count > 0)
             api.GetObjectOwnershipInfoFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint*, uint*, uint*, int>)&GetObjectOwnershipInfo;
+        if (ContentsCalls)
+            api.GetContainerContentsFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint*, int, int>)&GetContainerContents;
         if (Bitfields.Count > 0)
             api.GetObjectBitfieldFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint>)&GetObjectBitfield;
         api.SetAutoRunFn            = (IntPtr)(delegate* unmanaged[Cdecl]<int, int>)&SetAutoRun;
@@ -459,6 +464,15 @@ internal static unsafe class FakeHost
         *wielder = w;
         *location = 0;
         return 1;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetContainerContents(uint container, uint* output, int max)
+    {
+        int n = 0;
+        foreach (var kv in Containers)
+            if (kv.Value == container && n < max) output[n++] = kv.Key;
+        return n;
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]

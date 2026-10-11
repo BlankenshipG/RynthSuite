@@ -1787,6 +1787,42 @@ public class WorldObjectCache
         return result;
     }
 
+    /// <summary>
+    /// Items the client lists inside <paramref name="containerId"/> that the cache never
+    /// classified, looked up now (the indexer's lazy lookup files them) and returned.
+    /// <paramref name="known"/> is what <see cref="GetContainedItems"/> already found.
+    /// An item whose create the cache never processed is otherwise invisible to corpse
+    /// looting: it isn't in the inventory or landscape sets, so it is never a candidate
+    /// and the corpse is finished without it (2026-10-11, Silentkelpie: a Necrolytic
+    /// Extract on a corpse with a Keep rule, left behind with no log line; the cache
+    /// reported it DELETE-BEFORE-CLASSIFY when the corpse went away).
+    /// </summary>
+    public List<WorldObject> RescueContainedItems(int containerId, IReadOnlyCollection<WorldObject> known)
+    {
+        var rescued = new List<WorldObject>();
+        if (containerId == 0 || !_host.HasGetContainerContents) return rescued;
+
+        uint[] buf = new uint[256];
+        int count;
+        try { count = _host.GetContainerContents(unchecked((uint)containerId), buf); }
+        catch { return rescued; }
+        if (count <= 0) return rescued;
+
+        var have = new HashSet<int>();
+        foreach (var wo in known) have.Add(wo.Id);
+
+        for (int i = 0; i < Math.Min(count, buf.Length); i++)
+        {
+            int id = unchecked((int)buf[i]);
+            if (id == 0 || have.Contains(id)) continue;
+            WorldObject? wo = this[id];
+            if (wo == null) continue;
+            if (wo.ObjectClass == AcObjectClass.Corpse || wo.ObjectClass == AcObjectClass.Monster) continue;
+            rescued.Add(wo);
+        }
+        return rescued;
+    }
+
     /// <summary>Enumerate landscape creatures (received health updates or TYPE_CREATURE).</summary>
     public IEnumerable<WorldObject> GetLandscape()
     {
