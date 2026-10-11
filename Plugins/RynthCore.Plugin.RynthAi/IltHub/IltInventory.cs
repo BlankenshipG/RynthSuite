@@ -60,6 +60,8 @@ internal sealed class IltInventory
     public const uint QuadTotalXp = 1;
     public const uint QuadAvailableXp = 2;
     public const uint QuadItemTotalXp = 4;
+    /// <summary>ACECustom PropertyInt64.BankedLuminance (sent with each XP batch).</summary>
+    public const uint QuadBankedLuminance = 9005;
     public const uint BoolNeverChunk = 9030;
     public const uint BoolPyrealRefillActive = 9049;
     public const uint BoolUniversalMasteryActive = 50038;
@@ -207,6 +209,10 @@ internal sealed class IltInventory
     /// <summary>Total stack count of items whose name matches exactly (case-insensitive).</summary>
     public long CountByName(string name)
         => Items().Where(wo => wo.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).Sum(wo => (long)StackSize(wo));
+
+    /// <summary>Total stack count of a sigil-chain item (singular or plural stack name; see IltSigilChain.NameIs).</summary>
+    public long CountByChainName(string chainName)
+        => Items().Where(wo => IltSigilChain.NameIs(wo.Name, chainName)).Sum(wo => (long)StackSize(wo));
 
     /// <summary>
     /// True when the player carries spell components or an Infinite Casting Stone that isn't

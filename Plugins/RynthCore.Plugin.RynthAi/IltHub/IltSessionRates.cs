@@ -3,7 +3,8 @@
 // Sources (all passive — nothing is sent to the server except the optional bank refresh
 // the Banking tab already does):
 //   XP         player quad 1 (TotalExperience) delta since session start.
-//   Luminance  "You've banked N Luminance" chat lines (ILT overflow-to-bank message).
+//   Luminance  bank luminance (player quad 9005) gains; "You've banked N Luminance" chat lines
+//              only until that property is seen (see IltLumIncome — fellowship lum has no chat).
 //   Coins      positive bank Enlightened Coins deltas + carried coin (WCID 300004) gains.
 //   Pyreals    positive bank pyreal deltas + carried pyreal (WCID 273) gains; MMD = 250k.
 //   Items      gains of each item in the item→coin conversion table (carried count),
@@ -27,7 +28,7 @@ internal sealed class IltSessionRates : IIltFeature
 
     private long _startXp = -1;
     private long _xp;
-    private long _lum;
+    private readonly IltLumIncome _lum = new();
     private long _coins;
     private long _pyreals;
     private int _kills;
@@ -75,7 +76,8 @@ internal sealed class IltSessionRates : IIltFeature
         RynthLog.Trace(LogCat.IltRates, $"Reset()");
         _start = DateTime.UtcNow;
         _startXp = -1;
-        _xp = _lum = _coins = _pyreals = 0;
+        _xp = _coins = _pyreals = 0;
+        _lum.Reset();
         _kills = 0;
         _lastInvCoins = _lastInvPyreals = -1;
         _lastItemCounts.Clear();
@@ -98,6 +100,9 @@ internal sealed class IltSessionRates : IIltFeature
             if (_startXp < 0) _startXp = totalXp;
             _xp = Math.Max(0, totalXp - _startXp);
         }
+
+        // Bank luminance covers kill, quest and fellowship-shared lum alike.
+        _lum.OnBankSample(inv.PlayerQuad(IltInventory.QuadBankedLuminance));
 
         _coins += Gain(ref _lastInvCoins, inv.CountByWcid(IltInventory.WcidEnlightenedCoin));
         _pyreals += Gain(ref _lastInvPyreals, inv.CountByWcid(IltInventory.WcidPyreal));
@@ -128,7 +133,7 @@ internal sealed class IltSessionRates : IIltFeature
     public bool OnChat(string text)
     {
         var m = IltParse.LumBanked.Match(text);
-        if (m.Success) _lum += IltParse.ParseLeadingLong(m.Groups["amt"].Value);
+        if (m.Success) _lum.OnChatAmount(IltParse.ParseLeadingLong(m.Groups["amt"].Value));
         return false;
     }
 
@@ -139,11 +144,12 @@ internal sealed class IltSessionRates : IIltFeature
     private void BuildRows()
     {
         double hours = Math.Max((DateTime.UtcNow - _start).TotalHours, 1.0 / 3600);
-        _summary = new RateSummary(_xp / hours, _lum / hours, _kills / hours, _coins / hours, _pyreals / hours, _xp, _kills);
+        long lum = _lum.Total;
+        _summary = new RateSummary(_xp / hours, lum / hours, _kills / hours, _coins / hours, _pyreals / hours, _xp, _kills);
         var rows = new List<RateRow>
         {
             Row("XP", _xp, hours),
-            Row("Luminance banked", _lum, hours),
+            Row("Luminance banked", lum, hours),
             Row("Enlightened Coins", _coins, hours),
             Row("Pyreals", _pyreals, hours),
             new("  as MMD", (_pyreals / (double)PyrealsPerMmd).ToString("0.0"), (_pyreals / (double)PyrealsPerMmd / hours).ToString("0.0")),
