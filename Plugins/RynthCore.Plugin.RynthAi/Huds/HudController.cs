@@ -8,8 +8,10 @@
 //     the Inventory Management settings (ImGui Advanced Settings, the Avalonia Settings
 //     panel) or "/ra huds".
 //   * The same Mini Remote inside the engine's RynthAi dashboard (its Mini Remote drawer,
-//     RynthPluginRenderEmbed "miniremote"): RenderEmbedded. Data polling runs while either
-//     the floating window or the drawer shows it (MiniRemoteActive).
+//     RynthPluginRenderEmbed "miniremote") and inside the engine's Mini Remote window
+//     ("miniremote-window"): RenderEmbedded. Data polling runs while any of them shows it
+//     (MiniRemoteActive); the floating window stays hidden while the engine's window shows it
+//     (MiniRemoteInEngineWindow), so there is one Mini Remote on screen.
 // Every HUD is an ordinary ImGui window, so it can be docked into / undocked from other
 // ImGui windows and dragged outside the game window (multi-viewport).
 //
@@ -128,12 +130,22 @@ internal sealed class HudController
     /// </summary>
     private const long EmbeddedVisibleMs = 1500;
 
-    /// <summary>When the Mini Remote last drew in the dashboard drawer (TickCount64); written on the render thread.</summary>
+    /// <summary>When the Mini Remote last drew in an engine surface (TickCount64); written on the render thread.</summary>
     private long _embeddedDrawnAt = long.MinValue / 2;
 
-    /// <summary>The Mini Remote is on screen: the floating window or the dashboard drawer. Any thread.</summary>
+    /// <summary>When the engine's Mini Remote window last drew it (TickCount64); written on the render thread.</summary>
+    private long _windowDrawnAt = long.MinValue / 2;
+
+    /// <summary>The Mini Remote is on screen: the floating window or an engine surface. Any thread.</summary>
     public bool MiniRemoteActive =>
         State.ShowMiniRemote || NowMs - System.Threading.Interlocked.Read(ref _embeddedDrawnAt) < EmbeddedVisibleMs;
+
+    /// <summary>
+    /// The engine's Mini Remote window is showing the remote: the floating copy stays hidden
+    /// meanwhile, so there is one Mini Remote on screen. Any thread.
+    /// </summary>
+    public bool MiniRemoteInEngineWindow =>
+        NowMs - System.Threading.Interlocked.Read(ref _windowDrawnAt) < EmbeddedVisibleMs;
 
     // ── Pump thread ─────────────────────────────────────────────────────────
 
@@ -471,6 +483,8 @@ internal sealed class HudController
             case "remote":
             case "miniremote":
                 State.ShowMiniRemote = Resolve(mode, State.ShowMiniRemote);
+                if (State.ShowMiniRemote && MiniRemoteInEngineWindow)
+                    return "The Mini Remote is open in RynthCore's Mini Remote window (bar button, /rc miniremote); the floating copy stays hidden while that window is open.";
                 return State.ShowMiniRemote ? "Mini Remote shown." : "Mini Remote hidden.";
             default:
                 State.ShowSetup = Resolve(mode, State.ShowSetup);
@@ -487,7 +501,8 @@ internal sealed class HudController
         {
             if (State.ShowSetup) _setup.Render();
             if (State.ShowItemHud) _itemHud.Render(); else _itemHud.OnHidden();
-            if (State.ShowMiniRemote) _miniRemote.Render(); else _miniRemote.OnHidden();
+            // The engine's Mini Remote window hosts the same remote: draw one, not two.
+            if (State.ShowMiniRemote && !MiniRemoteInEngineWindow) _miniRemote.Render(); else _miniRemote.OnHidden();
         }
         finally
         {
@@ -497,15 +512,18 @@ internal sealed class HudController
 
     /// <summary>
     /// Draws the Mini Remote into the engine's current ImGui window (the RynthAi dashboard's
-    /// Mini Remote drawer) and returns the content size it wants. Render thread.
+    /// Mini Remote drawer, or with <paramref name="window"/> the engine's Mini Remote window)
+    /// and returns the content size it wants. Render thread.
     /// </summary>
-    public System.Numerics.Vector2 RenderEmbedded()
+    public System.Numerics.Vector2 RenderEmbedded(bool window = false)
     {
-        System.Threading.Interlocked.Exchange(ref _embeddedDrawnAt, NowMs);
+        long now = NowMs;
+        System.Threading.Interlocked.Exchange(ref _embeddedDrawnAt, now);
+        if (window) System.Threading.Interlocked.Exchange(ref _windowDrawnAt, now);
         int pushed = LegacyDashboardRenderer.PushDashboardStyle();
         try
         {
-            return _miniRemote.RenderEmbedded();
+            return _miniRemote.RenderEmbedded(window);
         }
         finally
         {

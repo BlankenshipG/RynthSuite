@@ -277,11 +277,12 @@ public sealed partial class RynthAiPlugin
     }
 
     /// <summary>
-    /// RynthPluginRenderEmbed "miniremote": the Mini Remote inside the engine's RynthAi dashboard
-    /// drawer, drawn into the engine's current ImGui window. False (nothing drawn) until login and
-    /// the HUDs exist. Render thread.
+    /// RynthPluginRenderEmbed "miniremote" / "miniremote-window": the Mini Remote inside the
+    /// engine's RynthAi dashboard drawer, or (<paramref name="window"/>) inside the engine's Mini
+    /// Remote window, drawn into the engine's current ImGui window. False (nothing drawn) until
+    /// login and the HUDs exist. Render thread.
     /// </summary>
-    public bool RenderEmbeddedMiniRemote(out System.Numerics.Vector2 want)
+    public bool RenderEmbeddedMiniRemote(bool window, out System.Numerics.Vector2 want)
     {
         want = default;
         var huds = _huds;
@@ -292,7 +293,7 @@ public sealed partial class RynthAiPlugin
         ImGui.SetCurrentContext(Host.ImGuiContext);
         try
         {
-            want = huds.RenderEmbedded();
+            want = huds.RenderEmbedded(window);
             return true;
         }
         catch (Exception ex)

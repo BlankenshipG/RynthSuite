@@ -85,7 +85,9 @@ public static unsafe class PluginExports
     /// <summary>
     /// Engine dashboard drawers (RynthCore 2026.10.5.21+): draws the named UTF-8 surface into the
     /// engine's current ImGui window on the render thread and reports the size it wants.
-    /// Surfaces: "miniremote" (the Mini Remote drawer). 1 = drawn, 0 = not ready / unknown.
+    /// Surfaces: "miniremote" (the RynthAi dashboard's Mini Remote drawer) and
+    /// "miniremote-window" (the engine's Mini Remote window, which hosts the remote with its
+    /// Toggles). 1 = drawn, 0 = not ready / unknown (nothing drawn).
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderEmbed", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static int RenderEmbed(byte* surface, float width, float height, float* wantWidth, float* wantHeight)
@@ -94,9 +96,10 @@ public static unsafe class PluginExports
         {
             if (surface == null) return 0;
             ReadOnlySpan<byte> name = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(surface);
-            if (!name.SequenceEqual("miniremote"u8)) return 0;
+            bool window = name.SequenceEqual("miniremote-window"u8);
+            if (!window && !name.SequenceEqual("miniremote"u8)) return 0;
             var plugin = Runtime.Plugin;
-            if (plugin == null || !plugin.RenderEmbeddedMiniRemote(out System.Numerics.Vector2 want)) return 0;
+            if (plugin == null || !plugin.RenderEmbeddedMiniRemote(window, out System.Numerics.Vector2 want)) return 0;
             if (wantWidth != null) *wantWidth = want.X;
             if (wantHeight != null) *wantHeight = want.Y;
             return 1;

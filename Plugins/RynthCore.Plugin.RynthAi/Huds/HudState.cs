@@ -14,6 +14,8 @@ public sealed class HudState
     /// <summary>Mini Remote gem grid size (UB layout: 5 columns × 6 rows).</summary>
     public const int MiniRemoteColumns = 5;
     public const int MiniRemoteSlotCount = 30;
+    /// <summary>Mini Remote slot icon edge in pixels: the grow / shrink range and the default.</summary>
+    public const float MinMiniRemoteSlotSize = 18f, MaxMiniRemoteSlotSize = 64f, DefaultMiniRemoteSlotSize = 28f;
 
     /// <summary>The "Inventory HUDs" setup window is open.</summary>
     public bool ShowSetup;
@@ -46,6 +48,11 @@ public sealed class HudState
     public bool MiniShowGuardian = true;
     /// <summary>Gem grid slots, row-major from the top-left (empty Name = unassigned).</summary>
     public List<HudItemEntry> MiniRemoteSlots = new();
+    /// <summary>
+    /// Slot icon edge in pixels (Ctrl+wheel over the slots, or Options > Slot size).
+    /// Clamped to <see cref="MinMiniRemoteSlotSize"/>..<see cref="MaxMiniRemoteSlotSize"/>.
+    /// </summary>
+    public float MiniRemoteSlotSize = DefaultMiniRemoteSlotSize;
 }
 
 /// <summary>An item pinned to a HUD. Matched by name; Wcid / IconDid are remembered so the
@@ -115,5 +122,9 @@ internal sealed class HudStore
         while (s.MiniRemoteSlots.Count < HudState.MiniRemoteSlotCount) s.MiniRemoteSlots.Add(new HudItemEntry());
         if (s.MiniRemoteSlots.Count > HudState.MiniRemoteSlotCount)
             s.MiniRemoteSlots.RemoveRange(HudState.MiniRemoteSlotCount, s.MiniRemoteSlots.Count - HudState.MiniRemoteSlotCount);
+        // A huds.json from before the setting has no value (0): use the default.
+        s.MiniRemoteSlotSize = s.MiniRemoteSlotSize <= 0f || float.IsNaN(s.MiniRemoteSlotSize)
+            ? HudState.DefaultMiniRemoteSlotSize
+            : Math.Clamp(s.MiniRemoteSlotSize, HudState.MinMiniRemoteSlotSize, HudState.MaxMiniRemoteSlotSize);
     }
 }

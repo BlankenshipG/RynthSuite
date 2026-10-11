@@ -12,8 +12,9 @@
 //            whether it is ready
 //   Slots    5 × 6 quick-use item grid; click uses the item (an empty slot takes the selected
 //            pack item), right-click assigns / clears, and items dragged from the game's
-//            inventory or the RynthCore Inventory window drop straight into a slot
-//   Toggles  macro and subsystem switches (same as the dashboard buttons; floating window only)
+//            inventory or the RynthCore Inventory window drop straight into a slot. Ctrl+wheel
+//            over the grid (or Options > Slot size) grows / shrinks the boxes.
+//   Toggles  macro and subsystem switches (same as the dashboard buttons; not in the drawer)
 //   Bank     ILT bank balances (pyreals, luminance, keys, coins)
 //   Rebuff   force rebuff / cancel rebuff
 //   Translate chat translator on/off and the receive <-> send language swap
@@ -23,7 +24,9 @@
 // RenderEmbedded draws the same sections and Options menu inside the engine's RynthAi dashboard
 // (its Mini Remote drawer, opened by the Hub launcher's right-click or the drawer tab) and
 // reports the size it wants; the drawer is sized from that. The drawer leaves out Toggles: the
-// dashboard it sits on already has those switches, so they stay a floating-window section.
+// dashboard it sits on already has those switches. RenderEmbedded(window: true) draws it in the
+// engine's Mini Remote window instead (bar button, /rc miniremote): Toggles included, and the
+// floating window stays hidden meanwhile (HudController), so that window is the one Mini Remote.
 using System;
 using System.Linq;
 using System.Numerics;
@@ -37,9 +40,8 @@ internal sealed class MiniRemoteHud
 {
     private const string OptionsPopup = "##miniremoteopts";
     private const string SlotPopup = "##miniremoteslot";
-    private const float SlotSize = 28f;
-    /// <summary>Slot button edge including its 1 px frame padding on each side.</summary>
-    private const float SlotButtonSize = SlotSize + 2f;
+    /// <summary>Pixels per Ctrl+wheel notch over the slot grid.</summary>
+    private const float SlotSizeStep = 2f;
     /// <summary>Narrowest horizontal-layout column (fits the stat lines and the translate row).</summary>
     private const float MinColumnWidth = 190f;
     private const float HeaderButtonWidth = 80f;
@@ -54,7 +56,8 @@ internal sealed class MiniRemoteHud
     private int _slotMenuIndex = -1;
     private bool _rescueChecked; // off-screen check done for the current show
     private bool _columnOpen; // horizontal layout: a column was already started this frame (next one goes SameLine)
-    private bool _embedded;   // true only inside RenderEmbedded (the dashboard drawer)
+    private bool _embedded;   // true only inside RenderEmbedded (an engine surface)
+    private bool _inWindow;   // with _embedded: the engine's Mini Remote window, not the dashboard drawer
 
     public MiniRemoteHud(HudController hud) => _hud = hud;
 
@@ -94,14 +97,16 @@ internal sealed class MiniRemoteHud
 
     /// <summary>
     /// The same sections drawn into the caller's current window (the engine's RynthAi dashboard
-    /// drawer, which sizes itself from the result) instead of a window of their own. Returns the
-    /// content size it wants: the column layout's width, and the height drawn.
+    /// drawer, or with <paramref name="window"/> the engine's Mini Remote window; both size
+    /// themselves from the result) instead of a window of their own. Returns the content size it
+    /// wants: the column layout's width, and the height drawn.
     /// </summary>
-    public Vector2 RenderEmbedded()
+    public Vector2 RenderEmbedded(bool window = false)
     {
         var s = _hud.State;
         _slotMenuIndex = -1;
         _embedded = true;
+        _inWindow = window;
         float startY = ImGui.GetCursorPosY();
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
         try
@@ -123,11 +128,15 @@ internal sealed class MiniRemoteHud
             ImGui.PopStyleVar();
             _slotMenuIndex = -1;
             _embedded = false;
+            _inWindow = false;
         }
     }
 
+    /// <summary>In the dashboard drawer (not the floating window or the engine's Mini Remote window).</summary>
+    private bool InDrawer => _embedded && !_inWindow;
+
     /// <summary>The Toggles section is drawn: chosen in Options, and never in the dashboard drawer.</summary>
-    private bool ShowToggles(HudState s) => s.MiniShowToggles && !_embedded;
+    private bool ShowToggles(HudState s) => s.MiniShowToggles && !InDrawer;
 
     /// <summary>
     /// The width the sections need: one column stacked, else one per non-empty column side by side.
@@ -135,7 +144,7 @@ internal sealed class MiniRemoteHud
     /// </summary>
     private float EmbeddedWidth(HudState s)
     {
-        float colW = ColumnWidth();
+        float colW = ColumnWidth(s);
         if (!s.MiniRemoteHorizontal) return colW;
         int cols = 0;
         if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet) cols++;
@@ -174,7 +183,7 @@ internal sealed class MiniRemoteHud
     /// </summary>
     private void RenderHorizontal(HudState s, IltHubController? hub)
     {
-        float colW = ColumnWidth();
+        float colW = ColumnWidth(s);
         _columnOpen = false;
         if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet)
         {
@@ -204,13 +213,27 @@ internal sealed class MiniRemoteHud
         ImGui.BeginChild(id, new Vector2(width, 0), ImGuiChildFlags.AutoResizeY, ImGuiWindowFlags.NoScrollbar);
     }
 
-    /// <summary>Wide enough for the slot grid, and never narrower than MinColumnWidth.</summary>
-    private static float ColumnWidth()
+    /// <summary>Wide enough for the slot grid at its current size, and never narrower than MinColumnWidth.</summary>
+    private static float ColumnWidth(HudState s)
     {
         int cols = HudState.MiniRemoteColumns;
-        float grid = cols * SlotButtonSize + (cols - 1) * ImGui.GetStyle().ItemSpacing.X;
+        float grid = cols * SlotButtonSize(s) + (cols - 1) * ImGui.GetStyle().ItemSpacing.X;
         return Math.Max(MinColumnWidth, grid);
     }
+
+    /// <summary>Slot icon edge in pixels (the saved size, clamped).</summary>
+    private static float SlotSize(HudState s) =>
+        Math.Clamp(s.MiniRemoteSlotSize, HudState.MinMiniRemoteSlotSize, HudState.MaxMiniRemoteSlotSize);
+
+    /// <summary>Slot button edge including its 1 px frame padding on each side.</summary>
+    private static float SlotButtonSize(HudState s) => SlotSize(s) + 2f;
+
+    /// <summary>
+    /// Grows (+) or shrinks (-) the slot boxes within the saved range (huds.json picks it up on
+    /// the next SaveIfDirty, like every other HUD setting).
+    /// </summary>
+    private static void ResizeSlots(HudState s, float delta) =>
+        s.MiniRemoteSlotSize = Math.Clamp(SlotSize(s) + delta, HudState.MinMiniRemoteSlotSize, HudState.MaxMiniRemoteSlotSize);
 
     private void RenderStatusSections(HudState s, IltHubController? hub)
     {
@@ -375,7 +398,9 @@ internal sealed class MiniRemoteHud
     {
         var slots = s.MiniRemoteSlots.ToArray();
         var pack = _hud.Pack;
+        float slotSize = SlotSize(s);
         ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(1, 1));
+        ImGui.BeginGroup();
         for (int i = 0; i < slots.Length; i++)
         {
             if (i % HudState.MiniRemoteColumns != 0) ImGui.SameLine();
@@ -387,17 +412,17 @@ internal sealed class MiniRemoteHud
             if (tex != IntPtr.Zero)
             {
                 var tint = count == 0 ? new Vector4(1, 1, 1, 0.35f) : Vector4.One;
-                clicked = ImGui.ImageButton("##slot", tex, new Vector2(SlotSize, SlotSize), Vector2.Zero, Vector2.One, Vector4.Zero, tint);
+                clicked = ImGui.ImageButton("##slot", tex, new Vector2(slotSize, slotSize), Vector2.Zero, Vector2.One, Vector4.Zero, tint);
             }
             else
             {
                 string label = e.IsEmpty ? string.Empty : e.Name.Substring(0, 1).ToUpperInvariant();
                 if (e.IsEmpty) ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.10f, 0.13f, 0.18f, 0.6f));
-                clicked = ImGui.Button(label + "##slot", new Vector2(SlotSize + 2, SlotSize + 2));
+                clicked = ImGui.Button(label + "##slot", new Vector2(slotSize + 2, slotSize + 2));
                 if (e.IsEmpty) ImGui.PopStyleColor();
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(e.IsEmpty ? EmptySlotTip(i) : $"{e.Name}\n{count:N0} carried\nClick to use, right-click for options.");
+                ImGui.SetTooltip(e.IsEmpty ? EmptySlotTip(i) : $"{e.Name}\n{count:N0} carried\nClick to use, right-click for options.\nCtrl+wheel: box size.");
             int slotIndex = i;
             if (clicked)
             {
@@ -418,7 +443,13 @@ internal sealed class MiniRemoteHud
             RenderSlotMenu(i, e);
             ImGui.PopID();
         }
+        ImGui.EndGroup();
         ImGui.PopStyleVar();
+
+        // Ctrl+wheel over the grid: bigger / smaller boxes (the window / drawer refits to them).
+        var io = ImGui.GetIO();
+        if (io.KeyCtrl && io.MouseWheel != 0f && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem))
+            ResizeSlots(s, io.MouseWheel > 0f ? SlotSizeStep : -SlotSizeStep);
     }
 
     /// <summary>
@@ -456,8 +487,8 @@ internal sealed class MiniRemoteHud
     {
         string candidate = _hud.AssignCandidate;
         return candidate.Length > 0
-            ? $"Slot {index + 1:00}: empty\nClick to assign {candidate}.\nOr drag an item here from the game inventory or the RynthCore Inventory."
-            : $"Slot {index + 1:00}: empty\nClick an item in your pack, then click here to assign it.\nOr drag an item here from the game inventory or the RynthCore Inventory.";
+            ? $"Slot {index + 1:00}: empty\nClick to assign {candidate}.\nOr drag an item here from the game inventory or the RynthCore Inventory.\nCtrl+wheel: box size."
+            : $"Slot {index + 1:00}: empty\nClick an item in your pack, then click here to assign it.\nOr drag an item here from the game inventory or the RynthCore Inventory.\nCtrl+wheel: box size.";
     }
 
     /// <summary>Per-slot right-click menu (opened inside the slot's ID scope).</summary>
@@ -524,8 +555,9 @@ internal sealed class MiniRemoteHud
     }
 
     /// <summary>
-    /// The Options popup. <paramref name="embedded"/>: drawn in the dashboard drawer, where the
-    /// window's lock and hide don't apply and the floating window is a separate choice.
+    /// The Options popup. <paramref name="embedded"/>: drawn in an engine surface, where the
+    /// floating window's lock and hide don't apply. The dashboard drawer offers the floating
+    /// window as a separate choice; the engine's Mini Remote window replaces it, so it doesn't.
     /// </summary>
     private void RenderOptions(HudState s, bool embedded)
     {
@@ -537,15 +569,20 @@ internal sealed class MiniRemoteHud
         Flag("Attack target", ref s.MiniShowTarget);
         Flag("Pet / summon", ref s.MiniShowPet);
         Flag("Item slots", ref s.MiniShowGems);
-        // The drawer's dashboard has these switches already; the setting is the floating window's.
-        if (!embedded) Flag("Toggles", ref s.MiniShowToggles);
+        // The drawer's dashboard has these switches already; the setting is for the windows.
+        if (!InDrawer) Flag("Toggles", ref s.MiniShowToggles);
         Flag("Bank", ref s.MiniShowBank);
         Flag("Rebuff", ref s.MiniShowRebuff);
         Flag("Translate", ref s.MiniShowTranslate);
         Flag("Guardian answer", ref s.MiniShowGuardian);
         ImGui.Separator();
         Flag("Horizontal layout", ref s.MiniRemoteHorizontal);
-        if (embedded)
+        RenderSlotSizeSlider(s);
+        if (embedded && _inWindow)
+        {
+            if (ImGui.MenuItem("Inventory HUDs setup...")) s.ShowSetup = true;
+        }
+        else if (embedded)
         {
             Flag("Floating window too", ref s.ShowMiniRemote);
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("Also show the Mini Remote as its own window (/ra remote).");
@@ -558,6 +595,21 @@ internal sealed class MiniRemoteHud
             if (ImGui.MenuItem("Hide Mini Remote")) s.ShowMiniRemote = false;
         }
         ImGui.EndPopup();
+    }
+
+    /// <summary>"Slot size" slider plus a reset, the menu twin of Ctrl+wheel over the slots.</summary>
+    private static void RenderSlotSizeSlider(HudState s)
+    {
+        float size = SlotSize(s);
+        ImGui.SetNextItemWidth(120f);
+        if (ImGui.SliderFloat("Slot size##mrslotsize", ref size, HudState.MinMiniRemoteSlotSize, HudState.MaxMiniRemoteSlotSize, "%.0f px"))
+            s.MiniRemoteSlotSize = MathF.Round(size);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Item slot box size (or Ctrl+wheel over the slots).");
+        ImGui.SameLine();
+        bool isDefault = s.MiniRemoteSlotSize == HudState.DefaultMiniRemoteSlotSize;
+        if (isDefault) ImGui.BeginDisabled();
+        if (ImGui.SmallButton("Default##mrslotsize")) s.MiniRemoteSlotSize = HudState.DefaultMiniRemoteSlotSize;
+        if (isDefault) ImGui.EndDisabled();
     }
 
     /// <summary>
