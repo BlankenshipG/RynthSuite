@@ -238,6 +238,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         try { _translator?.Dispose(); } catch { }
         _translator = null;
         _translateUi = null;
+        try { _discordRelay?.Dispose(); } catch { }
+        _discordRelay = null;
+        _discordRelayUi = null;
         try { RynthLog.Shutdown(); } catch { }
         Log($"RynthAi: Shutdown done — SaveSettings={tAfterSettings - t0} ms, TeardownSession={tAfterTeardown - tAfterSettings} ms, SaveCreatureStore={tAfterStore - tAfterTeardown} ms, GC={tAfterGc - tGc} ms (heap now {GC.GetGCMemoryInfo().HeapSizeBytes / (1024 * 1024)} MB), total={tAfterGc - t0} ms");
     }
@@ -3170,6 +3173,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "miniremote":   HandleHudCommand(cmd, parts.Length > 2 ? parts[2] : string.Empty); break;
             case "translate":
             case "tr":           HandleTranslateCommand(parts); break;
+            case "discord":      HandleDiscordCommand(parts); break;
             case "iteminfo":
             case "ii":           HandleItemInfoCommand(parts); break;
             case "spells":       HandleSpellsCommand(parts.Length > 2 ? parts[2] : string.Empty); break;

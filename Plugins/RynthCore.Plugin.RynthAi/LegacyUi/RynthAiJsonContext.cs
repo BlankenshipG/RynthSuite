@@ -21,6 +21,7 @@ namespace RynthCore.Plugin.RynthAi;
 // context (NativeAOT cannot reflect).
 [JsonSerializable(typeof(RynthCore.CreatureSeed.UbMobSeedFile))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Translate.TranslateSettings))]
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Discord.DiscordRelaySettings))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.RynthLogConfig))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Huds.HudState))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.IltHub.IltHubState))]
