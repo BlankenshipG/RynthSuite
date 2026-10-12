@@ -15,6 +15,30 @@ internal sealed class LegacyAdvancedSettingsUi
     private string? _serverNamesEdit;
 
     private static readonly string[] AttackHeights = { "Low", "Medium", "High" };
+
+    /// <summary>
+    /// The environment-impact throttle's shared numbers (one set for missiles and magic), drawn
+    /// under each response combo. <paramref name="id"/> keeps the two copies' ImGui ids apart.
+    /// </summary>
+    private void DrawEnvironmentThrottleKnobs(string id)
+    {
+        ImGui.Indent();
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Hits to trip##envlimit{id}", ref _settings.EnvironmentImpactLimit, 1, 10);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Environment hits on one target, within the window, before combat reacts.\nShared by missiles and magic.");
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Window (s)##envwin{id}", ref _settings.EnvironmentImpactWindowSec, 5, 120);
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Move closer by (m)##envstep{id}", ref _settings.EnvironmentApproachMeters, 1, 30);
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Closest (m)##envmin{id}", ref _settings.EnvironmentMinDistance, 1, 30);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Never moves nearer than this. Already this close, a new target is picked instead.");
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Skip target (s)##envskip{id}", ref _settings.EnvironmentSkipSec, 5, 300);
+        ImGui.Unindent();
+    }
     private static readonly string[] NavLabelModeNames = { "Off", "Numbers", "Numbers and names" };
     private const string NavResumeNearestTip =
         "On: starting the macro, loading a Circular or Linear route, and carrying on after a fight, loot, buff or door\n" +
@@ -523,6 +547,32 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.SetNextItemWidth(120);
                 ImGui.Combo("Missile Attack Height", ref _settings.MissileAttackHeight, AttackHeights, AttackHeights.Length);
 
+                ImGui.Spacing();
+                ImGui.Text("Variable Power (monster rules)");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("A monster rule's Power column picks per monster: Default (these settings),\n" +
+                                     "High (100%), Reckless (80%, needs Recklessness trained), Variable (a new\n" +
+                                     "random power each attack in this range), or Reckless + Variable (random,\n" +
+                                     "kept inside the Recklessness band 20-80%).");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Variable Min %", ref _settings.VariablePowerMin, 0, 100);
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Variable Max %", ref _settings.VariablePowerMax, 0, 100);
+
+                ImGui.Spacing();
+                ImGui.Text("Missiles Hitting the Environment");
+                ImGui.SetNextItemWidth(220);
+                ImGui.Combo("Missile Response", ref _settings.MissileEnvironmentResponse,
+                    EnvironmentImpactPlanner.ResponseNames, EnvironmentImpactPlanner.ResponseNames.Length);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("When arrows or bolts keep hitting walls or objects instead of the target\n" +
+                                     "(\"Your missile attack hit the environment.\"), stop shooting and:\n" +
+                                     "  Move closer - run toward the target for a clearer shot\n" +
+                                     "  New target - skip this one for a while and fight another\n" +
+                                     "  Move closer, then new target - one approach, then switch\n" +
+                                     "The only monster in reach is never skipped.");
+                DrawEnvironmentThrottleKnobs("missile");
+
                 ImGui.Separator();
                 ImGui.Spacing();
                 ImGui.Checkbox("Use Native Attack", ref _settings.UseNativeAttack);
@@ -573,6 +623,20 @@ internal sealed class LegacyAdvancedSettingsUi
                                      "are within this many yards in the wall's path toward the target.\n" +
                                      "The character turns to face the target first. 0 = no walls.");
                 ImGui.InputInt("Min Wall Targets", ref _settings.MinWallTargets);
+
+                ImGui.Spacing();
+                ImGui.Text("Spells Hitting the Environment");
+                ImGui.SetNextItemWidth(220);
+                ImGui.Combo("Magic Response", ref _settings.MagicEnvironmentResponse,
+                    EnvironmentImpactPlanner.ResponseNames, EnvironmentImpactPlanner.ResponseNames.Length);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("When bolts, streaks, arcs or blasts keep stopping short of the target\n" +
+                                     "(a wall, a pillar, the ceiling) with no hit or resist, stop casting and:\n" +
+                                     "  Move closer - run toward the target for a clearer line\n" +
+                                     "  New target - skip this one for a while and fight another\n" +
+                                     "  Move closer, then new target - one approach, then switch\n" +
+                                     "Rings and walls aren't judged. The only monster in reach is never skipped.");
+                DrawEnvironmentThrottleKnobs("magic");
 
                 ImGui.Spacing();
                 ImGui.Separator();

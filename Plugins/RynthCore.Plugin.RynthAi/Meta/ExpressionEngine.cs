@@ -3412,6 +3412,17 @@ internal sealed class ExpressionEngine
             ["CastDispelSelf"]      = (() => B(s.CastDispelSelf),      v => s.CastDispelSelf      = ToDouble(v) != 0),
             ["AutoFellowMgmt"]      = (() => B(s.AutoFellowMgmt),      v => s.AutoFellowMgmt      = ToDouble(v) != 0),
             ["UseRecklessness"]     = (() => B(s.UseRecklessness),     v => s.UseRecklessness     = ToDouble(v) != 0),
+            // The range a monster rule's Variable attack power picks from (percent of the bar).
+            ["VariablePowerMin"]    = (() => I(s.VariablePowerMin),    v => { if (int.TryParse(v, out int i)) s.VariablePowerMin = Math.Clamp(i, 0, 100); }),
+            ["VariablePowerMax"]    = (() => I(s.VariablePowerMax),    v => { if (int.TryParse(v, out int i)) s.VariablePowerMax = Math.Clamp(i, 0, 100); }),
+            // Environment hits: 0 Off, 1 Move closer, 2 New target, 3 Move closer then new target.
+            ["MissileEnvironmentResponse"] = (() => I(s.MissileEnvironmentResponse), v => { if (int.TryParse(v, out int i)) s.MissileEnvironmentResponse = Math.Clamp(i, 0, 3); }),
+            ["MagicEnvironmentResponse"]   = (() => I(s.MagicEnvironmentResponse),   v => { if (int.TryParse(v, out int i)) s.MagicEnvironmentResponse   = Math.Clamp(i, 0, 3); }),
+            ["EnvironmentImpactLimit"]     = (() => I(s.EnvironmentImpactLimit),     v => { if (int.TryParse(v, out int i)) s.EnvironmentImpactLimit     = Math.Clamp(i, 1, 10); }),
+            ["EnvironmentImpactWindowSec"] = (() => I(s.EnvironmentImpactWindowSec), v => { if (int.TryParse(v, out int i)) s.EnvironmentImpactWindowSec = Math.Clamp(i, 5, 120); }),
+            ["EnvironmentApproachMeters"]  = (() => I(s.EnvironmentApproachMeters),  v => { if (int.TryParse(v, out int i)) s.EnvironmentApproachMeters  = Math.Clamp(i, 1, 30); }),
+            ["EnvironmentMinDistance"]     = (() => I(s.EnvironmentMinDistance),     v => { if (int.TryParse(v, out int i)) s.EnvironmentMinDistance     = Math.Clamp(i, 1, 30); }),
+            ["EnvironmentSkipSec"]         = (() => I(s.EnvironmentSkipSec),         v => { if (int.TryParse(v, out int i)) s.EnvironmentSkipSec         = Math.Clamp(i, 5, 300); }),
             ["UseNativeAttack"]     = (() => B(s.UseNativeAttack),     v => s.UseNativeAttack     = ToDouble(v) != 0),
             ["WieldUnlistedWandWhenNoneListed"] = (() => B(s.WieldUnlistedWandWhenNoneListed), v => s.WieldUnlistedWandWhenNoneListed = ToDouble(v) != 0),
             // The off hand when a monster rule doesn't choose: Auto, Shield, Weapon or None (or 0-3).

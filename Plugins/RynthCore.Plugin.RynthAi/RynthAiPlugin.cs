@@ -971,6 +971,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ["HealOthersAt"] = (0, 100), ["RestamOthersAt"] = (0, 100), ["InfuseOthersAt"] = (0, 100),
         ["MeleeAttackPower"] = (-1, 100), ["MissileAttackPower"] = (-1, 100),
         ["MeleeAttackHeight"] = (0, 2), ["MissileAttackHeight"] = (0, 2),
+        ["VariablePowerMin"] = (0, 100), ["VariablePowerMax"] = (0, 100),
+        ["MissileEnvironmentResponse"] = (0, 3), ["MagicEnvironmentResponse"] = (0, 3),
+        ["EnvironmentImpactLimit"] = (1, 10), ["EnvironmentImpactWindowSec"] = (5, 120),
+        ["EnvironmentApproachMeters"] = (1, 30), ["EnvironmentMinDistance"] = (1, 30), ["EnvironmentSkipSec"] = (5, 300),
         ["PetMinMonsters"] = (1, 20),
         ["SpellCastIntervalMs"] = (100, 1500), ["AttackSpellIntervalMs"] = (0, 5000), ["MinRingTargets"] = (1, 20), ["MinBlastTargets"] = (1, 20), ["BlastRange"] = (0, 100), ["MinWallTargets"] = (1, 20), ["WallRange"] = (0, 100),
         ["MinSkillLevelTier1"] = (1, 500), ["MinSkillLevelTier2"] = (1, 500), ["MinSkillLevelTier3"] = (1, 500), ["MinSkillLevelTier4"] = (1, 500),
@@ -2198,7 +2202,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     public override void OnCreateObject(uint objectId)
     {
         _sessionStats?.OnCreateObject(objectId);
-        try { _objectCache?.OnCreateObject(objectId); }
+        try
+        {
+            _objectCache?.OnCreateObject(objectId);
+            _combatManager?.OnObjectCreated(objectId);   // spell projectiles for the environment-impact throttle
+        }
         catch (Exception ex)
         {
             Host.Log($"[RynthAi] OnCreateObject EXCEPTION on id=0x{objectId:X8}: {ex.GetType().Name}: {ex.Message}");
