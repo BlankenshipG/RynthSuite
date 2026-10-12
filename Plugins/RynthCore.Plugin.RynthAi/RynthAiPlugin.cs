@@ -3304,8 +3304,13 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "items":
                 if (parts.Length >= 3 && parts[2].Equals("fill", StringComparison.OrdinalIgnoreCase))
                     ChatLine(_dashboard?.FillItemsFromPack(_objectCache, _playerId) ?? "[RynthAi] Settings not ready.");
+                else if (parts.Length >= 3 && parts[2].Equals("clean", StringComparison.OrdinalIgnoreCase))
+                    CleanMissingItems();
                 else
+                {
                     ChatLine("[RynthAi] /ra items fill — add every weapon, healing kit, lockpick and pet essence in your pack that isn't listed yet.");
+                    ChatLine("[RynthAi] /ra items clean — remove weapons and consumables that are no longer in your inventory.");
+                }
                 break;
             case "follow":       HandleFollowCommand(parts); break;
             case "myquests":

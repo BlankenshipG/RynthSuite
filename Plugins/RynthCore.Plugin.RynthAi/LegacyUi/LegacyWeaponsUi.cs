@@ -136,27 +136,49 @@ internal sealed class LegacyWeaponsUi
     }
 
     /// <summary>
-    /// Removes weapons and consumables this character has nothing of, by id or by
-    /// name: entries a profile picked up from another character. Returns their names.
+    /// Removes weapons and consumables this character has nothing of: entries a profile
+    /// picked up from another character. Returns their names. See <see cref="CleanMissing"/>.
     /// </summary>
-    public List<string> PruneNotOwned(IReadOnlyList<WorldObject> inventory)
+    public List<string> PruneNotOwned(IReadOnlyList<WorldObject> inventory) => CleanMissing(inventory).Removed;
+
+    /// <summary>
+    /// Clears out weapons and consumables whose item is no longer in
+    /// <paramref name="inventory"/> (owned items: main pack, side packs, wielded gear).
+    /// An entry whose item is gone, but with an unlisted item of the same name in the pack
+    /// (a new stack of kits, a replacement weapon), is re-pointed at that item instead of
+    /// removed. Returns the names removed and the names re-pointed.
+    /// </summary>
+    public (List<string> Removed, List<string> Relinked) CleanMissing(IReadOnlyList<WorldObject> inventory)
     {
-        var ids   = new HashSet<int>(inventory.Select(w => w.Id));
-        var names = new HashSet<string>(inventory.Select(w => w.Name), StringComparer.OrdinalIgnoreCase);
-        var removed = new List<string>();
-        _settings.ItemRules.RemoveAll(r =>
+        var removed  = new List<string>();
+        var relinked = new List<string>();
+        CleanList(_settings.ItemRules, r => r.Id, (r, id) => r.Id = id, r => r.Name, inventory, removed, relinked);
+        CleanList(_settings.ConsumableRules, r => r.Id, (r, id) => r.Id = id, r => r.Name, inventory, removed, relinked);
+        return (removed, relinked);
+    }
+
+    private static void CleanList<T>(List<T> rules, Func<T, int> getId, Action<T, int> setId, Func<T, string> getName,
+                                     IReadOnlyList<WorldObject> inventory, List<string> removed, List<string> relinked)
+    {
+        var owned = new HashSet<int>(inventory.Select(w => w.Id));
+        // Items already listed by a live entry: a gone entry is never pointed at one of them.
+        var listed = new HashSet<int>(rules.Select(getId).Where(owned.Contains));
+        rules.RemoveAll(r =>
         {
-            bool gone = !ids.Contains(r.Id) && !names.Contains(r.Name);
-            if (gone) removed.Add(r.Name);
-            return gone;
+            if (owned.Contains(getId(r))) return false;
+            string name = getName(r);
+            var spare = inventory.FirstOrDefault(w => !listed.Contains(w.Id)
+                && string.Equals(w.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (spare != null)
+            {
+                setId(r, spare.Id);
+                listed.Add(spare.Id);
+                relinked.Add(name);
+                return false;
+            }
+            removed.Add(name);
+            return true;
         });
-        _settings.ConsumableRules.RemoveAll(r =>
-        {
-            bool gone = !ids.Contains(r.Id) && !names.Contains(r.Name);
-            if (gone) removed.Add(r.Name);
-            return gone;
-        });
-        return removed;
     }
 
     internal static string? PackConsumableType(WorldObject wo)

@@ -21,6 +21,10 @@ public sealed partial class RynthAiPlugin
         Host.WriteToChat(text, 1);
     }
 
+    /// <summary>/ra items clean and the engine Items panel's Remove Missing button (RynthPluginCleanItems).</summary>
+    internal void CleanMissingItems()
+        => ChatLine(_dashboard?.CleanMissingItems(_objectCache, _playerId) ?? "[RynthAi] Settings not ready.");
+
     private void HandleHelpCommand()
     {
         ChatLine("[RynthAi] === Commands ===");

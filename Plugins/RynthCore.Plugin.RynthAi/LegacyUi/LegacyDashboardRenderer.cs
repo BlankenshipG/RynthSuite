@@ -586,6 +586,28 @@ internal sealed partial class LegacyDashboardRenderer
         return $"[RynthAi] Added {w} weapon(s) and {c} consumable(s) from your pack.";
     }
 
+    /// <summary>
+    /// /ra items clean and the Items panel's Remove Missing button: drops weapons and
+    /// consumables whose item is no longer in the pack (sold, dropped, used up, traded),
+    /// re-pointing an entry at an unlisted item of the same name when there is one.
+    /// Refuses while the inventory is still arriving, so a half-loaded pack can't empty the lists.
+    /// </summary>
+    public string CleanMissingItems(WorldObjectCache? cache, uint playerId)
+    {
+        if (cache == null || playerId == 0) return "[RynthAi] Not logged in.";
+        if (_packSetup != PackSetup.None) return "[RynthAi] Your inventory is still loading - try again in a few seconds.";
+        var inv = cache.GetDirectInventory(forceRefresh: true).ToList();
+        if (inv.Count == 0) return "[RynthAi] Your inventory hasn't loaded yet - nothing was removed.";
+
+        var (removed, relinked) = _weaponsUi.CleanMissing(inv);
+        if (removed.Count == 0 && relinked.Count == 0) return "[RynthAi] Items: everything listed is still in your inventory.";
+        SaveSettings();
+        string msg = $"[RynthAi] Items: removed {removed.Count} no longer in your inventory";
+        if (removed.Count > 0) msg += $" ({string.Join(", ", removed)})";
+        if (relinked.Count > 0) msg += $"; re-pointed {relinked.Count} at another item of the same name ({string.Join(", ", relinked)})";
+        return msg + ".";
+    }
+
     // ── Per-server profile folders ───────────────────────────────────────────
 
     private string ResolveServerFolder()

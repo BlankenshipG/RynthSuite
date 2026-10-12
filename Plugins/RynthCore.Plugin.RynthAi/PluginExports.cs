@@ -887,4 +887,12 @@ public static unsafe class PluginExports
         try { Runtime.Plugin?.DashboardRenderer?.AddSelectedConsumable(); }
         catch { }
     }
+
+    /// <summary>Items panel "Remove Missing": drops weapons and consumables no longer in the inventory (reports in chat).</summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginCleanItems", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void CleanItems()
+    {
+        try { Runtime.Plugin?.CleanMissingItems(); }
+        catch { }
+    }
 }
