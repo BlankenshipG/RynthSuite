@@ -23,6 +23,9 @@ public sealed partial class RynthAiPlugin
     private Translate.TranslateUi? _translateUi;
     private LegacyItemInfoUi? _itemInfoUi;
     private CreatureData.UbMobSeedStore? _mobSeedStore;
+    // Mini Remote session stats: RynthTracker's SessionStats (Plugins\Shared), so the Mini Remote and
+    // the Tracker panel count the same way. Lives for the plugin; starts and ends with each login.
+    private RynthCore.Plugin.Shared.SessionStatsTracker? _sessionStats;
 
     // One-time overlay diagnostics (render thread only).
     private string? _overlaySkipReasonLogged;
@@ -35,6 +38,17 @@ public sealed partial class RynthAiPlugin
         catch (Exception ex) { Host.Log($"[RynthAi] diagnostics init failed: {ex.Message}"); }
         try { _mobSeedStore = new CreatureData.UbMobSeedStore(); }
         catch (Exception ex) { Host.Log($"[RynthAi] mob seed store failed: {ex.Message}"); }
+    }
+
+    /// <summary>Session stats for the Mini Remote, saved in their own folder (never RynthTracker's).</summary>
+    private void InitSessionStats()
+    {
+        try
+        {
+            _sessionStats = new RynthCore.Plugin.Shared.SessionStatsTracker(Host, "[RynthAi] Mini Remote stats:",
+                RynthCore.Plugin.Shared.TrackerSessionStore.DirectoryFor("miniremote-stats"));
+        }
+        catch (Exception ex) { Host.Log($"[RynthAi] session stats init failed: {ex.Message}"); }
     }
 
     /// <summary>
@@ -106,10 +120,13 @@ public sealed partial class RynthAiPlugin
             () => Host.HasGetWorldName && Host.TryGetWorldName(out string w) ? w ?? string.Empty : string.Empty;
         _iltHub = new IltHub.IltHubController(Host, dash.CharFolder,
             () => _objectCache, () => dash.Settings, () => _questTracker,
-            () => dash.SaveSettings());
+            () => dash.SaveSettings(), _sessionStats);
         _hudIcons ??= new Huds.HudIconCache(Host, () => _raycast?.GeometryLoader?.PortalDat);
         _huds = new Huds.HudController(Host, dash.CharFolder, () => _objectCache, dash, () => _iltHub, _hudIcons,
-            () => _combatManager?.activeTargetId ?? 0);
+            () => _combatManager?.activeTargetId ?? 0)
+        {
+            SessionStats = _sessionStats,
+        };
         if (_translateUi != null) _huds.Translate = _translateUi;
 
         // The ILT sections are Mini Remote tabs: "/ra hub [show|hide|toggle]" drives the remote,
@@ -135,6 +152,8 @@ public sealed partial class RynthAiPlugin
     {
         try { RynthLog.Pump(); }
         catch (Exception ex) { Host.Log($"[RynthAi] diagnostics pump: {ex.Message}"); }
+        try { _sessionStats?.Tick(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltRates, ex, "session stats tick"); }
         try { _iltHub?.Tick(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "Tick"); }
         try { _huds?.Tick(); }

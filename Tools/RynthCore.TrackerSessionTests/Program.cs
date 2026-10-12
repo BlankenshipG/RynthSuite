@@ -1,6 +1,6 @@
 using System;
 using System.IO;
-using RynthCore.Plugin.RynthTracker;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.TrackerSessionTests;
 
@@ -46,6 +46,7 @@ internal static partial class Program
         TestFiles();
         TestCleanup();
         TestKillCounter();
+        TestSessionStats();
 
         Console.WriteLine($"\n{_asserts} assertions, {_fails} failed.");
         if (_asserts == 0) { Console.WriteLine("ABORT: zero assertions ran."); return 1; }
@@ -77,6 +78,11 @@ internal static partial class Program
         RadBase = 0,
         BankedBase = 77,
         DrawnBase = -5,
+        BankLumBase = 3_900_000_000_000,
+        LumOwn = 5_000,
+        BankIncome = 9_000,
+        OwnSinceBank = 4_000,
+        RecentLum = { (Now.AddMinutes(-2).Ticks, 300), (Now.AddMinutes(-1).Ticks, 700) },
     };
 
     private static void SameState(TrackerSessionState a, TrackerSessionState b, string what)
@@ -101,6 +107,11 @@ internal static partial class Program
         Eq(a.RadBase, b.RadBase, what + " radbase");
         Eq(a.BankedBase, b.BankedBase, what + " bankedbase");
         Eq(a.DrawnBase, b.DrawnBase, what + " drawnbase");
+        Eq(a.BankLumBase, b.BankLumBase, what + " bankbase");
+        Eq(a.LumOwn, b.LumOwn, what + " lumown");
+        Eq(a.BankIncome, b.BankIncome, what + " bankincome");
+        Eq(a.OwnSinceBank, b.OwnSinceBank, what + " ownsincebank");
+        Eq(string.Join(";", a.RecentLum), string.Join(";", b.RecentLum), what + " recentlum");
     }
 
     // First read is the baseline; rises count; a drop only moves the baseline.
@@ -130,6 +141,8 @@ internal static partial class Program
     {
         var s = Sample();
         s.XpBase = null; s.LumBase = null; s.RadBase = null; s.BankedBase = null; s.DrawnBase = null;
+        s.BankLumBase = null;
+        s.RecentLum.Clear();
         s.MaxLevel = false;
         Check(TrackerSessionStore.TryParse(TrackerSessionStore.Serialize(s), out var back), "null baselines parse");
         SameState(back, s, "null baselines");
@@ -168,6 +181,21 @@ internal static partial class Program
         Check(TrackerSessionStore.TryParse(good.Replace("\n", "\r\n"), out var crlf), "CRLF parses");
         SameState(crlf, Sample(), "CRLF");
         Check(TrackerSessionStore.TryParse(good.Replace("end=1", "future=thing\nend=1"), out _), "unknown key ignored");
+
+        // A save written before the 2026-10-11 keys still carries the session on.
+        string old = good;
+        foreach (string key in new[] { "bankbase", "lumown", "bankincome", "ownsincebank", "recentlum" })
+        {
+            int at = old.IndexOf("\n" + key + "=", StringComparison.Ordinal);
+            int end = old.IndexOf('\n', at + 1);
+            old = old.Remove(at, end - at);
+        }
+        Check(TrackerSessionStore.TryParse(old, out var oldBack), "save without the 2026-10-11 keys parses");
+        Eq(oldBack.XpTotal, Sample().XpTotal, "older save keeps its totals");
+        Eq(oldBack.BankLumBase, (long?)null, "older save: no bank baseline");
+        Eq(oldBack.RecentLum.Count, 0, "older save: no recent luminance");
+        Check(!TrackerSessionStore.TryParse(good.Replace("lumown=5000", "lumown=x"), out _), "malformed new key rejected");
+        Check(!TrackerSessionStore.TryParse(good.Replace("recentlum=", "recentlum=12"), out _), "malformed recent luminance rejected");
     }
 
     private static void TestShouldRestore()

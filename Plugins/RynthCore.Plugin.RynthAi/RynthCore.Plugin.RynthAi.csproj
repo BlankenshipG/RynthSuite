@@ -49,6 +49,11 @@
     <Compile Include="..\Shared\ActionPacer.cs" Link="Shared\ActionPacer.cs" />
     <!-- Text in the world on the Nav3D buffer (waypoint labels; RynthNav's path markers use it too). -->
     <Compile Include="..\Shared\Nav3DText.cs" Link="Shared\Nav3DText.cs" />
+    <!-- Mini Remote session stats: RynthTracker's code, so the two show the same numbers (2026-10-11). -->
+    <Compile Include="..\Shared\KillCounter.cs" Link="Shared\KillCounter.cs" />
+    <Compile Include="..\Shared\TrackerSessionStore.cs" Link="Shared\TrackerSessionStore.cs" />
+    <Compile Include="..\Shared\SessionStats.cs" Link="Shared\SessionStats.cs" />
+    <Compile Include="..\Shared\SessionStatsTracker.cs" Link="Shared\SessionStatsTracker.cs" />
   </ItemGroup>
 
   <ItemGroup>

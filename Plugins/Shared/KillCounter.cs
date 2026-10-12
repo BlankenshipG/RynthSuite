@@ -1,10 +1,11 @@
 using System;
 using System.Collections.Generic;
 
-namespace RynthCore.Plugin.RynthTracker;
+namespace RynthCore.Plugin.Shared;
 
 /// <summary>
 /// Counts your kills, including the extra monsters a ring, wall, blast or chain spell kills.
+/// Shared by RynthTracker and RynthAi's Mini Remote through <see cref="SessionStats"/>.
 ///
 /// Two ways a kill is counted:
 ///   1. The server's killer notification (it goes only to whoever landed the killing blow).

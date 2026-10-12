@@ -16,9 +16,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthTracker\TrackerSessionStore.cs" Link="Linked\TrackerSessionStore.cs" />
-    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthTracker\KillCounter.cs" Link="Linked\KillCounter.cs" />
+    <Compile Include="..\..\Plugins\Shared\TrackerSessionStore.cs" Link="Linked\TrackerSessionStore.cs" />
+    <Compile Include="..\..\Plugins\Shared\KillCounter.cs" Link="Linked\KillCounter.cs" />
     <Compile Include="..\..\Plugins\Shared\CombatText.cs" Link="Linked\CombatText.cs" />
+    <Compile Include="..\..\Plugins\Shared\SessionStats.cs" Link="Linked\SessionStats.cs" />
   </ItemGroup>
 
 </Project>

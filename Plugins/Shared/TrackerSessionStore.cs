@@ -4,13 +4,16 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 
-namespace RynthCore.Plugin.RynthTracker;
+namespace RynthCore.Plugin.Shared;
 
 // Keeps a hunting session alive across a plugin reload (engine hot reload, RynthSuite
 // update: plugins swap in place and the new copy starts from zero). The plugin saves its
 // session to a small file every ~30 s and on Shutdown; the next copy picks it up in
 // OnLoginComplete when it is the same client process, the same character and the save is
 // recent. A real logout deletes the file, so the next login is a new session.
+//
+// Shared (2026-10-11): RynthTracker and RynthAi's Mini Remote both keep their session through
+// SessionStatsTracker, each in its own folder (DirectoryFor), so the two never read each other's file.
 //
 // Dependency-free on purpose (no plugin SDK types): Tools\RynthCore.TrackerSessionTests
 // compiles this file directly. Plain "key=value" lines, no System.Text.Json (plugin types
@@ -74,6 +77,19 @@ internal sealed class TrackerSessionState
     public long? RadBase;
     public long? BankedBase;
     public long? DrawnBase;
+
+    // Added 2026-10-11 (SessionStats). Optional in the file: a save from before them loads
+    // with these at their defaults instead of being thrown away.
+    /// <summary>ACECustom bank luminance (PropertyInt64 9005) baseline.</summary>
+    public long? BankLumBase;
+    /// <summary>Own kill / quest luminance from "You've banked N Luminance" lines.</summary>
+    public long LumOwn;
+    /// <summary>Bank luminance income (deposits and transfers taken out) since the bank was first read.</summary>
+    public long BankIncome;
+    /// <summary>Own luminance chat seen since the bank was first read (pass-up = BankIncome - this).</summary>
+    public long OwnSinceBank;
+    /// <summary>Luminance of the last five minutes, oldest first: (UTC ticks, amount).</summary>
+    public List<(long AtTicks, long Amount)> RecentLum = new();
 }
 
 internal static class TrackerSessionStore
@@ -96,10 +112,14 @@ internal static class TrackerSessionStore
     public static string FileName(int processId, uint characterId)
         => FilePrefix + processId.ToString(Ic) + "-" + characterId.ToString("X8", Ic) + FileSuffix;
 
-    public static string DefaultDirectory()
+    /// <summary>RynthTracker's folder.</summary>
+    public static string DefaultDirectory() => DirectoryFor("tracker");
+
+    /// <summary>%LOCALAPPDATA%\RynthCore\&lt;name&gt;: one folder per plugin that keeps a session.</summary>
+    public static string DirectoryFor(string name)
         => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RynthCore", "tracker");
+            "RynthCore", name);
 
     // ── Format ───────────────────────────────────────────────────────────────
 
@@ -127,6 +147,11 @@ internal static class TrackerSessionStore
         Line(sb, "radbase", Opt(s.RadBase));
         Line(sb, "bankedbase", Opt(s.BankedBase));
         Line(sb, "drawnbase", Opt(s.DrawnBase));
+        Line(sb, "bankbase", Opt(s.BankLumBase));
+        Line(sb, "lumown", s.LumOwn.ToString(Ic));
+        Line(sb, "bankincome", s.BankIncome.ToString(Ic));
+        Line(sb, "ownsincebank", s.OwnSinceBank.ToString(Ic));
+        Line(sb, "recentlum", Recent(s.RecentLum));
         Line(sb, "end", "1");   // a torn write never parses
         return sb.ToString();
     }
@@ -173,7 +198,13 @@ internal static class TrackerSessionStore
             OptLong(map, "lumbase", out s.LumBase) &&
             OptLong(map, "radbase", out s.RadBase) &&
             OptLong(map, "bankedbase", out s.BankedBase) &&
-            OptLong(map, "drawnbase", out s.DrawnBase);
+            OptLong(map, "drawnbase", out s.DrawnBase) &&
+            // The 2026-10-11 keys may be absent (older save), never malformed.
+            (!map.ContainsKey("bankbase") || OptLong(map, "bankbase", out s.BankLumBase)) &&
+            (!map.ContainsKey("lumown") || Long(map, "lumown", out s.LumOwn)) &&
+            (!map.ContainsKey("bankincome") || Long(map, "bankincome", out s.BankIncome)) &&
+            (!map.ContainsKey("ownsincebank") || Long(map, "ownsincebank", out s.OwnSinceBank)) &&
+            (!map.ContainsKey("recentlum") || ParseRecent(map["recentlum"], s.RecentLum));
         if (!ok) return false;
 
         // Ticks outside DateTime's range would throw when the plugin builds a DateTime.
@@ -250,6 +281,34 @@ internal static class TrackerSessionStore
         => sb.Append(key).Append('=').Append(value).Append('\n');
 
     private static string Opt(long? v) => v.HasValue ? v.Value.ToString(Ic) : "-";
+
+    // "ticks:amount;ticks:amount", or "-" for none.
+    private static string Recent(List<(long AtTicks, long Amount)> entries)
+    {
+        if (entries.Count == 0) return "-";
+        var sb = new StringBuilder(entries.Count * 28);
+        for (int i = 0; i < entries.Count; i++)
+        {
+            if (i > 0) sb.Append(';');
+            sb.Append(entries[i].AtTicks.ToString(Ic)).Append(':').Append(entries[i].Amount.ToString(Ic));
+        }
+        return sb.ToString();
+    }
+
+    private static bool ParseRecent(string text, List<(long AtTicks, long Amount)> into)
+    {
+        into.Clear();
+        if (text == "-") return true;
+        foreach (string part in text.Split(';'))
+        {
+            int colon = part.IndexOf(':');
+            if (colon <= 0) return false;
+            if (!long.TryParse(part.AsSpan(0, colon), NumberStyles.None, Ic, out long at) || !ValidTicks(at)) return false;
+            if (!long.TryParse(part.AsSpan(colon + 1), NumberStyles.AllowLeadingSign, Ic, out long amount)) return false;
+            into.Add((at, amount));
+        }
+        return true;
+    }
 
     private static bool ValidTicks(long t) => t >= DateTime.MinValue.Ticks && t <= DateTime.MaxValue.Ticks;
 

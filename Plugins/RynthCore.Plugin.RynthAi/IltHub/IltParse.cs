@@ -36,9 +36,6 @@ internal static class IltParse
     public static readonly Regex BankReceived = new(
         @"^Received (" + AmountPattern + @") ([^']+?) from (.+?)(?:\s*---.*)?$", Opt);
 
-    /// <summary>"You've banked 1,234 Luminance" (session rates).</summary>
-    public static readonly Regex LumBanked = new(@"You've banked (?<amt>[\d,]+)\s+Luminance", Opt | RegexOptions.IgnoreCase);
-
     /// <summary>"/xp all" cost line: "[XP] Your XP cost for next 1 Strength level is: 1,234".</summary>
     public static readonly Regex XpCost = new(@"\[XP\] Your XP cost for next 1 (\w+) level is: ([\d,]+)", Opt);
 

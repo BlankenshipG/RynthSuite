@@ -4,7 +4,6 @@
 // RynthAiPlugin creates one controller per login session and forwards:
 //   OnTick → Tick()          (pump thread)
 //   OnChatWindowText → OnChat() (pump thread; returns true to eat the line)
-//   OnKillNotification → RecordKill()
 //   OnRender → Render()      (render thread: Games HUD, quest favorites HUD, confirmations)
 //   /ra hub ..., /ra quests ..., /ra guardian ... → HandleCommand()
 //   OnLogout / teardown → OnLogout()
@@ -48,7 +47,8 @@ internal sealed class IltHubController
     public IltGuardian Guardian { get; }
 
     public IltHubController(RynthCoreHost host, string charFolder, Func<WorldObjectCache?> cache,
-                            Func<LegacyUiSettings?> settings, Func<QuestTracker?> quests, Action saveCombatSettings)
+                            Func<LegacyUiSettings?> settings, Func<QuestTracker?> quests, Action saveCombatSettings,
+                            RynthCore.Plugin.Shared.SessionStatsTracker? sessionStats = null)
     {
         var store = new IltHubStore(host, charFolder);
         var state = store.LoadState();
@@ -64,7 +64,7 @@ internal sealed class IltHubController
 
         Banking = new IltBanking(_ctx);
         Pets = new IltPets(_ctx);
-        Rates = new IltSessionRates(_ctx);
+        Rates = new IltSessionRates(_ctx, sessionStats);
         Quests = new IltQuests(_ctx, quests);
         Progression = new IltProgression(_ctx);
         Gear = new IltGear(_ctx);
@@ -262,9 +262,6 @@ internal sealed class IltHubController
         IltGames => LogCat.IltGames,
         _ => LogCat.IltHub,
     };
-
-    /// <summary>One of this character's kills: session rates (bounties are RynthILT's).</summary>
-    public void RecordKill() => Rates.RecordKill();
 
     /// <summary>Logout / teardown: stop automation and flush to disk.</summary>
     public void OnLogout()

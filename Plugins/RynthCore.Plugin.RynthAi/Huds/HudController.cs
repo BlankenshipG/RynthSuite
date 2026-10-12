@@ -104,6 +104,9 @@ internal sealed class HudController
     public Func<IltHubController?> Hub { get; }
     public RynthCoreHost Host => _host;
 
+    /// <summary>The Mini Remote's session stats (the same SessionStats code as RynthTracker); null if it failed to start.</summary>
+    public RynthCore.Plugin.Shared.SessionStatsTracker? SessionStats { get; init; }
+
     /// <summary>Latest pack view (render thread safe).</summary>
     public HudPackSnapshot Pack => _pack;
 

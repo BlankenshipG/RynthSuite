@@ -2,19 +2,19 @@
 //
 // Sources (all passive — nothing is sent to the server except the optional bank refresh
 // the Banking tab already does):
-//   XP         player quad 1 (TotalExperience) delta since session start.
-//   Luminance  bank luminance (player quad 9005) gains; "You've banked N Luminance" chat lines
-//              only until that property is seen (see IltLumIncome — fellowship lum has no chat).
+//   XP, luminance (total, last 5 min, allegiance pass-up) and kills: the Mini Remote's
+//              SessionStatsTracker — RynthTracker's SessionStats code (Plugins\Shared), so this
+//              table, the Mini Remote and the Tracker panel count them the same way (2026-10-11).
 //   Coins      positive bank Enlightened Coins deltas + carried coin (WCID 300004) gains.
 //   Pyreals    positive bank pyreal deltas + carried pyreal (WCID 273) gains; MMD = 250k.
 //   Items      gains of each item in the item→coin conversion table (carried count),
 //              converted to potential coins with ItemsPerConversion / CoinsPerConversion.
-//   Kills      RynthAiPlugin.OnKillNotification.
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -22,16 +22,15 @@ internal sealed class IltSessionRates : IIltFeature
 {
     private const long PyrealsPerMmd = 250_000;
     private const long SampleIntervalMs = 5000;
+    private const long RowsIntervalMs = 1000;
+    private const string PassUpLabel = "  pass-up";
 
     private readonly IltHubContext _ctx;
+    private readonly SessionStatsTracker? _stats;
     private DateTime _start = DateTime.UtcNow;
 
-    private long _startXp = -1;
-    private long _xp;
-    private readonly IltLumIncome _lum = new();
     private long _coins;
     private long _pyreals;
-    private int _kills;
 
     // Carried-item baselines (last seen counts) for gain tracking.
     private long _lastInvCoins = -1;
@@ -39,23 +38,27 @@ internal sealed class IltSessionRates : IIltFeature
     private readonly Dictionary<string, long> _lastItemCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _itemGains = new(StringComparer.OrdinalIgnoreCase);
     private long _lastSampleAt;
+    private long _lastRowsAt;
 
     // Render snapshot.
     private volatile RateRow[] _rows = Array.Empty<RateRow>();
     private sealed record RateRow(string Label, string Total, string PerHour);
 
-    /// <summary>Per-hour figures for the Mini Remote HUD (rebuilt every sample).</summary>
-    public sealed record RateSummary(double XpPerHour, double LumPerHour, double KillsPerHour,
-                                     double CoinsPerHour, double PyrealsPerHour, long Xp, int Kills);
-    private static readonly RateSummary EmptySummary = new(0, 0, 0, 0, 0, 0, 0);
+    /// <summary>Coin and pyreal per-hour figures for the Mini Remote HUD (rebuilt every sample).</summary>
+    public sealed record RateSummary(double CoinsPerHour, double PyrealsPerHour);
+    private static readonly RateSummary EmptySummary = new(0, 0);
     private volatile RateSummary _summary = EmptySummary;
 
-    /// <summary>Latest per-hour summary (safe from the render thread).</summary>
+    /// <summary>Latest coin / pyreal summary (safe from the render thread).</summary>
     public RateSummary Summary => _summary;
-    /// <summary>When the current session (or the last Reset) started.</summary>
+    /// <summary>When the coin / pyreal session (or the last Reset) started.</summary>
     public DateTime SessionStartUtc => _start;
 
-    public IltSessionRates(IltHubContext ctx) => _ctx = ctx;
+    public IltSessionRates(IltHubContext ctx, SessionStatsTracker? stats = null)
+    {
+        _ctx = ctx;
+        _stats = stats;
+    }
 
     /// <summary>Banking hook: bank balance changed (pump thread).</summary>
     public void OnBankBalanceChanged(string key, long oldValue, long newValue)
@@ -69,40 +72,40 @@ internal sealed class IltSessionRates : IIltFeature
         else if (key == "Pyreals") _pyreals += delta;
     }
 
-    public void RecordKill() => _kills++;
-
+    /// <summary>Coins, pyreals and item gains start over (login, or with <see cref="ResetAll"/>).</summary>
     public void Reset()
     {
         RynthLog.Trace(LogCat.IltRates, $"Reset()");
         _start = DateTime.UtcNow;
-        _startXp = -1;
-        _xp = _coins = _pyreals = 0;
-        _lum.Reset();
-        _kills = 0;
+        _coins = _pyreals = 0;
         _lastInvCoins = _lastInvPyreals = -1;
         _lastItemCounts.Clear();
         _itemGains.Clear();
         _lastSampleAt = 0;
+        _lastRowsAt = 0;
         _summary = EmptySummary;
+    }
+
+    /// <summary>The player's reset (this tab, the Mini Remote): coins here and the shared session stats together. Pump thread.</summary>
+    public void ResetAll()
+    {
+        Reset();
+        _stats?.RequestReset();
     }
 
     // ── IIltFeature ─────────────────────────────────────────────────────────
 
     public void Tick(long nowMs)
     {
-        if (nowMs - _lastSampleAt < SampleIntervalMs) return;
-        _lastSampleAt = nowMs;
-        var inv = _ctx.Inventory;
-
-        long totalXp = inv.PlayerQuad(IltInventory.QuadTotalXp);
-        if (totalXp > 0)
+        // The shared stats move every 0.5 s; their rows refresh each second, coins every 5 s.
+        if (nowMs - _lastSampleAt < SampleIntervalMs)
         {
-            if (_startXp < 0) _startXp = totalXp;
-            _xp = Math.Max(0, totalXp - _startXp);
+            if (nowMs - _lastRowsAt >= RowsIntervalMs) { _lastRowsAt = nowMs; BuildRows(); }
+            return;
         }
-
-        // Bank luminance covers kill, quest and fellowship-shared lum alike.
-        _lum.OnBankSample(inv.PlayerQuad(IltInventory.QuadBankedLuminance));
+        _lastSampleAt = nowMs;
+        _lastRowsAt = nowMs;
+        var inv = _ctx.Inventory;
 
         _coins += Gain(ref _lastInvCoins, inv.CountByWcid(IltInventory.WcidEnlightenedCoin));
         _pyreals += Gain(ref _lastInvPyreals, inv.CountByWcid(IltInventory.WcidPyreal));
@@ -130,12 +133,8 @@ internal sealed class IltSessionRates : IIltFeature
         return d > 0 ? d : 0;
     }
 
-    public bool OnChat(string text)
-    {
-        var m = IltParse.LumBanked.Match(text);
-        if (m.Success) _lum.OnChatAmount(IltParse.ParseLeadingLong(m.Groups["amt"].Value));
-        return false;
-    }
+    // Luminance chat goes to the shared session stats (RynthAiPlugin.OnChatWindowText).
+    public bool OnChat(string text) => false;
 
     public void OnLogout() => Reset();
 
@@ -144,17 +143,21 @@ internal sealed class IltSessionRates : IIltFeature
     private void BuildRows()
     {
         double hours = Math.Max((DateTime.UtcNow - _start).TotalHours, 1.0 / 3600);
-        long lum = _lum.Total;
-        _summary = new RateSummary(_xp / hours, lum / hours, _kills / hours, _coins / hours, _pyreals / hours, _xp, _kills);
+        _summary = new RateSummary(_coins / hours, _pyreals / hours);
+        var s = _stats?.View ?? SessionStatsView.Empty;
         var rows = new List<RateRow>
         {
-            Row("XP", _xp, hours),
-            Row("Luminance banked", lum, hours),
-            Row("Enlightened Coins", _coins, hours),
-            Row("Pyreals", _pyreals, hours),
-            new("  as MMD", (_pyreals / (double)PyrealsPerMmd).ToString("0.0"), (_pyreals / (double)PyrealsPerMmd / hours).ToString("0.0")),
-            new("Kills", _kills.ToString(), (_kills / hours).ToString("0")),
+            new("XP", IltParse.Compact(s.Xp), IltParse.Compact(s.XpPerHour)),
+            new("Luminance", IltParse.Compact(s.Lum), IltParse.Compact(s.LumPerHour)),
+            // Per hour at the last five minutes' pace.
+            new("  last 5 min", IltParse.Compact(s.LumLast5Min), IltParse.Compact(s.LumLast5Min * 12.0)),
         };
+        if (s.PassUpTracked)
+            rows.Add(new RateRow(PassUpLabel, IltParse.Compact(s.LumPassUp), IltParse.Compact(s.PassUpPerHour)));
+        rows.Add(new RateRow("Kills", s.Kills.ToString(), s.KillsPerHour.ToString("0")));
+        rows.Add(new RateRow("Enlightened Coins", IltParse.Compact(_coins), IltParse.Compact(_coins / hours)));
+        rows.Add(new RateRow("Pyreals", IltParse.Compact(_pyreals), IltParse.Compact(_pyreals / hours)));
+        rows.Add(new RateRow("  as MMD", (_pyreals / (double)PyrealsPerMmd).ToString("0.0"), (_pyreals / (double)PyrealsPerMmd / hours).ToString("0.0")));
 
         double potentialCoins = 0;
         foreach (var conv in _ctx.State.Character.ItemConversions.ToArray())
@@ -169,17 +172,20 @@ internal sealed class IltSessionRates : IIltFeature
         _rows = rows.ToArray();
     }
 
-    private static RateRow Row(string label, long total, double hours)
-        => new(label, IltParse.Compact(total), IltParse.Compact(total / hours));
+    /// <summary>What the pass-up figure is (shared with the Mini Remote's Stats).</summary>
+    public const string PassUpTooltip =
+        "Luminance that reached your bank without a \"You've banked\" line: your vassals' pass-up.\n"
+        + "Fellowship and Zone Share splits arrive the same silent way and are included.";
 
     // ── UI (render thread) ──────────────────────────────────────────────────
 
     public void Render()
     {
-        var elapsed = DateTime.UtcNow - _start;
-        ImGui.TextDisabled($"Session {IltParse.Duration(elapsed)}");
+        // The session clock is the shared stats' (it and the coins reset together).
+        var start = _stats?.View is { } v && v.SessionSeconds > 0 ? v.SessionStartUtc : _start;
+        ImGui.TextDisabled($"Session {IltParse.Duration(DateTime.UtcNow - start)}");
         ImGui.SameLine();
-        if (ImGui.SmallButton("Reset##rates")) _ctx.Post(Reset);
+        if (ImGui.SmallButton("Reset##rates")) _ctx.Post(ResetAll);
 
         if (ImGui.BeginTable("##iltrates", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV))
         {
@@ -191,6 +197,7 @@ internal sealed class IltSessionRates : IIltFeature
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Label);
+                if (ReferenceEquals(r.Label, PassUpLabel) && ImGui.IsItemHovered()) ImGui.SetTooltip(PassUpTooltip);
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Total);
                 ImGui.TableNextColumn(); ImGui.TextColored(LegacyDashboardRenderer.ColTeal, r.PerHour);
             }

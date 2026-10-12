@@ -96,7 +96,6 @@ internal static class Program
         ActivityInterfaceTests.Register(runner);
         AttributeRaiserTests.Register(runner);
         SigilChainTests.Register(runner);
-        LumIncomeTests.Register(runner);
         ServerMenuTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }

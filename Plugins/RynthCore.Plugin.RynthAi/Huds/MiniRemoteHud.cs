@@ -409,17 +409,34 @@ internal sealed class MiniRemoteHud
         ImGui.TextUnformatted(value);
     }
 
-    private static void RenderStats(IltHubController? hub)
+    /// <summary>
+    /// Session stats on every world: the shared SessionStats (RynthTracker's code, so these match the
+    /// Tracker panel), plus ILT coins and pyreals.
+    /// </summary>
+    private void RenderStats(IltHubController? hub)
     {
-        if (!IltActive(hub)) { ImGui.TextDisabled("Session stats: ILT worlds only"); return; }
+        var v = _hud.SessionStats?.View ?? RynthCore.Plugin.Shared.SessionStatsView.Empty;
+        Stat("Time:", IltParse.Duration(TimeSpan.FromSeconds(SessionClock(v))));
+        Stat("XP:", HudDraw.Compact(v.XpPerHour) + "/h");
+        Stat("Lum:", HudDraw.Compact(v.LumPerHour) + "/h");
+        Stat("Lum 5m:", HudDraw.Compact(v.LumLast5Min));
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Luminance earned in the last five minutes.");
+        if (v.PassUpTracked)
+        {
+            Stat("Pass-up:", HudDraw.Compact(v.PassUpPerHour) + "/h");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{v.LumPassUp:N0} this session.\n{IltSessionRates.PassUpTooltip}");
+        }
+        Stat("Kills:", HudDraw.Compact(v.KillsPerHour) + "/h");
+        if (!IltActive(hub)) return;
         var r = hub!.Rates.Summary;
-        Stat("Time:", IltParse.Duration(DateTime.UtcNow - hub.Rates.SessionStartUtc));
-        Stat("XP:", HudDraw.Compact(r.XpPerHour) + "/h");
-        Stat("Lum:", HudDraw.Compact(r.LumPerHour) + "/h");
-        Stat("Kills:", HudDraw.Compact(r.KillsPerHour) + "/h");
         Stat("Coins:", HudDraw.Compact(r.CoinsPerHour) + "/h");
         Stat("Pyr:", HudDraw.Compact(r.PyrealsPerHour) + "/h");
     }
+
+    /// <summary>Seconds since the session started; 0 before it has (no login yet).</summary>
+    private static double SessionClock(RynthCore.Plugin.Shared.SessionStatsView v)
+        => ReferenceEquals(v, RynthCore.Plugin.Shared.SessionStatsView.Empty)
+            ? 0 : Math.Max(0, (DateTime.UtcNow - v.SessionStartUtc).TotalSeconds);
 
     private static void RenderTarget(CombatHudSnapshot c)
     {
@@ -513,10 +530,15 @@ internal sealed class MiniRemoteHud
 
     private void RenderStatButtons(IltHubController? hub)
     {
-        if (!IltActive(hub)) return;
         float w = (ImGui.GetContentRegionAvail().X - ImGui.GetStyle().ItemSpacing.X) * 0.5f;
         w = Math.Max(w, 70f);
-        if (ImGui.Button("Reset XP", new Vector2(w, 0))) _hud.Post(() => _hud.Hub()?.Rates.Reset());
+        if (ImGui.Button("Reset XP", new Vector2(w, 0)))
+            _hud.Post(() =>
+            {
+                _hud.SessionStats?.RequestReset();
+                _hud.Hub()?.Rates.Reset();
+            });
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Start the session stats over (the Tracker panel keeps its own session).");
         ImGui.SameLine();
         if (ImGui.Button("Report", new Vector2(w, 0))) _hud.Post(ReportToChat);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Print the session rates in your chat window (local only).");
@@ -525,13 +547,19 @@ internal sealed class MiniRemoteHud
     /// <summary>One-line session summary written to local chat (pump thread).</summary>
     private void ReportToChat()
     {
+        var v = _hud.SessionStats?.View ?? RynthCore.Plugin.Shared.SessionStatsView.Empty;
+        string time = IltParse.Duration(TimeSpan.FromSeconds(SessionClock(v)));
+        string line = $"[RynthAi] Session {time}: XP {HudDraw.Compact(v.XpPerHour)}/h, Lum {HudDraw.Compact(v.LumPerHour)}/h "
+                      + $"({HudDraw.Compact(v.LumLast5Min)} last 5m)";
+        if (v.PassUpTracked) line += $", Pass-up {HudDraw.Compact(v.PassUpPerHour)}/h";
+        line += $", Kills {HudDraw.Compact(v.KillsPerHour)}/h ({v.Kills:N0})";
         var hub = _hud.Hub();
-        if (hub == null) return;
-        var r = hub.Rates.Summary;
-        string time = IltParse.Duration(DateTime.UtcNow - hub.Rates.SessionStartUtc);
-        _hud.Chat($"[RynthAi] Session {time}: XP {HudDraw.Compact(r.XpPerHour)}/h, Lum {HudDraw.Compact(r.LumPerHour)}/h, "
-                  + $"Kills {HudDraw.Compact(r.KillsPerHour)}/h ({r.Kills:N0}), Coins {HudDraw.Compact(r.CoinsPerHour)}/h, "
-                  + $"Pyr {HudDraw.Compact(r.PyrealsPerHour)}/h");
+        if (IltActive(hub))
+        {
+            var r = hub!.Rates.Summary;
+            line += $", Coins {HudDraw.Compact(r.CoinsPerHour)}/h, Pyr {HudDraw.Compact(r.PyrealsPerHour)}/h";
+        }
+        _hud.Chat(line);
     }
 
     private void RenderSlots(HudState s)

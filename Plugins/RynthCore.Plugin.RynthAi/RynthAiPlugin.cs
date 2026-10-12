@@ -171,6 +171,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // and never reads Host.ImGuiContext.)
         ComponentDatabase.SetLog(msg => Log(msg));
         InitLocalDiagnostics();
+        InitSessionStats();
         // The overlay windows (OnRenderOverlay) must draw through the engine's cimgui module.
         ImGuiNativeBinding.Ensure();
         _dashboard = new LegacyDashboardRenderer(Host);
@@ -220,6 +221,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         long t0 = Environment.TickCount64;
         try { _dashboard?.SaveSettings(); } catch { }
+        try { _sessionStats?.Shutdown(); } catch { }
         // Release the Monster Editor process handle (if the toggle button
         // launched one) rather than leaking it on plugin unload/hot-reload.
         try { _dashboard?.ReleaseMonsterEditorHandle(); } catch { }
@@ -271,6 +273,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         Log("RynthAi: logout — tearing down session.");
         try { _dashboard?.SaveSettings(); } catch { }
+        try { _sessionStats?.OnLogout(); } catch (Exception ex) { RynthLog.Exception(LogCat.IltRates, ex, "session stats logout"); }
         Loot.T11ItemSupport.Reset();
         // A real logout: the next OnLoginComplete is a fresh login, not a hot reload.
         ClearInGameMarker();
@@ -575,6 +578,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         // Cache player ID so we can filter self out of creature tracking and update vitals
         _playerId = Host.GetPlayerId();
+        try { _sessionStats?.OnLoginComplete(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltRates, ex, "session stats login"); }
         _objectCache?.SetPlayerId(_playerId);
         _navigationEngine?.SetPlayerId(_playerId);
         if (_objectCache != null) _dashboard.SetWorldFilter(_objectCache);
@@ -2147,6 +2152,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     public override void OnChatWindowText(string? text, int chatType, ref int eat)
     {
         if (string.IsNullOrEmpty(text)) return;
+        try { _sessionStats?.OnChatWindowText(text); } catch (Exception ex) { RynthLog.Exception(LogCat.IltRates, ex, "session stats chat"); }
         // The Meta Manager eats the reply to its own /myquests poll (only that).
         bool mmEat = false;
         try { mmEat = MetaScheduleChat(text); } catch { }
@@ -2176,16 +2182,18 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     // it here so combat can drop the dead target before burning another cast.
     public override void OnKillNotification(string? deathMessage)
     {
+        // Mini Remote stats count every notice, as RynthTracker does (an empty message is still a kill).
+        try { _sessionStats?.OnKillNotification(deathMessage); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltRates, ex, "session stats kill"); }
         if (string.IsNullOrEmpty(deathMessage)) return;
         _killClock.RecordKill();    // the only kill source: KillerNotification goes to the killer alone
         _combatManager?.OnKillNotification(deathMessage);
         _dashboard?.RecordKill();   // feeds the kills/hour session stat
-        try { _iltHub?.RecordKill(); }
-        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "kill"); }
     }
 
     public override void OnCreateObject(uint objectId)
     {
+        _sessionStats?.OnCreateObject(objectId);
         try { _objectCache?.OnCreateObject(objectId); }
         catch (Exception ex)
         {
@@ -2197,6 +2205,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         try
         {
+            _sessionStats?.OnDeleteObject(objectId);
             _objectCache?.OnDeleteObject(objectId);
             _combatManager?.OnObjectDeleted(objectId);   // D7/D8: free per-id maps + clear cast-wait if it was our target
             _scrollLearner?.OnObjectDeleted(objectId);   // a read scroll is consumed
@@ -2212,6 +2221,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     public override void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth)
     {
         float prevRatio = _objectCache?.GetHealthRatio(unchecked((int)targetId)) ?? -1f;
+        _sessionStats?.OnUpdateHealth(targetId, currentHealth, maxHealth);
         _objectCache?.OnUpdateHealth(targetId, healthRatio);
         _dashboard?.OnUpdateHealth(targetId, healthRatio, currentHealth, maxHealth);
         if (_loginComplete && targetId == _playerId && maxHealth > 0)

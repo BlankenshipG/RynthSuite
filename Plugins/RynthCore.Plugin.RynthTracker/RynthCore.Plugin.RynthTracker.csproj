@@ -24,6 +24,11 @@
   <ItemGroup>
     <!-- Reading our hits out of the combat log (victim + amount); RynthAi reads the same lines. -->
     <Compile Include="..\Shared\CombatText.cs" Link="Shared\CombatText.cs" />
+    <!-- Session stats shared with RynthAi's Mini Remote: the same numbers in both (2026-10-11). -->
+    <Compile Include="..\Shared\KillCounter.cs" Link="Shared\KillCounter.cs" />
+    <Compile Include="..\Shared\TrackerSessionStore.cs" Link="Shared\TrackerSessionStore.cs" />
+    <Compile Include="..\Shared\SessionStats.cs" Link="Shared\SessionStats.cs" />
+    <Compile Include="..\Shared\SessionStatsTracker.cs" Link="Shared\SessionStatsTracker.cs" />
   </ItemGroup>
 
   <ItemGroup>
