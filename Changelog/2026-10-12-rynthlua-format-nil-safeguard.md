@@ -29,3 +29,13 @@ chat-event field, an unset setting) then dies on its first message.
 
 - `Plugins/RynthCore.Plugin.RynthLua/LuaScriptHost.cs`
 - `Tools/RynthLua.CompatTests/Scripts/format.lua`
+## Deployment (local)
+
+- Live RynthLua is `C:\Games\RynthLua\RynthCore.Plugin.RynthLua.dll`, not
+  `C:\Games\RynthSuite\RynthLua`, which holds an older copy from 10/04 that nothing loads.
+  The new DLL was copied there at about 14:24.
+- The replaced DLL is saved as `RynthCore.Plugin.RynthLua.dll.previous` beside it, and in
+  `C:\Games\RynthCore\HotBackups\20261012-before-rynthlua-format-fix\RynthLua\`.
+- Clients 2256 and 64256 hot-reloaded (gen 4, reload 3 of 3) at 14:22, on a reload signal sent
+  before the copy. They still run the old RynthLua and take no more hot reloads; the fix loads
+  when each client restarts. Client 15208 isn't injected.
