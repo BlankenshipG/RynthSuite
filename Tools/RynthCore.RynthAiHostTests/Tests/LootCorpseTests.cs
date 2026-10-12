@@ -54,6 +54,8 @@ internal static class LootCorpseTests
         r.Add("corpse close: stopping the macro mid-loot closes the open corpse, not marked completed", MacroStopClosesCorpse);
         r.Add("loot pacing: a pickup waits for the last bend-down, and no retry is timed while it plays", PickupWaitsForAnimation);
         r.Add("corpse close: not while the last item is between the corpse and the pack - it closes once the item is in the inventory", CloseWaitsForInventory);
+        r.Add("loot pacing: an item merged into a stack in the pack is confirmed without the 4 s arrival wait", MergedPickupConfirmedQuickly);
+        r.Add("loot pacing: each item taken restarts the corpse timeout, so a corpse with many keeps is looted to the end", ManyKeepsBeatTheTimeout);
     }
 
     // ── World set-up ──────────────────────────────────────────────────────────
@@ -549,6 +551,76 @@ internal static class LootCorpseTests
         }
         Check.Eq(FakeHost.Closes.Count, 1, "closed once the item is in the inventory");
         Check.True(FakeHost.Logs.Any(l => l.Contains("pickup confirmed")), "and the pickup confirmed");
+    }
+
+    // 2026-10-11, Silentkelpie: Necrolytic Extracts and Coalesced Aetheria merge into stacks
+    // already in the pack (StackableMerge). The server removes the picked object and the client
+    // keeps no container for it, so it never "arrived" in the inventory and every such item
+    // waited out PickupArriveMaxMs (4 s) before the next pickup. With the 12 s corpse timeout,
+    // a corpse with three or four keeps was closed part way through.
+    private const uint Gem2 = 0x80261102, Gem3 = 0x80261103;
+
+    private static Bot ThreeGemCorpse(int corpseTimeoutMs)
+    {
+        BaseWorld(corpsePositioned: true);
+        foreach (uint g in new[] { Gem2, Gem3 })
+        {
+            FakeHost.Names[g] = "Black Opal";
+            FakeHost.ItemTypes[g] = ItemTypeGem;
+            FakeHost.Containers[g] = Corpse;
+            FakeHost.Appraised.Add(g);
+        }
+        FakeHost.CloseContainerCalls = true;
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.LootCorpseTimeoutMs = corpseTimeoutMs;
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        bot.Tick(BotActivity.Looting);
+        Check.True(FakeHost.Uses.Contains(Corpse), "the corpse is opened");
+        foreach (uint g in new[] { Gem, Gem2, Gem3 })
+            bot.Cache.OnCreateObject(g);
+        bot.Cache.Tick();
+        FakeHost.GroundContainer = Corpse;
+        bot.P.OnViewObjectContents(Corpse);
+        return bot;
+    }
+
+    /// <summary>Ticks for up to <paramref name="ms"/>; every item whose move went out merges at once.</summary>
+    private static long LootWithMerges(Bot bot, int ms, int wantMoves)
+    {
+        long start = Environment.TickCount64, end = start + ms;
+        while (Environment.TickCount64 < end && FakeHost.ExternalMoves.Select(m => m.Id).Distinct().Count() < wantMoves)
+        {
+            foreach (var m in FakeHost.ExternalMoves)
+                FakeHost.Containers[m.Id] = 0;   // merged: gone from the corpse, no container
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        foreach (var m in FakeHost.ExternalMoves)
+            FakeHost.Containers[m.Id] = 0;
+        return Environment.TickCount64 - start;
+    }
+
+    private static void MergedPickupConfirmedQuickly()
+    {
+        var bot = ThreeGemCorpse(corpseTimeoutMs: 60_000);
+        long took = LootWithMerges(bot, 6000, wantMoves: 2);
+        Check.Eq(FakeHost.ExternalMoves.Select(m => m.Id).Distinct().Count(), 2, "the second pickup goes out");
+        Check.True(took < 2800, $"the second pickup follows the first merge in about the settle time, not 4 s more (took {took} ms)");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("merged into a stack in the pack")), "the confirm says why");
+    }
+
+    private static void ManyKeepsBeatTheTimeout()
+    {
+        // Each merged item takes about PickupSettleMs (1 s) to confirm; three in a row take longer
+        // than this corpse timeout, which only an idle corpse should hit.
+        var bot = ThreeGemCorpse(corpseTimeoutMs: 2200);
+        LootWithMerges(bot, 8000, wantMoves: 3);
+        TickFor(bot, 1500);
+        var moved = FakeHost.ExternalMoves.Select(m => m.Id).Distinct().ToList();
+        Check.Eq(moved.Count, 3, "all three gems are taken (moved: " + string.Join(",", moved.Select(i => $"{i:X8}")) + ")");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("abandoning corpse")), "the corpse is not abandoned on the timeout");
     }
 
     private static void TickFor(Bot bot, int ms)
