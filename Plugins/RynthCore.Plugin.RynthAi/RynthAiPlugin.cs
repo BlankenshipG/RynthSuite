@@ -1577,6 +1577,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // finally below still submits the nav markers.
                 if (HoldForDeath())
                     return;
+                // Recall On Death in progress: nothing else until it lands or gives up.
+                if (TickDeathRecall())
+                    return;
                 // Standing in acid or lava: nothing but getting out (RynthAiPlugin.HazardEscape.cs).
                 RecordHazardTrail();
                 if (HoldForHazardEscape())

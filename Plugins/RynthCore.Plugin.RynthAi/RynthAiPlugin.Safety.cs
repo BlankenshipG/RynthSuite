@@ -31,6 +31,7 @@ public sealed partial class RynthAiPlugin
             Log("[RynthAi] Death detected (health 0).");
             try { RecordDeathSpot(); }   // where the corpse will be (RynthAiPlugin.OwnCorpse.cs)
             catch (Exception ex) { Log($"[RynthAi] Death spot not recorded: {ex.Message}"); }
+            ArmDeathRecall(s);           // before Stop Macro On Death: it reads whether the macro ran
             if (s.StopMacroOnDeath && s.IsMacroRunning)
             {
                 HandleMacroRunCommand("stop", Array.Empty<string>());
@@ -86,8 +87,12 @@ public sealed partial class RynthAiPlugin
             else
             {
                 Log("[RynthAi] Respawned — resuming.");
-                try { OnRespawnedForOwnCorpse(); }   // Travel Back To My Corpse
-                catch (Exception ex) { Log($"[RynthAi] Own corpse travel not started: {ex.Message}"); }
+                try
+                {
+                    // Recall On Death first; the corpse trip then starts from where it lands (EndDeathRecall).
+                    if (!StartDeathRecall()) OnRespawnedForOwnCorpse();   // Travel Back To My Corpse
+                }
+                catch (Exception ex) { Log($"[RynthAi] Death recall / own corpse travel not started: {ex.Message}"); }
             }
         }
         return hold;

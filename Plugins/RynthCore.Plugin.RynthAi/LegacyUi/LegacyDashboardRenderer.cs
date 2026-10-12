@@ -986,6 +986,9 @@ internal sealed partial class LegacyDashboardRenderer
                 StaminaToHealthAt          = s.StaminaToHealthAt,
                 StaminaToHealthMinStamina  = s.StaminaToHealthMinStamina,
                 StopMacroOnDeath           = s.StopMacroOnDeath,
+                DeathRecallMode            = s.DeathRecallMode,
+                DeathRecallSpellId         = s.DeathRecallSpellId,
+                DeathRecallItem            = s.DeathRecallItem,
                 StopMacroOnNoComponents    = s.StopMacroOnNoComponents,
                 StopLootingWhenPackFull    = s.StopLootingWhenPackFull,
                 StopMacroWhenPackFull      = s.StopMacroWhenPackFull,
@@ -1210,6 +1213,10 @@ internal sealed partial class LegacyDashboardRenderer
             s.StaminaToHealthAt          = Math.Clamp(p.StaminaToHealthAt, 0, 100);
             s.StaminaToHealthMinStamina  = Math.Clamp(p.StaminaToHealthMinStamina, 0, 100);
             s.StopMacroOnDeath           = p.StopMacroOnDeath;
+            // Absent (older engine) = unchanged.
+            if (p.DeathRecallMode is int recallMode) s.DeathRecallMode = Math.Clamp(recallMode, 0, 2);
+            if (p.DeathRecallSpellId is int recallSpell && recallSpell > 0) s.DeathRecallSpellId = recallSpell;
+            if (p.DeathRecallItem is string recallItem) s.DeathRecallItem = recallItem.Trim();
             s.StopMacroOnNoComponents    = p.StopMacroOnNoComponents;
             s.StopLootingWhenPackFull    = p.StopLootingWhenPackFull;
             s.StopMacroWhenPackFull      = p.StopMacroWhenPackFull;
@@ -1692,6 +1699,9 @@ internal sealed partial class LegacyDashboardRenderer
         dst.StaminaToHealthAt        = tmp.StaminaToHealthAt;
         dst.StaminaToHealthMinStamina= tmp.StaminaToHealthMinStamina;
         dst.StopMacroOnDeath         = tmp.StopMacroOnDeath;
+        dst.DeathRecallMode          = Math.Clamp(tmp.DeathRecallMode, 0, 2);
+        dst.DeathRecallSpellId       = tmp.DeathRecallSpellId > 0 ? tmp.DeathRecallSpellId : 48;
+        dst.DeathRecallItem          = tmp.DeathRecallItem ?? string.Empty;
         dst.StopMacroOnNoComponents  = tmp.StopMacroOnNoComponents;
         dst.StopLootingWhenPackFull  = tmp.StopLootingWhenPackFull;
         dst.StopMacroWhenPackFull    = tmp.StopMacroWhenPackFull;

@@ -147,6 +147,12 @@ public sealed class LegacyUiSettings
     public int StaminaToHealthAt = 30;
     public int StaminaToHealthMinStamina = 20;
     public bool StopMacroOnDeath = false;
+    // Recall On Death (RynthAiPlugin.DeathRecall.cs): after a death while the macro ran, once
+    // respawned: 0 off, 1 cast DeathRecallSpellId, 2 use the inventory item named DeathRecallItem
+    // (exact name, else the first containing it). Travel Back To My Corpse starts after it.
+    public int DeathRecallMode = 0;
+    public int DeathRecallSpellId = 48;          // Primary Portal Recall
+    public string DeathRecallItem = string.Empty;
     public bool StopMacroOnNoComponents = false;
     public bool StopLootingWhenPackFull = true;
     public bool StopMacroWhenPackFull = false;
@@ -924,6 +930,10 @@ public sealed class SettingsBridgePayload
     public int StaminaToHealthMinStamina { get; set; } = 20;
     public bool StopMacroOnDeath { get; set; }
     public bool StopMacroOnNoComponents { get; set; }
+    // Absent from an older engine: null keeps the plugin's values.
+    public int? DeathRecallMode { get; set; }
+    public int? DeathRecallSpellId { get; set; }
+    public string? DeathRecallItem { get; set; }
     public bool StopLootingWhenPackFull { get; set; }
     public bool StopMacroWhenPackFull { get; set; }
     public int RestamAt { get; set; }
