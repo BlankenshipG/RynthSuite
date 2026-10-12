@@ -278,10 +278,23 @@ public sealed partial class RynthAiPlugin
     }
 
     /// <summary>
+    /// The ImGui context an embedded surface draws in: the engine's current one, which is the
+    /// context of the window it has begun (a popped-out panel has its own, not
+    /// Host.ImGuiContext; switching to Host.ImGuiContext there drew into a context that wasn't
+    /// mid-frame and crashed the client, 2026-10-11). Host.ImGuiContext only if none is current.
+    /// </summary>
+    private IntPtr EmbedContext()
+    {
+        IntPtr current = ImGui.GetCurrentContext();
+        return current != IntPtr.Zero ? current : Host.ImGuiContext;
+    }
+
+    /// <summary>
     /// RynthPluginRenderEmbed "miniremote" / "miniremote-window": the Mini Remote inside the
     /// engine's RynthAi dashboard drawer, or (<paramref name="window"/>) inside the engine's Mini
-    /// Remote window, drawn into the engine's current ImGui window. False (nothing drawn) until
-    /// login and the HUDs exist. Render thread.
+    /// Remote window, docked or popped out, drawn into the engine's current ImGui window (and
+    /// context, see <see cref="EmbedContext"/>). False (nothing drawn) until login and the HUDs
+    /// exist. Render thread.
     /// </summary>
     public bool RenderEmbeddedMiniRemote(bool window, out System.Numerics.Vector2 want)
     {
@@ -291,7 +304,7 @@ public sealed partial class RynthAiPlugin
             return false;
 
         IntPtr previousContext = ImGui.GetCurrentContext();
-        ImGui.SetCurrentContext(Host.ImGuiContext);
+        ImGui.SetCurrentContext(EmbedContext());
         try
         {
             want = huds.RenderEmbedded(window);
@@ -311,8 +324,9 @@ public sealed partial class RynthAiPlugin
     /// <summary>
     /// RynthPluginRenderEmbed "guardian": the Temple guardian tools inside RynthCore's Guardian
     /// panel (the bar's ILT button), drawn into the engine's current ImGui window at the size it
-    /// gives (<paramref name="want"/> echoes that size: the panel is user-sized). False (nothing
-    /// drawn) until login and the ILT features exist. Render thread.
+    /// gives (<paramref name="want"/> echoes that size: the panel is user-sized), docked or popped
+    /// out (<see cref="EmbedContext"/>). False (nothing drawn) until login and the ILT features
+    /// exist. Render thread.
     /// </summary>
     public bool RenderEmbeddedGuardian(System.Numerics.Vector2 size, out System.Numerics.Vector2 want)
     {
@@ -322,7 +336,7 @@ public sealed partial class RynthAiPlugin
             return false;
 
         IntPtr previousContext = ImGui.GetCurrentContext();
-        ImGui.SetCurrentContext(Host.ImGuiContext);
+        ImGui.SetCurrentContext(EmbedContext());
         int pushedColors = LegacyDashboardRenderer.PushDashboardStyle();
         try
         {

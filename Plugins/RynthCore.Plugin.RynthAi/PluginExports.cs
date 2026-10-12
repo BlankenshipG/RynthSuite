@@ -88,6 +88,9 @@ public static unsafe class PluginExports
     /// Surfaces: "miniremote" (the RynthAi dashboard's Mini Remote drawer), "miniremote-window"
     /// (the engine's Mini Remote window, which hosts the remote with its Toggles and ILT tabs)
     /// and "guardian" (RynthCore 2026.10.5.29+: the engine's Guardian ILT panel).
+    /// RynthCore 2026.10.5.30+ adds ":popout" to the name when the panel is popped out into its
+    /// own window, whose ImGui context is not the one in Host.ImGuiContext; the surfaces draw
+    /// in the engine's current context either way (RenderEmbedded*).
     /// 1 = drawn, 0 = not ready / unknown (nothing drawn).
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderEmbed", CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -97,6 +100,7 @@ public static unsafe class PluginExports
         {
             if (surface == null) return 0;
             ReadOnlySpan<byte> name = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(surface);
+            if (name.EndsWith(":popout"u8)) name = name[..^":popout"u8.Length];
             var plugin = Runtime.Plugin;
             if (plugin == null) return 0;
             System.Numerics.Vector2 want;
