@@ -11,8 +11,9 @@
 // The ILT sections are Mini Remote tabs (RenderTab); the Guardian is RynthCore's ILT panel
 // (RenderGuardianPanel), and bounties are the RynthILT plugin's (RynthCore's ILT button), so
 // "/ra bounty" and "/ra guardian window" open those engine panels.
-// The ILT tabs only appear on ACECustom/ILT worlds where at least one server feature is on;
-// on every other world this stays dormant (no probes, no chat, no tabs).
+// The Quests and Pets tabs (and their features) are universal: every world. The ILT tabs only
+// appear on ACECustom/ILT worlds where at least one server feature is on; on every other world
+// the ILT features stay dormant (no probes, no chat, no tabs).
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -101,22 +102,32 @@ internal sealed class IltHubController
     public bool Available => _ctx.Options.IsIltLikeWorld && _ctx.Options.AnyFeatureOn;
 
     /// <summary>
-    /// Whether a section can be shown now. Character always can (it explains why the ILT tabs are
-    /// idle and holds the Force-ILT override); the rest need server features.
+    /// Whether a section can be shown now. The universal tabs (Quests, Pets) and Character always
+    /// can (Character explains why the ILT tabs are idle and holds the Force-ILT override); the
+    /// rest need server features.
     /// </summary>
     public bool SectionAvailable(IltSection section) => section switch
     {
         IltSection.Character => true,
+        IltSection.Quests or IltSection.Pet => true,
         IltSection.Banking => Available && !_ctx.Options.IsOff(IltFeature.Bank),
         IltSection.Games => Available && Games.AnyGameAvailable,
         _ => Available,
     };
 
     /// <summary>
-    /// The Mini Remote offers ILT tabs: an ILT-like world (or the Force-ILT override). The
-    /// Character tab then always shows; the others follow <see cref="SectionAvailable"/>.
+    /// The Mini Remote offers the Infinite Leaftide tabs: an ILT-like world (or the Force-ILT
+    /// override). The Character tab then always shows; the others follow
+    /// <see cref="SectionAvailable"/>. The universal tabs don't depend on this.
     /// </summary>
     public bool OffersTabs => _ctx.Options.IsIltLikeWorld;
+
+    /// <summary>
+    /// Whether the Mini Remote's tab bar shows <paramref name="section"/>: a universal tab always,
+    /// an Infinite Leaftide tab on an ILT world once <see cref="SectionAvailable"/>.
+    /// </summary>
+    public bool TabShown(IltSection section) =>
+        IltSections.IsUniversal(section) || (OffersTabs && IltSections.IsTab(section) && SectionAvailable(section));
 
     /// <summary>Render thread: one Mini Remote ILT tab's body (MiniRemoteHud draws the tab bar).</summary>
     public void RenderTab(IltSection section) => _ui.RenderTab(section);
@@ -195,14 +206,13 @@ internal sealed class IltHubController
                 _ctx.Chat("[Mini Remote] ILT server features detected. Open the Mini Remote (bar button, /rc miniremote) for the ILT tabs.");
         }
 
-        // Features run only on ILT-like worlds; elsewhere the Hub is fully dormant.
-        if (_ctx.Options.IsIltLikeWorld)
+        // The ILT features run only on ILT-like worlds; the universal ones (Quests, Pets) everywhere.
+        bool ilt = _ctx.Options.IsIltLikeWorld;
+        foreach (var f in _features)
         {
-            foreach (var f in _features)
-            {
-                try { f.Tick(now); }
-                catch (Exception ex) { RynthLog.Exception(CategoryOf(f), ex, $"{f.GetType().Name}.Tick"); }
-            }
+            if (!ilt && !IsUniversal(f)) continue;
+            try { f.Tick(now); }
+            catch (Exception ex) { RynthLog.Exception(CategoryOf(f), ex, $"{f.GetType().Name}.Tick"); }
         }
 
         // Expire an unanswered chat confirmation so a stale "/ra hub confirm" can't fire it later.
@@ -227,14 +237,18 @@ internal sealed class IltHubController
         string line = text.TrimEnd('\r', '\n');
         _ctx.Options.OnChatLine(line);
         bool eat = _ctx.Capture.OnChatLine(line);
-        if (!_ctx.Options.IsIltLikeWorld) return eat;
+        bool ilt = _ctx.Options.IsIltLikeWorld;
         foreach (var f in _features)
         {
+            if (!ilt && !IsUniversal(f)) continue;
             try { eat |= f.OnChat(line); }
             catch (Exception ex) { RynthLog.Exception(CategoryOf(f), ex, $"{f.GetType().Name}.OnChat"); }
         }
         return eat;
     }
+
+    /// <summary>The feature behind a universal tab (Quests, Pets): it runs on every world.</summary>
+    private static bool IsUniversal(IIltFeature f) => f is IltQuests or IltPets;
 
     /// <summary>Maps a feature module to its diagnostics category so its trace/exception lines land in its own file.</summary>
     private static LogCat CategoryOf(IIltFeature f) => f switch

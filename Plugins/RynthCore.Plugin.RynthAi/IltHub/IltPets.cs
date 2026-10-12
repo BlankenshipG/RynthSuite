@@ -735,12 +735,20 @@ internal sealed class IltPets : IIltFeature
 
         RenderRosterHeader(settings);
         RenderRosterTable();
-        ImGui.Separator();
-        RenderCharms();
+        // The tab is universal; the charms and the /pets and /shinies logs are ILT's.
+        bool ilt = _ctx.Options.IsIltLikeWorld;
+        if (ilt)
+        {
+            ImGui.Separator();
+            RenderCharms();
+        }
         ImGui.Separator();
         RenderHealing();
-        ImGui.Separator();
-        RenderRosters();
+        if (ilt)
+        {
+            ImGui.Separator();
+            RenderRosters();
+        }
     }
 
     /// <summary>Type / Sort combos, action buttons, the active-summon line and per-type options.</summary>

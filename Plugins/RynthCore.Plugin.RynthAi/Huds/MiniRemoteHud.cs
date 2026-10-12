@@ -1,14 +1,15 @@
 // MiniRemoteHud.cs — The Mini Remote (UtilityBelt-style) for RynthAi. Render thread only.
 //
-// One window with tabs: Remote (the sections below) and, on ILT worlds, the ILT tabs Character,
-// Quests, Pets, Banking, Gear and Games (IltHubUi draws their bodies; a tab shows once the server
-// reports its feature on). The tab bar's selection is saved (HudState.MiniRemoteTab) and
-// "/ra hub open <section>" or RynthCore's dashboard switch it (RequestTab). The Guardian and
-// Bounties are RynthCore ILT panels (the bar's ILT button).
-// Right-click on the remote: "Character" (Spells, Skills, Inventory, Item Count, Inventory HUDs:
-// windows every server has), then the server section, i.e. the installed server plugins'
-// windows for the world you're on, which RynthCore sends (ServerMenuModel), or "Treat this world
-// as ..." when none matches. The Options button holds the Mini Remote's own settings.
+// One window with tabs: Remote (the sections below), the universal tabs Quests and Pets (every
+// world), and on ILT worlds the ILT tabs Character, Banking, Gear and Games (IltHubUi draws
+// their bodies; an ILT tab shows once the server reports its feature on). The tab bar's
+// selection is saved (HudState.MiniRemoteTab) and "/ra hub open <section>" or RynthCore's
+// dashboard switch it (RequestTab). The Guardian (ILT only) and Bounties are RynthCore ILT
+// panels (the bar's ILT button).
+// Right-click on the remote: "Character" (Spells, Quests, Pets, Skills, Inventory, Item Count,
+// Inventory HUDs: windows every server has), then "Server: <name>", i.e. the installed server
+// plugins' windows for the world you're on, which RynthCore sends (ServerMenuModel), or "Treat
+// this world as ..." when none matches. The Options button holds the Mini Remote's own settings.
 // The V/H button stacks the sections (vertical) or lays them out in three columns (horizontal).
 //
 // Remote sections (each can be hidden from the Options menu):
@@ -162,18 +163,18 @@ internal sealed class MiniRemoteHud
     // ── Tabs ────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// The tab bar (when ILT tabs are on offer and <paramref name="allowTabs"/>) and the selected
-    /// tab: the remote, or an ILT tab's body in a child of its fixed size. Returns the width the
-    /// content wants (never narrower than the tab bar's labels).
+    /// The tab bar (when <paramref name="allowTabs"/>: the universal tabs on every world, the ILT
+    /// tabs on ILT worlds) and the selected tab: the remote, or a tab's body in a child of its
+    /// fixed size. Returns the width the content wants (never narrower than the tab bar's labels).
     /// </summary>
     private float RenderBody(HudState s, IltHubController? hub, bool allowTabs)
     {
         _onRemoteTab = true;
         _tabs.Clear();
-        if (allowTabs && hub != null && hub.OffersTabs)
+        if (allowTabs && hub != null)
         {
             foreach (IltSection section in IltSections.Tabs)
-                if (hub.SectionAvailable(section)) _tabs.Add(section);
+                if (hub.TabShown(section)) _tabs.Add(section);
         }
         if (_tabs.Count == 0)
         {
@@ -776,7 +777,10 @@ internal sealed class MiniRemoteHud
         finally { ImGui.EndPopup(); }
     }
 
-    /// <summary>"Character": RynthAi's own windows, and RynthCore's panels when it runs /rc commands.</summary>
+    /// <summary>
+    /// "Character": RynthAi's own windows, the universal Mini Remote tabs (Quests, Pets), and
+    /// RynthCore's panels when it runs /rc commands.
+    /// </summary>
     private void RenderCharacterMenu(HudState s)
     {
         ImGui.TextDisabled("Character");
@@ -784,6 +788,13 @@ internal sealed class MiniRemoteHud
         if (ImGui.MenuItem("Spells##mrspells", "/ra spells", settings.ShowSpellsWindow))
             settings.ShowSpellsWindow = !settings.ShowSpellsWindow;
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("The spell catalog and buff profiles.");
+        foreach (IltSection section in IltSections.Tabs)
+        {
+            if (!IltSections.IsUniversal(section)) continue;
+            string id = IltSections.TabId(section);
+            if (ImGui.MenuItem(IltSections.Label(section) + "##mrchar_" + id, "/ra hub open " + id))
+                _hud.HandleTabCommand(id, "show");
+        }
         if (_hud.Host.HasInvokeChatParser)
         {
             if (ImGui.MenuItem("Skills##mrskills", "/rc skills")) _hud.RunEngineCommand("/rc skills toggle");
@@ -816,10 +827,12 @@ internal sealed class MiniRemoteHud
             if (!g.Active && !forcedHere) continue;
             any = true;
             ImGui.Separator();
-            ImGui.TextDisabled(g.Active ? g.Name : g.Name + " (forced)");
+            ImGui.TextDisabled("Server: " + (g.Active ? g.Name : g.Name + " (forced)"));
             foreach (ServerMenuEntry item in g.Items)
             {
                 string? tab = ServerMenuModel.TabOf(item.Feature);
+                // Universal tabs are under Character; RynthCore 2026.10.5.30 and older list them here too.
+                if (tab != null && IltSections.TryParse(tab, out IltSection listed) && IltSections.IsUniversal(listed)) continue;
                 bool enabled = tab == null || TabAvailable(hub, tab);
                 if (ImGui.MenuItem(item.Label + "##mrsrv_" + g.Id, item.Command, false, enabled))
                     RunServerItem(item, tab);
@@ -870,9 +883,10 @@ internal sealed class MiniRemoteHud
     {
         if (hub == null || !hub.OffersTabs) return;
         ImGui.Separator();
-        ImGui.TextDisabled("Infinite Leaftide");
+        ImGui.TextDisabled("Server: Infinite Leaftide");
         foreach (IltSection section in IltSections.Tabs)
         {
+            if (IltSections.IsUniversal(section)) continue;   // under Character
             if (ImGui.MenuItem(IltSections.Label(section) + "##mrlocal", string.Empty, false, hub.SectionAvailable(section)))
                 _hud.HandleTabCommand(IltSections.TabId(section), "show");
         }

@@ -366,7 +366,8 @@ internal sealed class IltQuests : IIltFeature
     /// <summary>The Mini Remote's Quests tab: the quest bonus (collapsed), then the tracker filling the rest.</summary>
     public void RenderTab()
     {
-        if (ImGui.CollapsingHeader("Quest bonus (/qb)##qbwin")) RenderQb();
+        // The tab is universal (/myquests); the quest bonus list (/qb) is ILT's.
+        if (_ctx.Options.IsIltLikeWorld && ImGui.CollapsingHeader("Quest bonus (/qb)##qbwin")) RenderQb();
         RenderQuestTracker();
     }
 

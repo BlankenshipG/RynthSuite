@@ -1,7 +1,9 @@
-// IltSections.cs - The ILT sections. Character, Quests, Pets, Banking, Gear and Games are tabs of
-// the Mini Remote (MiniRemoteHud), picked from its tab bar or "/ra hub open <section>". Guardian is
-// a RynthCore ILT panel instead (the bar's ILT button, next to Bounties; "/rc guardian"), drawn by
-// this plugin through RynthPluginRenderEmbed("guardian").
+// IltSections.cs - The Mini Remote's tabs and the Guardian panel. Quests and Pets are universal
+// tabs (every server: /myquests and summoning essences aren't ILT's); Character, Banking, Gear and
+// Games are Infinite Leaftide tabs. All are picked from the Mini Remote's tab bar (MiniRemoteHud)
+// or "/ra hub open <section>". Guardian is ILT only and a RynthCore ILT panel instead (the bar's
+// ILT button, next to Bounties; "/rc guardian"), drawn by this plugin through
+// RynthPluginRenderEmbed("guardian").
 using System;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
@@ -20,12 +22,21 @@ internal enum IltSection
 
 internal static class IltSections
 {
-    /// <summary>The Mini Remote's ILT tabs, in tab-bar order (after its own Remote tab).</summary>
+    /// <summary>
+    /// The Mini Remote's tabs, in tab-bar order (after its own Remote tab): the universal ones
+    /// first, then the Infinite Leaftide ones.
+    /// </summary>
     public static readonly IltSection[] Tabs =
     {
-        IltSection.Character, IltSection.Quests, IltSection.Pet,
-        IltSection.Banking, IltSection.Gear, IltSection.Games,
+        IltSection.Quests, IltSection.Pet,
+        IltSection.Character, IltSection.Banking, IltSection.Gear, IltSection.Games,
     };
+
+    /// <summary>
+    /// True for the tabs every server gets (Quests, Pets); the rest are Infinite Leaftide's and
+    /// show only on an ILT world (or with the Force-ILT override).
+    /// </summary>
+    public static bool IsUniversal(IltSection s) => s is IltSection.Quests or IltSection.Pet;
 
     /// <summary>The Mini Remote's own tab (the remote itself): its tab id.</summary>
     public const string RemoteTab = "";

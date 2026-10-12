@@ -13,6 +13,21 @@ internal static class ServerMenuTests
         r.Add("server menu: sections and items parse in order", ParsesSections);
         r.Add("server menu: malformed lines are skipped, never thrown", SkipsMalformed);
         r.Add("server menu: tab features name the Mini Remote tab", TabFeature);
+        r.Add("mini remote tabs: Quests and Pets are universal and first; Guardian is ILT's panel", UniversalTabs);
+    }
+
+    private static void UniversalTabs()
+    {
+        var tabs = RynthCore.Plugin.RynthAi.IltHub.IltSections.Tabs;
+        Check.Eq(tabs[0], RynthCore.Plugin.RynthAi.IltHub.IltSection.Quests, "Quests leads the tab bar");
+        Check.Eq(tabs[1], RynthCore.Plugin.RynthAi.IltHub.IltSection.Pet, "Pets second");
+        int universal = 0;
+        foreach (var t in tabs)
+            if (RynthCore.Plugin.RynthAi.IltHub.IltSections.IsUniversal(t)) universal++;
+        Check.Eq(universal, 2, "only Quests and Pets are universal");
+        Check.True(!RynthCore.Plugin.RynthAi.IltHub.IltSections.IsUniversal(RynthCore.Plugin.RynthAi.IltHub.IltSection.Guardian), "Guardian is ILT only");
+        Check.True(!RynthCore.Plugin.RynthAi.IltHub.IltSections.IsTab(RynthCore.Plugin.RynthAi.IltHub.IltSection.Guardian), "Guardian is a panel, not a tab");
+        Check.True(!RynthCore.Plugin.RynthAi.IltHub.IltSections.IsUniversal(RynthCore.Plugin.RynthAi.IltHub.IltSection.Character), "the Character tab is ILT's");
     }
 
     private static void ParsesSections()
