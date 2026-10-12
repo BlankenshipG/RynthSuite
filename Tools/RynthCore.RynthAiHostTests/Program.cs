@@ -102,6 +102,7 @@ internal static class Program
         BankCommandTests.Register(runner);
         InventoryAttributeFilterTests.Register(runner);
         EnvironmentImpactTests.Register(runner);
+        PetDamageTintTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }

@@ -875,7 +875,7 @@ internal sealed class IltPets : IIltFeature
                 _highlightId = _highlightId == r.Id ? 0 : r.Id;
             RenderRowContextMenu(r);
             ImGui.SetCursorPos(start);
-            ImGui.TextColored(DamageColor(r.DamageType), r.Line1);
+            ImGui.TextColored(IltDamageTypeTint.ForName(r.DamageType), r.Line1);
             ImGui.TextColored(LegacyDashboardRenderer.ColAmber, "  " + r.Line2);
             if (r.UsesMax > 0 && r.UsesCur == 0) ImGui.TextColored(LegacyDashboardRenderer.ColHp, "  " + r.Line3);
             else ImGui.TextDisabled("  " + r.Line3);
@@ -909,17 +909,6 @@ internal sealed class IltPets : IIltFeature
             _ctx.Post(() => SetKind(row.Id, row.Name, null));
         ImGui.EndPopup();
     }
-
-    /// <summary>Line-1 colour by the pet's damage type (white when unknown / not appraised).</summary>
-    private static Vector4 DamageColor(string damageType) => damageType switch
-    {
-        "Fire"      => new Vector4(1.00f, 0.55f, 0.30f, 1f),
-        "Cold"      => new Vector4(0.55f, 0.80f, 1.00f, 1f),
-        "Acid"      => new Vector4(0.55f, 0.95f, 0.45f, 1f),
-        "Lightning" => new Vector4(0.85f, 0.70f, 1.00f, 1f),
-        "Nether"    => new Vector4(0.75f, 0.50f, 0.90f, 1f),
-        _           => new Vector4(0.95f, 0.95f, 0.95f, 1f),
-    };
 
     private void RenderCharms()
     {
