@@ -13,7 +13,7 @@ using RynthCore.PluginSdk;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
-/// <summary>A yes/no question waiting for the player in the Hub window.</summary>
+/// <summary>A yes/no question waiting for the player (a modal over the Mini Remote).</summary>
 internal sealed class IltConfirmRequest
 {
     public string Title = "Confirm";
@@ -57,8 +57,14 @@ internal sealed class IltHubContext
     /// <summary>Logged-in character name (resolved at login).</summary>
     public string CharName = string.Empty;
 
-    /// <summary>True when the Hub window is open (features use it to gate auto-refreshes).</summary>
+    /// <summary>True when the Mini Remote is on screen (features use it to gate auto-refreshes).</summary>
     public bool WindowOpen => State.WindowVisible;
+
+    /// <summary>
+    /// Shows the Mini Remote on one of its ILT tabs (set by the controller). Any thread: it only
+    /// records the tab and the show request, which the next frame applies.
+    /// </summary>
+    public Action<IltSection>? ShowTab;
 
     /// <summary>Writes a local chat line (never sent to the server).</summary>
     public void Chat(string text)

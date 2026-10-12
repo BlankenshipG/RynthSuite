@@ -112,10 +112,11 @@ public sealed partial class RynthAiPlugin
             () => _combatManager?.activeTargetId ?? 0);
         if (_translateUi != null) _huds.Translate = _translateUi;
 
-        // The Mini Remote is the Hub's main window: "/ra hub [show|hide|toggle]" drives it, and
-        // while it is up the Hub keeps its bank / gear data fresh.
+        // The ILT sections are Mini Remote tabs: "/ra hub [show|hide|toggle]" drives the remote,
+        // "/ra hub open <section>" its tabs, and while it is up the Hub keeps its bank / gear data fresh.
         var huds = _huds;
-        _iltHub.MiniRemoteCommand = mode => "[ILT Hub] " + huds.HandleCommand("remote", mode);
+        _iltHub.MiniRemoteCommand = mode => "[Mini Remote] " + huds.HandleCommand("remote", mode);
+        _iltHub.MiniRemoteTabCommand = (tab, mode) => huds.HandleTabCommand(tab, mode);
         _iltHub.MiniRemoteVisible = () => huds.MiniRemoteActive;
         EnsureItemInfoUi();
         EnsureSpellsUi();
@@ -307,6 +308,39 @@ public sealed partial class RynthAiPlugin
         }
     }
 
+    /// <summary>
+    /// RynthPluginRenderEmbed "guardian": the Temple guardian tools inside RynthCore's Guardian
+    /// panel (the bar's ILT button), drawn into the engine's current ImGui window at the size it
+    /// gives (<paramref name="want"/> echoes that size: the panel is user-sized). False (nothing
+    /// drawn) until login and the ILT features exist. Render thread.
+    /// </summary>
+    public bool RenderEmbeddedGuardian(System.Numerics.Vector2 size, out System.Numerics.Vector2 want)
+    {
+        want = size;
+        var hub = _iltHub;
+        if (!_initialized || !_loginComplete || Host.ImGuiContext == IntPtr.Zero || hub == null)
+            return false;
+
+        IntPtr previousContext = ImGui.GetCurrentContext();
+        ImGui.SetCurrentContext(Host.ImGuiContext);
+        int pushedColors = LegacyDashboardRenderer.PushDashboardStyle();
+        try
+        {
+            hub.RenderGuardianPanel();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Exception(LogCat.UI, ex, "RenderEmbeddedGuardian");
+            return false;
+        }
+        finally
+        {
+            ImGui.PopStyleColor(pushedColors);
+            ImGui.SetCurrentContext(previousContext);
+        }
+    }
+
     /// <summary>Chat Translate window in the dashboard colours (no-op while hidden).</summary>
     private void RenderTranslateWindow()
     {
@@ -333,7 +367,7 @@ public sealed partial class RynthAiPlugin
     /// <summary>"prog ..." remote command from the Skills panel's Progression tab. Pump thread.</summary>
     private void HandleProgressionRemote(string value)
     {
-        if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); return; }
+        if (_iltHub == null) { ChatLine("[RynthAi] ILT features not ready (log in first)."); return; }
         _iltHub.Progression.HandleRemote(value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 

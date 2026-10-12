@@ -1,12 +1,14 @@
-// MiniRemoteHud.cs — Floating Mini Remote (UtilityBelt-style) for RynthAi. Render thread only.
+// MiniRemoteHud.cs — The Mini Remote (UtilityBelt-style) for RynthAi. Render thread only.
 //
-// The Mini Remote is the ILT Hub's main window: its Options menu (the Options button or a
-// right-click) opens the Hub's section windows (Character, Quests, Pets, Banking, Gear, Games,
-// Guardian).
+// One window with tabs: Remote (the sections below) and, on ILT worlds, the ILT tabs Character,
+// Quests, Pets, Banking, Gear and Games (IltHubUi draws their bodies; a tab shows once the server
+// reports its feature on). The tab bar's selection is saved (HudState.MiniRemoteTab) and
+// "/ra hub open <section>" or RynthCore's dashboard switch it (RequestTab). The Guardian and
+// Bounties are RynthCore ILT panels (the bar's ILT button); the Options menu links to them.
 // The V/H button stacks the sections (vertical) or lays them out in three columns (horizontal).
 //
-// Sections (each can be hidden from the Options menu):
-//   Stats    session time and per-hour XP / luminance / kills / coins / pyreals (ILT Hub rates)
+// Remote sections (each can be hidden from the Options menu):
+//   Stats    session time and per-hour XP / luminance / kills / coins / pyreals (ILT rates)
 //   Target   the creature combat is attacking: name, health bar, distance
 //   Pet      the summon that is out (health bar, time left), else the next combat essence and
 //            whether it is ready
@@ -23,13 +25,16 @@
 //
 // RenderEmbedded draws the same sections and Options menu inside the engine's RynthAi dashboard
 // (its Mini Remote drawer, opened by the Hub launcher's right-click or the drawer tab) and
-// reports the size it wants; the drawer is sized from that. The drawer leaves out Toggles: the
-// dashboard it sits on already has those switches. RenderEmbedded(window: true) draws it in the
-// engine's Mini Remote window instead (bar button, /rc miniremote): Toggles included, and the
-// floating window stays hidden meanwhile (HudController), so that window is the one Mini Remote.
+// reports the size it wants; the drawer is sized from that. The drawer leaves out Toggles (the
+// dashboard it sits on already has those switches) and the tabs (it is too narrow for them).
+// RenderEmbedded(window: true) draws it in the engine's Mini Remote window instead (bar button,
+// /rc miniremote): tabs and Toggles included, and the floating window stays hidden meanwhile
+// (HudController), so that window is the one Mini Remote.
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Threading;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.IltHub;
 using RynthCore.Plugin.RynthAi.LegacyUi;
@@ -58,11 +63,29 @@ internal sealed class MiniRemoteHud
     private bool _columnOpen; // horizontal layout: a column was already started this frame (next one goes SameLine)
     private bool _embedded;   // true only inside RenderEmbedded (an engine surface)
     private bool _inWindow;   // with _embedded: the engine's Mini Remote window, not the dashboard drawer
+    // A tab switch asked for by a command or the engine (any thread), applied by the next tab bar;
+    // null = none. Starts as the saved tab so the first tab bar restores it.
+    private string? _pendingTab;
+    private bool _pendingTabFromState = true;
+    // This frame's tab bar showed the Remote tab (right-click Options belongs to it only).
+    private bool _onRemoteTab = true;
+    // The ILT tabs offered this frame (reused, so a frame doesn't allocate).
+    private readonly List<IltSection> _tabs = new();
 
     public MiniRemoteHud(HudController hud) => _hud = hud;
 
     /// <summary>The remote was not drawn this frame: check its position again on the next show.</summary>
     public void OnHidden() => _rescueChecked = false;
+
+    /// <summary>
+    /// Switches to tab <paramref name="tab"/> ("" = the remote, else an ILT tab id) on the next
+    /// frame the tab bar draws. Any thread.
+    /// </summary>
+    public void RequestTab(string tab)
+    {
+        _pendingTabFromState = false;
+        Volatile.Write(ref _pendingTab, tab ?? string.Empty);
+    }
 
     public void Render()
     {
@@ -82,13 +105,11 @@ internal sealed class MiniRemoteHud
         if (!visible) { ImGui.End(); return; }
         UiPlacement.RescueOncePerShow(ref _rescueChecked);
 
-        var hub = _hud.Hub();
-        RenderHeaderRow(s);
-        if (s.MiniRemoteHorizontal) RenderHorizontal(s, hub);
-        else RenderVertical(s, hub);
+        RenderBody(s, _hud.Hub(), allowTabs: true);
 
-        // Right-click on the window body opens the options, unless a slot's own menu is open.
-        if (_slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
+        // Right-click on the remote opens the options, unless a slot's own menu is open (the ILT
+        // tabs have their own right-click menus).
+        if (_onRemoteTab && _slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
             ImGui.OpenPopup(OptionsPopup);
         RenderOptions(s, embedded: false);
         _slotMenuIndex = -1;
@@ -99,7 +120,7 @@ internal sealed class MiniRemoteHud
     /// The same sections drawn into the caller's current window (the engine's RynthAi dashboard
     /// drawer, or with <paramref name="window"/> the engine's Mini Remote window; both size
     /// themselves from the result) instead of a window of their own. Returns the content size it
-    /// wants: the column layout's width, and the height drawn.
+    /// wants: the selected tab's width, and the height drawn.
     /// </summary>
     public Vector2 RenderEmbedded(bool window = false)
     {
@@ -111,17 +132,14 @@ internal sealed class MiniRemoteHud
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
         try
         {
-            var hub = _hud.Hub();
-            RenderHeaderRow(s);
-            if (s.MiniRemoteHorizontal) RenderHorizontal(s, hub);
-            else RenderVertical(s, hub);
+            float width = RenderBody(s, _hud.Hub(), allowTabs: !InDrawer);
 
-            if (_slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
+            if (_onRemoteTab && _slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
                 ImGui.OpenPopup(OptionsPopup);
             RenderOptions(s, embedded: true);
 
             float height = ImGui.GetCursorPosY() - startY - ImGui.GetStyle().ItemSpacing.Y;
-            return new Vector2(EmbeddedWidth(s), Math.Max(0f, height) + 2f);
+            return new Vector2(width, Math.Max(0f, height) + 2f);
         }
         finally
         {
@@ -130,6 +148,117 @@ internal sealed class MiniRemoteHud
             _embedded = false;
             _inWindow = false;
         }
+    }
+
+    // ── Tabs ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The tab bar (when ILT tabs are on offer and <paramref name="allowTabs"/>) and the selected
+    /// tab: the remote, or an ILT tab's body in a child of its fixed size. Returns the width the
+    /// content wants (never narrower than the tab bar's labels).
+    /// </summary>
+    private float RenderBody(HudState s, IltHubController? hub, bool allowTabs)
+    {
+        _onRemoteTab = true;
+        _tabs.Clear();
+        if (allowTabs && hub != null && hub.OffersTabs)
+        {
+            foreach (IltSection section in IltSections.Tabs)
+                if (hub.SectionAvailable(section)) _tabs.Add(section);
+        }
+        if (_tabs.Count == 0)
+        {
+            RenderRemote(s, hub);
+            return EmbeddedWidth(s);
+        }
+
+        if (_pendingTabFromState)
+        {
+            _pendingTabFromState = false;
+            Interlocked.CompareExchange(ref _pendingTab, s.MiniRemoteTab ?? string.Empty, null);
+        }
+        string? pending = Interlocked.Exchange(ref _pendingTab, null);
+        float width = TabBarWidth();
+        _onRemoteTab = false;
+        if (ImGui.BeginTabBar("##mrtabs", ImGuiTabBarFlags.FittingPolicyScroll | ImGuiTabBarFlags.NoTooltip))
+        {
+            if (BeginTab(RemoteTabLabel, TabFlags(IltSections.RemoteTab, pending)))
+            {
+                _onRemoteTab = true;
+                s.MiniRemoteTab = IltSections.RemoteTab;
+                RenderRemote(s, hub);
+                width = Math.Max(width, EmbeddedWidth(s));
+                ImGui.EndTabItem();
+            }
+            foreach (IltSection section in _tabs)
+            {
+                string id = IltSections.TabId(section);
+                if (!BeginTab(TabLabels[(int)section], TabFlags(id, pending))) continue;
+                s.MiniRemoteTab = id;
+                Vector2 size = IltHubUi.TabSize(section);
+                // The tab draws into a child of its own size; tables in it scroll inside it.
+                ImGui.BeginChild(TabBodyIds[(int)section], size, ImGuiChildFlags.None, ImGuiWindowFlags.None);
+                hub!.RenderTab(section);
+                ImGui.EndChild();
+                width = Math.Max(width, size.X);
+                ImGui.EndTabItem();
+            }
+            ImGui.EndTabBar();
+        }
+        return width;
+    }
+
+    // Tab labels as NUL-terminated UTF-8 and the tab body child ids, indexed by (int)IltSection,
+    // built once so the tab bar doesn't allocate per frame.
+    private static readonly byte[] RemoteTabLabel = Utf8Z("Remote##mrtab");
+    private static readonly byte[][] TabLabels = BuildPerSection(s => Utf8Z(IltSections.Label(s) + "##mrtab"));
+    private static readonly string[] TabBodyIds = BuildPerSection(s => "##mrtabbody_" + IltSections.TabId(s));
+
+    private static T[] BuildPerSection<T>(Func<IltSection, T> make)
+    {
+        var result = new T[(int)IltSection.Guardian + 1];
+        foreach (IltSection section in IltSections.Tabs) result[(int)section] = make(section);
+        return result;
+    }
+
+    private static byte[] Utf8Z(string text)
+    {
+        byte[] bytes = new byte[System.Text.Encoding.UTF8.GetByteCount(text) + 1];
+        System.Text.Encoding.UTF8.GetBytes(text, 0, text.Length, bytes, 0);
+        return bytes;
+    }
+
+    /// <summary>
+    /// BeginTabItem without a close button: ImGui.NET only wraps the flags overload together with
+    /// p_open, and a non-null p_open draws an X on the tab.
+    /// </summary>
+    private static unsafe bool BeginTab(byte[] labelUtf8Z, ImGuiTabItemFlags flags)
+    {
+        fixed (byte* label = labelUtf8Z)
+            return ImGuiNative.igBeginTabItem(label, null, flags) != 0;
+    }
+
+    /// <summary>SetSelected for the tab a command asked for this frame.</summary>
+    private static ImGuiTabItemFlags TabFlags(string id, string? pending) =>
+        pending != null && string.Equals(pending, id, StringComparison.OrdinalIgnoreCase)
+            ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+
+    /// <summary>Width of every tab label side by side (the embedded window shouldn't be narrower, or tabs scroll).</summary>
+    private float TabBarWidth()
+    {
+        var style = ImGui.GetStyle();
+        float w = ImGui.CalcTextSize("Remote").X + style.FramePadding.X * 2f;
+        foreach (IltSection section in _tabs)
+            w += style.ItemInnerSpacing.X + ImGui.CalcTextSize(IltSections.Label(section)).X + style.FramePadding.X * 2f;
+        return w;
+    }
+
+    /// <summary>The Remote tab: the [V/H] [Options] row, then the sections in the chosen layout.</summary>
+    private void RenderRemote(HudState s, IltHubController? hub)
+    {
+        RenderHeaderRow(s);
+        if (s.MiniRemoteHorizontal) RenderHorizontal(s, hub);
+        else RenderVertical(s, hub);
     }
 
     /// <summary>In the dashboard drawer (not the floating window or the engine's Mini Remote window).</summary>
@@ -165,7 +294,7 @@ internal sealed class MiniRemoteHud
             ImGui.SetTooltip(s.MiniRemoteHorizontal ? "Horizontal: sections in columns. Click to stack them." : "Vertical: sections stacked. Click to lay them out in columns.");
         ImGui.SameLine();
         if (ImGui.Button("Options##mropts", new Vector2(HeaderButtonWidth, 0))) ImGui.OpenPopup(OptionsPopup);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("ILT Hub windows and Mini Remote settings (or right-click the remote).");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Mini Remote settings and the ILT panels (or right-click the remote).");
     }
 
     private void RenderVertical(HudState s, IltHubController? hub)
@@ -613,21 +742,21 @@ internal sealed class MiniRemoteHud
     }
 
     /// <summary>
-    /// ILT Hub group of the Options menu: one item per section window (checked when open, greyed
-    /// out until the server reports the feature). Off ILT worlds it also offers the Force-ILT
-    /// override and a server-options refresh.
+    /// ILT group of the Options menu: the RynthCore ILT panels (Guardian, Bounties; the bar's ILT
+    /// button opens them too). The ILT sections themselves are the remote's tabs. Off ILT worlds
+    /// it also offers the Force-ILT override and a server-options refresh.
     /// </summary>
-    private static void RenderHubMenu(IltHubController? hub)
+    private void RenderHubMenu(IltHubController? hub)
     {
-        ImGui.TextDisabled("ILT Hub");
+        ImGui.TextDisabled("ILT");
         if (hub == null) { ImGui.TextDisabled("Available after login."); return; }
 
-        foreach (IltSection section in IltSections.All)
-        {
-            bool open = hub.IsSectionOpen(section);
-            if (ImGui.MenuItem(IltSections.Label(section) + "##mrsec", string.Empty, open, hub.SectionAvailable(section)))
-                hub.SetSectionOpen(section, !open);
-        }
+        if (ImGui.MenuItem("Guardian panel##mrguardian", string.Empty, false, hub.SectionAvailable(IltSection.Guardian)))
+            _hud.Post(() => hub.OpenEnginePanel("guardian", "Guardian", "show"));
+        if (ImGui.MenuItem("Bounties panel##mrbounties"))
+            _hud.Post(() => hub.OpenEnginePanel("bounties", "Bounties", "show"));
+        if (hub.OffersTabs && !InDrawer) ImGui.TextDisabled("Character, Quests, Pets...: the tabs above");
+        else if (hub.OffersTabs) ImGui.TextDisabled("ILT tabs: the Mini Remote window");
         ImGui.TextDisabled("Progression: Skills panel (Char right-click)");
 
         if (hub.Available) return;

@@ -53,6 +53,11 @@ public sealed class HudState
     /// Clamped to <see cref="MinMiniRemoteSlotSize"/>..<see cref="MaxMiniRemoteSlotSize"/>.
     /// </summary>
     public float MiniRemoteSlotSize = DefaultMiniRemoteSlotSize;
+    /// <summary>
+    /// The Mini Remote's selected tab: "" for the remote itself, else an ILT tab id
+    /// (IltSections.TabId: character, quests, pets, banking, gear, games).
+    /// </summary>
+    public string MiniRemoteTab = string.Empty;
 }
 
 /// <summary>An item pinned to a HUD. Matched by name; Wcid / IconDid are remembered so the
@@ -122,6 +127,7 @@ internal sealed class HudStore
         while (s.MiniRemoteSlots.Count < HudState.MiniRemoteSlotCount) s.MiniRemoteSlots.Add(new HudItemEntry());
         if (s.MiniRemoteSlots.Count > HudState.MiniRemoteSlotCount)
             s.MiniRemoteSlots.RemoveRange(HudState.MiniRemoteSlotCount, s.MiniRemoteSlots.Count - HudState.MiniRemoteSlotCount);
+        s.MiniRemoteTab ??= string.Empty;
         // A huds.json from before the setting has no value (0): use the default.
         s.MiniRemoteSlotSize = s.MiniRemoteSlotSize <= 0f || float.IsNaN(s.MiniRemoteSlotSize)
             ? HudState.DefaultMiniRemoteSlotSize

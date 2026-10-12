@@ -47,8 +47,6 @@ internal sealed class IltQuests : IIltFeature
     private volatile string _qbStatus = "not loaded";
     private long _qbCount = -1;
     private volatile int _qbGeneration; // bumped per successful "/qb list"; 0 = never loaded this session
-    private bool _questsRescueChecked; // popped-out window's off-screen check done for the current show
-
     // Render-thread UI state.
     private int _questView; // 0 timed, 1 kill tasks, 2 once, 3 all
 
@@ -127,16 +125,16 @@ internal sealed class IltQuests : IIltFeature
     public void CheckCommand(string pattern)
     {
         var t = _tracker();
-        if (t == null) { _ctx.Chat("[ILT Hub] Quest tracker not ready."); return; }
+        if (t == null) { _ctx.Chat("[Mini Remote] Quest tracker not ready."); return; }
         Regex rx;
         try { rx = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(200)); }
-        catch (ArgumentException ex) { _ctx.Chat("[ILT Hub] Bad pattern: " + ex.Message); return; }
+        catch (ArgumentException ex) { _ctx.Chat("[Mini Remote] Bad pattern: " + ex.Message); return; }
 
         var hits = t.Snapshot().Where(r => rx.IsMatch(r.Key) || rx.IsMatch(FriendlyName(r))).OrderBy(r => r.Key).ToList();
-        if (hits.Count == 0) { _ctx.Chat($"[ILT Hub] No quest flags match '{pattern}' ({t.Count} cached)."); return; }
+        if (hits.Count == 0) { _ctx.Chat($"[Mini Remote] No quest flags match '{pattern}' ({t.Count} cached)."); return; }
         foreach (var r in hits.Take(5))
-            _ctx.Chat($"[ILT Hub] {FriendlyName(r)} [{r.Key}] solves {r.Solves}{(r.MaxSolves > 0 ? "/" + r.MaxSolves : "")} - {IltParse.Duration(r.TimeUntilReady())}");
-        if (hits.Count > 5) _ctx.Chat($"[ILT Hub] ...and {hits.Count - 5} more.");
+            _ctx.Chat($"[Mini Remote] {FriendlyName(r)} [{r.Key}] solves {r.Solves}{(r.MaxSolves > 0 ? "/" + r.MaxSolves : "")} - {IltParse.Duration(r.TimeUntilReady())}");
+        if (hits.Count > 5) _ctx.Chat($"[Mini Remote] ...and {hits.Count - 5} more.");
     }
 
     /// <summary>Captures "/qb list" (quiet).</summary>
@@ -256,7 +254,7 @@ internal sealed class IltQuests : IIltFeature
 
     // ── UI (render thread) ──────────────────────────────────────────────────
 
-    /// <summary>Quest tracker body, filling the "Quests" window (the table uses the remaining height).</summary>
+    /// <summary>Quest tracker body, filling the Mini Remote's Quests tab (the table uses the remaining height).</summary>
     public void RenderQuestTracker()
     {
         var t = _tracker();
@@ -268,7 +266,7 @@ internal sealed class IltQuests : IIltFeature
         }
         var cs = _ctx.State.Character;
 
-        if (ImGui.SmallButton("Refresh##quests")) _ctx.Post(() => _ctx.Chat("[ILT Hub] " + RefreshQuests()));
+        if (ImGui.SmallButton("Refresh##quests")) _ctx.Post(() => _ctx.Chat("[Mini Remote] " + RefreshQuests()));
         ImGui.SameLine();
         if (ImGui.SmallButton("Reload quests.xml")) _ctx.Post(LoadFriendlyNames);
         ImGui.SameLine();
@@ -340,7 +338,7 @@ internal sealed class IltQuests : IIltFeature
 
     private static int ViewToKind(int view) => view switch { 0 => (int)QuestKind.Timed, 1 => (int)QuestKind.KillTask, _ => (int)QuestKind.Once };
 
-    // ── Favorites / floating windows ────────────────────────────────────────
+    // ── Favorites / the Quests tab ──────────────────────────────────────────
 
     private static readonly Vector4 FavStarOn = new(1.00f, 0.82f, 0.25f, 1f);
     private static readonly Vector4 FavStarOff = new(0.45f, 0.48f, 0.52f, 1f);
@@ -358,35 +356,18 @@ internal sealed class IltQuests : IIltFeature
             list.Add(key.ToLowerInvariant());
     }
 
-    /// <summary>
-    /// The "Quests" window (opened from the Mini Remote's Options or "/ra hub open quests"; drawn
-    /// only while the Hub is available, matching IltHubController.SectionAvailable) and the
-    /// floating favorites HUD. Called every frame.
-    /// </summary>
+    /// <summary>The floating favorites HUD (the tracker itself is the Mini Remote's Quests tab). Called every frame.</summary>
     public void RenderFloatingWindows()
     {
         var cs = _ctx.State.Character;
-        bool hubAvailable = _ctx.Options.IsIltLikeWorld && _ctx.Options.AnyFeatureOn;
-        if (cs.QuestTrackerPoppedOut && hubAvailable) RenderPoppedOutTracker(cs);
-        else _questsRescueChecked = false;
         if (cs.ShowQuestFavoritesHud) RenderFavoritesHud(cs);
     }
 
-    private void RenderPoppedOutTracker(IltCharacterState cs)
+    /// <summary>The Mini Remote's Quests tab: the quest bonus (collapsed), then the tracker filling the rest.</summary>
+    public void RenderTab()
     {
-        // Offset from the Pets window's first spot so the two don't open exactly stacked.
-        UiPlacement.CenterFirstUse(new Vector2(40, 40));
-        ImGui.SetNextWindowSize(new Vector2(700, 520), ImGuiCond.FirstUseEver);
-        bool open = true;
-        if (ImGui.Begin("Quests##iltquestswin", ref open))
-        {
-            UiPlacement.RescueOncePerShow(ref _questsRescueChecked);
-            // Quest bonus first (collapsed by default) so the tracker table can fill the rest.
-            if (ImGui.CollapsingHeader("Quest bonus (/qb)##qbwin")) RenderQb();
-            RenderQuestTracker();
-        }
-        ImGui.End();
-        if (!open) cs.QuestTrackerPoppedOut = false;
+        if (ImGui.CollapsingHeader("Quest bonus (/qb)##qbwin")) RenderQb();
+        RenderQuestTracker();
     }
 
     /// <summary>Compact always-on list of starred quests and when each is ready.</summary>
@@ -432,8 +413,8 @@ internal sealed class IltQuests : IIltFeature
         {
             bool locked = cs.QuestFavoritesHudLocked;
             if (ImGui.Checkbox("Lock position", ref locked)) cs.QuestFavoritesHudLocked = locked;
-            if (ImGui.MenuItem("Open quest tracker")) cs.QuestTrackerPoppedOut = true;
-            if (ImGui.MenuItem("Refresh /myquests")) _ctx.Post(() => _ctx.Chat("[ILT Hub] " + RefreshQuests()));
+            if (ImGui.MenuItem("Open quest tracker")) _ctx.ShowTab?.Invoke(IltSection.Quests);
+            if (ImGui.MenuItem("Refresh /myquests")) _ctx.Post(() => _ctx.Chat("[Mini Remote] " + RefreshQuests()));
             if (ImGui.MenuItem("Hide favorites HUD")) cs.ShowQuestFavoritesHud = false;
             ImGui.EndPopup();
         }
@@ -447,7 +428,7 @@ internal sealed class IltQuests : IIltFeature
             ImGui.TextColored(LegacyDashboardRenderer.ColTextMute, "/qb is disabled on this server.");
             return;
         }
-        if (ImGui.SmallButton("Load /qb list")) _ctx.Post(() => _ctx.Chat("[ILT Hub] " + RefreshQb()));
+        if (ImGui.SmallButton("Load /qb list")) _ctx.Post(() => _ctx.Chat("[Mini Remote] " + RefreshQb()));
         ImGui.SameLine();
         long count = _qbCount;
         ImGui.TextDisabled((count >= 0 ? $"QB count {IltParse.N0(count)} - " : "") + _qbStatus);

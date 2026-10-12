@@ -494,7 +494,7 @@ internal sealed class IltAttributeRaiser
         _status = text;
         _lastRun = $"{DateTime.Now:t} {(_runAuto ? "auto" : "manual")}: {text}";
         RynthLog.Trace(LogCat.IltProgression, $"attr raise run finished: {text}");
-        if (_runRaised > 0) _ctx.Chat($"[ILT Hub] Attribute raise ({(_runAuto ? "auto" : "manual")}): {text}");
+        if (_runRaised > 0) _ctx.Chat($"[Mini Remote] Attribute raise ({(_runAuto ? "auto" : "manual")}): {text}");
     }
 
     // ── Engine Skills panel bridge ────────────────────────────────────────────

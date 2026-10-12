@@ -890,9 +890,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "bounty":
             case "bounties":
             case "bountys":
-                // Dashboard Char launcher (hub=show opens the Mini Remote) and its right-click menu
-                // (hub=open <section> toggle); value carries the "/ra hub|quests|pets|bounty" arguments.
-                if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
+                // Dashboard Char launcher and its right-click menu (hub=tab <section> switches the
+                // Mini Remote's tab); value carries the "/ra hub|quests|pets|bounty" arguments.
+                if (_iltHub == null) { ChatLine("[RynthAi] ILT features not ready (log in first)."); break; }
                 _iltHub.HandleCommand(action.ToLowerInvariant(), value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
                 break;
             case "huds":
@@ -3262,7 +3262,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "bounty":
             case "bounties":
             case "bountys":
-                if (_iltHub == null) { ChatLine("[RynthAi] ILT Hub not ready (log in first)."); break; }
+                if (_iltHub == null) { ChatLine("[RynthAi] ILT features not ready (log in first)."); break; }
                 _iltHub.HandleCommand(cmd, parts.Length > 2 ? parts[2..] : Array.Empty<string>());
                 break;
             case "itemhud" when parts.Length > 2 && parts[2].Equals("add", StringComparison.OrdinalIgnoreCase):

@@ -1,14 +1,18 @@
-// IltHubController.cs — Owns the ILT Hub: state, services, feature modules, commands.
+// IltHubController.cs — Owns the ILT features behind the Mini Remote: state, services, feature
+// modules, commands.
 //
 // RynthAiPlugin creates one controller per login session and forwards:
 //   OnTick → Tick()          (pump thread)
 //   OnChatWindowText → OnChat() (pump thread; returns true to eat the line)
 //   OnKillNotification → RecordKill()
-//   OnRender → Render()      (render thread)
-//   /ra hub ..., /ra quests ..., /ra bounty ... → HandleCommand()
+//   OnRender → Render()      (render thread: Games HUD, quest favorites HUD, confirmations)
+//   /ra hub ..., /ra quests ..., /ra guardian ... → HandleCommand()
 //   OnLogout / teardown → OnLogout()
-// The Hub only appears on ACECustom/ILT worlds where at least one server feature is on;
-// on every other world it stays dormant (no probes, no chat, no window).
+// The ILT sections are Mini Remote tabs (RenderTab); the Guardian is RynthCore's ILT panel
+// (RenderGuardianPanel), and bounties are the RynthILT plugin's (RynthCore's ILT button), so
+// "/ra bounty" and "/ra guardian window" open those engine panels.
+// The ILT tabs only appear on ACECustom/ILT worlds where at least one server feature is on;
+// on every other world this stays dormant (no probes, no chat, no tabs).
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -41,8 +45,6 @@ internal sealed class IltHubController
     public IltCharmTracker Charms { get; }
     /// <summary>Temple guardians: riddle translator, hand-in, attribute turn-in tracker.</summary>
     public IltGuardian Guardian { get; }
-    /// <summary>ACECustom bounties: every area's reward and this character's progress ("/bounty list").</summary>
-    public IltBounties Bounties { get; }
 
     public IltHubController(RynthCoreHost host, string charFolder, Func<WorldObjectCache?> cache,
                             Func<LegacyUiSettings?> settings, Func<QuestTracker?> quests, Action saveCombatSettings)
@@ -68,31 +70,38 @@ internal sealed class IltHubController
         Games = new IltGames(_ctx);
         Charms = new IltCharmTracker(_ctx);
         Guardian = new IltGuardian(_ctx, quests, Quests);
-        Bounties = new IltBounties(_ctx);
-        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Games, Guardian, Bounties });
+        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Games, Guardian });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
         options.ProbeReplyTap = OnProbeReply;
         _ui = new IltHubUi(this, _ctx);
+        _ctx.ShowTab = section => MiniRemoteTabCommand?.Invoke(IltSections.TabId(section), "show");
     }
 
     public IltHubState State => _ctx.State;
     public IltServerOptions Options => _ctx.Options;
 
     /// <summary>
-    /// Shows / hides / toggles the Mini Remote, which is the Hub's main window ("show", "hide",
-    /// "toggle"). Set by RynthAiPlugin; returns the chat reply. Pump thread.
+    /// Shows / hides / toggles the Mini Remote ("show", "hide", "toggle"). Set by RynthAiPlugin;
+    /// returns the chat reply. Pump thread.
     /// </summary>
     public Func<string, string>? MiniRemoteCommand { get; set; }
+
+    /// <summary>
+    /// Puts the Mini Remote on a tab: (tab id from IltSections.TabId, "" = the remote itself;
+    /// mode "show" / "hide" / "toggle", or "select" to switch tabs without showing it). Set by
+    /// RynthAiPlugin; returns the chat reply. Any thread (plain field writes).
+    /// </summary>
+    public Func<string, string, string>? MiniRemoteTabCommand { get; set; }
 
     /// <summary>True while the Mini Remote is on screen (set by RynthAiPlugin).</summary>
     public Func<bool>? MiniRemoteVisible { get; set; }
 
-    /// <summary>World is ILT-like and the server has at least one Hub feature on.</summary>
+    /// <summary>World is ILT-like and the server has at least one ILT feature on.</summary>
     public bool Available => _ctx.Options.IsIltLikeWorld && _ctx.Options.AnyFeatureOn;
 
     /// <summary>
-    /// Whether a section window can be shown now. Character always can (it explains why the Hub is
+    /// Whether a section can be shown now. Character always can (it explains why the ILT tabs are
     /// idle and holds the Force-ILT override); the rest need server features.
     /// </summary>
     public bool SectionAvailable(IltSection section) => section switch
@@ -103,10 +112,17 @@ internal sealed class IltHubController
         _ => Available,
     };
 
-    public bool IsSectionOpen(IltSection section) => IltSections.IsOpen(_ctx.State.Character, section);
+    /// <summary>
+    /// The Mini Remote offers ILT tabs: an ILT-like world (or the Force-ILT override). The
+    /// Character tab then always shows; the others follow <see cref="SectionAvailable"/>.
+    /// </summary>
+    public bool OffersTabs => _ctx.Options.IsIltLikeWorld;
 
-    /// <summary>Opens / closes a section window (render or pump thread; a plain bool write).</summary>
-    public void SetSectionOpen(IltSection section, bool open) => IltSections.SetOpen(_ctx.State.Character, section, open);
+    /// <summary>Render thread: one Mini Remote ILT tab's body (MiniRemoteHud draws the tab bar).</summary>
+    public void RenderTab(IltSection section) => _ui.RenderTab(section);
+
+    /// <summary>Render thread: the Guardian panel's body (RynthPluginRenderEmbed "guardian").</summary>
+    public void RenderGuardianPanel() => _ui.RenderGuardianPanel();
 
     /// <summary>The Force-ILT world override (world identity only; features still come from the server).</summary>
     public bool ForceIltWorld
@@ -167,16 +183,16 @@ internal sealed class IltHubController
         _ctx.Options.Tick();
         HookQuestOutcome();
 
-        // "Hub UI on screen" gates bank auto-refresh and the gear / split-arrow scans.
-        _ctx.State.WindowVisible = (MiniRemoteVisible?.Invoke() ?? false) || IltSections.AnyOpen(_ctx.State.Character);
+        // "Mini Remote on screen" gates bank auto-refresh and the gear / split-arrow scans.
+        _ctx.State.WindowVisible = MiniRemoteVisible?.Invoke() ?? false;
 
-        // One hint per session once the server confirms Hub features. The Mini Remote is separate
+        // One hint per session once the server confirms ILT features. The Mini Remote is separate
         // from the main RynthAi panel, so say how to open it.
         if (!_availabilityAnnounced && Available)
         {
             _availabilityAnnounced = true;
             if (!_ctx.State.WindowVisible)
-                _ctx.Chat("[ILT Hub] ILT server features detected. Type /ra hub to open the Mini Remote (Options lists the Hub windows).");
+                _ctx.Chat("[Mini Remote] ILT server features detected. Open the Mini Remote (bar button, /rc miniremote) for the ILT tabs.");
         }
 
         // Features run only on ILT-like worlds; elsewhere the Hub is fully dormant.
@@ -193,7 +209,7 @@ internal sealed class IltHubController
         if (_pendingAction != null && now - _pendingAt > ConfirmWindowMs)
         {
             RynthLog.Event(LogEvents.IltConfirmation, $"confirmation expired: {_pendingLabel}");
-            _ctx.Chat($"[ILT Hub] Confirmation for '{_pendingLabel}' expired.");
+            _ctx.Chat($"[Mini Remote] Confirmation for '{_pendingLabel}' expired.");
             ClearPending();
         }
 
@@ -230,16 +246,11 @@ internal sealed class IltHubController
         IltProgression => LogCat.IltProgression,
         IltGear => LogCat.IltGear,
         IltGames => LogCat.IltGames,
-        IltBounties => LogCat.IltBounties,
         _ => LogCat.IltHub,
     };
 
-    /// <summary>One of this character's kills: session rates, and a bounty re-read while that window is open.</summary>
-    public void RecordKill()
-    {
-        Rates.RecordKill();
-        if (_ctx.Options.IsIltLikeWorld) Bounties.OnKill();
-    }
+    /// <summary>One of this character's kills: session rates (bounties are RynthILT's).</summary>
+    public void RecordKill() => Rates.RecordKill();
 
     /// <summary>Logout / teardown: stop automation and flush to disk.</summary>
     public void OnLogout()
@@ -272,7 +283,7 @@ internal sealed class IltHubController
     /// <summary>JSON for the engine Settings panel's Charms Tracking tab (RynthPluginGetCharmsJson). Pump thread.</summary>
     public string BuildCharmsJson() => Charms.BuildJson();
 
-    /// <summary>Render thread: section windows, confirm popups, games HUD.</summary>
+    /// <summary>Render thread: Games HUD, quest favorites HUD and confirmation popups.</summary>
     public void Render() => _ui.Render();
 
     // ── Probe taps: reuse login-probe replies so tabs fill without extra commands ──
@@ -293,11 +304,12 @@ internal sealed class IltHubController
     // ── Commands ────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// "/ra hub [show|hide|toggle|open &lt;section&gt; [show|hide|toggle]|refresh|bank|status|force on|off|
-    /// profile save|load|list ...|suit list|test|load ...]" (show/hide/toggle drive the Mini Remote),
+    /// "/ra hub [show|hide|toggle|open &lt;section&gt; [show|hide|toggle]|tab &lt;section|remote&gt;|refresh|
+    /// bank|status|force on|off|profile save|load|list ...|suit list|test|load ...]" (show/hide/toggle
+    /// drive the Mini Remote, open puts it on a tab, tab switches tabs without showing it),
     /// "/ra quests [refresh|check &lt;regex&gt;|window|favhud]", "/ra pets [show|hide|toggle]",
-    /// "/ra bounty [show|hide|toggle|refresh|list]" (aliases bounties / bountys) and
-    /// "/ra guardian ..." (see IltGuardian.HandleCommand).
+    /// "/ra bounty [show|hide|toggle]" (aliases bounties / bountys: RynthCore's ILT Bounties panel)
+    /// and "/ra guardian ..." (window: RynthCore's ILT Guardian panel; the rest IltGuardian.HandleCommand).
     /// Pump thread. Returns false if not handled.
     /// </summary>
     public bool HandleCommand(string verb, string[] args)
@@ -319,10 +331,10 @@ internal sealed class IltHubController
                 case "favhud":
                 case "favorites":
                     cs.ShowQuestFavoritesHud = ResolveToggle(mode, cs.ShowQuestFavoritesHud);
-                    _ctx.Chat(cs.ShowQuestFavoritesHud ? "[ILT Hub] Quest favorites HUD shown." : "[ILT Hub] Quest favorites HUD hidden.");
+                    _ctx.Chat(cs.ShowQuestFavoritesHud ? "[Mini Remote] Quest favorites HUD shown." : "[Mini Remote] Quest favorites HUD hidden.");
                     break;
                 default:
-                    _ctx.Chat("[ILT Hub] " + Quests.RefreshQuests());
+                    _ctx.Chat("[Mini Remote] " + Quests.RefreshQuests());
                     break;
             }
             return true;
@@ -335,28 +347,16 @@ internal sealed class IltHubController
         }
         if (IsBountyVerb(verb))
         {
-            string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "toggle";
-            switch (sub)
-            {
-                case "refresh":
-                case "read":
-                    _ctx.Chat("[Bounties] " + Bounties.RequestRefresh());
-                    break;
-                case "list":
-                case "print":
-                    Bounties.PrintList();
-                    break;
-                default:
-                    OpenSection(IltSection.Bounties, sub);
-                    break;
-            }
+            // Bounties are the RynthILT plugin's (RynthCore's ILT button); open that panel.
+            OpenEnginePanel("bounties", "Bounties", args.Length > 0 ? args[0] : "toggle");
             return true;
         }
         if (verb.Equals("guardian", StringComparison.OrdinalIgnoreCase))
         {
-            // "/ra guardian window [show|hide|toggle]" opens the window; everything else is the Guardian's.
+            // "/ra guardian window [show|hide|toggle]" opens RynthCore's ILT Guardian panel;
+            // everything else is the Guardian's.
             if (args.Length > 0 && args[0].Equals("window", StringComparison.OrdinalIgnoreCase))
-                OpenSection(IltSection.Guardian, args.Length > 1 ? args[1] : "toggle");
+                OpenEnginePanel("guardian", "Guardian", args.Length > 1 ? args[1] : "toggle");
             else
                 Guardian.HandleCommand(args);
             return true;
@@ -372,22 +372,34 @@ internal sealed class IltHubController
             case "toggle":
                 // The Mini Remote is the Hub's main window.
                 if (MiniRemoteCommand != null) _ctx.Chat(MiniRemoteCommand(cmd));
-                else _ctx.Chat("[ILT Hub] The Mini Remote is not available yet.");
+                else _ctx.Chat("[Mini Remote] The Mini Remote is not available yet.");
                 break;
             case "open":
+                if (args.Length > 1 && IsBountyVerb(args[1]))
+                {
+                    OpenEnginePanel("bounties", "Bounties", args.Length > 2 ? args[2] : "toggle");
+                    break;
+                }
                 if (args.Length < 2 || !IltSections.TryParse(args[1], out IltSection section))
                 {
-                    _ctx.Chat("[ILT Hub] Usage: /ra hub open character|quests|pets|banking|gear|games|guardian|bounties [show|hide|toggle]");
+                    _ctx.Chat("[Mini Remote] Usage: /ra hub open character|quests|pets|banking|gear|games|guardian|bounties [show|hide|toggle]");
                     break;
                 }
                 OpenSection(section, args.Length > 2 ? args[2] : "toggle");
+                break;
+            case "tab":
+                // The engine's dashboard: it opens its Mini Remote window itself, so only switch tabs.
+                if (args.Length > 1 && IltSections.TryParse(args[1], out IltSection tab) && IltSections.IsTab(tab))
+                    MiniRemoteTabCommand?.Invoke(IltSections.TabId(tab), "select");
+                else
+                    MiniRemoteTabCommand?.Invoke(IltSections.RemoteTab, "select");
                 break;
             case "refresh": _ctx.Options.Refresh(manual: true); break;
             case "bank": Banking.RequestRefresh(quiet: false); break;
             case "status": PrintStatus(); break;
             case "force":
                 _ctx.State.ForceLeaftideFeatures = !rest.Equals("off", StringComparison.OrdinalIgnoreCase);
-                _ctx.Chat($"[ILT Hub] Force ILT world: {(_ctx.State.ForceLeaftideFeatures ? "on" : "off")}. Use /ra hub refresh to re-check the server.");
+                _ctx.Chat($"[Mini Remote] Force ILT world: {(_ctx.State.ForceLeaftideFeatures ? "on" : "off")}. Use /ra hub refresh to re-check the server.");
                 break;
             case "profile": HandleProfile(args.Skip(1).ToArray()); break;
             case "suit": HandleSuit(args.Skip(1).ToArray()); break;
@@ -395,17 +407,17 @@ internal sealed class IltHubController
             case "attr": HandleAttr(args.Skip(1).ToArray()); break;
             case "confirm": RunPending(); break;
             case "cancel":
-                _ctx.Chat(_pendingAction != null ? $"[ILT Hub] Cancelled '{_pendingLabel}'." : "[ILT Hub] Nothing to cancel.");
+                _ctx.Chat(_pendingAction != null ? $"[Mini Remote] Cancelled '{_pendingLabel}'." : "[Mini Remote] Nothing to cancel.");
                 ClearPending();
                 break;
             default:
-                _ctx.Chat("[ILT Hub] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|force on|off|clap|confirm|cancel");
-                _ctx.Chat("[ILT Hub] /ra hub open character|quests|pets|banking|gear|games|guardian|bounties [show|hide|toggle]");
-                _ctx.Chat("[ILT Hub] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
-                _ctx.Chat("[ILT Hub] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
-                _ctx.Chat("[ILT Hub] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");
-                _ctx.Chat("[ILT Hub] /ra guardian [window|translate <text>|handin|stop|chat on|off|auto on|off|buy on|off|refresh|status]");
-                _ctx.Chat("[ILT Hub] /ra bounty [show|hide|toggle|refresh|list]  (Bounties window: every server bounty and your kills)");
+                _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|force on|off|clap|confirm|cancel");
+                _ctx.Chat("[Mini Remote] /ra hub open character|quests|pets|banking|gear|games [show|hide|toggle]  (Mini Remote tabs)");
+                _ctx.Chat("[Mini Remote] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
+                _ctx.Chat("[Mini Remote] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
+                _ctx.Chat("[Mini Remote] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");
+                _ctx.Chat("[Mini Remote] /ra guardian [window|translate <text>|handin|stop|chat on|off|auto on|off|buy on|off|refresh|status]  (window: ILT button > Guardian)");
+                _ctx.Chat("[Mini Remote] /ra bounty [show|hide|toggle]  (RynthCore's ILT button > Bounties, /rc bounties)");
                 break;
         }
         return true;
@@ -427,28 +439,51 @@ internal sealed class IltHubController
             default:
                 var c = _ctx.State.Character;
                 string blocked = raiser.Blocker() ?? "ready";
-                _ctx.Chat($"[ILT Hub] Attribute raiser: {blocked}; auto={(c.AttrAutoRaise ? $"on every {c.AttrAutoRaiseMinutes}m" : "off")} "
+                _ctx.Chat($"[Mini Remote] Attribute raiser: {blocked}; auto={(c.AttrAutoRaise ? $"on every {c.AttrAutoRaiseMinutes}m" : "off")} "
                           + $"mode={(IltAttributeRaiser.Mode)c.AttrRaiseMode} keep={IltParse.Compact(c.AttrKeepXp)} "
                           + $"stats={(c.AttrRaiseStats.Count > 0 ? string.Join(",", c.AttrOrder.Where(c.AttrRaiseStats.Contains)) : "none ticked")}");
                 return;
         }
     }
 
-    /// <summary>"/ra bounty", "/ra bounties" and the "/ra bountys" spelling all reach the Bounties window.</summary>
+    /// <summary>"/ra bounty", "/ra bounties" and the "/ra bountys" spelling all reach the Bounties panel.</summary>
     public static bool IsBountyVerb(string verb)
         => verb.Equals("bounty", StringComparison.OrdinalIgnoreCase)
            || verb.Equals("bounties", StringComparison.OrdinalIgnoreCase)
            || verb.Equals("bountys", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Applies show / hide / toggle to a section window and says what happened.</summary>
+    /// <summary>
+    /// Applies show / hide / toggle to a section: a Mini Remote tab, or for the Guardian
+    /// RynthCore's ILT panel. Says what happened.
+    /// </summary>
     private void OpenSection(IltSection section, string mode)
     {
-        bool open = IltSections.Resolve(mode, IsSectionOpen(section));
-        SetSectionOpen(section, open);
-        string label = IltSections.Label(section);
-        _ctx.Chat(!open ? $"[ILT Hub] {label} window hidden."
-            : SectionAvailable(section) ? $"[ILT Hub] {label} window shown."
-            : $"[ILT Hub] {label} window will show once the server reports that feature on.");
+        if (!IltSections.IsTab(section))
+        {
+            OpenEnginePanel(IltSections.TabId(section), IltSections.Label(section), mode);
+            return;
+        }
+        string reply = MiniRemoteTabCommand?.Invoke(IltSections.TabId(section), mode) ?? "The Mini Remote is not available yet.";
+        if (!SectionAvailable(section) && !mode.Equals("hide", StringComparison.OrdinalIgnoreCase))
+            reply = $"The {IltSections.Label(section)} tab shows once the server reports that feature on.";
+        _ctx.Chat("[Mini Remote] " + reply);
+    }
+
+    /// <summary>
+    /// Opens / closes one of RynthCore's ILT panels ("/rc bounties|guardian [show|hide|toggle]")
+    /// through the engine's chat dispatcher. Pump thread.
+    /// </summary>
+    public void OpenEnginePanel(string rcVerb, string label, string mode)
+    {
+        string m = (mode ?? string.Empty).ToLowerInvariant() switch
+        {
+            "show" or "on" or "open" => "show",
+            "hide" or "off" or "close" => "hide",
+            _ => "toggle",
+        };
+        if (_ctx.Host.HasInvokeChatParser && _ctx.Host.InvokeChatParser($"/rc {rcVerb} {m}"))
+            return;
+        _ctx.Chat($"[Mini Remote] {label} is a RynthCore ILT panel: the bar's ILT button, or /rc {rcVerb}.");
     }
 
     /// <summary>"show"/"on" → true, "hide"/"off" → false, anything else flips <paramref name="current"/>.</summary>
@@ -462,13 +497,13 @@ internal sealed class IltHubController
     private void PrintStatus()
     {
         var o = _ctx.Options;
-        _ctx.Chat($"[ILT Hub] World '{o.WorldName}' ILT={o.IsIltLikeWorld} force={_ctx.State.ForceLeaftideFeatures} source={(o.Source.Length > 0 ? o.Source : "none")} "
+        _ctx.Chat($"[Mini Remote] World '{o.WorldName}' ILT={o.IsIltLikeWorld} force={_ctx.State.ForceLeaftideFeatures} source={(o.Source.Length > 0 ? o.Source : "none")} "
                   + $"refreshed={(o.LastRefreshUtc == DateTime.MinValue ? "never" : o.LastRefreshUtc.ToLocalTime().ToString("t"))}");
         var bits = o.SnapshotBits();
         string on = string.Join(", ", bits.Where(b => b.Value == 1).Select(b => b.Key));
         string off = string.Join(", ", bits.Where(b => b.Value == 0).Select(b => b.Key));
-        _ctx.Chat("[ILT Hub] on: " + (on.Length > 0 ? on : "-"));
-        _ctx.Chat("[ILT Hub] off: " + (off.Length > 0 ? off : "-"));
+        _ctx.Chat("[Mini Remote] on: " + (on.Length > 0 ? on : "-"));
+        _ctx.Chat("[Mini Remote] off: " + (off.Length > 0 ? off : "-"));
     }
 
     private void HandleProfile(string[] a)
@@ -477,15 +512,15 @@ internal sealed class IltHubController
         if (sub == "list")
         {
             var names = _ctx.Store.ListProfiles();
-            _ctx.Chat("[ILT Hub] Profiles: " + (names.Count > 0 ? string.Join(", ", names) : "(none)"));
+            _ctx.Chat("[Mini Remote] Profiles: " + (names.Count > 0 ? string.Join(", ", names) : "(none)"));
             return;
         }
-        if (a.Length < 2) { _ctx.Chat("[ILT Hub] Usage: /ra hub profile save <name> [shared] | load <name>"); return; }
+        if (a.Length < 2) { _ctx.Chat("[Mini Remote] Usage: /ra hub profile save <name> [shared] | load <name>"); return; }
         if (sub == "save")
         {
             bool shared = a.Length > 2 && a[2].Equals("shared", StringComparison.OrdinalIgnoreCase);
             _ctx.Chat(_ctx.Store.SaveProfile(_ctx.State, a[1], shared, out string err)
-                ? $"[ILT Hub] Saved {(shared ? "shared " : "")}profile '{a[1]}'." : "[ILT Hub] Save failed: " + err);
+                ? $"[Mini Remote] Saved {(shared ? "shared " : "")}profile '{a[1]}'." : "[Mini Remote] Save failed: " + err);
         }
         else if (sub == "load")
         {
@@ -493,7 +528,7 @@ internal sealed class IltHubController
             string profile = a[1];
             RequestConfirm($"load Hub profile '{profile}' (replaces current Hub settings)", () =>
                 _ctx.Chat(_ctx.Store.LoadProfile(_ctx.State, profile, out string err)
-                    ? $"[ILT Hub] Loaded profile '{profile}'." : "[ILT Hub] Load failed: " + err));
+                    ? $"[Mini Remote] Loaded profile '{profile}'." : "[Mini Remote] Load failed: " + err));
         }
     }
 
@@ -513,7 +548,7 @@ internal sealed class IltHubController
         _pendingAction = action;
         _pendingAt = IltHubContext.NowMs;
         RynthLog.Event(LogEvents.IltConfirmation, $"confirmation requested: {label}");
-        _ctx.Chat($"[ILT Hub] About to {label}. Type /ra hub confirm within {ConfirmWindowMs / 1000} s, or /ra hub cancel.");
+        _ctx.Chat($"[Mini Remote] About to {label}. Type /ra hub confirm within {ConfirmWindowMs / 1000} s, or /ra hub cancel.");
     }
 
     /// <summary>Runs the pending action if one is armed and still inside its window.</summary>
@@ -523,7 +558,7 @@ internal sealed class IltHubController
         string? label = _pendingLabel;
         bool fresh = action != null && IltHubContext.NowMs - _pendingAt <= ConfirmWindowMs;
         ClearPending();
-        if (!fresh || action == null) { _ctx.Chat("[ILT Hub] Nothing to confirm."); return; }
+        if (!fresh || action == null) { _ctx.Chat("[Mini Remote] Nothing to confirm."); return; }
 
         RynthLog.Event(LogEvents.IltConfirmation, $"confirmed: {label}");
         try { action(); }
@@ -545,17 +580,17 @@ internal sealed class IltHubController
         {
             case "list":
                 var list = Gear.Suits.ListProfiles();
-                _ctx.Chat("[ILT Hub] Suits: " + (list.Count > 0 ? string.Join(", ", list.Select(p => p.Name)) : "(none)"));
+                _ctx.Chat("[Mini Remote] Suits: " + (list.Count > 0 ? string.Join(", ", list.Select(p => p.Name)) : "(none)"));
                 break;
             case "test":
-                foreach (string l in Gear.Suits.Test(name)) _ctx.Chat("[ILT Hub] " + l);
+                foreach (string l in Gear.Suits.Test(name)) _ctx.Chat("[Mini Remote] " + l);
                 break;
             case "load":
                 // Equipping a suit swaps gear mid-session, so it needs an explicit confirm.
-                RequestConfirm($"equip suit '{name ?? "(auto)"}'", () => _ctx.Chat("[ILT Hub] " + Gear.Suits.Load(name)));
+                RequestConfirm($"equip suit '{name ?? "(auto)"}'", () => _ctx.Chat("[Mini Remote] " + Gear.Suits.Load(name)));
                 break;
             default:
-                _ctx.Chat("[ILT Hub] Usage: /ra hub suit list|test [name]|load [name]");
+                _ctx.Chat("[Mini Remote] Usage: /ra hub suit list|test [name]|load [name]");
                 break;
         }
     }

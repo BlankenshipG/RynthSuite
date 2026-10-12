@@ -1,11 +1,12 @@
-// IltHubUi.cs — The ILT Hub's ImGui windows (render thread only).
+// IltHubUi.cs — The ILT sections' ImGui bodies (render thread only).
 //
-// The Mini Remote is the Hub. Each former tab is its own window, opened from the Mini Remote's
-// Options or "/ra hub open <section>": ILT Character (world status, Force-ILT, profiles, session
-// rates), Quests (IltQuests), Pets, Banking, Gear, Games, Guardian (IltGuardian: Temple riddle
-// translator, hand-in, attribute turn-in tracker) and Bounties (IltBounties: every ACECustom
-// bounty and this character's progress). A section window draws only while the
-// server reports its feature on. Augmentations / Enlightenment / XP planning live on the engine
+// The ILT sections are tabs of the Mini Remote (MiniRemoteHud draws the tab bar and calls
+// RenderTab): Character (world status, Force-ILT, profiles, session rates), Quests (IltQuests),
+// Pets, Banking, Gear and Games. A tab is offered only while the server reports its feature on.
+// The Guardian (IltGuardian: Temple riddle translator, hand-in, attribute turn-in tracker) is a
+// RynthCore ILT panel instead (the bar's ILT button, next to Bounties), drawn through
+// RenderGuardianPanel. Render() keeps the floating extras: the Games HUD, the quest favorites HUD
+// and the confirmation modal. Augmentations / Enlightenment / XP planning live on the engine
 // Skills panel. All AC actions go through IltHubContext.Post / Confirm so nothing here touches
 // the game directly.
 using System;
@@ -18,7 +19,6 @@ namespace RynthCore.Plugin.RynthAi.IltHub;
 internal sealed class IltHubUi
 {
     private const string ConfirmPopupId = "Confirm##iltconfirm";
-    private static readonly int SectionCount = IltSections.All.Length;
 
     private readonly IltHubController _hub;
     private readonly IltHubContext _ctx;
@@ -28,87 +28,74 @@ internal sealed class IltHubUi
     private bool _profileShared;
     private string[] _profileList = Array.Empty<string>();
     private int _profileIdx;
-
-    // Per section (indexed by IltSection): drawn last frame (for shown/hidden log events) and
-    // whether the off-screen check already ran for the current show.
-    private readonly bool[] _wasDrawn = new bool[SectionCount];
-    private readonly bool[] _rescueChecked = new bool[SectionCount];
-
-    // Cached so the per-frame window calls don't allocate a delegate each time.
-    private readonly Action _characterBody, _petsBody, _bankingBody, _gearBody, _gamesBody, _guardianBody, _bountiesBody;
+    // The last tab body drawn (for one shown log event per tab change); -1 = none yet.
+    private int _lastTabLogged = -1;
 
     public IltHubUi(IltHubController hub, IltHubContext ctx)
     {
         _hub = hub;
         _ctx = ctx;
-        _characterBody = RenderCharacterBody;
-        _petsBody = () => _hub.Pets.Render();
-        _bankingBody = () => _hub.Banking.Render();
-        _gearBody = () => _hub.Gear.Render();
-        _gamesBody = () => _hub.Games.Render();
-        _guardianBody = () => _hub.Guardian.Render();
-        _bountiesBody = () => _hub.Bounties.Render();
     }
 
+    /// <summary>The floating extras: Games HUD, quest favorites HUD and the confirmation modal.</summary>
     public void Render()
     {
-        // Distinct first-use offsets so sections opened together don't stack exactly.
-        RenderSectionWindow(IltSection.Character, "ILT Character##iltcharwin", new Vector2(520, 480), Vector2.Zero, _characterBody);
-        RenderSectionWindow(IltSection.Pet, "Pets##iltpetswin", new Vector2(560, 620), Vector2.Zero, _petsBody);
-        RenderSectionWindow(IltSection.Banking, "Banking##iltbankwin", new Vector2(560, 560), new Vector2(80, 80), _bankingBody);
-        RenderSectionWindow(IltSection.Gear, "Gear##iltgearwin", new Vector2(560, 560), new Vector2(120, 120), _gearBody);
-        RenderSectionWindow(IltSection.Games, "Games##iltgameswin", new Vector2(520, 480), new Vector2(160, 160), _gamesBody);
-        RenderSectionWindow(IltSection.Guardian, "Guardian##iltguardianwin", new Vector2(540, 520), new Vector2(200, 120), _guardianBody);
-        RenderSectionWindow(IltSection.Bounties, "Bounties##iltbountywin", new Vector2(560, 420), new Vector2(240, 160), _bountiesBody);
-        LogSectionTransition(IltSection.Quests, _ctx.State.Character.QuestTrackerPoppedOut && _hub.SectionAvailable(IltSection.Quests));
         _hub.Games.RenderHud();
         _hub.Quests.RenderFloatingWindows();
         RenderConfirm();
     }
 
     /// <summary>
-    /// One section window: drawn while its open flag is set and the section is available, centred
-    /// on first use and moved back on screen once per show if a saved spot left it off-screen.
-    /// Closing it with the title-bar X clears the open flag.
+    /// Size of a Mini Remote tab's body (the old section window's default size): the tab draws in a
+    /// child this big, and the Mini Remote (or the engine window hosting it) fits to it.
     /// </summary>
-    private void RenderSectionWindow(IltSection section, string title, Vector2 size, Vector2 offset, Action body)
+    public static Vector2 TabSize(IltSection section) => section switch
     {
-        var cs = _ctx.State.Character;
-        int i = (int)section;
-        bool drawn = IltSections.IsOpen(cs, section) && _hub.SectionAvailable(section);
-        LogSectionTransition(section, drawn);
-        if (!drawn) { _rescueChecked[i] = false; return; }
+        IltSection.Character => new Vector2(520, 440),
+        IltSection.Quests => new Vector2(700, 500),
+        IltSection.Pet => new Vector2(560, 580),
+        IltSection.Banking => new Vector2(560, 520),
+        IltSection.Gear => new Vector2(560, 520),
+        IltSection.Games => new Vector2(520, 440),
+        _ => new Vector2(520, 440),
+    };
 
-        UiPlacement.CenterFirstUse(offset);
-        ImGui.SetNextWindowSize(size, ImGuiCond.FirstUseEver);
-        bool open = true;
-        if (ImGui.Begin(title, ref open))
+    /// <summary>Draws one Mini Remote ILT tab's body into the current (child) window.</summary>
+    public void RenderTab(IltSection section)
+    {
+        if ((int)section != _lastTabLogged)
         {
-            if (UiPlacement.RescueOncePerShow(ref _rescueChecked[i]))
-            {
-                Vector2 moved = ImGui.GetWindowPos();
-                RynthLog.Write(LogCat.IltHub, $"[IltHub] {IltSections.Label(section)} window was off-screen - moved to ({moved.X:0},{moved.Y:0}).");
-            }
-            body();
+            _lastTabLogged = (int)section;
+            RynthLog.Event(LogEvents.IltWindowShown, $"{IltSections.Label(section)} tab shown (world='{_ctx.Options.WorldName}', available={_hub.Available})");
         }
-        ImGui.End();
-        if (!open) IltSections.SetOpen(cs, section, false);
+        switch (section)
+        {
+            case IltSection.Character: RenderCharacterBody(); break;
+            case IltSection.Quests: _hub.Quests.RenderTab(); break;
+            case IltSection.Pet: _hub.Pets.Render(); break;
+            case IltSection.Banking: _hub.Banking.Render(); break;
+            case IltSection.Gear: _hub.Gear.Render(); break;
+            case IltSection.Games: _hub.Games.Render(); break;
+        }
     }
 
-    /// <summary>Logs the first frame a section window is (or stops being) drawn, proving the overlay renders it.</summary>
-    private void LogSectionTransition(IltSection section, bool drawn)
+    /// <summary>
+    /// The Guardian panel's body (RynthCore's ILT Guardian panel, RynthPluginRenderEmbed
+    /// "guardian"), or why it's idle while the server hasn't reported ILT features.
+    /// </summary>
+    public void RenderGuardianPanel()
     {
-        int i = (int)section;
-        if (drawn == _wasDrawn[i]) return;
-        _wasDrawn[i] = drawn;
-        string label = IltSections.Label(section);
-        if (drawn)
-            RynthLog.Event(LogEvents.IltWindowShown, $"{label} window shown (world='{_ctx.Options.WorldName}', available={_hub.Available})");
-        else
-            RynthLog.Event(LogEvents.IltWindowHidden, $"{label} window hidden");
+        if (!_hub.SectionAvailable(IltSection.Guardian))
+        {
+            RenderHeader();
+            ImGui.Separator();
+            RenderUnavailable();
+            return;
+        }
+        _hub.Guardian.Render();
     }
 
-    /// <summary>ILT Character window: world / options header, then session rates (or why the Hub is idle).</summary>
+    /// <summary>Character tab: world / options header, then session rates (or why the ILT tabs are idle).</summary>
     private void RenderCharacterBody()
     {
         RenderHeader();
@@ -135,7 +122,7 @@ internal sealed class IltHubUi
         bool force = _ctx.State.ForceLeaftideFeatures;
         if (ImGui.Checkbox("Treat this world as ILT", ref force)) _ctx.State.ForceLeaftideFeatures = force;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("World-identity override only: the Hub asks the server which features exist.\nIt never turns a feature on by itself.");
+            ImGui.SetTooltip("World-identity override only: the Mini Remote asks the server which ILT features exist.\nIt never turns a feature on by itself.");
         ImGui.SameLine();
         if (ImGui.SmallButton("Profiles...")) { ImGui.OpenPopup("##iltprofiles"); _ctx.Post(() => _profileList = _ctx.Store.ListProfiles().ToArray()); }
         RenderProfilesPopup();
@@ -144,7 +131,7 @@ internal sealed class IltHubUi
     private void RenderProfilesPopup()
     {
         if (!ImGui.BeginPopup("##iltprofiles")) return;
-        ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Hub profiles (settings only; no balances)");
+        ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "ILT profiles (settings only; no balances)");
         ImGui.SetNextItemWidth(180);
         ImGui.InputTextWithHint("##profname", "profile name", ref _profileName, 64u);
         ImGui.SameLine();
@@ -155,7 +142,7 @@ internal sealed class IltHubUi
             string n = _profileName; bool sh = _profileShared;
             _ctx.Post(() =>
             {
-                _ctx.Chat(_ctx.Store.SaveProfile(_ctx.State, n, sh, out string err) ? $"[ILT Hub] Saved profile '{n}'." : "[ILT Hub] Save failed: " + err);
+                _ctx.Chat(_ctx.Store.SaveProfile(_ctx.State, n, sh, out string err) ? $"[Mini Remote] Saved profile '{n}'." : "[Mini Remote] Save failed: " + err);
                 _profileList = _ctx.Store.ListProfiles().ToArray();
             });
         }
@@ -169,8 +156,8 @@ internal sealed class IltHubUi
             if (ImGui.SmallButton("Load"))
             {
                 string n = list[_profileIdx];
-                _ctx.Confirm("Load Hub profile", $"Replace the current Hub settings with profile '{n}'?",
-                    () => _ctx.Chat(_ctx.Store.LoadProfile(_ctx.State, n, out string err) ? $"[ILT Hub] Loaded profile '{n}'." : "[ILT Hub] Load failed: " + err),
+                _ctx.Confirm("Load ILT profile", $"Replace the current ILT settings with profile '{n}'?",
+                    () => _ctx.Chat(_ctx.Store.LoadProfile(_ctx.State, n, out string err) ? $"[Mini Remote] Loaded profile '{n}'." : "[Mini Remote] Load failed: " + err),
                     "Load");
             }
         }
@@ -183,7 +170,7 @@ internal sealed class IltHubUi
         var o = _ctx.Options;
         if (!o.IsIltLikeWorld)
         {
-            ImGui.TextWrapped("This is not an Infinite Leaftide / ACECustom world, so the ILT Hub is idle. "
+            ImGui.TextWrapped("This is not an Infinite Leaftide / ACECustom world, so the ILT tabs are idle. "
                               + "If this shard runs ACECustom under another name, tick 'Treat this world as ILT' and press Refresh.");
         }
         else if (o.IsRefreshing || o.LastRefreshUtc == DateTime.MinValue)
@@ -192,7 +179,7 @@ internal sealed class IltHubUi
         }
         else
         {
-            ImGui.TextWrapped("The server did not report any ILT Hub features as enabled. Press Refresh to check again.");
+            ImGui.TextWrapped("The server did not report any ILT features as enabled. Press Refresh to check again.");
         }
     }
 

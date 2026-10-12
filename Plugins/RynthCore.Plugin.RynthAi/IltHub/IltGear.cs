@@ -67,7 +67,7 @@ internal sealed class IltGear : IIltFeature
     {
         var wo = _ctx.Inventory.Cache?[id];
         if (wo == null) return;
-        if (_ctx.Inventory.IsBusy) { _ctx.Chat("[ILT Hub] Busy - try the charm again in a moment."); return; }
+        if (_ctx.Inventory.IsBusy) { _ctx.Chat("[Mini Remote] Busy - try the charm again in a moment."); return; }
         _ctx.Inventory.Use(wo);
         _lastCharmScan = 0; // re-read status soon (appraisal refresh is throttled per item)
     }

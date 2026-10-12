@@ -1,10 +1,12 @@
-// IltSections.cs - The ILT Hub's sections, each its own window, opened from the Mini Remote's
-// Options or "/ra hub open <section>". Open flags live in IltCharacterState (per character).
+// IltSections.cs - The ILT sections. Character, Quests, Pets, Banking, Gear and Games are tabs of
+// the Mini Remote (MiniRemoteHud), picked from its tab bar or "/ra hub open <section>". Guardian is
+// a RynthCore ILT panel instead (the bar's ILT button, next to Bounties; "/rc guardian"), drawn by
+// this plugin through RynthPluginRenderEmbed("guardian").
 using System;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
-/// <summary>Section windows. Values index per-section arrays, so new sections go at the end.</summary>
+/// <summary>ILT sections: the Mini Remote's tabs, then the Guardian panel.</summary>
 internal enum IltSection
 {
     Character,
@@ -14,17 +16,19 @@ internal enum IltSection
     Gear,
     Games,
     Guardian,
-    Bounties,
 }
 
 internal static class IltSections
 {
-    /// <summary>Menu order (the old Hub's tab order, then the Guardian and Bounties windows).</summary>
-    public static readonly IltSection[] All =
+    /// <summary>The Mini Remote's ILT tabs, in tab-bar order (after its own Remote tab).</summary>
+    public static readonly IltSection[] Tabs =
     {
         IltSection.Character, IltSection.Quests, IltSection.Pet,
-        IltSection.Banking, IltSection.Gear, IltSection.Games, IltSection.Guardian, IltSection.Bounties,
+        IltSection.Banking, IltSection.Gear, IltSection.Games,
     };
+
+    /// <summary>The Mini Remote's own tab (the remote itself): its tab id.</summary>
+    public const string RemoteTab = "";
 
     public static string Label(IltSection s) => s switch
     {
@@ -35,9 +39,27 @@ internal static class IltSections
         IltSection.Gear => "Gear",
         IltSection.Games => "Games",
         IltSection.Guardian => "Guardian",
-        IltSection.Bounties => "Bounties",
         _ => s.ToString(),
     };
+
+    /// <summary>
+    /// The section's tab id: saved as HudState.MiniRemoteTab and sent by the engine's dashboard
+    /// ("/ra hub tab &lt;id&gt;"). TryParse reads it back.
+    /// </summary>
+    public static string TabId(IltSection s) => s switch
+    {
+        IltSection.Character => "character",
+        IltSection.Quests => "quests",
+        IltSection.Pet => "pets",
+        IltSection.Banking => "banking",
+        IltSection.Gear => "gear",
+        IltSection.Games => "games",
+        IltSection.Guardian => "guardian",
+        _ => s.ToString().ToLowerInvariant(),
+    };
+
+    /// <summary>True for the sections drawn as Mini Remote tabs (all but the Guardian panel).</summary>
+    public static bool IsTab(IltSection s) => s != IltSection.Guardian;
 
     /// <summary>Parses a "/ra hub open" section name (a few aliases accepted).</summary>
     public static bool TryParse(string text, out IltSection section)
@@ -51,45 +73,8 @@ internal static class IltSections
             case "gear": section = IltSection.Gear; return true;
             case "games": case "game": section = IltSection.Games; return true;
             case "guardian": case "temple": case "riddle": section = IltSection.Guardian; return true;
-            case "bounties": case "bounty": case "bountys": section = IltSection.Bounties; return true;
             default: section = IltSection.Character; return false;
         }
-    }
-
-    public static bool IsOpen(IltCharacterState cs, IltSection s) => s switch
-    {
-        IltSection.Character => cs.CharacterWindowOpen,
-        IltSection.Quests => cs.QuestTrackerPoppedOut,
-        IltSection.Pet => cs.PetsWindowOpen,
-        IltSection.Banking => cs.BankingWindowOpen,
-        IltSection.Gear => cs.GearWindowOpen,
-        IltSection.Games => cs.GamesWindowOpen,
-        IltSection.Guardian => cs.GuardianWindowOpen,
-        IltSection.Bounties => cs.BountiesWindowOpen,
-        _ => false,
-    };
-
-    public static void SetOpen(IltCharacterState cs, IltSection s, bool open)
-    {
-        switch (s)
-        {
-            case IltSection.Character: cs.CharacterWindowOpen = open; break;
-            case IltSection.Quests: cs.QuestTrackerPoppedOut = open; break;
-            case IltSection.Pet: cs.PetsWindowOpen = open; break;
-            case IltSection.Banking: cs.BankingWindowOpen = open; break;
-            case IltSection.Gear: cs.GearWindowOpen = open; break;
-            case IltSection.Games: cs.GamesWindowOpen = open; break;
-            case IltSection.Guardian: cs.GuardianWindowOpen = open; break;
-            case IltSection.Bounties: cs.BountiesWindowOpen = open; break;
-        }
-    }
-
-    /// <summary>True when any section window is open.</summary>
-    public static bool AnyOpen(IltCharacterState cs)
-    {
-        foreach (IltSection s in All)
-            if (IsOpen(cs, s)) return true;
-        return false;
     }
 
     /// <summary>"show" / "hide" / "toggle" (anything else toggles) applied to the current state.</summary>

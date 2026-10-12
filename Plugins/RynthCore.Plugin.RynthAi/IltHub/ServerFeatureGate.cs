@@ -121,7 +121,7 @@ internal static class ServerFeatureGate
         bool hubForce;
         try { hubForce = HubForceProvider?.Invoke() == true; } catch { hubForce = false; }
         if (hubForce)
-            return $"This world {shown}: ON - the ILT Hub's \"Treat this world as ILT\" override.";
+            return $"This world {shown}: ON - the Mini Remote's \"Treat this world as ILT\" override.";
         return world.Length > 0
             ? $"This world {shown}: OFF - not in the list. Add it, or tick the override."
             : "This world: not logged in yet.";

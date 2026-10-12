@@ -314,7 +314,7 @@ internal sealed class IltUsdImporter
         }
         _ctx.SaveCombatSettings?.Invoke();
         _status = $"Imported {plan.Monsters.Count} monsters, {plan.Weapons.Count} weapons, {plan.Consumables.Count} consumables.";
-        _ctx.Chat("[ILT Hub] " + _status);
+        _ctx.Chat("[Mini Remote] " + _status);
         _plan = null;
     }
 

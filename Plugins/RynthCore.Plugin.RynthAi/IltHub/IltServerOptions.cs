@@ -196,19 +196,19 @@ internal sealed class IltServerOptions
     {
         if (_refreshInFlight)
         {
-            if (manual) _chat("[ILT Hub] Server options refresh already running.");
+            if (manual) _chat("[Mini Remote] Server options refresh already running.");
             return;
         }
         if (!IsIltLikeWorld)
         {
-            if (manual) _chat("[ILT Hub] This world is not in the Server Features list (Settings > Misc: add it, or tick the override).");
+            if (manual) _chat("[Mini Remote] This world is not in the Server Features list (Settings > Misc: add it, or tick the override).");
             return;
         }
 
         _refreshInFlight = true;
         _state.ServerOptions.WorldName = WorldName;
         RynthLog.Event(LogEvents.IltOptionsRefreshStart, $"refresh start (manual={manual}, world='{WorldName}')");
-        if (manual) _chat("[ILT Hub] Refreshing server options...");
+        if (manual) _chat("[Mini Remote] Refreshing server options...");
 
         // Step 1: structured dump. Lines start with "=== ILT Custom Features ===".
         _capture.Enqueue(new IltChatRequest
@@ -373,7 +373,7 @@ internal sealed class IltServerOptions
             RynthLog.Event(LogEvents.IltOptionsRefreshed, $"options refreshed via {Source} (manual={manual}): {on} on, {off} off - " +
                 string.Join(" ", _state.ServerOptions.Bits.Select(b => $"{b.Key}={b.Value}")));
         if (manual)
-            _chat($"[ILT Hub] Server options refreshed via {Source}: {on} on, {off} off.");
+            _chat($"[Mini Remote] Server options refreshed via {Source}: {on} on, {off} off.");
     }
 
     // ── Passive refusals ────────────────────────────────────────────────────

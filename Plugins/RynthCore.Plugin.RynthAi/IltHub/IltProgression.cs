@@ -145,7 +145,7 @@ internal sealed class IltProgression : IIltFeature
         _lastEnlSentAt = IltHubContext.NowMs;
         _ctx.Host.InvokeChatParser("/enl");
         _enlStatus = $"/enl sent ({why}) - click Yes in the AC dialog to confirm.";
-        _ctx.Chat("[ILT Hub] " + _enlStatus);
+        _ctx.Chat("[Mini Remote] " + _enlStatus);
     }
 
     // ── IIltFeature ─────────────────────────────────────────────────────────
@@ -762,7 +762,7 @@ internal sealed class IltProgression : IIltFeature
                     case "on":
                         C.AutoEnlightenEnabled = true;
                         _autoArmed = true;
-                        _ctx.Chat("[ILT Hub] Auto-enlighten armed for this session.");
+                        _ctx.Chat("[Mini Remote] Auto-enlighten armed for this session.");
                         break;
                     case "arm": if (C.AutoEnlightenEnabled) _autoArmed = true; break;
                     default: C.AutoEnlightenEnabled = false; _autoArmed = false; break;

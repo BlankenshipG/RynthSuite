@@ -88,7 +88,7 @@ internal sealed class LegacyAdvancedSettingsUi
         }
         else if (!ImGui.IsItemActive()) _serverNamesEdit = null;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Comma-separated world names that turn on the ILT Hub, the Progression\n" +
+            ImGui.SetTooltip("Comma-separated world names that turn on the Mini Remote's ILT tabs, the Progression\n" +
                              "planners and the attribute raiser. * is a wildcard (*Leaftide* matches any\n" +
                              "name containing Leaftide). Case does not matter.");
 

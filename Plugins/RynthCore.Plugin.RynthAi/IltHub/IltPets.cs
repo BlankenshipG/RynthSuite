@@ -534,13 +534,13 @@ internal sealed class IltPets : IIltFeature
     /// <summary>Summons from <paramref name="essenceId"/>, or the current type's chosen pet when 0.</summary>
     private void SummonPet(int essenceId, IltPetKind kind)
     {
-        if (FindOwnPet() is { } outPet) { _ctx.Chat($"[ILT Hub] {outPet.Name} is already out — Despawn it first."); return; }
-        if (_heal != HealState.Idle) { _ctx.Chat("[ILT Hub] The heal-pet cycle is running."); return; }
-        if (_ctx.Inventory.IsBusy) { _ctx.Chat("[ILT Hub] Busy — try again in a moment."); return; }
+        if (FindOwnPet() is { } outPet) { _ctx.Chat($"[Mini Remote] {outPet.Name} is already out — Despawn it first."); return; }
+        if (_heal != HealState.Idle) { _ctx.Chat("[Mini Remote] The heal-pet cycle is running."); return; }
+        if (_ctx.Inventory.IsBusy) { _ctx.Chat("[Mini Remote] Busy — try again in a moment."); return; }
 
         WorldObject? essence = essenceId != 0 ? _ctx.Inventory.Items().FirstOrDefault(w => w.Id == essenceId) : ChosenEssence(kind);
-        if (essence == null) { _ctx.Chat($"[ILT Hub] No {KindNames[(int)kind].ToLowerInvariant()} pet selected."); return; }
-        if (_ctx.Inventory.Uses(essence) == 0 && !AllowSummonOnEmpty()) { _ctx.Chat($"[ILT Hub] {essence.Name} has no uses left."); return; }
+        if (essence == null) { _ctx.Chat($"[Mini Remote] No {KindNames[(int)kind].ToLowerInvariant()} pet selected."); return; }
+        if (_ctx.Inventory.Uses(essence) == 0 && !AllowSummonOnEmpty()) { _ctx.Chat($"[Mini Remote] {essence.Name} has no uses left."); return; }
         if (!_ctx.Inventory.Use(essence)) return;
 
         _lastSummonEssenceId = essence.Id;
@@ -552,10 +552,10 @@ internal sealed class IltPets : IIltFeature
     private void DespawnPet()
     {
         var pet = FindOwnPet();
-        if (pet == null) { _ctx.Chat("[ILT Hub] No pet is out."); return; }
-        if (_ctx.Inventory.IsBusy) { _ctx.Chat("[ILT Hub] Busy — try again in a moment."); return; }
+        if (pet == null) { _ctx.Chat("[Mini Remote] No pet is out."); return; }
+        if (_ctx.Inventory.IsBusy) { _ctx.Chat("[Mini Remote] Busy — try again in a moment."); return; }
         var essence = ResolveActiveEssence(pet);
-        if (essence == null) { _ctx.Chat($"[ILT Hub] Couldn't find the essence for {pet.Name}."); return; }
+        if (essence == null) { _ctx.Chat($"[Mini Remote] Couldn't find the essence for {pet.Name}."); return; }
         if (!_ctx.Inventory.Use(essence)) return;
 
         // A manual dismiss shouldn't be undone straight away by "Keep cosmetic pet out".
@@ -603,23 +603,23 @@ internal sealed class IltPets : IIltFeature
             }
         }
         if (pets == 0 && candidates == 0)
-            _ctx.Chat("[ILT Hub] Pets were appraised recently.");
+            _ctx.Chat("[Mini Remote] Pets were appraised recently.");
         else
             _ctx.Chat(candidates > 0
-                ? $"[ILT Hub] Appraising {pets} pet(s) and checking {candidates} pet-named item(s)…"
-                : $"[ILT Hub] Appraising {pets} pet(s)…");
+                ? $"[Mini Remote] Appraising {pets} pet(s) and checking {candidates} pet-named item(s)…"
+                : $"[Mini Remote] Appraising {pets} pet(s)…");
         RebuildPetSnapshot(autoAppraise: false);
     }
 
     /// <summary>Gives the item selected in the game a summon type (pump thread).</summary>
     private void AddSelectedAs(IltPetKind kind)
     {
-        if (!_ctx.Host.HasGetSelectedItemId) { _ctx.Chat("[ILT Hub] This client build can't read the selected item."); return; }
+        if (!_ctx.Host.HasGetSelectedItemId) { _ctx.Chat("[Mini Remote] This client build can't read the selected item."); return; }
         int id = unchecked((int)_ctx.Host.GetSelectedItemId());
         var wo = _ctx.Inventory.Items().FirstOrDefault(w => w.Id == id);
-        if (wo == null) { _ctx.Chat("[ILT Hub] Select a pet essence in your pack first."); return; }
+        if (wo == null) { _ctx.Chat("[Mini Remote] Select a pet essence in your pack first."); return; }
         SetKind(wo.Id, wo.Name, kind);
-        _ctx.Chat($"[ILT Hub] {wo.Name} added as a {KindNames[(int)kind].ToLowerInvariant()} pet.");
+        _ctx.Chat($"[Mini Remote] {wo.Name} added as a {KindNames[(int)kind].ToLowerInvariant()} pet.");
     }
 
     /// <summary>

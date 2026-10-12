@@ -251,7 +251,7 @@ internal sealed class IltEquipSuits : IIltFeature
             ImGui.SameLine();
             if (ImGui.SmallButton("Load..."))
                 _ctx.Confirm("Load equipment suit", $"Swap to suit '{pick}'?\nItems not in the suit are moved to your packs.",
-                    () => _ctx.Chat("[ILT Hub] " + Load(pick)), "Load");
+                    () => _ctx.Chat("[Mini Remote] " + Load(pick)), "Load");
             if (_running)
             {
                 ImGui.SameLine();

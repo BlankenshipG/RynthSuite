@@ -492,6 +492,35 @@ internal sealed class HudController
         }
     }
 
+    /// <summary>
+    /// Puts the Mini Remote on tab <paramref name="tab"/> ("" = the remote itself, else an ILT tab
+    /// id). Modes: "show" selects it and shows the Mini Remote (the floating one, unless RynthCore's
+    /// window hosts it); "hide" goes back to the remote tab when this tab is the one selected;
+    /// "toggle" does whichever undoes the current state; "select" only switches tabs (RynthCore's
+    /// dashboard opens its own window). Any thread: plain field writes the next frame applies.
+    /// Returns the chat reply.
+    /// </summary>
+    public string HandleTabCommand(string tab, string mode)
+    {
+        tab ??= string.Empty;
+        string label = tab.Length == 0 ? "Remote" : char.ToUpperInvariant(tab[0]) + tab.Substring(1);
+        bool selected = string.Equals(State.MiniRemoteTab, tab, StringComparison.OrdinalIgnoreCase);
+        string m = (mode ?? string.Empty).ToLowerInvariant();
+        bool hide = m is "hide" or "off" or "close"
+                    || (m is not ("show" or "on" or "open" or "select") && selected && MiniRemoteActive);
+        if (hide)
+        {
+            if (selected) _miniRemote.RequestTab(string.Empty);
+            return selected ? $"Mini Remote back on its Remote tab ({label} closed)." : $"The {label} tab isn't the one showing.";
+        }
+        _miniRemote.RequestTab(tab);
+        if (m == "select") return $"Mini Remote: {label} tab.";
+        if (!MiniRemoteActive && !MiniRemoteInEngineWindow) State.ShowMiniRemote = true;
+        return MiniRemoteInEngineWindow
+            ? $"Mini Remote (RynthCore's window): {label} tab."
+            : $"Mini Remote shown on its {label} tab.";
+    }
+
     // ── Render thread ───────────────────────────────────────────────────────
 
     public void Render()

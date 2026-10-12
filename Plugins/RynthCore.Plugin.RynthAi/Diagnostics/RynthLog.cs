@@ -55,7 +55,6 @@ internal enum LogCat
     IltRates,
     IltGear,
     IltGames,
-    IltBounties,
 }
 
 /// <summary>
@@ -180,8 +179,8 @@ internal static class LogEvents
         new(IltWorldCheck,          LogCat.IltOptions, LogEventLevel.Info,  "ILT Hub: login world check (ILT-like world or skipped)."),
         new(IltOptionsRefreshStart, LogCat.IltOptions, LogEventLevel.Trace, "ILT Hub: server options refresh started."),
         new(IltOptionsRefreshed,    LogCat.IltOptions, LogEventLevel.Info,  "ILT Hub: server options refreshed (source and on/off counts)."),
-        new(IltWindowShown,         LogCat.IltHub,     LogEventLevel.Info,  "ILT Hub: Hub window shown."),
-        new(IltWindowHidden,        LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: Hub window hidden."),
+        new(IltWindowShown,         LogCat.IltHub,     LogEventLevel.Info,  "ILT: a Mini Remote ILT tab shown."),
+        new(IltWindowHidden,        LogCat.IltHub,     LogEventLevel.Trace, "ILT: Mini Remote hidden."),
         new(IltCommand,             LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: /ra hub and /ra quests commands."),
         new(IltConfirmation,        LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: chat confirmations requested, confirmed or expired."),
         new(IltLogout,              LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: logout (features stopped)."),
@@ -225,7 +224,6 @@ internal static class LogEvents
         LogCat.IltRates => "ILT Hub: rates.",
         LogCat.IltGear => "ILT Hub: gear.",
         LogCat.IltGames => "ILT Hub: games.",
-        LogCat.IltBounties => "ILT Hub: bounty tracker (/bounty list reads and bounty chat).",
         _ => cat.ToString(),
     };
 }
