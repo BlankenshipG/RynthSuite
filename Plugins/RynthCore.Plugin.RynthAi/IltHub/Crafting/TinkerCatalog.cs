@@ -26,6 +26,8 @@ internal enum TinkerBench
     Caster,
     Jewelry,
     Items,
+    /// <summary>Infinite Leaftide trinkets (compass, goggles, scarab...): tier-prepared salvage.</summary>
+    Trinkets,
 }
 
 /// <summary>Where a material's recipe comes from.</summary>
@@ -56,9 +58,10 @@ internal enum TinkerKind
 /// <param name="AppliedInt">ILT flag int: the material is on the item when it reads 2 (0 = none).</param>
 /// <param name="NameMatch">The bag must have this in its name (ILT bags that share a material id).</param>
 /// <param name="Order">Apply order (lower first).</param>
+/// <param name="Prepared">The bag must first be prepared on tier Ammunition (ILT trinkets): its name then carries the tier.</param>
 internal sealed record TinkerMaterial(
     int Id, string Name, TinkerOrigin Origin, TinkerKind Kind, string Effect, int Order,
-    bool UsesTinkSlot = true, int AppliedInt = 0, string NameMatch = "", int Skill = 0);
+    bool UsesTinkSlot = true, int AppliedInt = 0, string NameMatch = "", int Skill = 0, bool Prepared = false);
 
 internal static class TinkerCatalog
 {
@@ -83,9 +86,17 @@ internal static class TinkerCatalog
         Gold = 60, Iron = 61, Silver = 63, Steel = 64, Alabaster = 66, Granite = 67, Marble = 68, Sandstone = 70,
         Serpentine = 71, Ebony = 73, Mahogany = 74, Oak = 75, Pine = 76, Teak = 77;
 
+    public const int Diamond = 20, Ruby = 38, GromnieHide = 54, Pyreal = 62;
+
     // ILT jewelry flag ints (applied = 2).
     public const int IntJewelCopper = 370, IntJewelGreenJade = 371, IntJewelSerpentine = 372,
         IntJewelSilver = 374, IntJewelTourmaline = 375, IntJewelSteel = 376;
+
+    // ILT trinket flag ints (applied = 2).
+    public const int IntTrinketDiamond = 384, IntTrinketRuby = 385, IntTrinketGromnie = 386, IntTrinketPyreal = 387;
+
+    /// <summary>Trinket salvage tiers: the word in the Ammunition's and the prepared bag's name.</summary>
+    public static readonly string[] TrinketTiers = { "Minor", "Moderate", "Major" };
 
     /// <summary>Steel and Serpentine stack on ILT jewelry, at most this many combined.</summary>
     public const int JewelryStackCap = 10;
@@ -173,6 +184,7 @@ internal static class TinkerCatalog
             new(Leather, "Leather", TinkerOrigin.Retail, TinkerKind.Once, "Retained (can't be salvaged or sold)", 500, UsesTinkSlot: false, Skill: SkillItem),
             new(Sandstone, "Sandstone", TinkerOrigin.Retail, TinkerKind.Once, "Removes Retained", 510, UsesTinkSlot: false, Skill: SkillItem),
         },
+        [TinkerBench.Trinkets] = Array.Empty<TinkerMaterial>(),
     };
 
     private static readonly Dictionary<TinkerBench, TinkerMaterial[]> Server = new()
@@ -215,6 +227,14 @@ internal static class TinkerCatalog
             new(Steel, "Steel", TinkerOrigin.Server, TinkerKind.Tink, "Steel stack tier (stacks with Serpentine, 10 max)", 60, UsesTinkSlot: false),
         },
         [TinkerBench.Items] = Array.Empty<TinkerMaterial>(),
+        // UB-IT LeaftideImbueHelper trinket imbues: Diamond, Ruby, Gromnie Hide, Pyreal, in that order.
+        [TinkerBench.Trinkets] = new TinkerMaterial[]
+        {
+            new(Diamond, "Diamond", TinkerOrigin.Server, TinkerKind.Once, "Trinket tier: Diamond", 10, UsesTinkSlot: false, AppliedInt: IntTrinketDiamond, Prepared: true),
+            new(Ruby, "Ruby", TinkerOrigin.Server, TinkerKind.Once, "Trinket tier: Ruby", 20, UsesTinkSlot: false, AppliedInt: IntTrinketRuby, Prepared: true),
+            new(GromnieHide, "Gromnie Hide", TinkerOrigin.Server, TinkerKind.Once, "Trinket tier: Gromnie Hide", 30, UsesTinkSlot: false, AppliedInt: IntTrinketGromnie, Prepared: true),
+            new(Pyreal, "Pyreal", TinkerOrigin.Server, TinkerKind.Once, "Trinket tier: Pyreal", 40, UsesTinkSlot: false, AppliedInt: IntTrinketPyreal, Prepared: true),
+        },
     };
 
     /// <summary>The retail rows of a tab.</summary>
@@ -238,7 +258,7 @@ internal static class TinkerCatalog
         TinkerBench.Melee => oc == AcObjectClass.MeleeWeapon,
         TinkerBench.Missile => oc == AcObjectClass.MissileWeapon,
         TinkerBench.Caster => oc == AcObjectClass.WandStaffOrb,
-        TinkerBench.Jewelry => oc == AcObjectClass.Jewelry,
+        TinkerBench.Jewelry or TinkerBench.Trinkets => oc == AcObjectClass.Jewelry,
         TinkerBench.Items => oc is not (AcObjectClass.Salvage or AcObjectClass.Container or AcObjectClass.Unknown
             or AcObjectClass.Money or AcObjectClass.TradeNote or AcObjectClass.SpellComponent or AcObjectClass.Food),
         _ => false,
@@ -264,6 +284,7 @@ internal static class TinkerCatalog
         TinkerBench.Caster => "Caster",
         TinkerBench.Jewelry => "Jewelry",
         TinkerBench.Items => "Items",
+        TinkerBench.Trinkets => "Trinkets",
         _ => bench.ToString(),
     };
 
@@ -320,16 +341,16 @@ internal static class TinkerCatalog
         (Ceramic, "Ceramic"), (Porcelain, "Porcelain"), (3, "Cloth"), (Linen, "Linen"), (Satin, "Satin"), (Silk, "Silk"),
         (Velvet, "Velvet"), (Wool, "Wool"), (Agate, "Agate"), (11, "Amber"), (12, "Amethyst"), (Aquamarine, "Aquamarine"),
         (Azurite, "Azurite"), (BlackGarnet, "Black Garnet"), (BlackOpal, "Black Opal"), (Bloodstone, "Bloodstone"),
-        (Carnelian, "Carnelian"), (Citrine, "Citrine"), (20, "Diamond"), (Emerald, "Emerald"), (FireOpal, "Fire Opal"),
+        (Carnelian, "Carnelian"), (Citrine, "Citrine"), (Diamond, "Diamond"), (Emerald, "Emerald"), (FireOpal, "Fire Opal"),
         (GreenGarnet, "Green Garnet"), (GreenJade, "Green Jade"), (Hematite, "Hematite"), (ImperialTopaz, "Imperial Topaz"),
         (Jet, "Jet"), (LapisLazuli, "Lapis Lazuli"), (LavenderJade, "Lavender Jade"), (Malachite, "Malachite"),
         (Moonstone, "Moonstone"), (Onyx, "Onyx"), (Opal, "Opal"), (Peridot, "Peridot"), (RedGarnet, "Red Garnet"),
-        (RedJade, "Red Jade"), (RoseQuartz, "Rose Quartz"), (38, "Ruby"), (39, "Sapphire"), (SmokeyQuartz, "Smokey Quartz"),
+        (RedJade, "Red Jade"), (RoseQuartz, "Rose Quartz"), (Ruby, "Ruby"), (39, "Sapphire"), (SmokeyQuartz, "Smokey Quartz"),
         (Sunstone, "Sunstone"), (TigerEye, "Tiger Eye"), (Tourmaline, "Tourmaline"), (Turquoise, "Turquoise"),
         (WhiteJade, "White Jade"), (WhiteQuartz, "White Quartz"), (WhiteSapphire, "White Sapphire"),
         (YellowGarnet, "Yellow Garnet"), (YellowTopaz, "Yellow Topaz"), (Zircon, "Zircon"), (Ivory, "Ivory"),
-        (Leather, "Leather"), (Armoredillo, "Armoredillo Hide"), (54, "Gromnie Hide"), (Reedshark, "Reedshark Hide"),
-        (Brass, "Brass"), (Bronze, "Bronze"), (Copper, "Copper"), (Gold, "Gold"), (Iron, "Iron"), (62, "Pyreal"),
+        (Leather, "Leather"), (Armoredillo, "Armoredillo Hide"), (GromnieHide, "Gromnie Hide"), (Reedshark, "Reedshark Hide"),
+        (Brass, "Brass"), (Bronze, "Bronze"), (Copper, "Copper"), (Gold, "Gold"), (Iron, "Iron"), (Pyreal, "Pyreal"),
         (Silver, "Silver"), (Steel, "Steel"), (Alabaster, "Alabaster"), (Granite, "Granite"), (Marble, "Marble"),
         (Sandstone, "Sandstone"), (Serpentine, "Serpentine"), (Ebony, "Ebony"), (Mahogany, "Mahogany"), (Oak, "Oak"),
         (Pine, "Pine"), (Teak, "Teak"),

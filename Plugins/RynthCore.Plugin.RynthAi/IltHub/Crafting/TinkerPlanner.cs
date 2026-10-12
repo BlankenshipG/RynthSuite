@@ -10,7 +10,9 @@
 //   * one imbue per item (the item's own, or the first planned one);
 //   * an ILT flag row (jewelry Copper...) is skipped once its flag reads 2;
 //   * ILT jewelry Steel + Serpentine stop at 10 combined;
-//   * ILT Leather on a weapon goes on once, after the 10 ordinary tinks are on.
+//   * ILT Leather on a weapon goes on once, after the 10 ordinary tinks are on;
+//   * an ILT trinket salvage needs a bag prepared at the chosen tier (its name says Minor,
+//     Moderate or Major); a raw bag becomes one on that tier's Ammunition.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -160,10 +162,12 @@ internal static class TinkerPlanner
     /// matched by name (Abyssal-Touched Gems share Black Garnet's id, Foolproof rend bags may not
     /// carry a material at all).
     /// </summary>
-    public static bool BagMatches(TinkerStep step, string bagName, int bagMaterial, int bagUses)
+    public static bool BagMatches(TinkerStep step, string bagName, int bagMaterial, int bagUses, int trinketTier = 0)
     {
         if (bagUses < 100) return false;
         bagName ??= string.Empty;
+        if (step.Row.Prepared)
+            return bagMaterial == step.Material && TierOf(bagName) == Math.Clamp(trinketTier, 0, TinkerCatalog.TrinketTiers.Length - 1);
         bool abyssal = bagName.IndexOf("Abyssal", StringComparison.OrdinalIgnoreCase) >= 0;
         if (step.Row.NameMatch.Length > 0)
             return bagName.IndexOf(step.Row.NameMatch, StringComparison.OrdinalIgnoreCase) >= 0;
@@ -171,6 +175,24 @@ internal static class TinkerPlanner
         if (bagMaterial == step.Material) return true;
         return step.Row.Id == TinkerCatalog.RendId && TinkerCatalog.RendFromFoolproofName(bagName) == step.Material;
     }
+
+    /// <summary>The trinket tier a name carries (0 Minor, 1 Moderate, 2 Major), else -1.</summary>
+    public static int TierOf(string name)
+    {
+        name ??= string.Empty;
+        for (int i = 0; i < TinkerCatalog.TrinketTiers.Length; i++)
+            if (name.IndexOf(TinkerCatalog.TrinketTiers[i], StringComparison.OrdinalIgnoreCase) >= 0) return i;
+        return -1;
+    }
+
+    /// <summary>A full, not yet prepared bag of a trinket salvage (no tier in its name).</summary>
+    public static bool IsRawTrinketBag(int material, string bagName, int bagMaterial, int bagUses)
+        => bagUses >= 100 && bagMaterial == material && TierOf(bagName) < 0;
+
+    /// <summary>The Ammunition that prepares a raw trinket bag into a tier bag.</summary>
+    public static bool IsTierAmmunition(string name, int tier)
+        => (name ?? string.Empty).IndexOf("Ammunition", StringComparison.OrdinalIgnoreCase) >= 0
+           && TierOf(name!) == Math.Clamp(tier, 0, TinkerCatalog.TrinketTiers.Length - 1);
 
     /// <summary>True for a bag that can't fail ("Foolproof ...").</summary>
     public static bool IsFoolproof(string bagName)

@@ -270,7 +270,7 @@ public sealed class IltGearState
 /// <summary>The Crafting tab: one settings block per tinker bench, plus per-server custom salvage.</summary>
 public sealed class IltCraftingState
 {
-    /// <summary>Bench settings keyed by the bench name (TinkerBench: Armor, Melee, Missile, Caster, Jewelry, Items).</summary>
+    /// <summary>Bench settings keyed by the bench name (TinkerBench: Armor, Melee, Missile, Caster, Jewelry, Items, Trinkets).</summary>
     public Dictionary<string, IltTinkerBenchSettings> Benches = new();
     /// <summary>The player's extra salvage rows, keyed by world name (custom shards' own recipes).</summary>
     public Dictionary<string, List<IltCustomTinker>> CustomByWorld = new();
@@ -280,6 +280,16 @@ public sealed class IltCraftingState
     public int BatchSize = 20;
     /// <summary>Apply even in combat mode (servers with allow_combat_mode_crafting).</summary>
     public bool AllowInCombat;
+    /// <summary>When a batch finishes, scan the next one (items finished this session are left out).</summary>
+    public bool AutoNextBatch;
+    /// <summary>...and start it without asking again.</summary>
+    public bool AutoStartNextBatch;
+    /// <summary>Trinket salvage tier: 0 Minor, 1 Moderate, 2 Major (TinkerCatalog.TrinketTiers).</summary>
+    public int TrinketTier;
+    /// <summary>Prepare a raw trinket bag on the tier's Ammunition when no prepared bag is carried.</summary>
+    public bool TrinketPrep;
+    /// <summary>Rings chain: recipe id (RingChain) to how many times to craft it.</summary>
+    public Dictionary<string, int> RingRuns = new();
 }
 
 /// <summary>One tinker bench's choices.</summary>

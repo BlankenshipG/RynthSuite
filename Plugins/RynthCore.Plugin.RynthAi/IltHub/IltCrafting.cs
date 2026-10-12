@@ -1,12 +1,13 @@
 // IltCrafting.cs - The universal "Crafting" tab (Mini Remote, Universal group).
 //
 // UB-IT's crafting benches, one sub-tab each: Armor, Weapons (Melee / Missile / Caster),
-// Jewelry and Items tinkering, plus the Infinite Leaftide chunking / clap and split-arrow tools
-// that used to sit on the Gear tab. Every tinker tab has two sections:
+// Jewelry, Trinkets and Items tinkering, the Rings inscription chain, plus the Infinite Leaftide
+// chunking / clap and split-arrow tools that used to sit on the Gear tab. Every tinker tab has
+// two sections:
 //   * Retail tinkering - stock ACE salvage (TinkerCatalog.Retail), chance from TinkerMath;
 //   * Server tinkering - the connected world's extras: Infinite Leaftide's rows on ILT-like
 //     worlds, then the player's own rows for this world (IltCraftingState.CustomByWorld).
-// One TinkerRunner works one tab's scan at a time.
+// One TinkerRunner works one tab's scan at a time; the RingChainRunner and it never run together.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -23,6 +24,7 @@ internal sealed class IltCrafting : IIltFeature
     public IltChunkClap ChunkClap { get; }
     public IltSplitArrows Split { get; }
     public TinkerRunner Runner { get; }
+    public RingChainRunner Rings { get; }
 
     // Custom-row editor (render thread only)
     private int _newMaterial = TinkerCatalog.Steel;
@@ -39,6 +41,8 @@ internal sealed class IltCrafting : IIltFeature
         ChunkClap = new IltChunkClap(ctx);
         Split = new IltSplitArrows(ctx);
         Runner = new TinkerRunner(ctx, RowsFor, SettingsFor);
+        Rings = new RingChainRunner(ctx, () => Runner.Running);
+        Runner.Blocked = () => Rings.Running;
     }
 
     private IltCraftingState C => _ctx.State.Crafting;
@@ -76,6 +80,7 @@ internal sealed class IltCrafting : IIltFeature
         ChunkClap.Tick(nowMs);
         Split.Tick(nowMs);
         Runner.Tick(nowMs);
+        Rings.Tick(nowMs);
     }
 
     public bool OnChat(string text)
@@ -83,6 +88,7 @@ internal sealed class IltCrafting : IIltFeature
         bool eat = ChunkClap.OnChat(text);
         eat |= Split.OnChat(text);
         Runner.OnChat(text);
+        Rings.OnChat(text);
         return eat;
     }
 
@@ -91,6 +97,7 @@ internal sealed class IltCrafting : IIltFeature
         ChunkClap.OnLogout();
         Split.OnLogout();
         Runner.OnLogout();
+        Rings.OnLogout();
     }
 
     // ── UI (render thread) ──────────────────────────────────────────────────
@@ -111,6 +118,13 @@ internal sealed class IltCrafting : IIltFeature
             ImGui.EndTabItem();
         }
         if (ImGui.BeginTabItem("Jewelry")) { RenderBench(TinkerBench.Jewelry); ImGui.EndTabItem(); }
+        if (ImGui.BeginTabItem("Trinkets")) { RenderBench(TinkerBench.Trinkets); ImGui.EndTabItem(); }
+        if (ImGui.BeginTabItem("Rings"))
+        {
+            IltOnlyNote();
+            RenderRings();
+            ImGui.EndTabItem();
+        }
         if (ImGui.BeginTabItem("Items")) { RenderBench(TinkerBench.Items); ImGui.EndTabItem(); }
         if (ImGui.BeginTabItem("Chunking / Clap"))
         {
@@ -142,9 +156,14 @@ internal sealed class IltCrafting : IIltFeature
         ImGui.PushID((int)bench);
 
         RenderFilters(s, weapon);
+        if (bench == TinkerBench.Trinkets) RenderTrinketOptions();
 
         if (ImGui.CollapsingHeader("Retail tinkering", ImGuiTreeNodeFlags.DefaultOpen))
-            RenderRows(s, TinkerCatalog.RetailFor(bench), "retail");
+        {
+            var retail = TinkerCatalog.RetailFor(bench);
+            if (retail.Count == 0) ImGui.TextDisabled("Retail AC has no tinkering for this tab.");
+            else RenderRows(s, retail, "retail");
+        }
 
         string serverTitle = $"Server tinkering - {(world.Length > 0 ? world : "this server")}###server";
         if (ImGui.CollapsingHeader(serverTitle, ImGuiTreeNodeFlags.DefaultOpen))
@@ -155,7 +174,8 @@ internal sealed class IltCrafting : IIltFeature
                 ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Infinite Leaftide");
                 RenderRows(s, iltRows, "ilt");
                 if (weapon)
-                    ImGui.TextDisabled("Leaftide weapon lines don't show on the item: a run applies each once - don't run an item twice.");
+                    ImGui.TextDisabled("Leaftide weapon lines don't show on the item: a run applies each once, and items\n"
+                                       + "finished this session are left out of later scans (Forget brings them back).");
             }
             else if (ilt)
                 ImGui.TextDisabled("Infinite Leaftide has no extra salvage for this tab.");
@@ -196,6 +216,23 @@ internal sealed class IltCrafting : IIltFeature
             if (ImGui.Checkbox("Rend last", ref rendLast)) s.RendLast = rendLast;
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("Apply the rend after everything else (a Foolproof rend can't fail).");
         }
+    }
+
+    /// <summary>Trinkets: the salvage tier and whether to prepare raw bags on the tier's Ammunition.</summary>
+    private void RenderTrinketOptions()
+    {
+        int tier = Math.Clamp(C.TrinketTier, 0, TinkerCatalog.TrinketTiers.Length - 1);
+        ImGui.SetNextItemWidth(110);
+        if (ImGui.Combo("Tier", ref tier, TinkerCatalog.TrinketTiers, TinkerCatalog.TrinketTiers.Length)) C.TrinketTier = tier;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Uses bags whose name has this tier (e.g. \"Major\"), made on that tier's Ammunition.");
+        ImGui.SameLine();
+        bool prep = C.TrinketPrep;
+        if (ImGui.Checkbox("Prepare on Ammunition", ref prep)) C.TrinketPrep = prep;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("With no bag of the tier carried, use a full raw bag on the tier's Ammunition first,\n"
+                             + "then apply the prepared bag.");
+        ImGui.TextDisabled("Trinkets: compass, goggles, scarab, watch, puzzle box, top (the Jewelry tab leaves them out).");
     }
 
     /// <summary>One ticked count / checkbox per row.</summary>
@@ -351,12 +388,37 @@ internal sealed class IltCrafting : IIltFeature
         if (ImGui.Checkbox("Allow in combat mode", ref combat)) C.AllowInCombat = combat;
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Only for servers that allow crafting outside peace mode.");
 
+        bool autoNext = C.AutoNextBatch;
+        if (ImGui.Checkbox("Auto next batch", ref autoNext)) C.AutoNextBatch = autoNext;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("When a batch finishes, scan the next items (finished ones are left out).\n"
+                             + "Stops after a batch that used no bag.");
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!autoNext);
+        bool autoStart = C.AutoStartNextBatch;
+        if (ImGui.Checkbox("and start it", ref autoStart)) C.AutoStartNextBatch = autoStart;
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Start the next batch without asking again (off: press Start yourself).");
+        ImGui.EndDisabled();
+        int doneCount = Runner.DoneCount(bench);
+        if (doneCount > 0)
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled($"{doneCount} finished this session");
+            ImGui.SameLine();
+            ImGui.BeginDisabled(Runner.Running);
+            if (ImGui.SmallButton("Forget")) _ctx.Post(() => Runner.ForgetDone(bench));
+            ImGui.EndDisabled();
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Let finished items show in scans again (Leaftide lines that don't show on the item could go on twice).");
+        }
+
         bool running = Runner.Running;
         bool mine = Runner.ScannedBench == (int)bench;
         ImGui.BeginDisabled(running);
         if (ImGui.Button("Scan")) _ctx.Post(() => Runner.Scan(bench));
         ImGui.SameLine();
-        ImGui.BeginDisabled(!mine || Runner.Rows.Length == 0);
+        ImGui.BeginDisabled(!mine || Runner.Rows.Length == 0 || Rings.Running);
         if (ImGui.Button("Start"))
         {
             int n = Runner.Rows.Length;
@@ -376,6 +438,8 @@ internal sealed class IltCrafting : IIltFeature
         ImGui.SameLine();
         if (running && Runner.Bench != bench)
             ImGui.TextColored(LegacyDashboardRenderer.ColAmber, $"{TinkerCatalog.Label(Runner.Bench)} is running");
+        else if (Rings.Running)
+            ImGui.TextColored(LegacyDashboardRenderer.ColAmber, "the Rings chain is running");
         else
             ImGui.TextDisabled(Runner.Status);
 
@@ -408,5 +472,126 @@ internal sealed class IltCrafting : IIltFeature
             ImGui.TextWrapped(r.Status);
         }
         ImGui.EndTable();
+    }
+
+    // ── Rings ───────────────────────────────────────────────────────────────
+
+    /// <summary>The ring inscription chain: runs per recipe, Scan / Create / Stop, then the scrolls.</summary>
+    private void RenderRings()
+    {
+        ImGui.TextDisabled("Quill of Infliction -> Enlightened Quill -> partition quill -> glyph -> Inscription scroll -> ring.");
+        if (ImGui.BeginTable("##ringrecipes", 2, ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
+        {
+            ImGui.TableSetupColumn("Runs", ImGuiTableColumnFlags.WidthFixed, 100);
+            ImGui.TableSetupColumn("Recipe");
+            var runs = C.RingRuns;
+            foreach (var r in RingChain.Recipes)
+            {
+                ImGui.PushID(r.Id);
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                int n;
+                lock (runs) n = runs.TryGetValue(r.Id, out int v) ? v : 0;
+                ImGui.SetNextItemWidth(90);
+                if (ImGui.InputInt("##runs", ref n, 1))
+                {
+                    n = Math.Clamp(n, 0, RingChain.MaxRuns);
+                    lock (runs)
+                    {
+                        if (n == 0) runs.Remove(r.Id);
+                        else runs[r.Id] = n;
+                    }
+                }
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(r.Name);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip(r.Notes);
+                ImGui.PopID();
+            }
+            ImGui.EndTable();
+        }
+
+        bool running = Rings.Running;
+        bool tinkering = Runner.Running;
+        ImGui.BeginDisabled(running);
+        if (ImGui.Button("Scan##rings")) _ctx.Post(() => Rings.Scan());
+        ImGui.SameLine();
+        ImGui.BeginDisabled(tinkering);
+        if (ImGui.Button("Create"))
+        {
+            int total = RingChain.Expand(id => { lock (C.RingRuns) return C.RingRuns.TryGetValue(id, out int v) ? v : 0; }).Count;
+            _ctx.Confirm("Rings chain", $"Craft {total} combine(s)?\n\nEvery Step 1 run goes first, then Step 2, then Step 3.\nThe ingredients are used up.",
+                () => Rings.Create(), "Create");
+        }
+        ImGui.EndDisabled();
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!running);
+        if (ImGui.Button("Stop##rings")) _ctx.Post(() => Rings.Stop("stopped by player"));
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (tinkering) ImGui.TextColored(LegacyDashboardRenderer.ColAmber, $"{TinkerCatalog.Label(Runner.Bench)} tinkering is running");
+        else ImGui.TextDisabled(Rings.Status);
+
+        var lines = Rings.ScanLines;
+        if (lines.Length > 0 && ImGui.BeginTable("##ringscan", 2, ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders | ImGuiTableFlags.SizingStretchProp))
+        {
+            foreach (var l in lines)
+            {
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                if (l.Found == null) { ImGui.TextColored(LegacyDashboardRenderer.ColTeal, l.Text); continue; }
+                ImGui.TextUnformatted("  " + l.Text);
+                ImGui.TableNextColumn();
+                if (l.State == 0) ImGui.TextUnformatted(l.Found);
+                else if (l.State == 1) ImGui.TextDisabled(l.Found);
+                else ImGui.TextColored(LegacyDashboardRenderer.ColAmber, l.Found);
+            }
+            ImGui.EndTable();
+        }
+
+        ImGui.Separator();
+        RenderScrolls(running || tinkering);
+    }
+
+    /// <summary>The carried inscription scrolls: one to the selected item, or all to the last scan's items.</summary>
+    private void RenderScrolls(bool busy)
+    {
+        ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Inscription scrolls");
+        var scrolls = Rings.Scrolls;
+        if (scrolls.Length == 0) { ImGui.TextDisabled("None carried (Scan to look again)."); return; }
+
+        ImGui.BeginDisabled(busy);
+        foreach (var (id, name) in scrolls)
+        {
+            ImGui.PushID(id);
+            if (ImGui.SmallButton("Apply to selected"))
+            {
+                int scrollId = id;
+                string scrollName = name;
+                _ctx.Confirm("Ring inscription", $"Use {scrollName} on the item selected in AC?",
+                    () => Rings.ApplyToSelected(scrollId), "Apply");
+            }
+            ImGui.SameLine();
+            ImGui.TextUnformatted(name);
+            ImGui.PopID();
+        }
+
+        // UB-IT pairs the scrolls with the last Jewelry or weapon scan's items.
+        int scanned = Runner.ScannedBench;
+        bool usable = scanned is (int)TinkerBench.Jewelry or (int)TinkerBench.Melee or (int)TinkerBench.Missile or (int)TinkerBench.Caster;
+        var targets = usable ? Runner.Rows.Select(r => r.Id).ToList() : new List<int>();
+        string from = usable ? TinkerCatalog.Label((TinkerBench)scanned) : "Jewelry / Weapons";
+        ImGui.BeginDisabled(targets.Count == 0);
+        if (ImGui.Button($"Apply all to the last {from} scan ({targets.Count})"))
+        {
+            int pairs = Math.Min(targets.Count, scrolls.Length);
+            _ctx.Confirm("Ring inscriptions", $"Use {pairs} inscription scroll(s) on the items of the last {from} scan, one each?",
+                () => Rings.ApplyToItems(targets), "Apply");
+        }
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Scrolls in glyph order go on the scanned items in id order (UB-IT's pairing).\n"
+                             + "Scan the Jewelry or a Weapons tab first.");
+        ImGui.EndDisabled();
     }
 }

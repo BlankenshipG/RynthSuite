@@ -11,6 +11,8 @@ namespace RynthCore.RynthAiHostTests.Tests;
 // The Crafting tab's tinkering (2026-10-12): ACE's retail chance (RecipeManager.GetTinkerChance),
 // the planner's caps and order (imbue once, ILT no-slot salvage, Steel + Serpentine 10, Leather
 // after the cap, rend last), bag matching / choice, and the universal Crafting tab id.
+// Phase 2: ILT trinkets (flags 384-387, tier-prepared bags, Ammunition) and the Rings
+// inscription chain (UB-IT's ingredient names, queue order and scroll pairing).
 internal static class TinkerTests
 {
     public static void Register(Runner r)
@@ -25,6 +27,10 @@ internal static class TinkerTests
         r.Add("tinker: bag matching (full, Abyssal, Foolproof)", Bags);
         r.Add("tinker: bag choice by chance and minimum", BagChoice);
         r.Add("tinker: Crafting is a universal Mini Remote tab", Section);
+        r.Add("tinker: ILT trinkets (flags, order, tier bags, Ammunition)", Trinkets);
+        r.Add("rings: ingredient names, alternates and excludes", RingIngredients);
+        r.Add("rings: craft queue runs Step 1, then 2, then 3", RingQueue);
+        r.Add("rings: scroll glyph and UB-IT pairing", RingScrolls);
     }
 
     private static IltTinkerBenchSettings Settings(params (string Key, int Count)[] counts)
@@ -206,5 +212,83 @@ internal static class TinkerTests
         Check.True(IltSections.IsUniversal(IltSection.Crafting), "every server");
         Check.True(IltSections.Tabs.Contains(IltSection.Crafting), "on the tab bar");
         Check.True(IltSections.IsTab(IltSection.Crafting), "a Mini Remote tab, not a panel");
+    }
+
+    private static void Trinkets()
+    {
+        Check.Eq(TinkerPlanner.Rows(TinkerBench.Trinkets, false, null).Count, 0, "off ILT: no trinket rows");
+        var rows = TinkerPlanner.Rows(TinkerBench.Trinkets, true, null);
+        var s = Settings(("s" + TinkerCatalog.Pyreal, 1), ("s" + TinkerCatalog.Diamond, 1), ("s" + TinkerCatalog.Ruby, 1),
+                         ("s" + TinkerCatalog.GromnieHide, 1));
+        var all = TinkerPlanner.Plan(TinkerBench.Trinkets, Item(AcObjectClass.Jewelry), s, rows);
+        Check.Eq(Seq(all), Seq(TinkerCatalog.Diamond, TinkerCatalog.Ruby, TinkerCatalog.GromnieHide, TinkerCatalog.Pyreal),
+            "UB-IT order: Diamond, Ruby, Gromnie Hide, Pyreal");
+        var some = TinkerPlanner.Plan(TinkerBench.Trinkets, Item(AcObjectClass.Jewelry,
+            flags: k => k is TinkerCatalog.IntTrinketDiamond or TinkerCatalog.IntTrinketGromnie ? 2 : 0), s, rows);
+        Check.Eq(Seq(some), Seq(TinkerCatalog.Ruby, TinkerCatalog.Pyreal), "flags 384 / 386 already 2");
+        var capped = TinkerPlanner.Plan(TinkerBench.Trinkets, Item(AcObjectClass.Jewelry, tinks: 10), s, rows);
+        Check.Eq(capped.Count, 4, "trinket salvage doesn't use tink slots");
+
+        var diamond = new TinkerStep(rows.First(r => r.Id == TinkerCatalog.Diamond), TinkerCatalog.Diamond);
+        Check.True(TinkerPlanner.BagMatches(diamond, "Major Diamond Salvage", TinkerCatalog.Diamond, 100, 2), "Major bag at Major");
+        Check.True(!TinkerPlanner.BagMatches(diamond, "Minor Diamond Salvage", TinkerCatalog.Diamond, 100, 2), "Minor bag at Major");
+        Check.True(!TinkerPlanner.BagMatches(diamond, "Salvage (100)", TinkerCatalog.Diamond, 100, 0), "raw bag isn't prepared");
+        Check.True(!TinkerPlanner.BagMatches(diamond, "Major Ruby Salvage", TinkerCatalog.Ruby, 100, 2), "other material");
+        Check.True(TinkerPlanner.IsRawTrinketBag(TinkerCatalog.Diamond, "Salvage (100)", TinkerCatalog.Diamond, 100), "raw bag");
+        Check.True(!TinkerPlanner.IsRawTrinketBag(TinkerCatalog.Diamond, "Moderate Diamond Salvage", TinkerCatalog.Diamond, 100), "prepared isn't raw");
+        Check.True(!TinkerPlanner.IsRawTrinketBag(TinkerCatalog.Diamond, "Salvage (55)", TinkerCatalog.Diamond, 55), "partial raw bag");
+        Check.True(TinkerPlanner.IsTierAmmunition("Moderate Ammunition", 1), "Moderate Ammunition");
+        Check.True(!TinkerPlanner.IsTierAmmunition("Major Ammunition", 1), "wrong tier");
+        Check.True(!TinkerPlanner.IsTierAmmunition("Moderate Diamond Salvage", 1), "not Ammunition");
+        Check.Eq(TinkerPlanner.TierOf("Minor Pyreal Salvage"), 0, "Minor");
+        Check.Eq(TinkerPlanner.TierOf("Salvage (100)"), -1, "no tier");
+
+        Check.True(TinkerCatalog.IsTrinket("Spinning Top") && TinkerCatalog.IsTrinket("Copper Pocket Watch")
+                   && !TinkerCatalog.IsTrinket("Imperial Topaz Necklace"), "trinket names (topaz isn't a top)");
+        Check.True(TinkerCatalog.Targets(TinkerBench.Trinkets, AcObjectClass.Jewelry), "trinkets are jewelry");
+    }
+
+    private static void RingIngredients()
+    {
+        var step1 = RingChain.Recipes[0];
+        Check.True(RingChain.Matches("Quill of Infliction", step1.Tool), "base quill");
+        Check.True(RingChain.Matches("Infliction Quill", step1.Tool), "alternate name");
+        Check.True(!RingChain.Matches("Enlightened Quill of Infliction", step1.Tool), "Enlightened excluded from Step 1");
+        Check.True(RingChain.Matches("Empyrean Trophy", step1.Target) && RingChain.Matches("Royal Summons", step1.Target), "trophies");
+        Check.True(!RingChain.Matches("Trophy Kit", step1.Target), "not every Trophy");
+
+        var step2 = RingChain.Recipes[1];
+        Check.True(RingChain.Matches("Enlightened Quill of Infliction", step2.Tool), "Step 2 quill");
+        Check.True(!RingChain.Matches("Enlightened Infliction Quill of Partition", step2.Tool), "partition quill excluded from Step 2");
+        Check.True(RingChain.Matches("Vial of Ink of Partition", step2.Target), "ink");
+
+        var flame = RingChain.Recipes.First(r => r.Id == "ring2_glyph_flame");
+        Check.True(RingChain.Matches("Enlightened Infliction Quill of Partition", flame.Tool), "Step 3 quill");
+        Check.True(RingChain.Matches("Glyph of Flame", flame.Target) && !RingChain.Matches("Glyph of Frost", flame.Target), "glyph by full name");
+        Check.True(!RingChain.Matches(null, flame.Target), "no name");
+    }
+
+    private static void RingQueue()
+    {
+        var runs = new Dictionary<string, int> { ["ring2_glyph_frost"] = 1, ["ring2_step2_ink"] = 2, ["ring2_step1_quill_trophy"] = 2, ["ring2_glyph_bludgeoning"] = 1 };
+        var q = RingChain.Expand(id => runs.TryGetValue(id, out int n) ? n : 0);
+        Check.Eq(string.Join(",", q.Select(r => r.Tier)), "1,1,2,2,3,3", "tiers in order");
+        Check.Eq(q[4].Id, "ring2_glyph_bludgeoning", "glyphs in definition order");
+        Check.Eq(RingChain.Expand(_ => 500).Count, RingChain.Recipes.Length * RingChain.MaxRuns, "runs capped at 99");
+        Check.Eq(RingChain.Expand(_ => 0).Count, 0, "nothing queued");
+    }
+
+    private static void RingScrolls()
+    {
+        Check.Eq(RingChain.GlyphOf("Inscription of Halo of Frost")?.Id, "ring2_glyph_frost", "Halo of Frost");
+        Check.Eq(RingChain.GlyphOf("Inscription of Cassius' Ring of Fire")?.Id, "ring2_glyph_flame", "Ring of Fire");
+        Check.Eq(RingChain.GlyphOf("Inscription of Something"), null, "unknown scroll");
+        Check.True(RingChain.IsInscriptionScroll("Inscription of Clouded Soul") && !RingChain.IsInscriptionScroll("Glyph of Nether"), "scroll marker");
+
+        var scrolls = new[] { (30, "Inscription of Searing Disc"), (10, "Inscription of Tectonic Rifts"), (20, "Inscription of Mystery") };
+        var pairs = RingChain.PairScrolls(scrolls, new[] { 900, 500, 700, 800 });
+        // Recipe ids sort bludgeoning < corrosion, unknown last; targets by id.
+        Check.Eq(string.Join(";", pairs.Select(p => $"{p.Scroll}>{p.Target}")), "10>500;30>700;20>800", "glyph order onto target id order");
+        Check.Eq(RingChain.PairScrolls(scrolls, Array.Empty<int>()).Count, 0, "no targets");
     }
 }
