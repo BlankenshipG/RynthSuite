@@ -39,6 +39,16 @@ public partial class CombatManager
     private DateTime _ammoDequipAt = DateTime.MinValue, _ammoDequipRestUntil = DateTime.MinValue;
     private const double AmmoDequipResolveMs = 2500;
     private const int AmmoDequipMaxTries = 3;
+    // When the old ammo first read out of the ammunition slot (MinValue = not seen yet).
+    private DateTime _ammoOffSeenAt = DateTime.MinValue;
+
+    /// <summary>
+    /// How long the launcher waits once the old ammo reads off (2026-10-12). Before, the dequip
+    /// held the launcher for the swap gate's full 3 s (a pack move) and then the equip pacing's
+    /// 2 s, so a mixed-launcher swap took 5-6 s. Ammo has no unwield motion, and the server's own
+    /// drop to peace mode is waited out by the combat tick's animation gate. Settable for tests.
+    /// </summary>
+    internal double AmmoOffSettleMs { get; set; } = 400;
 
     private readonly HashSet<int> _noAmmoNoted = new();
 
@@ -56,6 +66,7 @@ public partial class CombatManager
         _ammoFollowUpUntil = DateTime.MinValue;
         _ammoDequipPendingId = _ammoDequipTries = 0;
         _ammoDequipRestUntil = DateTime.MinValue;
+        _ammoOffSeenAt = DateTime.MinValue;
         _noAmmoNoted.Clear();
     }
 
@@ -186,14 +197,22 @@ public partial class CombatManager
         var wielded = pack.FirstOrDefault(a => a.Wielded);
         if (wielded != null && MissileAmmo.Fits(lt, wielded.AmmoType))
         {
-            _ammoDequipPendingId = 0; _ammoDequipTries = 0;
+            _ammoDequipPendingId = 0; _ammoDequipTries = 0; _ammoOffSeenAt = DateTime.MinValue;
             return AmmoPrep.Ready;                            // same ammo type: it stays
         }
         if (pack.Any(a => !a.Wielded && MissileAmmo.Fits(lt, a.AmmoType)))
             ArmAmmoFollowUp(launcherId, now);
         if (wielded == null)
         {
-            _ammoDequipPendingId = 0; _ammoDequipTries = 0;
+            // Our own dequip just landed: a short settle, then the swap gate is told the move is
+            // done so the launcher goes on the server's answers rather than its full 3 s.
+            if (_ammoDequipPendingId != 0)
+            {
+                if (_ammoOffSeenAt == DateTime.MinValue) _ammoOffSeenAt = now;
+                if ((now - _ammoOffSeenAt).TotalMilliseconds < AmmoOffSettleMs) return AmmoPrep.Busy;
+                _weaponSwapGate?.MoveDone(_ammoDequipPendingId);
+            }
+            _ammoDequipPendingId = 0; _ammoDequipTries = 0; _ammoOffSeenAt = DateTime.MinValue;
             return AmmoPrep.Ready;
         }
 
@@ -224,7 +243,9 @@ public partial class CombatManager
         _ammoDequipPendingId = wielded.Id;
         _ammoDequipAt = now;
         _ammoDequipTries++;
-        _lastEquipTime = now;
+        _ammoOffSeenAt = DateTime.MinValue;
+        // No _lastEquipTime stamp: its 2 s equip pacing would hold the launcher after the ammo is
+        // already off. Busy above (until it reads off and settles) does the waiting instead.
         _host.Log($"[EquipDiag] {MissileAmmo.Label(wielded.AmmoType)} 0x{(uint)wielded.Id:X8} '{wielded.Name}' x{amount} -> pack 0x{(uint)packId:X8} before wielding 0x{(uint)launcherId:X8} '{WeaponName(launcherId)}' (try {_ammoDequipTries}/{AmmoDequipMaxTries})");
         return AmmoPrep.Busy;
     }
@@ -237,6 +258,26 @@ public partial class CombatManager
     }
 
     private void EndAmmoFollowUp() { _ammoFollowUpFor = 0; _ammoFollowUpUntil = DateTime.MinValue; }
+
+    /// <summary>
+    /// True while ChangeCombatMode(Missile) must wait for <paramref name="launcherId"/> (not yet
+    /// read in hand): combat is swapping to it and it, or its ammo, isn't on yet. Each request in
+    /// that window was bounced by the server (no launcher, or no ammo) and flickered the stance
+    /// Missile/peace/Melee for the whole swap; it also stayed the outstanding server action for
+    /// 2 s, which held the swap gate at its full 3 s per step (2026-10-11 14:45:11-17). Once the
+    /// launcher reads in hand, the wielded branch sends the stance after the ammo is on.
+    /// Thrown weapons and launchers of an unknown type: false (as before).
+    /// </summary>
+    private bool LauncherSwapHoldsStance(int launcherId)
+    {
+        int lt = LauncherTypeOf(_worldFilter[launcherId]);
+        if (lt == 0) return false;
+        if (_ammoDequipPendingId != 0) return true;                                // old ammo going into the pack
+        if (_ammoFollowUpFor == launcherId && AmmoSwapInProgress) return true;     // its ammo goes on once it lands
+        if (SwapTracker.PendingId == launcherId) return true;                      // its wield is in flight
+        var wielded = PackAmmo().FirstOrDefault(a => a.Wielded);
+        return wielded != null && !MissileAmmo.Fits(lt, wielded.AmmoType);        // the wrong ammo is still on
+    }
 
     /// <summary>
     /// Step 3, with <paramref name="launcherId"/> confirmed in hand. True while the attack should

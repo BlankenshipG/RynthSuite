@@ -4525,12 +4525,20 @@ public partial class CombatManager : IDisposable
             MarkWieldSent(targetWeaponId, inHand);
             _lastEquipTime = DateTime.Now;
         }
-        if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
-            && _host.ChangeCombatModeFor(desiredMode, "Combat", "stance"))
+        if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
         {
-            if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=FALSE mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource} class={weaponObj.ObjectClass}) — ChangeCombatMode"); }
-            lastStanceAttempt = DateTime.Now;
-            NoteStanceFlipSent();
+            // A launcher swap: no Missile request until the launcher and its ammo are on (the
+            // wielded branch above sends it then). See LauncherSwapHoldsStance.
+            if (desiredMode == CombatMode.Missile && LauncherSwapHoldsStance(targetWeaponId))
+            {
+                if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] stance held: 0x{targetWeaponId:X8} '{weaponObj.Name}' or its ammo isn't on yet (mode={CurrentCombatMode})"); }
+            }
+            else if (_host.ChangeCombatModeFor(desiredMode, "Combat", "stance"))
+            {
+                if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=FALSE mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource} class={weaponObj.ObjectClass}) — ChangeCombatMode"); }
+                lastStanceAttempt = DateTime.Now;
+                NoteStanceFlipSent();
+            }
         }
         return false;
     }
