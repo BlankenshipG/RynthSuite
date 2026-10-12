@@ -53,6 +53,8 @@
     <!-- The Meta editor's "Set current" landblock / landcell text (self-contained), so MetaTests
          check that MetaManager matches what the editor writes (engine 2026-10-05). -->
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\Data\MetaLocation.cs" Link="Engine\MetaLocation.cs" />
+    <!-- The Inventory panel's attribute filter rules and matching (pure; engine 2026-10-11). -->
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\Compatibility\InventoryAttributeFilter.cs" Link="Engine\InventoryAttributeFilter.cs" />
   </ItemGroup>
 
   <ItemGroup>

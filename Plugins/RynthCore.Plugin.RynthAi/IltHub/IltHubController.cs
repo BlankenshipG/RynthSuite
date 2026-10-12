@@ -41,8 +41,10 @@ internal sealed class IltHubController
     public IltProgression Progression { get; }
     public IltGear Gear { get; }
     public IltGames Games { get; }
-    /// <summary>Registry charm acquired / active / server state (Charms Tracking tab).</summary>
+    /// <summary>Registry charm acquired / active / server state (the Charms tab and RynthPluginGetCharmsJson).</summary>
     public IltCharmTracker Charms { get; }
+    /// <summary>The Mini Remote's Charms tab (registry charms with toggles, the Guardian Hand).</summary>
+    public IltCharms CharmsTab { get; }
     /// <summary>Temple guardians: riddle translator, hand-in, attribute turn-in tracker.</summary>
     public IltGuardian Guardian { get; }
 
@@ -70,10 +72,12 @@ internal sealed class IltHubController
         Gear = new IltGear(_ctx);
         Games = new IltGames(_ctx);
         Charms = new IltCharmTracker(_ctx);
+        CharmsTab = new IltCharms(_ctx, Charms);
         Guardian = new IltGuardian(_ctx, quests, Quests);
-        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Games, Guardian });
+        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, CharmsTab, Games, Guardian });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
+        Rates.MovingMoney = () => Banking.MovingMoney;
         options.ProbeReplyTap = OnProbeReply;
         _ui = new IltHubUi(this, _ctx);
         _ctx.ShowTab = section => MiniRemoteTabCommand?.Invoke(IltSections.TabId(section), "show");
@@ -258,7 +262,7 @@ internal sealed class IltHubController
         IltSessionRates => LogCat.IltRates,
         IltQuests => LogCat.IltQuests,
         IltProgression => LogCat.IltProgression,
-        IltGear => LogCat.IltGear,
+        IltGear or IltCharms => LogCat.IltGear,
         IltGames => LogCat.IltGames,
         _ => LogCat.IltHub,
     };
@@ -291,7 +295,7 @@ internal sealed class IltHubController
         return sb.ToString();
     }
 
-    /// <summary>JSON for the engine Settings panel's Charms Tracking tab (RynthPluginGetCharmsJson). Pump thread.</summary>
+    /// <summary>JSON for RynthPluginGetCharmsJson (an older engine's Settings "Charms Tracking" tab). Pump thread.</summary>
     public string BuildCharmsJson() => Charms.BuildJson();
 
     /// <summary>Render thread: Games HUD, quest favorites HUD and confirmation popups.</summary>
@@ -393,7 +397,7 @@ internal sealed class IltHubController
                 }
                 if (args.Length < 2 || !IltSections.TryParse(args[1], out IltSection section))
                 {
-                    _ctx.Chat("[Mini Remote] Usage: /ra hub open character|quests|pets|banking|gear|games|guardian|bounties [show|hide|toggle]");
+                    _ctx.Chat("[Mini Remote] Usage: /ra hub open character|quests|pets|banking|gear|charms|games|guardian|bounties [show|hide|toggle]");
                     break;
                 }
                 OpenSection(section, args.Length > 2 ? args[2] : "toggle");
@@ -423,7 +427,7 @@ internal sealed class IltHubController
                 break;
             default:
                 _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|force on|off|clap|confirm|cancel");
-                _ctx.Chat("[Mini Remote] /ra hub open character|quests|pets|banking|gear|games [show|hide|toggle]  (Mini Remote tabs)");
+                _ctx.Chat("[Mini Remote] /ra hub open character|quests|pets|banking|gear|charms|games [show|hide|toggle]  (Mini Remote tabs)");
                 _ctx.Chat("[Mini Remote] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
                 _ctx.Chat("[Mini Remote] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
                 _ctx.Chat("[Mini Remote] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");

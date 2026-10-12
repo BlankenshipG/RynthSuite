@@ -706,6 +706,8 @@ internal sealed class MiniRemoteHud
         ImGui.TableNextColumn(); Stat("MK:", HudDraw.Compact(b.MythicalKeys));
         ImGui.TableNextColumn(); Stat("EC:", HudDraw.Compact(b.EnlightenedCoins));
         ImGui.TableNextColumn(); Stat("WE:", HudDraw.Compact(b.WeaklyEnlightenedCoins));
+        // Prestige Coins (ACECustom 2026-10-04): only once the server has reported some.
+        if (b.PrestigeCoins > 0) { ImGui.TableNextColumn(); Stat("PC:", HudDraw.Compact(b.PrestigeCoins)); }
         ImGui.EndTable();
     }
 

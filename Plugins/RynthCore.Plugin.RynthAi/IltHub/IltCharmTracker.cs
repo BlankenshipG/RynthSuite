@@ -1,5 +1,5 @@
-// IltCharmTracker.cs — Snapshot of every ACECustom registry charm for the engine Settings
-// panel's "Charms Tracking" tab (RynthPluginGetCharmsJson).
+// IltCharmTracker.cs — Every ACECustom registry charm's state: the Mini Remote's Charms tab
+// (IltCharms) and RynthPluginGetCharmsJson (an older engine's Settings "Charms Tracking" tab).
 //
 // Per charm it reports:
 //   acquired — "carried" (in pack / equipped now), "seen" (carried earlier this or a past
@@ -23,10 +23,13 @@ internal sealed class IltCharmTracker
 
     public IltCharmTracker(IltHubContext ctx) => _ctx = ctx;
 
-    /// <summary>One charm's tracked state.</summary>
+    /// <summary>
+    /// One charm's tracked state. <paramref name="ToggleId"/> is the carried copy a toggle uses
+    /// (the active one when one is on), 0 when none is carried.
+    /// </summary>
     internal readonly record struct CharmState(
         IltCharmDef Def, string Acquired, int Count, int Tier, int MaxTier,
-        IltTri Active, IltTri Server, DateTime LastSeenUtc);
+        IltTri Active, IltTri Server, DateTime LastSeenUtc, int ToggleId = 0);
 
     /// <summary>Evaluates every registry charm and refreshes the "seen" memory for carried ones.</summary>
     public List<CharmState> Evaluate()
@@ -48,19 +51,20 @@ internal sealed class IltCharmTracker
         {
             carried.TryGetValue(def, out var items);
             int count = items?.Count ?? 0;
-            int tier = 0, maxTier = 0;
+            int tier = 0, maxTier = 0, toggleId = 0;
             IltTri active = IltTri.Off;
 
             if (count > 0)
             {
                 // Server allows only one active charm per ability, so any ON item means ON.
                 bool anyOn = false, allKnown = true;
+                toggleId = items![0].Id;
                 foreach (var wo in items!)
                 {
                     var (t, m) = inv.CharmTier(wo);
                     if (t > tier) { tier = t; maxTier = m; }
                     var st = inv.CharmStatus(wo);
-                    if (st == IltTri.On) anyOn = true;
+                    if (st == IltTri.On) { anyOn = true; toggleId = wo.Id; }
                     else if (st == IltTri.Unknown) allKnown = false;
                 }
                 if (anyOn) active = IltTri.On;
@@ -79,7 +83,7 @@ internal sealed class IltCharmTracker
             if (count == 0 && memory != null) { tier = memory.Tier; maxTier = memory.MaxTier; }
 
             result.Add(new CharmState(def, acquired, count, tier, maxTier, active,
-                ServerState(def), memory?.LastSeenUtc ?? default));
+                ServerState(def), memory?.LastSeenUtc ?? default, toggleId));
         }
         return result;
     }

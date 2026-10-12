@@ -9,6 +9,8 @@
 //   Pyreals    positive bank pyreal deltas + carried pyreal (WCID 273) gains; MMD = 250k.
 //   Items      gains of each item in the item→coin conversion table (carried count),
 //              converted to potential coins with ItemsPerConversion / CoinsPerConversion.
+// A deposit or withdrawal only moves money between pack and bank: while Banking reports one
+// (MovingMoney) the coin and pyreal baselines follow along without counting a gain.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -60,12 +62,18 @@ internal sealed class IltSessionRates : IIltFeature
         _stats = stats;
     }
 
+    /// <summary>True while money moves between pack and bank (set by the controller from Banking). Pump thread.</summary>
+    public Func<bool>? MovingMoney { get; set; }
+
+    private bool Moving => MovingMoney?.Invoke() ?? false;
+
     /// <summary>Banking hook: bank balance changed (pump thread).</summary>
     public void OnBankBalanceChanged(string key, long oldValue, long newValue)
     {
         RynthLog.Trace(LogCat.IltRates, $"balance {key}: {oldValue} -> {newValue}");
         // The first read after login only establishes the baseline (old value is the stale cache).
         if (_lastSampleAt == 0) return;
+        if (Moving) return;   // a deposit, not income
         long delta = newValue - oldValue;
         if (delta <= 0) return; // spending / sending isn't income
         if (key == "EnlightenedCoins") _coins += delta;
@@ -107,8 +115,14 @@ internal sealed class IltSessionRates : IIltFeature
         _lastRowsAt = nowMs;
         var inv = _ctx.Inventory;
 
-        _coins += Gain(ref _lastInvCoins, inv.CountByWcid(IltInventory.WcidEnlightenedCoin));
-        _pyreals += Gain(ref _lastInvPyreals, inv.CountByWcid(IltInventory.WcidPyreal));
+        long coinGain = Gain(ref _lastInvCoins, inv.CountByWcid(IltInventory.WcidEnlightenedCoin));
+        long pyrealGain = Gain(ref _lastInvPyreals, inv.CountByWcid(IltInventory.WcidPyreal));
+        // A withdrawal: the baselines moved, nothing earned.
+        if (!Moving)
+        {
+            _coins += coinGain;
+            _pyreals += pyrealGain;
+        }
 
         // ToArray: the render thread edits this table.
         foreach (var conv in _ctx.State.Character.ItemConversions.ToArray())

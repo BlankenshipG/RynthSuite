@@ -99,6 +99,8 @@ internal static class Program
         ServerMenuTests.Register(runner);
         ItemsCleanTests.Register(runner);
         DeathRecallTests.Register(runner);
+        BankCommandTests.Register(runner);
+        InventoryAttributeFilterTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }

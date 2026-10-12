@@ -2,7 +2,7 @@
 //
 // The ILT sections are tabs of the Mini Remote (MiniRemoteHud draws the tab bar and calls
 // RenderTab): Character (world status, Force-ILT, profiles, session rates), Quests (IltQuests),
-// Pets, Banking, Gear and Games. A tab is offered only while the server reports its feature on.
+// Pets, Banking, Gear, Charms and Games. A tab is offered only while the server reports its feature on.
 // The Guardian (IltGuardian: Temple riddle translator, hand-in, attribute turn-in tracker) is a
 // RynthCore ILT panel instead (the bar's ILT button, next to Bounties), drawn through
 // RenderGuardianPanel. Render() keeps the floating extras: the Games HUD, the quest favorites HUD
@@ -56,6 +56,7 @@ internal sealed class IltHubUi
         IltSection.Pet => new Vector2(560, 580),
         IltSection.Banking => new Vector2(560, 520),
         IltSection.Gear => new Vector2(560, 520),
+        IltSection.Charms => new Vector2(560, 520),
         IltSection.Games => new Vector2(520, 440),
         _ => new Vector2(520, 440),
     };
@@ -75,6 +76,7 @@ internal sealed class IltHubUi
             case IltSection.Pet: _hub.Pets.Render(); break;
             case IltSection.Banking: _hub.Banking.Render(); break;
             case IltSection.Gear: _hub.Gear.Render(); break;
+            case IltSection.Charms: _hub.CharmsTab.Render(); break;
             case IltSection.Games: _hub.Games.Render(); break;
         }
     }

@@ -713,9 +713,10 @@ public static unsafe class PluginExports
     private static IntPtr _charmsPtr = IntPtr.Zero;
 
     /// <summary>
-    /// Settings panel Charms Tracking tab (ACECustom registry charms: acquired / active / server
-    /// state). Same contract as RynthPluginGetProgressionJson: one static buffer, valid until the
-    /// next call; the engine polls it from its pump thread only.
+    /// ACECustom registry charms (acquired / active / server state) for engines up to 2026.10.5.35,
+    /// whose Settings panel has a Charms Tracking tab; newer engines leave charms to the Mini
+    /// Remote's Charms tab. Same contract as RynthPluginGetProgressionJson: one static buffer,
+    /// valid until the next call; the engine polls it from its pump thread only.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetCharmsJson", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static IntPtr GetCharmsJson()

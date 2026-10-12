@@ -55,7 +55,7 @@ public sealed class HudState
     public float MiniRemoteSlotSize = DefaultMiniRemoteSlotSize;
     /// <summary>
     /// The Mini Remote's selected tab: "" for the remote itself, else an ILT tab id
-    /// (IltSections.TabId: character, quests, pets, banking, gear, games).
+    /// (IltSections.TabId: character, quests, pets, banking, gear, charms, games).
     /// </summary>
     public string MiniRemoteTab = string.Empty;
 }

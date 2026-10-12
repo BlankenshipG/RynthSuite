@@ -67,11 +67,18 @@ public sealed class IltBankState
     public long MythicalKeys;
     public long EnlightenedCoins;
     public long WeaklyEnlightenedCoins;
+    /// <summary>Bound to the character: deposit and withdraw only, never transferred.</summary>
+    public long PrestigeCoins;
     public DateTime LastUpdated = DateTime.MinValue;
 
     /// <summary>Last transfer recipient typed into the transfer form.</summary>
     public string TransferTarget = string.Empty;
     public int TransferCurrencyIndex;
+
+    /// <summary>Deposit / withdraw form choices (IltBankCommands.Deposits / Withdrawals / NoteDenominations).</summary>
+    public int DepositIndex;
+    public int WithdrawIndex;
+    public int WithdrawNoteIndex = 9;
 
     /// <summary>Re-issue /bank every N seconds while the Hub is open (0 = manual only).</summary>
     public int AutoRefreshSeconds = 120;

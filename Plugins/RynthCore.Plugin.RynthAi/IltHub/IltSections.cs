@@ -1,6 +1,6 @@
 // IltSections.cs - The Mini Remote's tabs and the Guardian panel. Quests and Pets are universal
-// tabs (every server: /myquests and summoning essences aren't ILT's); Character, Banking, Gear and
-// Games are Infinite Leaftide tabs. All are picked from the Mini Remote's tab bar (MiniRemoteHud)
+// tabs (every server: /myquests and summoning essences aren't ILT's); Character, Banking, Gear,
+// Charms and Games are Infinite Leaftide tabs. All are picked from the Mini Remote's tab bar (MiniRemoteHud)
 // or "/ra hub open <section>". Guardian is ILT only and a RynthCore ILT panel instead (the bar's
 // ILT button, next to Bounties; "/rc guardian"), drawn by this plugin through
 // RynthPluginRenderEmbed("guardian").
@@ -17,6 +17,9 @@ internal enum IltSection
     Banking,
     Gear,
     Games,
+    /// <summary>Registry charms (acquired / status / tier / server) and the Guardian Hand.</summary>
+    Charms,
+    // Keep Guardian last: MiniRemoteHud sizes its per-tab tables by it.
     Guardian,
 }
 
@@ -29,7 +32,7 @@ internal static class IltSections
     public static readonly IltSection[] Tabs =
     {
         IltSection.Quests, IltSection.Pet,
-        IltSection.Character, IltSection.Banking, IltSection.Gear, IltSection.Games,
+        IltSection.Character, IltSection.Banking, IltSection.Gear, IltSection.Charms, IltSection.Games,
     };
 
     /// <summary>
@@ -49,6 +52,7 @@ internal static class IltSections
         IltSection.Banking => "Banking",
         IltSection.Gear => "Gear",
         IltSection.Games => "Games",
+        IltSection.Charms => "Charms",
         IltSection.Guardian => "Guardian",
         _ => s.ToString(),
     };
@@ -65,6 +69,7 @@ internal static class IltSections
         IltSection.Banking => "banking",
         IltSection.Gear => "gear",
         IltSection.Games => "games",
+        IltSection.Charms => "charms",
         IltSection.Guardian => "guardian",
         _ => s.ToString().ToLowerInvariant(),
     };
@@ -83,6 +88,7 @@ internal static class IltSections
             case "banking": case "bank": section = IltSection.Banking; return true;
             case "gear": section = IltSection.Gear; return true;
             case "games": case "game": section = IltSection.Games; return true;
+            case "charms": case "charm": section = IltSection.Charms; return true;
             case "guardian": case "temple": case "riddle": section = IltSection.Guardian; return true;
             default: section = IltSection.Character; return false;
         }
