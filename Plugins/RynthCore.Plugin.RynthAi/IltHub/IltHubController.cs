@@ -40,6 +40,8 @@ internal sealed class IltHubController
     public IltQuests Quests { get; }
     public IltProgression Progression { get; }
     public IltGear Gear { get; }
+    /// <summary>The universal Crafting tab: tinkering benches, chunking / clap, split arrows.</summary>
+    public IltCrafting Crafting { get; }
     public IltGames Games { get; }
     /// <summary>Registry charm acquired / active / server state (the Charms tab and RynthPluginGetCharmsJson).</summary>
     public IltCharmTracker Charms { get; }
@@ -70,11 +72,12 @@ internal sealed class IltHubController
         Quests = new IltQuests(_ctx, quests);
         Progression = new IltProgression(_ctx);
         Gear = new IltGear(_ctx);
+        Crafting = new IltCrafting(_ctx);
         Games = new IltGames(_ctx);
         Charms = new IltCharmTracker(_ctx);
         CharmsTab = new IltCharms(_ctx, Charms);
         Guardian = new IltGuardian(_ctx, quests, Quests);
-        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, CharmsTab, Games, Guardian });
+        _features.AddRange(new IIltFeature[] { Banking, Pets, Rates, Quests, Progression, Gear, Crafting, CharmsTab, Games, Guardian });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
         Rates.MovingMoney = () => Banking.MovingMoney;
@@ -106,14 +109,14 @@ internal sealed class IltHubController
     public bool Available => _ctx.Options.IsIltLikeWorld && _ctx.Options.AnyFeatureOn;
 
     /// <summary>
-    /// Whether a section can be shown now. The universal tabs (Quests, Pets) and Character always
-    /// can (Character explains why the ILT tabs are idle and holds the Force-ILT override); the
-    /// rest need server features.
+    /// Whether a section can be shown now. The universal tabs (Quests, Pets, Crafting) and
+    /// Character always can (Character explains why the ILT tabs are idle and holds the Force-ILT
+    /// override); the rest need server features.
     /// </summary>
     public bool SectionAvailable(IltSection section) => section switch
     {
         IltSection.Character => true,
-        IltSection.Quests or IltSection.Pet => true,
+        IltSection.Quests or IltSection.Pet or IltSection.Crafting => true,
         IltSection.Banking => Available && !_ctx.Options.IsOff(IltFeature.Bank),
         IltSection.Games => Available && Games.AnyGameAvailable,
         _ => Available,
@@ -251,8 +254,8 @@ internal sealed class IltHubController
         return eat;
     }
 
-    /// <summary>The feature behind a universal tab (Quests, Pets): it runs on every world.</summary>
-    private static bool IsUniversal(IIltFeature f) => f is IltQuests or IltPets;
+    /// <summary>The feature behind a universal tab (Quests, Pets, Crafting): it runs on every world.</summary>
+    private static bool IsUniversal(IIltFeature f) => f is IltQuests or IltPets or IltCrafting;
 
     /// <summary>Maps a feature module to its diagnostics category so its trace/exception lines land in its own file.</summary>
     private static LogCat CategoryOf(IIltFeature f) => f switch
@@ -262,7 +265,7 @@ internal sealed class IltHubController
         IltSessionRates => LogCat.IltRates,
         IltQuests => LogCat.IltQuests,
         IltProgression => LogCat.IltProgression,
-        IltGear or IltCharms => LogCat.IltGear,
+        IltGear or IltCharms or IltCrafting => LogCat.IltGear,
         IltGames => LogCat.IltGames,
         _ => LogCat.IltHub,
     };
@@ -397,7 +400,7 @@ internal sealed class IltHubController
                 }
                 if (args.Length < 2 || !IltSections.TryParse(args[1], out IltSection section))
                 {
-                    _ctx.Chat("[Mini Remote] Usage: /ra hub open character|quests|pets|banking|gear|charms|games|guardian|bounties [show|hide|toggle]");
+                    _ctx.Chat("[Mini Remote] Usage: /ra hub open character|quests|pets|crafting|banking|gear|charms|games|guardian|bounties [show|hide|toggle]");
                     break;
                 }
                 OpenSection(section, args.Length > 2 ? args[2] : "toggle");
@@ -418,7 +421,7 @@ internal sealed class IltHubController
                 break;
             case "profile": HandleProfile(args.Skip(1).ToArray()); break;
             case "suit": HandleSuit(args.Skip(1).ToArray()); break;
-            case "clap": Gear.ChunkClap.ClapNow(manual: true); break;
+            case "clap": Crafting.ChunkClap.ClapNow(manual: true); break;
             case "attr": HandleAttr(args.Skip(1).ToArray()); break;
             case "confirm": RunPending(); break;
             case "cancel":
@@ -427,7 +430,7 @@ internal sealed class IltHubController
                 break;
             default:
                 _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|force on|off|clap|confirm|cancel");
-                _ctx.Chat("[Mini Remote] /ra hub open character|quests|pets|banking|gear|charms|games [show|hide|toggle]  (Mini Remote tabs)");
+                _ctx.Chat("[Mini Remote] /ra hub open character|quests|pets|crafting|banking|gear|charms|games [show|hide|toggle]  (Mini Remote tabs)");
                 _ctx.Chat("[Mini Remote] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
                 _ctx.Chat("[Mini Remote] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
                 _ctx.Chat("[Mini Remote] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");

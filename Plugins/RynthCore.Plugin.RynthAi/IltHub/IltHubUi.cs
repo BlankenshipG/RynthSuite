@@ -58,6 +58,7 @@ internal sealed class IltHubUi
         IltSection.Gear => new Vector2(560, 520),
         IltSection.Charms => new Vector2(560, 520),
         IltSection.Games => new Vector2(520, 440),
+        IltSection.Crafting => new Vector2(680, 600),
         _ => new Vector2(520, 440),
     };
 
@@ -78,6 +79,7 @@ internal sealed class IltHubUi
             case IltSection.Gear: _hub.Gear.Render(); break;
             case IltSection.Charms: _hub.CharmsTab.Render(); break;
             case IltSection.Games: _hub.Games.Render(); break;
+            case IltSection.Crafting: _hub.Crafting.Render(); break;
         }
     }
 

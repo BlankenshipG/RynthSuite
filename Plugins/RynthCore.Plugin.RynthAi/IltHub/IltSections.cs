@@ -1,5 +1,6 @@
-// IltSections.cs - The Mini Remote's tabs and the Guardian panel. Quests and Pets are universal
-// tabs (every server: /myquests and summoning essences aren't ILT's); Character, Banking, Gear,
+// IltSections.cs - The Mini Remote's tabs and the Guardian panel. Quests, Pets and Crafting are
+// universal tabs (every server: /myquests, summoning essences and tinkering aren't ILT's; the
+// Crafting tab adds ILT's salvage on ILT worlds); Character, Banking, Gear,
 // Charms and Games are Infinite Leaftide tabs. All are picked from the Mini Remote's tab bar (MiniRemoteHud)
 // or "/ra hub open <section>". Guardian is ILT only and a RynthCore ILT panel instead (the bar's
 // ILT button, next to Bounties; "/rc guardian"), drawn by this plugin through
@@ -19,6 +20,8 @@ internal enum IltSection
     Games,
     /// <summary>Registry charms (acquired / status / tier / server) and the Guardian Hand.</summary>
     Charms,
+    /// <summary>Tinkering benches (armor, weapons, jewelry, items), chunking / clap and split arrows.</summary>
+    Crafting,
     // Keep Guardian last: MiniRemoteHud sizes its per-tab tables by it.
     Guardian,
 }
@@ -31,15 +34,15 @@ internal static class IltSections
     /// </summary>
     public static readonly IltSection[] Tabs =
     {
-        IltSection.Quests, IltSection.Pet,
+        IltSection.Quests, IltSection.Pet, IltSection.Crafting,
         IltSection.Character, IltSection.Banking, IltSection.Gear, IltSection.Charms, IltSection.Games,
     };
 
     /// <summary>
-    /// True for the tabs every server gets (Quests, Pets); the rest are Infinite Leaftide's and
-    /// show only on an ILT world (or with the Force-ILT override).
+    /// True for the tabs every server gets (Quests, Pets, Crafting); the rest are Infinite
+    /// Leaftide's and show only on an ILT world (or with the Force-ILT override).
     /// </summary>
-    public static bool IsUniversal(IltSection s) => s is IltSection.Quests or IltSection.Pet;
+    public static bool IsUniversal(IltSection s) => s is IltSection.Quests or IltSection.Pet or IltSection.Crafting;
 
     /// <summary>The Mini Remote's own tab (the remote itself): its tab id.</summary>
     public const string RemoteTab = "";
@@ -53,6 +56,7 @@ internal static class IltSections
         IltSection.Gear => "Gear",
         IltSection.Games => "Games",
         IltSection.Charms => "Charms",
+        IltSection.Crafting => "Crafting",
         IltSection.Guardian => "Guardian",
         _ => s.ToString(),
     };
@@ -70,6 +74,7 @@ internal static class IltSections
         IltSection.Gear => "gear",
         IltSection.Games => "games",
         IltSection.Charms => "charms",
+        IltSection.Crafting => "crafting",
         IltSection.Guardian => "guardian",
         _ => s.ToString().ToLowerInvariant(),
     };
@@ -89,6 +94,7 @@ internal static class IltSections
             case "gear": section = IltSection.Gear; return true;
             case "games": case "game": section = IltSection.Games; return true;
             case "charms": case "charm": section = IltSection.Charms; return true;
+            case "crafting": case "craft": case "tinker": case "tinkering": section = IltSection.Crafting; return true;
             case "guardian": case "temple": case "riddle": section = IltSection.Guardian; return true;
             default: section = IltSection.Character; return false;
         }

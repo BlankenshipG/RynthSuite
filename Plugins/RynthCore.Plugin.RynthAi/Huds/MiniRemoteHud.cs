@@ -808,7 +808,7 @@ internal sealed class MiniRemoteHud
     }
 
     /// <summary>
-    /// "Character": RynthAi's own windows, the universal Mini Remote tabs (Quests, Pets), and
+    /// "Character": RynthAi's own windows, the universal Mini Remote tabs (Quests, Pets, Crafting), and
     /// RynthCore's panels when it runs /rc commands.
     /// </summary>
     private void RenderCharacterMenu(HudState s)

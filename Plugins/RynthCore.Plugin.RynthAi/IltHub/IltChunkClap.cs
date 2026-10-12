@@ -1,4 +1,4 @@
-// IltChunkClap.cs — Lugian-hammer chunking and /clap automation (Gear tab).
+// IltChunkClap.cs — Lugian-hammer chunking and /clap automation (Crafting tab).
 //
 // Chunk: uses a Lugian (Aetheria) Hammer on eligible items, one at a time:
 //   Aetheria  — "Aetheria"/"Coalesced Aetheria" gems, not equipped, appraised, not flagged

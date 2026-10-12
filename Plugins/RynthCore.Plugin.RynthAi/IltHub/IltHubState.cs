@@ -42,6 +42,8 @@ public sealed class IltHubState
     public IltPetState Pet = new();
     public IltCharacterState Character = new();
     public IltGearState Gear = new();
+    /// <summary>The Crafting tab's tinker benches (chunking / split arrows keep their Gear fields).</summary>
+    public IltCraftingState Crafting = new();
     public IltGamesState Games = new();
     public IltGuardianState Guardian = new();
 }
@@ -261,6 +263,57 @@ public sealed class IltGearState
     // Equipment profiles (.utl suits) and VTank .usd import
     public string LastEquipProfile = string.Empty;
     public string LastUsdPath = string.Empty;
+}
+
+// ── Crafting (tinkering) ────────────────────────────────────────────────────
+
+/// <summary>The Crafting tab: one settings block per tinker bench, plus per-server custom salvage.</summary>
+public sealed class IltCraftingState
+{
+    /// <summary>Bench settings keyed by the bench name (TinkerBench: Armor, Melee, Missile, Caster, Jewelry, Items).</summary>
+    public Dictionary<string, IltTinkerBenchSettings> Benches = new();
+    /// <summary>The player's extra salvage rows, keyed by world name (custom shards' own recipes).</summary>
+    public Dictionary<string, List<IltCustomTinker>> CustomByWorld = new();
+    /// <summary>Answer the server's craft-chance dialog for the runner (engine API v81).</summary>
+    public bool AnswerCraftDialog = true;
+    /// <summary>Items per scan (UB-IT's 20).</summary>
+    public int BatchSize = 20;
+    /// <summary>Apply even in combat mode (servers with allow_combat_mode_crafting).</summary>
+    public bool AllowInCombat;
+}
+
+/// <summary>One tinker bench's choices.</summary>
+public sealed class IltTinkerBenchSettings
+{
+    /// <summary>Row key (TinkerCatalog.Key: r/s/c + material id) to how many times (imbues and flags: 0 or 1).</summary>
+    public Dictionary<string, int> Counts = new();
+    /// <summary>Skip a step whose chance is under this percent (0 = any chance).</summary>
+    public int MinChancePercent;
+    /// <summary>Only items with at most this many tinks.</summary>
+    public int MaxTinks = 9;
+    /// <summary>Only items with at least this many free tink slots (0 = no filter).</summary>
+    public int MinFreeTinks;
+    public bool SkipImbued;
+    /// <summary>Slash/pierce weapons take the pierce rend (Black Garnet) instead of slash (Imperial Topaz).</summary>
+    public bool PierceForCombo;
+    /// <summary>The damage-type rend goes after every other step (UB-IT's "Foolproof rend last").</summary>
+    public bool RendLast;
+}
+
+/// <summary>A salvage row the player added for one server.</summary>
+public sealed class IltCustomTinker
+{
+    /// <summary>TinkerBench as an int.</summary>
+    public int Bench;
+    /// <summary>MaterialType of the salvage.</summary>
+    public int Material;
+    public bool Imbue;
+    /// <summary>Once per item (a flag-style recipe) rather than a repeatable tink.</summary>
+    public bool Once;
+    public bool UsesTinkSlot = true;
+    /// <summary>The bag's name must contain this (bags that share another salvage's material id).</summary>
+    public string NameMatch = string.Empty;
+    public string Note = string.Empty;
 }
 
 // ── Games ───────────────────────────────────────────────────────────────────

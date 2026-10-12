@@ -1,4 +1,4 @@
-// IltSplitArrows.cs — Split-arrow imbuer (Gear tab, P2).
+// IltSplitArrows.cs — Split-arrow imbuer (Crafting tab).
 //
 // ILT missile weapons carry a split-arrow count (int 9031). Each White Quartz salvage
 // application adds one split and uses one tink. Per weapon:
