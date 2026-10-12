@@ -855,6 +855,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     /// the busy watchdog makes from this thread). Idempotent set-semantics for toggles.
     private void ApplyRemoteCommand(string action, string value)
     {
+        // RynthCore's server sections for the Mini Remote menu: needs no settings, kept across logins.
+        if (action.Equals("servermenu", StringComparison.OrdinalIgnoreCase))
+        {
+            Huds.ServerMenuModel.Apply(value);
+            return;
+        }
         var dash = _dashboard;
         if (dash == null) return;
         bool on = value is "1" or "true" or "on" or "True" or "TRUE"

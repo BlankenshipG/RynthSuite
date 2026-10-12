@@ -122,6 +122,20 @@ internal sealed class HudController
     /// <summary>Queues work for the next pump tick (safe from the render thread).</summary>
     public void Post(Action action) => _posted.Enqueue(action);
 
+    /// <summary>
+    /// Runs a RynthCore "/rc ..." command through the engine's chat dispatcher on the next pump
+    /// tick (any thread). Says so in chat when this RynthCore can't run it.
+    /// </summary>
+    public void RunEngineCommand(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command)) return;
+        Post(() =>
+        {
+            if (_host.HasInvokeChatParser && _host.InvokeChatParser(command)) return;
+            Chat($"[Mini Remote] {command} needs RynthCore's ImGui layer; type it in chat to see why.");
+        });
+    }
+
     private static long NowMs => Environment.TickCount64;
 
     /// <summary>

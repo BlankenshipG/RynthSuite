@@ -4,7 +4,11 @@
 // Quests, Pets, Banking, Gear and Games (IltHubUi draws their bodies; a tab shows once the server
 // reports its feature on). The tab bar's selection is saved (HudState.MiniRemoteTab) and
 // "/ra hub open <section>" or RynthCore's dashboard switch it (RequestTab). The Guardian and
-// Bounties are RynthCore ILT panels (the bar's ILT button); the Options menu links to them.
+// Bounties are RynthCore ILT panels (the bar's ILT button).
+// Right-click on the remote: "Character" (Spells, Skills, Inventory, Item Count, Inventory HUDs:
+// windows every server has), then the server section, i.e. the installed server plugins'
+// windows for the world you're on, which RynthCore sends (ServerMenuModel), or "Treat this world
+// as ..." when none matches. The Options button holds the Mini Remote's own settings.
 // The V/H button stacks the sections (vertical) or lays them out in three columns (horizontal).
 //
 // Remote sections (each can be hidden from the Options menu):
@@ -44,6 +48,7 @@ namespace RynthCore.Plugin.RynthAi.Huds;
 internal sealed class MiniRemoteHud
 {
     private const string OptionsPopup = "##miniremoteopts";
+    private const string MenuPopup = "##miniremotemenu";
     private const string SlotPopup = "##miniremoteslot";
     /// <summary>Pixels per Ctrl+wheel notch over the slot grid.</summary>
     private const float SlotSizeStep = 2f;
@@ -69,6 +74,8 @@ internal sealed class MiniRemoteHud
     private bool _pendingTabFromState = true;
     // This frame's tab bar showed the Remote tab (right-click Options belongs to it only).
     private bool _onRemoteTab = true;
+    // The Options button was clicked this frame (the popup opens at window level).
+    private bool _openOptions;
     // The ILT tabs offered this frame (reused, so a frame doesn't allocate).
     private readonly List<IltSection> _tabs = new();
 
@@ -107,11 +114,12 @@ internal sealed class MiniRemoteHud
 
         RenderBody(s, _hud.Hub(), allowTabs: true);
 
-        // Right-click on the remote opens the options, unless a slot's own menu is open (the ILT
-        // tabs have their own right-click menus).
+        // Right-click on the remote opens the Character / server menu, unless a slot's own menu is
+        // open (the ILT tabs have their own right-click menus).
         if (_onRemoteTab && _slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
-            ImGui.OpenPopup(OptionsPopup);
+            ImGui.OpenPopup(MenuPopup);
         RenderOptions(s, embedded: false);
+        RenderMenu(s);
         _slotMenuIndex = -1;
         ImGui.End();
     }
@@ -135,8 +143,9 @@ internal sealed class MiniRemoteHud
             float width = RenderBody(s, _hud.Hub(), allowTabs: !InDrawer);
 
             if (_onRemoteTab && _slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
-                ImGui.OpenPopup(OptionsPopup);
+                ImGui.OpenPopup(MenuPopup);
             RenderOptions(s, embedded: true);
+            RenderMenu(s);
 
             float height = ImGui.GetCursorPosY() - startY - ImGui.GetStyle().ItemSpacing.Y;
             return new Vector2(width, Math.Max(0f, height) + 2f);
@@ -286,15 +295,16 @@ internal sealed class MiniRemoteHud
     // ── Layout ──────────────────────────────────────────────────────────────
 
     /// <summary>[V/H] and [Options] buttons. Fixed widths so the auto-resizing window can't grow from them.</summary>
-    private static void RenderHeaderRow(HudState s)
+    private void RenderHeaderRow(HudState s)
     {
         if (ImGui.Button((s.MiniRemoteHorizontal ? "H" : "V") + "##mrlayout", new Vector2(HeaderButtonWidth, 0)))
             s.MiniRemoteHorizontal = !s.MiniRemoteHorizontal;
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(s.MiniRemoteHorizontal ? "Horizontal: sections in columns. Click to stack them." : "Vertical: sections stacked. Click to lay them out in columns.");
         ImGui.SameLine();
-        if (ImGui.Button("Options##mropts", new Vector2(HeaderButtonWidth, 0))) ImGui.OpenPopup(OptionsPopup);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Mini Remote settings and the ILT panels (or right-click the remote).");
+        // Opened by RenderOptions: this row sits inside the Remote tab, whose ID the popup must not get.
+        if (ImGui.Button("Options##mropts", new Vector2(HeaderButtonWidth, 0))) _openOptions = true;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Mini Remote settings: sections, layout, slot size.\nRight-click the remote for the Character and server windows.");
     }
 
     private void RenderVertical(HudState s, IltHubController? hub)
@@ -690,9 +700,12 @@ internal sealed class MiniRemoteHud
     /// </summary>
     private void RenderOptions(HudState s, bool embedded)
     {
+        if (_openOptions)
+        {
+            _openOptions = false;
+            ImGui.OpenPopup(OptionsPopup);
+        }
         if (!ImGui.BeginPopup(OptionsPopup)) return;
-        RenderHubMenu(_hud.Hub());
-        ImGui.Separator();
         ImGui.TextDisabled("Mini Remote sections");
         Flag("Session stats", ref s.MiniShowStats);
         Flag("Attack target", ref s.MiniShowTarget);
@@ -741,25 +754,142 @@ internal sealed class MiniRemoteHud
         if (isDefault) ImGui.EndDisabled();
     }
 
+    // ── Right-click menu: Character, then this server's plugin windows ─────────
+
+    /// <summary>RynthCore's server id for Infinite Leaftide (UI/ServerMenus.cs), the one RynthAi has features for.</summary>
+    private const string IltServerId = "ilt";
+
     /// <summary>
-    /// ILT group of the Options menu: the RynthCore ILT panels (Guardian, Bounties; the bar's ILT
-    /// button opens them too). The ILT sections themselves are the remote's tabs. Off ILT worlds
-    /// it also offers the Force-ILT override and a server-options refresh.
+    /// The right-click menu. Top, "Character": windows every server has. Bottom: the server
+    /// section, i.e. the installed server plugins' windows for the world you're on (RynthCore
+    /// sends them, see <see cref="ServerMenuModel"/>), or the "Treat this world as ..." choices
+    /// when none matches.
     /// </summary>
-    private void RenderHubMenu(IltHubController? hub)
+    private void RenderMenu(HudState s)
     {
-        ImGui.TextDisabled("ILT");
-        if (hub == null) { ImGui.TextDisabled("Available after login."); return; }
+        if (!ImGui.BeginPopup(MenuPopup)) return;
+        try
+        {
+            RenderCharacterMenu(s);
+            RenderServerMenu(_hud.Hub());
+        }
+        finally { ImGui.EndPopup(); }
+    }
 
-        if (ImGui.MenuItem("Guardian panel##mrguardian", string.Empty, false, hub.SectionAvailable(IltSection.Guardian)))
+    /// <summary>"Character": RynthAi's own windows, and RynthCore's panels when it runs /rc commands.</summary>
+    private void RenderCharacterMenu(HudState s)
+    {
+        ImGui.TextDisabled("Character");
+        var settings = _hud.Dashboard.Settings;
+        if (ImGui.MenuItem("Spells##mrspells", "/ra spells", settings.ShowSpellsWindow))
+            settings.ShowSpellsWindow = !settings.ShowSpellsWindow;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("The spell catalog and buff profiles.");
+        if (_hud.Host.HasInvokeChatParser)
+        {
+            if (ImGui.MenuItem("Skills##mrskills", "/rc skills")) _hud.RunEngineCommand("/rc skills toggle");
+            if (ImGui.MenuItem("Inventory##mrinv", "/rc inventory")) _hud.RunEngineCommand("/rc inventory");
+            if (ImGui.MenuItem("Item Count##mritemcount", "/rc itemcount")) _hud.RunEngineCommand("/rc itemcount");
+        }
+        if (ImGui.MenuItem("Inventory HUDs setup...##mrsetup")) s.ShowSetup = true;
+    }
+
+    /// <summary>
+    /// The server section. Each section RynthCore marks active is listed, and so is Infinite
+    /// Leaftide while this character's "Treat this world as ILT" is on (RynthAi's own override).
+    /// Without RynthCore's list it falls back to RynthAi's ILT entries.
+    /// </summary>
+    private void RenderServerMenu(IltHubController? hub)
+    {
+        ServerMenuGroup[]? groups = ServerMenuModel.Groups;
+        if (groups == null)
+        {
+            RenderLocalIltMenu(hub);
+            return;
+        }
+        if (groups.Length == 0) return;   // no server plugin installed
+
+        bool any = false;
+        foreach (ServerMenuGroup g in groups)
+        {
+            bool ilt = g.Id.Equals(IltServerId, StringComparison.OrdinalIgnoreCase);
+            bool forcedHere = ilt && hub?.ForceIltWorld == true;
+            if (!g.Active && !forcedHere) continue;
+            any = true;
+            ImGui.Separator();
+            ImGui.TextDisabled(g.Active ? g.Name : g.Name + " (forced)");
+            foreach (ServerMenuEntry item in g.Items)
+            {
+                string? tab = ServerMenuModel.TabOf(item.Feature);
+                bool enabled = tab == null || TabAvailable(hub, tab);
+                if (ImGui.MenuItem(item.Label + "##mrsrv_" + g.Id, item.Command, false, enabled))
+                    RunServerItem(item, tab);
+                if (item.Tooltip.Length > 0 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    ImGui.SetTooltip(enabled ? item.Tooltip : item.Tooltip + "\nShows once the server reports this feature on.");
+            }
+            if (ilt) RenderIltStatus(hub);
+        }
+        if (any) return;
+
+        ImGui.Separator();
+        ImGui.TextDisabled("Server: no installed server plugin matches this world");
+        foreach (ServerMenuGroup g in groups)
+        {
+            if (g.ForceCommand.Length == 0) continue;
+            if (ImGui.MenuItem("Treat this world as " + g.Name + "##mrforce_" + g.Id, g.ForceCommand))
+                ForceServer(g, hub);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Shows this server's windows here anyway. It only says which world this is:\nthe server still decides which features exist.");
+        }
+    }
+
+    /// <summary>A Mini Remote tab switches here and now; anything else is a RynthCore command.</summary>
+    private void RunServerItem(ServerMenuEntry item, string? tab)
+    {
+        if (tab != null) _hud.HandleTabCommand(tab, "show");
+        else if (item.Command.Length > 0) _hud.RunEngineCommand(item.Command);
+    }
+
+    /// <summary>
+    /// Forces a server: RynthCore's session override, plus for Infinite Leaftide this character's
+    /// "Treat this world as ILT" (so RynthAi's tabs come too).
+    /// </summary>
+    private void ForceServer(ServerMenuGroup g, IltHubController? hub)
+    {
+        if (g.Id.Equals(IltServerId, StringComparison.OrdinalIgnoreCase) && hub != null) hub.ForceIltWorld = true;
+        _hud.RunEngineCommand(g.ForceCommand);
+    }
+
+    private static bool TabAvailable(IltHubController? hub, string tab) =>
+        hub != null && IltSections.TryParse(tab, out IltSection section) && IltSections.IsTab(section) && hub.SectionAvailable(section);
+
+    /// <summary>
+    /// RynthAi's own Infinite Leaftide entries, for when RynthCore sends no server list (older
+    /// RynthCore, or its ImGui layer off): the tabs, and the Guardian / Bounties panels.
+    /// </summary>
+    private void RenderLocalIltMenu(IltHubController? hub)
+    {
+        if (hub == null || !hub.OffersTabs) return;
+        ImGui.Separator();
+        ImGui.TextDisabled("Infinite Leaftide");
+        foreach (IltSection section in IltSections.Tabs)
+        {
+            if (ImGui.MenuItem(IltSections.Label(section) + "##mrlocal", string.Empty, false, hub.SectionAvailable(section)))
+                _hud.HandleTabCommand(IltSections.TabId(section), "show");
+        }
+        if (ImGui.MenuItem("Guardian##mrlocal", "/rc guardian", false, hub.SectionAvailable(IltSection.Guardian)))
             _hud.Post(() => hub.OpenEnginePanel("guardian", "Guardian", "show"));
-        if (ImGui.MenuItem("Bounties panel##mrbounties"))
+        if (ImGui.MenuItem("Bounties##mrlocal", "/rc bounties"))
             _hud.Post(() => hub.OpenEnginePanel("bounties", "Bounties", "show"));
-        if (hub.OffersTabs && !InDrawer) ImGui.TextDisabled("Character, Quests, Pets...: the tabs above");
-        else if (hub.OffersTabs) ImGui.TextDisabled("ILT tabs: the Mini Remote window");
-        ImGui.TextDisabled("Progression: Skills panel (Char right-click)");
+        RenderIltStatus(hub);
+    }
 
-        if (hub.Available) return;
+    /// <summary>
+    /// Under the Infinite Leaftide section while no ILT feature is on: why, this character's
+    /// "Treat this world as ILT" override and a server-features refresh.
+    /// </summary>
+    private static void RenderIltStatus(IltHubController? hub)
+    {
+        if (hub == null || hub.Available) return;
         var o = hub.Options;
         ImGui.TextDisabled(!o.IsIltLikeWorld ? "Not an ILT world."
             : o.IsRefreshing || o.LastRefreshUtc == DateTime.MinValue ? "Checking server features..."
@@ -767,7 +897,7 @@ internal sealed class MiniRemoteHud
         bool force = hub.ForceIltWorld;
         if (ImGui.Checkbox("Treat this world as ILT##mrforce", ref force)) hub.ForceIltWorld = force;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("World-identity override only: the Hub asks the server which features exist.\nIt never turns a feature on by itself.");
+            ImGui.SetTooltip("World-identity override only: RynthAi asks the server which features exist.\nIt never turns a feature on by itself.");
         if (ImGui.MenuItem("Refresh server features##mrrefresh")) hub.RequestOptionsRefresh();
     }
 
