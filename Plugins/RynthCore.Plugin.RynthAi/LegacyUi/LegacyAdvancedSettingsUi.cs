@@ -16,6 +16,11 @@ internal sealed class LegacyAdvancedSettingsUi
 
     private static readonly string[] AttackHeights = { "Low", "Medium", "High" };
     private static readonly string[] NavLabelModeNames = { "Off", "Numbers", "Numbers and names" };
+    private const string NavResumeNearestTip =
+        "On: starting the macro, loading a Circular or Linear route, and carrying on after a fight, loot, buff or door\n" +
+        "that moved you 10 yd or more all head for the closest waypoint on the route. A waypoint you have already\n" +
+        "walked past is skipped for the one after it, so nav doesn't turn back. Once routes only look ahead.\n" +
+        "Off: nav carries on to the waypoint it was heading for, and a loaded route starts at its first point.";
     private static readonly string[] TargetSelectionNames = { "Lowest health", "Closest", "Farthest", "Least turning" };
     private static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
 
@@ -679,6 +684,10 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Separator();
                 ImGui.Text("Getting Back On Route");
+
+                ImGui.Checkbox("Go To Closest Waypoint", ref _settings.NavResumeNearest);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(NavResumeNearestTip);
 
                 ImGui.Checkbox("Find A Way Back When Stuck", ref _settings.NavRecoveryEnabled);
                 if (ImGui.IsItemHovered())

@@ -3479,6 +3479,7 @@ internal sealed class ExpressionEngine
             ["CurrentMetaPath"]     = (() => s.CurrentMetaPath,        v => s.CurrentMetaPath = v),
             ["OpenDoors"]           = (() => B(s.OpenDoors),           v => s.OpenDoors       = ToDouble(v) != 0),
             ["NavRecoveryEnabled"]  = (() => B(s.NavRecoveryEnabled),  v => s.NavRecoveryEnabled = ToDouble(v) != 0),
+            ["NavResumeNearest"]    = (() => B(s.NavResumeNearest),    v => s.NavResumeNearest   = ToDouble(v) != 0),
             ["NavOffTrackYards"]    = (() => F(s.NavOffTrackYards),    v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.NavOffTrackYards = Math.Clamp(f, 160f, 1000f); }),
             ["NavMaxDetourAttempts"] = (() => I(s.NavMaxDetourAttempts), v => { if (int.TryParse(v, out int i)) s.NavMaxDetourAttempts = Math.Clamp(i, 1, 10); }),
             ["OpenDoorRange"]       = (() => F(s.OpenDoorRange),       v => { if (float.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out float f)) s.OpenDoorRange = f; }),

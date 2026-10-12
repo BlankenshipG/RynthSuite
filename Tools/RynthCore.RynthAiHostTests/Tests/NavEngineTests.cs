@@ -37,6 +37,11 @@ internal static class NavEngineTests
         r.Add("nav engine: a recall that never fires, next waypoint close: moves on after 60 s", RecallTimeoutNear);
         r.Add("nav engine: macro start picks the nearest plain waypoint", ResumeNearest);
         r.Add("nav engine: indoors, macro start picks the nearest waypoint on foot, not through a wall", ResumeNearestByWalk);
+        r.Add("nav engine: macro start skips a nearest waypoint already walked past, not one still ahead", ResumeNearestPassed);
+        r.Add("nav engine: back from a pause that moved 10+ yd, nav heads for the closest waypoint", ResumeAfterPauseMoved);
+        r.Add("nav engine: back from a pause that moved under 10 yd, nav keeps its waypoint", ResumeAfterPauseStill);
+        r.Add("nav engine: Go To Closest Waypoint off keeps the last waypoint (hazard/corpse still rejoin)", ResumeNearestOff);
+        r.Add("nav engine: a loaded route starts at [0] for Once/Follow, or for any route with the option off", StartsAtFirstPoint);
         r.Add("nav engine: nearest waypoint lookup", FindNearest);
         r.Add("nav engine: off track only beyond 160 yd (159 yd never), after 5 s, once per trip", OffTrack159);
         r.Add("nav engine: coming back from a pause far off the route is not off track", OffTrackDisarmedByStop);
@@ -425,6 +430,77 @@ internal static class NavEngineTests
         nav3.E.ResumeFromNearestWaypoint();
         Check.Eq(nav3.Idx, 2, "outdoors: straight-line nearest");
         Check.Eq(p3.PlanTargets.Count, 0, "outdoors: no plans asked for");
+    }
+
+    /// <summary>A 40 yd square, run clockwise: [0] origin, [1] 40 east, [2] 40 north-east, [3] 40 north.</summary>
+    private static NavRouteParser Square()
+        => Route(RT.Circular, Pt(0, 0), Pt(0, 40), Pt(40, 40), Pt(40, 0));
+
+    private static void ResumeNearestPassed()
+    {
+        // Just beyond [2] on the leg toward [3]: the closest spot on the route is on that leg.
+        FakeHost.Reset(); At(42, 30);
+        var past = new Nav(Square(), idx: 0);
+        past.E.ResumeFromNearestWaypoint();
+        Check.Eq(past.Idx, 3, "walked past [2]: on to [3] instead of turning back");
+
+        // Still short of [1], a little off the leg into it: [1] stays the target.
+        FakeHost.Reset(); At(2, 30);
+        var shy = new Nav(Square(), idx: 0);
+        shy.E.ResumeFromNearestWaypoint();
+        Check.Eq(shy.Idx, 1, "still on the leg into [1]: [1]");
+    }
+
+    private static void ResumeAfterPauseMoved()
+    {
+        FakeHost.Reset(); At(0, 10);
+        var nav = new Nav(Square(), idx: 1);
+        nav.Tick();
+        nav.E.Stop();                  // a fight starts
+        At(38, 42);                    // ... and the chase ends near [2]
+        nav.Run(6.0);                  // past any teleport settle
+        Check.Eq(nav.Idx, 2, "the closest waypoint, not the one it was heading for");
+        Check.True(LogCount("back from a pause") == 1, "logged once");
+    }
+
+    private static void ResumeAfterPauseStill()
+    {
+        FakeHost.Reset(); At(2, 38);
+        var nav = new Nav(Square(), idx: 2);
+        nav.Tick();
+        nav.E.Stop();
+        At(-3, 36);                    // 5 yd: [1] is now nearer, but the pause barely moved us
+        nav.Run(1.0);
+        Check.Eq(nav.Idx, 2, "kept: moved under 10 yd");
+        Check.Eq(LogCount("back from a pause"), 0, "nothing re-picked");
+    }
+
+    private static void ResumeNearestOff()
+    {
+        FakeHost.Reset(); At(0, 10);
+        var nav = new Nav(Square(), idx: 1);
+        nav.S.NavResumeNearest = false;
+        nav.Tick();
+        nav.E.Stop();
+        At(38, 42);
+        nav.Run(6.0);
+        Check.Eq(nav.Idx, 1, "pause: carries on to the waypoint it was heading for");
+
+        nav.E.ResumeFromNearestWaypoint();
+        Check.Eq(nav.Idx, 1, "macro start: keeps the last waypoint");
+
+        nav.E.ResumeFromNearestWaypoint(always: true);
+        Check.Eq(nav.Idx, 2, "hazard escape / corpse run: rejoins at the closest waypoint anyway");
+    }
+
+    private static void StartsAtFirstPoint()
+    {
+        Check.False(NavRouteParser.StartsAtFirstPoint(RT.Circular, true), "Circular, option on: nearest");
+        Check.False(NavRouteParser.StartsAtFirstPoint(RT.Linear, true), "Linear, option on: nearest");
+        Check.True(NavRouteParser.StartsAtFirstPoint(RT.Once, true), "Once: always [0]");
+        Check.True(NavRouteParser.StartsAtFirstPoint(RT.Follow, true), "Follow: always [0]");
+        Check.True(NavRouteParser.StartsAtFirstPoint(RT.Circular, false), "Circular, option off: [0]");
+        Check.True(NavRouteParser.StartsAtFirstPoint(RT.Linear, false), "Linear, option off: [0]");
     }
 
     private static void FindNearest()

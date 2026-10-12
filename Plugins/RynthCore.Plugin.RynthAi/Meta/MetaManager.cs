@@ -205,17 +205,12 @@ internal sealed class MetaManager
     /// <summary>
     /// Follow and Once routes must run from the first point so opening
     /// Recall/Portal/Chat actions fire. Circular and Linear routes jump
-    /// in at the nearest traversable Point.
+    /// in at the nearest traversable Point (at [0] with NavResumeNearest off).
     /// </summary>
     private int StartIndexForRoute(NavRouteParser route)
-    {
-        return route.RouteType switch
-        {
-            NavRouteType.Follow => 0,
-            NavRouteType.Once => 0,
-            _ => FindNearestWaypoint(route)
-        };
-    }
+        => NavRouteParser.StartsAtFirstPoint(route.RouteType, _settings.NavResumeNearest)
+            ? 0
+            : FindNearestWaypoint(route);
 
     public ExpressionEngine Expressions => _expressions ??= CreateExpressionEngine();
 

@@ -319,6 +319,6 @@ public sealed partial class RynthAiPlugin
         _hazardHasTarget = false;
         _hazardPath.Clear();
         _hazardTrailCount = 0;   // the old trail runs through the pool
-        _navigationEngine?.ResumeFromNearestWaypoint();
+        _navigationEngine?.ResumeFromNearestWaypoint(always: true);
     }
 }

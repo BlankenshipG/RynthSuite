@@ -140,6 +140,14 @@ public sealed class NavRouteParser
     public static bool IsPlainWaypoint(NavPointType t) => t is NavPointType.Point or NavPointType.Checkpoint;
 
     /// <summary>
+    /// Whether a freshly loaded route starts at [0] rather than at its nearest waypoint.
+    /// Follow and Once routes always do, so their opening Recall/Portal/Chat steps fire;
+    /// with <c>NavResumeNearest</c> off every route does.
+    /// </summary>
+    public static bool StartsAtFirstPoint(NavRouteType type, bool resumeNearest)
+        => !resumeNearest || type is NavRouteType.Follow or NavRouteType.Once;
+
+    /// <summary>
     /// Follow-type nav files (route type 3) name a character to follow instead of
     /// listing points: "uTank2 NAV 1.2", 3, name, id. Empty for other routes.
     /// </summary>

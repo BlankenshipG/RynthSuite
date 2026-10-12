@@ -396,8 +396,7 @@ internal sealed partial class LegacyDashboardRenderer
             {
                 _settings.CurrentRoute = NavRouteParser.Load(_settings.CurrentNavPath);
                 _settings.ActiveNavIndex =
-                    (_settings.CurrentRoute.RouteType == NavRouteType.Follow ||
-                     _settings.CurrentRoute.RouteType == NavRouteType.Once)
+                    NavRouteParser.StartsAtFirstPoint(_settings.CurrentRoute.RouteType, _settings.NavResumeNearest)
                         ? 0
                         : FindNearestWaypoint(_settings.CurrentRoute);
             }
@@ -1022,6 +1021,7 @@ internal sealed partial class LegacyDashboardRenderer
                 ShowTerrainPassability     = s.ShowTerrainPassability,
                 NavLabelMode               = NavLabelModes.Clamp(s.NavLabelMode),
                 NavGuideLine               = s.NavGuideLine,
+                NavResumeNearest           = s.NavResumeNearest,
                 OpenDoors                  = s.OpenDoors,
                 OpenDoorRange              = s.OpenDoorRange,
                 AutoUnlockDoors            = s.AutoUnlockDoors,
@@ -1245,6 +1245,7 @@ internal sealed partial class LegacyDashboardRenderer
             s.ShowTerrainPassability     = p.ShowTerrainPassability;
             if (p.NavLabelMode >= 0) s.NavLabelMode = NavLabelModes.Clamp(p.NavLabelMode);
             if (p.NavGuideLine is bool guideLine) s.NavGuideLine = guideLine;
+            if (p.NavResumeNearest is bool resumeNearest) s.NavResumeNearest = resumeNearest;   // absent = unchanged
             s.OpenDoors                  = p.OpenDoors;
             s.OpenDoorRange              = p.OpenDoorRange;
             s.AutoUnlockDoors            = p.AutoUnlockDoors;
@@ -1552,8 +1553,7 @@ internal sealed partial class LegacyDashboardRenderer
             {
                 _settings.CurrentRoute = NavRouteParser.Load(_settings.CurrentNavPath);
                 _settings.ActiveNavIndex =
-                    (_settings.CurrentRoute.RouteType == NavRouteType.Follow ||
-                     _settings.CurrentRoute.RouteType == NavRouteType.Once)
+                    NavRouteParser.StartsAtFirstPoint(_settings.CurrentRoute.RouteType, _settings.NavResumeNearest)
                         ? 0
                         : FindNearestWaypoint(_settings.CurrentRoute);
             }
@@ -1605,6 +1605,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.NavTier1TurnSpeed        = tmp.NavTier1TurnSpeed;
         dst.PostPortalDelaySec       = tmp.PostPortalDelaySec;
         dst.NavRecoveryEnabled       = tmp.NavRecoveryEnabled;
+        dst.NavResumeNearest         = tmp.NavResumeNearest;
         dst.NavOffTrackYards         = Math.Max(160f, tmp.NavOffTrackYards);
         dst.NavMaxDetourAttempts     = Math.Clamp(tmp.NavMaxDetourAttempts, 1, 10);
         dst.T2Speed                  = tmp.T2Speed;
@@ -2385,10 +2386,10 @@ internal sealed partial class LegacyDashboardRenderer
             _host.WriteToChat($"[RynthAi] {_settings.CurrentRoute.LoadWarning}", 4);
         }
         // Follow and Once routes start from the top so opening Recall/Portal/Chat
-        // actions always fire. Circular and Linear routes jump in at the nearest point.
+        // actions always fire. Circular and Linear routes jump in at the nearest point
+        // (unless NavResumeNearest is off).
         _settings.ActiveNavIndex =
-            (_settings.CurrentRoute.RouteType == NavRouteType.Follow ||
-             _settings.CurrentRoute.RouteType == NavRouteType.Once)
+            NavRouteParser.StartsAtFirstPoint(_settings.CurrentRoute.RouteType, _settings.NavResumeNearest)
                 ? 0
                 : FindNearestWaypoint(_settings.CurrentRoute);
         SaveSettings();

@@ -71,6 +71,13 @@ internal sealed class NavigationEngine
     private long   _globalSettleStart;
 
     // ── Route state ──────────────────────────────────────────────────────────
+    // Where nav stopped for a pause (combat, loot, buff, door); NaN when not paused. With
+    // NavResumeNearest on, a pause that moved the character re-picks the closest waypoint.
+    private double _pauseNs = double.NaN;
+    private double _pauseEw = double.NaN;
+    private bool   _resumeCheckPending;      // nav took over again; check _pauseNs/_pauseEw on the next steer tick
+    private const double ResumeMovedYards    = 10.0;   // moved less while paused: carry on to the same waypoint
+    private const double ResumeTeleportYards = 400.0;  // moved more: a teleport, which the portal handling owns
     private int    _linearDir  = 1;
     private bool   _inPause;
     private int    _pauseIdx = -1;     // the Pause waypoint _pauseUntil belongs to
@@ -409,6 +416,7 @@ internal sealed class NavigationEngine
                     _isMovingForward = false;
                     _isTurning       = false;
                     _hasStopped      = true;
+                    MarkPausePosition();
                     RememberFiredPortalAction();
                     ResetPortalState();
                 }
@@ -417,6 +425,7 @@ internal sealed class NavigationEngine
         }
 
         _stopRequestedAt = long.MaxValue;
+        if (_hasStopped) _resumeCheckPending = true;
         _hasStopped      = false;
 
         // Fellowship-follow takes priority over route nav while enabled: steer
@@ -456,6 +465,8 @@ internal sealed class NavigationEngine
             _stuckCount     = 0;
             _inRecovery     = false;
             _hasGoodHeading = false;
+            // The loader chose the new route's start index; a pause on the old route says nothing.
+            ClearPausePosition();
             ResetPortalState();
             ResetRecovery("the route changed");
             _host.Log($"Nav: route swap detected, {route.Points.Count} pts, startIdx={_settings.ActiveNavIndex}");
@@ -542,6 +553,13 @@ internal sealed class NavigationEngine
                 _host.Log($"Nav: teleport detected (portalExit={portalExited} posJump={positionJumped}), settling {PostTeleportMs:F0}ms...");
                 return;
             }
+        }
+
+        // Back from a pause, past any teleport settle: rejoin at the closest waypoint if it moved us.
+        if (_resumeCheckPending)
+        {
+            _resumeCheckPending = false;
+            ResumeAfterPause();
         }
 
         int idx = _settings.ActiveNavIndex;
@@ -691,21 +709,66 @@ internal sealed class NavigationEngine
         _isMovingForward = false;
         _isTurning       = false;
         _hasStopped      = true;
+        MarkPausePosition();
     }
+
+    /// <summary>Remembers where the first stop of a pause happened (later stops in the same pause keep it).</summary>
+    private void MarkPausePosition()
+    {
+        if (!double.IsNaN(_pauseNs)) return;
+        if (!TryGetPos(out double ns, out double ew)) return;
+        _pauseNs = ns;
+        _pauseEw = ew;
+    }
+
+    private void ClearPausePosition()
+    {
+        _pauseNs = double.NaN;
+        _pauseEw = double.NaN;
+        _resumeCheckPending = false;
+    }
+
+    /// <summary>
+    /// Nav took over again after a pause. With <c>NavResumeNearest</c> on and the pause having
+    /// moved the character <see cref="ResumeMovedYards"/> or more (a chase, a corpse run), the
+    /// route re-picks its closest waypoint instead of walking back to the one it was heading for.
+    /// A detour or area hold in progress owns getting back, so it is left alone.
+    /// </summary>
+    private void ResumeAfterPause()
+    {
+        double pNs = _pauseNs, pEw = _pauseEw;
+        ClearPausePosition();
+        if (!_settings.NavResumeNearest || double.IsNaN(pNs)) return;
+        if (_detour != null || _areaMismatch) return;
+        if (!TryGetPos(out double ns, out double ew)) return;
+
+        double movedYd = Math.Sqrt(Sq(ns - pNs) + Sq(ew - pEw)) * 240.0;
+        if (movedYd < ResumeMovedYards || movedYd > ResumeTeleportYards) return;
+        RepickNearestWaypoint($"back from a pause that moved {movedYd:F0}yd", resetRecovery: false);
+    }
+
+    /// <summary>Sends a Chat waypoint's text as if typed in chat (set by the plugin).</summary>
+    public Action<string>? ChatSubmit;
 
     /// <summary>
     /// Points the route at the waypoint nearest the player (macro start). Circular
     /// and Linear routes pick from the whole route; a Once route only from the
     /// current waypoint onward, so finished steps (a recall, a portal) aren't
     /// repeated. Only plain waypoints are candidates; if the current one is a
-    /// Recall/Portal/Chat/Pause step it is kept.
+    /// Recall/Portal/Chat/Pause step it is kept. With <c>NavResumeNearest</c> off the
+    /// route keeps its last waypoint, unless <paramref name="always"/> (hazard escapes
+    /// and corpse runs, which leave the route behind).
     /// </summary>
-    /// <summary>Sends a Chat waypoint's text as if typed in chat (set by the plugin).</summary>
-    public Action<string>? ChatSubmit;
-
-    public void ResumeFromNearestWaypoint()
+    public void ResumeFromNearestWaypoint(bool always = false)
     {
-        ResetRecovery("macro started");
+        ClearPausePosition();
+        if (!always && !_settings.NavResumeNearest) return;
+        RepickNearestWaypoint("macro start", resetRecovery: true);
+    }
+
+    private void RepickNearestWaypoint(string why, bool resetRecovery)
+    {
+        if (resetRecovery) ResetRecovery("macro started");
         var route = _settings.CurrentRoute;
         if (route == null || route.Points.Count == 0) return;
         if (route.RouteType == NavRouteType.Follow) return;
@@ -739,14 +802,56 @@ internal sealed class NavigationEngine
         string how = "nearest";
         int walkBest = PickNearestByWalk(route, from, once, cur, ns, ew, out double walkYd);
         if (walkBest >= 0) { best = walkBest; how = $"nearest on foot ({walkYd:F0}yd walk)"; }
+        else
+        {
+            // Already walked past the nearest point toward the next one: the closest spot on
+            // the route lies on the leg ahead, so head for its far end instead of turning back.
+            int ahead = PassedToward(route, best, ns, ew);
+            if (ahead >= 0) { best = ahead; how = "next after the nearest"; }
+        }
         if (best == cur) return;
 
-        _host.Log($"Nav: macro start — {how} waypoint [{best}] ({Math.Sqrt(Sq(route.Points[best].NS - ns) + Sq(route.Points[best].EW - ew)) * 240.0:F0}yd) instead of [{cur}]");
+        _host.Log($"Nav: {why} — {how} waypoint [{best}] ({Math.Sqrt(Sq(route.Points[best].NS - ns) + Sq(route.Points[best].EW - ew)) * 240.0:F0}yd) instead of [{cur}]");
         _settings.ActiveNavIndex = best;
         _closestDist = double.MaxValue;
         _stuckCount = 0;
         _watchdogNs = double.NaN;
         _watchdogEw = double.NaN;
+    }
+
+    /// <summary>
+    /// The waypoint after <paramref name="idx"/> in the direction the route runs, when the
+    /// closest spot on the route is on the leg out of <paramref name="idx"/> (the player has
+    /// walked past it) rather than on the leg into it; otherwise -1. The next point must be a
+    /// plain waypoint (a step is never jumped to), and a Linear route at its end has no leg
+    /// ahead in its current direction. With no plain point before <paramref name="idx"/> the
+    /// leg in is the point itself.
+    /// </summary>
+    private int PassedToward(NavRouteParser route, int idx, double ns, double ew)
+    {
+        int n = route.Points.Count;
+        int step = route.RouteType == NavRouteType.Linear ? _linearDir : 1;
+        int next = idx + step, prev = idx - step;
+        if (route.RouteType == NavRouteType.Circular) { next = (idx + 1) % n; prev = (idx - 1 + n) % n; }
+        if (!IndexValid(next, route) || next == idx) return -1;
+        var a = route.Points[idx];
+        var b = route.Points[next];
+        if (!NavRouteParser.IsPlainWaypoint(b.Type)) return -1;
+
+        double legOut = SegmentDistSq(ns, ew, a, b);
+        double legIn  = IndexValid(prev, route) && prev != idx && NavRouteParser.IsPlainWaypoint(route.Points[prev].Type)
+            ? SegmentDistSq(ns, ew, route.Points[prev], a)
+            : Sq(ns - a.NS) + Sq(ew - a.EW);
+        return legOut < legIn ? next : -1;
+    }
+
+    /// <summary>Squared map distance from (ns, ew) to the leg a→b.</summary>
+    private static double SegmentDistSq(double ns, double ew, NavPoint a, NavPoint b)
+    {
+        double vN = b.NS - a.NS, vE = b.EW - a.EW;
+        double len = vN * vN + vE * vE;
+        double t = len <= 0 ? 0 : Math.Clamp(((ns - a.NS) * vN + (ew - a.EW) * vE) / len, 0, 1);
+        return Sq(ns - (a.NS + t * vN)) + Sq(ew - (a.EW + t * vE));
     }
 
     private const int WalkCandidates = 5;
@@ -794,6 +899,7 @@ internal sealed class NavigationEngine
     public void ResetRouteState()
     {
         Stop();
+        ClearPausePosition();
         ResetRecovery("route reset");
         _teleportedRoute = null;
         _firedRoute      = null;

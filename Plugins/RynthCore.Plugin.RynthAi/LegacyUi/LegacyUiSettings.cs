@@ -55,6 +55,12 @@ public sealed class LegacyUiSettings
     public bool  NavRecoveryEnabled = true;
     public float NavOffTrackYards = 170f;        // off track beyond this (never below 160: metas pull the bot up to ~159 yd away)
     public int   NavMaxDetourAttempts = 3;       // detours per waypoint before falling back to the escape ladder alone
+    // On: macro start, loading a Circular or Linear route, and nav taking over again after a
+    // pause that moved the character (combat, looting, buffing, doors) all head for the closest
+    // waypoint on the route. Off: a pause carries on to the waypoint it was heading for, a macro
+    // start keeps the last waypoint, and a loaded route starts at its first point. Hazard escapes
+    // and corpse runs always rejoin at the closest waypoint.
+    public bool  NavResumeNearest = true;
     public float T2Speed = 1.0f;
     public float T2DistanceTo = 0.5f;
     public float T2ReissueMs = 2000f;
@@ -983,6 +989,7 @@ public sealed class SettingsBridgePayload
     // Absent from an older engine: -1 / null keep the plugin's value.
     public int NavLabelMode { get; set; } = -1;
     public bool? NavGuideLine { get; set; }
+    public bool? NavResumeNearest { get; set; }
     public bool OpenDoors { get; set; }
     public float OpenDoorRange { get; set; }
     public bool AutoUnlockDoors { get; set; }

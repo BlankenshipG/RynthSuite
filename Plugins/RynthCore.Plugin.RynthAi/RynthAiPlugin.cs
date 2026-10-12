@@ -1630,6 +1630,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 }
                 // Macro switched on: carry on from the nearest waypoint, not the one it
                 // was heading to when stopped (after a recall that can be far away).
+                // NavResumeNearest off keeps the last waypoint.
                 if (!_macroWasRunning && settings.IsMacroRunning)
                     _navigationEngine?.ResumeFromNearestWaypoint();
                 _macroWasRunning = settings.IsMacroRunning;

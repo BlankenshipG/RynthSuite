@@ -662,7 +662,7 @@ public sealed partial class RynthAiPlugin
         string line = $"[RynthAi] Own corpse: travel back ended: {why}.";
         if (sayInChat) OwnCorpseSay(line); else Log(line);
         // RynthAi's own nav carries on from the nearest waypoint, not one from before the death.
-        _navigationEngine?.ResumeFromNearestWaypoint();
+        _navigationEngine?.ResumeFromNearestWaypoint(always: true);
     }
 
     private bool SendRynthNav(string command)
