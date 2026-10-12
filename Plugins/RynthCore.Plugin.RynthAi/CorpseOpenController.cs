@@ -1610,7 +1610,14 @@ public sealed partial class RynthAiPlugin
         if (currentItem == null || !stillVisibleOnCorpse || (currentContainer != 0 && currentContainer != _openedContainerId))
         {
             if (_currentLootItemLeftAt == 0) _currentLootItemLeftAt = now;
-            bool inInventory = currentItem == null || InPlayerInventory(currentContainer);
+            // Merged into a stack already in the pack (StackableMerge): the server removes the
+            // picked object (InventoryRemoveObject) and the client keeps no container for it, so
+            // it is never seen in the inventory. That waited out PickupArriveMaxMs (4 s) after
+            // every stackable item, and with LootCorpseTimeoutMs 12 s a corpse with three or four
+            // keeps timed out half looted (2026-10-11, Silentkelpie: Necrolytic Extracts and
+            // Coalesced Aetheria merged at ~1.8 s, the next pickup went out 4 s later).
+            bool mergedIntoStack = currentItem != null && currentContainer == 0 && !stillVisibleOnCorpse;
+            bool inInventory = currentItem == null || mergedIntoStack || InPlayerInventory(currentContainer);
             long since = now - _currentLootItemLeftAt;
             bool settled = !animating && (_currentLootItemSawAnim || since >= PickupSettleMs);
             if (!(inInventory && settled) && since < PickupArriveMaxMs)
@@ -1619,6 +1626,8 @@ public sealed partial class RynthAiPlugin
                 now,
                 currentItem == null
                     ? "item left cache after use"
+                    : mergedIntoStack
+                        ? "merged into a stack in the pack"
                     : (!stillVisibleOnCorpse
                         ? "item no longer listed on corpse"
                         : $"new container=0x{(uint)currentContainer:X8}"));
@@ -1747,6 +1756,11 @@ public sealed partial class RynthAiPlugin
 
         _processedCorpseItems.Add(_currentLootItemId);
         LootDiag($"[RynthAi] Corpse loot: pickup confirmed for 0x{(uint)_currentLootItemId:X8}; {reason}.");
+        // The corpse timeout guards against a corpse that never makes progress. Each item taken
+        // is progress, so the clock restarts: a corpse with many keeps was closed by the timeout
+        // part way through (12 s in, two or three items taken, the rest left).
+        if (_targetCorpseId != 0 && _targetCorpseId == _openedContainerId)
+            _corpseTargetSince = now;
         if (_openedContainerId != 0 && _openedContainerId == _ownRecoveryCorpseId)
             NoteOwnCorpseItemRecovered(now);
         if (!string.IsNullOrWhiteSpace(_currentLootItemName))
