@@ -180,6 +180,10 @@ internal static unsafe class FakeHost
     public static bool BusyCalls;
     public static int ForceResets;
     public static int BusyStateValue;
+    /// <summary>Opt-in (set before Create): SetMotion, recorded in <see cref="MotionCalls"/>.</summary>
+    public static bool SetMotionCalls;
+    /// <summary>Every SetMotion (motion command, key down), in order.</summary>
+    public static readonly List<(uint Motion, bool On)> MotionCalls = new();
 
     // ANSI strings handed back to tested code stay alive for the whole run.
     private static readonly Dictionary<string, IntPtr> _ansi = new();
@@ -215,6 +219,7 @@ internal static unsafe class FakeHost
         PluginCommandCalls = false; PluginCommandDelivered = true; PluginCommands.Clear();
         CombatModeCalls = false; CombatModeRequests.Clear();
         BusyCalls = false; ForceResets = 0; BusyStateValue = 0;
+        SetMotionCalls = false; MotionCalls.Clear();
     }
 
     /// <summary>
@@ -254,6 +259,8 @@ internal static unsafe class FakeHost
         if (Bitfields.Count > 0)
             api.GetObjectBitfieldFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint>)&GetObjectBitfield;
         api.SetAutoRunFn            = (IntPtr)(delegate* unmanaged[Cdecl]<int, int>)&SetAutoRun;
+        if (SetMotionCalls)
+            api.SetMotionFn         = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int>)&SetMotion;
         api.TurnToHeadingFn         = (IntPtr)(delegate* unmanaged[Cdecl]<float, int>)&TurnToHeading;
         api.JumpNonAutonomousFn     = (IntPtr)(delegate* unmanaged[Cdecl]<float, int>)&JumpNonAutonomous;
         if (TapJumpCalls)
@@ -628,6 +635,9 @@ internal static unsafe class FakeHost
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int SetAutoRun(int on) { AutoRun = on != 0; AutoRunCalls.Add(AutoRun); return 1; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int SetMotion(uint motion, int on) { MotionCalls.Add((motion, on != 0)); return 1; }
 
     // The fake character turns instantly.
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]

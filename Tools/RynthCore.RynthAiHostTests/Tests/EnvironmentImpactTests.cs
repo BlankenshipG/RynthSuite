@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 using RynthCore.RynthAiHostTests.Fakes;
 using RynthCore.RynthAiTests.Harness;
 
@@ -30,6 +31,11 @@ internal static class EnvironmentImpactTests
         r.Add("env impact: Off, or not in Missile mode: the line is ignored", MissileOff);
         r.Add("env impact: a bolt stopping short with no hit counts; one with a hit line, or reaching the target, doesn't", MagicShort);
         r.Add("env impact: an approach Think stops driving lets go of autorun", ApproachOrphan);
+        r.Add("env impact (flight 63260): 3 magic casts landing nothing -> one short real sidestep; a hit resets; 30 s apart", ResyncSidestep);
+        r.Add("env impact: the throttle switching target restarts the re-sync's miss count", ResyncCountResetByThrottle);
+        r.Add("env impact: moving closer drops a wanted re-sync sidestep", ResyncDroppedByApproach);
+        r.Add("env impact: a re-sync sidestep holding its key finishes before the throttle runs", ResyncStepFinishesFirst);
+        r.Add("env impact: a re-sync sidestep Think stops driving, or a macro stop, lets go of the key", ResyncKeyReleased);
         r.Add("attack power: Default/High/Reckless/Variable/Reckless + Variable, the DEFAULT line, untrained Recklessness", Power);
         r.Add("attack power: an engine without the Power column keeps each rule's power", PowerCarriedOver);
     }
@@ -99,9 +105,14 @@ internal static class EnvironmentImpactTests
 
         /// <summary>The player at (96, 96) facing north; <paramref name="mobs"/> placed after the reset.</summary>
         public Rig(int mode, Action<LegacyUiSettings> set, params (uint Id, string Name, float X, float Y)[] mobs)
+            : this(mode, set, setMotion: false, mobs) { }
+
+        /// <summary>As above; <paramref name="setMotion"/> installs SetMotion (the re-sync sidestep needs it).</summary>
+        public Rig(int mode, Action<LegacyUiSettings> set, bool setMotion, params (uint Id, string Name, float X, float Y)[] mobs)
         {
             FakeHost.Reset();
             FakeHost.WeaponCalls = true;
+            FakeHost.SetMotionCalls = setMotion;
             FakeHost.CombatModeValue = mode;
             Place(Player, "Me", 96, 96, creature: false);
             foreach (var m in mobs) Place(m.Id, m.Name, m.X, m.Y);
@@ -117,6 +128,7 @@ internal static class EnvironmentImpactTests
             C.EnvClock = () => Now;
             C.ScanNearbyTargets();
             C.HandleCombatTrigger();
+            FakeHost.MotionCalls.Clear();         // the trigger's turn-motion clear-out isn't under test
         }
 
         public double Dist(uint id)
@@ -231,26 +243,7 @@ internal static class EnvironmentImpactTests
         var r = new Rig(CombatMode.Magic, s => { s.MagicEnvironmentResponse = 2; s.EnvironmentImpactLimit = 2; }, Skulker, Slinker);
         Check.Eq((uint)r.C.activeTargetId, A, "the Skulker is locked");
 
-        // One cast whose bolt flies 9 m and stops (a wall halfway).
-        void Cast(float stopY, bool hitLine = false)
-        {
-            r.C.RegisterCastWatch(r.C.activeTargetId, "Flame Bolt VI");
-            r.Now = r.Now.AddMilliseconds(800);                     // the windup
-            FakeHost.Names[Bolt] = "Flame Bolt";
-            FakeHost.Positions[Bolt] = (Lb | 0x1C, 96f, 97f, 0f);   // spawns at the caster
-            r.C.OnObjectCreated(Bolt);
-            r.C.PollEnvironmentImpact();
-            for (float y = 99; y <= stopY; y += 2)
-            {
-                r.Now = r.Now.AddMilliseconds(100);
-                FakeHost.Positions[Bolt] = (Lb | 0x1C, 96f, y, 0f);
-                r.C.PollEnvironmentImpact();
-            }
-            if (hitLine) r.C.HandleChatForDamage("You singe Drudge Skulker for 40 points of fire damage!");
-            for (int i = 0; i < 15; i++) { r.Now = r.Now.AddMilliseconds(100); r.C.PollEnvironmentImpact(); }
-            r.C.OnObjectDeleted(Bolt);
-            FakeHost.Positions.Remove(Bolt);
-        }
+        void Cast(float stopY, bool hitLine = false) => CastBolt(r, stopY, hitLine);
 
         Cast(105);
         Check.True(FakeHost.Logs.Any(l => l.Contains("[EnvImpact] magic") && l.Contains("1/2")), "a bolt stopping 9 m out, no hit: one environment hit");
@@ -343,7 +336,148 @@ internal static class EnvironmentImpactTests
         Check.Eq(incoming[3].AttackPower, "Default", "a new rule stays Default");
     }
 
+    // ── Magic position re-sync (upstream 2026.10.12.1) and the throttle ──────
+
+    private const uint StepRight = 0x6500000F, StepLeft = 0x65000010;
+
+    /// <summary>Upstream's CastNoDamageTests.ResyncSidestep, on this file's rig.</summary>
+    private static void ResyncSidestep()
+    {
+        var r = new Rig(CombatMode.Magic, s => { }, setMotion: true, Skulker, Slinker);
+        var c = r.C;
+        c.TargetClock = () => r.Now;
+        MoveAudit.Reset();
+
+        c.MagicMissForTest(unchecked((int)A));
+        c.MagicMissForTest(unchecked((int)B));            // a swap to the other monster doesn't reset the count
+        Check.False(c.ResyncActive, "two misses: nothing yet");
+        c.ReportDamageOnTarget(unchecked((int)A));
+        c.MagicMissForTest(unchecked((int)A));
+        c.MagicMissForTest(unchecked((int)A));
+        Check.False(c.ResyncActive, "a hit reset the count");
+        c.MagicMissForTest(unchecked((int)A));
+        Check.True(c.ResyncActive, "three in a row: a re-sync is wanted");
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("one short sidestep to re-sync")), 1, "said once");
+
+        Check.True(c.TickResyncStep(), "first tick: the step starts, no cast");
+        Check.True(FakeHost.MotionCalls.SequenceEqual(new[] { (StepRight, true) }), "sidestep right key down");
+        r.Now = r.Now.AddMilliseconds(200);
+        Check.True(c.TickResyncStep(), "still stepping at 200 ms");
+        r.Now = r.Now.AddMilliseconds(100);
+        Check.True(c.TickResyncStep(), "300 ms: key up, settling");
+        Check.True(FakeHost.MotionCalls.SequenceEqual(new[] { (StepRight, true), (StepRight, false) }), "key up");
+        r.Now = r.Now.AddMilliseconds(400);
+        Check.False(c.TickResyncStep(), "settled: casting may go on");
+        Check.Eq(c.ResyncSteps, 1, "one step");
+
+        for (int i = 0; i < 3; i++) c.MagicMissForTest(unchecked((int)A));
+        Check.False(c.ResyncActive, "within 30 s: no second step");
+        r.Now = r.Now.AddSeconds(30);
+        for (int i = 0; i < 3; i++) c.MagicMissForTest(unchecked((int)A));
+        Check.True(c.ResyncActive, "30 s later: another one");
+        c.TickResyncStep();
+        Check.True(FakeHost.MotionCalls[2] == (StepLeft, true), "the other side this time");
+    }
+
+    private static void ResyncCountResetByThrottle()
+    {
+        var r = new Rig(CombatMode.Magic, s => { s.MagicEnvironmentResponse = 2; s.EnvironmentImpactLimit = 2; }, setMotion: true, Skulker, Slinker);
+        r.C.TargetClock = () => r.Now;
+        r.C.MagicMissForTest(unchecked((int)A));
+        r.C.MagicMissForTest(unchecked((int)A));
+        CastBolt(r, 105);
+        CastBolt(r, 105);
+        Check.True(r.Run(), "two short bolts: the throttle switches target");
+        Check.Eq(r.C.activeTargetId, 0, "the Skulker is left");
+
+        r.C.MagicMissForTest(unchecked((int)B));
+        r.C.MagicMissForTest(unchecked((int)B));
+        Check.False(r.C.ResyncActive, "the misses the wall explained no longer count toward a sidestep");
+        r.C.MagicMissForTest(unchecked((int)B));
+        Check.True(r.C.ResyncActive, "three fresh misses on the new target still ask for one");
+    }
+
+    private static void ResyncDroppedByApproach()
+    {
+        var r = new Rig(CombatMode.Magic, s => { s.MagicEnvironmentResponse = 1; s.EnvironmentImpactLimit = 1; }, setMotion: true, Skulker);
+        r.C.TargetClock = () => r.Now;
+        for (int i = 0; i < 3; i++) r.C.MagicMissForTest(unchecked((int)A));
+        Check.True(r.C.ResyncActive, "a sidestep is wanted");
+
+        CastBolt(r, 105);
+        Check.True(r.Run(), "the throttle moves closer");
+        Check.True(FakeHost.AutoRun, "running toward the Skulker");
+        Check.False(r.C.ResyncActive, "the wanted sidestep is dropped: the run moves us anyway");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("re-sync sidestep dropped: moving closer")), "logged");
+        Check.Eq(FakeHost.MotionCalls.Count, 0, "no sidestep key was sent");
+    }
+
+    private static void ResyncStepFinishesFirst()
+    {
+        var r = new Rig(CombatMode.Magic, s => { s.MagicEnvironmentResponse = 1; s.EnvironmentImpactLimit = 1; }, setMotion: true, Skulker);
+        r.C.TargetClock = () => r.Now;
+        for (int i = 0; i < 3; i++) r.C.MagicMissForTest(unchecked((int)A));
+        CastBolt(r, 105);                      // the throttle trips (its response waits for Think)
+        Check.True(r.C.TickResyncStep(), "the sidestep key goes down");
+
+        Check.True(r.Run(), "the throttle's tick: no attack");
+        Check.False(r.C.EnvironmentApproachActive, "but no run while the sidestep key is held");
+        Check.False(FakeHost.AutoRun, "autorun not sent");
+
+        r.Now = r.Now.AddMilliseconds(300);
+        Check.True(r.C.TickResyncStep(), "the sidestep key comes up");
+        Check.True(r.Run(), "now the approach runs");
+        Check.True(r.C.EnvironmentApproachActive, "approach under way");
+        Check.True(FakeHost.MotionCalls.SequenceEqual(new[] { (StepRight, true), (StepRight, false) }), "the key went up before the run");
+    }
+
+    private static void ResyncKeyReleased()
+    {
+        var r = new Rig(CombatMode.Magic, s => { }, setMotion: true, Skulker);
+        r.C.TargetClock = () => r.Now;
+        for (int i = 0; i < 3; i++) r.C.MagicMissForTest(unchecked((int)A));
+        r.C.TickResyncStep();
+        Check.True(FakeHost.MotionCalls.SequenceEqual(new[] { (StepRight, true) }), "key down");
+
+        r.Now = r.Now.AddSeconds(2);           // Think stopped ticking it (left magic mode)
+        r.C.PollEnvironmentImpact();
+        Check.True(FakeHost.MotionCalls.SequenceEqual(new[] { (StepRight, true), (StepRight, false) }), "the heartbeat lets go of the key");
+        Check.False(r.C.ResyncActive, "the sidestep is over");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("re-sync sidestep stopped: combat stopped driving it")), "logged");
+
+        r.C.OnHeartbeat();                     // a heartbeat sees the macro running
+        r.C.MagicMissForTest(unchecked((int)A));
+        int before = FakeHost.MotionCalls.Count;
+        r.C.TickResyncStep();
+        Check.True(FakeHost.MotionCalls.Count == before + 1 && FakeHost.MotionCalls[^1] == (StepLeft, true), "a new sidestep, key down");
+        r.S.IsMacroRunning = false;
+        r.C.OnHeartbeat();
+        Check.True(FakeHost.MotionCalls[^1] == (StepLeft, false), "a macro stop lets go of it too");
+        Check.False(r.C.ResyncActive, "and ends it");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /// <summary>One cast at the active target whose bolt flies from the caster north to <paramref name="stopY"/> and stops.</summary>
+    private static void CastBolt(Rig r, float stopY, bool hitLine = false)
+    {
+        r.C.RegisterCastWatch(r.C.activeTargetId, "Flame Bolt VI");
+        r.Now = r.Now.AddMilliseconds(800);                     // the windup
+        FakeHost.Names[Bolt] = "Flame Bolt";
+        FakeHost.Positions[Bolt] = (Lb | 0x1C, 96f, 97f, 0f);   // spawns at the caster
+        r.C.OnObjectCreated(Bolt);
+        r.C.PollEnvironmentImpact();
+        for (float y = 99; y <= stopY; y += 2)
+        {
+            r.Now = r.Now.AddMilliseconds(100);
+            FakeHost.Positions[Bolt] = (Lb | 0x1C, 96f, y, 0f);
+            r.C.PollEnvironmentImpact();
+        }
+        if (hitLine) r.C.HandleChatForDamage("You singe Drudge Skulker for 40 points of fire damage!");
+        for (int i = 0; i < 15; i++) { r.Now = r.Now.AddMilliseconds(100); r.C.PollEnvironmentImpact(); }
+        r.C.OnObjectDeleted(Bolt);
+        FakeHost.Positions.Remove(Bolt);
+    }
 
     private static void Place(uint id, string name, float x, float y, bool creature = true)
     {

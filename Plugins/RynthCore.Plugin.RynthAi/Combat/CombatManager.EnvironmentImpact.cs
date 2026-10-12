@@ -99,7 +99,7 @@ public partial class CombatManager
     private EnvironmentResponse ResponseFor(EnvKind kind) => EnvironmentImpactPlanner.Parse(
         kind == EnvKind.Missile ? _settings.MissileEnvironmentResponse : _settings.MagicEnvironmentResponse);
 
-    // â”€â”€ Signals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Signals ────────────────────────────────────────────────────────────────
 
     /// <summary>A new object. Only queued while the macro runs with magic detection on
     /// (the heartbeat poll that drains the queue runs only then).</summary>
@@ -167,7 +167,7 @@ public partial class CombatManager
         _envPendingKind = kind;
     }
 
-    // â”€â”€ Heartbeat: projectile watch and the approach's safety net â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Heartbeat: projectile watch and the approach's safety net ─────────────
 
     /// <summary>Every heartbeat while the macro runs (pump thread).</summary>
     internal void PollEnvironmentImpact()
@@ -195,6 +195,11 @@ public partial class CombatManager
                 || (now - _envApproachStartedAt).TotalMilliseconds > ApproachMaxMs + ApproachOrphanMs
                 || !_settings.EnableCombat))
             EndEnvironmentApproach("combat stopped driving it");
+
+        // Same for the re-sync sidestep's movement key: Think releases it after ResyncStepMs,
+        // but only while it keeps ticking in magic mode.
+        if (_resyncState == 2 && (TargetClock() - _resyncAt).TotalMilliseconds > ResyncStepMs + ApproachOrphanMs)
+            AbandonResync("combat stopped driving it");
     }
 
     private void ClaimProjectiles(DateTime now)
@@ -310,7 +315,7 @@ public partial class CombatManager
         }
     }
 
-    // â”€â”€ Think: the response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Think: the response ───────────────────────────────────────────────────
 
     /// <summary>
     /// In ThinkCore once the target is valid and in reach. True = this tick belongs to the
@@ -331,6 +336,9 @@ public partial class CombatManager
         EnvKind kind = _envPendingKind;
         // The cast in flight finishes first: turning or running now would cancel it.
         if (kind == EnvKind.Magic && IsCastInFlight()) return true;
+        // A re-sync sidestep already holding a movement key finishes first: running or turning
+        // over it would send two movement states at once.
+        if (_resyncState == 2) return true;
 
         int id = activeTargetId;
         _envPendingTargetId = 0;
@@ -350,6 +358,7 @@ public partial class CombatManager
                 int skip = Math.Max(1, _settings.EnvironmentSkipSec);
                 _envSkipUntil[id] = now.AddSeconds(skip);
                 _host.Log($"[EnvImpact] {why} keep hitting the environment: leaving {who}, skipping it {skip}s ({EnvironmentImpactPlanner.Name((int)response)})");
+                SupersedeResync("a new target");
                 ForgetScanned(id);
                 DropTarget("environment hits: new target");
                 return true;
@@ -367,12 +376,36 @@ public partial class CombatManager
                 _envApproachRunAt = _envApproachTurnAt = DateTime.MinValue;
                 _envApproachUsedMotions = false;
                 _host.Log($"[EnvImpact] {why} keep hitting the environment: moving closer to {who}, stopping at {goal:0.0}m ({EnvironmentImpactPlanner.Name((int)response)})");
+                SupersedeResync("moving closer");
                 return ContinueEnvironmentApproach(targetObj, currentDist, now);
             }
             default:
                 _host.Log($"[EnvImpact] {why} keep hitting the environment on {who}, but it's the only monster in reach and already close: attacking on");
                 return false;
         }
+    }
+
+    /// <summary>
+    /// The throttle acted on misses the magic re-sync (TickResyncStep) was also counting. The
+    /// misses are explained (a wall in the way), so the re-sync's count starts over, and a
+    /// sidestep that is wanted but not yet started is dropped. Moving closer is itself real
+    /// movement, which re-syncs the server's copy of our position anyway.
+    /// </summary>
+    private void SupersedeResync(string by)
+    {
+        _magicMissesSinceHit = 0;
+        if (_resyncState != 1) return;
+        _resyncState = 0;
+        _host.Log($"[EnvImpact] re-sync sidestep dropped: {by} answers the misses");
+    }
+
+    /// <summary>Stops a re-sync sidestep where it is, letting go of its movement key if held.</summary>
+    private void AbandonResync(string why)
+    {
+        if (_resyncState == 0) return;
+        if (_resyncState == 2) _host.SetMotionBy("Combat/Resync", _resyncMotion, false);
+        _resyncState = 0;
+        _host.Log($"[CombatCast] re-sync sidestep stopped: {why}");
     }
 
     private bool ContinueEnvironmentApproach(WorldObject targetObj, double currentDist, DateTime now)
@@ -448,6 +481,7 @@ public partial class CombatManager
     private void ResetEnvironmentImpact(string why)
     {
         EndEnvironmentApproach(why);
+        AbandonResync(why);
         _envPendingTargetId = 0;
         _castWatches.Clear();
         _envCandidates.Clear();
@@ -456,7 +490,7 @@ public partial class CombatManager
         _envSkipUntil.Clear();
     }
 
-    // â”€â”€ Positions (global metres: landblock x/y * 192 + the in-block offset) â”€â”€
+    // ── Positions (global metres: landblock x/y * 192 + the in-block offset) ──
 
     private bool TryGetObjectGlobal(uint id, out double x, out double y, out double z)
     {

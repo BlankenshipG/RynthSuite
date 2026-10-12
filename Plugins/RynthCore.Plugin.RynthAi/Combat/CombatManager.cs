@@ -1619,8 +1619,92 @@ public partial class CombatManager : IDisposable
         _lastSpellCast = DateTime.Now;
     }
 
+    // ── Position re-sync after casts that land nothing (2026-10-12) ──────────────────────────
+    // Flight 63260: after a stray stop burst rode with a cast, every projectile cast (Corruption
+    // VII, Nether Arc VII) was answered - components burned, UseDone - and nothing landed, until a
+    // real sidestep (12:32:13) ended it. ACE launches projectiles from the caster's SERVER physics
+    // position and drops a spawn that fails or collides at once without a word; it re-syncs that
+    // position only when a reported position differs from the last one (Player_Tick
+    // UpdatePlayerPosition), and standing still reports the same spot. So after
+    // ResyncAfterMagicMisses magic casts in a row with no damage (any target: swaps between two
+    // monsters don't reset it), RynthAi takes one short real sidestep - a movement key down and
+    // up through the client (MoveToState + AutonomousPositions), alternating sides - once the
+    // server has answered the last cast, and casts nothing until it is done. At most once per
+    // ResyncCooldownMs.
+    internal const int ResyncAfterMagicMisses = 3;
+    internal const double ResyncStepMs = 300;
+    internal const double ResyncSettleMs = 400;
+    internal const double ResyncCooldownMs = 30_000;
+    private const uint MotionSideStepRight = 0x6500000F;
+    private const uint MotionSideStepLeft = 0x65000010;
+    private int _magicMissesSinceHit;
+    private int _resyncState;                 // 0 idle, 1 wanted, 2 stepping, 3 settling
+    private DateTime _resyncAt = DateTime.MinValue;
+    private DateTime _lastResyncAt = DateTime.MinValue;
+    private uint _resyncMotion;
+    private bool _resyncLeftNext;
+    internal int ResyncSteps { get; private set; }
+    internal bool ResyncActive => _resyncState != 0;
+
+    private void NoteMagicMissForResync(int tid)
+    {
+        _magicMissesSinceHit++;
+        if (_resyncState != 0 || _magicMissesSinceHit < ResyncAfterMagicMisses) return;
+        DateTime now = TargetClock();
+        if (_lastResyncAt != DateTime.MinValue && (now - _lastResyncAt).TotalMilliseconds < ResyncCooldownMs) return;
+        if (!_host.HasSetMotion) return;
+        _resyncState = 1;
+        _resyncAt = now;
+        _host.Log($"[CombatCast] {_magicMissesSinceHit} magic casts in a row landed nothing (last at 0x{(uint)tid:X8}) - " +
+                  "one short sidestep to re-sync the server's copy of our position before the next cast");
+    }
+
+    /// <summary>
+    /// The re-sync sidestep, one step per call (Think, before a cast). True while it runs: no cast.
+    /// Starts only when no server action is unanswered and the character isn't animating.
+    /// </summary>
+    internal bool TickResyncStep()
+    {
+        if (_resyncState == 0) return false;
+        DateTime now = TargetClock();
+        switch (_resyncState)
+        {
+            case 1:
+                if (ActionPacer.Enabled
+                    && (ActionPacer.Current(_host) != null || ActionPacer.GestureHolds(_host, "Combat/Resync", HealNeed.None, out _)))
+                {
+                    if ((now - _resyncAt).TotalMilliseconds > 10_000) { _resyncState = 0; _host.Log("[CombatCast] re-sync sidestep given up: the server never went idle"); }
+                    return true;
+                }
+                _resyncMotion = _resyncLeftNext ? MotionSideStepLeft : MotionSideStepRight;
+                _resyncLeftNext = !_resyncLeftNext;
+                if (!_host.SetMotionBy("Combat/Resync", _resyncMotion, true)) { _resyncState = 0; return false; }
+                _resyncState = 2;
+                _resyncAt = now;
+                return true;
+            case 2:
+                if ((now - _resyncAt).TotalMilliseconds < ResyncStepMs) return true;
+                _host.SetMotionBy("Combat/Resync", _resyncMotion, false);
+                _resyncState = 3;
+                _resyncAt = now;
+                return true;
+            default:
+                if ((now - _resyncAt).TotalMilliseconds < ResyncSettleMs) return true;
+                _resyncState = 0;
+                _lastResyncAt = now;
+                _magicMissesSinceHit = 0;
+                ResyncSteps++;
+                _host.Log("[CombatCast] re-sync sidestep done");
+                return false;
+        }
+    }
+
+    /// <summary>Test seam: one judged magic cast with no damage.</summary>
+    internal void MagicMissForTest(int tid) => NoteMagicMissForResync(tid);
+
     public void ReportDamageOnTarget(int targetId)
     {
+        _magicMissesSinceHit = 0;   // something we cast landed: the server's position is fine
         // Damage / health change on the cast we're judging → that cast HIT.
         if (targetId == _pendingJudgeTargetId)
             _damageSincePendingCast = true;
@@ -1784,8 +1868,9 @@ public partial class CombatManager : IDisposable
         bool hit = _damageSincePendingCast;
         _pendingJudgeCastAt = DateTime.MinValue;
 
-        if (hit) { _consecutiveCastMisses = 0; return; }
+        if (hit) { _consecutiveCastMisses = 0; _magicMissesSinceHit = 0; return; }
 
+        if (CurrentCombatMode == CombatMode.Magic) NoteMagicMissForResync(tid);
         _consecutiveCastMisses++;
         if (_consecutiveCastMisses >= _settings.BlacklistAttempts)
         {
@@ -2797,6 +2882,15 @@ public partial class CombatManager : IDisposable
             if (CurrentCombatMode == CombatMode.Magic && IsAwaitingCastResolution())
             {
                 LastCombatSkipReason = "cast-cadence"; // D4 record-only (IsCastInFlight)
+                _tickWait = CombatLatencyTracker.Wait.Cast;
+                return true;
+            }
+
+            // Casts landing nothing: one short real sidestep re-syncs the server's copy of our
+            // position (TickResyncStep, 2026-10-12); nothing is cast while it runs.
+            if (CurrentCombatMode == CombatMode.Magic && TickResyncStep())
+            {
+                LastCombatSkipReason = "position-resync";
                 _tickWait = CombatLatencyTracker.Wait.Cast;
                 return true;
             }
