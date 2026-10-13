@@ -383,7 +383,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     // May run on AC's thread: the feed only queues.
     public override void OnChatWindowText(string? text, int chatType, ref int eat)
     {
-        if (eat == 0 && _vault != null && _vault.ShouldEat(text)) eat = 1;
+        if (eat == 0 && _vault != null && _vault.ShouldEat(text, chatType)) eat = 1;
     }
 
     private void StartCharacter(long now, uint player, string server, string account, string character)

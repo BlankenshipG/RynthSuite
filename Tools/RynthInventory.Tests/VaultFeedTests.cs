@@ -59,6 +59,25 @@ namespace RynthInventory.Tests
                 Check(!v.ShouldEat(null), "null is fine");
             }
 
+            // A player imitating the server: their name is in front, or the chat type is theirs.
+            {
+                (VaultFeed v, _) = NewVault();
+                v.Ask(0);
+                Check(!v.ShouldEat("Bob says, \"" + VaultPage(1, 1, 1, A) + "\"", 2), "spoken data line is not ours");
+                Check(!v.ShouldEat("Bob " + VaultPage(1, 1, 1, A), 12), "an emoted data line is not ours");
+                Check(!v.ShouldEat("Bob " + VaultPage(1, 1, 1, A)), "a data line not at the start is not ours, type unknown");
+                Check(!v.ShouldEat(VaultPage(1, 1, 1, A), 3), "a data line in a tell is not ours");
+                Check(!v.ShouldEat("Bob tells you, \"Unknown command: mule-data\"", 3), "a told unknown-command line is not ours");
+                Check(!v.ShouldEat("Unknown command: mule-data", 2), "unknown-command in speech is not ours");
+                Check(!v.ShouldEat("Unknown command: mule-data-ish"), "another command's refusal is not ours");
+                Check(v.ShouldEat("Unknown command: mule-data", 15), "ACE's real reply (Help) is ours");
+            }
+            {
+                (VaultFeed v, _) = NewVault();
+                v.Ask(0);
+                Check(v.ShouldEat("  " + VaultPage(1, 1, 1, A), 0), "the server's line (Broadcast), leading space allowed");
+            }
+
             // A server without the command.
             {
                 (VaultFeed v, List<string> sent) = NewVault();

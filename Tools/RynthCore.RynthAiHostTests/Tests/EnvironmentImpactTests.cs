@@ -29,6 +29,7 @@ internal static class EnvironmentImpactTests
         r.Add("env impact: missile lines trip New target: the attack stops, the target is skipped, the next is picked", MissileNewTarget);
         r.Add("env impact: Move closer runs toward the target and stops at the goal; the only monster is never skipped", MissileApproach);
         r.Add("env impact: Off, or not in Missile mode: the line is ignored", MissileOff);
+        r.Add("env impact: a player's copy of the missile line (their chat type, or their name in front) is not a hit", MissileSpoof);
         r.Add("env impact: a bolt stopping short with no hit counts; one with a hit line, or reaching the target, doesn't", MagicShort);
         r.Add("env impact: an approach Think stops driving lets go of autorun", ApproachOrphan);
         r.Add("env impact (flight 63260): 3 magic casts landing nothing -> one short real sidestep; a hit resets; 30 s apart", ResyncSidestep);
@@ -236,6 +237,20 @@ internal static class EnvironmentImpactTests
         var melee = new Rig(CombatMode.Melee, s => { s.MissileEnvironmentResponse = 2; s.EnvironmentImpactLimit = 1; }, Skulker);
         melee.C.HandleChatForDamage(MissileLine);
         Check.False(melee.Run(), "not in Missile mode: ignored");
+    }
+
+    private static void MissileSpoof()
+    {
+        var r = new Rig(CombatMode.Missile, s => { s.MissileEnvironmentResponse = 2; s.EnvironmentImpactLimit = 1; }, Skulker);
+        r.C.HandleChatForDamage("Bob says, \"" + MissileLine + "\"", 2);
+        r.C.HandleChatForDamage(MissileLine, 3);                      // a tell, whatever its text
+        r.C.HandleChatForDamage("Bob " + MissileLine, 12);            // an emote
+        r.C.HandleChatForDamage("[Allegiance] Bob says, \"" + MissileLine + "\"");   // type unknown: the anchor
+        Check.False(r.Run(), "no spoofed line counts");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("[EnvImpact]")), "nothing recorded");
+
+        r.C.HandleChatForDamage(MissileLine, 0);                      // ACE's own line is a Broadcast
+        Check.True(r.Run(), "the server's line still trips the limit");
     }
 
     private static void MagicShort()

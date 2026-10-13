@@ -1264,9 +1264,13 @@ public partial class CombatManager : IDisposable
             _damageStore!.RecordTaken(src, name, ElementFromWord(m.Groups["type"].Value), amount);
     }
 
-    public void HandleChatForDamage(string text)
+    /// <summary>A chat line for the damage meter, the stall watchdog and the environment throttle.
+    /// <paramref name="chatType"/> is the line's eChatTypes (-1 = not known).</summary>
+    public void HandleChatForDamage(string text, int chatType = -1)
     {
         if (string.IsNullOrEmpty(text)) return;
+        // Combat lines come from the server; one in a player's chat type is someone's imitation.
+        if (ChatSource.IsPlayerAuthored(chatType)) return;
         // An arrow into a wall: the environment-impact throttle's missile signal.
         if (NoteMissileEnvironmentChat(text)) return;
         // A miss is a swing too (stall watchdog). "You evaded X!" is the monster's miss, not ours.

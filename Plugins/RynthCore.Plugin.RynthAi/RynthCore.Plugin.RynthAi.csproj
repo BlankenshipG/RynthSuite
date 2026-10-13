@@ -51,6 +51,8 @@
     <Compile Include="..\Shared\Nav3DText.cs" Link="Shared\Nav3DText.cs" />
     <!-- ImGui text calls for non-literal text ('%' escaped): see the file's header. -->
     <Compile Include="..\Shared\SafeImGui.cs" Link="Shared\SafeImGui.cs" />
+    <!-- Server signal vs a player's copy of it (chat type + line-start anchor). -->
+    <Compile Include="..\Shared\ChatSource.cs" Link="Shared\ChatSource.cs" />
     <!-- Mini Remote session stats: RynthTracker's code, so the two show the same numbers (2026-10-11). -->
     <Compile Include="..\Shared\KillCounter.cs" Link="Shared\KillCounter.cs" />
     <Compile Include="..\Shared\TrackerSessionStore.cs" Link="Shared\TrackerSessionStore.cs" />

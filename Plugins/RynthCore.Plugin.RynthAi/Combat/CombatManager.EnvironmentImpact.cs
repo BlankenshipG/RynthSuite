@@ -29,8 +29,9 @@ public partial class CombatManager
 
     internal EnvironmentImpactThrottle EnvThrottle { get; } = new();
 
-    /// <summary>The chat line ACE sends the shooter (ProjectileCollisionHelper.OnCollideEnvironment).</summary>
-    internal const string MissileEnvironmentText = "missile attack hit the environment";
+    /// <summary>The start of the chat line ACE sends the shooter (ProjectileCollisionHelper.OnCollideEnvironment,
+    /// a Broadcast line). Matched at the line's start only: a player's copy has their name in front.</summary>
+    internal const string MissileEnvironmentText = "Your missile attack hit the environment";
 
     // A cast's projectiles appear once its windup ends (up to ~2.5 s for a high tier).
     private const double CastClaimWindowMs = 4000;
@@ -126,7 +127,7 @@ public partial class CombatManager
     /// <summary>The missile line, from HandleChatForDamage. True when it was that line.</summary>
     private bool NoteMissileEnvironmentChat(string text)
     {
-        if (text.IndexOf(MissileEnvironmentText, StringComparison.OrdinalIgnoreCase) < 0) return false;
+        if (!ChatSource.StartsWithMarker(text, MissileEnvironmentText, StringComparison.OrdinalIgnoreCase)) return false;
         if (ResponseFor(EnvKind.Missile) == EnvironmentResponse.Off) return true;
         if (CurrentCombatMode != CombatMode.Missile) return true;
         int target = _serverAttackTargetId != 0 ? _serverAttackTargetId : activeTargetId;

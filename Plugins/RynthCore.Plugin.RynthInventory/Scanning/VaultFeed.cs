@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text.Json;
 using RynthCore.Plugin.RynthInventory.Data;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthInventory.Scanning;
 
@@ -98,12 +99,17 @@ internal sealed class VaultFeed
         return false;
     }
 
-    /// <summary>True for a line this feed answers, so the caller keeps it out of the chat window. Cheap; any thread.</summary>
-    public bool ShouldEat(string? text)
+    /// <summary>
+    /// True for a line this feed answers, so the caller keeps it out of the chat window. Cheap; any thread.
+    /// <paramref name="chatType"/> is the line's eChatTypes (-1 = not known). Server lines only: a line
+    /// in a player's chat type, or one that doesn't start with the marker (a player's copy has their
+    /// name in front), is left alone, so nobody can feed the vault view or hide chat by typing "~ael1".
+    /// </summary>
+    public bool ShouldEat(string? text, int chatType = -1)
     {
-        if (string.IsNullOrEmpty(text)) return false;
-        int at = text.IndexOf(Prefix, StringComparison.Ordinal);
-        if (at >= 0)
+        if (string.IsNullOrEmpty(text) || ChatSource.IsPlayerAuthored(chatType)) return false;
+        int at = ChatSource.ContentStart(text);
+        if (ChatSource.StartsWithMarker(text, Prefix))
         {
             // Only our own kind: another plugin's ~ael1 line (the Companion's) stays visible to it.
             if (text.IndexOf("\"t\":\"mule\"", at, StringComparison.Ordinal) < 0) return false;
@@ -111,13 +117,21 @@ internal sealed class VaultFeed
             return true;
         }
         // The reply of a server that has no such command: swallowed only while we wait for one.
-        if (_expecting && text.IndexOf("Unknown command", StringComparison.OrdinalIgnoreCase) >= 0
-            && text.IndexOf("mule-data", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (_expecting && IsUnknownCommandReply(text))
         {
             _lines.Enqueue(UnknownMarker);
             return true;
         }
         return false;
+    }
+
+    /// <summary>ACE's "Unknown command: mule-data" (GameActionTalk names the bare command; a leading / or @ is allowed).</summary>
+    private static bool IsUnknownCommandReply(string text)
+    {
+        const string marker = "Unknown command:";
+        if (!ChatSource.StartsWithMarker(text, marker, StringComparison.OrdinalIgnoreCase)) return false;
+        string named = text.Substring(ChatSource.ContentStart(text) + marker.Length).Trim().TrimStart('/', '@');
+        return string.Equals(named, "mule-data", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Applies what arrived and decides what to send next. Plugin tick.</summary>

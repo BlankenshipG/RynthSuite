@@ -2172,7 +2172,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _manaStoneManager?.OnChatWindowText(text);
         _petManager?.OnChatWindowText(text);
         _combatManager?.HandleChatForDebuffs(text);
-        _combatManager?.HandleChatForDamage(text);
+        _combatManager?.HandleChatForDamage(text, chatType);
         _missileCraftingManager?.HandleChat(text);
         _scrollLearner?.OnChat(text);
         _metaManager?.HandleChat(text, chatType);
