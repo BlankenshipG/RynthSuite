@@ -247,6 +247,16 @@ public class FellowshipTracker : IDisposable
         return _memberCache.Values;
     }
 
+    /// <summary>
+    /// Every member as (character id, name), all from one refresh. Prefer this over the index
+    /// getters, which can each see a different refresh and pair one member's id with another's name.
+    /// </summary>
+    public List<KeyValuePair<int, string>> GetMembers()
+    {
+        RefreshIfNeeded();
+        return new List<KeyValuePair<int, string>>(_memberCache);
+    }
+
     public string GetMemberName(int index)
     {
         RefreshIfNeeded();
@@ -296,15 +306,14 @@ public class FellowshipTracker : IDisposable
             int tableSize  = Marshal.ReadInt32(tableSizeAddr);
             int currNum    = Marshal.ReadInt32(currNumAddr);
 
-            // Fellowship caps at 9 members; a corrupt/mid-mutation table_size
-            // here (bogus large value) would otherwise turn the bucket loop
-            // below into an unbounded scan over garbage addresses.
-            if (bucketsPtr == 0 || tableSize == 0 || tableSize > 64 || currNum == 0 || currNum > 9)
+            // A corrupt/mid-mutation table_size (bogus large value) would otherwise
+            // turn the bucket loop below into an unbounded scan over garbage addresses.
+            if (!IsPlausibleTable(bucketsPtr, tableSize, currNum))
                 return;
             if (!IsReadablePointer(new IntPtr(bucketsPtr)))
                 return;
 
-            int maxMembers = Math.Min(currNum, 9);
+            int maxMembers = currNum;
             int found = 0;
 
             for (int b = 0; b < tableSize && found < maxMembers; b++)
@@ -354,6 +363,22 @@ public class FellowshipTracker : IDisposable
         }
         catch { return ""; }
     }
+
+    /// <summary>
+    /// Largest member count read. Retail fellowships hold 9; ACECustom servers such as Infinite
+    /// Leaftide allow up to 29 (Fellowship.MaxFellows), so this leaves headroom over both.
+    /// </summary>
+    internal const int MaxMembers = 32;
+
+    /// <summary>Largest hash-table bucket count read; anything bigger is a torn or freed table.</summary>
+    internal const int MaxBuckets = 256;
+
+    /// <summary>
+    /// Whether a fellowship hash table's header looks real enough to walk: a bucket array, a bucket
+    /// count and member count in range. Internal for the tests.
+    /// </summary>
+    internal static bool IsPlausibleTable(int bucketsPtr, int tableSize, int currNum) =>
+        bucketsPtr != 0 && tableSize > 0 && tableSize <= MaxBuckets && currNum > 0 && currNum <= MaxMembers;
 
     /// <summary>A fellowship member's name is at most this long (AC names are under 20).</summary>
     internal const int MaxNameChars = 64;

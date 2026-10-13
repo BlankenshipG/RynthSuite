@@ -34,6 +34,9 @@ internal sealed class Quest
     /// <summary>The Name column: the curated name, else the one-line info, else "Unknown quest" (upstream's rule).</summary>
     public string DisplayName => Name.Length > 0 ? Name : Info.Length > 0 ? Info : "Unknown quest";
 
+    /// <summary>The list label: the display name, or for a flag no list knows "(new)" and its description or flag.</summary>
+    public string Label => IsNew ? "(new) " + (Name.Length > 0 ? Name : Flag) : DisplayName;
+
     /// <summary>The server is the source of truth where it has spoken (the flag's timer); else the lists.</summary>
     public bool IsRepeatable(QuestFlagStore flags) =>
         flags.TryGet(Flag, out QuestFlag q) ? q.RepeatTime != TimeSpan.Zero : Repeatable;

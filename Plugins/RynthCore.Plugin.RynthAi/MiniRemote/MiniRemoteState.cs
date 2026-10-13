@@ -130,7 +130,11 @@ public sealed class PetAssignment
     public int Kind;
 }
 
-/// <summary>The Quests tab's settings (the quest fields of the ILT Hub's IltCharacterState).</summary>
+/// <summary>
+/// The retired Quests tab's settings (the quest fields of the ILT Hub's IltCharacterState). The tab
+/// moved to RynthOracle on 2026-10-13 (tracking and rewards live in its per-character quest book);
+/// the fields stay so existing miniremote.json files load and keep what they recorded.
+/// </summary>
 public sealed class QuestsTabState
 {
     /// <summary>Quest Tracker search box contents.</summary>

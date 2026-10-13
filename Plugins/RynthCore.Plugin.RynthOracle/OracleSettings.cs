@@ -23,6 +23,8 @@ internal sealed class OracleSettings
     /// <summary>Show the Void target window by itself for characters with Void Magic.</summary>
     public bool AutoShowVoidWindow = true;
     public bool MainWindowOpen;
+    /// <summary>The Quest Timers window (tracked quests) was left open; it opens again at login.</summary>
+    public bool QuestTimersOpen;
     /// <summary>The selected tab, by name (the set of tabs depends on the server).</summary>
     public string TabName = "Quests";
     /// <summary>ConquestAC: "/bank deposit" at every ten-minute mark (upstream's auto-deposit; off by default).</summary>
@@ -44,6 +46,7 @@ internal sealed class OracleSettings
             CheckQuestListDaily = Bool(r, "checkQuestListDaily", CheckQuestListDaily);
             AutoShowVoidWindow = Bool(r, "autoShowVoidWindow", AutoShowVoidWindow);
             MainWindowOpen = Bool(r, "mainWindowOpen", MainWindowOpen);
+            QuestTimersOpen = Bool(r, "questTimersOpen", QuestTimersOpen);
             ConquestAutoDeposit = Bool(r, "conquestAutoDeposit", ConquestAutoDeposit);
             if (r.TryGetProperty("tabName", out JsonElement t) && t.ValueKind == JsonValueKind.String) TabName = t.GetString() ?? TabName;
             if (r.TryGetProperty("lastQuestListCheck", out JsonElement c) && c.ValueKind == JsonValueKind.String
@@ -68,6 +71,7 @@ internal sealed class OracleSettings
             sb.Append("  \"lastQuestListCheck\": \"").Append(LastQuestListCheckUtc.ToString("o", CultureInfo.InvariantCulture)).Append("\",\n");
             sb.Append("  \"autoShowVoidWindow\": ").Append(AutoShowVoidWindow ? "true" : "false").Append(",\n");
             sb.Append("  \"mainWindowOpen\": ").Append(MainWindowOpen ? "true" : "false").Append(",\n");
+            sb.Append("  \"questTimersOpen\": ").Append(QuestTimersOpen ? "true" : "false").Append(",\n");
             sb.Append("  \"conquestAutoDeposit\": ").Append(ConquestAutoDeposit ? "true" : "false").Append(",\n");
             sb.Append("  \"tabName\": \"").Append(JsonEncodedText.Encode(TabName).ToString()).Append("\"\n");
             sb.Append("}\n");

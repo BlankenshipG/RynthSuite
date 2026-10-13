@@ -11,8 +11,10 @@ public static unsafe class PluginExports
 {
     internal static readonly RynthPluginRuntime<RynthILTPlugin> Runtime = new();
 
-    // Typed interface for RynthAi (host GetPluginInterface, API v68): "RynthILT.Hub" v1, the ILT
-    // tabs and sections its Mini Remote hosts (Plugins/Shared/RynthIltHubApi.cs, HubInterface.cs).
+    // Typed interfaces for other plugins (host GetPluginInterface, API v68): "RynthILT.Hub" v1, the ILT
+    // tabs and sections RynthAi's Mini Remote hosts (Plugins/Shared/RynthIltHubApi.cs, HubInterface.cs),
+    // and "RynthILT.Server" v1, the Leaftide feature list and fellowship rules as JSON
+    // (Plugins/Shared/RynthIltServerApi.cs, ServerInterface.cs).
     // Fixed signature: void* (const char* iface, uint version).
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginQueryInterface", CallConvs = new[] { typeof(CallConvCdecl) })]
     private static IntPtr QueryInterface(IntPtr ifaceAnsi, uint version)
@@ -20,7 +22,8 @@ public static unsafe class PluginExports
         try
         {
             string iface = ifaceAnsi == IntPtr.Zero ? "" : Marshal.PtrToStringAnsi(ifaceAnsi) ?? "";
-            return HubInterface.Query(iface, version);
+            IntPtr hub = HubInterface.Query(iface, version);
+            return hub != IntPtr.Zero ? hub : ServerInterface.Query(iface, version);
         }
         catch
         {
@@ -37,6 +40,7 @@ public static unsafe class PluginExports
         // An exception escaping an UnmanagedCallersOnly export fail-fasts the client under NativeAOT.
         try { Runtime.Shutdown(); } catch { }
         try { HubInterface.Release(); } catch { }
+        try { ServerInterface.Release(); } catch { }
         foreach (IntPtr p in new[] { Interlocked.Exchange(ref _bountiesPtr, IntPtr.Zero), Interlocked.Exchange(ref _progressionPtr, IntPtr.Zero),
                      Interlocked.Exchange(ref _statusPtr, IntPtr.Zero) })
             if (p != IntPtr.Zero) Marshal.FreeCoTaskMem(p);

@@ -38,6 +38,7 @@ internal static class Program
         SigilChainTests.Register(runner);
         BankCommandTests.Register(runner);
         MoveTests.Register(runner);
+        FeatureCatalogTests.Register(runner);
         return runner.Run("RynthILT tests", args.Length > 0 ? args[0] : null);
     }
 }

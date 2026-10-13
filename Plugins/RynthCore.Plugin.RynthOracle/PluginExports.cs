@@ -37,7 +37,7 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginVersion", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static IntPtr GetVersion()
     {
-        try { return LiteralPointer("0.2.0"u8); }
+        try { return LiteralPointer("0.2.2"u8); }
         catch { return IntPtr.Zero; }
     }
 

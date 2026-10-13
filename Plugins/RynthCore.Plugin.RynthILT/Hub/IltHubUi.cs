@@ -117,16 +117,71 @@ internal sealed class IltHubUi
         _hub.Guardian.Render();
     }
 
-    /// <summary>Character tab: world / options header, then session rates (or why the ILT tabs are idle).</summary>
+    /// <summary>
+    /// Character tab: world / options header, then session rates (or why the ILT tabs are idle), then
+    /// the list of every Leaftide feature RynthILT supports with the server's state for each.
+    /// </summary>
     private void RenderCharacterBody()
     {
         RenderHeader();
         ImGui.Separator();
-        if (!_hub.Available) { RenderUnavailable(); return; }
-        if (ImGui.CollapsingHeader("Session rates", ImGuiTreeNodeFlags.DefaultOpen)) _hub.Rates.Render();
+        if (!_hub.Available) RenderUnavailable();
+        else
+        {
+            if (ImGui.CollapsingHeader("Session rates", ImGuiTreeNodeFlags.DefaultOpen)) _hub.Rates.Render();
+            ImGui.Spacing();
+            ImGui.TextDisabled("XP planner, Augmentations and Enlightenment are on the Skills panel's Progression tab");
+            ImGui.TextDisabled("(right-click the dashboard's Char button > Progression).");
+        }
         ImGui.Spacing();
-        ImGui.TextDisabled("XP planner, Augmentations and Enlightenment are on the Skills panel's Progression tab");
-        ImGui.TextDisabled("(right-click the dashboard's Char button > Progression).");
+        RenderFeatureList();
+    }
+
+    /// <summary>
+    /// "Leaftide features": IltFeatureCatalog grouped by section, each with the server's state and where
+    /// the Rynth tools handle it. States come from the controller's per-second copy (FeatureStates).
+    /// </summary>
+    private void RenderFeatureList()
+    {
+        if (!ImGui.CollapsingHeader("Leaftide features", ImGuiTreeNodeFlags.None)) return;
+        IltTri[] states = _hub.FeatureStates;
+        bool ilt = _ctx.Options.IsIltLikeWorld;
+        SafeImGui.TextDisabled(ilt
+            ? $"Fellowships up to {IltFeatureCatalog.FellowshipMax(true)}. Built-in features are on with the world; the rest follow the server's check."
+            : "Not an ILT world: nothing is asked of the server, so every feature reads 'checking'.");
+        if (!ImGui.BeginTable("##iltfeatures", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp))
+            return;
+        ImGui.TableSetupColumn("Feature", ImGuiTableColumnFlags.WidthStretch, 1.2f);
+        ImGui.TableSetupColumn("Server", ImGuiTableColumnFlags.WidthFixed, 64f);
+        ImGui.TableSetupColumn("Where", ImGuiTableColumnFlags.WidthStretch, 1.6f);
+        ImGui.TableHeadersRow();
+        foreach (string group in IltFeatureCatalog.Groups)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            SafeImGui.TextColored(IltStyle.ColTeal, group);
+            for (int i = 0; i < IltFeatureCatalog.All.Length; i++)
+            {
+                IltFeatureInfo f = IltFeatureCatalog.All[i];
+                if (f.Group != group) continue;
+                IltTri state = i < states.Length ? states[i] : IltTri.Unknown;
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(f.Label);
+                if (ImGui.IsItemHovered())
+                    SafeImGui.SetTooltip(f.Description + (f.ServerBit == null ? "\nBuilt into ACECustom: on with the world." : "\nThe server's check decides."));
+                ImGui.TableNextColumn();
+                SafeImGui.TextColored(state switch
+                {
+                    IltTri.On => IltStyle.ColGreen,
+                    IltTri.Off => IltStyle.ColHp,
+                    _ => IltStyle.ColTextMute,
+                }, IltFeatureCatalog.StateText(state));
+                ImGui.TableNextColumn();
+                SafeImGui.TextDisabled(f.Where);
+            }
+        }
+        ImGui.EndTable();
     }
 
     private void RenderHeader()
@@ -247,7 +302,15 @@ internal sealed class IltHubUi
     private void RenderRemoteBank()
     {
         var b = _ctx.State.Bank;
-        if (b.LastUpdated == DateTime.MinValue) { ImGui.TextDisabled("Bank: not loaded (Options > Banking)"); return; }
+        if (b.LastUpdated == DateTime.MinValue)
+        {
+            // Nothing read yet this install: offer a quiet /bank (the Banking tab has the full view).
+            ImGui.TextDisabled("Bank: not loaded yet");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Load##mrbank")) _ctx.Post(() => _hub.Banking.RequestRefresh(quiet: true));
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Reads your bank balances (/bank, reply hidden). The Mini Remote's Banking tab has the details.");
+            return;
+        }
         Stat("P:", Compact(b.Pyreals));
         Stat("Lum:", Compact(b.Luminance));
         if (!ImGui.BeginTable("##mrbank", 2, ImGuiTableFlags.SizingStretchSame)) return;

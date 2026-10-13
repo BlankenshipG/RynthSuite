@@ -28,6 +28,7 @@
   <ItemGroup>
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\**\*.cs" Exclude="..\..\Plugins\RynthCore.Plugin.RynthOracle\obj\**;..\..\Plugins\RynthCore.Plugin.RynthOracle\bin\**" Link="RynthOracle\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="RynthOracle\Shared\FellowshipTracker.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthIltServerApi.cs" Link="RynthOracle\Shared\RynthIltServerApi.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
   </ItemGroup>
 

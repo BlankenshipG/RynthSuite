@@ -18,16 +18,20 @@ namespace RynthCore.Plugin.RynthOracle;
 /// </summary>
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
-    public const string Version = "0.2.0";
+    // Previous release: 0.2.1.
+    public const string Version = "0.2.2";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
+    private const long BookWorldWaitMs = 15_000;  // how long the quest book waits for the world name
 
     private readonly OracleContext _c = new();
     private readonly UiHost _ui = new();
-    private UiWindow? _main, _void;
+    private UiWindow? _main, _void, _timers;
     private OracleView? _mainView;
     private VoidView? _voidView;
+    private QuestTimersView? _timersView;
+    private int _seenBookRevision = -1;
 
     private readonly ConcurrentQueue<string> _commands = new();
     private long _questReadAtMs = -1;
@@ -35,7 +39,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private long _nextCharacterReadMs;
     private bool _voidAutoDecided;
     private bool _dailyCheckStarted;
-    private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1;
+    private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1, _seenIltRevision = -1;
     private bool _noUiLogged;
     private string? _catalogTag;          // the server tag the catalog and server data were loaded for
     private bool _conquestLoginRead;
@@ -53,9 +57,10 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
         _mainView = new OracleView(_c);
         _voidView = new VoidView(_c);
+        _timersView = new QuestTimersView(_c);
         _main = _ui.Add(new UiWindow("RynthOracle/Oracle", "Oracle")
         {
-            DefaultWidth = 620f, DefaultHeight = 560f, MinWidth = 420f, MinHeight = 260f,
+            DefaultWidth = 700f, DefaultHeight = 600f, MinWidth = 420f, MinHeight = 260f,
         });
         // The Void window is opened from the Oracle window: no bar button (and no Scripts menu
         // line, which would bring back the Scripts button just for it).
@@ -66,9 +71,32 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         });
         _mainView.SetVoidWindow = v => { if (_void != null) { _void.Visible = v; _void.NeedsPass = true; } };
         _mainView.VoidWindowVisible = () => _void?.Visible ?? false;
+        // The Quest Timers window (tracked quests): opened from the Quests tab, /ro timers or the
+        // engine's Character menu; like the Void window it has no bar button of its own.
+        _timers = _ui.Add(new UiWindow("RynthOracle/QuestTimers", "Quest Timers")
+        {
+            DefaultWidth = 310f, DefaultHeight = 220f, MinWidth = 220f, MinHeight = 90f,
+            ShowInBar = false,
+        });
+        _c.SetQuestTimersWindow = SetQuestTimers;
+        _c.QuestTimersWindowVisible = () => _timers?.Visible ?? false;
 
         Host.Log($"[RynthOracle] {Version} initialized. /ro opens the window. Based on Oracle of Dereth by Advis Eveldan - thank you!");
         return 0;
+    }
+
+    /// <summary>Shows or hides the Quest Timers window and remembers the choice for the next login.</summary>
+    private void SetQuestTimers(bool visible)
+    {
+        if (_timers == null) return;
+        _timers.Visible = visible;
+        _timers.NeedsPass = true;
+        if (_c.Settings.QuestTimersOpen != visible)
+        {
+            _c.Settings.QuestTimersOpen = visible;
+            _c.Settings.Save();
+        }
+        if (_main != null) _main.NeedsPass = true;
     }
 
     // The engine calls this on a real login and on a freshly (re)loaded plugin already in game.
@@ -78,7 +106,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Flags.Clear();
         _c.Void.Clear();
         _c.Server.Reset();
-        _c.Server.Refresh(Host, Host.GetPlayerId());
+        _c.Ilt.Clear();
+        _c.Ilt.Poll(Host, Environment.TickCount64);
+        _c.Server.Refresh(Host, Host.GetPlayerId(), _c.Ilt.Profile.Ilt);
         _catalogTag = null;
         ApplyServer();
         _conquestLoginRead = false;
@@ -94,6 +124,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _dailyCheckStarted = false;
         if (_main != null) { _main.Visible = _c.Settings.MainWindowOpen; _main.NeedsPass = true; }
         if (_void != null) { _void.Visible = false; _void.NeedsPass = true; }
+        // The quest book loads once the character's name (and world) are known (TickData).
+        _c.Book.Clear();
+        if (_timers != null) { _timers.Visible = _c.Settings.QuestTimersOpen; _timers.NeedsPass = true; }
     }
 
     public override void OnLogout()
@@ -103,12 +136,15 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         // Closed for character select (the saved "left open" choice is kept for the next login).
         if (_main != null) { _main.Visible = false; _main.NeedsPass = true; }
         if (_void != null) { _void.Visible = false; _void.NeedsPass = true; }
+        if (_timers != null) { _timers.Visible = false; _timers.NeedsPass = true; }
         _ui.SubmitEmpty(Host);
+        _c.Book.Clear();   // saved as it changed
         _c.Flags.Clear();
         _c.Void.Clear();
         _c.Conquest.Clear();
         _c.Boards.Clear();
         _c.Server.Reset();
+        _c.Ilt.Clear();
         _c.TitlesKnown = false;
         _c.EarnedTitles.Clear();
     }
@@ -215,6 +251,10 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             case "void":
                 if (_void != null) { _void.Visible = !_void.Visible; _void.NeedsPass = true; }
                 break;
+            case "timers":
+            case "timer":
+                if (_timers != null) SetQuestTimers(!_timers.Visible);
+                break;
             case "quests":
             case "refresh":
                 RequestQuests();
@@ -229,10 +269,10 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 _c.Print("Based on Oracle of Dereth by Advis Eveldan - thank you! github.com/advis61/OracleOfDereth (MIT)");
                 break;
             default:
-                _c.Print("Commands: /ro (window), /ro void (Void window), /ro quests (read quest flags), /ro status, /ro about");
+                _c.Print("Commands: /ro (window), /ro void (Void window), /ro timers (Quest Timers window), /ro quests (read quest flags), /ro status, /ro about");
                 break;
         }
-        if (arg is "" or "void" && !Host.HasUi && !_noUiLogged)
+        if (arg is "" or "void" or "timers" or "timer" && !Host.HasUi && !_noUiLogged)
         {
             _noUiLogged = true;
             _c.Print("This RynthCore engine can't show plugin windows (it needs script windows, API v71, with ImGui on). /ro status still works.");
@@ -270,6 +310,13 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             _c.Settings.MainWindowOpen = _main.Visible;
             _c.Settings.Save();
         }
+        // The same for the Quest Timers window (closed with its X or opened from the engine's menu).
+        if (_c.InWorld && _timers != null && _timers.Visible != _c.Settings.QuestTimersOpen)
+        {
+            _c.Settings.QuestTimersOpen = _timers.Visible;
+            _c.Settings.Save();
+            if (_main != null) _main.NeedsPass = true;
+        }
     }
 
     private void TickData(long now)
@@ -280,11 +327,19 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             _seenFlagRevision = _c.Flags.Revision;
             _c.Catalog.SyncDiscoveries(_c.Flags);
             if (_main != null) _main.NeedsPass = true;
+            if (_timers != null) _timers.NeedsPass = true;
         }
         if (_c.Catalog.Revision != _seenCatalogRevision)
         {
             _seenCatalogRevision = _c.Catalog.Revision;
             if (_main != null) _main.NeedsPass = true;
+            if (_timers != null) _timers.NeedsPass = true;
+        }
+        if (_c.Book.Revision != _seenBookRevision)
+        {
+            _seenBookRevision = _c.Book.Revision;
+            if (_main != null) _main.NeedsPass = true;
+            if (_timers != null) _timers.NeedsPass = true;
         }
 
         string? result = _c.Updater.TakeResult(out bool updated);
@@ -301,6 +356,14 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         }
 
         if (!_c.InWorld) return;
+
+        // RynthILT's profile (every 2 s): the Fellowship tab's size and Leaftide fellowship features.
+        _c.Ilt.Poll(Host, now);
+        if (_c.Ilt.Revision != _seenIltRevision)
+        {
+            _seenIltRevision = _c.Ilt.Revision;
+            if (_main != null) _main.NeedsPass = true;
+        }
 
         if (_questReadAtMs >= 0 && now >= _questReadAtMs)
         {
@@ -323,8 +386,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             _nextCharacterReadMs = now + CharacterReadMs;
             _c.Character.Read(Host);
             _c.Void.RemoveExpired(now);
-            _c.Server.Refresh(Host, _c.Character.PlayerId);
+            _c.Server.Refresh(Host, _c.Character.PlayerId, _c.Ilt.Profile.Ilt);
             ApplyServer();
+            LoadQuestBook(now);
             ReadTitles();
             TickConquest(now);
             if (!_voidAutoDecided && _c.Character.Valid)
@@ -344,6 +408,19 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             if (_void != null) _void.NeedsPass = true;
             if (_main != null && _mainView != null && _mainView.Tab == OracleView.TabVoid) _main.NeedsPass = true;
         }
+    }
+
+    /// <summary>
+    /// Loads this character's quest book (tracked quests, rewards) once the name is known and the
+    /// world has been announced, or after <see cref="BookWorldWaitMs"/> without one (then filed
+    /// under "default"), so the file isn't picked before the world name arrives.
+    /// </summary>
+    private void LoadQuestBook(long now)
+    {
+        if (_c.Book.Loaded || !_c.Character.Valid || _c.Character.Name.Length == 0) return;
+        if (_c.Server.WorldName.Length == 0 && now - _loginMs < BookWorldWaitMs) return;
+        _c.Book.Load(_c.Server.WorldName, _c.Character.Name);
+        if (_c.Book.LoadNote.Length > 0) _c.Print(_c.Book.LoadNote);
     }
 
     /// <summary>The titles the character holds (engine API v75), re-read each second (cheap; changes are rare).</summary>
@@ -395,6 +472,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         }
         if (_void != null && _voidView != null)
             Record(_void, now, 500, _voidView.Draw);
+        if (_timers != null && _timersView != null)
+            Record(_timers, now, 1000, _timersView.Draw);
     }
 
     /// <summary>

@@ -40,6 +40,7 @@ internal static class PluginFixTests
         r.Add("selection: creature classes are Monster, Player, Npc and CombatPet only", CreatureClasses);
         r.Add("fellowship name read: ReadableBytesFrom ends at the page whose neighbour is PAGE_NOACCESS", ReadableBytesAtGuardPage);
         r.Add("fellowship name read: it stops at 64 characters and at the end of the probed bytes", NameReadBounded);
+        r.Add("fellowship table: an ACECustom 29-member fellowship is read, torn headers are not", FellowshipTableSizes);
     }
 
     // -- Selection ------------------------------------------------------------
@@ -159,6 +160,20 @@ internal static class PluginFixTests
             Check.Eq(FellowshipTracker.ReadBoundedAnsi(IntPtr.Zero, FellowshipTracker.MaxNameChars, 64), "", "null: empty");
         }
         finally { Marshal.FreeHGlobal(buf); }
+    }
+
+    private static void FellowshipTableSizes()
+    {
+        const int Buckets = 0x1000;   // any non-zero bucket array address
+        Check.True(FellowshipTracker.IsPlausibleTable(Buckets, 16, 9), "a full retail fellowship (9)");
+        Check.True(FellowshipTracker.IsPlausibleTable(Buckets, 64, 29), "an Infinite Leaftide fellowship (29, ACECustom MaxFellows)");
+        Check.True(FellowshipTracker.IsPlausibleTable(Buckets, 1, 1), "one member, one bucket");
+        Check.False(FellowshipTracker.IsPlausibleTable(0, 16, 3), "no bucket array");
+        Check.False(FellowshipTracker.IsPlausibleTable(Buckets, 0, 3), "no buckets");
+        Check.False(FellowshipTracker.IsPlausibleTable(Buckets, 16, 0), "no members");
+        Check.False(FellowshipTracker.IsPlausibleTable(Buckets, FellowshipTracker.MaxBuckets + 1, 3), "a torn bucket count");
+        Check.False(FellowshipTracker.IsPlausibleTable(Buckets, 16, FellowshipTracker.MaxMembers + 1), "a torn member count");
+        Check.False(FellowshipTracker.IsPlausibleTable(Buckets, -5, 3), "a negative bucket count");
     }
 
     private static void Land(uint id, string name)

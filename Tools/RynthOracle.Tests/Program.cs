@@ -43,6 +43,8 @@ namespace RynthOracle.Tests
             QuestLines();
             Catalog();
             Servers();
+            IltProfile();
+            QuestNotes();
             ConquestReplies();
             AelrynthReplies();
             Void();
@@ -165,6 +167,8 @@ namespace RynthOracle.Tests
             Check(ServerIdentity.TagForWorld("Conquest") == ServerTags.Conquest, "Conquest");
             Check(ServerIdentity.TagForWorld("Levistras") == ServerTags.Levistras, "Levistras");
             Check(ServerIdentity.TagForWorld("Coldeve") == "" && ServerIdentity.TagForWorld("") == "", "other servers have no tag");
+            Check(ServerIdentity.TagForWorld("InfiniteLeaftide") == ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
+            Check(ServerIdentity.TagForWorld("Infinite Leaftide Staging") == ServerTags.InfiniteLeaftide, "a Leaftide staging world is ILT");
             var id = new ServerIdentity();
             id.Force("", "Coldeve");
             Check(id.Allows(null) && id.Allows("") && !id.Allows(ServerTags.Conquest) && !id.Allows(ServerTags.Aelrynth), "untagged everywhere, tagged nowhere else");
@@ -186,6 +190,110 @@ namespace RynthOracle.Tests
             c.Settings.TabName = OracleView.TabConquest;
             c.Server.Force(ServerTags.Aelrynth, "Aeshnidae");
             Check(view.Tab == OracleView.TabQuests, "a Conquest tab left selected falls back to Quests elsewhere");
+        }
+
+        /// <summary>RynthILT's "RynthILT.Server" profile JSON as the Fellowship tab reads it.</summary>
+        private static void IltProfile()
+        {
+            const string json = "{\"ilt\":true,\"world\":\"InfiniteLeaftide\",\"forced\":false,\"source\":\"probe\",\"checked\":\"2026-10-13T21:25:37Z\","
+                + "\"features\":[{\"key\":\"bank\",\"label\":\"Banking\",\"group\":\"Character\",\"state\":1,\"where\":\"Mini Remote > Banking tab\"},"
+                + "{\"key\":\"zone_share\",\"label\":\"Zone Share\",\"group\":\"Fellowship\",\"state\":1,\"where\":\"server\"},"
+                + "{\"key\":\"fellowship_blackjack\",\"label\":\"Fellowship Blackjack\",\"group\":\"Fellowship\",\"state\":0,\"where\":\"/fblackjack\"}],"
+                + "\"fellowship\":{\"maxMembers\":29,\"zoneShare\":1,\"blackjack\":0,\"luminanceShare\":-1},\"later\":{\"x\":1}}";
+            IltServerProfile p = IltServerProfile.Parse(json);
+            Check(p.Available && p.Ilt && p.World == "InfiniteLeaftide" && p.Source == "probe", "ILT profile header");
+            Check(p.FellowshipMax == 29 && p.ZoneShare == 1 && p.Blackjack == 0 && p.LuminanceShare == -1, "ILT fellowship rules");
+            Check(p.Features.Count == 3 && p.InGroup("Fellowship").Count() == 2, $"ILT features: {p.Features.Count}");
+            Check(p.CheckedUtc == new DateTime(2026, 10, 13, 21, 25, 37, DateTimeKind.Utc), "checked time is UTC: " + p.CheckedUtc.ToString("o"));
+
+            IltServerProfile none = IltServerProfile.Parse("");
+            Check(!none.Available && none.FellowshipMax == 9, "no RynthILT: a retail fellowship");
+            Check(!IltServerProfile.Parse("not json").Available, "garbage is ignored");
+            Check(IltServerProfile.Parse("{\"ilt\":false}").FellowshipMax == 9, "an older profile without fellowship rules: retail size");
+            Check(IltServerProfile.Parse("{\"fellowship\":{\"maxMembers\":5000}}").FellowshipMax == 9, "an absurd size is not believed");
+            Check(IltServerProfile.StateText(1) == "on" && IltServerProfile.StateText(0) == "off" && IltServerProfile.StateText(-1) == "checking", "state words");
+
+            // The /qb list RynthILT 0.2.3 adds to the profile.
+            Check(p.QuestBonus == null, "no questBonus object: no /qb list");
+            IltServerProfile qb = IltServerProfile.Parse(QbProfileJson);
+            Check(qb.QuestBonus is { Disabled: false, Generation: 3, Count: 41 } b && b.Completed.Count == 2 && b.Incomplete.Count == 1
+                  && b.Incomplete[0] == "qbflagthree" && b.Status == "2 completed, 1 incomplete", "quest bonus list parsed");
+        }
+
+        private const string QbProfileJson = "{\"ilt\":true,\"world\":\"InfiniteLeaftide\",\"fellowship\":{\"maxMembers\":29},"
+            + "\"questBonus\":{\"disabled\":false,\"generation\":3,\"count\":41,\"status\":\"2 completed, 1 incomplete\","
+            + "\"completed\":[\"qbflagone\",\"qbflagtwo\"],\"incomplete\":[\"qbflagthree\"]}}";
+
+        // Quest notes: tracking and rewards saved per character, UB's reward format and import, kill-task timers.
+        private static void QuestNotes()
+        {
+            string root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RynthOracleTests-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var r = new QuestReward { XpPercent = 1.5, LumPercent = 2, RecordedLevel = 275, Coins = 3, Trinkets = 1, Medallions = 2,
+                                          YellowPowder = 1, RedPowder = 1, BluePowder = 1, Mmd = 2 };
+                Check(r.ShortSummary() == "1.5%XP 2%Lum 3C 1T 2M 1Y 1R 1B 2D L275", "UB's short summary: " + r.ShortSummary());
+                Check(QuestReward.Percent(12.345) == "12.3" && QuestReward.Percent(0.1234) == "0.123" && QuestReward.Percent(1.234) == "1.23", "UB's percent format");
+                Check(QuestReward.TryParsePercent("2,5%", out double pc) && pc == 2.5, "a percent with a comma and a % sign");
+                Check(QuestReward.TryParsePercent("5000", out double big) && big == QuestReward.MaxPercent, "percent clamped to 1000");
+                Check(!QuestReward.TryParsePercent("abc", out _) && !QuestReward.TryParseCount("1.5", out _), "junk is refused");
+                Check(QuestReward.TryParseCount("-4", out int neg) && neg == 0 && QuestReward.TryParseCount("", out int blank) && blank == 0, "counts: negatives and blanks are 0");
+                Check(new QuestReward().IsEmpty && !r.IsEmpty, "empty entry");
+
+                // Track and record, then read it back as a new session would.
+                var book = new QuestBook { RootOverride = root, UbRootOverride = "" };
+                book.Load("Infinite Leaftide", "Test \"Char\"");
+                Check(book.Loaded && book.Tracked.Count == 0 && book.RewardCount == 0, "a new character starts empty");
+                book.SetTracked("killtaskdrudges", true);
+                book.SetTracked("30minattributes", true);
+                book.SetTracked("killtaskdrudges", true);
+                book.SetReward("30minattributes", r);
+                Check(book.Tracked.Count == 2 && book.IsTracked("KILLTASKDRUDGES"), "tracked once, case-insensitive");
+                string file = book.PathFor("Infinite Leaftide", "Test \"Char\"");
+                Check(System.IO.File.Exists(file) && System.IO.File.ReadAllText(file).All(ch => ch == '\n' || (ch >= 0x20 && ch <= 0x7E)), "saved at once, plain ASCII");
+
+                var again = new QuestBook { RootOverride = root, UbRootOverride = "" };
+                again.Load("Infinite Leaftide", "Test \"Char\"");
+                Check(again.Tracked.SequenceEqual(new[] { "killtaskdrudges", "30minattributes" }), "tracked list kept in order");
+                Check(again.TryGetReward("30minattributes", out QuestReward back) && back.ShortSummary() == r.ShortSummary(), "rewards read back");
+                again.SetReward("30minattributes", new QuestReward());
+                again.ToggleTracked("killtaskdrudges");
+                Check(again.RewardCount == 0 && again.Tracked.Count == 1, "an empty entry removes the rewards; untrack");
+
+                // UB ILT's quest_rewards.json is imported once for a character without notes.
+                string ub = System.IO.Path.Combine(root, "ub");
+                System.IO.Directory.CreateDirectory(System.IO.Path.Combine(ub, "InfiniteLeaftide", "Kelp"));
+                System.IO.File.WriteAllText(System.IO.Path.Combine(ub, "InfiniteLeaftide", "Kelp", "quest_rewards.json"),
+                    "{\"SchemaVersion\":2,\"Character\":\"Kelp\",\"Server\":\"InfiniteLeaftide\",\"Rewards\":{"
+                    + "\"stipendtimer_0812\":{\"XpPercent\":1.25,\"LumPercent\":0,\"RecordedLevel\":300,\"Coins\":5},"
+                    + "\"emptyone\":{\"XpPercent\":0}}}");
+                var imported = new QuestBook { RootOverride = root, UbRootOverride = ub };
+                imported.Load("Infinite Leaftide", "Kelp");
+                Check(imported.RewardCount == 1 && imported.TryGetReward("stipendtimer_0812", out QuestReward ir) && ir.Coins == 5 && ir.RecordedLevel == 300
+                      && imported.LoadNote.Contains("Imported 1"), "UB rewards imported (empty entries skipped): " + imported.LoadNote);
+                var noReimport = new QuestBook { RootOverride = root, UbRootOverride = ub };
+                noReimport.Load("Infinite Leaftide", "Kelp");
+                Check(noReimport.RewardCount == 1 && noReimport.LoadNote.Length == 0, "imported once: the next load reads Oracle's own file");
+
+                // Kill tasks: kills left, then the reset timer, then done (UB's rule).
+                DateTime now = new DateTime(2026, 10, 13, 12, 0, 0, DateTimeKind.Utc);
+                var kt = new QuestFlag { Key = "killtaskdrudges", Solves = 12, MaxSolves = 50, RepeatTime = TimeSpan.FromHours(20), CompletedOnUtc = now.AddHours(-1) };
+                Check(QuestTimer.IsKillTask(kt) && QuestTimer.State(kt, true, now, out string t1) == QuestTimerState.InProgress && t1 == "38 left", "kill task counting");
+                kt.Solves = 50;
+                Check(QuestTimer.State(kt, true, now, out string t2) == QuestTimerState.Waiting && t2.StartsWith("19h"), "kill task waiting: " + t2);
+                kt.CompletedOnUtc = now.AddDays(-2);
+                Check(QuestTimer.State(kt, true, now, out string t3) == QuestTimerState.Done && t3 == "done", "kill task done");
+                var timed = new QuestFlag { Key = "stipendtimer_0812", Solves = 3, RepeatTime = TimeSpan.FromHours(1), CompletedOnUtc = now.AddMinutes(-30) };
+                QuestTimerState s4 = QuestTimer.State(timed, true, now, out string t4);
+                Check(!QuestTimer.IsKillTask(timed) && s4 == QuestTimerState.Waiting && t4 == "30m 0s", "timer: " + t4);
+                timed.CompletedOnUtc = now.AddHours(-2);
+                Check(QuestTimer.State(timed, true, now, out string t5) == QuestTimerState.Ready && t5 == "ready", "timer ran out");
+                Check(QuestTimer.State(timed, false, now, out string t6) == QuestTimerState.Done && t6 == "completed", "one-time quest");
+            }
+            finally
+            {
+                try { System.IO.Directory.Delete(root, true); } catch (System.IO.IOException) { }
+            }
         }
 
         private static void ConquestReplies()
@@ -319,6 +427,13 @@ namespace RynthOracle.Tests
             ch.Enchantments.Add(new ActiveEnchantment(3531, "Bobo's Quickening", 600, 1800, false));
             ch.Enchantments.Add(new ActiveEnchantment(SpellIds.SurgeOfDestruction, "Surge of Destruction", 5, 8, false));
             c.Void.OnChatLine("You cast Corrosion VII on Drudge Slinker", c.NowMs, _ => 0, () => true);
+            // The quest book in a temp folder (never the player's %APPDATA%), with two tracked quests.
+            c.Book.RootOverride = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RynthOracleTests-" + Guid.NewGuid().ToString("N"));
+            c.Book.UbRootOverride = "";
+            c.Book.Load("Aeshnidae", ch.Name);
+            c.Book.SetTracked("30minattributes", true);
+            c.Book.SetTracked("societyribbonsperdaycounter", true);
+            c.Book.SetReward("30minattributes", new QuestReward { XpPercent = 1.5, RecordedLevel = 126, Coins = 2 });
             return c;
         }
 
@@ -331,6 +446,11 @@ namespace RynthOracle.Tests
             UiWindow voidW = host.Add(new UiWindow("RynthOracle/Void", "Void") { Visible = true });
             var vv = new VoidView(c);
             voidW.Begin(); vv.Draw(voidW); voidW.End();
+            UiWindow timersW = host.Add(new UiWindow("RynthOracle/QuestTimers", "Quest Timers") { Visible = true });
+            var tv = new QuestTimersView(c);
+            timersW.Begin(); tv.Draw(timersW); timersW.End();
+            string timersBody = Encoding.UTF8.GetString(timersW.Body);
+            Check(timersBody.Contains("Attribute and Skill Redistribution") && timersBody.Contains("ready"), "the Quest Timers window lists tracked quests with their timers");
 
             // Every tab on each server, including the server-specific ones (with data in them).
             c.Conquest.RequestBank(c.NowMs);
@@ -354,6 +474,28 @@ namespace RynthOracle.Tests
                     main.MarkSubmitted(true);
                 }
             }
+            // Infinite Leaftide: the Quests tab with a quest opened (rewards editor) and the /qb list open.
+            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
+            c.Ilt.SetJson(QbProfileJson);
+            c.Settings.TabName = OracleView.TabQuests;
+            main.Begin(); view.Draw(main); main.End();
+            Apply(host, Event(2, 89, main.Hash, main.KeyOf("q.tracked"), new byte[] { 1 }));
+            main.Begin(); view.Draw(main); main.End();
+            Check(Encoding.UTF8.GetString(main.Body).Contains("2 shown"), "the Tracked filter lists the two tracked quests");
+            Apply(host, Event(1, 90, main.Hash, main.KeyOf("q.r.30minattributes"), new byte[] { 1, 0, 0 }));
+            Apply(host, Event(6, 91, main.Hash, main.KeyOf("q.qb"), new byte[] { 1 }));
+            main.Begin(); view.Draw(main); main.End();   // the inner header exists once the outer one is open
+            Apply(host, Event(6, 92, main.Hash, main.KeyOf("q.qb.todo"), new byte[] { 1 }));
+            main.Begin(); view.Draw(main); main.End();
+            ParseAll(host, "ILT quests with a quest opened", out int iltOps);
+            string iltBody = Encoding.UTF8.GetString(main.Body);
+            Check(iltOps > 5 && iltOps < 1400, $"ILT quests page: {iltOps} ops");
+            Check(iltBody.Contains("Save rewards") && iltBody.Contains("Level: 126"), "the opened quest shows the rewards editor");
+            Check(iltBody.Contains("1.5%XP 2C L126"), "the Rewards column shows the recorded rewards");
+            Check(iltBody.Contains("Quest bonus (/qb) - count 41") && iltBody.Contains("qbflagthree"), "the /qb list from RynthILT");
+            Console.WriteLine($"  InfiniteLeaftide/Quests (opened, /qb): {iltOps} ops, {main.Body.Length} bytes");
+            main.MarkSubmitted(true);
+
             // The Conquest tab's sub-pages and the Aelrynth board views.
             c.Server.Force(ServerTags.Conquest, "Conquest");
             c.Settings.TabName = OracleView.TabConquest;

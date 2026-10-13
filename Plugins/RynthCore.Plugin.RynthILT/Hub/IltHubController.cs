@@ -35,6 +35,12 @@ internal sealed class IltHubController
     private bool _availabilityAnnounced; // "open the Mini Remote" hint printed this session
     private volatile int _forceRequest = -1; // SetForceIlt from another thread, applied on the next tick
 
+    /// <summary>How often the "RynthILT.Server" profile snapshot is rebuilt (pump thread).</summary>
+    private const long ProfileRebuildMs = 1000;
+    private long _profileBuiltAt;
+    private volatile string _profileJson = string.Empty;
+    private volatile IltTri[] _featureStates = Array.Empty<IltTri>();
+
     public IltBanking Banking { get; }
     public IltSessionRates Rates { get; }
     /// <summary>The quest bonus list (/qb): the Quests tab's section and the Temple tracker's stamps.</summary>
@@ -84,6 +90,34 @@ internal sealed class IltHubController
         options.ProbeReplyTap = OnProbeReply;
         _ui = new IltHubUi(this, _ctx);
         _ctx.ShowTab = section => _ctx.Ai.MiniRemoteTab(IltSections.TabId(section), "show");
+        RebuildProfile();
+    }
+
+    /// <summary>
+    /// The latest "RynthILT.Server" profile JSON: the Leaftide feature list with the server's state
+    /// for each, and the fellowship rules (Plugins/Shared/RynthIltServerApi.cs). Rebuilt on the pump
+    /// about once a second, so any thread may read it.
+    /// </summary>
+    public string ProfileJson => _profileJson;
+
+    /// <summary>
+    /// Each IltFeatureCatalog.All entry's state, in the same order, from the same rebuild as
+    /// <see cref="ProfileJson"/>. The render thread draws the feature list from this copy rather than
+    /// the option bits the pump is writing. Any thread.
+    /// </summary>
+    public IltTri[] FeatureStates => _featureStates;
+
+    /// <summary>Rebuilds the profile JSON and the feature-state copy from the current server options. Pump thread.</summary>
+    private void RebuildProfile()
+    {
+        IltServerOptions o = _ctx.Options;
+        bool ilt = o.IsIltLikeWorld;
+        var states = new IltTri[IltFeatureCatalog.All.Length];
+        for (int i = 0; i < states.Length; i++) states[i] = IltFeatureCatalog.StateOf(IltFeatureCatalog.All[i], ilt, o.Get);
+        _featureStates = states;
+        _profileJson = IltFeatureCatalog.BuildProfileJson(ilt, o.WorldName, _ctx.State.ForceLeaftideFeatures,
+                                                          o.Source ?? string.Empty, o.LastRefreshUtc, o.Get,
+                                                          QuestBonus.Snapshot());
     }
 
     public IltHubState State => _ctx.State;
@@ -179,6 +213,13 @@ internal sealed class IltHubController
         _ctx.Capture.Tick();
         _ctx.Options.Tick();
         PollQuestOutcome();
+
+        // The profile other plugins read (RynthILT.Server): world, feature states, fellowship rules.
+        if (now - _profileBuiltAt >= ProfileRebuildMs)
+        {
+            _profileBuiltAt = now;
+            RebuildProfile();
+        }
 
         // "Mini Remote on screen" gates bank auto-refresh and the gear / split-arrow scans.
         _ctx.State.WindowVisible = _ctx.Ai.MiniRemoteVisible;
@@ -367,7 +408,10 @@ internal sealed class IltHubController
                 break;
             case "refresh": _ctx.Options.Refresh(manual: true); break;
             case "bank": Banking.RequestRefresh(quiet: false); break;
+            // "/ilt qb": RynthOracle's "Load /qb list" button (the list reaches it through the profile JSON).
+            case "qb": _ctx.Chat("[RynthILT] " + QuestBonus.RefreshQb()); break;
             case "status": PrintStatus(); break;
+            case "features": PrintFeatures(); break;
             case "force":
                 _ctx.State.ForceLeaftideFeatures = !rest.Equals("off", StringComparison.OrdinalIgnoreCase);
                 _ctx.Chat($"[Mini Remote] Force ILT world: {(_ctx.State.ForceLeaftideFeatures ? "on" : "off")}. Use /ra hub refresh to re-check the server.");
@@ -383,7 +427,7 @@ internal sealed class IltHubController
                 ClearPending();
                 break;
             default:
-                _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|force on|off|servers [list]|clap|confirm|cancel");
+                _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|features|force on|off|servers [list]|clap|confirm|cancel");
                 _ctx.Chat("[Mini Remote] /ra hub open character|quests|pets|banking|gear|charms|games [show|hide|toggle]  (Mini Remote tabs)");
                 _ctx.Chat("[Mini Remote] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
                 _ctx.Chat("[Mini Remote] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
@@ -394,6 +438,17 @@ internal sealed class IltHubController
                 break;
         }
         return true;
+    }
+
+    /// <summary>"/ra hub features": every Leaftide feature RynthILT supports, with the server's state for each.</summary>
+    private void PrintFeatures()
+    {
+        IltServerOptions o = _ctx.Options;
+        string world = o.WorldName.Length > 0 ? o.WorldName : "unknown world";
+        _ctx.Chat($"[Mini Remote] Leaftide features on {world} ({(o.IsIltLikeWorld ? "ILT world" : "not an ILT world")}, "
+                  + $"fellowships up to {IltFeatureCatalog.FellowshipMax(o.IsIltLikeWorld)}):");
+        foreach (string line in IltFeatureCatalog.BuildChatLines(o.IsIltLikeWorld, o.Get))
+            _ctx.Chat("[Mini Remote]   " + line);
     }
 
     /// <summary>"/ra hub servers [list | &lt;names, comma separated&gt; | default]": which world names count as Infinite Leaftide.</summary>

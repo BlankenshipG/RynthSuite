@@ -35,7 +35,7 @@ internal static class MiniRemoteMoveTests
     {
         r.Add("mini remote: Pets / Quests settings come over from ilt-hub.json once, which is never rewritten", LegacyState);
         r.Add("mini remote: without RynthILT there are no ILT tabs, bits or verbs", NoRynthIlt);
-        r.Add("mini remote: /ra hub|quests|pets stay RynthAi's; ILT verbs say RynthILT is needed", Commands);
+        r.Add("mini remote: /ra hub|quests|pets stay RynthAi's; quest windows point to RynthOracle; ILT verbs say RynthILT is needed", Commands);
         r.Add("mini remote: the pyreal refill path never spends without RynthILT's confirmation", RefillNeedsIlt);
         r.Add("profile: the old Server Features fields still round-trip (RynthILT migrates them)", LegacyProfileFields);
         r.Add("RynthAi.Hub: table, spell names, nothing before login", HubTable);
@@ -125,7 +125,17 @@ internal static class MiniRemoteMoveTests
         FakeHost.Chat.Clear();
         Check.True(c.HandleCommand("hub", new[] { "bank" }), "hub bank is handled (answered)");
         Check.True(FakeHost.Chat.Any(x => x.Contains("RynthILT")), "it says the ILT verbs come with RynthILT");
-        Check.True(FakeHost.Chat.Any(x => x.Contains("/ra hub open quests|pets")), "and lists what RynthAi still has");
+        Check.True(FakeHost.Chat.Any(x => x.Contains("/ra hub open pets|crafting")), "and lists what RynthAi still has");
+        FakeHost.Chat.Clear();
+        // The Quests tab moved to RynthOracle (2026-10-13): its verbs and tab names say so.
+        Check.True(c.HandleCommand("hub", new[] { "open", "quests" }), "hub open quests is answered");
+        Check.True(FakeHost.Chat.Any(x => x.Contains("RynthOracle") && x.Contains("/ro timers")), "it points to RynthOracle");
+        FakeHost.Chat.Clear();
+        Check.True(c.HandleCommand("quests", new[] { "window" }), "quests window is answered");
+        Check.True(FakeHost.Chat.Any(x => x.Contains("RynthOracle")), "with the same note");
+        FakeHost.Chat.Clear();
+        Check.True(c.HandleCommand("quests", Array.Empty<string>()), "quests (refresh) stays RynthAi's");
+        Check.True(FakeHost.Chat.Any(x => x.Contains("Quest tracker not ready")), "the meta tracker's refresh (none in this test)");
         FakeHost.Chat.Clear();
         Check.True(c.HandleCommand("guardian", new[] { "handin" }), "guardian is answered");
         Check.True(FakeHost.Chat.Any(x => x.Contains("RynthILT")), "with the RynthILT note");

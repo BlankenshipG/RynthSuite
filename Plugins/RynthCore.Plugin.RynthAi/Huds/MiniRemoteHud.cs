@@ -1,7 +1,7 @@
 // MiniRemoteHud.cs — The Mini Remote (UtilityBelt-style) for RynthAi. Render thread only.
 //
-// One window with tabs: Remote (the sections below), the universal tabs Quests and Pets (every
-// world, MiniRemote/), and on Infinite Leaftide the RynthILT plugin's ILT tabs (Character,
+// One window with tabs: Remote (the sections below), the universal tabs Pets and Crafting (every
+// world, MiniRemote/; the Quests tab moved to RynthOracle 2026-10-13), and on Infinite Leaftide the RynthILT plugin's ILT tabs (Character,
 // Banking, Gear, Charms, Games: RynthILT.Hub GetTabs / RenderTab through IltClient; an ILT tab
 // shows once the server reports its feature on, and never without RynthILT). The tab bar's
 // selection is saved (HudState.MiniRemoteTab) and "/ra hub open <section>" or RynthCore's
@@ -805,8 +805,9 @@ internal sealed class MiniRemoteHud
     }
 
     /// <summary>
-    /// "Character": RynthAi's own windows, the universal Mini Remote tabs (Quests, Pets, Crafting), and
-    /// RynthCore's panels when it runs /rc commands.
+    /// "Character": RynthAi's own windows, the universal Mini Remote tabs (Pets, Crafting), RynthOracle's
+    /// quest windows (the Quests tab moved there 2026-10-13) and RynthCore's panels, when chat
+    /// commands can be run.
     /// </summary>
     private void RenderCharacterMenu(HudState s)
     {
@@ -822,6 +823,11 @@ internal sealed class MiniRemoteHud
         }
         if (_hud.Host.HasInvokeChatParser)
         {
+            // RynthOracle's commands (it toggles its own windows; without RynthOracle nothing answers "/ro").
+            if (ImGui.MenuItem("Quests##mrquests", "/ro")) _hud.RunEngineCommand("/ro");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle: quest timers, tracking, rewards and the /qb list.");
+            if (ImGui.MenuItem("Quest Timers##mrqtimers", "/ro timers")) _hud.RunEngineCommand("/ro timers");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Quest Timers window: your tracked quests and the time left on each.");
             if (ImGui.MenuItem("Skills##mrskills", "/rc skills")) _hud.RunEngineCommand("/rc skills toggle");
             if (ImGui.MenuItem("Inventory##mrinv", "/rc inventory")) _hud.RunEngineCommand("/rc inventory");
             if (ImGui.MenuItem("Item Count##mritemcount", "/rc itemcount")) _hud.RunEngineCommand("/rc itemcount");
@@ -856,8 +862,9 @@ internal sealed class MiniRemoteHud
             foreach (ServerMenuEntry item in g.Items)
             {
                 string? tab = ServerMenuModel.TabOf(item.Feature);
-                // Universal tabs are under Character; RynthCore 2026.10.5.30 and older list them here too.
-                if (tab != null && MiniRemoteTabs.Parse(tab) != null) continue;
+                // Universal tabs are under Character; RynthCore 2026.10.5.30 and older list them here too
+                // (with the retired Quests tab, now RynthOracle's).
+                if (tab != null && (MiniRemoteTabs.Parse(tab) != null || tab.Equals("quests", StringComparison.OrdinalIgnoreCase))) continue;
                 bool enabled = tab == null || TabAvailable(remote, tab);
                 if (ImGui.MenuItem(item.Label + "##mrsrv_" + g.Id, item.Command, false, enabled))
                     RunServerItem(item, tab);

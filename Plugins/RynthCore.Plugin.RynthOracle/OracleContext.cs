@@ -13,10 +13,14 @@ internal sealed class OracleContext
     public readonly QuestFlagStore Flags = new();
     public readonly QuestCatalog Catalog = new();
     public readonly QuestCatalogUpdater Updater = new();
+    /// <summary>This character's tracked quests and recorded rewards (loaded once the name is known).</summary>
+    public readonly QuestBook Book = new();
     public readonly CharacterSnapshot Character = new();
     public readonly VoidTracker Void = new();
     public readonly FellowshipTracker Fellowship = new();
     public readonly ServerIdentity Server = new();
+    /// <summary>RynthILT's server profile (Leaftide features, fellowship rules); None without RynthILT.</summary>
+    public readonly IltServerLink Ilt = new();
     /// <summary>ConquestAC-only data (tag Conquest); fed only while on ConquestAC.</summary>
     public readonly ConquestData Conquest = new();
     /// <summary>Aelrynth's leaderboards (tag Aelrynth); fed only while on Aelrynth.</summary>
@@ -38,6 +42,11 @@ internal sealed class OracleContext
 
     /// <summary>Set by the plugin: sends a chat command to the server as if typed (the views' buttons).</summary>
     public Func<string, bool> Send = _ => false;
+
+    /// <summary>Set by the plugin: shows or hides the Quest Timers window.</summary>
+    public Action<bool> SetQuestTimersWindow = _ => { };
+    /// <summary>Set by the plugin: whether the Quest Timers window is showing.</summary>
+    public Func<bool> QuestTimersWindowVisible = () => false;
 
     public Func<uint, int> Props => id => Character.Int(Host, id);
 

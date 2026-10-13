@@ -119,25 +119,25 @@ internal static class MiniRemoteTabs
 {
     /// <summary>The Remote tab (the remote itself).</summary>
     public const string Remote = "";
-    public const string Quests = "quests";
     public const string Pets = "pets";
     public const string Crafting = "crafting";
 
-    /// <summary>The universal tabs in tab-bar order (after Remote, before RynthILT's tabs).</summary>
-    public static readonly string[] Universal = { Quests, Pets, Crafting };
+    /// <summary>
+    /// The universal tabs in tab-bar order (after Remote, before RynthILT's tabs). The Quests tab
+    /// moved to RynthOracle on 2026-10-13 (MiniRemoteController.QuestsMovedText).
+    /// </summary>
+    public static readonly string[] Universal = { Pets, Crafting };
 
     public static string Label(string id) => id switch
     {
-        Quests => "Quests",
         Pets => "Pets",
         Crafting => "Crafting",
         _ => "Remote",
     };
 
-    /// <summary>"quests" / "pets" / "crafting" (and their short forms) to the tab id; null for anything else.</summary>
+    /// <summary>"pets" / "crafting" (and their short forms) to the tab id; null for anything else.</summary>
     public static string? Parse(string? text) => (text ?? string.Empty).Trim().ToLowerInvariant() switch
     {
-        "quests" or "quest" => Quests,
         "pets" or "pet" => Pets,
         "crafting" or "craft" or "tinker" or "tinkering" => Crafting,
         _ => null,
@@ -146,7 +146,6 @@ internal static class MiniRemoteTabs
     /// <summary>Size of a universal tab's body (the old section window's default size).</summary>
     public static System.Numerics.Vector2 Size(string id) => id switch
     {
-        Quests => new System.Numerics.Vector2(700, 500),
         Pets => new System.Numerics.Vector2(560, 580),
         Crafting => new System.Numerics.Vector2(680, 600),
         _ => new System.Numerics.Vector2(520, 440),

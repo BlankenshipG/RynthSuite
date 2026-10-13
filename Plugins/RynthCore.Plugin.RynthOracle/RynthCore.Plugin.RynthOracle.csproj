@@ -52,6 +52,8 @@
   <ItemGroup>
     <!-- Fellowship reader (client memory, VirtualQuery-guarded), shared source with RynthAi. -->
     <Compile Include="..\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="Shared\FellowshipTracker.cs" />
+    <!-- RynthILT's "RynthILT.Server" interface (server profile: Leaftide features, fellowship rules). -->
+    <Compile Include="..\Shared\RynthIltServerApi.cs" Link="Shared\RynthIltServerApi.cs" />
   </ItemGroup>
 
   <ItemGroup>

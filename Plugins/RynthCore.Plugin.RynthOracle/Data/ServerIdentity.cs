@@ -9,9 +9,11 @@ internal static class ServerTags
     public const string Aelrynth = "Aelrynth";
     public const string Conquest = "Conquest";
     public const string Levistras = "Levistras";
+    /// <summary>Infinite Leaftide (ACECustom). Its server rules come from RynthILT ("RynthILT.Server").</summary>
+    public const string InfiniteLeaftide = "InfiniteLeaftide";
 
     /// <summary>Tags with a quest pack (Resources\quests.&lt;tag&gt;.csv) or features.</summary>
-    public static readonly string[] Known = { Aelrynth, Conquest, Levistras };
+    public static readonly string[] Known = { Aelrynth, Conquest, Levistras, InfiniteLeaftide };
 }
 
 /// <summary>
@@ -28,7 +30,9 @@ internal static class ServerTags
 ///      mod's player properties 9101-9103, which only Aelrynth sends.
 /// Aelrynth's live config still names the world "Aeshnidae" (its earlier name); both count.
 /// ConquestAC and Levistras are matched on their world names, as upstream does
-/// (Decal's CharacterFilter.Server).
+/// (Decal's CharacterFilter.Server). Infinite Leaftide is matched on a world name containing
+/// "Leaftide", or on RynthILT's own verdict (its world list or the character's override) when
+/// RynthILT is loaded.
 /// </summary>
 internal sealed class ServerIdentity
 {
@@ -51,7 +55,8 @@ internal sealed class ServerIdentity
         Set("", "", "not logged in");
     }
 
-    public void Refresh(RynthCoreHost host, uint playerId)
+    /// <param name="rynthIltSaysIlt">RynthILT's profile reports an ILT world (IltServerLink); false without RynthILT.</param>
+    public void Refresh(RynthCoreHost host, uint playerId, bool rynthIltSaysIlt = false)
     {
         string tag, world, source;
         if (host.TryGetServerInfo(out bool aelrynth, out bool staging, out string announced))
@@ -82,6 +87,11 @@ internal sealed class ServerIdentity
                 source = "the Aelrynth Bank properties (older engine)";
             }
         }
+        if (tag.Length == 0 && rynthIltSaysIlt)
+        {
+            tag = ServerTags.InfiniteLeaftide;
+            source = "RynthILT: an Infinite Leaftide world";
+        }
         Set(tag, world, source);
     }
 
@@ -96,6 +106,9 @@ internal sealed class ServerIdentity
             return ServerTags.Conquest;
         if (w.Equals(ServerTags.Levistras, StringComparison.OrdinalIgnoreCase))
             return ServerTags.Levistras;
+        // "InfiniteLeaftide", "Infinite Leaftide", staging copies: RynthILT's own world rule.
+        if (w.IndexOf("Leaftide", StringComparison.OrdinalIgnoreCase) >= 0)
+            return ServerTags.InfiniteLeaftide;
         return "";
     }
 
