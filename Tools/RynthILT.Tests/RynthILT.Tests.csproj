@@ -20,6 +20,9 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\Bounty\BountyParse.cs" Link="Plugin\BountyParse.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\Bounty\BountyTracker.cs" Link="Plugin\BountyTracker.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\RynthILTJsonContext.cs" Link="Plugin\RynthILTJsonContext.cs" />
+    <!-- The ILT settings copy: RynthILT's reader and RynthAi's feature writer, checked together. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\IltSettings\IltSettingsModel.cs" Link="Plugin\IltSettingsModel.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\IltHub\IltFeatureShare.cs" Link="RynthAi\IltFeatureShare.cs" />
     <!-- The RynthAi test tools' check/runner harness (no plugin code in it). -->
     <Compile Include="..\RynthCore.RynthAiTests\Harness\Check.cs" Link="Harness\Check.cs" />
     <Compile Include="..\RynthCore.RynthAiTests\Harness\Runner.cs" Link="Harness\Runner.cs" />

@@ -911,7 +911,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "itemhud":
             case "remote":
             case "miniremote":
-                // Dashboard Hub launcher: left-click remote=toggle, right-click huds=show.
+                // RynthCore's Mini Remote commands ("remote","toggle"; "huds","show").
                 HandleHudCommand(action.ToLowerInvariant(), value);
                 break;
             case "itemhudadd":

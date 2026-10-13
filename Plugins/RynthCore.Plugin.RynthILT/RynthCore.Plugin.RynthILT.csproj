@@ -4,7 +4,9 @@
     RynthILT: features for Infinite Leaftide (ILT), the ACECustom server. The engine shows its
     panels (the bar's ILT button, /rc bounties) only on ILT (RynthCore Compatibility/IltInfo.cs).
     First feature: the Bounties window's tracker (Bounty/, ported from SilentKelpie's
-    rynth/RynthSuite PR #11). ILT features live here, not in RynthAi or the engine core.
+    rynth/RynthSuite PR #11). Second: a copy of the ILT settings (IltSettings/), drawn with ImGui
+    in RynthCore's Mini Remote and its own window. ILT features live here, not in RynthAi or the
+    engine core.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -23,15 +25,34 @@
     <Platforms>x86</Platforms>
     <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
          highest API use NOT behind a Has*/version check. Nothing above the v66 baseline: chat
-         commands, world and object names are behind HasInvokeChatParser / HasGetWorldName /
-         HasGetObjectName. -->
+         commands, world and object names, and the plugin-command broker are behind
+         HasInvokeChatParser / HasGetWorldName / HasGetObjectName / HasSendPluginCommand. -->
     <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
-    <RynthPluginDescription>Infinite Leaftide (ACECustom) features: the Bounties window.</RynthPluginDescription>
+    <RynthPluginDescription>Infinite Leaftide (ACECustom) features: the Bounties window and the ILT settings.</RynthPluginDescription>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ImGui text calls for non-literal text ('%' escaped): see the file's header. -->
+    <Compile Include="..\Shared\SafeImGui.cs" Link="Shared\SafeImGui.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
+    <TrimmerRootAssembly Include="ImGui.NET" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
   </ItemGroup>
+
+  <!-- The engine already loaded cimgui.dll into the client; a second copy next to the plugin is never used. -->
+  <Target Name="RemoveBundledImGuiNativeFromBuild" AfterTargets="Build">
+    <Delete Files="$(OutputPath)cimgui.dll" Condition="Exists('$(OutputPath)cimgui.dll')" />
+  </Target>
+
+  <Target Name="RemoveBundledImGuiNativeFromPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <Delete Files="$(PublishDir)cimgui.dll" Condition="Exists('$(PublishDir)cimgui.dll')" />
+  </Target>
 
 </Project>

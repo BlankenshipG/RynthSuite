@@ -105,18 +105,24 @@ internal sealed class IltHubController
     /// <summary>True while the Mini Remote is on screen (set by RynthAiPlugin).</summary>
     public Func<bool>? MiniRemoteVisible { get; set; }
 
+    /// <summary>
+    /// Draws the universal Fellowship tab (RynthAiPlugin's FellowshipSectionUi, shared with
+    /// RynthCore's Fellowship section). Render thread; null until the plugin sets it.
+    /// </summary>
+    public Action? FellowshipRenderer { get; set; }
+
     /// <summary>World is ILT-like and the server has at least one ILT feature on.</summary>
     public bool Available => _ctx.Options.IsIltLikeWorld && _ctx.Options.AnyFeatureOn;
 
     /// <summary>
-    /// Whether a section can be shown now. The universal tabs (Quests, Pets, Crafting) and
-    /// Character always can (Character explains why the ILT tabs are idle and holds the Force-ILT
-    /// override); the rest need server features.
+    /// Whether a section can be shown now. The universal tabs (Quests, Pets, Crafting, Fellowship)
+    /// and Character always can (Character explains why the ILT tabs are idle and holds the
+    /// Force-ILT override); the rest need server features.
     /// </summary>
     public bool SectionAvailable(IltSection section) => section switch
     {
         IltSection.Character => true,
-        IltSection.Quests or IltSection.Pet or IltSection.Crafting => true,
+        IltSection.Quests or IltSection.Pet or IltSection.Crafting or IltSection.Fellowship => true,
         IltSection.Banking => Available && !_ctx.Options.IsOff(IltFeature.Bank),
         IltSection.Games => Available && Games.AnyGameAvailable,
         _ => Available,

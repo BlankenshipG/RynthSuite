@@ -135,6 +135,7 @@ public sealed partial class RynthAiPlugin
         _iltHub.MiniRemoteCommand = mode => "[Mini Remote] " + huds.HandleCommand("remote", mode);
         _iltHub.MiniRemoteTabCommand = (tab, mode) => huds.HandleTabCommand(tab, mode);
         _iltHub.MiniRemoteVisible = () => huds.MiniRemoteActive;
+        _iltHub.FellowshipRenderer = () => FellowshipUi().Render();
         EnsureItemInfoUi();
         EnsureSpellsUi();
     }
@@ -390,6 +391,14 @@ public sealed partial class RynthAiPlugin
     private Huds.FellowshipSectionUi? _fellowshipUi;
 
     /// <summary>
+    /// The one fellowship view: the Mini Remote's Fellowship tab and RynthCore's Fellowship
+    /// section draw the same instance. Render thread.
+    /// </summary>
+    private Huds.FellowshipSectionUi FellowshipUi() =>
+        _fellowshipUi ??= new Huds.FellowshipSectionUi(() => _fellowshipTracker,
+            () => Host.HasGetPlayerId ? Host.GetPlayerId() : 0);
+
+    /// <summary>
     /// RynthPluginRenderEmbed "section:&lt;name&gt;": one of RynthAi's views in RynthCore's Mini
     /// Remote sections (Huds/SectionsManifest.cs lists them), drawn into the engine's current
     /// window (and context, see <see cref="EmbedContext"/>) at <paramref name="size"/>.
@@ -404,7 +413,12 @@ public sealed partial class RynthAiPlugin
         if (!_initialized || !_loginComplete || Host.ImGuiContext == IntPtr.Zero) return false;
 
         Action? draw = null;
-        if (Huds.SectionsManifest.TryTabOf(surface, out IltHub.IltSection tab))
+        // Fellowship is a Mini Remote tab too, but it doesn't need the ILT Hub: checked first.
+        if (surface == Huds.SectionsManifest.FellowshipSurface)
+        {
+            draw = FellowshipUi().Render;
+        }
+        else if (Huds.SectionsManifest.TryTabOf(surface, out IltHub.IltSection tab))
         {
             if (hub == null) return false;
             want = IltHub.IltHubUi.TabSize(tab);
@@ -421,12 +435,6 @@ public sealed partial class RynthAiPlugin
             var spells = _spellsUi;
             if (spells == null) return false;
             draw = spells.RenderEmbedded;
-        }
-        else if (surface == Huds.SectionsManifest.FellowshipSurface)
-        {
-            _fellowshipUi ??= new Huds.FellowshipSectionUi(() => _fellowshipTracker,
-                () => Host.HasGetPlayerId ? Host.GetPlayerId() : 0);
-            draw = _fellowshipUi.Render;
         }
         if (draw == null) return false;
 
@@ -470,7 +478,8 @@ public sealed partial class RynthAiPlugin
             IltHub.IltHubUi.TabSize);
         // Without the ILT Hub (failed to start) its views have nothing to draw.
         if (hub == null)
-            views.RemoveAll(v => Huds.SectionsManifest.TryTabOf(v.Surface, out _) || v.Surface == Huds.SectionsManifest.IltOptionsSurface);
+            views.RemoveAll(v => v.Surface != Huds.SectionsManifest.FellowshipSurface
+                                 && (Huds.SectionsManifest.TryTabOf(v.Surface, out _) || v.Surface == Huds.SectionsManifest.IltOptionsSurface));
         return Huds.SectionsManifest.Build(views, Huds.SectionsManifest.OwnSections);
     }
 

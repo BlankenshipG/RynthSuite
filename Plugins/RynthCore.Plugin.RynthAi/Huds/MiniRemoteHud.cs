@@ -29,7 +29,7 @@
 // All game actions are posted to the pump thread.
 //
 // RenderEmbedded draws the same sections and Options menu inside the engine's RynthAi dashboard
-// (its Mini Remote drawer, opened by the Hub launcher's right-click or the drawer tab) and
+// (its Mini Remote drawer, opened by the drawer tab) and
 // reports the size it wants; the drawer is sized from that. The drawer leaves out Toggles (the
 // dashboard it sits on already has those switches) and the tabs (it is too narrow for them).
 // RenderEmbedded(window: true) draws it in the engine's Mini Remote window instead (bar button,
@@ -811,7 +811,7 @@ internal sealed class MiniRemoteHud
     }
 
     /// <summary>
-    /// "Character": RynthAi's own windows, the universal Mini Remote tabs (Quests, Pets, Crafting), and
+    /// "Character": RynthAi's own windows, the universal Mini Remote tabs (Quests, Pets, Crafting, Fellowship), and
     /// RynthCore's panels when it runs /rc commands.
     /// </summary>
     private void RenderCharacterMenu(HudState s)

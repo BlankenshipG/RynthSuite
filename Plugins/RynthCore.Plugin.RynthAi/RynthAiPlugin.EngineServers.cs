@@ -80,10 +80,42 @@ public sealed partial class RynthAiPlugin
         }
     }
 
-    /// <summary>Plugin tick: the migration check, then the queued RynthCore commands through the chat parser.</summary>
+    // RynthILT's copy of the ILT feature bits (IltHub/IltFeatureShare.cs). Plugin tick only.
+    private const long FeatureShareCheckMs = 2000;
+    private const long FeatureShareResendMs = 10_000;
+    private long _featureShareNextAt;
+    private long _featureShareSentAt;
+    private string _featureShareLast = string.Empty;
+
+    /// <summary>
+    /// Plugin tick: sends RynthILT the ILT features the server reported, when they change and
+    /// every <see cref="FeatureShareResendMs"/> (RynthILT may load later). Nothing without the
+    /// Hub, or on an engine without the plugin-command broker.
+    /// </summary>
+    private void ShareIltFeatures()
+    {
+        var hub = _iltHub;
+        if (hub == null || !_loginComplete || !Host.HasSendPluginCommand) return;
+        long now = Environment.TickCount64;
+        if (now < _featureShareNextAt) return;
+        _featureShareNextAt = now + FeatureShareCheckMs;
+
+        var o = hub.Options;
+        string payload = IltHub.IltFeatureShare.Build(o.WorldName, o.Source, o.LastRefreshUtc, o.IsRefreshing,
+                                                      o.IsIltLikeWorld, o.SnapshotBits());
+        if (payload == _featureShareLast && now - _featureShareSentAt < FeatureShareResendMs) return;
+        // Not delivered (RynthILT not installed or not loaded yet): the resend timer tries again.
+        _featureShareSentAt = now;
+        if (Host.SendPluginCommand(IltHub.IltFeatureShare.Target, IltHub.IltFeatureShare.Action, payload))
+            _featureShareLast = payload;
+    }
+
+    /// <summary>Plugin tick: the migration check, the RynthILT feature copy, then the queued RynthCore commands through the chat parser.</summary>
     private void DrainEngineCommands()
     {
         CheckEngineMigration();
+        try { ShareIltFeatures(); }
+        catch (Exception ex) { Log($"[RynthAi] ILT feature copy to RynthILT failed: {ex.Message}"); }
         while (_engineCommands.TryDequeue(out string? command))
         {
             if (Host.HasInvokeChatParser && Host.InvokeChatParser(command)) continue;

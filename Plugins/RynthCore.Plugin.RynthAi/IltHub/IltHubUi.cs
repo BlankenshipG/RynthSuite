@@ -60,6 +60,7 @@ internal sealed class IltHubUi
         IltSection.Charms => new Vector2(560, 520),
         IltSection.Games => new Vector2(520, 440),
         IltSection.Crafting => new Vector2(680, 600),
+        IltSection.Fellowship => new Vector2(380, 360),
         _ => new Vector2(520, 440),
     };
 
@@ -81,6 +82,10 @@ internal sealed class IltHubUi
             case IltSection.Charms: _hub.CharmsTab.Render(); break;
             case IltSection.Games: _hub.Games.Render(); break;
             case IltSection.Crafting: _hub.Crafting.Render(); break;
+            case IltSection.Fellowship:
+                if (_hub.FellowshipRenderer != null) _hub.FellowshipRenderer();
+                else ImGui.TextDisabled("The fellowship view isn't ready yet.");
+                break;
         }
     }
 
@@ -116,7 +121,8 @@ internal sealed class IltHubUi
         }
         foreach (var kv in bits)
         {
-            string state = kv.Value switch { 1 => "on", -1 => "off", _ => "unknown" };
+            // IltTri: 1 on, 0 off, -1 unknown.
+            string state = kv.Value switch { 1 => "on", 0 => "off", _ => "unknown" };
             Vector4 color = kv.Value == 1 ? LegacyDashboardRenderer.ColTeal : LegacyDashboardRenderer.ColTextMute;
             SafeImGui.TextColored(color, $"{kv.Key}: {state}");
         }

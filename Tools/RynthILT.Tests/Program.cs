@@ -23,6 +23,7 @@ internal static class Program
         var runner = new Runner();
         BountyTests.Register(runner);
         BountyReviewTests.Register(runner);
+        IltSettingsTests.Register(runner);
         return runner.Run("RynthILT tests", args.Length > 0 ? args[0] : null);
     }
 }
