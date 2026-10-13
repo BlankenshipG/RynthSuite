@@ -147,7 +147,7 @@ internal sealed class QuestsTab
         ImGui.SameLine();
         if (ImGui.SmallButton("Reload quests.xml")) _ctx.Post(LoadFriendlyNames);
         ImGui.SameLine();
-        ImGui.TextDisabled(t.IsRefreshing ? "refreshing..." : t.LastStatus
+        SafeImGui.TextDisabled(t.IsRefreshing ? "refreshing..." : t.LastStatus
             + (t.LastRefreshUtc == DateTime.MinValue ? "" : " @ " + t.LastRefreshUtc.ToLocalTime().ToString("t")));
 
         string filter = cs.QuestFilter;
@@ -199,7 +199,7 @@ internal sealed class QuestsTab
                     _ctx.Post(() => ToggleFavorite(key));
                 }
                 ImGui.PopStyleColor();
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip(starred ? "Remove from favorites" : "Add to favorites");
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip(starred ? "Remove from favorites" : "Add to favorites");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(FriendlyName(r));
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.MaxSolves > 0 ? $"{r.Solves}/{r.MaxSolves}" : r.Solves.ToString());
                 ImGui.TableNextColumn();
@@ -207,7 +207,7 @@ internal sealed class QuestsTab
                 if (Classify(r) == QuestKind.Once) ImGui.TextDisabled("done");
                 else if (left <= TimeSpan.Zero) ImGui.TextColored(LegacyDashboardRenderer.ColGreen, "ready");
                 else ImGui.TextUnformatted(MiniRemoteText.Duration(left));
-                ImGui.TableNextColumn(); ImGui.TextDisabled(r.Key);
+                ImGui.TableNextColumn(); SafeImGui.TextDisabled(r.Key);
             }
             ImGui.EndTable();
         }
@@ -263,7 +263,7 @@ internal sealed class QuestsTab
         var favorites = FavoriteSet();
         if (t == null || favorites.Count == 0)
         {
-            ImGui.TextDisabled(t == null ? "Quest tracker not ready." : "No favorites yet - star quests in the tracker.");
+            SafeImGui.TextDisabled(t == null ? "Quest tracker not ready." : "No favorites yet - star quests in the tracker.");
         }
         else
         {

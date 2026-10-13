@@ -465,16 +465,16 @@ internal sealed class IltGuardian : IIltFeature
             ImGui.TextDisabled("Heard:");
             ImGui.SameLine();
             ImGui.PushTextWrapPos(0f);
-            ImGui.TextDisabled(IltGuardianPhrasebook.MessageOf(line));
+            SafeImGui.TextDisabled(IltGuardianPhrasebook.MessageOf(line));
             ImGui.PopTextWrapPos();
         }
 
         string answer = _lastAnswer, npc = _lastNpc;
         if (answer.Length > 0)
         {
-            ImGui.TextColored(IltStyle.ColTeal, answer);
+            SafeImGui.TextColored(IltStyle.ColTeal, answer);
             ImGui.SameLine();
-            ImGui.TextDisabled("-> " + npc);
+            SafeImGui.TextDisabled("-> " + npc);
             if (HandInRunning)
             {
                 if (ImGui.SmallButton("Stop##grdstop")) _ctx.Post(() => StopHandIn());
@@ -485,7 +485,7 @@ internal sealed class IltGuardian : IIltFeature
             }
         }
         else ImGui.TextDisabled("No guardian answer yet.");
-        ImGui.TextDisabled("Hand-in: " + _handInStatus);
+        SafeImGui.TextDisabled("Hand-in: " + _handInStatus);
 
         ImGui.Spacing();
         ImGui.InputTextMultiline("##grdinput", ref _input, 2048u, new Vector2(-1, 54));
@@ -506,7 +506,7 @@ internal sealed class IltGuardian : IIltFeature
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Re-read /myquests and /qb list (the server allows each once a minute).");
         ImGui.SameLine();
         DateTime synced = Attributes.SyncedUtc;
-        ImGui.TextDisabled(synced == DateTime.MinValue ? "/qb not read this session" : $"/qb read {synced.ToLocalTime():t}");
+        SafeImGui.TextDisabled(synced == DateTime.MinValue ? "/qb not read this session" : $"/qb read {synced.ToLocalTime():t}");
         ImGui.SameLine();
         if (ImGui.SmallButton("Reset counts##grdreset"))
             _ctx.Confirm("Reset turn-in counts", "Forget the turn-in counts and cooldown estimates taken from /qb wait stamps? (/myquests counts are not affected.)",
@@ -531,9 +531,9 @@ internal sealed class IltGuardian : IIltFeature
                 var col = r.Ready ? IltStyle.ColGreen
                     : r.Status == "Unknown" ? IltStyle.ColTextMute
                     : IltStyle.ColAmber;
-                ImGui.TextColored(col, r.Status);
+                SafeImGui.TextColored(col, r.Status);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip(r.FromMyQuests ? "From /myquests (exact)." : "From /qb wait stamps (count and timer are estimates).");
+                    SafeImGui.SetTooltip(r.FromMyQuests ? "From /myquests (exact)." : "From /qb wait stamps (count and timer are estimates).");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Eta);
             }
             ImGui.EndTable();
@@ -555,8 +555,8 @@ internal sealed class IltGuardian : IIltFeature
         if (answer.Length == 0 || LastAnswerAge > AnswerShownFor) return;
         ImGui.TextColored(IltStyle.ColTextMute, "Guardian:");
         ImGui.SameLine();
-        ImGui.TextColored(IltStyle.ColTeal, answer);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Give to {npc}\nHand-in: {_handInStatus}");
+        SafeImGui.TextColored(IltStyle.ColTeal, answer);
+        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"Give to {npc}\nHand-in: {_handInStatus}");
         ImGui.SameLine();
         if (HandInRunning)
         {

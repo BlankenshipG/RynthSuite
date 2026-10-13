@@ -345,6 +345,8 @@ internal sealed class IltServerOptions
             {
                 Command = probe.Command,
                 IsResponseLine = probe.IsReply,
+                // /aug: banner alone must not end the probe before Creature:/Item: lines arrive.
+                ArmsIdle = probe.Key == IltFeature.Aug ? t => IltParse.AugLine.IsMatch(t) : null,
                 IdleEndMs = 1500,
                 FirstLineTimeoutMs = 8000,
                 Eat = true,

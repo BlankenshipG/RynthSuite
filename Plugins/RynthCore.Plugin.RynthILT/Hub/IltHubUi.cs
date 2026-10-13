@@ -133,9 +133,9 @@ internal sealed class IltHubUi
     {
         var o = _ctx.Options;
         string world = o.WorldName.Length > 0 ? o.WorldName : "unknown world";
-        ImGui.TextColored(o.IsIltLikeWorld ? IltStyle.ColTeal : IltStyle.ColTextMute, world);
+        SafeImGui.TextColored(o.IsIltLikeWorld ? IltStyle.ColTeal : IltStyle.ColTextMute, world);
         ImGui.SameLine();
-        ImGui.TextDisabled(o.IsRefreshing ? "checking server options..."
+        SafeImGui.TextDisabled(o.IsRefreshing ? "checking server options..."
             : o.LastRefreshUtc == DateTime.MinValue ? "server options not checked yet"
             : $"options via {o.Source} @ {o.LastRefreshUtc.ToLocalTime():t}");
         ImGui.SameLine();
@@ -144,7 +144,7 @@ internal sealed class IltHubUi
         bool force = _ctx.State.ForceLeaftideFeatures;
         if (ImGui.Checkbox("Treat this world as ILT", ref force)) _hub.ForceIltWorld = force;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("World-identity override only: the Mini Remote asks the server which ILT features exist.\nIt never turns a feature on by itself.");
+            SafeImGui.SetTooltip("World-identity override only: the Mini Remote asks the server which ILT features exist.\nIt never turns a feature on by itself.");
         ImGui.SameLine();
         if (ImGui.SmallButton("Servers...")) { _serverNamesEdit = null; ImGui.OpenPopup("##iltservers"); }
         ImGui.SameLine();
@@ -161,13 +161,13 @@ internal sealed class IltHubUi
     {
         if (!ImGui.BeginPopup("##iltservers")) return;
         ImGui.TextColored(IltStyle.ColTeal, "Infinite Leaftide world names");
-        ImGui.TextDisabled(ServerFeatureGate.Describe(_ctx.Options.WorldName, _ctx.Settings, _ctx.State.ForceLeaftideFeatures));
+        SafeImGui.TextDisabled(ServerFeatureGate.Describe(_ctx.Options.WorldName, _ctx.Settings, _ctx.State.ForceLeaftideFeatures));
         string text = _serverNamesEdit ?? ServerFeatureGate.FormatList(ServerFeatureGate.Patterns(_ctx.Settings));
         ImGui.SetNextItemWidth(320);
         bool enter = ImGui.InputTextWithHint("##iltservernames", "InfiniteLeaftide, *Leaftide*", ref text, 512, ImGuiInputTextFlags.EnterReturnsTrue);
         _serverNamesEdit = text;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Comma-separated world names that turn on the ILT tabs, the Guardian, the Progression\n" +
+            SafeImGui.SetTooltip("Comma-separated world names that turn on the ILT tabs, the Guardian, the Progression\n" +
                              "planners and the attribute raiser. * is a wildcard (*Leaftide* matches any\n" +
                              "name containing Leaftide). Case does not matter. Also: /ra hub servers <list>.");
         ImGui.SameLine();
@@ -229,7 +229,7 @@ internal sealed class IltHubUi
         var o = _ctx.Options;
         if (!o.IsIltLikeWorld)
         {
-            ImGui.TextWrapped("This is not an Infinite Leaftide / ACECustom world, so the ILT tabs are idle. "
+            SafeImGui.TextWrapped("This is not an Infinite Leaftide / ACECustom world, so the ILT tabs are idle. "
                               + "If this shard runs ACECustom under another name, tick 'Treat this world as ILT' and press Refresh.");
         }
         else if (o.IsRefreshing || o.LastRefreshUtc == DateTime.MinValue)
@@ -262,7 +262,7 @@ internal sealed class IltHubUi
 
     private static void Stat(string label, string value)
     {
-        ImGui.TextColored(ColLabel, label);
+        SafeImGui.TextColored(ColLabel, label);
         ImGui.SameLine();
         ImGui.TextUnformatted(value);
     }
@@ -287,13 +287,13 @@ internal sealed class IltHubUi
     {
         if (_hub.Available) return false;
         var o = _ctx.Options;
-        ImGui.TextDisabled(!o.IsIltLikeWorld ? "Not an ILT world."
+        SafeImGui.TextDisabled(!o.IsIltLikeWorld ? "Not an ILT world."
             : o.IsRefreshing || o.LastRefreshUtc == DateTime.MinValue ? "Checking server features..."
             : "No ILT features reported.");
         bool force = _hub.ForceIltWorld;
         if (ImGui.Checkbox("Treat this world as ILT##mrforce", ref force)) _hub.ForceIltWorld = force;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("World-identity override only: RynthILT asks the server which features exist.\nIt never turns a feature on by itself.");
+            SafeImGui.SetTooltip("World-identity override only: RynthILT asks the server which features exist.\nIt never turns a feature on by itself.");
         if (ImGui.MenuItem("Refresh server features##mrrefresh")) _hub.RequestOptionsRefresh();
         return true;
     }
@@ -340,9 +340,9 @@ internal sealed class IltHubUi
         bool keepOpen = true;
         if (ImGui.BeginPopupModal(ConfirmPopupId, ref keepOpen, ImGuiWindowFlags.AlwaysAutoResize))
         {
-            ImGui.TextColored(IltStyle.ColAmber, _confirm.Title);
+            SafeImGui.TextColored(IltStyle.ColAmber, _confirm.Title);
             ImGui.Separator();
-            ImGui.TextWrapped(_confirm.Message);
+            SafeImGui.TextWrapped(_confirm.Message);
             ImGui.Spacing();
             if (ImGui.Button(_confirm.YesLabel + "##iltyes", new Vector2(120, 0)))
             {

@@ -6,6 +6,7 @@ using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.Meta;
 using RynthCore.Install;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -140,7 +141,7 @@ internal sealed class LegacyMetaUi
             if (!string.IsNullOrEmpty(_sourceApplyMessage) &&
                 (DateTime.Now - _sourceApplyTime).TotalSeconds < 4)
             {
-                ImGui.TextColored(new Vector4(0, 1, 0.4f, 1f), _sourceApplyMessage);
+                SafeImGui.TextColored(new Vector4(0, 1, 0.4f, 1f), _sourceApplyMessage);
                 ImGui.SameLine();
             }
 
@@ -345,7 +346,7 @@ internal sealed class LegacyMetaUi
                             : rule.Children;
                         int childCount = actionList?.Count ?? 0;
                         bool expanded = _expandedRuleIndices.Contains(globalIdx);
-                        ImGui.TextColored(new Vector4(1, 1, 0, 1), $"All: [{childCount} actions] (right-click to expand)");
+                        SafeImGui.TextColored(new Vector4(1, 1, 0, 1), $"All: [{childCount} actions] (right-click to expand)");
                         if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                             ToggleExpand();
 
@@ -356,7 +357,7 @@ internal sealed class LegacyMetaUi
                                 var child = actionList[ai];
                                 string childText = child.Action.ToString() +
                                     (string.IsNullOrEmpty(child.ActionData) ? "" : $": {child.ActionData}");
-                                ImGui.TextDisabled($"   {ai + 1}. {childText}");
+                                SafeImGui.TextDisabled($"   {ai + 1}. {childText}");
                                 if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                                     ToggleExpand();
                             }
@@ -366,13 +367,13 @@ internal sealed class LegacyMetaUi
                              !string.IsNullOrEmpty(rule.ActionData) && rule.ActionData.Contains(';'))
                     {
                         var parts = rule.ActionData.Split(';');
-                        ImGui.Text($"EmbeddedNavRoute: {parts[0]} ({parts[1]} pts)");
+                        SafeImGui.Text($"EmbeddedNavRoute: {parts[0]} ({parts[1]} pts)");
                         if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                             ToggleExpand();
                     }
                     else
                     {
-                        ImGui.Text(rule.Action.ToString() +
+                        SafeImGui.Text(rule.Action.ToString() +
                             (string.IsNullOrEmpty(rule.ActionData) ? "" : $": {rule.ActionData}"));
                         if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                             ToggleExpand();
@@ -557,7 +558,7 @@ internal sealed class LegacyMetaUi
                 ImGui.SameLine();
             }
 
-            ImGui.TextColored(new Vector4(1, 1, 0, 1), $"{rule.Condition} Sub-Conditions");
+            SafeImGui.TextColored(new Vector4(1, 1, 0, 1), $"{rule.Condition} Sub-Conditions");
             ImGui.Indent(15f);
 
             for (int i = 0; i < rule.Children.Count; i++)
@@ -641,7 +642,7 @@ internal sealed class LegacyMetaUi
                     if (!string.IsNullOrEmpty(sName))
                     {
                         ImGui.SameLine();
-                        ImGui.TextColored(new Vector4(0, 1, 1, 1), $"({sName})");
+                        SafeImGui.TextColored(new Vector4(0, 1, 1, 1), $"({sName})");
                     }
                 }
 
@@ -1078,7 +1079,7 @@ internal sealed class LegacyMetaUi
 
         // Status message
         if (!string.IsNullOrEmpty(_statusMessage) && (DateTime.Now - _statusTime).TotalSeconds < 5)
-            ImGui.TextColored(new Vector4(0, 1, 0, 1), _statusMessage);
+            SafeImGui.TextColored(new Vector4(0, 1, 0, 1), _statusMessage);
 
         // Save popup
         if (_openSavePopup)

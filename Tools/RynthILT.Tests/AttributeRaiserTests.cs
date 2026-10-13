@@ -30,6 +30,7 @@ internal static class AttributeRaiserTests
         r.Add("attr raiser: safety (stale costs, another stat's reply, gate off mid-run, held off)", Safety);
         r.Add("attr raiser: by-hand +1 / +10 priced like UB, refused when unaffordable, costs read on tab open", ByHandPriced);
         r.Add("aug planner: /aug pulled on tab open, totals, reset targets, copy texts", AugPlanner);
+        r.Add("aug refresh: banner alone does not end /aug; Current updates from level lines", AugRefreshWaitsForLevelLines);
         r.Add("aug costs: UB's ILT model (tier starts at its S level) in closed form", AugCostModel);
         r.Add("aug costs: per-server multipliers and rules, saved and reset", AugCostSettings);
     }
@@ -194,6 +195,34 @@ internal static class AttributeRaiserTests
         Check.Eq(hub.State.Character.AugTargets["creature"], 100, "reset targets: back to current");
         Check.Eq(hub.State.Character.AugTargets["summon"], 0, "reset targets: unloaded augs go to 0");
         Check.Eq(FakeHost.ChatCommands.Count(x => x == "/aug"), 1, "levels loaded: no second automatic /aug");
+    }
+
+    /// <summary>
+    /// Refresh current must not finish on the /aug banner alone (chat-hold lag used to leave Current at 0).
+    /// </summary>
+    private static void AugRefreshWaitsForLevelLines()
+    {
+        var settings = new IltSettings();
+        var hub = NewHub("InfiniteLeaftide", settings, "aug-refresh-idle", out _);
+        var prog = hub.Progression;
+        // Seed so EnsureAugs does not queue its own /aug ahead of our Refresh.
+        prog.ApplyAugLines(new List<string> { "Creature: 1" });
+
+        prog.HandleRemote(new[] { "augload" });
+        Check.True(TickUntil(hub, () => FakeHost.ChatCommands.Contains("/aug")), "Refresh current sends /aug");
+        Reply(hub, "---------------------------", "Advanced Augmentation Levels:");
+        // Longer than IdleEndMs (2s): without ArmsIdle this used to ApplyAugLines([]) and clear the status.
+        var until = DateTime.UtcNow.AddMilliseconds(2500);
+        while (DateTime.UtcNow < until) { hub.Tick(); Thread.Sleep(25); }
+        Check.True(FakeHost.ChatCommands.Count(x => x == "/aug") == 1, "still waiting on the same /aug (banner did not end it)");
+
+        Reply(hub, "Creature:4,300", "Item:100", "Specialize: 2");
+        Check.True(TickUntil(hub, () =>
+        {
+            var sb = new System.Text.StringBuilder();
+            prog.AppendSnapshotJson(sb);
+            return sb.ToString().Contains("\"cur\":4300", StringComparison.Ordinal);
+        }), "Current updates once Creature:/Item: lines arrive");
     }
 
     private static void Patterns()

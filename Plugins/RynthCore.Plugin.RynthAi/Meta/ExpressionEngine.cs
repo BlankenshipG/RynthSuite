@@ -99,6 +99,8 @@ internal sealed class ExpressionEngine
         = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (RynthCore.Loot.LootProfile Profile, DateTime Mtime)> _giveNativeProfileCache
         = new(StringComparer.OrdinalIgnoreCase);
+    // actiontrygiveprofile arguments already logged as refused (the meta retries every pulse).
+    private readonly HashSet<string> _giveProfileRefused = new(StringComparer.OrdinalIgnoreCase);
     // The three data paths are settable only so offline tests can point them at a scratch
     // folder before anything reads or writes them; the plugin never changes them.
     internal static string ItemGiverDir { get; set; }
@@ -3017,24 +3019,27 @@ internal sealed class ExpressionEngine
         // The item disappearing from GetInventory() is the confirmation it was accepted.
         if (_worldObjectCache == null || string.IsNullOrEmpty(profileArg) || string.IsNullOrEmpty(targetNameArg))
             return "0";
+        // An NPC ignores MoveItemExternal (move-to-container): only AC's give action reaches one.
+        if (!_host.HasGiveObjectTo) return "0";
 
-        // Resolve profile path — bare name → ItemGiverDir.
-        // .utl extension added automatically if no extension and not .json.
-        string profilePath = Path.IsPathRooted(profileArg)
-            ? profileArg
-            : Path.Combine(ItemGiverDir, profileArg);
-
+        // The profile stays inside ItemGiverDir: a shared meta can't point the give at another file.
+        string? profilePath = ResolveGiveProfilePath(profileArg, ItemGiverDir);
+        if (profilePath == null)
+        {
+            if (_giveProfileRefused.Add(profileArg))   // once per argument, not every pulse
+                _host.Log($"[RynthAi] actiontrygiveprofile: refused profile '{profileArg}' (only files inside ItemGiver\\).");
+            return "0";
+        }
         bool isJson = profilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
-        if (!isJson && !profilePath.EndsWith(".utl", StringComparison.OrdinalIgnoreCase))
-            profilePath += ".utl";
 
         if (!File.Exists(profilePath)) return "0";
 
-        // Find target by exact name (case-insensitive) among landscape objects
+        // Target: an NPC or vendor with that exact name (case-insensitive). Never a player, so a
+        // shared meta can't hand the inventory to someone's character; /ra ig gives to players.
         uint targetId = 0;
         foreach (var wo in _worldObjectCache.GetLandscape())
         {
-            if (string.Equals(wo.Name, targetNameArg, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(wo.Name, targetNameArg, StringComparison.OrdinalIgnoreCase) && IsGiveProfileTarget(wo))
             {
                 targetId = (uint)wo.Id;
                 break;
@@ -3044,7 +3049,7 @@ internal sealed class ExpressionEngine
 
         DateTime mtime = File.GetLastWriteTime(profilePath);
 
-        // Each pulse: fire MoveItemExternal for the first matching item still in inventory.
+        // Each pulse: give (whole object) the first matching item still in inventory.
         // We retry the same item until it vanishes from the cache (server confirmed).
         // Once gone, the next iteration naturally picks up the next item.
         // Returns 1 while matching items remain, 0 when inventory is clear.
@@ -3067,8 +3072,7 @@ internal sealed class ExpressionEngine
             {
                 var (action, _) = RynthCore.Plugin.RynthAi.Loot.LootEvaluator.Classify(nativeProfile, wo, null);
                 if (action != RynthCore.Loot.LootAction.Keep) continue;
-                int amount = Math.Max(1, wo.Values(LongValueKey.StackCount, 1));
-                _host.MoveItemExternal((uint)wo.Id, targetId, amount);
+                _host.GiveObjectTo((uint)wo.Id, targetId, 0);
                 return "1";
             }
         }
@@ -3095,13 +3099,51 @@ internal sealed class ExpressionEngine
                     if (VTankLootEvaluator.Match(rule, wo, lootCtx)) { match = rule; break; }
 
                 if (match == null || match.Action != VTankLootAction.Keep) continue;
-                int amount = Math.Max(1, wo.Values(LongValueKey.StackCount, 1));
-                _host.MoveItemExternal((uint)wo.Id, targetId, amount);
+                _host.GiveObjectTo((uint)wo.Id, targetId, 0);
                 return "1";
             }
         }
 
         return "0"; // No matching items remain
+    }
+
+    /// <summary>An NPC or a vendor (weenie bitfield first, as the meta's ObjectClass): a player never is.</summary>
+    private bool IsGiveProfileTarget(WorldObject wo)
+    {
+        int cls = ResolveEffectiveObjectClass(wo);
+        return cls == (int)AcObjectClass.Npc || cls == (int)AcObjectClass.Vendor;
+    }
+
+    /// <summary>
+    /// actiontrygiveprofile's profile file: <paramref name="profileArg"/> relative to
+    /// <paramref name="baseDir"/>, ".utl" added unless it ends in .utl or .json. Null when the
+    /// argument is rooted (C:\..., \\server\..., \x, C:x), names an alternate stream (':'), or
+    /// leaves <paramref name="baseDir"/> ("..\").
+    /// </summary>
+    internal static string? ResolveGiveProfilePath(string profileArg, string baseDir)
+    {
+        string arg = profileArg.Trim();
+        if (arg.Length == 0 || string.IsNullOrWhiteSpace(baseDir) || arg.IndexOf(':') >= 0 || Path.IsPathRooted(arg))
+            return null;
+
+        string root;
+        string full;
+        try
+        {
+            root = Path.GetFullPath(baseDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            full = Path.GetFullPath(Path.Combine(root, arg));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+        if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase) || full.Length == root.Length)
+            return null;
+
+        if (!full.EndsWith(".json", StringComparison.OrdinalIgnoreCase) && !full.EndsWith(".utl", StringComparison.OrdinalIgnoreCase))
+            full += ".utl";
+        return full;
     }
 
     private string EvalGetCombatState()
@@ -3587,6 +3629,17 @@ internal sealed class ExpressionEngine
             ["CastDispelSelf"]      = (() => B(s.CastDispelSelf),      v => s.CastDispelSelf      = ToDouble(v) != 0),
             ["AutoFellowMgmt"]      = (() => B(s.AutoFellowMgmt),      v => s.AutoFellowMgmt      = ToDouble(v) != 0),
             ["UseRecklessness"]     = (() => B(s.UseRecklessness),     v => s.UseRecklessness     = ToDouble(v) != 0),
+            // The range a monster rule's Variable attack power picks from (percent of the bar).
+            ["VariablePowerMin"]    = (() => I(s.VariablePowerMin),    v => { if (int.TryParse(v, out int i)) s.VariablePowerMin = Math.Clamp(i, 0, 100); }),
+            ["VariablePowerMax"]    = (() => I(s.VariablePowerMax),    v => { if (int.TryParse(v, out int i)) s.VariablePowerMax = Math.Clamp(i, 0, 100); }),
+            // Environment hits: 0 Off, 1 Move closer, 2 New target, 3 Move closer then new target.
+            ["MissileEnvironmentResponse"] = (() => I(s.MissileEnvironmentResponse), v => { if (int.TryParse(v, out int i)) s.MissileEnvironmentResponse = Math.Clamp(i, 0, 3); }),
+            ["MagicEnvironmentResponse"]   = (() => I(s.MagicEnvironmentResponse),   v => { if (int.TryParse(v, out int i)) s.MagicEnvironmentResponse   = Math.Clamp(i, 0, 3); }),
+            ["EnvironmentImpactLimit"]     = (() => I(s.EnvironmentImpactLimit),     v => { if (int.TryParse(v, out int i)) s.EnvironmentImpactLimit     = Math.Clamp(i, 1, 10); }),
+            ["EnvironmentImpactWindowSec"] = (() => I(s.EnvironmentImpactWindowSec), v => { if (int.TryParse(v, out int i)) s.EnvironmentImpactWindowSec = Math.Clamp(i, 5, 120); }),
+            ["EnvironmentApproachMeters"]  = (() => I(s.EnvironmentApproachMeters),  v => { if (int.TryParse(v, out int i)) s.EnvironmentApproachMeters  = Math.Clamp(i, 1, 30); }),
+            ["EnvironmentMinDistance"]     = (() => I(s.EnvironmentMinDistance),     v => { if (int.TryParse(v, out int i)) s.EnvironmentMinDistance     = Math.Clamp(i, 1, 30); }),
+            ["EnvironmentSkipSec"]         = (() => I(s.EnvironmentSkipSec),         v => { if (int.TryParse(v, out int i)) s.EnvironmentSkipSec         = Math.Clamp(i, 5, 300); }),
             ["UseNativeAttack"]     = (() => B(s.UseNativeAttack),     v => s.UseNativeAttack     = ToDouble(v) != 0),
             ["WieldUnlistedWandWhenNoneListed"] = (() => B(s.WieldUnlistedWandWhenNoneListed), v => s.WieldUnlistedWandWhenNoneListed = ToDouble(v) != 0),
             // The off hand when a monster rule doesn't choose: Auto, Shield, Weapon or None (or 0-3).

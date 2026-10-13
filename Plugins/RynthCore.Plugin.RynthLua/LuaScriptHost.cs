@@ -450,6 +450,30 @@ function waitfor(cond, timeout)
   end
   return true
 end
+
+-- Lua 5.2+ gives %s any value through tostring (nil -> ""nil""); MoonSharp throws
+-- ""bad argument #n to 'format' (string expected, got nil)"" instead, which stops
+-- scripts written for standard Lua (a missing chat field, an unset setting).
+do
+  local rawformat = string.format
+  local unpack = table.unpack or unpack
+  string.format = function(fmt, ...)
+    local n = select('#', ...)
+    if n == 0 or type(fmt) ~= 'string' then return rawformat(fmt, ...) end
+    local args = { ... }
+    local i = 0
+    for conv in fmt:gmatch('%%[-+ #0]*%d*%.?%d*(.)') do
+      if conv ~= '%' then
+        i = i + 1
+        local v = args[i]
+        if conv == 's' and i <= n and type(v) ~= 'string' and type(v) ~= 'number' then
+          args[i] = tostring(v)
+        end
+      end
+    end
+    return rawformat(fmt, unpack(args, 1, n))
+  end
+end
 ", null, "rynth-core");
     }
 }

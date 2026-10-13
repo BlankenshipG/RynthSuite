@@ -2,6 +2,8 @@
 bin/
 obj/
 publish/
+# Staged plugin publishes (dotnet publish -o out/rynthai-<ver>); deployed copies live under C:\Games.
+/out/
 artifacts/
 TestResults/
 

@@ -28,6 +28,10 @@ internal sealed class MiniRemoteInventory
     // ── Property ids ────────────────────────────────────────────────────────
     public const uint IntStackSize = 12;
     public const uint IntStructure = 92;
+    // Crafting tab (tinker runs): how often an item was tinkered, its imbue, a salvage bag's material.
+    public const uint IntNumTimesTinkered = 171;
+    public const uint IntImbuedEffect = 179;
+    public const uint IntMaterialType = 131;
     public const uint StrUse = 14;
     public const uint BoolPyrealRefillActive = 9049;
     public const uint BoolUniversalMasteryActive = 50038;
@@ -90,6 +94,17 @@ internal sealed class MiniRemoteInventory
 
     /// <summary>Remaining uses on a structure item (essences, kits, salvage bags).</summary>
     public int Uses(WorldObject wo) => Int(wo, IntStructure, 0);
+
+    /// <summary>A bool property of an object (false when unknown or the engine can't read it).</summary>
+    public bool Bool(WorldObject wo, uint stype)
+        => _host.HasGetObjectBoolProperty && _host.TryGetObjectBoolProperty(unchecked((uint)wo.Id), stype, out bool v) && v;
+
+    /// <summary>Stack size (1 for a non-stack).</summary>
+    public int StackSize(WorldObject wo) => Math.Max(1, Int(wo, IntStackSize, 1));
+
+    /// <summary>Worn or wielded by the player.</summary>
+    public bool IsEquipped(WorldObject wo)
+        => wo.WieldedLocation > 0 || (wo.Wielder != 0 && unchecked((uint)wo.Wielder) == PlayerId);
 
     public bool HasAppraisal(WorldObject wo)
         => !_host.HasHasAppraisalData || _host.HasAppraisalData(unchecked((uint)wo.Id));

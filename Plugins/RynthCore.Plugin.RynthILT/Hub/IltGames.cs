@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Numerics;
 using System.Text.RegularExpressions;
 using ImGuiNET;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthILT.Hub;
 
@@ -179,7 +180,7 @@ internal sealed class IltGames : IIltFeature
         ImGui.InputTextWithHint($"Bet (luminance)##{id}", "e.g. 1m, 500k", ref betText, 24u);
         bool ok = IltParse.TryParseAmount(betText, out long bet) && (!fellowship || bet <= FBlackjackMaxBet);
         ImGui.SameLine();
-        ImGui.TextDisabled(ok ? IltParse.N0(bet) : fellowship ? "invalid (max 100B)" : "invalid");
+        SafeImGui.TextDisabled(ok ? IltParse.N0(bet) : fellowship ? "invalid (max 100B)" : "invalid");
 
         ImGui.BeginDisabled(!ok || _handActive);
         if (ImGui.Button($"Deal...##{id}"))
@@ -192,7 +193,7 @@ internal sealed class IltGames : IIltFeature
         ImGui.EndDisabled();
 
         if (_handActive && _fellowshipHand == fellowship) RenderHandButtons(id);
-        if (_lastResult.Length > 0 && _fellowshipHand == fellowship) ImGui.TextWrapped(_lastResult);
+        if (_lastResult.Length > 0 && _fellowshipHand == fellowship) SafeImGui.TextWrapped(_lastResult);
     }
 
     private void RenderHandButtons(string id)
@@ -221,7 +222,7 @@ internal sealed class IltGames : IIltFeature
         if (!_ctx.Options.IsOn(IltFeature.Powerball))
         {
             ImGui.TextDisabled("Ticket purchases unlock once the server confirms /pb (press Refresh).");
-            if (_pbStatus.Length > 0) ImGui.TextWrapped(_pbStatus);
+            if (_pbStatus.Length > 0) SafeImGui.TextWrapped(_pbStatus);
             return;
         }
         int qty = S.PowerballQuantity;
@@ -234,7 +235,7 @@ internal sealed class IltGames : IIltFeature
             _ctx.Confirm("Powerball", $"Buy {q} Powerball ticket(s)?\n{(_pbPrice.Length > 0 ? _pbPrice : "Tickets cost banked luminance.")}",
                 () => Send($"/pb buy {q}"), "Buy");
         }
-        if (_pbStatus.Length > 0) ImGui.TextWrapped(_pbStatus);
+        if (_pbStatus.Length > 0) SafeImGui.TextWrapped(_pbStatus);
     }
 
     /// <summary>Small HUD with the current hand; called every frame by the Hub UI.</summary>
@@ -245,7 +246,7 @@ internal sealed class IltGames : IIltFeature
         bool open = true;
         if (ImGui.Begin("Blackjack HUD##iltbjhud", ref open, ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoCollapse))
         {
-            ImGui.TextColored(IltStyle.ColAmber, _fellowshipHand ? "Fellowship Blackjack" : "Blackjack");
+            SafeImGui.TextColored(IltStyle.ColAmber, _fellowshipHand ? "Fellowship Blackjack" : "Blackjack");
             RenderHandButtons("hud");
         }
         ImGui.End();

@@ -15,6 +15,7 @@ using System.Collections.Generic;
 using System.Linq;
 using ImGuiNET;
 using RynthCore.Loot;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthILT.Hub;
 
@@ -261,7 +262,7 @@ internal sealed class IltChunkClap : IIltFeature
         if (ImGui.Button("Chunk eligible items now...")) _ctx.Confirm("Chunk items",
             "Run one chunk pass now on every eligible aetheria and corrupted weapon?\nChunked items are destroyed.",
             ChunkNow, "Chunk");
-        ImGui.TextDisabled("Status: " + _chunkStatus);
+        SafeImGui.TextDisabled("Status: " + _chunkStatus);
 
         ImGui.Separator();
         ImGui.TextColored(IltStyle.ColTeal, "Clap (/clap all)");
@@ -277,6 +278,6 @@ internal sealed class IltChunkClap : IIltFeature
         if (ImGui.InputInt("Interval (min)", ref mins)) G.ClapIntervalMinutes = Math.Max(5, mins);
         if (ImGui.SmallButton("Clap now")) _ctx.Post(() => ClapNow(manual: true));
         ImGui.SameLine();
-        ImGui.TextDisabled(_clapStatus);
+        SafeImGui.TextDisabled(_clapStatus);
     }
 }

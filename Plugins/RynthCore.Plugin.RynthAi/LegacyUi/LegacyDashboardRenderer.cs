@@ -969,10 +969,28 @@ internal sealed partial class LegacyDashboardRenderer
                 incoming.Insert(0, existingDefault ?? new MonsterRule { Name = "Default" });
             }
 
+            // An engine without the Power column (before 2026-10-12) sends no AttackPower, which
+            // would reset every rule to Default: keep each rule's own (same name and expression).
+            if (json.IndexOf("\"AttackPower\"", StringComparison.OrdinalIgnoreCase) < 0)
+                CarryAttackPower(_settings.MonsterRules, incoming);
+
             _settings.MonsterRules = incoming;
             SaveMonstersFile();
         }
         catch { }
+    }
+
+    /// <summary>Copies AttackPower from <paramref name="current"/> onto the matching rules of
+    /// <paramref name="incoming"/> (same Name and MatchExpression, case-insensitive).</summary>
+    internal static void CarryAttackPower(List<MonsterRule> current, List<MonsterRule> incoming)
+    {
+        foreach (var r in incoming)
+        {
+            var old = current.FirstOrDefault(o =>
+                string.Equals(o.Name, r.Name, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(o.MatchExpression ?? "", r.MatchExpression ?? "", StringComparison.OrdinalIgnoreCase));
+            if (old != null) r.AttackPower = old.AttackPower;
+        }
     }
 
     // ── Settings bridge (engine-side Avalonia SettingsPanel) ─────────────────
@@ -1052,6 +1070,15 @@ internal sealed partial class LegacyDashboardRenderer
                 UseNativeAttack            = s.UseNativeAttack,
                 SummonPets                 = s.SummonPets,
                 PetMinMonsters             = s.PetMinMonsters,
+                VariablePowerMin           = s.VariablePowerMin,
+                VariablePowerMax           = s.VariablePowerMax,
+                MissileEnvironmentResponse = s.MissileEnvironmentResponse,
+                MagicEnvironmentResponse   = s.MagicEnvironmentResponse,
+                EnvironmentImpactLimit     = s.EnvironmentImpactLimit,
+                EnvironmentImpactWindowSec = s.EnvironmentImpactWindowSec,
+                EnvironmentApproachMeters  = s.EnvironmentApproachMeters,
+                EnvironmentMinDistance     = s.EnvironmentMinDistance,
+                EnvironmentSkipSec         = s.EnvironmentSkipSec,
                 // Spell Combat
                 SpellCastIntervalMs        = s.SpellCastIntervalMs,
                 AttackSpellIntervalMs      = s.AttackSpellIntervalMs,
@@ -1284,6 +1311,16 @@ internal sealed partial class LegacyDashboardRenderer
             s.UseNativeAttack            = p.UseNativeAttack;
             s.SummonPets                 = p.SummonPets;
             s.PetMinMonsters             = p.PetMinMonsters;
+            // Absent (an engine without these controls) = unchanged.
+            if (p.VariablePowerMin is int vpMin)              s.VariablePowerMin = vpMin;
+            if (p.VariablePowerMax is int vpMax)              s.VariablePowerMax = vpMax;
+            if (p.MissileEnvironmentResponse is int envMis)   s.MissileEnvironmentResponse = envMis;
+            if (p.MagicEnvironmentResponse is int envMag)     s.MagicEnvironmentResponse = envMag;
+            if (p.EnvironmentImpactLimit is int envLimit)     s.EnvironmentImpactLimit = envLimit;
+            if (p.EnvironmentImpactWindowSec is int envWin)   s.EnvironmentImpactWindowSec = envWin;
+            if (p.EnvironmentApproachMeters is int envStep)   s.EnvironmentApproachMeters = envStep;
+            if (p.EnvironmentMinDistance is int envMinDist)   s.EnvironmentMinDistance = envMinDist;
+            if (p.EnvironmentSkipSec is int envSkip)          s.EnvironmentSkipSec = envSkip;
             // Spell Combat
             s.SpellCastIntervalMs        = p.SpellCastIntervalMs;
             if (p.AttackSpellIntervalMs is int attackDelay) s.AttackSpellIntervalMs = attackDelay;   // absent = unchanged
@@ -1829,6 +1866,15 @@ internal sealed partial class LegacyDashboardRenderer
         dst.MeleeAttackPower         = tmp.MeleeAttackPower;
         dst.MissileAttackPower       = tmp.MissileAttackPower;
         dst.UseRecklessness          = tmp.UseRecklessness;
+        dst.VariablePowerMin         = tmp.VariablePowerMin;
+        dst.VariablePowerMax         = tmp.VariablePowerMax;
+        dst.MissileEnvironmentResponse = tmp.MissileEnvironmentResponse;
+        dst.MagicEnvironmentResponse = tmp.MagicEnvironmentResponse;
+        dst.EnvironmentImpactLimit   = tmp.EnvironmentImpactLimit;
+        dst.EnvironmentImpactWindowSec = tmp.EnvironmentImpactWindowSec;
+        dst.EnvironmentApproachMeters = tmp.EnvironmentApproachMeters;
+        dst.EnvironmentMinDistance   = tmp.EnvironmentMinDistance;
+        dst.EnvironmentSkipSec       = tmp.EnvironmentSkipSec;
         dst.UseNativeAttack          = tmp.UseNativeAttack;
         dst.WieldUnlistedWandWhenNoneListed = tmp.WieldUnlistedWandWhenNoneListed;
         dst.OffhandDefault           = OffhandRules.SettingValue(OffhandRules.Parse(tmp.OffhandDefault, OffhandMode.Auto));

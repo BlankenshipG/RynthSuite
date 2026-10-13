@@ -29,6 +29,8 @@
   <ItemGroup>
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthInventory\**\*.cs" Exclude="..\..\Plugins\RynthCore.Plugin.RynthInventory\obj\**;..\..\Plugins\RynthCore.Plugin.RynthInventory\bin\**" Link="RynthInventory\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
+    <!-- The plugin links this one from Plugins/Shared (the glob above only covers the plugin's folder). -->
+    <Compile Include="..\..\Plugins\Shared\ChatSource.cs" Link="Shared\ChatSource.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -14,8 +14,11 @@ internal static class IltParse
 {
     private const RegexOptions Opt = RegexOptions.Compiled | RegexOptions.CultureInvariant;
 
-    /// <summary>"/aug" level line: "Creature: 1,234".</summary>
-    public static readonly Regex AugLine = new(@"^(\w+):\s*([\d,]+)$", Opt);
+    /// <summary>
+    /// "/aug" level line: "Creature:1,234", "Duration: 1,234", or "Specialize: 2".
+    /// Trailing notes ("Triune Weave: 5 (adds ...)") are allowed; the planner only keeps known keys.
+    /// </summary>
+    public static readonly Regex AugLine = new(@"^(\w+)\s*:\s*([\d,]+)", Opt);
 
     /// <summary>"/pets" / "/shinies" roster entry: "12. Shiny Drudge Ravener".</summary>
     public static readonly Regex RosterLine = new(@"^\s*(\d+)\.\s+(.+)$", Opt);

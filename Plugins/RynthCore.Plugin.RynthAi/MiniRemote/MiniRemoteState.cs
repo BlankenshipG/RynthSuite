@@ -21,8 +21,69 @@ public sealed class MiniRemoteState
     public int SchemaVersion = 1;
     public PetTabState Pet = new();
     public QuestsTabState Quests = new();
+    /// <summary>The Crafting tab (tinker benches, Rings chain); the ILT Hub's Crafting before.</summary>
+    public CraftingTabState Crafting = new();
     /// <summary>Last VTank .usd file the importer read (the ILT Hub's Gear.LastUsdPath before).</summary>
     public string LastUsdPath = string.Empty;
+}
+
+/// <summary>The Crafting tab: one settings block per tinker bench, plus per-server custom salvage.</summary>
+public sealed class CraftingTabState
+{
+    /// <summary>Bench settings keyed by the bench name (TinkerBench: Armor, Melee, Missile, Caster, Jewelry, Items, Trinkets).</summary>
+    public Dictionary<string, TinkerBenchSettings> Benches = new();
+    /// <summary>The player's extra salvage rows, keyed by world name (custom shards' own recipes).</summary>
+    public Dictionary<string, List<CustomTinker>> CustomByWorld = new();
+    /// <summary>Answer the server's craft-chance dialog for the runner (engine API v84).</summary>
+    public bool AnswerCraftDialog = true;
+    /// <summary>Items per scan (UB-IT's 20).</summary>
+    public int BatchSize = 20;
+    /// <summary>Apply even in combat mode (servers with allow_combat_mode_crafting).</summary>
+    public bool AllowInCombat;
+    /// <summary>When a batch finishes, scan the next one (items finished this session are left out).</summary>
+    public bool AutoNextBatch;
+    /// <summary>...and start it without asking again.</summary>
+    public bool AutoStartNextBatch;
+    /// <summary>Trinket salvage tier: 0 Minor, 1 Moderate, 2 Major (TinkerCatalog.TrinketTiers).</summary>
+    public int TrinketTier;
+    /// <summary>Prepare a raw trinket bag on the tier's Ammunition when no prepared bag is carried.</summary>
+    public bool TrinketPrep;
+    /// <summary>Rings chain: recipe id (RingChain) to how many times to craft it.</summary>
+    public Dictionary<string, int> RingRuns = new();
+}
+
+/// <summary>One tinker bench's choices.</summary>
+public sealed class TinkerBenchSettings
+{
+    /// <summary>Row key (TinkerCatalog.Key: r/s/c + material id) to how many times (imbues and flags: 0 or 1).</summary>
+    public Dictionary<string, int> Counts = new();
+    /// <summary>Skip a step whose chance is under this percent (0 = any chance).</summary>
+    public int MinChancePercent;
+    /// <summary>Only items with at most this many tinks.</summary>
+    public int MaxTinks = 9;
+    /// <summary>Only items with at least this many free tink slots (0 = no filter).</summary>
+    public int MinFreeTinks;
+    public bool SkipImbued;
+    /// <summary>Slash/pierce weapons take the pierce rend (Black Garnet) instead of slash (Imperial Topaz).</summary>
+    public bool PierceForCombo;
+    /// <summary>The damage-type rend goes after every other step (UB-IT's "Foolproof rend last").</summary>
+    public bool RendLast;
+}
+
+/// <summary>A salvage row the player added for one server.</summary>
+public sealed class CustomTinker
+{
+    /// <summary>TinkerBench as an int.</summary>
+    public int Bench;
+    /// <summary>MaterialType of the salvage.</summary>
+    public int Material;
+    public bool Imbue;
+    /// <summary>Once per item (a flag-style recipe) rather than a repeatable tink.</summary>
+    public bool Once;
+    public bool UsesTinkSlot = true;
+    /// <summary>The bag's name must contain this (bags that share another salvage's material id).</summary>
+    public string NameMatch = string.Empty;
+    public string Note = string.Empty;
 }
 
 /// <summary>The Pets tab's settings (the ILT Hub's IltPetState, without the ILT /pets and /shinies logs).</summary>
@@ -90,6 +151,8 @@ public sealed class LegacyIltHubFile
     /// <summary>The ILT Hub's IltCharacterState: its quest fields have QuestsTabState's names.</summary>
     public QuestsTabState? Character;
     public LegacyIltGear? Gear;
+    /// <summary>The ILT Hub's Crafting tab (build-comp-10-11 hosted it in RynthAi): same field names.</summary>
+    public CraftingTabState? Crafting;
 }
 
 public sealed class LegacyIltGear
@@ -149,6 +212,7 @@ internal sealed class MiniRemoteStore
         {
             Pet = old.Pet ?? new PetTabState(),
             Quests = old.Character ?? new QuestsTabState(),
+            Crafting = old.Crafting ?? new CraftingTabState(),
             LastUsdPath = old.Gear?.LastUsdPath ?? string.Empty,
         };
         Normalize(s);
@@ -187,6 +251,12 @@ internal sealed class MiniRemoteStore
         s.Quests.QuestFilter ??= string.Empty;
         s.Quests.QuestFavorites ??= new();
         s.Quests.QuestFavorites.RemoveAll(string.IsNullOrWhiteSpace);
+        s.Crafting ??= new CraftingTabState();
+        s.Crafting.Benches ??= new();
+        s.Crafting.CustomByWorld ??= new();
+        s.Crafting.RingRuns ??= new();
+        s.Crafting.BatchSize = Math.Clamp(s.Crafting.BatchSize, 1, 200);
+        s.Crafting.TrinketTier = Math.Clamp(s.Crafting.TrinketTier, 0, 2);
         s.LastUsdPath ??= string.Empty;
     }
 }

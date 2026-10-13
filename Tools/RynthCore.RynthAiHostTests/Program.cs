@@ -54,6 +54,7 @@ internal static class Program
         T11LootTests.Register(runner);
         MagItemDescriberTests.Register(runner);
         ExpressionTests.Register(runner);
+        GiveProfileTests.Register(runner);
         MetaTests.Register(runner);
         NoKillTests.Register(runner);
         MetaSchedulerTests.Register(runner);
@@ -70,6 +71,7 @@ internal static class Program
         AmmoTests.Register(runner);
         VTankYieldTests.Register(runner);
         OffhandTests.Register(runner);
+        LauncherSwapTests.Register(runner);
         FloodPerfTests.Register(runner);
         LootSalvageTests.Register(runner);
         LootCorpseTests.Register(runner);
@@ -125,6 +127,9 @@ internal static class Program
         CorpseCloseTests.Register(runner);
         VTankHotkeyTests.Register(runner);
         SaveFailureTests.Register(runner);
+        EnvironmentImpactTests.Register(runner);
+        PetDamageTintTests.Register(runner);
+        TinkerTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }

@@ -194,7 +194,7 @@ internal sealed class IltSessionRates : IIltFeature
         // The session clock is RynthAi's session stats' (it and the coins reset together).
         var start = _ctx.Ai.TryGetSessionStats(out SessionStatsV1 v) && v.SessionSeconds > 0 && v.StartUtcTicks > 0
             ? new DateTime(v.StartUtcTicks, DateTimeKind.Utc) : _start;
-        ImGui.TextDisabled($"Session {IltParse.Duration(DateTime.UtcNow - start)}");
+        SafeImGui.TextDisabled($"Session {IltParse.Duration(DateTime.UtcNow - start)}");
         ImGui.SameLine();
         if (ImGui.SmallButton("Reset##rates")) _ctx.Post(ResetAll);
 
@@ -208,9 +208,9 @@ internal sealed class IltSessionRates : IIltFeature
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Label);
-                if (ReferenceEquals(r.Label, PassUpLabel) && ImGui.IsItemHovered()) ImGui.SetTooltip(PassUpTooltip);
+                if (ReferenceEquals(r.Label, PassUpLabel) && ImGui.IsItemHovered()) SafeImGui.SetTooltip(PassUpTooltip);
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Total);
-                ImGui.TableNextColumn(); ImGui.TextColored(IltStyle.ColTeal, r.PerHour);
+                ImGui.TableNextColumn(); SafeImGui.TextColored(IltStyle.ColTeal, r.PerHour);
             }
             ImGui.EndTable();
         }

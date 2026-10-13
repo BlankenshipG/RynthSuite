@@ -32,7 +32,8 @@ namespace RynthCore.Plugin.RynthILT;
 public sealed class RynthILTPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthILT");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.0");
+    // Previous release: 0.2.0.
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.1");
 
     /// <summary>Wait this long after login for the character's name before tracking without a save file.</summary>
     private const long NameWaitMs = 30_000;

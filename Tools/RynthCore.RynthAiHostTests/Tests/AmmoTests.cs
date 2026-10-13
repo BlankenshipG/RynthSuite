@@ -120,6 +120,7 @@ internal static class AmmoTests
             InHand = unchecked((int)Bow);
             C.InHandOverride = () => InHand;
             C.OpenPackOverride = () => unchecked((int)Pack);
+            C.AmmoOffSettleMs = 0;                            // the ticks here don't wait on the wall clock
             Target = new WorldObject(unchecked((int)Monster), "Test Dummy", AcObjectClass.Monster);
             List(Bow, Crossbow);
         }
@@ -172,7 +173,11 @@ internal static class AmmoTests
         Check.Eq(FakeHost.Uses.Count, 0, "nor the crossbow before the arrows are off");
 
         Rig.Unwield(Arrows);                                  // the arrows are in the pack
-        Check.False(rig.Tick(), "tick 3: the crossbow wield is sent");
+        rig.C.AmmoOffSettleMs = 60_000;
+        Check.False(rig.Tick(), "arrows just read off: the settle");
+        Check.Eq(FakeHost.Uses.Count, 0, "no crossbow inside the settle");
+        rig.C.AmmoOffSettleMs = 0;
+        Check.False(rig.Tick(), "settled: the crossbow wield is sent");
         Check.Eq(FakeHost.Uses.Count, 1, "one UseObject");
         Check.Eq(FakeHost.Uses.LastOrDefault(), Crossbow, "for the crossbow");
 

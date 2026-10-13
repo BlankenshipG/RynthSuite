@@ -7,6 +7,7 @@
 using System;
 using System.Collections.Generic;
 using ImGuiNET;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthILT.Hub;
 
@@ -78,7 +79,7 @@ internal sealed class IltPetLogs : IIltFeature
         if (ImGui.TreeNode($"{label} ({snap.Length})##{key}"))
         {
             if (ImGui.SmallButton($"Refresh##{key}")) _ctx.Post(() => RequestRoster(shinies));
-            foreach (string s in snap) ImGui.BulletText(s);
+            foreach (string s in snap) SafeImGui.BulletText(s);
             ImGui.TreePop();
         }
     }

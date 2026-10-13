@@ -1,4 +1,4 @@
-// MiniRemoteController.cs — The Mini Remote's universal tabs (Quests, Pets), the VTank .usd
+// MiniRemoteController.cs — The Mini Remote's universal tabs (Quests, Pets, Crafting), the VTank .usd
 // importer and the "/ra hub|quests|pets" commands. The universal half of the ILT Hub's
 // IltHubController (SilentKelpie's ILT Hub; its Infinite Leaftide half went to the RynthILT plugin
 // 2026-10-13).
@@ -9,8 +9,8 @@
 //   OnRender → Render()         (render thread: quest favorites HUD, confirmations)
 //   /ra hub ..., /ra quests ..., /ra pets ..., /ra guardian ..., /ra bounty ... → HandleCommand()
 //   OnLogout / teardown → OnLogout()
-// The Mini Remote's tab bar (MiniRemoteHud) shows Remote, then Quests and Pets (here, every
-// world), then RynthILT's Infinite Leaftide tabs (IltClient). The ILT verbs ("/ra hub bank",
+// The Mini Remote's tab bar (MiniRemoteHud) shows Remote, then Quests, Pets and Crafting (here,
+// every world), then RynthILT's Infinite Leaftide tabs (IltClient). The ILT verbs ("/ra hub bank",
 // "/ra hub attr ...", "/ra guardian ...", "/ra bounty", "/ra hub open banking", ...) are forwarded
 // to RynthILT (RynthILT.Hub Command); without RynthILT they say so.
 using System;
@@ -36,6 +36,8 @@ internal sealed class MiniRemoteController
 
     public QuestsTab Quests { get; }
     public PetsTab Pets { get; }
+    /// <summary>The Crafting tab (tinker benches and the Rings chain; any world).</summary>
+    public CraftingTab Crafting { get; }
     public VTankUsdImporter Usd { get; }
 
     public MiniRemoteController(RynthCoreHost host, string charFolder, Func<WorldObjectCache?> cache,
@@ -47,6 +49,7 @@ internal sealed class MiniRemoteController
         _ctx = new MiniRemoteContext(host, state, store, inventory, ilt, settings) { SaveCombatSettings = saveCombatSettings };
         Quests = new QuestsTab(_ctx, quests);
         Pets = new PetsTab(_ctx);
+        Crafting = new CraftingTab(_ctx);
         Usd = new VTankUsdImporter(_ctx);
         _ctx.ShowTab = tab => MiniRemoteTabCommand?.Invoke(tab, "show");
     }
@@ -90,6 +93,8 @@ internal sealed class MiniRemoteController
         _ctx.DrainPosted();
         try { Pets.Tick(now); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Pets, ex, "PetsTab.Tick"); }
+        try { Crafting.Tick(now); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Crafting, ex, "CraftingTab.Tick"); }
         if (now - _lastSaveAt >= SaveIntervalMs)
         {
             _lastSaveAt = now;
@@ -97,12 +102,15 @@ internal sealed class MiniRemoteController
         }
     }
 
-    /// <summary>Pump-thread chat line (the heal pet's heal). Never eats.</summary>
+    /// <summary>Pump-thread chat line (the heal pet's heal, a tinker run's results). Never eats.</summary>
     public void OnChat(string text)
     {
         if (string.IsNullOrEmpty(text)) return;
-        try { Pets.OnChat(text.TrimEnd('\r', '\n')); }
+        string line = text.TrimEnd('\r', '\n');
+        try { Pets.OnChat(line); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Pets, ex, "PetsTab.OnChat"); }
+        try { Crafting.OnChat(line); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Crafting, ex, "CraftingTab.OnChat"); }
     }
 
     /// <summary>Logout / teardown: stop the pet automation and flush to disk.</summary>
@@ -110,6 +118,8 @@ internal sealed class MiniRemoteController
     {
         try { Pets.OnLogout(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Pets, ex, "PetsTab.OnLogout"); }
+        try { Crafting.OnLogout(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Crafting, ex, "CraftingTab.OnLogout"); }
         _ctx.Store.SaveIfDirty(_ctx.State);
     }
 
@@ -118,13 +128,14 @@ internal sealed class MiniRemoteController
 
     // ── Rendering (render thread) ───────────────────────────────────────────
 
-    /// <summary>One of the Mini Remote's own tabs ("quests", "pets"); false for anything else.</summary>
+    /// <summary>One of the Mini Remote's own tabs ("quests", "pets", "crafting"); false for anything else.</summary>
     public bool RenderTab(string id)
     {
         switch (id)
         {
             case MiniRemoteTabs.Quests: Quests.RenderTab(); return true;
             case MiniRemoteTabs.Pets: Pets.Render(); return true;
+            case MiniRemoteTabs.Crafting: Crafting.Render(); return true;
             default: return false;
         }
     }
@@ -154,9 +165,9 @@ internal sealed class MiniRemoteController
         bool keepOpen = true;
         if (ImGui.BeginPopupModal(ConfirmPopupId, ref keepOpen, ImGuiWindowFlags.AlwaysAutoResize))
         {
-            ImGui.TextColored(LegacyDashboardRenderer.ColAmber, _confirm.Title);
+            SafeImGui.TextColored(LegacyDashboardRenderer.ColAmber, _confirm.Title);
             ImGui.Separator();
-            ImGui.TextWrapped(_confirm.Message);
+            SafeImGui.TextWrapped(_confirm.Message);
             ImGui.Spacing();
             if (ImGui.Button(_confirm.YesLabel + "##mryes", new Vector2(120, 0)))
             {
@@ -184,7 +195,7 @@ internal sealed class MiniRemoteController
     // ── Commands ────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// "/ra hub [show|hide|toggle|open quests|pets [show|hide|toggle]|tab quests|pets|remote]",
+    /// "/ra hub [show|hide|toggle|open quests|pets|crafting [show|hide|toggle]|tab quests|pets|crafting|remote]",
     /// "/ra quests [refresh|check &lt;regex&gt;|window|favhud]", "/ra pets [show|hide|toggle]"; every
     /// other "/ra hub ..." verb, "/ra guardian ..." and "/ra bounty|bounties|bountys ..." go to
     /// RynthILT. Returns false if not handled.
@@ -261,7 +272,7 @@ internal sealed class MiniRemoteController
 
     private void PrintHelp()
     {
-        _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)   /ra hub open quests|pets [show|hide|toggle]");
+        _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)   /ra hub open quests|pets|crafting [show|hide|toggle]");
         _ctx.Chat("[Mini Remote] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");
         _ctx.Chat("[Mini Remote] Banking, gear, charms, games, the Guardian, bounties, /ra hub attr ...: Infinite Leaftide, the RynthILT plugin.");
     }

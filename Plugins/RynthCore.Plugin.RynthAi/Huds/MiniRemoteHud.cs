@@ -214,7 +214,7 @@ internal sealed class MiniRemoteHud
                 // The tab draws into a child of its own size; tables in it scroll inside it.
                 ImGui.BeginChild(TabBodyId(tab.Id), tab.Size, ImGuiChildFlags.None, ImGuiWindowFlags.None);
                 bool drawn = tab.Ilt ? remote!.Ilt.RenderTab(tab.Id) : remote!.RenderTab(tab.Id);
-                if (!drawn) ImGui.TextDisabled(tab.Ilt ? "RynthILT isn't drawing this tab (not loaded, or not ready yet)." : "Not ready.");
+                if (!drawn) SafeImGui.TextDisabled(tab.Ilt ? "RynthILT isn't drawing this tab (not loaded, or not ready yet)." : "Not ready.");
                 ImGui.EndChild();
                 width = Math.Max(width, tab.Size.X);
                 ImGui.EndTabItem();
@@ -313,11 +313,11 @@ internal sealed class MiniRemoteHud
         if (ImGui.Button((s.MiniRemoteHorizontal ? "H" : "V") + "##mrlayout", new Vector2(HeaderButtonWidth, 0)))
             s.MiniRemoteHorizontal = !s.MiniRemoteHorizontal;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(s.MiniRemoteHorizontal ? "Horizontal: sections in columns. Click to stack them." : "Vertical: sections stacked. Click to lay them out in columns.");
+            SafeImGui.SetTooltip(s.MiniRemoteHorizontal ? "Horizontal: sections in columns. Click to stack them." : "Vertical: sections stacked. Click to lay them out in columns.");
         ImGui.SameLine();
         // Opened by RenderOptions: this row sits inside the Remote tab, whose ID the popup must not get.
         if (ImGui.Button("Options##mropts", new Vector2(HeaderButtonWidth, 0))) _openOptions = true;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Mini Remote settings: sections, layout, slot size.\nRight-click the remote for the Character and server windows.");
+        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("Mini Remote settings: sections, layout, slot size.\nRight-click the remote for the Character and server windows.");
     }
 
     private void RenderVertical(HudState s, MiniRemoteController? remote)
@@ -418,7 +418,7 @@ internal sealed class MiniRemoteHud
 
     private static void Stat(string label, string value)
     {
-        ImGui.TextColored(ColLabel, label);
+        SafeImGui.TextColored(ColLabel, label);
         ImGui.SameLine();
         ImGui.TextUnformatted(value);
     }
@@ -438,7 +438,7 @@ internal sealed class MiniRemoteHud
         if (v.PassUpTracked)
         {
             Stat("Pass-up:", HudDraw.Compact(v.PassUpPerHour) + "/h");
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{v.LumPassUp:N0} this session.\n{PassUpTooltip}");
+            if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"{v.LumPassUp:N0} this session.\n{PassUpTooltip}");
         }
         Stat("Kills:", HudDraw.Compact(v.KillsPerHour) + "/h");
         if (remote == null || !remote.Ilt.TryGetRates(out double coins, out double pyreals)) return;
@@ -465,7 +465,7 @@ internal sealed class MiniRemoteHud
         if (c.TargetDistance >= 0)
         {
             ImGui.SameLine();
-            ImGui.TextDisabled($"{c.TargetDistance:F0}yd");
+            SafeImGui.TextDisabled($"{c.TargetDistance:F0}yd");
         }
         HealthBar("##mrtargethp", c.TargetHealth);
     }
@@ -484,7 +484,7 @@ internal sealed class MiniRemoteHud
         if (name.Length == 0) { ImGui.TextDisabled("No combat pet set"); return; }
         ImGui.TextUnformatted(name);
         var col = status switch { "Ready" => ColReady, "Out" => ColOut, "Healing" => ColBusy, _ => ColEmpty };
-        ImGui.TextColored(col, status);
+        SafeImGui.TextColored(col, status);
     }
 
     private static void RenderSummon(MiniRemoteController? remote, CombatHudSnapshot c)
@@ -513,14 +513,14 @@ internal sealed class MiniRemoteHud
             }
             else
             {
-                ImGui.TextColored(left.TotalSeconds <= 30 ? ColEmpty : ColOut, text);
+                SafeImGui.TextColored(left.TotalSeconds <= 30 ? ColEmpty : ColOut, text);
             }
         }
         else
         {
             // No RemainingLifespan from the server: show how long it has been out instead.
             var up = TimeSpan.FromMilliseconds(Math.Max(0, now - c.PetSeenAtMs));
-            ImGui.TextDisabled($"Out {FormatClock(up)}");
+            SafeImGui.TextDisabled($"Out {FormatClock(up)}");
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("The server hasn't reported this summon's lifespan yet.");
         }
     }
@@ -604,7 +604,7 @@ internal sealed class MiniRemoteHud
                 if (e.IsEmpty) ImGui.PopStyleColor();
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(e.IsEmpty ? EmptySlotTip(i) : $"{e.Name}\n{count:N0} carried\nClick to use, right-click for options.\nCtrl+wheel: box size.");
+                SafeImGui.SetTooltip(e.IsEmpty ? EmptySlotTip(i) : $"{e.Name}\n{count:N0} carried\nClick to use, right-click for options.\nCtrl+wheel: box size.");
             int slotIndex = i;
             if (clicked)
             {
@@ -678,7 +678,7 @@ internal sealed class MiniRemoteHud
     {
         if (!ImGui.BeginPopup(SlotPopup)) return;
         _slotMenuIndex = index;
-        ImGui.TextDisabled(e.IsEmpty ? $"Slot {index + 1:00}" : $"Slot {index + 1:00}: {e.Name}");
+        SafeImGui.TextDisabled(e.IsEmpty ? $"Slot {index + 1:00}" : $"Slot {index + 1:00}: {e.Name}");
         string candidate = _hud.AssignCandidate;
         if (ImGui.MenuItem(candidate.Length > 0 ? $"Assign {candidate}" : "Assign selected item"))
             _hud.Post(() => _hud.SetSlotFromSelection(index));
@@ -805,7 +805,7 @@ internal sealed class MiniRemoteHud
     }
 
     /// <summary>
-    /// "Character": RynthAi's own windows, the universal Mini Remote tabs (Quests, Pets), and
+    /// "Character": RynthAi's own windows, the universal Mini Remote tabs (Quests, Pets, Crafting), and
     /// RynthCore's panels when it runs /rc commands.
     /// </summary>
     private void RenderCharacterMenu(HudState s)
@@ -852,7 +852,7 @@ internal sealed class MiniRemoteHud
             if (!g.Active && !forcedHere) continue;
             any = true;
             ImGui.Separator();
-            ImGui.TextDisabled("Server: " + (g.Active ? g.Name : g.Name + " (forced)"));
+            SafeImGui.TextDisabled("Server: " + (g.Active ? g.Name : g.Name + " (forced)"));
             foreach (ServerMenuEntry item in g.Items)
             {
                 string? tab = ServerMenuModel.TabOf(item.Feature);
@@ -862,7 +862,7 @@ internal sealed class MiniRemoteHud
                 if (ImGui.MenuItem(item.Label + "##mrsrv_" + g.Id, item.Command, false, enabled))
                     RunServerItem(item, tab);
                 if (item.Tooltip.Length > 0 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                    ImGui.SetTooltip(enabled ? item.Tooltip : item.Tooltip + "\nShows once the server reports this feature on.");
+                    SafeImGui.SetTooltip(enabled ? item.Tooltip : item.Tooltip + "\nShows once the server reports this feature on.");
             }
             if (ilt) remote?.Ilt.RenderSection(RynthIltHub.SectionIltStatus);
         }
@@ -876,7 +876,7 @@ internal sealed class MiniRemoteHud
             if (ImGui.MenuItem("Treat this world as " + g.Name + "##mrforce_" + g.Id, g.ForceCommand))
                 ForceServer(g, remote);
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Shows this server's windows here anyway. It only says which world this is:\nthe server still decides which features exist.");
+                SafeImGui.SetTooltip("Shows this server's windows here anyway. It only says which world this is:\nthe server still decides which features exist.");
         }
     }
 

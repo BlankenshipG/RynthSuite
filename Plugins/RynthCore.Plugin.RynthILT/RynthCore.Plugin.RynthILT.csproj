@@ -47,6 +47,8 @@
     <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />
     <!-- ImGui.NET bound to the engine's cimgui (the tabs draw inside RynthAi's Mini Remote). -->
     <Compile Include="..\Shared\ImGuiNativeBinding.cs" Link="Shared\ImGuiNativeBinding.cs" />
+    <!-- ImGui text calls are printf formats: dynamic text (names, chat, server lines) goes through SafeImGui. -->
+    <Compile Include="..\Shared\SafeImGui.cs" Link="Shared\SafeImGui.cs" />
     <!-- Install-folder resolver (the ILT Hub files left in the RynthAi folder). -->
     <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
     <!-- One logged, guarded way to use an object (the Guardian's vendor). -->

@@ -26,7 +26,8 @@ namespace RynthCore.Plugin.RynthInventory;
 /// </summary>
 public sealed class RynthInventoryPlugin : RynthPluginBase
 {
-    public const string Version = "0.1.0";
+    // Previous release: 0.1.0. Keep in step with PluginExports.GetVersion.
+    public const string Version = "0.1.1";
 
     private const long IdentityRetryMs = 1000;
     private const long AccountWaitMs = 15_000;
@@ -383,7 +384,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     // May run on AC's thread: the feed only queues.
     public override void OnChatWindowText(string? text, int chatType, ref int eat)
     {
-        if (eat == 0 && _vault != null && _vault.ShouldEat(text)) eat = 1;
+        if (eat == 0 && _vault != null && _vault.ShouldEat(text, chatType)) eat = 1;
     }
 
     private void StartCharacter(long now, uint player, string server, string account, string character)

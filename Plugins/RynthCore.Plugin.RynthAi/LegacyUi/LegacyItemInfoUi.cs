@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.ItemInfo;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -87,7 +88,7 @@ internal sealed class LegacyItemInfoUi
         if (string.IsNullOrEmpty(_previewText))
             ImGui.TextDisabled("Select an item to preview its info line.");
         else
-            ImGui.TextWrapped(s.Prefix + _previewText);
+            SafeImGui.TextWrapped(s.Prefix + _previewText);
         ImGui.EndChild();
 
         if (ImGui.Button("Print to chat##iiPrint")) _printSelected?.Invoke();
@@ -155,7 +156,7 @@ internal sealed class LegacyItemInfoUi
         if (ImGui.Combo("Layout" + idSuffix, ref s.Layout, MagItemInfoCatalog.Layouts, MagItemInfoCatalog.Layouts.Length))
             s.Sanitize();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
+            SafeImGui.SetTooltip(
                 "Pet-style lines (like the Mini Remote's Pets roster):\n" +
                 "  1  Name (type mastery), set, AL, tinks, applied, craft\n" +
                 "  2  imbues, slayer, damage, variance, %a / %md / %mc\n" +
@@ -191,7 +192,7 @@ internal sealed class LegacyItemInfoUi
                 if (ImGui.Checkbox($"{f.Label}##iiF{(int)f.Field}", ref shown))
                     s.SetHidden(f.Field, !shown);
                 ImGui.TableNextColumn();
-                ImGui.TextColored(ExampleColor, f.Example);
+                SafeImGui.TextColored(ExampleColor, f.Example);
             }
             ImGui.TableNextRow();
             ImGui.TableNextColumn();

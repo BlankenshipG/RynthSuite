@@ -18,6 +18,7 @@ using System.Linq;
 using ImGuiNET;
 using RynthCore.Loot;
 using RynthCore.Install;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthILT.Hub;
 
@@ -238,7 +239,7 @@ internal sealed class IltEquipSuits : IIltFeature
         var profiles = _profiles;
         if (profiles.Length == 0)
         {
-            ImGui.TextDisabled($"No .utl files found ({System.IO.Path.Combine(IltHubStore.SharedRoot, "EquipProfiles")}, the RynthAi folder's EquipProfiles or UtilityBelt equip folders).");
+            SafeImGui.TextDisabled($"No .utl files found ({System.IO.Path.Combine(IltHubStore.SharedRoot, "EquipProfiles")}, the RynthAi folder's EquipProfiles or UtilityBelt equip folders).");
         }
         else
         {
@@ -258,7 +259,7 @@ internal sealed class IltEquipSuits : IIltFeature
                 if (ImGui.SmallButton("Cancel")) _ctx.Post(() => Cancel("cancelled by player"));
             }
         }
-        ImGui.TextDisabled("Status: " + _status);
-        foreach (string l in _preview) ImGui.BulletText(l);
+        SafeImGui.TextDisabled("Status: " + _status);
+        foreach (string l in _preview) SafeImGui.BulletText(l);
     }
 }

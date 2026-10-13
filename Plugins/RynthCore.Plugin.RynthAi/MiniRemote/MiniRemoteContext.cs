@@ -59,6 +59,10 @@ internal sealed class MiniRemoteContext
     /// <summary>Logged-in character name (resolved at login).</summary>
     public string CharName = string.Empty;
 
+    /// <summary>The connected world's name ("" before login or on an engine without it); keys the Crafting tab's custom rows.</summary>
+    public string WorldName
+        => Host.HasGetWorldName && Host.TryGetWorldName(out string world) ? (world ?? string.Empty).Trim() : string.Empty;
+
     /// <summary>
     /// Shows the Mini Remote on one of its tabs (tab id; set by the controller). Any thread: it
     /// only records the tab and the show request, which the next frame applies.
@@ -117,22 +121,25 @@ internal static class MiniRemoteTabs
     public const string Remote = "";
     public const string Quests = "quests";
     public const string Pets = "pets";
+    public const string Crafting = "crafting";
 
     /// <summary>The universal tabs in tab-bar order (after Remote, before RynthILT's tabs).</summary>
-    public static readonly string[] Universal = { Quests, Pets };
+    public static readonly string[] Universal = { Quests, Pets, Crafting };
 
     public static string Label(string id) => id switch
     {
         Quests => "Quests",
         Pets => "Pets",
+        Crafting => "Crafting",
         _ => "Remote",
     };
 
-    /// <summary>"quests" / "quest" / "pets" / "pet" → the tab id; null for anything else.</summary>
+    /// <summary>"quests" / "pets" / "crafting" (and their short forms) to the tab id; null for anything else.</summary>
     public static string? Parse(string? text) => (text ?? string.Empty).Trim().ToLowerInvariant() switch
     {
         "quests" or "quest" => Quests,
         "pets" or "pet" => Pets,
+        "crafting" or "craft" or "tinker" or "tinkering" => Crafting,
         _ => null,
     };
 
@@ -141,6 +148,7 @@ internal static class MiniRemoteTabs
     {
         Quests => new System.Numerics.Vector2(700, 500),
         Pets => new System.Numerics.Vector2(560, 580),
+        Crafting => new System.Numerics.Vector2(680, 600),
         _ => new System.Numerics.Vector2(520, 440),
     };
 }

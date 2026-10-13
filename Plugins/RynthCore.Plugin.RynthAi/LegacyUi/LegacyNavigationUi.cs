@@ -35,14 +35,14 @@ internal sealed class LegacyNavigationUi
         }
 
         string activeNavName = string.IsNullOrEmpty(_settings.CurrentNavPath) ? "None (Unsaved)" : Path.GetFileName(_settings.CurrentNavPath);
-        ImGui.TextColored(new Vector4(1, 1, 0, 1), $"Active Nav: {activeNavName}");
+        SafeImGui.TextColored(new Vector4(1, 1, 0, 1), $"Active Nav: {activeNavName}");
 
         if (!string.IsNullOrEmpty(_settings.NavStatusLine))
         {
             var statusColor = _settings.NavIsStuck
                 ? new Vector4(0.91f, 0.70f, 0.20f, 1.00f)   // amber
                 : new Vector4(0.25f, 0.85f, 0.45f, 1.00f);  // green
-            ImGui.TextColored(statusColor, _settings.NavStatusLine);
+            SafeImGui.TextColored(statusColor, _settings.NavStatusLine);
         }
 
         ImGui.Spacing();

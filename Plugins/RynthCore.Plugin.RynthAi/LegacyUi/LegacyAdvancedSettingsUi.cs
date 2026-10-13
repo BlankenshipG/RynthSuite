@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using ImGuiNET;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -14,6 +15,30 @@ internal sealed class LegacyAdvancedSettingsUi
     // Server Features list being edited (committed on Enter / focus loss); null = show the saved list.
 
     private static readonly string[] AttackHeights = { "Low", "Medium", "High" };
+
+    /// <summary>
+    /// The environment-impact throttle's shared numbers (one set for missiles and magic), drawn
+    /// under each response combo. <paramref name="id"/> keeps the two copies' ImGui ids apart.
+    /// </summary>
+    private void DrawEnvironmentThrottleKnobs(string id)
+    {
+        ImGui.Indent();
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Hits to trip##envlimit{id}", ref _settings.EnvironmentImpactLimit, 1, 10);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Environment hits on one target, within the window, before combat reacts.\nShared by missiles and magic.");
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Window (s)##envwin{id}", ref _settings.EnvironmentImpactWindowSec, 5, 120);
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Move closer by (m)##envstep{id}", ref _settings.EnvironmentApproachMeters, 1, 30);
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Closest (m)##envmin{id}", ref _settings.EnvironmentMinDistance, 1, 30);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Never moves nearer than this. Already this close, a new target is picked instead.");
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Skip target (s)##envskip{id}", ref _settings.EnvironmentSkipSec, 5, 300);
+        ImGui.Unindent();
+    }
     private static readonly string[] NavLabelModeNames = { "Off", "Numbers", "Numbers and names" };
     private const string NavResumeNearestTip =
         "On: starting the macro, loading a Circular or Linear route, and carrying on after a fight, loot, buff or door\n" +
@@ -90,12 +115,12 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.Spacing();
 
         string status = _autoVendorStatus?.Invoke() ?? "Not logged in";
-        ImGui.TextDisabled($"Status: {status}");
+        SafeImGui.TextDisabled($"Status: {status}");
         ImGui.Spacing();
 
         ImGui.Checkbox("Enabled##AV", ref _settings.AutoVendorEnabled);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Buy and sell by a loot profile when a vendor opens (and allow /ub autovendor).\n" +
+            SafeImGui.SetTooltip("Buy and sell by a loot profile when a vendor opens (and allow /ub autovendor).\n" +
                              "Profiles: <Vendor Name>.utl or default.utl in your character's AutoVendor\n" +
                              "folder, the server folder, or " + Vendor.AutoVendorManager.MainProfileDir + ".");
         ImGui.Checkbox("Test Mode (only print what it would do)##AV", ref _settings.AutoVendorTestMode);
@@ -139,12 +164,12 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.Spacing();
 
         string status = _autoTradeStatus?.Invoke() ?? "Not logged in";
-        ImGui.TextDisabled($"Status: {status}");
+        SafeImGui.TextDisabled($"Status: {status}");
         ImGui.Spacing();
 
         ImGui.Checkbox("Enabled##AT", ref _settings.AutoTradeEnabled);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("When a trade window opens, add the items that match Keep / Keep # rules in\n" +
+            SafeImGui.SetTooltip("When a trade window opens, add the items that match Keep / Keep # rules in\n" +
                              "<Partner Name>.utl or default.utl (your character's AutoTrade folder, the\n" +
                              "server folder, or " + Trade.AutoTradeManager.MainProfileDir + ").");
         ImGui.Checkbox("Test Mode (only print what it would add)##AT", ref _settings.AutoTradeTestMode);
@@ -214,7 +239,7 @@ internal sealed class LegacyAdvancedSettingsUi
             return;
 
         string tabName = _settings.AdvancedTabs[tabIndex];
-        ImGui.TextColored(new Vector4(0.4f, 0.7f, 1.0f, 1.0f), $"Advanced Settings > {tabName}");
+        SafeImGui.TextColored(new Vector4(0.4f, 0.7f, 1.0f, 1.0f), $"Advanced Settings > {tabName}");
         ImGui.Separator();
         ImGui.Spacing();
 
@@ -409,28 +434,28 @@ internal sealed class LegacyAdvancedSettingsUi
                 break;
 
             case "Recharge":
-                ImGui.Text("Self Vitals (%)");
+                SafeImGui.Text("Self Vitals (%)");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Heal At", ref _settings.HealAt, 0, 100);
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Emergency Heal At", ref _settings.EmergencyHealAt, 0, 100);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("At or under this health %, a healing kit goes first out of Magic mode,\nand a kit or potion is used while a cast is pending. 0 = off.");
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("At or under this health %, a healing kit goes first out of Magic mode,\nand a kit or potion is used while a cast is pending. 0 = off.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Stamina To Health At", ref _settings.StaminaToHealthAt, 0, 100);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("At or under this health %, cast Stamina to Health Self ahead of Heal At\n(after a kit out of Magic mode). 0 = never cast it.");
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("At or under this health %, cast Stamina to Health Self ahead of Heal At\n(after a kit out of Magic mode). 0 = never cast it.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Stamina To Health Min Stamina", ref _settings.StaminaToHealthMinStamina, 0, 100);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Don't cast Stamina to Health unless stamina is over this %.");
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("Don't cast Stamina to Health unless stamina is over this %.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Re-stam At", ref _settings.RestamAt, 0, 100);
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Re-stam To", ref _settings.RestamTo, 0, 100);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Once a recharge starts under Re-stam At, keep recharging until stamina reaches this %.\n0 = one recharge, as before.");
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("Once a recharge starts under Re-stam At, keep recharging until stamina reaches this %.\n0 = one recharge, as before.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Get Mana At", ref _settings.GetManaAt, 0, 100);
 
                 ImGui.Spacing();
-                ImGui.Text("Top-Off Vitals (%)");
+                SafeImGui.Text("Top-Off Vitals (%)");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Top HP", ref _settings.TopOffHP, 0, 100);
                 ImGui.SetNextItemWidth(120);
@@ -439,7 +464,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.SliderInt("Top Mana", ref _settings.TopOffMana, 0, 100);
 
                 ImGui.Spacing();
-                ImGui.Text("Helper Settings (%)");
+                SafeImGui.Text("Helper Settings (%)");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Heal Others", ref _settings.HealOthersAt, 0, 100);
                 ImGui.SetNextItemWidth(120);
@@ -453,7 +478,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Separator();
                 ImGui.Checkbox("Use Recklessness", ref _settings.UseRecklessness);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("When enabled and Recklessness is trained, auto power uses 80% instead of 100%.");
+                    SafeImGui.SetTooltip("When enabled and Recklessness is trained, auto power uses 80% instead of 100%.");
 
                 ImGui.Spacing();
                 bool meleeAuto = _settings.MeleeAttackPower < 0;
@@ -498,6 +523,32 @@ internal sealed class LegacyAdvancedSettingsUi
 
                 ImGui.SetNextItemWidth(120);
                 ImGui.Combo("Missile Attack Height", ref _settings.MissileAttackHeight, AttackHeights, AttackHeights.Length);
+
+                ImGui.Spacing();
+                ImGui.Text("Variable Power (monster rules)");
+                if (ImGui.IsItemHovered())
+                    SafeImGui.SetTooltip("A monster rule's Power column picks per monster: Default (these settings),\n" +
+                                     "High (100%), Reckless (80%, needs Recklessness trained), Variable (a new\n" +
+                                     "random power each attack in this range), or Reckless + Variable (random,\n" +
+                                     "kept inside the Recklessness band 20-80%).");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Variable Min %", ref _settings.VariablePowerMin, 0, 100);
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Variable Max %", ref _settings.VariablePowerMax, 0, 100);
+
+                ImGui.Spacing();
+                ImGui.Text("Missiles Hitting the Environment");
+                ImGui.SetNextItemWidth(220);
+                ImGui.Combo("Missile Response", ref _settings.MissileEnvironmentResponse,
+                    EnvironmentImpactPlanner.ResponseNames, EnvironmentImpactPlanner.ResponseNames.Length);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("When arrows or bolts keep hitting walls or objects instead of the target\n" +
+                                     "(\"Your missile attack hit the environment.\"), stop shooting and:\n" +
+                                     "  Move closer - run toward the target for a clearer shot\n" +
+                                     "  New target - skip this one for a while and fight another\n" +
+                                     "  Move closer, then new target - one approach, then switch\n" +
+                                     "The only monster in reach is never skipped.");
+                DrawEnvironmentThrottleKnobs("missile");
 
                 ImGui.Separator();
                 ImGui.Spacing();
@@ -575,6 +626,20 @@ internal sealed class LegacyAdvancedSettingsUi
                                      "are within this many yards in the wall's path toward the target.\n" +
                                      "The character turns to face the target first. 0 = no walls.");
                 ImGui.InputInt("Min Wall Targets", ref _settings.MinWallTargets);
+
+                ImGui.Spacing();
+                ImGui.Text("Spells Hitting the Environment");
+                ImGui.SetNextItemWidth(220);
+                ImGui.Combo("Magic Response", ref _settings.MagicEnvironmentResponse,
+                    EnvironmentImpactPlanner.ResponseNames, EnvironmentImpactPlanner.ResponseNames.Length);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("When bolts, streaks, arcs or blasts keep stopping short of the target\n" +
+                                     "(a wall, a pillar, the ceiling) with no hit or resist, stop casting and:\n" +
+                                     "  Move closer - run toward the target for a clearer line\n" +
+                                     "  New target - skip this one for a while and fight another\n" +
+                                     "  Move closer, then new target - one approach, then switch\n" +
+                                     "Rings and walls aren't judged. The only monster in reach is never skipped.");
+                DrawEnvironmentThrottleKnobs("magic");
 
                 ImGui.Spacing();
                 ImGui.Separator();
@@ -689,7 +754,7 @@ internal sealed class LegacyAdvancedSettingsUi
 
                 ImGui.Checkbox("Go To Closest Waypoint", ref _settings.NavResumeNearest);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip(NavResumeNearestTip);
+                    SafeImGui.SetTooltip(NavResumeNearestTip);
 
                 ImGui.Checkbox("Find A Way Back When Stuck", ref _settings.NavRecoveryEnabled);
                 if (ImGui.IsItemHovered())
@@ -819,7 +884,7 @@ internal sealed class LegacyAdvancedSettingsUi
                         "listed weapons.");
                 string skipped = _buffSkips?.Invoke() ?? "";
                 if (_settings.SkipUnusableBuffs && skipped.Length > 0)
-                    ImGui.TextWrapped("Skipping: " + skipped);
+                    SafeImGui.TextWrapped("Skipping: " + skipped);
 
                 ImGui.Spacing();
                 if (ImGui.Button("Force Buff##forceBuff") && _forceBuff != null) _forceBuff();
@@ -995,10 +1060,10 @@ internal sealed class LegacyAdvancedSettingsUi
                         : new Vector4(0.5f, 0.5f, 0.5f, 1.0f);
                     ImGui.Text("State:");
                     ImGui.SameLine();
-                    ImGui.TextColored(stateColor, stateLabel);
+                    SafeImGui.TextColored(stateColor, stateLabel);
 
                     if (!string.IsNullOrEmpty(_missileCraftingManager.StatusMessage))
-                        ImGui.TextWrapped(_missileCraftingManager.StatusMessage);
+                        SafeImGui.TextWrapped(_missileCraftingManager.StatusMessage);
                 }
                 break;
 
@@ -1007,7 +1072,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 break;
 
             default:
-                ImGui.Text($"Settings for {tabName} are currently under development.");
+                SafeImGui.Text($"Settings for {tabName} are currently under development.");
                 break;
         }
     }

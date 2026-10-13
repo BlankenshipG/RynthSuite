@@ -15,6 +15,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using ImGuiNET;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthILT.Hub;
 
@@ -214,9 +215,9 @@ internal sealed class IltBuffKeepers : IIltFeature
         int cd = G.DispelCooldownSeconds;
         ImGui.SetNextItemWidth(100);
         if (ImGui.InputInt("Cooldown (s)##disp", ref cd)) G.DispelCooldownSeconds = Math.Max(2, cd);
-        ImGui.TextDisabled("Status: " + _dispelStatus);
+        SafeImGui.TextDisabled("Status: " + _dispelStatus);
         var harm = _harmfulNow;
-        if (harm.Length > 0) ImGui.TextColored(IltStyle.ColAmber, "Harmful now: " + string.Join(", ", harm));
+        if (harm.Length > 0) SafeImGui.TextColored(IltStyle.ColAmber, "Harmful now: " + string.Join(", ", harm));
         if (ImGui.TreeNode("Always / never dispel lists"))
         {
             EditList("Always dispel (name contains)", G.DispelInclusions, ref _newInclude, "inc");
@@ -228,7 +229,7 @@ internal sealed class IltBuffKeepers : IIltFeature
         ImGui.TextColored(IltStyle.ColTeal, "Surging Strength");
         bool ss = G.SurgingStrength;
         if (ImGui.Checkbox("Keep Surging Strength up (Empowered Volcanic Ember)", ref ss)) G.SurgingStrength = ss;
-        ImGui.TextDisabled("Status: " + (_surgeActive ? "active" : _surgeStatus));
+        SafeImGui.TextDisabled("Status: " + (_surgeActive ? "active" : _surgeStatus));
     }
 
     private void EditList(string label, List<string> list, ref string buffer, string id)
@@ -237,7 +238,7 @@ internal sealed class IltBuffKeepers : IIltFeature
         var snap = list.ToArray();
         for (int i = 0; i < snap.Length; i++)
         {
-            ImGui.BulletText(snap[i]);
+            SafeImGui.BulletText(snap[i]);
             ImGui.SameLine();
             string victim = snap[i];
             if (ImGui.SmallButton($"x##{id}{i}")) _ctx.Post(() => list.Remove(victim));

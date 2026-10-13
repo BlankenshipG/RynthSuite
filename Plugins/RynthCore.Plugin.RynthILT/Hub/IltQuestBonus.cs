@@ -12,6 +12,7 @@ using System.Linq;
 using System.Numerics;
 using System.Text.RegularExpressions;
 using ImGuiNET;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthILT.Hub;
 
@@ -178,7 +179,7 @@ internal sealed class IltQuestBonus : IIltFeature
         if (ImGui.SmallButton("Load /qb list")) _ctx.Post(() => _ctx.Chat("[Mini Remote] " + RefreshQb()));
         ImGui.SameLine();
         long count = _qbCount;
-        ImGui.TextDisabled((count >= 0 ? $"QB count {IltParse.N0(count)} - " : "") + _qbStatus);
+        SafeImGui.TextDisabled((count >= 0 ? $"QB count {IltParse.N0(count)} - " : "") + _qbStatus);
 
         string filter = _ctx.State.Character.QbFilter;
         ImGui.SetNextItemWidth(220);
@@ -195,7 +196,7 @@ internal sealed class IltQuestBonus : IIltFeature
         if (ImGui.TreeNode($"{label} ({shown.Length})##qb{label}"))
         {
             if (ImGui.SmallButton($"Copy##qbc{label}")) ImGui.SetClipboardText(string.Join(Environment.NewLine, shown));
-            foreach (string s in shown) ImGui.TextColored(color, s);
+            foreach (string s in shown) SafeImGui.TextColored(color, s);
             ImGui.TreePop();
         }
     }

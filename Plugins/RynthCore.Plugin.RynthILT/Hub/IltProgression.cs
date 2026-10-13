@@ -63,6 +63,10 @@ internal sealed class IltProgression : IIltFeature
     private volatile string _augStatus = "not loaded";
     // Opening the Progression tab pulls "/aug" once per login when nothing has loaded the levels yet.
     private bool _augAutoTried;
+    /// <summary>Second Refresh current while /aug is already queued or in flight (UB coalesces the same way).</summary>
+    private bool _augRefreshAgain;
+    /// <summary>Passive /aug window: accept AugLine chat until this tick (like T11's report parser).</summary>
+    private long _augPassiveUntilMs;
 
     // Cached player facts for the render thread (refreshed in Tick).
     private volatile int _enl, _level, _freeSlots;
@@ -104,38 +108,82 @@ internal sealed class IltProgression : IIltFeature
     public void RequestAugs()
     {
         RynthLog.Trace(LogCat.IltProgression, $"RequestAugs()");
-        if (_ctx.Options.IsOff(IltFeature.Aug) || _ctx.Capture.IsPending("/aug")) return;
+        if (_ctx.Options.IsOff(IltFeature.Aug))
+        {
+            _augStatus = "/aug is off for this world";
+            return;
+        }
+        // Coalesce: a click during an in-flight /aug runs again when that capture finishes (UB).
+        if (_ctx.Capture.IsPending("/aug"))
+        {
+            _augRefreshAgain = true;
+            _augStatus = "refresh queued (waiting for current /aug)...";
+            return;
+        }
         _augStatus = "loading...";
+        _augPassiveUntilMs = IltHubContext.NowMs + 20_000; // also accept lines if capture finishes early
         _ctx.Capture.Enqueue(new IltChatRequest
         {
             Command = "/aug",
             IsResponseLine = t => t.StartsWith("---") || t.Contains("Augmentation Levels", StringComparison.OrdinalIgnoreCase) || IltParse.AugLine.IsMatch(t),
+            // Idle must not start on the banner alone — chat-hold / pump lag used to finish with 0 level lines.
+            ArmsIdle = t => IltParse.AugLine.IsMatch(t),
             IdleEndMs = 2000,
             FirstLineTimeoutMs = 15000,
             Eat = true,
             OnComplete = r =>
             {
-                if (r.UnknownCommand) { _ctx.Options.Set(IltFeature.Aug, IltTri.Off); _augStatus = "/aug not available"; return; }
+                if (r.UnknownCommand)
+                {
+                    _ctx.Options.Set(IltFeature.Aug, IltTri.Off);
+                    _augStatus = "/aug not available";
+                    _augRefreshAgain = false;
+                    return;
+                }
                 ApplyAugLines(r.Lines);
+                if (r.TimedOut)
+                {
+                    int have;
+                    lock (_augLevels) have = _augLevels.Count;
+                    if (have == 0)
+                        _augStatus = "timed out waiting for /aug level lines";
+                }
+                if (_augRefreshAgain)
+                {
+                    _augRefreshAgain = false;
+                    RequestAugs();
+                }
             },
         });
     }
 
-    /// <summary>Parses "/aug" output (also fed from the login probe).</summary>
+    /// <summary>Parses "/aug" output (also fed from the login probe and passive chat).</summary>
     public void ApplyAugLines(List<string> lines)
     {
         RynthLog.Trace(LogCat.IltProgression, $"ApplyAugLines(lines={lines.Count})");
         int n = 0;
         foreach (string l in lines)
         {
-            var m = IltParse.AugLine.Match(l.Trim());
-            if (!m.Success) continue;
-            string key = m.Groups[1].Value.ToLowerInvariant();
-            if (key == "specialize") key = "specialization";
-            lock (_augLevels) _augLevels[key] = (int)IltParse.ParseLeadingLong(m.Groups[2].Value);
-            n++;
+            if (TryApplyAugLine(l)) n++;
         }
         _augStatus = n > 0 ? $"{n} aug types @ {DateTime.Now:t}" : "no aug lines in reply";
+        RynthLog.Trace(LogCat.IltProgression, $"ApplyAugLines done: {_augStatus} (raw lines={lines.Count})");
+    }
+
+    /// <summary>Applies one "/aug" Type: N line. Returns true when a known planner key was updated.</summary>
+    private bool TryApplyAugLine(string raw)
+    {
+        var m = IltParse.AugLine.Match((raw ?? string.Empty).Trim());
+        if (!m.Success) return false;
+        string key = m.Groups[1].Value.ToLowerInvariant();
+        if (key == "specialize") key = "specialization";
+        // Planner rows only; charm / Triune Weave lines are ignored here (T11 reads those).
+        bool known = false;
+        foreach (var (k, _) in IltAugCosts.Labels)
+            if (k.Equals(key, StringComparison.OrdinalIgnoreCase)) { known = true; break; }
+        if (!known) return false;
+        lock (_augLevels) _augLevels[key] = (int)IltParse.ParseLeadingLong(m.Groups[2].Value);
+        return true;
     }
 
     /// <summary>Sends "/enl" (server shows the confirmation dialog). Pump thread.</summary>
@@ -172,6 +220,18 @@ internal sealed class IltProgression : IIltFeature
     public bool OnChat(string text)
     {
         Attributes.OnChat(text);
+        // Passive /aug reader: updates Current even when the capture idle finished on the banner alone
+        // (chat-hold backlog) or the player typed /aug by hand. Window opens on the header.
+        string t = text ?? string.Empty;
+        if (t.Contains("Augmentation Levels", StringComparison.OrdinalIgnoreCase))
+            _augPassiveUntilMs = IltHubContext.NowMs + 8_000;
+        else if (IltHubContext.NowMs <= _augPassiveUntilMs && TryApplyAugLine(t))
+        {
+            _augPassiveUntilMs = IltHubContext.NowMs + 8_000;
+            int n;
+            lock (_augLevels) n = _augLevels.Count;
+            _augStatus = $"{n} aug types @ {DateTime.Now:t}";
+        }
         if (text.Contains("You have become enlightened", StringComparison.OrdinalIgnoreCase)
             || text.Contains("You have risen to a higher tier of enlightenment", StringComparison.OrdinalIgnoreCase))
         {
@@ -188,6 +248,8 @@ internal sealed class IltProgression : IIltFeature
         Attributes.OnLogout();
         lock (_augLevels) _augLevels.Clear();
         _augAutoTried = false;
+        _augRefreshAgain = false;
+        _augPassiveUntilMs = 0;
         _augStatus = "not loaded";
     }
 

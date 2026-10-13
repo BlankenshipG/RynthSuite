@@ -85,6 +85,20 @@ public sealed class WeaponSwapGate
         lock (_lock) _movingId = itemId;
     }
 
+    /// <summary>
+    /// The caller saw the noted move of <paramref name="itemId"/> finish and settle: the next swap
+    /// is paced on the server's answers (<see cref="FloorMs"/>) instead of the full MinIntervalMs.
+    /// Only for moves with no unwield motion behind them (ammo out of the ammunition slot); a
+    /// weapon or shield pack move keeps the full wait (see <see cref="NoteMove"/>).
+    /// </summary>
+    public void MoveDone(int itemId)
+    {
+        lock (_lock)
+        {
+            if (_movingId == itemId) _movingId = 0;
+        }
+    }
+
     private bool LastSwapDone(long since)
     {
         if (since < FloorMs || ServerIdle == null || IsWielded == null) return false;

@@ -38,4 +38,9 @@
     <EmbeddedResource Include="..\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthInventory.SpellData.txt" Link="Shared\SpellData.txt" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Server signal vs a player's copy of it (VaultFeed). Also linked by RynthInventory.Tests. -->
+    <Compile Include="..\Shared\ChatSource.cs" Link="Shared\ChatSource.cs" />
+  </ItemGroup>
+
 </Project>

@@ -21,6 +21,12 @@ internal sealed class IltChatRequest
     public string Command = string.Empty;
     /// <summary>True for lines that belong to this reply (captured, refresh the idle timer).</summary>
     public Func<string, bool> IsResponseLine = _ => false;
+    /// <summary>
+    /// Optional: only these response lines arm / refresh the idle timer. Header / banner lines
+    /// still capture, but idle completion waits until a progress line arrives (UB's /aug fetch:
+    /// dashes and "Advanced Augmentation Levels:" must not start the 2s idle before Creature:).
+    /// </summary>
+    public Func<string, bool>? ArmsIdle;
     /// <summary>Optional: a line that ends the reply immediately (it is captured too).</summary>
     public Func<string, bool>? IsTerminator;
     /// <summary>The reply is complete after this long with no new response line.</summary>
@@ -55,6 +61,8 @@ internal sealed class IltChatCapture
     private IltChatResult? _activeResult;
     private long _sentAt;
     private long _lastLineAt;
+    /// <summary>True once a response line that arms idle has arrived (always true when <see cref="IltChatRequest.ArmsIdle"/> is null).</summary>
+    private bool _idleArmed;
 
     /// <summary>Minimum spacing between two sends so the server's own command throttles aren't tripped.</summary>
     private const long SendSpacingMs = 400;
@@ -102,9 +110,11 @@ internal sealed class IltChatCapture
         if (_active != null && _activeResult != null)
         {
             bool gotAny = _activeResult.Lines.Count > 0;
-            if (gotAny && now - _lastLineAt >= _active.IdleEndMs)
+            // Idle completion only after a progress line when ArmsIdle is set (header alone is not enough).
+            bool idleReady = _active.ArmsIdle == null || _idleArmed;
+            if (gotAny && idleReady && now - _lastLineAt >= _active.IdleEndMs)
                 Finish();
-            else if (!gotAny && now - _sentAt >= _active.FirstLineTimeoutMs)
+            else if ((!gotAny || !idleReady) && now - _sentAt >= _active.FirstLineTimeoutMs)
             {
                 _activeResult.TimedOut = true;
                 Finish();
@@ -147,7 +157,12 @@ internal sealed class IltChatCapture
 
         if (!_active.IsResponseLine(text)) return false;
         _activeResult.Lines.Add(text);
-        _lastLineAt = NowMs;
+        // Header-only replies (e.g. /aug dashes + banner) must not start the idle clock.
+        if (_active.ArmsIdle == null || _active.ArmsIdle(text))
+        {
+            _idleArmed = true;
+            _lastLineAt = NowMs;
+        }
         RynthLog.Trace(LogCat.IltChat, $"line '{_active.Command}'{(_active.Eat ? " [eaten]" : "")}: {text}");
         return _active.Eat;
     }
@@ -179,6 +194,7 @@ internal sealed class IltChatCapture
         _activeResult = result;
         _sentAt = now;
         _lastLineAt = now;
+        _idleArmed = req.ArmsIdle == null; // no progress gate → idle can finish after any response line
         _lastSendAt = now;
         RynthLog.Trace(LogCat.IltChat, $"send '{req.Command}' (idle={req.IdleEndMs} ms, timeout={req.FirstLineTimeoutMs} ms, eat={req.Eat})");
         _host.InvokeChatParser(req.Command);
@@ -190,6 +206,7 @@ internal sealed class IltChatCapture
         var res = _activeResult;
         _active = null;
         _activeResult = null;
+        _idleArmed = false;
         if (req == null || res == null) return;
         RynthLog.Trace(LogCat.IltChat,
             $"complete '{req.Command}' in {NowMs - _sentAt} ms: lines={res.Lines.Count} timedOut={res.TimedOut} " +

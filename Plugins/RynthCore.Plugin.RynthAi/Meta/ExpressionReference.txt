@@ -1608,7 +1608,9 @@ ITEM GIVING
 
 actiontrygiveprofile[lootprofile, target]
     Gives all inventory items matching Keep rules in the specified loot profile to a
-    nearby player or NPC named target.
+    nearby NPC or vendor named target, with AC's give action. Never to a player: a
+    shared meta must not be able to hand your inventory to someone's character.
+    To give to a player, type /ra ig <profile> to <player>.
 
     Supports both VTank .utl profiles and native RynthAi .json profiles.
     Profile files are loaded from:
@@ -1620,10 +1622,13 @@ actiontrygiveprofile[lootprofile, target]
     the target was not found in the nearby world, no items matched, or the profile
     could not be loaded.
 
-    Param #0: lootprofile — filename (or full path) of the loot profile (.utl or .json).
+    Param #0: lootprofile — filename of the loot profile (.utl or .json), inside ItemGiver\
+              (a subfolder of it is fine). Full paths, drive letters, ':' and anything
+              that climbs out with ..\ are refused (logged once, returns "0").
               Bare names without extension resolve as .utl from ItemGiver\.
               Regex-escaped dots in UB examples (e.g. salvage\.utl) are just literal dots.
-    Param #1: target — exact name (case-insensitive) of the player or NPC to give to.
+    Param #1: target — exact name (case-insensitive) of the NPC or vendor to give to.
+              A player with that name is skipped.
 
     Known limitations (TODO):
       - Currently gives one item per meta pulse. Full rapid-fire batch transfer not yet
@@ -1632,10 +1637,10 @@ actiontrygiveprofile[lootprofile, target]
         all item types correctly (e.g. salvage ObjectClass known issue).
       - Only .utl and .json profiles are supported; no fallback between profile directories.
 
-    Test in chat:  /ra mexec actiontrygiveprofile[salvage.utl,My Salvage Mule]
-    Example: actiontrygiveprofile[salvage.utl,My Salvage Mule]
+    Test in chat:  /ra mexec actiontrygiveprofile[salvage.utl,Town Crier]
+    Example: actiontrygiveprofile[salvage.utl,Town Crier]
                  →  "1" if items were given (VTank profile)
-    Example: actiontrygiveprofile[mysalvage.json,My Salvage Mule]
+    Example: actiontrygiveprofile[mysalvage.json,Town Crier]
                  →  "1" if items were given (native JSON profile)
 
 

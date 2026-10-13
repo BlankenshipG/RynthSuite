@@ -23,6 +23,7 @@ using System.Linq;
 using ImGuiNET;
 using RynthCore.Loot;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.MiniRemote;
 
@@ -338,10 +339,10 @@ internal sealed class VTankUsdImporter
             ImGui.TextUnformatted($"{plan.Monsters.Count} monster rules, {plan.Weapons.Count} weapons, {plan.Consumables.Count} consumables");
             if (ImGui.TreeNode("Preview details"))
             {
-                foreach (var m in plan.Monsters.Take(50)) ImGui.BulletText($"Monster {m.Name} [{m.DamageType}] pri {m.Priority}");
-                foreach (var w in plan.Weapons) ImGui.BulletText($"Weapon {w.Name} [{w.Element}]");
-                foreach (var c in plan.Consumables) ImGui.BulletText($"{c.Type}: {c.Name}");
-                foreach (var n in plan.Notes.Take(30)) ImGui.TextColored(LegacyDashboardRenderer.ColAmber, n);
+                foreach (var m in plan.Monsters.Take(50)) SafeImGui.BulletText($"Monster {m.Name} [{m.DamageType}] pri {m.Priority}");
+                foreach (var w in plan.Weapons) SafeImGui.BulletText($"Weapon {w.Name} [{w.Element}]");
+                foreach (var c in plan.Consumables) SafeImGui.BulletText($"{c.Type}: {c.Name}");
+                foreach (var n in plan.Notes.Take(30)) SafeImGui.TextColored(LegacyDashboardRenderer.ColAmber, n);
                 ImGui.TreePop();
             }
             if (ImGui.Button("Apply import..."))
@@ -349,6 +350,6 @@ internal sealed class VTankUsdImporter
                     $"Write these rules into the current RynthAi profile?\nRules with the same monster name / item id are replaced.",
                     Apply, "Import");
         }
-        if (_status.Length > 0) ImGui.TextWrapped(_status);
+        if (_status.Length > 0) SafeImGui.TextWrapped(_status);
     }
 }

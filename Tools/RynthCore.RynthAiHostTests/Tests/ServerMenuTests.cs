@@ -13,15 +13,16 @@ internal static class ServerMenuTests
         r.Add("server menu: sections and items parse in order", ParsesSections);
         r.Add("server menu: malformed lines are skipped, never thrown", SkipsMalformed);
         r.Add("server menu: tab features name the Mini Remote tab", TabFeature);
-        r.Add("mini remote tabs: Quests and Pets are RynthAi's and first; the ILT tabs come from RynthILT", UniversalTabs);
+        r.Add("mini remote tabs: Quests, Pets and Crafting are RynthAi's and first; the ILT tabs come from RynthILT", UniversalTabs);
     }
 
     private static void UniversalTabs()
     {
         var tabs = RynthCore.Plugin.RynthAi.MiniRemote.MiniRemoteTabs.Universal;
-        Check.Eq(tabs.Length, 2, "RynthAi's own tabs: Quests and Pets (the ILT tabs are RynthILT's)");
+        Check.Eq(tabs.Length, 3, "RynthAi's own tabs: Quests, Pets and Crafting (the ILT tabs are RynthILT's)");
         Check.Eq(tabs[0], "quests", "Quests leads the tab bar");
         Check.Eq(tabs[1], "pets", "Pets second");
+        Check.Eq(tabs[2], "crafting", "Crafting third (tinker benches and Rings work on any server)");
         Check.Eq(RynthCore.Plugin.RynthAi.MiniRemote.MiniRemoteTabs.Parse("Pet"), "pets", "aliases parse");
         Check.Null(RynthCore.Plugin.RynthAi.MiniRemote.MiniRemoteTabs.Parse("banking"), "an ILT tab isn't RynthAi's");
         Check.Null(RynthCore.Plugin.RynthAi.MiniRemote.MiniRemoteTabs.Parse("guardian"), "nor the Guardian panel");
