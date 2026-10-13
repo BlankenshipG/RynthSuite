@@ -7,6 +7,7 @@ using System.Numerics;
 using System.Text.RegularExpressions;
 using ImGuiNET;
 using RynthCore.PluginCore;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.UbRythai;
 
@@ -500,7 +501,7 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
                 ImGui.TextWrapped(
                     "This DLL is net10.0-windows + NativeAOT for RynthCore. " +
                     "Decal Utility Belt / UB-ILT is net48 (and net8/net10) in UB/ and ub-IT/ — a different host.");
-                ImGui.TextDisabled($"Log files: {Path.Combine(AppContext.BaseDirectory, "Logs")}");
+                SafeImGui.TextDisabled($"Log files: {Path.Combine(AppContext.BaseDirectory, "Logs")}");
 
                 ImGui.Spacing();
                 ImGui.TextColored(new Vector4(0.85f, 0.9f, 1.0f, 1.0f), "Logging");
@@ -540,11 +541,11 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
                 ImGui.Checkbox("Busy-state guardrails##p1bg", ref _settings.BusyGuardrailsEnabled);
                 ImGui.InputInt("Min chat command gap (ms)##p1bggap", ref _settings.BusyGuardrailsMinCommandGapMs);
                 ImGui.InputInt("Busy-state threshold##p1bgth", ref _settings.BusyGuardrailsBusyStateThreshold);
-                ImGui.TextDisabled($"Guard blocks: busy={_busyGuardBlockedByBusyCount}, gap={_busyGuardBlockedByGapCount}");
+                SafeImGui.TextDisabled($"Guard blocks: busy={_busyGuardBlockedByBusyCount}, gap={_busyGuardBlockedByGapCount}");
                 ImGui.Separator();
                 ImGui.TextColored(new Vector4(0.85f, 0.9f, 1.0f, 1.0f), "Login Queue Diagnostics");
                 string loginDiagStatus = _automation?.GetLoginQueueDiagnosticsStatusLine() ?? "automation not ready.";
-                ImGui.TextWrapped(loginDiagStatus);
+                SafeImGui.TextWrapped(loginDiagStatus);
                 if (ImGui.Button("Clear login diagnostics##p1diagclr"))
                 {
                     _automation?.ClearLoginQueueDiagnostics();
@@ -563,7 +564,7 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
                         {
                             UbRythaiChatCommandAutomation.LoginQueueDiagnostic d = snapshot[i];
                             string state = d.Success ? "OK" : "FAIL";
-                            ImGui.TextWrapped($"{state} {d.TimestampUtc:HH:mm:ss} L{d.SourceLine} {d.CommandPreview} ({d.Detail})");
+                            SafeImGui.TextWrapped($"{state} {d.TimestampUtc:HH:mm:ss} L{d.SourceLine} {d.CommandPreview} ({d.Detail})");
                         }
                     }
                 }
@@ -596,8 +597,8 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
                 ImGui.Checkbox("Filter kill task complete##p2ktc", ref _settings.FilterKillTaskCompleteLines);
                 if (ImGui.Button("Reset P2 counters##p2reset"))
                     ResetP2Counters();
-                ImGui.TextDisabled($"P2 counters: busy={_busyFilteredCount} fizz={_fizzleFilteredCount} ven={_vendorSpamFilteredCount} death={_deathFilteredCount} atkEv={_attackEvadeFilteredCount} defEv={_defenseEvadeFilteredCount} atkRs={_attackResistFilteredCount} defRs={_defenseResistFilteredCount}");
-                ImGui.TextDisabled($"P2 counters 2: castMe={_spellCastMineFilteredCount} castOther={_spellCastOthersFilteredCount} exp={_spellExpiresFilteredCount} heal={_periodicHealingFilteredCount} assess={_failedAssessFilteredCount} task={_killTaskCompleteFilteredCount}");
+                SafeImGui.TextDisabled($"P2 counters: busy={_busyFilteredCount} fizz={_fizzleFilteredCount} ven={_vendorSpamFilteredCount} death={_deathFilteredCount} atkEv={_attackEvadeFilteredCount} defEv={_defenseEvadeFilteredCount} atkRs={_attackResistFilteredCount} defRs={_defenseResistFilteredCount}");
+                SafeImGui.TextDisabled($"P2 counters 2: castMe={_spellCastMineFilteredCount} castOther={_spellCastOthersFilteredCount} exp={_spellExpiresFilteredCount} heal={_periodicHealingFilteredCount} assess={_failedAssessFilteredCount} task={_killTaskCompleteFilteredCount}");
                 ImGui.Checkbox("Client FPS policy##p2fps", ref _settings.ClientFpsPolicyEnabled);
                 ImGui.InputInt("Focused FPS##p2ff", ref _settings.TargetFpsFocused);
                 ImGui.InputInt("Background FPS##p2bf", ref _settings.TargetFpsBackground);
@@ -1180,7 +1181,7 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
         }
 
         ImGui.Separator();
-        ImGui.TextDisabled($"PlayerId: {pid}");
+        SafeImGui.TextDisabled($"PlayerId: {pid}");
         ImGui.End();
     }
 

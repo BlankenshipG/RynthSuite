@@ -197,7 +197,7 @@ internal sealed class IltSessionRates : IIltFeature
     {
         // The session clock is the shared stats' (it and the coins reset together).
         var start = _stats?.View is { } v && v.SessionSeconds > 0 ? v.SessionStartUtc : _start;
-        ImGui.TextDisabled($"Session {IltParse.Duration(DateTime.UtcNow - start)}");
+        SafeImGui.TextDisabled($"Session {IltParse.Duration(DateTime.UtcNow - start)}");
         ImGui.SameLine();
         if (ImGui.SmallButton("Reset##rates")) _ctx.Post(ResetAll);
 
@@ -211,9 +211,9 @@ internal sealed class IltSessionRates : IIltFeature
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Label);
-                if (ReferenceEquals(r.Label, PassUpLabel) && ImGui.IsItemHovered()) ImGui.SetTooltip(PassUpTooltip);
+                if (ReferenceEquals(r.Label, PassUpLabel) && ImGui.IsItemHovered()) SafeImGui.SetTooltip(PassUpTooltip);
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Total);
-                ImGui.TableNextColumn(); ImGui.TextColored(LegacyDashboardRenderer.ColTeal, r.PerHour);
+                ImGui.TableNextColumn(); SafeImGui.TextColored(LegacyDashboardRenderer.ColTeal, r.PerHour);
             }
             ImGui.EndTable();
         }

@@ -14,6 +14,7 @@ using System.Text.RegularExpressions;
 using ImGuiNET;
 using RynthCore.Loot;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -179,7 +180,7 @@ internal sealed class IltSplitArrows : IIltFeature
         ImGui.SameLine();
         bool skip = G.SplitIgnoreImbued;
         if (ImGui.Checkbox("Skip imbued weapons", ref skip)) G.SplitIgnoreImbued = skip;
-        ImGui.TextDisabled($"Full White Quartz bags carried: {_bagCount}");
+        SafeImGui.TextDisabled($"Full White Quartz bags carried: {_bagCount}");
 
         foreach (var w in _weapons)
         {
@@ -200,6 +201,6 @@ internal sealed class IltSplitArrows : IIltFeature
         }
         if (_weapons.Length == 0) ImGui.TextDisabled("No missile weapons carried.");
         if (Running && ImGui.SmallButton("Stop imbuing")) _ctx.Post(() => Stop("stopped by player"));
-        ImGui.TextDisabled("Status: " + _status);
+        SafeImGui.TextDisabled("Status: " + _status);
     }
 }

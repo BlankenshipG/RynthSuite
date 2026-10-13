@@ -20,6 +20,7 @@ using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.Meta;
 using RynthCore.Install;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -270,7 +271,7 @@ internal sealed class IltQuests : IIltFeature
         ImGui.SameLine();
         if (ImGui.SmallButton("Reload quests.xml")) _ctx.Post(LoadFriendlyNames);
         ImGui.SameLine();
-        ImGui.TextDisabled(t.IsRefreshing ? "refreshing..." : t.LastStatus
+        SafeImGui.TextDisabled(t.IsRefreshing ? "refreshing..." : t.LastStatus
             + (t.LastRefreshUtc == DateTime.MinValue ? "" : " @ " + t.LastRefreshUtc.ToLocalTime().ToString("t")));
 
         string filter = cs.QuestFilter;
@@ -322,7 +323,7 @@ internal sealed class IltQuests : IIltFeature
                     _ctx.Post(() => ToggleFavorite(key));
                 }
                 ImGui.PopStyleColor();
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip(starred ? "Remove from favorites" : "Add to favorites");
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip(starred ? "Remove from favorites" : "Add to favorites");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(FriendlyName(r));
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.MaxSolves > 0 ? $"{r.Solves}/{r.MaxSolves}" : r.Solves.ToString());
                 ImGui.TableNextColumn();
@@ -330,7 +331,7 @@ internal sealed class IltQuests : IIltFeature
                 if (Classify(r) == QuestKind.Once) ImGui.TextDisabled("done");
                 else if (left <= TimeSpan.Zero) ImGui.TextColored(LegacyDashboardRenderer.ColGreen, "ready");
                 else ImGui.TextUnformatted(IltParse.Duration(left));
-                ImGui.TableNextColumn(); ImGui.TextDisabled(r.Key);
+                ImGui.TableNextColumn(); SafeImGui.TextDisabled(r.Key);
             }
             ImGui.EndTable();
         }
@@ -386,7 +387,7 @@ internal sealed class IltQuests : IIltFeature
         var favorites = FavoriteSet();
         if (t == null || favorites.Count == 0)
         {
-            ImGui.TextDisabled(t == null ? "Quest tracker not ready." : "No favorites yet - star quests in the tracker.");
+            SafeImGui.TextDisabled(t == null ? "Quest tracker not ready." : "No favorites yet - star quests in the tracker.");
         }
         else
         {
@@ -432,7 +433,7 @@ internal sealed class IltQuests : IIltFeature
         if (ImGui.SmallButton("Load /qb list")) _ctx.Post(() => _ctx.Chat("[Mini Remote] " + RefreshQb()));
         ImGui.SameLine();
         long count = _qbCount;
-        ImGui.TextDisabled((count >= 0 ? $"QB count {IltParse.N0(count)} - " : "") + _qbStatus);
+        SafeImGui.TextDisabled((count >= 0 ? $"QB count {IltParse.N0(count)} - " : "") + _qbStatus);
 
         string filter = _ctx.State.Character.QbFilter;
         ImGui.SetNextItemWidth(220);
@@ -449,7 +450,7 @@ internal sealed class IltQuests : IIltFeature
         if (ImGui.TreeNode($"{label} ({shown.Length})##qb{label}"))
         {
             if (ImGui.SmallButton($"Copy##qbc{label}")) ImGui.SetClipboardText(string.Join(Environment.NewLine, shown));
-            foreach (string s in shown) ImGui.TextColored(color, s);
+            foreach (string s in shown) SafeImGui.TextColored(color, s);
             ImGui.TreePop();
         }
     }

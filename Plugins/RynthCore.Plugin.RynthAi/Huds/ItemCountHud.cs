@@ -3,6 +3,7 @@
 using System.Linq;
 using System.Numerics;
 using ImGuiNET;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.Huds;
 
@@ -52,16 +53,16 @@ internal sealed class ItemCountHud
         {
             long count = pack.CountOf(e.Name);
             HudDraw.Icon(_hud.Icons, e.IconDid, e.Name, size, count == 0);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{e.Name}\n{count:N0} carried");
+            if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"{e.Name}\n{count:N0} carried");
             ImGui.SameLine();
             // Vertically centre the text on the icon.
             float pad = (size - ImGui.GetTextLineHeight()) * 0.5f;
             if (pad > 0) ImGui.SetCursorPosY(ImGui.GetCursorPosY() + pad);
-            ImGui.TextColored(count == 0 ? ColNone : ColCount, count.ToString("N0"));
+            SafeImGui.TextColored(count == 0 ? ColNone : ColCount, count.ToString("N0"));
             if (s.ItemHudShowNames)
             {
                 ImGui.SameLine();
-                ImGui.TextColored(ColName, e.Name);
+                SafeImGui.TextColored(ColName, e.Name);
             }
         }
 

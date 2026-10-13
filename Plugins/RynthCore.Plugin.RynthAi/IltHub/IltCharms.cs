@@ -14,6 +14,7 @@ using System.Linq;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -93,13 +94,13 @@ internal sealed class IltCharms : IIltFeature
         var rows = _rows;
         if (rows.Length == 0)
         {
-            ImGui.TextDisabled(_ctx.WindowOpen ? "Reading your charms..." : "Open the Mini Remote to read your charms.");
+            SafeImGui.TextDisabled(_ctx.WindowOpen ? "Reading your charms..." : "Open the Mini Remote to read your charms.");
             RenderGuardianHand();
             return;
         }
 
         int acquired = rows.Count(r => r.Acquired != "no"), active = rows.Count(r => r.Active == IltTri.On);
-        ImGui.TextColored(LegacyDashboardRenderer.ColTeal, $"{acquired} of {rows.Length} acquired, {active} active");
+        SafeImGui.TextColored(LegacyDashboardRenderer.ColTeal, $"{acquired} of {rows.Length} acquired, {active} active");
         ImGui.SameLine();
         if (ImGui.SmallButton("Refresh##charms")) _ctx.Post(() => { _lastScan = 0; });
 
@@ -133,16 +134,16 @@ internal sealed class IltCharms : IIltFeature
         ImGui.TableNextColumn();
         bool carried = r.Acquired == "carried";
         if (carried) ImGui.TextUnformatted(r.Def.Name);
-        else ImGui.TextColored(LegacyDashboardRenderer.ColTextMute, r.Def.Name);
-        if (ImGui.IsItemHovered() && r.Def.Effect.Length > 0) ImGui.SetTooltip(r.Def.Effect);
+        else SafeImGui.TextColored(LegacyDashboardRenderer.ColTextMute, r.Def.Name);
+        if (ImGui.IsItemHovered() && r.Def.Effect.Length > 0) SafeImGui.SetTooltip(r.Def.Effect);
 
         ImGui.TableNextColumn();
-        if (carried) ImGui.TextColored(LegacyDashboardRenderer.ColGreen, r.Count > 1 ? $"Carried x{r.Count}" : "Carried");
+        if (carried) SafeImGui.TextColored(LegacyDashboardRenderer.ColGreen, r.Count > 1 ? $"Carried x{r.Count}" : "Carried");
         else if (r.Acquired == "seen")
         {
             ImGui.TextColored(LegacyDashboardRenderer.ColAmber, "Stored");
             if (ImGui.IsItemHovered() && r.LastSeenUtc != default)
-                ImGui.SetTooltip("Last carried " + r.LastSeenUtc.ToString("yyyy-MM-dd"));
+                SafeImGui.SetTooltip("Last carried " + r.LastSeenUtc.ToString("yyyy-MM-dd"));
         }
         else ImGui.TextDisabled("No");
 
@@ -188,12 +189,12 @@ internal sealed class IltCharms : IIltFeature
         foreach (var h in hands)
         {
             ImGui.PushID(h.Id);
-            if (h.ServerDisabled) ImGui.TextDisabled($"{h.Name} - disabled on this server");
+            if (h.ServerDisabled) SafeImGui.TextDisabled($"{h.Name} - disabled on this server");
             else
             {
                 var col = h.Status == IltTri.On ? LegacyDashboardRenderer.ColGreen
                         : h.Status == IltTri.Off ? LegacyDashboardRenderer.ColTextMute : LegacyDashboardRenderer.ColAmber;
-                ImGui.TextColored(col, h.Status == IltTri.On ? "ON " : h.Status == IltTri.Off ? "OFF" : " ? ");
+                SafeImGui.TextColored(col, h.Status == IltTri.On ? "ON " : h.Status == IltTri.Off ? "OFF" : " ? ");
                 ImGui.SameLine();
                 ImGui.TextUnformatted(h.Name);
                 ImGui.SameLine();

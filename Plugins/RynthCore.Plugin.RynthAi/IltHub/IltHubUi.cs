@@ -13,6 +13,7 @@ using System;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -115,9 +116,9 @@ internal sealed class IltHubUi
     {
         var o = _ctx.Options;
         string world = o.WorldName.Length > 0 ? o.WorldName : "unknown world";
-        ImGui.TextColored(o.IsIltLikeWorld ? LegacyDashboardRenderer.ColTeal : LegacyDashboardRenderer.ColTextMute, world);
+        SafeImGui.TextColored(o.IsIltLikeWorld ? LegacyDashboardRenderer.ColTeal : LegacyDashboardRenderer.ColTextMute, world);
         ImGui.SameLine();
-        ImGui.TextDisabled(o.IsRefreshing ? "checking server options..."
+        SafeImGui.TextDisabled(o.IsRefreshing ? "checking server options..."
             : o.LastRefreshUtc == DateTime.MinValue ? "server options not checked yet"
             : $"options via {o.Source} @ {o.LastRefreshUtc.ToLocalTime():t}");
         ImGui.SameLine();
@@ -207,9 +208,9 @@ internal sealed class IltHubUi
         bool keepOpen = true;
         if (ImGui.BeginPopupModal(ConfirmPopupId, ref keepOpen, ImGuiWindowFlags.AlwaysAutoResize))
         {
-            ImGui.TextColored(LegacyDashboardRenderer.ColAmber, _confirm.Title);
+            SafeImGui.TextColored(LegacyDashboardRenderer.ColAmber, _confirm.Title);
             ImGui.Separator();
-            ImGui.TextWrapped(_confirm.Message);
+            SafeImGui.TextWrapped(_confirm.Message);
             ImGui.Spacing();
             if (ImGui.Button(_confirm.YesLabel + "##iltyes", new Vector2(120, 0)))
             {

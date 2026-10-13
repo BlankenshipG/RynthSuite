@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using ImGuiNET;
 using System.Numerics;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.UbRythai;
 
@@ -396,7 +397,7 @@ public sealed partial class UbRythaiPlugin
         string world = "(unknown)";
         if (Host.HasGetWorldName && Host.TryGetWorldName(out string worldName) && !string.IsNullOrWhiteSpace(worldName))
             world = worldName.Trim();
-        ImGui.TextDisabled($"World={world}; autoMatch={(autoMatch ? "yes" : "no")}; features={(iltEnabled ? "ON" : "OFF")}; banking={(bankEnabled ? "ON" : "OFF")}");
+        SafeImGui.TextDisabled($"World={world}; autoMatch={(autoMatch ? "yes" : "no")}; features={(iltEnabled ? "ON" : "OFF")}; banking={(bankEnabled ? "ON" : "OFF")}");
 
         ImGui.Checkbox("Enable spellcraft queue (phase-in)##p3sp", ref _settings.EnableSpellcraftQueue);
         ImGui.Checkbox("Enable temple/guardian tools (phase-in)##p3tg", ref _settings.EnableTempleGuardianTools);
@@ -414,8 +415,8 @@ public sealed partial class UbRythaiPlugin
 
         ImGui.Checkbox("Bank tools enabled##ubbanken", ref _settings.BankToolsEnabled);
         ImGui.Checkbox("Bank auto-refresh on login##ubbanklogin", ref _settings.BankAutoRefreshOnLogin);
-        ImGui.TextDisabled($"Bank: p={_bankData.Pyreals:N0}, lum={_bankData.Luminance:N0}, lk={_bankData.LegendaryKeys:N0}, mk={_bankData.MythicalKeys:N0}, ec={_bankData.EnlightenedCoins:N0}, wec={_bankData.WeaklyEnlightenedCoins:N0}");
-        ImGui.TextDisabled($"Bank updated: {(_bankData.LastUpdatedUtc == DateTime.MinValue ? "never" : _bankData.LastUpdatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"))}");
+        SafeImGui.TextDisabled($"Bank: p={_bankData.Pyreals:N0}, lum={_bankData.Luminance:N0}, lk={_bankData.LegendaryKeys:N0}, mk={_bankData.MythicalKeys:N0}, ec={_bankData.EnlightenedCoins:N0}, wec={_bankData.WeaklyEnlightenedCoins:N0}");
+        SafeImGui.TextDisabled($"Bank updated: {(_bankData.LastUpdatedUtc == DateTime.MinValue ? "never" : _bankData.LastUpdatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"))}");
         if (ImGui.Button("Refresh bank now##ubbankrefresh"))
             RequestBankRefresh("ui");
 

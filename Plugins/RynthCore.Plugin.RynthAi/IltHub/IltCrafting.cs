@@ -14,6 +14,7 @@ using System.Linq;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.IltHub.Crafting;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -253,7 +254,7 @@ internal sealed class IltCrafting : IIltFeature
             ImGui.TextUnformatted(row.Name);
             ImGui.TableNextColumn();
             string slot = row.UsesTinkSlot ? "" : " - no tink slot";
-            ImGui.TextDisabled(row.Kind == TinkerKind.Imbue ? row.Effect + " (imbue)" : row.Effect + (row.Effect.Contains("tink slot") ? "" : slot));
+            SafeImGui.TextDisabled(row.Kind == TinkerKind.Imbue ? row.Effect + " (imbue)" : row.Effect + (row.Effect.Contains("tink slot") ? "" : slot));
             ImGui.PopID();
         }
         ImGui.EndTable();
@@ -363,7 +364,7 @@ internal sealed class IltCrafting : IIltFeature
             _newNote = string.Empty;
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Adds a row for this server only. Its chance isn't known ahead:\nthe server's own percent decides (Min chance %).");
+            SafeImGui.SetTooltip("Adds a row for this server only. Its chance isn't known ahead:\nthe server's own percent decides (Min chance %).");
     }
 
     /// <summary>Scan / Start / Stop, the shared run options and the scanned rows.</summary>
@@ -376,7 +377,7 @@ internal sealed class IltCrafting : IIltFeature
         if (ImGui.Checkbox("Answer AC's craft dialog", ref answer)) C.AnswerCraftDialog = answer;
         ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(canAnswer
+            SafeImGui.SetTooltip(canAnswer
                 ? "Says Yes for you only when the server's chance reaches Min chance %, else No."
                 : "Needs RynthCore engine API v81: until then click Yes in AC's dialog yourself.");
         ImGui.SameLine();
@@ -404,7 +405,7 @@ internal sealed class IltCrafting : IIltFeature
         if (doneCount > 0)
         {
             ImGui.SameLine();
-            ImGui.TextDisabled($"{doneCount} finished this session");
+            SafeImGui.TextDisabled($"{doneCount} finished this session");
             ImGui.SameLine();
             ImGui.BeginDisabled(Runner.Running);
             if (ImGui.SmallButton("Forget")) _ctx.Post(() => Runner.ForgetDone(bench));
@@ -437,11 +438,11 @@ internal sealed class IltCrafting : IIltFeature
         ImGui.EndDisabled();
         ImGui.SameLine();
         if (running && Runner.Bench != bench)
-            ImGui.TextColored(LegacyDashboardRenderer.ColAmber, $"{TinkerCatalog.Label(Runner.Bench)} is running");
+            SafeImGui.TextColored(LegacyDashboardRenderer.ColAmber, $"{TinkerCatalog.Label(Runner.Bench)} is running");
         else if (Rings.Running)
             ImGui.TextColored(LegacyDashboardRenderer.ColAmber, "the Rings chain is running");
         else
-            ImGui.TextDisabled(Runner.Status);
+            SafeImGui.TextDisabled(Runner.Status);
 
         if (!mine) return;
         var scanned = Runner.Rows;
@@ -467,9 +468,9 @@ internal sealed class IltCrafting : IIltFeature
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(r.Workmanship.ToString("0"));
             ImGui.TableNextColumn();
-            ImGui.TextWrapped(r.Plan);
+            SafeImGui.TextWrapped(r.Plan);
             ImGui.TableNextColumn();
-            ImGui.TextWrapped(r.Status);
+            SafeImGui.TextWrapped(r.Status);
         }
         ImGui.EndTable();
     }
@@ -504,7 +505,7 @@ internal sealed class IltCrafting : IIltFeature
                 }
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(r.Name);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip(r.Notes);
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip(r.Notes);
                 ImGui.PopID();
             }
             ImGui.EndTable();
@@ -529,8 +530,8 @@ internal sealed class IltCrafting : IIltFeature
         if (ImGui.Button("Stop##rings")) _ctx.Post(() => Rings.Stop("stopped by player"));
         ImGui.EndDisabled();
         ImGui.SameLine();
-        if (tinkering) ImGui.TextColored(LegacyDashboardRenderer.ColAmber, $"{TinkerCatalog.Label(Runner.Bench)} tinkering is running");
-        else ImGui.TextDisabled(Rings.Status);
+        if (tinkering) SafeImGui.TextColored(LegacyDashboardRenderer.ColAmber, $"{TinkerCatalog.Label(Runner.Bench)} tinkering is running");
+        else SafeImGui.TextDisabled(Rings.Status);
 
         var lines = Rings.ScanLines;
         if (lines.Length > 0 && ImGui.BeginTable("##ringscan", 2, ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders | ImGuiTableFlags.SizingStretchProp))
@@ -539,12 +540,12 @@ internal sealed class IltCrafting : IIltFeature
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
-                if (l.Found == null) { ImGui.TextColored(LegacyDashboardRenderer.ColTeal, l.Text); continue; }
+                if (l.Found == null) { SafeImGui.TextColored(LegacyDashboardRenderer.ColTeal, l.Text); continue; }
                 ImGui.TextUnformatted("  " + l.Text);
                 ImGui.TableNextColumn();
                 if (l.State == 0) ImGui.TextUnformatted(l.Found);
-                else if (l.State == 1) ImGui.TextDisabled(l.Found);
-                else ImGui.TextColored(LegacyDashboardRenderer.ColAmber, l.Found);
+                else if (l.State == 1) SafeImGui.TextDisabled(l.Found);
+                else SafeImGui.TextColored(LegacyDashboardRenderer.ColAmber, l.Found);
             }
             ImGui.EndTable();
         }

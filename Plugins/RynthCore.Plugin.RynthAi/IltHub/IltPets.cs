@@ -25,6 +25,7 @@ using System.Linq;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -780,10 +781,10 @@ internal sealed class IltPets : IIltFeature
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Appraise every pet to refresh bond, potency and breeding, and check pet-named items\n(an \"... Essence\" name alone isn't enough — the item must be a summoning pet device).");
         ImGui.SameLine();
         if (ImGui.Button("Add sel.")) _ctx.Post(() => AddSelectedAs(summonKind));
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Make the item selected in your pack a {KindNames[(int)kind].ToLowerInvariant()} pet.");
+        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"Make the item selected in your pack a {KindNames[(int)kind].ToLowerInvariant()} pet.");
 
         string active = _uiActivePet;
-        if (active.Length > 0) ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Active summon: " + active);
+        if (active.Length > 0) SafeImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Active summon: " + active);
         else ImGui.TextDisabled("Active summon: none");
 
         switch (kind)
@@ -813,7 +814,7 @@ internal sealed class IltPets : IIltFeature
                 int resp = S.CosmeticRespawnSeconds;
                 ImGui.SetNextItemWidth(90);
                 if (ImGui.InputInt("Respawn (s)", ref resp)) S.CosmeticRespawnSeconds = Math.Clamp(resp, 5, 600);
-                ImGui.TextDisabled("Tick one cosmetic pet. Status: " + _cosmeticStatus);
+                SafeImGui.TextDisabled("Tick one cosmetic pet. Status: " + _cosmeticStatus);
                 break;
             }
         }
@@ -844,7 +845,7 @@ internal sealed class IltPets : IIltFeature
 
         if (rows.Length == 0)
         {
-            ImGui.TextDisabled(kind == IltPetKind.Cosmetic
+            SafeImGui.TextDisabled(kind == IltPetKind.Cosmetic
                 ? "No cosmetic pets yet — select an essence in your pack and press Add sel., or right-click a pet in another type."
                 : $"No {KindNames[(int)kind].ToLowerInvariant()} pet essences carried.");
             return;
@@ -875,10 +876,10 @@ internal sealed class IltPets : IIltFeature
                 _highlightId = _highlightId == r.Id ? 0 : r.Id;
             RenderRowContextMenu(r);
             ImGui.SetCursorPos(start);
-            ImGui.TextColored(IltDamageTypeTint.ForName(r.DamageType), r.Line1);
-            ImGui.TextColored(LegacyDashboardRenderer.ColAmber, "  " + r.Line2);
-            if (r.UsesMax > 0 && r.UsesCur == 0) ImGui.TextColored(LegacyDashboardRenderer.ColHp, "  " + r.Line3);
-            else ImGui.TextDisabled("  " + r.Line3);
+            SafeImGui.TextColored(IltDamageTypeTint.ForName(r.DamageType), r.Line1);
+            SafeImGui.TextColored(LegacyDashboardRenderer.ColAmber, "  " + r.Line2);
+            if (r.UsesMax > 0 && r.UsesCur == 0) SafeImGui.TextColored(LegacyDashboardRenderer.ColHp, "  " + r.Line3);
+            else SafeImGui.TextDisabled("  " + r.Line3);
 
             ImGui.TableNextColumn();
             if (showArrows && r.Selected)
@@ -932,7 +933,7 @@ internal sealed class IltPets : IIltFeature
         bool en = S.HealingEnabled;
         if (ImGui.Checkbox("Summon heal pet when health is low", ref en)) S.HealingEnabled = en;
         string healPet = S.HealPetName;
-        ImGui.TextDisabled("Heal pet: " + (string.IsNullOrWhiteSpace(healPet) ? "auto (Healing Buddy / Dule box)" : healPet)
+        SafeImGui.TextDisabled("Heal pet: " + (string.IsNullOrWhiteSpace(healPet) ? "auto (Healing Buddy / Dule box)" : healPet)
                            + "  — tick one under Type = Healing.");
         int thr = S.HealthThresholdPercent;
         ImGui.SetNextItemWidth(160);
@@ -948,7 +949,7 @@ internal sealed class IltPets : IIltFeature
         int to = S.PetTimeoutSeconds;
         ImGui.SetNextItemWidth(100);
         if (ImGui.InputInt("Heal timeout (s)", ref to)) S.PetTimeoutSeconds = Math.Max(5, to);
-        ImGui.TextDisabled("Status: " + _healStatus);
+        SafeImGui.TextDisabled("Status: " + _healStatus);
     }
 
     private void RenderRosters()
@@ -964,7 +965,7 @@ internal sealed class IltPets : IIltFeature
         if (ImGui.TreeNode($"{label} ({snap.Length})##{key}"))
         {
             if (ImGui.SmallButton($"Refresh##{key}")) _ctx.Post(() => RequestRoster(shinies));
-            foreach (string s in snap) ImGui.BulletText(s);
+            foreach (string s in snap) SafeImGui.BulletText(s);
             ImGui.TreePop();
         }
     }

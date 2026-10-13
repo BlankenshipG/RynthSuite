@@ -43,6 +43,7 @@ using System.Threading;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.IltHub;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.Huds;
 
@@ -301,7 +302,7 @@ internal sealed class MiniRemoteHud
         if (ImGui.Button((s.MiniRemoteHorizontal ? "H" : "V") + "##mrlayout", new Vector2(HeaderButtonWidth, 0)))
             s.MiniRemoteHorizontal = !s.MiniRemoteHorizontal;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(s.MiniRemoteHorizontal ? "Horizontal: sections in columns. Click to stack them." : "Vertical: sections stacked. Click to lay them out in columns.");
+            SafeImGui.SetTooltip(s.MiniRemoteHorizontal ? "Horizontal: sections in columns. Click to stack them." : "Vertical: sections stacked. Click to lay them out in columns.");
         ImGui.SameLine();
         // Opened by RenderOptions: this row sits inside the Remote tab, whose ID the popup must not get.
         if (ImGui.Button("Options##mropts", new Vector2(HeaderButtonWidth, 0))) _openOptions = true;
@@ -404,7 +405,7 @@ internal sealed class MiniRemoteHud
 
     private static void Stat(string label, string value)
     {
-        ImGui.TextColored(ColLabel, label);
+        SafeImGui.TextColored(ColLabel, label);
         ImGui.SameLine();
         ImGui.TextUnformatted(value);
     }
@@ -424,7 +425,7 @@ internal sealed class MiniRemoteHud
         if (v.PassUpTracked)
         {
             Stat("Pass-up:", HudDraw.Compact(v.PassUpPerHour) + "/h");
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{v.LumPassUp:N0} this session.\n{IltSessionRates.PassUpTooltip}");
+            if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"{v.LumPassUp:N0} this session.\n{IltSessionRates.PassUpTooltip}");
         }
         Stat("Kills:", HudDraw.Compact(v.KillsPerHour) + "/h");
         if (!IltActive(hub)) return;
@@ -447,7 +448,7 @@ internal sealed class MiniRemoteHud
         if (c.TargetDistance >= 0)
         {
             ImGui.SameLine();
-            ImGui.TextDisabled($"{c.TargetDistance:F0}yd");
+            SafeImGui.TextDisabled($"{c.TargetDistance:F0}yd");
         }
         HealthBar("##mrtargethp", c.TargetHealth);
     }
@@ -466,7 +467,7 @@ internal sealed class MiniRemoteHud
         if (name.Length == 0) { ImGui.TextDisabled("No combat pet set"); return; }
         ImGui.TextUnformatted(name);
         var col = status switch { "Ready" => ColReady, "Out" => ColOut, "Healing" => ColBusy, _ => ColEmpty };
-        ImGui.TextColored(col, status);
+        SafeImGui.TextColored(col, status);
     }
 
     private static void RenderSummon(IltHubController? hub, CombatHudSnapshot c)
@@ -495,14 +496,14 @@ internal sealed class MiniRemoteHud
             }
             else
             {
-                ImGui.TextColored(left.TotalSeconds <= 30 ? ColEmpty : ColOut, text);
+                SafeImGui.TextColored(left.TotalSeconds <= 30 ? ColEmpty : ColOut, text);
             }
         }
         else
         {
             // No RemainingLifespan from the server: show how long it has been out instead.
             var up = TimeSpan.FromMilliseconds(Math.Max(0, now - c.PetSeenAtMs));
-            ImGui.TextDisabled($"Out {FormatClock(up)}");
+            SafeImGui.TextDisabled($"Out {FormatClock(up)}");
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("The server hasn't reported this summon's lifespan yet.");
         }
     }
@@ -590,7 +591,7 @@ internal sealed class MiniRemoteHud
                 if (e.IsEmpty) ImGui.PopStyleColor();
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(e.IsEmpty ? EmptySlotTip(i) : $"{e.Name}\n{count:N0} carried\nClick to use, right-click for options.\nCtrl+wheel: box size.");
+                SafeImGui.SetTooltip(e.IsEmpty ? EmptySlotTip(i) : $"{e.Name}\n{count:N0} carried\nClick to use, right-click for options.\nCtrl+wheel: box size.");
             int slotIndex = i;
             if (clicked)
             {
@@ -664,7 +665,7 @@ internal sealed class MiniRemoteHud
     {
         if (!ImGui.BeginPopup(SlotPopup)) return;
         _slotMenuIndex = index;
-        ImGui.TextDisabled(e.IsEmpty ? $"Slot {index + 1:00}" : $"Slot {index + 1:00}: {e.Name}");
+        SafeImGui.TextDisabled(e.IsEmpty ? $"Slot {index + 1:00}" : $"Slot {index + 1:00}: {e.Name}");
         string candidate = _hud.AssignCandidate;
         if (ImGui.MenuItem(candidate.Length > 0 ? $"Assign {candidate}" : "Assign selected item"))
             _hud.Post(() => _hud.SetSlotFromSelection(index));
@@ -857,7 +858,7 @@ internal sealed class MiniRemoteHud
             if (!g.Active && !forcedHere) continue;
             any = true;
             ImGui.Separator();
-            ImGui.TextDisabled("Server: " + (g.Active ? g.Name : g.Name + " (forced)"));
+            SafeImGui.TextDisabled("Server: " + (g.Active ? g.Name : g.Name + " (forced)"));
             foreach (ServerMenuEntry item in g.Items)
             {
                 string? tab = ServerMenuModel.TabOf(item.Feature);
@@ -867,7 +868,7 @@ internal sealed class MiniRemoteHud
                 if (ImGui.MenuItem(item.Label + "##mrsrv_" + g.Id, item.Command, false, enabled))
                     RunServerItem(item, tab);
                 if (item.Tooltip.Length > 0 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                    ImGui.SetTooltip(enabled ? item.Tooltip : item.Tooltip + "\nShows once the server reports this feature on.");
+                    SafeImGui.SetTooltip(enabled ? item.Tooltip : item.Tooltip + "\nShows once the server reports this feature on.");
             }
             if (ilt) RenderIltStatus(hub);
         }
@@ -935,7 +936,7 @@ internal sealed class MiniRemoteHud
     {
         if (hub == null || hub.Available) return;
         var o = hub.Options;
-        ImGui.TextDisabled(!o.IsIltLikeWorld ? "Not an ILT world."
+        SafeImGui.TextDisabled(!o.IsIltLikeWorld ? "Not an ILT world."
             : o.IsRefreshing || o.LastRefreshUtc == DateTime.MinValue ? "Checking server features..."
             : "No ILT features reported.");
         bool force = hub.ForceIltWorld;

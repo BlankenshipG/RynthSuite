@@ -20,6 +20,7 @@ using System.Linq;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.IltHub;
 
@@ -369,7 +370,7 @@ internal sealed class IltBanking : IIltFeature
     {
         if (!Enabled)
         {
-            ImGui.TextColored(LegacyDashboardRenderer.ColTextMute,
+            SafeImGui.TextColored(LegacyDashboardRenderer.ColTextMute,
                 _ctx.Options.IsOff(IltFeature.Bank) ? "The server reports /bank is not available." : "Waiting for the server options check...");
             return;
         }
@@ -381,7 +382,7 @@ internal sealed class IltBanking : IIltFeature
         ImGui.SameLine();
         if (ImGui.SmallButton("Copy##bank")) ImGui.SetClipboardText(BuildCopyLine());
         ImGui.SameLine();
-        ImGui.TextDisabled(Bank.LastUpdated == DateTime.MinValue ? "never updated" : "updated " + Bank.LastUpdated.ToString("g"));
+        SafeImGui.TextDisabled(Bank.LastUpdated == DateTime.MinValue ? "never updated" : "updated " + Bank.LastUpdated.ToString("g"));
 
         if (ImGui.BeginTable("##iltbal", 2, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV))
         {
@@ -432,7 +433,7 @@ internal sealed class IltBanking : IIltFeature
             _ctx.Post(() => { string err = SendDeposit(index); if (err.Length > 0) _actionResult = err; });
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(IltBankCommands.Deposit(dep) + "\nEverything banks all currencies, notes and luminance tokens."
+            SafeImGui.SetTooltip(IltBankCommands.Deposit(dep) + "\nEverything banks all currencies, notes and luminance tokens."
                              + "\nThe server refuses while you are busy or moving.");
 
         ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Withdraw");
@@ -463,12 +464,12 @@ internal sealed class IltBanking : IIltFeature
         {
             ImGui.SameLine();
             if (!ok) ImGui.TextColored(LegacyDashboardRenderer.ColHp, "invalid amount");
-            else if (notes) ImGui.TextDisabled("= " + IltParse.N0(amount * IltBankCommands.NoteDenominations[denom].Value) + " pyreals");
-            else ImGui.TextDisabled("= " + IltParse.N0(amount));
+            else if (notes) SafeImGui.TextDisabled("= " + IltParse.N0(amount * IltBankCommands.NoteDenominations[denom].Value) + " pyreals");
+            else SafeImGui.TextDisabled("= " + IltParse.N0(amount));
         }
 
         string result = _actionResult;
-        if (result.Length > 0) ImGui.TextWrapped(result);
+        if (result.Length > 0) SafeImGui.TextWrapped(result);
     }
 
     private void RenderTransferForm()
@@ -490,7 +491,7 @@ internal sealed class IltBanking : IIltFeature
         if (_amountText.Length > 0)
         {
             ImGui.SameLine();
-            if (amountOk) ImGui.TextDisabled("= " + IltParse.N0(amount));
+            if (amountOk) SafeImGui.TextDisabled("= " + IltParse.N0(amount));
             else ImGui.TextColored(LegacyDashboardRenderer.ColHp, "invalid amount");
         }
 
@@ -510,13 +511,13 @@ internal sealed class IltBanking : IIltFeature
                 "Send");
         }
         ImGui.EndDisabled();
-        if (_lastResult.Length > 0) ImGui.TextWrapped(_lastResult);
+        if (_lastResult.Length > 0) SafeImGui.TextWrapped(_lastResult);
     }
 
     private void RenderTransactionLog()
     {
         var snap = _txSnapshot;
-        ImGui.TextColored(LegacyDashboardRenderer.ColTeal, $"Transactions ({snap.Length})");
+        SafeImGui.TextColored(LegacyDashboardRenderer.ColTeal, $"Transactions ({snap.Length})");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(180);
         ImGui.InputTextWithHint("##txfilter", "filter player / currency", ref _txFilter, 64u);
@@ -543,7 +544,7 @@ internal sealed class IltBanking : IIltFeature
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(t.Timestamp.ToString("g"));
                 ImGui.TableNextColumn();
-                ImGui.TextColored(t.Type == "Sent" ? LegacyDashboardRenderer.ColAmber : LegacyDashboardRenderer.ColGreen, t.Type);
+                SafeImGui.TextColored(t.Type == "Sent" ? LegacyDashboardRenderer.ColAmber : LegacyDashboardRenderer.ColGreen, t.Type);
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(IltParse.N0(t.Amount));
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(t.Currency);
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(t.OtherPlayer);

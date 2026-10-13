@@ -9,6 +9,7 @@
 using System;
 using System.Numerics;
 using ImGuiNET;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.Translate;
 
@@ -71,15 +72,15 @@ internal sealed class TranslateUi
         ImGui.SameLine();
         ImGui.Checkbox("Outgoing##trout", ref s.EnableOutbound);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Translate what you type on the ticked Send channels before it goes out.\n"
+            SafeImGui.SetTooltip("Translate what you type on the ticked Send channels before it goes out.\n"
                              + $"Start a line with '{s.RawPrefix}' to send it untranslated.");
         ImGui.SameLine();
-        ImGui.TextColored(ColDim, $"| {_tr.Translated} done, {_tr.CharsSent:N0} chars, {_tr.Pending} queued");
+        SafeImGui.TextColored(ColDim, $"| {_tr.Translated} done, {_tr.CharsSent:N0} chars, {_tr.Pending} queued");
 
         if (s.ApiKey.Length == 0 && s.Provider != TranslateSettings.ProviderLibre)
             ImGui.TextColored(ColError, "No API key: open the Settings tab to add one.");
         else if (_tr.LastError.Length > 0)
-            ImGui.TextColored(ColError, "Last error: " + _tr.LastError);
+            SafeImGui.TextColored(ColError, "Last error: " + _tr.LastError);
     }
 
     /// <summary>Receive / swap / send / reset-to-default row (window and Advanced page).</summary>
@@ -100,14 +101,14 @@ internal sealed class TranslateUi
         ImGui.SameLine();
         string send = s.CurrentSendLanguage;
         if (TranslateLanguages.Combo("##send" + id, ref send, allowAuto: false, comboWidth)) s.CurrentSendLanguage = send;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"What you type is translated into this language.\nDefault: {TranslateLanguages.Label(s.DefaultSendLanguage)}");
+        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"What you type is translated into this language.\nDefault: {TranslateLanguages.Label(s.DefaultSendLanguage)}");
         ImGui.SameLine();
         bool atDefault = s.CurrentSendLanguage == s.DefaultSendLanguage;
         if (atDefault) ImGui.BeginDisabled();
         if (ImGui.Button("Default##senddef" + id)) s.CurrentSendLanguage = s.DefaultSendLanguage;
         if (atDefault) ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip($"Reset the send language to the default ({s.DefaultSendLanguage}).");
+            SafeImGui.SetTooltip($"Reset the send language to the default ({s.DefaultSendLanguage}).");
     }
 
     private void RenderLog()
@@ -115,7 +116,7 @@ internal sealed class TranslateUi
         var log = _tr.LogSnapshot();
         if (ImGui.SmallButton("Clear")) _tr.ClearLog();
         ImGui.SameLine();
-        ImGui.TextColored(ColDim, $"{log.Length} entries (hover a line for the original)");
+        SafeImGui.TextColored(ColDim, $"{log.Length} entries (hover a line for the original)");
 
         if (!ImGui.BeginChild("##trlog", new Vector2(0, 0), ImGuiChildFlags.Borders)) { ImGui.EndChild(); return; }
         foreach (var e in log)
@@ -126,18 +127,18 @@ internal sealed class TranslateUi
                 TranslateDirection.Out => ("OUT", ColOut),
                 _ => ("TST", ColTest),
             };
-            ImGui.TextColored(ColDim, e.Time.ToString("HH:mm:ss"));
+            SafeImGui.TextColored(ColDim, e.Time.ToString("HH:mm:ss"));
             ImGui.SameLine();
-            ImGui.TextColored(e.Error.Length > 0 && e.Translated.Length == 0 ? ColError : col, tag);
+            SafeImGui.TextColored(e.Error.Length > 0 && e.Translated.Length == 0 ? ColError : col, tag);
             ImGui.SameLine();
             string ch = e.Channel is { } c ? $"[{TranslateChannels.Name(c)}] " : string.Empty;
             string who = e.Speaker.Length > 0 ? e.Speaker + ": " : string.Empty;
             string body = e.Translated.Length > 0 ? e.Translated : e.Original;
-            ImGui.TextWrapped($"{ch}{who}{body}");
+            SafeImGui.TextWrapped($"{ch}{who}{body}");
             if (ImGui.IsItemHovered())
             {
                 string langs = e.From.Length > 0 || e.To.Length > 0 ? $"\n{(e.From.Length > 0 ? e.From : "?")} -> {e.To}" : string.Empty;
-                ImGui.SetTooltip($"Original: {e.Original}{langs}{(e.Error.Length > 0 ? "\n" + e.Error : string.Empty)}");
+                SafeImGui.SetTooltip($"Original: {e.Original}{langs}{(e.Error.Length > 0 ? "\n" + e.Error : string.Empty)}");
             }
         }
         // Follow new lines unless the user scrolled up.
@@ -150,7 +151,7 @@ internal sealed class TranslateUi
     private void RenderCompose()
     {
         var s = S;
-        ImGui.TextWrapped($"Type in any language; it is translated into {TranslateLanguages.Label(s.CurrentSendLanguage)} and sent on the chosen channel.");
+        SafeImGui.TextWrapped($"Type in any language; it is translated into {TranslateLanguages.Label(s.CurrentSendLanguage)} and sent on the chosen channel.");
         ImGui.Spacing();
 
         ImGui.SetNextItemWidth(140f);
@@ -251,7 +252,7 @@ internal sealed class TranslateUi
         ImGui.SetNextItemWidth(220f);
         if (ImGui.Combo("Provider" + id, ref provider, TranslateSettings.ProviderNames, TranslateSettings.ProviderNames.Length))
             s.Provider = TranslateSettings.Providers[provider];
-        ImGui.TextColored(ColDim, ProviderHint(s.Provider));
+        SafeImGui.TextColored(ColDim, ProviderHint(s.Provider));
 
         var keyFlags = _showKey ? ImGuiInputTextFlags.None : ImGuiInputTextFlags.Password;
         ImGui.SetNextItemWidth(300f);
@@ -322,26 +323,26 @@ internal sealed class TranslateUi
         var s = S;
         ImGui.PushID("##mrtranslate");
         ImGui.Checkbox("Translate", ref s.Enabled);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip(_tr.StatusLine() + (_tr.LastError.Length > 0 ? "\nLast error: " + _tr.LastError : string.Empty));
+        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip(_tr.StatusLine() + (_tr.LastError.Length > 0 ? "\nLast error: " + _tr.LastError : string.Empty));
         ImGui.SameLine();
         if (ImGui.SmallButton("Window")) s.ShowWindow = !s.ShowWindow;
 
         string recv = s.MyLanguage;
         if (TranslateLanguages.Combo("##mrrecv", ref recv, allowAuto: false, 62f)) s.MyLanguage = recv;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Receive: {TranslateLanguages.Label(s.MyLanguage)}");
+        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"Receive: {TranslateLanguages.Label(s.MyLanguage)}");
         ImGui.SameLine();
         if (ImGui.Button("<->")) _tr.SwapLanguages();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Swap receive and send languages.");
         ImGui.SameLine();
         string send = s.CurrentSendLanguage;
         if (TranslateLanguages.Combo("##mrsend", ref send, allowAuto: false, 62f)) s.CurrentSendLanguage = send;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Send: {TranslateLanguages.Label(s.CurrentSendLanguage)}");
+        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"Send: {TranslateLanguages.Label(s.CurrentSendLanguage)}");
         // Right-click belongs to the Mini Remote options menu, so the reset is a button.
         if (s.CurrentSendLanguage != s.DefaultSendLanguage)
         {
             ImGui.SameLine();
             if (ImGui.SmallButton("def")) s.CurrentSendLanguage = s.DefaultSendLanguage;
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Reset the send language to the default ({s.DefaultSendLanguage}).");
+            if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"Reset the send language to the default ({s.DefaultSendLanguage}).");
         }
         ImGui.PopID();
     }

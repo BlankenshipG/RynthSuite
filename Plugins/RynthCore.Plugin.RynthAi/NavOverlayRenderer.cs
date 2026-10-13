@@ -16,6 +16,7 @@ using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -245,11 +246,11 @@ internal sealed class NavOverlayRenderer
         var route = _settings.CurrentRoute;
         var pts = route.Points;
         string name = string.IsNullOrEmpty(_settings.CurrentNavPath) ? "(unsaved)" : Path.GetFileNameWithoutExtension(_settings.CurrentNavPath);
-        ImGui.TextColored(new Vector4(1f, 0.85f, 0.3f, 1f), $"{name}  [{route.RouteType}]");
+        SafeImGui.TextColored(new Vector4(1f, 0.85f, 0.3f, 1f), $"{name}  [{route.RouteType}]");
         if (_settings.IsRecordingNav)
         {
             ImGui.SameLine();
-            ImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), $"REC +{_trail.RecordedCount}");
+            SafeImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), $"REC +{_trail.RecordedCount}");
         }
 
         int idx = _settings.ActiveNavIndex;
@@ -258,21 +259,21 @@ internal sealed class NavOverlayRenderer
             var p = pts[idx];
             bool travel = p.Type == NavPointType.Point;
             ImGui.BeginGroup();
-            ImGui.Text($"WP {idx}/{pts.Count - 1}  {TypeLabel(p)}");
+            SafeImGui.Text($"WP {idx}/{pts.Count - 1}  {TypeLabel(p)}");
             if (travel)
             {
                 double yd = NavRouteEditing.DistanceYards(f.NS, f.EW, p.NS, p.EW);
                 double dz = (p.Z * NavCoordinateHelper.NavZScale) - f.Pz;
-                ImGui.Text(Math.Abs(dz) >= 3 ? $"{yd:F1} yd  ({(dz > 0 ? "up" : "down")} {Math.Abs(dz):F0})" : $"{yd:F1} yd");
+                SafeImGui.Text(Math.Abs(dz) >= 3 ? $"{yd:F1} yd  ({(dz > 0 ? "up" : "down")} {Math.Abs(dz):F0})" : $"{yd:F1} yd");
             }
             else
             {
-                ImGui.TextDisabled(p.ToString());
+                SafeImGui.TextDisabled(p.ToString());
             }
             int ni = NextIndex(route, idx);
-            if (ni >= 0) ImGui.TextDisabled($"Next: [{ni}] {pts[ni]}");
+            if (ni >= 0) SafeImGui.TextDisabled($"Next: [{ni}] {pts[ni]}");
             double remain = RemainingYards(route, idx, f);
-            if (remain > 0) ImGui.TextDisabled(route.RouteType == NavRouteType.Circular ? $"Loop: {remain:F0} yd" : $"Remaining: ~{remain:F0} yd");
+            if (remain > 0) SafeImGui.TextDisabled(route.RouteType == NavRouteType.Circular ? $"Loop: {remain:F0} yd" : $"Remaining: ~{remain:F0} yd");
             ImGui.EndGroup();
 
             if (travel)
@@ -288,10 +289,10 @@ internal sealed class NavOverlayRenderer
         }
 
         if (!string.IsNullOrEmpty(_settings.NavStatusLine))
-            ImGui.TextColored(_settings.NavIsStuck ? new Vector4(0.91f, 0.70f, 0.20f, 1f) : new Vector4(0.6f, 0.75f, 0.6f, 1f),
+            SafeImGui.TextColored(_settings.NavIsStuck ? new Vector4(0.91f, 0.70f, 0.20f, 1f) : new Vector4(0.6f, 0.75f, 0.6f, 1f),
                 _settings.NavStatusLine);
         if (o.TrackBreadcrumbs)
-            ImGui.TextDisabled($"Trail: {_trail.Trail.Length} pts, {_trail.TrailYards:F0} yd");
+            SafeImGui.TextDisabled($"Trail: {_trail.Trail.Length} pts, {_trail.TrailYards:F0} yd");
         ImGui.End();
     }
 
