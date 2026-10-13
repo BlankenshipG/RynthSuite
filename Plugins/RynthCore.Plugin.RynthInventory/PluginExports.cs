@@ -27,7 +27,7 @@ public static unsafe class PluginExports
     public static IntPtr GetName() => LiteralPointer("RynthInventory"u8);
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginVersion", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static IntPtr GetVersion() => LiteralPointer("0.1.0"u8);
+    public static IntPtr GetVersion() => LiteralPointer("0.1.1"u8);   // = RynthInventoryPlugin.Version
 
     private static IntPtr LiteralPointer(ReadOnlySpan<byte> literal)
     {

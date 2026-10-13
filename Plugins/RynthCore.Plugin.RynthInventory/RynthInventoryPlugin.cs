@@ -26,7 +26,8 @@ namespace RynthCore.Plugin.RynthInventory;
 /// </summary>
 public sealed class RynthInventoryPlugin : RynthPluginBase
 {
-    public const string Version = "0.1.0";
+    // Previous release: 0.1.0. Keep in step with PluginExports.GetVersion.
+    public const string Version = "0.1.1";
 
     private const long IdentityRetryMs = 1000;
     private const long AccountWaitMs = 15_000;
