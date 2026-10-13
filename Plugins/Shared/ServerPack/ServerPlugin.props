@@ -1,0 +1,68 @@
+<Project>
+  <!--
+    The common build of a server plugin (RynthColdeve, RynthAelrynth, ...): one NativeAOT plugin
+    per game server, built like RynthILT, so each server's plugin ships and updates on its own
+    (its own DLL, feed entry and C:\Games\RynthSuite\<Name>\ folder).
+
+    A server plugin's csproj sets, then imports this file:
+      AssemblyName                  RynthCore.Plugin.Rynth<Server>  (plugin name = without the prefix)
+      Version                       its own version (Publish-Update.ps1 overrides it for a release)
+      RynthPluginServerId           lower-case id (a-z 0-9 -); the Mini Remote's server id
+      RynthPluginServerName         display name
+      RynthPluginServerHosts        connect hosts, '|'-separated (a name matches hosts under it)
+      RynthPluginServerWorldNames   world names the server announces, '|'-separated ('*' wildcards)
+      RynthPluginDescription        one line for the launcher's plugin list
+    and keeps one source file, ServerData.cs (ServerData.Create: what is known about the server).
+    Detection data lives only in the csproj: the SDK writes it into the embedded manifest (the
+    engine loads the plugin only for its server) and into RynthPluginInfo (the plugin's own use).
+
+    Server-specific features go in the project as more files, through the partial hooks in
+    ServerPackPlugin.cs (ServerTick, ServerChatCommand, ...), so the shared code stays the same for all.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <OutputType>Library</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+    <StripSymbols>false</StripSymbols>
+    <RootNamespace>RynthCore.Plugin.ServerPack</RootNamespace>
+    <Platforms>x86</Platforms>
+    <!-- Nothing above the v66 baseline: chat commands, world names and the plugin-command broker
+         are behind HasInvokeChatParser / HasGetWorldName / HasWriteToChat. -->
+    <RynthPluginMinEngineApi Condition="'$(RynthPluginMinEngineApi)' == ''">66</RynthPluginMinEngineApi>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)..\SafeImGui.cs" Link="Shared\SafeImGui.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ServerPackInfo.cs" Link="ServerPack\ServerPackInfo.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ServerPackModel.cs" Link="ServerPack\ServerPackModel.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ServerPackUi.cs" Link="ServerPack\ServerPackUi.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ServerPackPlugin.cs" Link="ServerPack\ServerPackPlugin.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ServerPackExports.cs" Link="ServerPack\ServerPackExports.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
+    <TrimmerRootAssembly Include="ImGui.NET" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+  </ItemGroup>
+
+  <!-- The engine already loaded cimgui.dll into the client; a second copy next to the plugin is never used. -->
+  <Target Name="RemoveBundledImGuiNativeFromBuild" AfterTargets="Build">
+    <Delete Files="$(OutputPath)cimgui.dll" Condition="Exists('$(OutputPath)cimgui.dll')" />
+  </Target>
+
+  <Target Name="RemoveBundledImGuiNativeFromPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <Delete Files="$(PublishDir)cimgui.dll" Condition="Exists('$(PublishDir)cimgui.dll')" />
+  </Target>
+</Project>

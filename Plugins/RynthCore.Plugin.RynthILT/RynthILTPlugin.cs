@@ -27,8 +27,8 @@ namespace RynthCore.Plugin.RynthILT;
 public sealed class RynthILTPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthILT");
-    // Previous release: 0.1.0.
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.1");
+    // Previous release: 0.1.1.
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.2");
 
     /// <summary>The settings view's surface in RynthCore's Mini Remote sections.</summary>
     internal const string SettingsSurface = "section:ilt-settings";

@@ -29,6 +29,12 @@
          HasInvokeChatParser / HasGetWorldName / HasGetObjectName / HasSendPluginCommand. -->
     <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
     <RynthPluginDescription>Infinite Leaftide (ACECustom) features: the Bounties window and the ILT settings.</RynthPluginDescription>
+    <!-- RynthILT is ILT's server plugin: RynthCore loads it only for clients connecting to ILT (or when no
+         installed server plugin claims the host). Same lists as RynthCore's IltDetect defaults. -->
+    <RynthPluginServerId>ilt</RynthPluginServerId>
+    <RynthPluginServerName>Infinite Leaftide</RynthPluginServerName>
+    <RynthPluginServerHosts>infiniteleaftide.online</RynthPluginServerHosts>
+    <RynthPluginServerWorldNames>InfiniteLeaftide|*Leaftide*</RynthPluginServerWorldNames>
   </PropertyGroup>
 
   <ItemGroup>

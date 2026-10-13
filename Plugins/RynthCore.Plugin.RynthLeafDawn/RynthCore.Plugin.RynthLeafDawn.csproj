@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- RynthLeafDawn: the LeafDawn server plugin (not Leafdawning, which has RynthLeafdawning). The build is shared
+       (..\Shared\ServerPack\ServerPlugin.props); ServerData.cs holds what is known about the server. -->
+  <PropertyGroup>
+    <AssemblyName>RynthCore.Plugin.RynthLeafDawn</AssemblyName>
+    <!-- First release (no previous). -->
+    <Version>0.1.0</Version>
+    <RynthPluginServerId>leafdawn</RynthPluginServerId>
+    <RynthPluginServerName>LeafDawn</RynthPluginServerName>
+    <RynthPluginServerHosts>leafdawn.hopto.org</RynthPluginServerHosts>
+    <RynthPluginServerWorldNames>LeafDawn</RynthPluginServerWorldNames>
+    <RynthPluginDescription>LeafDawn only: the server card (rules, account limits, botting policy, links, account setup) in the Mini Remote.</RynthPluginDescription>
+  </PropertyGroup>
+
+  <Import Project="..\Shared\ServerPack\ServerPlugin.props" />
+
+</Project>

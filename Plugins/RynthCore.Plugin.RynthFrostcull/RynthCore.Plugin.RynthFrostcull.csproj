@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- RynthFrostcull: the Frostcull server plugin. The build is shared (..\Shared\ServerPack\ServerPlugin.props);
+       ServerData.cs holds what is known about the server. -->
+  <PropertyGroup>
+    <AssemblyName>RynthCore.Plugin.RynthFrostcull</AssemblyName>
+    <!-- First release (no previous). -->
+    <Version>0.1.0</Version>
+    <RynthPluginServerId>frostcull</RynthPluginServerId>
+    <RynthPluginServerName>Frostcull</RynthPluginServerName>
+    <RynthPluginServerHosts>frostcull.ddns.net</RynthPluginServerHosts>
+    <RynthPluginServerWorldNames>Frostcull</RynthPluginServerWorldNames>
+    <RynthPluginDescription>Frostcull only: the server card (rules, account limits, botting policy, links, account setup) in the Mini Remote.</RynthPluginDescription>
+  </PropertyGroup>
+
+  <Import Project="..\Shared\ServerPack\ServerPlugin.props" />
+
+</Project>

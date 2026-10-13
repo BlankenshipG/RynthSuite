@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- RynthSundering: the Sundering server plugin. The build is shared (..\Shared\ServerPack\ServerPlugin.props);
+       ServerData.cs holds what is known about the server. -->
+  <PropertyGroup>
+    <AssemblyName>RynthCore.Plugin.RynthSundering</AssemblyName>
+    <!-- First release (no previous). -->
+    <Version>0.1.0</Version>
+    <RynthPluginServerId>sundering</RynthPluginServerId>
+    <RynthPluginServerName>Sundering</RynthPluginServerName>
+    <RynthPluginServerHosts>ace.sunderingac.com</RynthPluginServerHosts>
+    <RynthPluginServerWorldNames>Sundering|The Sundering</RynthPluginServerWorldNames>
+    <RynthPluginDescription>Sundering only: the server card (rules, account limits, botting policy, links, account setup) in the Mini Remote.</RynthPluginDescription>
+  </PropertyGroup>
+
+  <Import Project="..\Shared\ServerPack\ServerPlugin.props" />
+
+</Project>

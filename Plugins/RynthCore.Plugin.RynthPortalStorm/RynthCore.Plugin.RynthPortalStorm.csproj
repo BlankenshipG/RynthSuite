@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- RynthPortalStorm: the PortalStorm server plugin. The build is shared (..\Shared\ServerPack\ServerPlugin.props);
+       ServerData.cs holds what is known about the server. -->
+  <PropertyGroup>
+    <AssemblyName>RynthCore.Plugin.RynthPortalStorm</AssemblyName>
+    <!-- First release (no previous). -->
+    <Version>0.1.0</Version>
+    <RynthPluginServerId>portalstorm</RynthPluginServerId>
+    <RynthPluginServerName>PortalStorm</RynthPluginServerName>
+    <RynthPluginServerHosts>ac.portalstorm.us.com</RynthPluginServerHosts>
+    <RynthPluginServerWorldNames>PortalStorm|Portal Storm</RynthPluginServerWorldNames>
+    <RynthPluginDescription>PortalStorm only: the server card (rules, account limits, botting policy, links, account setup) in the Mini Remote.</RynthPluginDescription>
+  </PropertyGroup>
+
+  <Import Project="..\Shared\ServerPack\ServerPlugin.props" />
+
+</Project>
