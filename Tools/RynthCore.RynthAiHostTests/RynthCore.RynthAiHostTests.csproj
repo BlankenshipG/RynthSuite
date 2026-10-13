@@ -55,6 +55,14 @@
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\Data\MetaLocation.cs" Link="Engine\MetaLocation.cs" />
     <!-- The Inventory panel's attribute filter rules and matching (pure; engine 2026-10-11). -->
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\Compatibility\InventoryAttributeFilter.cs" Link="Engine\InventoryAttributeFilter.cs" />
+    <!-- The Mini Remote sections' manifest parser and catalog (pure; engine 2026.10.5.46), so
+         SectionsTests checks RynthAi's RynthPluginGetSectionsJson against the engine's reader.
+         IltDetect (with AelrynthWire, which it shares a parser with) does the catalog's matching. -->
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\Sections\ServerForce.cs" Link="Engine\ServerForce.cs" />
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\Sections\SectionManifest.cs" Link="Engine\SectionManifest.cs" />
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\Sections\SectionCatalog.cs" Link="Engine\SectionCatalog.cs" />
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\Compatibility\IltDetect.cs" Link="Engine\IltDetect.cs" />
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\Compatibility\AelrynthWire.cs" Link="Engine\AelrynthWire.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -100,6 +100,28 @@ internal sealed class IltHubUi
         _hub.Guardian.Render();
     }
 
+    /// <summary>
+    /// RynthCore's Char section, Infinite Leaftide options: the world / server-options header
+    /// (refresh, the Force-ILT override, profiles) and every feature the server reported.
+    /// </summary>
+    public void RenderServerOptions()
+    {
+        RenderHeader();
+        ImGui.Separator();
+        var bits = _ctx.Options.SnapshotBits();
+        if (bits.Count == 0)
+        {
+            ImGui.TextDisabled("The server hasn't reported its ILT features yet (Refresh asks again).");
+            return;
+        }
+        foreach (var kv in bits)
+        {
+            string state = kv.Value switch { 1 => "on", -1 => "off", _ => "unknown" };
+            Vector4 color = kv.Value == 1 ? LegacyDashboardRenderer.ColTeal : LegacyDashboardRenderer.ColTextMute;
+            SafeImGui.TextColored(color, $"{kv.Key}: {state}");
+        }
+    }
+
     /// <summary>Character tab: world / options header, then session rates (or why the ILT tabs are idle).</summary>
     private void RenderCharacterBody()
     {
@@ -124,10 +146,12 @@ internal sealed class IltHubUi
         ImGui.SameLine();
         if (ImGui.SmallButton("Refresh##opts")) _ctx.Post(() => o.Refresh(manual: true));
 
-        bool force = _ctx.State.ForceLeaftideFeatures;
-        if (ImGui.Checkbox("Treat this world as ILT", ref force)) _ctx.State.ForceLeaftideFeatures = force;
+        bool force = _ctx.ForceIltWorld;
+        if (ImGui.Checkbox("Treat this world as ILT", ref force)) _ctx.ForceIltWorld = force;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("World-identity override only: the Mini Remote asks the server which ILT features exist.\nIt never turns a feature on by itself.");
+            ImGui.SetTooltip(IltServerOptions.EngineDecides
+                ? "World-identity override only, saved for this character by RynthCore (/rc server ilt on|auto, or the Mini Remote's Char section).\nThe Mini Remote still asks the server which ILT features exist; it never turns a feature on by itself."
+                : "World-identity override only: the Mini Remote asks the server which ILT features exist.\nIt never turns a feature on by itself.");
         ImGui.SameLine();
         if (ImGui.SmallButton("Profiles...")) { ImGui.OpenPopup("##iltprofiles"); _ctx.Post(() => _profileList = _ctx.Store.ListProfiles().ToArray()); }
         RenderProfilesPopup();

@@ -142,12 +142,18 @@ internal sealed class IltHubController
     /// <summary>Render thread: the Guardian panel's body (RynthPluginRenderEmbed "guardian").</summary>
     public void RenderGuardianPanel() => _ui.RenderGuardianPanel();
 
+    /// <summary>Render thread: the ILT server options (RynthCore's Char section, "section:ilt-options").</summary>
+    public void RenderServerOptions() => _ui.RenderServerOptions();
+
     /// <summary>The Force-ILT world override (world identity only; features still come from the server).</summary>
     public bool ForceIltWorld
     {
-        get => _ctx.State.ForceLeaftideFeatures;
-        set => _ctx.State.ForceLeaftideFeatures = value;
+        get => _ctx.ForceIltWorld;
+        set => _ctx.ForceIltWorld = value;
     }
+
+    /// <summary>The per-character override as saved in ilt-hub.json (before RynthCore owned it).</summary>
+    public bool LocalForce => _ctx.State.ForceLeaftideFeatures;
 
     /// <summary>Re-asks the server which features are on (safe from the render thread: posted to the pump).</summary>
     public void RequestOptionsRefresh() => _ctx.Post(() => _ctx.Options.Refresh(manual: true));
@@ -416,9 +422,14 @@ internal sealed class IltHubController
             case "bank": Banking.RequestRefresh(quiet: false); break;
             case "status": PrintStatus(); break;
             case "force":
-                _ctx.State.ForceLeaftideFeatures = !rest.Equals("off", StringComparison.OrdinalIgnoreCase);
-                _ctx.Chat($"[Mini Remote] Force ILT world: {(_ctx.State.ForceLeaftideFeatures ? "on" : "off")}. Use /ra hub refresh to re-check the server.");
+            {
+                bool on = !rest.Equals("off", StringComparison.OrdinalIgnoreCase);
+                _ctx.ForceIltWorld = on;
+                _ctx.Chat(IltServerOptions.EngineDecides
+                    ? $"[Mini Remote] Force ILT world: {(on ? "on" : "auto")} (RynthCore keeps it for this character: /rc server ilt). Use /ra hub refresh to re-check the server."
+                    : $"[Mini Remote] Force ILT world: {(on ? "on" : "off")}. Use /ra hub refresh to re-check the server.");
                 break;
+            }
             case "profile": HandleProfile(args.Skip(1).ToArray()); break;
             case "suit": HandleSuit(args.Skip(1).ToArray()); break;
             case "clap": Crafting.ChunkClap.ClapNow(manual: true); break;

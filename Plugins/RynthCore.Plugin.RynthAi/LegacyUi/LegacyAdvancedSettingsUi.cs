@@ -106,6 +106,15 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.Text("Server Features (ILT / infinite attributes)");
         SafeImGui.TextDisabled(IltHub.ServerFeatureGate.Describe(_settings));
 
+        if (IltHub.IltServerOptions.EngineDecides)
+        {
+            // RynthCore owns the list and the override; this profile's copies were handed over once.
+            ImGui.TextWrapped("RynthCore decides which worlds are Infinite Leaftide. Its list: /rc server names ilt " +
+                              "[add|remove <name>]. This character's override: /rc server ilt on|off|auto, or the " +
+                              "Mini Remote's Char section.");
+            return;
+        }
+
         string text = _serverNamesEdit ?? IltHub.ServerFeatureGate.FormatList(_settings.FeatureServerNames);
         ImGui.SetNextItemWidth(320);
         bool enter = ImGui.InputTextWithHint("Servers##featureServers", "InfiniteLeaftide, *Leaftide*", ref text, 512,

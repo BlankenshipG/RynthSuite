@@ -375,6 +375,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private void TeardownSession()
     {
         ObjectChangeTracker.Clear();
+        _engineMigrationChecked = false;
         // The server drops whatever it was doing for this character at logout.
         RynthCore.Plugin.Shared.ActionPacer.Forget("logout");
         _navigationEngine?.Stop();
@@ -1338,6 +1339,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         {
             _dashboard?.DrainMetaCommands();   // apply queued meta edits on this (plugin-tick) thread
             TickDelayedCommands();              // /ub delay
+            DrainEngineCommands();              // ILT settings copied to RynthCore
             if (_loginComplete) _dashboard?.TickPackSetup(_objectCache, _playerId);   // new/copied profile items
 
             // /ra pause <sec>: restart the macro once the window elapses. Cleared by

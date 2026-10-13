@@ -103,14 +103,26 @@ internal sealed class IltServerOptions
         }
     }
 
+    /// <summary>RynthCore's id for Infinite Leaftide in its server verdicts.</summary>
+    public const string EngineServerId = "ilt";
+
     /// <summary>
-    /// True when the world is (or is declared to be) an ACECustom/ILT shard: its name is in the
-    /// Settings > Misc server list, or an override is on (ServerFeatureGate).
+    /// RynthCore (2026.10.5.46+) decides whether this is Infinite Leaftide: one world check for
+    /// the engine and every plugin, with its per-character override ("/rc server ilt on|off|auto").
+    /// </summary>
+    public static bool EngineDecides => Huds.ServerMenuModel.ServerActive(EngineServerId).HasValue;
+
+    /// <summary>
+    /// True when the world is (or is declared to be) an ACECustom/ILT shard. With a RynthCore
+    /// that sends server verdicts, its verdict; otherwise the name is in the Settings > Misc
+    /// server list, or an override is on (ServerFeatureGate).
     /// </summary>
     public bool IsIltLikeWorld
     {
         get
         {
+            bool? engine = Huds.ServerMenuModel.ServerActive(EngineServerId);
+            if (engine.HasValue) return engine.Value;
             if (_state.ForceLeaftideFeatures) return true;
             LegacyUiSettings? s;
             try { s = _settings(); } catch { s = null; }
@@ -179,8 +191,11 @@ internal sealed class IltServerOptions
             return;
         }
 
-        // World not reported yet: try again next tick rather than concluding "not ILT".
-        if (string.IsNullOrEmpty(WorldName) && sinceLogin < WorldNameWaitMs)
+        // World not reported yet: try again next tick rather than concluding "not ILT". RynthCore's
+        // verdict trails the world name by up to a second (its push), and before its first push
+        // there is none: keep checking for the same window rather than conclude early.
+        if ((string.IsNullOrEmpty(WorldName) || EngineDecides || Huds.ServerMenuModel.Groups == null)
+            && sinceLogin < WorldNameWaitMs)
             return;
 
         _loginRefreshDone = true;
@@ -201,7 +216,10 @@ internal sealed class IltServerOptions
         }
         if (!IsIltLikeWorld)
         {
-            if (manual) _chat("[Mini Remote] This world is not in the Server Features list (Settings > Misc: add it, or tick the override).");
+            if (manual)
+                _chat(EngineDecides
+                    ? "[Mini Remote] RynthCore doesn't treat this world as Infinite Leaftide (/rc server ilt on forces it for this character; /rc server names ilt add <name> adds the world)."
+                    : "[Mini Remote] This world is not in the Server Features list (Settings > Misc: add it, or tick the override).");
             return;
         }
 

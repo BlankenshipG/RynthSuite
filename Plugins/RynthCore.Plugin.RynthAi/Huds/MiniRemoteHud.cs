@@ -34,7 +34,8 @@
 // dashboard it sits on already has those switches) and the tabs (it is too narrow for them).
 // RenderEmbedded(window: true) draws it in the engine's Mini Remote window instead (bar button,
 // /rc miniremote): tabs and Toggles included, and the floating window stays hidden meanwhile
-// (HudController), so that window is the one Mini Remote.
+// (HudController), so that window is the one Mini Remote. RynthCore 2026.10.5.46+ shows the tabs
+// as its own sections (RynthPluginGetSectionsJson) and asks for the remote alone (tabs: false).
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -132,7 +133,7 @@ internal sealed class MiniRemoteHud
     /// themselves from the result) instead of a window of their own. Returns the content size it
     /// wants: the selected tab's width, and the height drawn.
     /// </summary>
-    public Vector2 RenderEmbedded(bool window = false)
+    public Vector2 RenderEmbedded(bool window = false, bool tabs = true)
     {
         var s = _hud.State;
         _slotMenuIndex = -1;
@@ -142,7 +143,8 @@ internal sealed class MiniRemoteHud
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
         try
         {
-            float width = RenderBody(s, _hud.Hub(), allowTabs: !InDrawer);
+            // Without tabs (RynthCore's sections show them instead) the remote alone.
+            float width = RenderBody(s, _hud.Hub(), allowTabs: tabs && !InDrawer);
 
             if (_onRemoteTab && _slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
                 ImGui.OpenPopup(MenuPopup);
@@ -899,7 +901,9 @@ internal sealed class MiniRemoteHud
     /// </summary>
     private void ForceServer(ServerMenuGroup g, IltHubController? hub)
     {
-        if (g.Id.Equals(IltServerId, StringComparison.OrdinalIgnoreCase) && hub != null) hub.ForceIltWorld = true;
+        // A RynthCore that decides the world saves the force itself (per character): one command.
+        if (!IltServerOptions.EngineDecides && g.Id.Equals(IltServerId, StringComparison.OrdinalIgnoreCase) && hub != null)
+            hub.ForceIltWorld = true;
         _hud.RunEngineCommand(g.ForceCommand);
     }
 
@@ -942,7 +946,9 @@ internal sealed class MiniRemoteHud
         bool force = hub.ForceIltWorld;
         if (ImGui.Checkbox("Treat this world as ILT##mrforce", ref force)) hub.ForceIltWorld = force;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("World-identity override only: RynthAi asks the server which features exist.\nIt never turns a feature on by itself.");
+            ImGui.SetTooltip(IltServerOptions.EngineDecides
+                ? "World-identity override only, saved for this character by RynthCore (/rc server ilt).\nRynthAi still asks the server which features exist; it never turns a feature on by itself."
+                : "World-identity override only: RynthAi asks the server which features exist.\nIt never turns a feature on by itself.");
         if (ImGui.MenuItem("Refresh server features##mrrefresh")) hub.RequestOptionsRefresh();
     }
 

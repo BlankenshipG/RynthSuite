@@ -75,6 +75,40 @@ internal sealed class IltHubContext
     /// <summary>Queues work for the next pump tick (safe from the render thread).</summary>
     public void Post(Action action) => _posted.Enqueue(action);
 
+    /// <summary>
+    /// The Force-ILT world override. With a RynthCore that decides the world (2026.10.5.46+) it is
+    /// RynthCore's, saved per character ("/rc server ilt on|auto"); otherwise this character's
+    /// Hub state. Setting it from the render thread is safe (the engine command is posted).
+    /// </summary>
+    public bool ForceIltWorld
+    {
+        get => IltServerOptions.EngineDecides
+            ? string.Equals(Huds.ServerMenuModel.Server(IltServerOptions.EngineServerId)?.Force, "on", StringComparison.OrdinalIgnoreCase)
+            : State.ForceLeaftideFeatures;
+        set
+        {
+            if (!IltServerOptions.EngineDecides)
+            {
+                State.ForceLeaftideFeatures = value;
+                return;
+            }
+            // RynthCore owns it: drop the local copy so the two can't disagree later.
+            State.ForceLeaftideFeatures = false;
+            RunEngineCommand("/rc server " + IltServerOptions.EngineServerId + (value ? " on" : " auto"));
+        }
+    }
+
+    /// <summary>Runs a RynthCore "/rc" command on the next pump tick (through the chat parser).</summary>
+    public void RunEngineCommand(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command)) return;
+        Post(() =>
+        {
+            if (Host.HasInvokeChatParser && Host.InvokeChatParser(command)) return;
+            Chat($"[Mini Remote] {command} needs RynthCore; type it in chat to see why.");
+        });
+    }
+
     /// <summary>Asks the player to confirm before <paramref name="onYes"/> runs on the pump thread.</summary>
     public void Confirm(string title, string message, Action onYes, string yesLabel = "Yes")
         => _confirms.Enqueue(new IltConfirmRequest { Title = title, Message = message, OnYes = onYes, YesLabel = yesLabel });

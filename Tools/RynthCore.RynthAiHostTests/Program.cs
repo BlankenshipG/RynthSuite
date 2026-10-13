@@ -99,6 +99,7 @@ internal static class Program
         AttributeRaiserTests.Register(runner);
         SigilChainTests.Register(runner);
         ServerMenuTests.Register(runner);
+        SectionsTests.Register(runner);
         ItemsCleanTests.Register(runner);
         DeathRecallTests.Register(runner);
         BankCommandTests.Register(runner);

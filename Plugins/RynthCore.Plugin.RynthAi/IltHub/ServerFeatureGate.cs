@@ -89,9 +89,13 @@ internal static class ServerFeatureGate
         catch { return false; }
     }
 
-    /// <summary>The gate itself.</summary>
+    /// <summary>
+    /// The gate itself. With a RynthCore that sends server verdicts, its "ilt" verdict (which holds
+    /// the world list and the per-character override, RynthAiPlugin.EngineServers.cs copies ours over).
+    /// </summary>
     public static bool IsEnabled(string world, LegacyUiSettings? settings)
-        => ForceOn(settings) || NameMatches(world, Patterns(settings), out _);
+        => Huds.ServerMenuModel.ServerActive(IltServerOptions.EngineServerId)
+           ?? (ForceOn(settings) || NameMatches(world, Patterns(settings), out _));
 
     /// <summary>"InfiniteLeaftide, *Leaftide*" → trimmed, de-duplicated list (case-insensitive).</summary>
     public static List<string> ParseList(string? text)
@@ -114,6 +118,14 @@ internal static class ServerFeatureGate
     {
         string world = CurrentWorld;
         string shown = world.Length > 0 ? $"'{world}'" : "(not logged in)";
+        var engine = Huds.ServerMenuModel.Server(IltServerOptions.EngineServerId);
+        if (engine != null)
+        {
+            string why = engine.Force.Equals("on", StringComparison.OrdinalIgnoreCase) ? "forced on for this character"
+                : engine.Force.Equals("off", StringComparison.OrdinalIgnoreCase) ? "forced off for this character"
+                : engine.Detected ? "RynthCore recognises the world" : "RynthCore doesn't recognise the world";
+            return $"This world {shown}: {(engine.Active ? "ON" : "OFF")} - {why}.";
+        }
         if (settings?.ForceServerFeatures == true)
             return $"This world {shown}: ON - manual override.";
         if (NameMatches(world, Patterns(settings), out string matched))

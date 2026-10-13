@@ -523,6 +523,13 @@ internal sealed class HudController
         string label = tab.Length == 0 ? "Remote" : char.ToUpperInvariant(tab[0]) + tab.Substring(1);
         bool selected = string.Equals(State.MiniRemoteTab, tab, StringComparison.OrdinalIgnoreCase);
         string m = (mode ?? string.Empty).ToLowerInvariant();
+        // RynthCore shows the tabs as sections: open it there. Not for "select", which is how
+        // RynthCore itself falls back to this tab bar (re-sending would bounce between the two).
+        if (EngineHostsSections && m is not ("select" or "hide" or "off" or "close"))
+        {
+            RunEngineCommand(tab.Length == 0 ? "/rc miniremote section remote" : "/rc miniremote tab " + tab);
+            return $"Mini Remote (RynthCore's window): {label}.";
+        }
         bool hide = m is "hide" or "off" or "close"
                     || (m is not ("show" or "on" or "open" or "select") && selected && MiniRemoteActive);
         if (hide)
@@ -561,7 +568,7 @@ internal sealed class HudController
     /// Mini Remote drawer, or with <paramref name="window"/> the engine's Mini Remote window)
     /// and returns the content size it wants. Render thread.
     /// </summary>
-    public System.Numerics.Vector2 RenderEmbedded(bool window = false)
+    public System.Numerics.Vector2 RenderEmbedded(bool window = false, bool tabs = true)
     {
         long now = NowMs;
         System.Threading.Interlocked.Exchange(ref _embeddedDrawnAt, now);
@@ -569,11 +576,25 @@ internal sealed class HudController
         int pushed = LegacyDashboardRenderer.PushDashboardStyle();
         try
         {
-            return _miniRemote.RenderEmbedded(window);
+            return _miniRemote.RenderEmbedded(window, tabs);
         }
         finally
         {
             ImGuiNET.ImGui.PopStyleColor(pushed);
         }
     }
+
+    /// <summary>
+    /// RynthCore's Mini Remote window is open on one of its sections (not the remote): it is still
+    /// the one Mini Remote, so the floating copy stays hidden and the data keeps polling. Render thread.
+    /// </summary>
+    public void MarkEngineWindow()
+    {
+        long now = NowMs;
+        System.Threading.Interlocked.Exchange(ref _embeddedDrawnAt, now);
+        System.Threading.Interlocked.Exchange(ref _windowDrawnAt, now);
+    }
+
+    /// <summary>RynthCore shows the Mini Remote's tabs as its own sections (it sent their list).</summary>
+    public static bool EngineHostsSections => ServerMenuModel.Sections.Length > 0;
 }

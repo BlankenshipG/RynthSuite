@@ -315,7 +315,7 @@ public sealed partial class RynthAiPlugin
     /// context, see <see cref="EmbedContext"/>). False (nothing drawn) until login and the HUDs
     /// exist. Render thread.
     /// </summary>
-    public bool RenderEmbeddedMiniRemote(bool window, out System.Numerics.Vector2 want)
+    public bool RenderEmbeddedMiniRemote(bool window, out System.Numerics.Vector2 want, bool tabs = true)
     {
         want = default;
         var huds = _huds;
@@ -326,7 +326,7 @@ public sealed partial class RynthAiPlugin
         ImGui.SetCurrentContext(EmbedContext());
         try
         {
-            want = huds.RenderEmbedded(window);
+            want = huds.RenderEmbedded(window, tabs);
             return true;
         }
         catch (Exception ex)
@@ -372,6 +372,106 @@ public sealed partial class RynthAiPlugin
             ImGui.PopStyleColor(pushedColors);
             ImGui.SetCurrentContext(previousContext);
         }
+    }
+
+    /// <summary>
+    /// RynthPluginRenderEmbed "miniremote-host": RynthCore's Mini Remote window is open on one of
+    /// its sections, so it is still the one Mini Remote (the floating copy stays hidden). Draws
+    /// nothing. Render thread.
+    /// </summary>
+    public bool MarkEngineMiniRemote()
+    {
+        var huds = _huds;
+        if (!_initialized || !_loginComplete || huds == null) return false;
+        huds.MarkEngineWindow();
+        return true;
+    }
+
+    private Huds.FellowshipSectionUi? _fellowshipUi;
+
+    /// <summary>
+    /// RynthPluginRenderEmbed "section:&lt;name&gt;": one of RynthAi's views in RynthCore's Mini
+    /// Remote sections (Huds/SectionsManifest.cs lists them), drawn into the engine's current
+    /// window (and context, see <see cref="EmbedContext"/>) at <paramref name="size"/>.
+    /// <paramref name="want"/> is the size the view would like. False (nothing drawn) for an
+    /// unknown view, or until login and the view's owner exist. Render thread.
+    /// </summary>
+    public bool RenderEmbeddedSection(string surface, System.Numerics.Vector2 size, out System.Numerics.Vector2 want)
+    {
+        want = size;
+        var hub = _iltHub;
+        var huds = _huds;
+        if (!_initialized || !_loginComplete || Host.ImGuiContext == IntPtr.Zero) return false;
+
+        Action? draw = null;
+        if (Huds.SectionsManifest.TryTabOf(surface, out IltHub.IltSection tab))
+        {
+            if (hub == null) return false;
+            want = IltHub.IltHubUi.TabSize(tab);
+            draw = () => hub.RenderTab(tab);
+        }
+        else if (surface == Huds.SectionsManifest.IltOptionsSurface)
+        {
+            if (hub == null) return false;
+            draw = hub.RenderServerOptions;
+        }
+        else if (surface == Huds.SectionsManifest.SpellsSurface)
+        {
+            EnsureSpellsUi();
+            var spells = _spellsUi;
+            if (spells == null) return false;
+            draw = spells.RenderEmbedded;
+        }
+        else if (surface == Huds.SectionsManifest.FellowshipSurface)
+        {
+            _fellowshipUi ??= new Huds.FellowshipSectionUi(() => _fellowshipTracker,
+                () => Host.HasGetPlayerId ? Host.GetPlayerId() : 0);
+            draw = _fellowshipUi.Render;
+        }
+        if (draw == null) return false;
+
+        // The engine's Mini Remote window shows this section: it is still the one Mini Remote.
+        huds?.MarkEngineWindow();
+        IntPtr previousContext = ImGui.GetCurrentContext();
+        ImGui.SetCurrentContext(EmbedContext());
+        int pushedColors = LegacyDashboardRenderer.PushDashboardStyle();
+        try
+        {
+            float startY = ImGui.GetCursorPosY();
+            draw();
+            // A view that sized itself by what it drew (the ILT options) reports that height.
+            if (surface == Huds.SectionsManifest.IltOptionsSurface)
+                want = new System.Numerics.Vector2(size.X, MathF.Max(40f, ImGui.GetCursorPosY() - startY + 4f));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Exception(LogCat.UI, ex, "RenderEmbeddedSection " + surface);
+            return false;
+        }
+        finally
+        {
+            ImGui.PopStyleColor(pushedColors);
+            ImGui.SetCurrentContext(previousContext);
+        }
+    }
+
+    /// <summary>
+    /// RynthPluginGetSectionsJson: what RynthAi adds to RynthCore's Mini Remote sections, from
+    /// what is available now (Huds/SectionsManifest.cs). Null before login (RynthCore then shows
+    /// none of RynthAi's views). Render thread.
+    /// </summary>
+    public string? BuildSectionsJson()
+    {
+        if (!_initialized || !_loginComplete) return null;
+        var hub = _iltHub;
+        var views = Huds.SectionsManifest.Views(
+            s => hub != null && hub.SectionAvailable(s),
+            IltHub.IltHubUi.TabSize);
+        // Without the ILT Hub (failed to start) its views have nothing to draw.
+        if (hub == null)
+            views.RemoveAll(v => Huds.SectionsManifest.TryTabOf(v.Surface, out _) || v.Surface == Huds.SectionsManifest.IltOptionsSurface);
+        return Huds.SectionsManifest.Build(views, Huds.SectionsManifest.OwnSections);
     }
 
     /// <summary>Chat Translate window in the dashboard colours (no-op while hidden).</summary>
