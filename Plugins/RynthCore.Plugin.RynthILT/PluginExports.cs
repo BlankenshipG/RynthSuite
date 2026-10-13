@@ -97,8 +97,9 @@ public static unsafe class PluginExports
 
     /// <summary>
     /// The engine's plugin-command broker: "servermenu" from RynthCore (2026.10.5.47+) and
-    /// "iltfeatures" from RynthAi (0.5.56+). The ANSI strings are copied before returning (the
-    /// caller frees them); the payloads are only parsed, so any thread is fine.
+    /// "iltfeatures" from RynthAi (0.5.56+); RynthILT sends RynthAi "servercommands" itself. The
+    /// ANSI strings are copied before returning (the caller frees them); the payloads are only
+    /// parsed, so any thread is fine.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginApplyRemoteCommand", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void ApplyRemoteCommand(IntPtr actionAnsi, IntPtr valueAnsi)
@@ -114,9 +115,9 @@ public static unsafe class PluginExports
     }
 
     /// <summary>
-    /// RynthCore's Mini Remote sections: "section:ilt-settings" (":popout" added in a popped-out
-    /// window) draws the ILT settings into the engine's current window. 1 = drawn, 0 = not ready
-    /// or not ours.
+    /// RynthCore's Mini Remote sections: "section:ilt-settings" (the ILT settings) and
+    /// "section:ilt-fellowship" (the /fship commands), ":popout" added in a popped-out window,
+    /// drawn into the engine's current window. 1 = drawn, 0 = not ready or not ours.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderEmbed", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static int RenderEmbed(byte* surface, float width, float height, float* wantWidth, float* wantHeight)
@@ -126,9 +127,12 @@ public static unsafe class PluginExports
             if (surface == null) return 0;
             ReadOnlySpan<byte> name = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(surface);
             if (name.EndsWith(":popout"u8)) name = name[..^":popout"u8.Length];
-            if (!name.SequenceEqual("section:ilt-settings"u8)) return 0;
+            string? view = name.SequenceEqual("section:ilt-settings"u8) ? RynthILTPlugin.SettingsSurface
+                         : name.SequenceEqual("section:ilt-fellowship"u8) ? RynthILTPlugin.FellowshipSurface
+                         : null;
+            if (view == null) return 0;
             var plugin = Runtime.Plugin;
-            if (plugin == null || !plugin.RenderEmbeddedSettings(out float wantH)) return 0;
+            if (plugin == null || !plugin.RenderEmbedded(view, out float wantH)) return 0;
             if (wantWidth != null) *wantWidth = width;
             if (wantHeight != null) *wantHeight = wantH;
             return 1;

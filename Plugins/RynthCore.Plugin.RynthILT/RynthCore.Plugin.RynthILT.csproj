@@ -28,7 +28,7 @@
          commands, world and object names, and the plugin-command broker are behind
          HasInvokeChatParser / HasGetWorldName / HasGetObjectName / HasSendPluginCommand. -->
     <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
-    <RynthPluginDescription>Infinite Leaftide (ACECustom) features: the Bounties window and the ILT settings.</RynthPluginDescription>
+    <RynthPluginDescription>Infinite Leaftide (ACECustom) features: the Bounties window, the ILT settings and the /fship fellowship commands.</RynthPluginDescription>
     <!-- RynthILT is ILT's server plugin: RynthCore loads it only for clients connecting to ILT (or when no
          installed server plugin claims the host). Same lists as RynthCore's IltDetect defaults. -->
     <RynthPluginServerId>ilt</RynthPluginServerId>
@@ -40,6 +40,9 @@
   <ItemGroup>
     <!-- ImGui text calls for non-literal text ('%' escaped): see the file's header. -->
     <Compile Include="..\Shared\SafeImGui.cs" Link="Shared\SafeImGui.cs" />
+    <!-- ILT's /fship commands: sent to RynthAi's Fellowship tab, and drawn in RynthCore's Fellowship section. -->
+    <Compile Include="..\Shared\ServerCommandShare.cs" Link="Shared\ServerCommandShare.cs" />
+    <Compile Include="..\Shared\ServerCommandPanel.cs" Link="Shared\ServerCommandPanel.cs" />
   </ItemGroup>
 
   <ItemGroup>

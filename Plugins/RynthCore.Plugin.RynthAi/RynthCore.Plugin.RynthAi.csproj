@@ -53,6 +53,9 @@
     <Compile Include="..\Shared\SafeImGui.cs" Link="Shared\SafeImGui.cs" />
     <!-- Server signal vs a player's copy of it (chat type + line-start anchor). -->
     <Compile Include="..\Shared\ChatSource.cs" Link="Shared\ChatSource.cs" />
+    <!-- Server commands a server plugin sends for a section (RynthILT's /fship for Fellowship), and their buttons. -->
+    <Compile Include="..\Shared\ServerCommandShare.cs" Link="Shared\ServerCommandShare.cs" />
+    <Compile Include="..\Shared\ServerCommandPanel.cs" Link="Shared\ServerCommandPanel.cs" />
     <!-- Mini Remote session stats: RynthTracker's code, so the two show the same numbers (2026-10-11). -->
     <Compile Include="..\Shared\KillCounter.cs" Link="Shared\KillCounter.cs" />
     <Compile Include="..\Shared\TrackerSessionStore.cs" Link="Shared\TrackerSessionStore.cs" />

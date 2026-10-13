@@ -135,7 +135,7 @@ public sealed partial class RynthAiPlugin
         _iltHub.MiniRemoteCommand = mode => "[Mini Remote] " + huds.HandleCommand("remote", mode);
         _iltHub.MiniRemoteTabCommand = (tab, mode) => huds.HandleTabCommand(tab, mode);
         _iltHub.MiniRemoteVisible = () => huds.MiniRemoteActive;
-        _iltHub.FellowshipRenderer = () => FellowshipUi().Render();
+        _iltHub.FellowshipRenderer = () => FellowshipUi().Render(withServerCommands: true);
         EnsureItemInfoUi();
         EnsureSpellsUi();
     }
@@ -185,6 +185,7 @@ public sealed partial class RynthAiPlugin
         try { _huds?.OnLogout(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "logout"); }
         _huds = null;
+        Huds.ServerCommandModel.Clear();
         _itemInfoUi = null;
         _spellsUi = null;
         ResetGroundLoot(clearCaches: true);
@@ -396,7 +397,16 @@ public sealed partial class RynthAiPlugin
     /// </summary>
     private Huds.FellowshipSectionUi FellowshipUi() =>
         _fellowshipUi ??= new Huds.FellowshipSectionUi(() => _fellowshipTracker,
-            () => Host.HasGetPlayerId ? Host.GetPlayerId() : 0);
+            () => Host.HasGetPlayerId ? Host.GetPlayerId() : 0,
+            QueueServerCommand);
+
+    /// <summary>Render thread: queues a server chat command (a fellowship button) for the plugin tick.</summary>
+    private bool QueueServerCommand(string command)
+    {
+        if (!Host.HasInvokeChatParser) return false;
+        _engineCommands.Enqueue(command);
+        return true;
+    }
 
     /// <summary>
     /// RynthPluginRenderEmbed "section:&lt;name&gt;": one of RynthAi's views in RynthCore's Mini
@@ -416,7 +426,8 @@ public sealed partial class RynthAiPlugin
         // Fellowship is a Mini Remote tab too, but it doesn't need the ILT Hub: checked first.
         if (surface == Huds.SectionsManifest.FellowshipSurface)
         {
-            draw = FellowshipUi().Render;
+            // The server plugin's own pane carries its commands in RynthCore's section.
+            draw = () => FellowshipUi().Render(withServerCommands: false);
         }
         else if (Huds.SectionsManifest.TryTabOf(surface, out IltHub.IltSection tab))
         {

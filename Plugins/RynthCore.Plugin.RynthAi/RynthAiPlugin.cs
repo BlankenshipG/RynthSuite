@@ -867,6 +867,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             Huds.ServerMenuModel.Apply(value);
             return;
         }
+        // A server plugin's commands for one of RynthAi's section views (RynthILT's /fship for Fellowship).
+        if (action.Equals(ServerCommandShare.Action, StringComparison.OrdinalIgnoreCase))
+        {
+            Huds.ServerCommandModel.Apply(value);
+            return;
+        }
         var dash = _dashboard;
         if (dash == null) return;
         bool on = value is "1" or "true" or "on" or "True" or "TRUE"
@@ -1339,7 +1345,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         {
             _dashboard?.DrainMetaCommands();   // apply queued meta edits on this (plugin-tick) thread
             TickDelayedCommands();              // /ub delay
-            DrainEngineCommands();              // ILT settings copied to RynthCore
+            DrainEngineCommands();              // ILT settings copied to RynthCore, fellowship command buttons
             if (_loginComplete) _dashboard?.TickPackSetup(_objectCache, _playerId);   // new/copied profile items
 
             // /ra pause <sec>: restart the macro once the window elapses. Cleared by

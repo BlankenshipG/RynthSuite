@@ -23,6 +23,10 @@
     <!-- The ILT settings copy: RynthILT's reader and RynthAi's feature writer, checked together. -->
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\IltSettings\IltSettingsModel.cs" Link="Plugin\IltSettingsModel.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\IltHub\IltFeatureShare.cs" Link="RynthAi\IltFeatureShare.cs" />
+    <!-- ILT's /fship commands: RynthILT's list, the shared "servercommands" format and RynthAi's store, checked together. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\IltFellowship\IltFellowshipCommands.cs" Link="Plugin\IltFellowshipCommands.cs" />
+    <Compile Include="..\..\Plugins\Shared\ServerCommandShare.cs" Link="Shared\ServerCommandShare.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Huds\ServerCommandModel.cs" Link="RynthAi\ServerCommandModel.cs" />
     <!-- The RynthAi test tools' check/runner harness (no plugin code in it). -->
     <Compile Include="..\RynthCore.RynthAiTests\Harness\Check.cs" Link="Harness\Check.cs" />
     <Compile Include="..\RynthCore.RynthAiTests\Harness\Runner.cs" Link="Harness\Runner.cs" />
