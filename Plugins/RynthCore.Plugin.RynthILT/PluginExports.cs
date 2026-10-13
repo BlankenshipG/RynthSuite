@@ -42,8 +42,9 @@ public static unsafe class PluginExports
         try { HubInterface.Release(); } catch { }
         try { ServerInterface.Release(); } catch { }
         foreach (IntPtr p in new[] { Interlocked.Exchange(ref _bountiesPtr, IntPtr.Zero), Interlocked.Exchange(ref _progressionPtr, IntPtr.Zero),
-                     Interlocked.Exchange(ref _statusPtr, IntPtr.Zero) })
+                     Interlocked.Exchange(ref _statusPtr, IntPtr.Zero), Interlocked.Exchange(ref _sectionsPtr, IntPtr.Zero) })
             if (p != IntPtr.Zero) Marshal.FreeCoTaskMem(p);
+        _sectionsJson = null;
     }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginName", CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -80,9 +81,11 @@ public static unsafe class PluginExports
 
     /// <summary>
     /// Engine panels drawn by RynthILT (render thread): "guardian" is the engine's Guardian ILT
-    /// panel (RynthCore's GuardianFace); ":popout" is added when it is popped out into a window of
-    /// its own, and RynthILT draws in the engine's current context either way. The panel is
-    /// user-sized: want echoes the size given. 1 = drawn, 0 = not ready / unknown surface.
+    /// panel (RynthCore's GuardianFace); "section:ilt-settings" (the ILT settings) and
+    /// "section:ilt-fellowship" (the /fship commands) are RynthCore's Mini Remote sections.
+    /// ":popout" is added when one is popped out into a window of its own, and RynthILT draws in
+    /// the engine's current context either way. The Guardian panel is user-sized (want echoes the
+    /// size given); a section reports the height it used. 1 = drawn, 0 = not ready / unknown surface.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderEmbed", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static int RenderEmbed(byte* surface, float width, float height, float* wantWidth, float* wantHeight)
@@ -92,16 +95,26 @@ public static unsafe class PluginExports
             if (surface == null) return 0;
             ReadOnlySpan<byte> name = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(surface);
             if (name.EndsWith(":popout"u8)) name = name[..^":popout"u8.Length];
-            if (!name.SequenceEqual("guardian"u8)) return 0;
             var plugin = Runtime.Plugin;
-            if (plugin == null || !plugin.RenderEmbeddedGuardian()) return 0;
+            if (plugin == null) return 0;
+            if (name.SequenceEqual("guardian"u8))
+            {
+                if (!plugin.RenderEmbeddedGuardian()) return 0;
+                if (wantWidth != null) *wantWidth = width;
+                if (wantHeight != null) *wantHeight = height;
+                return 1;
+            }
+            string? view = name.SequenceEqual("section:ilt-settings"u8) ? RynthILTPlugin.SettingsSurface
+                         : name.SequenceEqual("section:ilt-fellowship"u8) ? RynthILTPlugin.FellowshipSurface
+                         : null;
+            if (view == null || !plugin.RenderEmbedded(view, out float wantH)) return 0;
             if (wantWidth != null) *wantWidth = width;
-            if (wantHeight != null) *wantHeight = height;
+            if (wantHeight != null) *wantHeight = wantH;
             return 1;
         }
         catch
         {
-            return 0;
+            return 0;   // an exception crossing UnmanagedCallersOnly would fail-fast the client
         }
     }
 
@@ -185,9 +198,11 @@ public static unsafe class PluginExports
     }
 
     /// <summary>
-    /// (action, value) from the engine's plugin-command broker (Host.SendPluginCommand): "prog" with
-    /// the Progression tab's arguments (RynthAi forwards an older engine's "prog" here), or an ILT
-    /// verb. Copied and run on RynthILT's next tick.
+    /// (action, value) from the engine's plugin-command broker (Host.SendPluginCommand). Copied
+    /// before returning (the caller frees them). "servermenu" is RynthCore's (2026.10.5.47+) world
+    /// verdict, override and ILT world names for the ILT settings view: parsed and published here
+    /// (any thread). Anything else is "prog" with the Progression tab's arguments (RynthAi forwards
+    /// an older engine's "prog" here) or an ILT verb, queued and run on RynthILT's next tick.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginApplyRemoteCommand", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void ApplyRemoteCommand(IntPtr actionAnsi, IntPtr valueAnsi)
@@ -195,11 +210,20 @@ public static unsafe class PluginExports
         try
         {
             string action = actionAnsi != IntPtr.Zero ? (Marshal.PtrToStringAnsi(actionAnsi) ?? string.Empty) : string.Empty;
+            if (action.Length == 0 || action.Length > 32) return;
             string value = valueAnsi != IntPtr.Zero ? (Marshal.PtrToStringAnsi(valueAnsi) ?? string.Empty) : string.Empty;
-            if (action.Length == 0 || action.Length + value.Length > 512) return;
-            Runtime.Plugin?.EnqueueRemoteCommand(action, value);
+            var plugin = Runtime.Plugin;
+            if (plugin == null) return;
+            if (RynthILTPlugin.IsParsedRemoteAction(action))
+            {
+                // A few hundred bytes; IltSettingsModel drops anything past its MaxPayload.
+                plugin.ApplyRemoteCommand(action, value);
+                return;
+            }
+            if (action.Length + value.Length > 512) return;
+            plugin.EnqueueRemoteCommand(action, value);
         }
-        catch { }
+        catch { /* never let a managed exception cross the native boundary */ }
     }
 
     private static IntPtr _statusPtr = IntPtr.Zero;
@@ -207,8 +231,9 @@ public static unsafe class PluginExports
     /// <summary>
     /// What RynthILT knows about the world (UTF-8 JSON, previous reply valid until the next call):
     /// {"loaded":true,"ilt":bool,"forced":bool,"available":bool,"world":"..."}. "ilt" is RynthILT's
-    /// own verdict (its server list or this character's "Treat this world as ILT"); the engine's
-    /// IltInfo adds it to its own detection. Engine pump thread.
+    /// own verdict (its server list or this character's "Treat this world as ILT"), never the
+    /// engine's verdict echoed back: the engine's IltInfo adds it to its own detection, and an
+    /// echo would keep ILT on after "/rc ilt auto". Engine pump thread.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthILTGetStatusJson", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static IntPtr GetStatusJson()
@@ -218,11 +243,32 @@ public static unsafe class PluginExports
             var hub = Runtime.Plugin?.Hub;
             string json = hub == null
                 ? "{\"loaded\":true,\"ilt\":false,\"forced\":false,\"available\":false,\"world\":\"\"}"
-                : "{\"loaded\":true,\"ilt\":" + (hub.Options.IsIltLikeWorld ? "true" : "false")
+                : "{\"loaded\":true,\"ilt\":" + (hub.Options.IsIltLikeWorldLocal ? "true" : "false")
                   + ",\"forced\":" + (hub.ForceIltWorld ? "true" : "false")
                   + ",\"available\":" + (hub.Available ? "true" : "false")
                   + ",\"world\":\"" + RynthCore.Plugin.RynthILT.Hub.IltStyle.JsonEscape(hub.Options.WorldName) + "\"}";
             return Utf8Swap(ref _statusPtr, json);
+        }
+        catch { return IntPtr.Zero; }
+    }
+
+    private static IntPtr _sectionsPtr = IntPtr.Zero;
+    private static string? _sectionsJson;
+
+    /// <summary>
+    /// RynthCore 2026.10.5.46+ (optional): what RynthILT adds to the Mini Remote's sections (UTF-8
+    /// JSON, schema 1). Null before login. An unchanged manifest keeps the same buffer.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetSectionsJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetSectionsJson()
+    {
+        try
+        {
+            string? json = Runtime.Plugin?.BuildSectionsJson();
+            if (json == null) return IntPtr.Zero;
+            if (json == _sectionsJson && _sectionsPtr != IntPtr.Zero) return _sectionsPtr;
+            _sectionsJson = json;
+            return Utf8Swap(ref _sectionsPtr, json);
         }
         catch { return IntPtr.Zero; }
     }

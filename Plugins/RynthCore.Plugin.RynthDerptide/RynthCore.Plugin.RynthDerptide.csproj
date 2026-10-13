@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- RynthDerptide: the Derptide server plugin. The build is shared (..\Shared\ServerPack\ServerPlugin.props);
+       ServerData.cs holds what is known about the server. -->
+  <PropertyGroup>
+    <AssemblyName>RynthCore.Plugin.RynthDerptide</AssemblyName>
+    <!-- First release (no previous). -->
+    <Version>0.1.0</Version>
+    <RynthPluginServerId>derptide</RynthPluginServerId>
+    <RynthPluginServerName>Derptide</RynthPluginServerName>
+    <RynthPluginServerHosts>ac.derptide.net</RynthPluginServerHosts>
+    <RynthPluginServerWorldNames>Derptide</RynthPluginServerWorldNames>
+    <RynthPluginDescription>Derptide only: the server card (rules, account limits, botting policy, links, account setup) in the Mini Remote.</RynthPluginDescription>
+  </PropertyGroup>
+
+  <Import Project="..\Shared\ServerPack\ServerPlugin.props" />
+
+</Project>

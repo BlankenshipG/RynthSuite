@@ -102,9 +102,20 @@ public class FellowshipTracker : IDisposable
     private const int OFF_ENTRY_LEVEL    = 0x0C;
     private const int OFF_ENTRY_NEXT     = 0x34;
 
+    /// <summary>
+    /// Most members read. Retail caps a fellowship at 9, but servers raise it: ACECustom
+    /// (Infinite Leaftide) allows 29. A count above this is treated as a torn read.
+    /// </summary>
+    public const int MaxMembers = 64;
+
+    /// <summary>Most hash buckets walked (AC sizes the member table at 16; a larger value is a torn read).</summary>
+    internal const int MaxBuckets = 256;
+
     // Replaced whole on each refresh, never changed in place: the radar snapshot (engine pump
     // thread) reads it while RynthAi's own thread may be refreshing it.
     private volatile Dictionary<int, string> _memberCache = new();
+    // Member levels by id, replaced together with _memberCache.
+    private volatile Dictionary<int, int> _levelCache = new();
     private DateTime _lastRefresh = DateTime.MinValue;
     private const double REFRESH_INTERVAL_MS = 2000;
 
@@ -247,16 +258,6 @@ public class FellowshipTracker : IDisposable
         return _memberCache.Values;
     }
 
-    /// <summary>
-    /// Every member as (character id, name), all from one refresh. Prefer this over the index
-    /// getters, which can each see a different refresh and pair one member's id with another's name.
-    /// </summary>
-    public List<KeyValuePair<int, string>> GetMembers()
-    {
-        RefreshIfNeeded();
-        return new List<KeyValuePair<int, string>>(_memberCache);
-    }
-
     public string GetMemberName(int index)
     {
         RefreshIfNeeded();
@@ -271,6 +272,28 @@ public class FellowshipTracker : IDisposable
         int i = 0;
         foreach (var kvp in _memberCache) { if (i == index) return kvp.Key; i++; }
         return 0;
+    }
+
+    /// <summary>A member's level from the last read, or 0 when unknown.</summary>
+    public int GetMemberLevel(int characterId)
+    {
+        RefreshIfNeeded();
+        return _levelCache.TryGetValue(characterId, out int level) ? level : 0;
+    }
+
+    /// <summary>
+    /// The members from one read: id, name and level, in table order. Use this rather than
+    /// MemberCount with GetMemberId/GetMemberName, which can see two different reads.
+    /// </summary>
+    public List<(int Id, string Name, int Level)> GetMembers()
+    {
+        RefreshIfNeeded();
+        Dictionary<int, string> names = _memberCache;
+        Dictionary<int, int> levels = _levelCache;
+        var list = new List<(int, string, int)>(names.Count);
+        foreach (var kvp in names)
+            list.Add((kvp.Key, kvp.Value, levels.TryGetValue(kvp.Key, out int level) ? level : 0));
+        return list;
     }
 
     private IntPtr GetFellowshipPtr()
@@ -291,6 +314,7 @@ public class FellowshipTracker : IDisposable
         if ((DateTime.Now - _lastRefresh).TotalMilliseconds < REFRESH_INTERVAL_MS) return;
         _lastRefresh = DateTime.Now;
         var members = new Dictionary<int, string>();
+        var levels = new Dictionary<int, int>();
         try
         {
             IntPtr fel = GetFellowshipPtr();
@@ -306,8 +330,8 @@ public class FellowshipTracker : IDisposable
             int tableSize  = Marshal.ReadInt32(tableSizeAddr);
             int currNum    = Marshal.ReadInt32(currNumAddr);
 
-            // A corrupt/mid-mutation table_size (bogus large value) would otherwise
-            // turn the bucket loop below into an unbounded scan over garbage addresses.
+            // A corrupt/mid-mutation table_size or count here (bogus large value) would
+            // otherwise turn the bucket loop below into an unbounded scan over garbage addresses.
             if (!IsPlausibleTable(bucketsPtr, tableSize, currNum))
                 return;
             if (!IsReadablePointer(new IntPtr(bucketsPtr)))
@@ -326,13 +350,14 @@ public class FellowshipTracker : IDisposable
                 // read racing AC's main thread) must not spin this pump thread
                 // forever — cap the walk independent of the found-count exit.
                 int chainGuard = 0;
-                while (entryPtr != 0 && found < maxMembers && chainGuard++ < 32)
+                while (entryPtr != 0 && found < maxMembers && chainGuard++ < MaxMembers)
                 {
                     IntPtr entry = new IntPtr(entryPtr);
                     if (!IsReadablePointer(entry)) break;
 
                     IntPtr keyAddr = entry + OFF_ENTRY_KEY;
                     IntPtr nameFieldAddr = entry + OFF_ENTRY_NAME_PTR;
+                    IntPtr levelAddr = entry + OFF_ENTRY_LEVEL;
                     IntPtr nextAddr = entry + OFF_ENTRY_NEXT;
                     if (!IsReadablePointer(keyAddr) || !IsReadablePointer(nameFieldAddr) || !IsReadablePointer(nextAddr))
                         break;
@@ -340,13 +365,22 @@ public class FellowshipTracker : IDisposable
                     int memberId = Marshal.ReadInt32(keyAddr);
                     string name = ReadPString(nameFieldAddr);
                     if (memberId != 0 && !string.IsNullOrEmpty(name))
-                    { members[memberId] = name; found++; }
+                    {
+                        members[memberId] = name;
+                        if (IsReadablePointer(levelAddr)) levels[memberId] = Marshal.ReadInt32(levelAddr);
+                        found++;
+                    }
                     entryPtr = Marshal.ReadInt32(nextAddr);
                 }
             }
         }
         catch { }
-        finally { _memberCache = members; } // also on the early returns (no fellowship: empty)
+        finally
+        {
+            // Also on the early returns (no fellowship: empty). Levels first: readers take names, then levels.
+            _levelCache = levels;
+            _memberCache = members;
+        }
     }
 
     private string ReadPString(IntPtr addr)
@@ -363,15 +397,6 @@ public class FellowshipTracker : IDisposable
         }
         catch { return ""; }
     }
-
-    /// <summary>
-    /// Largest member count read. Retail fellowships hold 9; ACECustom servers such as Infinite
-    /// Leaftide allow up to 29 (Fellowship.MaxFellows), so this leaves headroom over both.
-    /// </summary>
-    internal const int MaxMembers = 32;
-
-    /// <summary>Largest hash-table bucket count read; anything bigger is a torn or freed table.</summary>
-    internal const int MaxBuckets = 256;
 
     /// <summary>
     /// Whether a fellowship hash table's header looks real enough to walk: a bucket array, a bucket

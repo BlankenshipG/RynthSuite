@@ -414,7 +414,9 @@ internal sealed class IltHubController
             case "features": PrintFeatures(); break;
             case "force":
                 _ctx.State.ForceLeaftideFeatures = !rest.Equals("off", StringComparison.OrdinalIgnoreCase);
-                _ctx.Chat($"[Mini Remote] Force ILT world: {(_ctx.State.ForceLeaftideFeatures ? "on" : "off")}. Use /ra hub refresh to re-check the server.");
+                _ctx.Chat(IltServerOptions.EngineDecides
+                    ? $"[Mini Remote] Force ILT world: {(_ctx.State.ForceLeaftideFeatures ? "on" : "off")} for this character (RynthCore counts it unless /rc server ilt off). Use /ra hub refresh to re-check the server."
+                    : $"[Mini Remote] Force ILT world: {(_ctx.State.ForceLeaftideFeatures ? "on" : "off")}. Use /ra hub refresh to re-check the server.");
                 break;
             case "servers": HandleServers(rest); break;
             case "profile": HandleProfile(args.Skip(1).ToArray()); break;

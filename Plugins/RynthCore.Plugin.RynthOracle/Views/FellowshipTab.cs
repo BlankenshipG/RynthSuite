@@ -1,6 +1,7 @@
 // Ported from Oracle of Dereth by Advis Eveldan (advis61), MIT. See THIRD_PARTY_NOTICES.md.
 using System.Collections.Generic;
 using RynthCore.Plugin.RynthAi;
+using RynthCore.Plugin.RynthILT.IltFellowship;
 using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 using RynthCore.Plugin.Shared;
@@ -11,8 +12,9 @@ namespace RynthCore.Plugin.RynthOracle.Views;
 /// Fellowship: name, leader, open/locked, experience sharing and the members (upstream's status
 /// list). Read from the client's fellowship object through RynthAi's FellowshipTracker (shared
 /// source). The size limit and, on Infinite Leaftide, the server's fellowship features (Zone Share,
-/// luminance share, Fellowship Blackjack) come from RynthILT's "RynthILT.Server" profile. The
-/// recruiting tools are not ported (see the port report).
+/// luminance share, Fellowship Blackjack) come from RynthILT's "RynthILT.Server" profile. On ILT
+/// the server's /fship commands are buttons here too (create, invite, dismiss, invite landblock,
+/// list nearby, leave, disband, help). The upstream recruiting tools are not ported (see the port report).
 /// </summary>
 internal sealed partial class OracleView
 {
@@ -44,12 +46,12 @@ internal sealed partial class OracleView
         }
 
         // One snapshot for every row: the index getters could each see a different refresh.
-        List<KeyValuePair<int, string>> members = f.GetMembers();
+        List<(int Id, string Name, int Level)> members = f.GetMembers();
         int leaderId = f.LeaderId;
         int count = System.Math.Max(f.MemberCount, members.Count);
         string leaderName = "";
-        foreach (KeyValuePair<int, string> m in members)
-            if (m.Key == leaderId) leaderName = m.Value;
+        foreach ((int id, string name, int _) in members)
+            if (id == leaderId) leaderName = name;
 
         w.SeparatorText(f.FellowshipName.Length > 0 ? f.FellowshipName : "Fellowship");
         Field(w, "Leader", leaderName.Length > 0 ? leaderName : "-", 0f, 110f);
@@ -62,23 +64,38 @@ internal sealed partial class OracleView
 
         w.SeparatorText("Members");
         if (members.Count == 0) w.TextDisabled("Reading the member list...");
-        foreach (KeyValuePair<int, string> m in members)
+        // Leader first, then everyone else by name; the level (0 = not read yet) in its own column.
+        members.Sort((a, b) => a.Id == leaderId ? -1 : b.Id == leaderId ? 1
+            : string.Compare(a.Name, b.Name, System.StringComparison.OrdinalIgnoreCase));
+        foreach ((int id, string name, int level) in members)
         {
-            if (m.Value.Length == 0) continue;
-            if (m.Key == leaderId) w.TextColored(UiColors.Gold, m.Value + " (leader)");
-            else w.Text(m.Value);
+            if (name.Length == 0) continue;
+            if (id == leaderId) w.TextColored(UiColors.Gold, name + " (leader)");
+            else w.Text(name);
+            if (level > 0)
+            {
+                w.SameLine(260f);
+                w.TextDisabled("level " + level);
+            }
         }
 
         if (ilt) DrawLeaftideFellowship(w, max);
     }
 
     /// <summary>
-    /// Infinite Leaftide's fellowship rules as RynthILT saved them from the server check: the size
-    /// limit and each fellowship feature with its state and where to use it.
+    /// Infinite Leaftide's fellowship rules as RynthILT saved them from the server check (the size
+    /// limit and each fellowship feature with its state and where to use it), then the server's
+    /// /fship commands as buttons.
     /// </summary>
     private void DrawLeaftideFellowship(UiWindow w, int max)
     {
         w.SeparatorText("Infinite Leaftide");
+        DrawLeaftideFeatures(w, max);
+        DrawFshipCommands(w);
+    }
+
+    private void DrawLeaftideFeatures(UiWindow w, int max)
+    {
         IltServerProfile p = _c.Ilt.Profile;
         if (!p.Available)
         {
@@ -108,5 +125,77 @@ internal sealed partial class OracleView
         }
         if (!any) w.TextDisabled("RynthILT hasn't reported fellowship features yet.");
         if (p.Forced) w.TextDisabled("(This character has 'Treat this world as ILT' on in RynthILT.)");
+    }
+
+    // ── ILT /fship commands (ACECustom; the list is RynthILT's IltFellowshipCommands) ──────────
+
+    /// <summary>A command flagged to confirm runs on a second click within this window.</summary>
+    private const long FshipConfirmMs = 4000;
+    /// <summary>The server answers "/fship list" once every 10 seconds; earlier clicks aren't sent.</summary>
+    private const long FshipListCooldownMs = 10_000;
+    private const string FshipListCommand = "/fship list";
+    /// <summary>Buttons per row (the tab is about 420 px wide).</summary>
+    private const int FshipButtonsPerRow = 4;
+
+    private string _fshipName = "";
+    private string _fshipArmed = "";       // the command waiting for its second click
+    private long _fshipArmedUntil;
+    private long _fshipListNextAt;
+    private string _fshipStatus = "";
+
+    /// <summary>
+    /// The /fship buttons: a name box (a player or fellowship name; blank = the selected player for
+    /// Invite / Dismiss), then one button per command. Names with spaces are sent quoted
+    /// (ServerCommandShare.Compose); Leave, Disband, Dismiss and Invite landblock ask first.
+    /// </summary>
+    private void DrawFshipCommands(UiWindow w)
+    {
+        w.SeparatorText("/fship commands");
+        w.InputText("Name", "fs.name", _fshipName, ServerCommandShare.MaxArgument, s => _fshipName = s);
+        w.Tooltip("A player name (Invite, Dismiss) or a fellowship name (Create). Blank = your selected player.");
+
+        long now = _c.NowMs;
+        if (_fshipArmed.Length > 0 && now > _fshipArmedUntil) _fshipArmed = "";
+        IReadOnlyList<ServerCommand> commands = IltFellowshipCommands.Commands;
+        for (int i = 0; i < commands.Count; i++)
+        {
+            ServerCommand c = commands[i];
+            bool armed = c.Confirm && _fshipArmed == c.Command;
+            string? line = ServerCommandShare.Compose(c, _fshipName);
+            if (i % FshipButtonsPerRow != 0) w.SameLine();
+            w.Button(armed ? "Confirm " + c.Label + "?" : c.Label, "fs.cmd." + i, () => RunFship(c), small: true);
+            w.Tooltip(c.Tooltip + "\n\n" + (line ?? "Type a name first."));
+        }
+        if (_fshipStatus.Length > 0) w.TextDisabled(_fshipStatus);
+    }
+
+    /// <summary>One /fship button click (plugin pump: script window events run there).</summary>
+    private void RunFship(ServerCommand c)
+    {
+        long now = _c.NowMs;
+        string? line = ServerCommandShare.Compose(c, _fshipName);
+        if (line == null)
+        {
+            _fshipStatus = c.Label + ": type a name first.";
+            return;
+        }
+        if (c.Confirm && !(_fshipArmed == c.Command && now <= _fshipArmedUntil))
+        {
+            _fshipArmed = c.Command;
+            _fshipArmedUntil = now + FshipConfirmMs;
+            _fshipStatus = $"Click 'Confirm {c.Label}?' again within {FshipConfirmMs / 1000} seconds to send: {line}";
+            return;
+        }
+        _fshipArmed = "";
+        if (c.Command == FshipListCommand)
+        {
+            if (now < _fshipListNextAt)
+            {
+                _fshipStatus = $"List nearby: wait {(_fshipListNextAt - now + 999) / 1000}s (the server answers once every 10 seconds).";
+                return;
+            }
+            _fshipListNextAt = now + FshipListCooldownMs;
+        }
+        _fshipStatus = _c.Send(line) ? "Sent: " + line : "Couldn't send (log in first): " + line;
     }
 }

@@ -30,12 +30,13 @@
 // All game actions are posted to the pump thread.
 //
 // RenderEmbedded draws the same sections and Options menu inside the engine's RynthAi dashboard
-// (its Mini Remote drawer, opened by the Hub launcher's right-click or the drawer tab) and
+// (its Mini Remote drawer, opened by the drawer tab) and
 // reports the size it wants; the drawer is sized from that. The drawer leaves out Toggles (the
 // dashboard it sits on already has those switches) and the tabs (it is too narrow for them).
 // RenderEmbedded(window: true) draws it in the engine's Mini Remote window instead (bar button,
 // /rc miniremote): tabs and Toggles included, and the floating window stays hidden meanwhile
-// (HudController), so that window is the one Mini Remote.
+// (HudController), so that window is the one Mini Remote. RynthCore 2026.10.5.46+ shows the tabs
+// as its own sections (RynthPluginGetSectionsJson) and asks for the remote alone (tabs: false).
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -136,7 +137,7 @@ internal sealed class MiniRemoteHud
     /// themselves from the result) instead of a window of their own. Returns the content size it
     /// wants: the selected tab's width, and the height drawn.
     /// </summary>
-    public Vector2 RenderEmbedded(bool window = false)
+    public Vector2 RenderEmbedded(bool window = false, bool tabs = true)
     {
         var s = _hud.State;
         _slotMenuIndex = -1;
@@ -146,7 +147,8 @@ internal sealed class MiniRemoteHud
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
         try
         {
-            float width = RenderBody(s, _hud.Remote(), allowTabs: !InDrawer);
+            // Without tabs (RynthCore's sections show them instead) the remote alone.
+            float width = RenderBody(s, _hud.Remote(), allowTabs: tabs && !InDrawer);
 
             if (_onRemoteTab && _slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
                 ImGui.OpenPopup(MenuPopup);
@@ -806,8 +808,8 @@ internal sealed class MiniRemoteHud
 
     /// <summary>
     /// "Character": RynthAi's own windows, the universal Mini Remote tabs (Pets, Crafting), RynthOracle's
-    /// quest windows (the Quests tab moved there 2026-10-13) and RynthCore's panels, when chat
-    /// commands can be run.
+    /// quest and fellowship windows (the Quests and Fellowship tabs moved there 2026-10-13) and
+    /// RynthCore's panels, when chat commands can be run.
     /// </summary>
     private void RenderCharacterMenu(HudState s)
     {
@@ -828,6 +830,8 @@ internal sealed class MiniRemoteHud
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle: quest timers, tracking, rewards and the /qb list.");
             if (ImGui.MenuItem("Quest Timers##mrqtimers", "/ro timers")) _hud.RunEngineCommand("/ro timers");
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Quest Timers window: your tracked quests and the time left on each.");
+            if (ImGui.MenuItem("Fellowship##mrfellow", "/ro fellowship")) _hud.RunEngineCommand("/ro fellowship");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Fellowship tab: members, levels, XP sharing, and ILT's /fship buttons on Infinite Leaftide.");
             if (ImGui.MenuItem("Skills##mrskills", "/rc skills")) _hud.RunEngineCommand("/rc skills toggle");
             if (ImGui.MenuItem("Inventory##mrinv", "/rc inventory")) _hud.RunEngineCommand("/rc inventory");
             if (ImGui.MenuItem("Item Count##mritemcount", "/rc itemcount")) _hud.RunEngineCommand("/rc itemcount");
@@ -900,7 +904,12 @@ internal sealed class MiniRemoteHud
     /// </summary>
     private void ForceServer(ServerMenuGroup g, MiniRemoteController? remote)
     {
-        if (g.Id.Equals(IltServerId, StringComparison.OrdinalIgnoreCase) && remote != null) remote.Ilt.ForceIlt = true;
+        // A RynthCore that decides the world saves the force itself (per character, the command
+        // below); RynthILT's own "Treat this world as ILT" is only for an engine that doesn't, so
+        // "/rc server ilt auto" later can't be undone by a forgotten local flag.
+        bool engineDecides = ServerMenuModel.ServerActive(IltServerId).HasValue;
+        if (!engineDecides && g.Id.Equals(IltServerId, StringComparison.OrdinalIgnoreCase) && remote != null)
+            remote.Ilt.ForceIlt = true;
         _hud.RunEngineCommand(g.ForceCommand);
     }
 

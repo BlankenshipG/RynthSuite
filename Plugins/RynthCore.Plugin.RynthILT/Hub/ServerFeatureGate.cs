@@ -67,7 +67,11 @@ internal static class ServerFeatureGate
         return true;
     }
 
-    /// <summary>The gate itself: the character's override, or the world name in the list.</summary>
+    /// <summary>
+    /// RynthILT's own gate: the character's override, or the world name in the list. RynthCore's
+    /// verdict, once it sends one, takes over in IltServerOptions.IsIltLikeWorld; this stays ours
+    /// (it is what the status export reports, IltServerOptions.IsIltLikeWorldLocal).
+    /// </summary>
     public static bool IsEnabled(string world, IltSettings? settings, bool forceOn)
         => forceOn || NameMatches(world, Patterns(settings), out _);
 
@@ -92,6 +96,14 @@ internal static class ServerFeatureGate
     {
         world = (world ?? string.Empty).Trim();
         string shown = world.Length > 0 ? $"'{world}'" : "(not logged in)";
+        var engine = IltSettingsView.IltEngineVerdict.Server;
+        if (engine != null)
+        {
+            string why = engine.Force == "on" ? "forced on for this character"
+                : engine.Force == "off" ? "forced off for this character"
+                : engine.Detected ? "RynthCore recognises the world" : "RynthCore doesn't recognise the world";
+            return $"This world {shown}: {(engine.Active ? "ON" : "OFF")} - {why}.";
+        }
         if (NameMatches(world, Patterns(settings), out string matched))
             return $"This world {shown}: ON - matches '{matched}'.";
         if (forceOn)

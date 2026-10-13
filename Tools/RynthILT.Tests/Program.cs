@@ -39,6 +39,8 @@ internal static class Program
         BankCommandTests.Register(runner);
         MoveTests.Register(runner);
         FeatureCatalogTests.Register(runner);
+        IltSettingsTests.Register(runner);
+        FellowshipCommandTests.Register(runner);
         return runner.Run("RynthILT tests", args.Length > 0 ? args[0] : null);
     }
 }

@@ -18,8 +18,8 @@ namespace RynthCore.Plugin.RynthOracle;
 /// </summary>
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
-    // Previous release: 0.2.1.
-    public const string Version = "0.2.2";
+    // Previous release: 0.2.2.
+    public const string Version = "0.2.3";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -259,6 +259,13 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             case "refresh":
                 RequestQuests();
                 break;
+            case "fellowship":
+            case "fellow":
+            case "fship":
+                // The main window on its Fellowship tab (RynthCore's Char menu and RynthAi's Mini Remote use this).
+                if (_mainView != null) _mainView.Tab = OracleView.TabFellowship;
+                if (_main != null) { _main.Visible = true; _main.NeedsPass = true; }
+                break;
             case "status":
                 string pack = _c.Catalog.PackServer.Length > 0 ? $" + {_c.Catalog.ServerCount} {_c.Catalog.PackServer}" : "";
                 string titles = _c.TitlesKnown ? $", {_c.EarnedTitles.Count} titles held" : "";
@@ -269,10 +276,10 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 _c.Print("Based on Oracle of Dereth by Advis Eveldan - thank you! github.com/advis61/OracleOfDereth (MIT)");
                 break;
             default:
-                _c.Print("Commands: /ro (window), /ro void (Void window), /ro timers (Quest Timers window), /ro quests (read quest flags), /ro status, /ro about");
+                _c.Print("Commands: /ro (window), /ro void (Void window), /ro timers (Quest Timers window), /ro fellowship (Fellowship tab), /ro quests (read quest flags), /ro status, /ro about");
                 break;
         }
-        if (arg is "" or "void" or "timers" or "timer" && !Host.HasUi && !_noUiLogged)
+        if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" && !Host.HasUi && !_noUiLogged)
         {
             _noUiLogged = true;
             _c.Print("This RynthCore engine can't show plugin windows (it needs script windows, API v71, with ImGui on). /ro status still works.");

@@ -383,6 +383,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private void TeardownSession()
     {
         ObjectChangeTracker.Clear();
+        while (_engineCommands.TryDequeue(out _)) { }   // a fellowship button's command is for this character only
         // The server drops whatever it was doing for this character at logout.
         RynthCore.Plugin.Shared.ActionPacer.Forget("logout");
         _navigationEngine?.Stop();
@@ -891,6 +892,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             Huds.ServerMenuModel.Apply(value);
             return;
         }
+        // A server plugin's commands for one of RynthAi's section views (RynthILT's /fship for Fellowship).
+        if (action.Equals(ServerCommandShare.Action, StringComparison.OrdinalIgnoreCase))
+        {
+            Huds.ServerCommandModel.Apply(value);
+            return;
+        }
         var dash = _dashboard;
         if (dash == null) return;
         bool on = value is "1" or "true" or "on" or "True" or "TRUE"
@@ -936,7 +943,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "itemhud":
             case "remote":
             case "miniremote":
-                // Dashboard Hub launcher: left-click remote=toggle, right-click huds=show.
+                // RynthCore's Mini Remote commands ("remote","toggle"; "huds","show").
                 HandleHudCommand(action.ToLowerInvariant(), value);
                 break;
             case "itemhudadd":
@@ -1369,6 +1376,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             if (_loginComplete) PostDataWriteProblems();   // a save that failed / folder not writable: say so in chat
             CombatHook.ObserveUseDone();        // ctx.last.err: the answer to the hook's last cast
             TickDelayedCommands();              // /ub delay
+            DrainEngineCommands();              // fellowship command buttons (RynthCore's Fellowship section)
             if (_loginComplete) _dashboard?.TickPackSetup(_objectCache, _playerId);   // new/copied profile items
 
             // /ra pause <sec>: restart the macro once the window elapses. Cleared by

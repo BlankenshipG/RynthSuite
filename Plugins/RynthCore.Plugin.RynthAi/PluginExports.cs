@@ -59,10 +59,13 @@ public static unsafe class PluginExports
         catch (Exception ex) { LogShutdownError(plugin, "CombatHookInterface.Shutdown", ex); }
         try
         {
-            // The loot editor's state can be a few hundred KB (LootSnobV4): don't leave it behind on a reload.
+            // The loot editor's state can be a few hundred KB (LootSnobV4): don't leave it behind on a
+            // reload. The sections manifest goes too.
             foreach (IntPtr p in new[] { Interlocked.Exchange(ref _lootStatePtr, IntPtr.Zero),
-                         Interlocked.Exchange(ref _lootRulePtr, IntPtr.Zero), Interlocked.Exchange(ref _lootVocabPtr, IntPtr.Zero) })
+                         Interlocked.Exchange(ref _lootRulePtr, IntPtr.Zero), Interlocked.Exchange(ref _lootVocabPtr, IntPtr.Zero),
+                         Interlocked.Exchange(ref _sectionsPtr, IntPtr.Zero) })
                 if (p != IntPtr.Zero) Marshal.FreeCoTaskMem(p);
+            _sectionsJson = null;
         }
         catch (Exception ex) { LogShutdownError(plugin, "loot buffers", ex); }
     }
@@ -124,6 +127,10 @@ public static unsafe class PluginExports
     /// RynthCore 2026.10.5.30+ adds ":popout" to the name when the panel is popped out into its
     /// own window, whose ImGui context is not the one in Host.ImGuiContext; the surfaces draw
     /// in the engine's current context either way (RenderEmbedded*).
+    /// RynthCore 2026.10.5.46+ (Mini Remote sections): "miniremote-remote" (the remote without its
+    /// tab bar, the engine's section rail replaces it), "miniremote-host" (the engine's Mini Remote
+    /// is open on another section; draws nothing) and "section:&lt;name&gt;" (the views
+    /// RynthPluginGetSectionsJson lists).
     /// 1 = drawn, 0 = not ready / unknown (nothing drawn).
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderEmbed", CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -136,9 +143,26 @@ public static unsafe class PluginExports
             if (name.EndsWith(":popout"u8)) name = name[..^":popout"u8.Length];
             var plugin = Runtime.Plugin;
             if (plugin == null) return 0;
-            bool window = name.SequenceEqual("miniremote-window"u8);
-            if (!window && !name.SequenceEqual("miniremote"u8)) return 0;
-            if (!plugin.RenderEmbeddedMiniRemote(window, out System.Numerics.Vector2 want)) return 0;
+            System.Numerics.Vector2 want;
+            var size = new System.Numerics.Vector2(width, height);
+            if (name.SequenceEqual("miniremote-host"u8))
+            {
+                return plugin.MarkEngineMiniRemote() ? 1 : 0;
+            }
+            else if (name.StartsWith("section:"u8))
+            {
+                // Section names are short ASCII ids (Huds/SectionsManifest.cs); anything longer isn't ours.
+                if (name.Length > 64) return 0;
+                if (!plugin.RenderEmbeddedSection(System.Text.Encoding.UTF8.GetString(name), size, out want)) return 0;
+            }
+            else
+            {
+                // "guardian" is RynthILT's (since 2026-10-13): not answered here.
+                bool remote = name.SequenceEqual("miniremote-remote"u8);
+                bool window = remote || name.SequenceEqual("miniremote-window"u8);
+                if (!window && !name.SequenceEqual("miniremote"u8)) return 0;
+                if (!plugin.RenderEmbeddedMiniRemote(window, out want, tabs: !remote)) return 0;
+            }
             if (wantWidth != null) *wantWidth = want.X;
             if (wantHeight != null) *wantHeight = want.Y;
             return 1;
@@ -825,6 +849,29 @@ public static unsafe class PluginExports
         IntPtr oldPtr = Interlocked.Exchange(ref slot, newPtr);
         if (oldPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(oldPtr);
         return newPtr;
+    }
+
+    private static IntPtr _sectionsPtr = IntPtr.Zero;
+    private static string? _sectionsJson;
+
+    /// <summary>
+    /// RynthCore 2026.10.5.46+ (optional): what RynthAi adds to the Mini Remote's sections, as
+    /// UTF-8 JSON (schema 1, Huds/SectionsManifest.cs). Null before login. The engine polls it on
+    /// the render thread every couple of seconds; an unchanged manifest keeps the same buffer, a
+    /// changed one frees the previous buffer (the engine copies the text before its next call).
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetSectionsJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetSectionsJson()
+    {
+        try
+        {
+            string? json = Runtime.Plugin?.BuildSectionsJson();
+            if (json == null) return IntPtr.Zero;
+            if (json == _sectionsJson && _sectionsPtr != IntPtr.Zero) return _sectionsPtr;
+            _sectionsJson = json;
+            return Utf8Swap(ref _sectionsPtr, json);
+        }
+        catch { return IntPtr.Zero; }
     }
 
     /// <summary>Changes whenever the editor's state does; 0 before RynthAi is ready.</summary>

@@ -54,6 +54,10 @@
     <Compile Include="..\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="Shared\FellowshipTracker.cs" />
     <!-- RynthILT's "RynthILT.Server" interface (server profile: Leaftide features, fellowship rules). -->
     <Compile Include="..\Shared\RynthIltServerApi.cs" Link="Shared\RynthIltServerApi.cs" />
+    <!-- Infinite Leaftide's /fship commands for the Fellowship tab: RynthILT's list and the shared
+         argument rules (quoting, required names), shared source rather than copied. Both are pure. -->
+    <Compile Include="..\Shared\ServerCommandShare.cs" Link="Shared\ServerCommandShare.cs" />
+    <Compile Include="..\RynthCore.Plugin.RynthILT\IltFellowship\IltFellowshipCommands.cs" Link="Shared\IltFellowshipCommands.cs" />
   </ItemGroup>
 
   <ItemGroup>

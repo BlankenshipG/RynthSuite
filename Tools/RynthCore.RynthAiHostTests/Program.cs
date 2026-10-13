@@ -114,6 +114,7 @@ internal static class Program
         MeleeStallTests.Register(runner);
         ServerMenuTests.Register(runner);
         MiniRemoteMoveTests.Register(runner);
+        SectionsTests.Register(runner);
         ItemsCleanTests.Register(runner);
         DeathRecallTests.Register(runner);
         InventoryAttributeFilterTests.Register(runner);

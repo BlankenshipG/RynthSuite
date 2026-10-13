@@ -81,8 +81,18 @@ internal sealed unsafe class LegacySpellsUi
         _refreshProfileList = refreshProfileList;
     }
 
-    /// <summary>True while the window is open (the plugin only feeds it data then).</summary>
-    public bool Visible => _settings.ShowSpellsWindow;
+    /// <summary>How long after its last embedded frame the body still counts as on screen.</summary>
+    private const long EmbeddedVisibleMs = 1500;
+
+    /// <summary>When RynthCore's Spells section last drew the body (TickCount64); render thread writes.</summary>
+    private long _embeddedDrawnAt = long.MinValue / 2;
+
+    /// <summary>
+    /// True while the window is open or RynthCore's Spells section shows the body (the plugin only
+    /// feeds it data then). Any thread.
+    /// </summary>
+    public bool Visible => _settings.ShowSpellsWindow
+                           || Environment.TickCount64 - Interlocked.Read(ref _embeddedDrawnAt) < EmbeddedVisibleMs;
 
     // ── Pump-thread side ────────────────────────────────────────────────────
 
@@ -116,34 +126,53 @@ internal sealed unsafe class LegacySpellsUi
         if (ImGui.Begin(WindowTitle, ref _settings.ShowSpellsWindow))
         {
             UiPlacement.RescueOncePerShow(ref _rescueChecked);
-            ApplyBuiltInList();
-
-            if (!SpellCatalog.IsLoaded)
-            {
-                ImGui.TextDisabled("The spell catalog is not loaded yet (it loads at login; see chat for errors).");
-            }
-            else
-            {
-                EnsureEffectItems();
-                float avail = ImGui.GetContentRegionAvail().X;
-                float leftW = MathF.Max(460f, avail * 0.58f);
-
-                if (ImGui.BeginChild("##spcatalog", new Vector2(leftW, 0), ImGuiChildFlags.Borders | ImGuiChildFlags.ResizeX))
-                {
-                    RenderFilters();
-                    RenderCatalogTable();
-                }
-                ImGui.EndChild();
-
-                ImGui.SameLine();
-                if (ImGui.BeginChild("##spprofile", Vector2.Zero, ImGuiChildFlags.Borders))
-                    RenderProfileEditor();
-                ImGui.EndChild();
-            }
-
-            RenderConfirmPopup();
+            RenderBody();
         }
         ImGui.End();
+    }
+
+    /// <summary>
+    /// RynthCore's Spells section (RynthPluginRenderEmbed "section:spells"): the window's body
+    /// drawn into the engine's current window. Render thread.
+    /// </summary>
+    public void RenderEmbedded()
+    {
+        long now = Environment.TickCount64;
+        // First frame after a gap: the same refresh as the window's open.
+        if (now - Interlocked.Read(ref _embeddedDrawnAt) >= EmbeddedVisibleMs && !_settings.ShowSpellsWindow) OnShown();
+        Interlocked.Exchange(ref _embeddedDrawnAt, now);
+        RenderBody();
+    }
+
+    /// <summary>The catalog (left, resizable) and the profile editor (right), in the current window.</summary>
+    private void RenderBody()
+    {
+        ApplyBuiltInList();
+
+        if (!SpellCatalog.IsLoaded)
+        {
+            ImGui.TextDisabled("The spell catalog is not loaded yet (it loads at login; see chat for errors).");
+        }
+        else
+        {
+            EnsureEffectItems();
+            float avail = ImGui.GetContentRegionAvail().X;
+            float leftW = MathF.Max(460f, avail * 0.58f);
+
+            if (ImGui.BeginChild("##spcatalog", new Vector2(leftW, 0), ImGuiChildFlags.Borders | ImGuiChildFlags.ResizeX))
+            {
+                RenderFilters();
+                RenderCatalogTable();
+            }
+            ImGui.EndChild();
+
+            ImGui.SameLine();
+            if (ImGui.BeginChild("##spprofile", Vector2.Zero, ImGuiChildFlags.Borders))
+                RenderProfileEditor();
+            ImGui.EndChild();
+        }
+
+        RenderConfirmPopup();
     }
 
     /// <summary>Each time the window opens: refresh the file list and open the active profile.</summary>

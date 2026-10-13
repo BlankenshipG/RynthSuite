@@ -5,12 +5,17 @@
     not in RynthAi or the engine core. The engine shows its panels (the bar's ILT button: Bounties,
     Guardian; /rc bounties, /rc guardian; the Skills panel's Progression tab) only on ILT
     (RynthCore Compatibility/IltInfo.cs, which also asks RynthILT).
-      Bounty/  the Bounties window's tracker (ported from SilentKelpie's rynth/RynthSuite PR #11).
-      Hub/     the ILT Hub (SilentKelpie's): the Mini Remote's ILT tabs (Character, Banking, Gear,
-               Charms, Games), the Guardian, the progression planners and the attribute raiser,
-               server feature detection. Moved out of RynthAi 2026-10-13: RynthAi's Mini Remote
-               hosts the tabs through RynthILT.Hub, and RynthILT borrows from RynthAi through
-               RynthAi.Hub (Plugins/Shared/RynthIltHubApi.cs, RynthAiHubApi.cs).
+      Bounty/          the Bounties window's tracker (ported from SilentKelpie's rynth/RynthSuite PR #11).
+      Hub/             the ILT Hub (SilentKelpie's): the Mini Remote's ILT tabs (Character, Banking, Gear,
+                       Charms, Games), the Guardian, the progression planners and the attribute raiser,
+                       server feature detection. Moved out of RynthAi 2026-10-13: RynthAi's Mini Remote
+                       hosts the tabs through RynthILT.Hub, and RynthILT borrows from RynthAi through
+                       RynthAi.Hub (Plugins/Shared/RynthIltHubApi.cs, RynthAiHubApi.cs).
+      IltSettingsView/ a copy of the ILT settings (RynthCore's verdict, this character's override, the
+                       ILT world names, the Hub's feature read), in RynthCore's Mini Remote and its
+                       own window ("/ilt settings").
+      IltFellowship/   ILT's /fship commands as buttons (RynthCore's Fellowship section, "/ilt fellow",
+                       and RynthAi's Fellowship view).
   -->
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -29,10 +34,16 @@
     <Platforms>x86</Platforms>
     <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
          highest API use NOT behind a Has*/version check. Nothing above the v66 baseline: every
-         newer call (plugin interfaces v68, live object ids v69, vendor trade v67, ...) is behind
-         its Has* check, as it was in RynthAi. -->
+         newer call (plugin interfaces v68, live object ids v69, vendor trade v67, the chat parser,
+         world names and the plugin-command broker) is behind its Has* check, as it was in RynthAi. -->
     <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
-    <RynthPluginDescription>Infinite Leaftide (ACECustom) features: the ILT Hub (the Mini Remote's ILT tabs: banking, gear, charms, games), the Guardian, bounties, progression and the attribute raiser.</RynthPluginDescription>
+    <RynthPluginDescription>Infinite Leaftide (ACECustom) features: the ILT Hub (the Mini Remote's ILT tabs: banking, gear, charms, games), the Guardian, bounties, progression, the attribute raiser, the ILT settings and the /fship fellowship commands.</RynthPluginDescription>
+    <!-- RynthILT is ILT's server plugin: RynthCore loads it only for clients connecting to ILT (or when no
+         installed server plugin claims the host). Same lists as RynthCore's IltDetect defaults. -->
+    <RynthPluginServerId>ilt</RynthPluginServerId>
+    <RynthPluginServerName>Infinite Leaftide</RynthPluginServerName>
+    <RynthPluginServerHosts>infiniteleaftide.online</RynthPluginServerHosts>
+    <RynthPluginServerWorldNames>InfiniteLeaftide|*Leaftide*</RynthPluginServerWorldNames>
   </PropertyGroup>
 
   <ItemGroup>
@@ -59,6 +70,9 @@
     <Compile Include="..\Shared\DataWriteGuard.cs" Link="Shared\DataWriteGuard.cs" />
     <!-- AcObjectClass (the item classes the gear tools check). -->
     <Compile Include="..\..\Shared\RynthCore.LootSdk\AcGameEnums.cs" Link="Shared\AcGameEnums.cs" />
+    <!-- ILT's /fship commands: sent to RynthAi's Fellowship view, and drawn in RynthCore's Fellowship section. -->
+    <Compile Include="..\Shared\ServerCommandShare.cs" Link="Shared\ServerCommandShare.cs" />
+    <Compile Include="..\Shared\ServerCommandPanel.cs" Link="Shared\ServerCommandPanel.cs" />
   </ItemGroup>
 
   <ItemGroup>

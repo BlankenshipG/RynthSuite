@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- RynthColdeve: the Coldeve server plugin. The build is shared (..\Shared\ServerPack\ServerPlugin.props);
+       ServerData.cs holds what is known about the server. -->
+  <PropertyGroup>
+    <AssemblyName>RynthCore.Plugin.RynthColdeve</AssemblyName>
+    <!-- First release (no previous). -->
+    <Version>0.1.0</Version>
+    <RynthPluginServerId>coldeve</RynthPluginServerId>
+    <RynthPluginServerName>Coldeve</RynthPluginServerName>
+    <RynthPluginServerHosts>play.coldeve.ac</RynthPluginServerHosts>
+    <RynthPluginServerWorldNames>Coldeve</RynthPluginServerWorldNames>
+    <RynthPluginDescription>Coldeve only: the server card (rules, account limits, botting policy, links, account setup) in the Mini Remote.</RynthPluginDescription>
+  </PropertyGroup>
+
+  <Import Project="..\Shared\ServerPack\ServerPlugin.props" />
+
+</Project>

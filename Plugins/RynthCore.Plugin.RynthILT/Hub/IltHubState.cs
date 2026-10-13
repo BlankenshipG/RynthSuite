@@ -77,6 +77,8 @@ public sealed class IltBankState
     /// <summary>Last transfer recipient typed into the transfer form.</summary>
     public string TransferTarget = string.Empty;
     public int TransferCurrencyIndex;
+    /// <summary>Transfer form's trade-note denomination (IltBankCommands.NoteDenominations; 9 = MMD).</summary>
+    public int TransferNoteIndex = 9;
 
     /// <summary>Deposit / withdraw form choices (IltBankCommands.Deposits / Withdrawals / NoteDenominations).</summary>
     public int DepositIndex;

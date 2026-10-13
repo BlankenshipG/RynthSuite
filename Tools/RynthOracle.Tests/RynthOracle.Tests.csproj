@@ -29,6 +29,9 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\**\*.cs" Exclude="..\..\Plugins\RynthCore.Plugin.RynthOracle\obj\**;..\..\Plugins\RynthCore.Plugin.RynthOracle\bin\**" Link="RynthOracle\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="RynthOracle\Shared\FellowshipTracker.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthIltServerApi.cs" Link="RynthOracle\Shared\RynthIltServerApi.cs" />
+    <!-- The Fellowship tab's /fship buttons (as in the plugin's csproj). -->
+    <Compile Include="..\..\Plugins\Shared\ServerCommandShare.cs" Link="RynthOracle\Shared\ServerCommandShare.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\IltFellowship\IltFellowshipCommands.cs" Link="RynthOracle\Shared\IltFellowshipCommands.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
   </ItemGroup>
 
