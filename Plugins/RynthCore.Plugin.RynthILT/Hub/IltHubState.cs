@@ -53,7 +53,7 @@ public sealed class IltHubState
 public sealed class IltServerOptionsSnapshot
 {
     public string WorldName = string.Empty;
-    /// <summary>"ilt-features" (structured dump), "probe" (command probing) or "" (never refreshed).</summary>
+    /// <summary>"probe" (the login probe) or "" (never refreshed).</summary>
     public string Source = string.Empty;
     public DateTime LastRefreshUtc = DateTime.MinValue;
     /// <summary>Feature key → -1 unknown, 0 off, 1 on.</summary>

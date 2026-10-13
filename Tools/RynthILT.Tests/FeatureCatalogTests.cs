@@ -19,6 +19,74 @@ internal static class FeatureCatalogTests
         r.Add("features: profile JSON is valid ASCII with features and the fellowship rules", ProfileJson);
         r.Add("features: the interface copies the JSON only when it fits, NUL-terminated", InterfaceWrite);
         r.Add("features: the /qb list rides the profile JSON on ILT worlds only", QuestBonusJson);
+        r.Add("features: the ILT profile is on with the world; a refusal in chat turns a feature off", ProfileOnWithTheWorld);
+        r.Add("features: probed features read checking; options ILT runs off are off until chat shows them", ProbedAndOffInIlt);
+        r.Add("features: charms are on with the ILT world unless refused; rows describe themselves", Charms);
+    }
+
+    /// <summary>ACECustom options Infinite Leaftide runs with off (ServerConfig defaults, PROD_DEPLOY_PLAN.md).</summary>
+    private static readonly string[] OffInIlt = { "pet_strain", "pet_refill", "defense_scaling" };
+
+    /// <summary>Features the login probe (or the /myquests tracker) answers.</summary>
+    private static readonly string[] Probed =
+    {
+        "bank", "attributes", "augmentations", "enlightenment", "clap", "pets", "shinies",
+        "fellowship_blackjack", "quests", "quest_bonus", "powerball", "blackjack",
+    };
+
+    private static void ProfileOnWithTheWorld()
+    {
+        // The features the player asked about, plus the pet switches prod runs on (bond, potency).
+        foreach (string key in new[] { "bank_notes", "t11", "t11_craft_gate", "split_arrows", "charms", "pet_breeding",
+                                       "pet_maturity", "pet_bond", "pet_potency", "monster_capture", "universal_mastery",
+                                       "missile_power", "t11_hit_gate", "fship" })
+        {
+            IltFeatureInfo f = IltFeatureCatalog.Find(key)!;
+            Check.Eq(f.Known, IltKnown.Profile, key + " is on in the ILT profile");
+            Check.Eq(IltFeatureCatalog.StateOf(f, true, _ => IltTri.Unknown), IltTri.On, key + " on with the ILT world");
+            Check.Eq(IltFeatureCatalog.StateOf(f, false, _ => IltTri.On), IltTri.Unknown, key + " unknown off ILT");
+        }
+        IltFeatureInfo mastery = IltFeatureCatalog.Find("universal_mastery")!;
+        Check.Eq(IltFeatureCatalog.StateOf(mastery, true, k => k == IltFeature.UniversalMastery ? IltTri.Off : IltTri.Unknown),
+                 IltTri.Off, "a refusal in chat turns a profile feature off");
+        Check.Null(IltFeatureCatalog.Find("fellowship_additive"), "upstream ACE's additive fellowship option isn't an ILT feature");
+    }
+
+    private static void ProbedAndOffInIlt()
+    {
+        foreach (string key in Probed)
+        {
+            IltFeatureInfo f = IltFeatureCatalog.Find(key)!;
+            Check.Eq(f.Known, IltKnown.Checked, key + " is answered by the login probe");
+            Check.Eq(IltFeatureCatalog.StateText(IltFeatureCatalog.StateOf(f, true, _ => IltTri.Unknown)), "checking", key + " reads 'checking' until then");
+        }
+        foreach (string key in OffInIlt)
+        {
+            IltFeatureInfo f = IltFeatureCatalog.Find(key)!;
+            Check.Eq(f.Known, IltKnown.ProfileOff, key + " is off in the ILT profile");
+            Check.Eq(IltFeatureCatalog.StateOf(f, true, _ => IltTri.Unknown), IltTri.Off, key + " off with the ILT world");
+            Check.Eq(IltFeatureCatalog.StateOf(f, true, _ => IltTri.On), IltTri.On, key + " on once the server shows it");
+            Check.True(IltFeatureCatalog.Describe(key).Tooltip.Contains("Off in ILT"), key + "'s tooltip says it's off in ILT");
+        }
+
+        // ACECustom's three refill messages (PetDevice.TryApplyPyrealAutoRefillBeforeSummon) prove the refill is on.
+        Check.True(IltServerOptions.IsPyrealRefillLine("You restore one charge on your summoning essence at no cost."), "free refill");
+        Check.True(IltServerOptions.IsPyrealRefillLine("You spend 1,000 pyreals to restore one charge on your summoning essence."), "paid refill");
+        Check.True(IltServerOptions.IsPyrealRefillLine("You need 1,000 pyreals to auto-replenish your summoning essence. You do not have enough pyreals."), "refill too dear");
+        Check.False(IltServerOptions.IsPyrealRefillLine("Your summoning essence is empty."), "an empty essence says nothing about the refill");
+    }
+
+    private static void Charms()
+    {
+        Check.Eq(IltFeatureCatalog.CharmStateOf(true, IltTri.Unknown), IltTri.On, "a charm is on with the ILT world");
+        Check.Eq(IltFeatureCatalog.CharmStateOf(true, IltTri.Off), IltTri.Off, "a refused charm is off");
+        Check.Eq(IltFeatureCatalog.CharmStateOf(false, IltTri.On), IltTri.Unknown, "nothing is claimed off ILT");
+
+        var (label, group, tooltip) = IltFeatureCatalog.Describe(IltFeature.Charm("Mana Barrier"));
+        Check.Eq(label, "Mana Barrier", "a charm row shows the charm's name");
+        Check.Eq(group, IltFeatureCatalog.GroupCharms, "charms have their own section");
+        Check.True(tooltip.Contains("Mana absorbs"), "the tooltip carries the charm's effect");
+        Check.Eq(IltFeatureCatalog.Describe("something_new").Group, IltFeatureCatalog.GroupOther, "an unknown bit goes to Other");
     }
 
     private static void QuestBonusJson()

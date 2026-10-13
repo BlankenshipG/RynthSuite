@@ -7,8 +7,10 @@
 // comes from). Edits are RynthCore commands, queued for the plugin tick; the next push shows the result.
 // Render thread only.
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using ImGuiNET;
+using RynthCore.Plugin.RynthILT.Hub;
 using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthILT.IltSettingsView;
@@ -155,21 +157,53 @@ internal sealed class IltSettingsUi
             ImGui.TextDisabled("The server hasn't reported any ILT features yet.");
             return;
         }
-        if (ImGui.BeginTable("##iltfeatures", 2, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp))
+        if (f.IltLike)
+            SafeImGui.TextWrapped("The ILT profile: what Infinite Leaftide runs beyond retail, from ACECustom. Detected on "
+                                  + "this client only: the login check and the server's replies in chat can turn a feature "
+                                  + "on or off; hover a row for where its state comes from.");
+
+        // One collapsible section per group (Character, Items, Pets, Fellowship, Combat,
+        // Activities), then the charms and any other bit chat or a probe set.
+        var byGroup = new Dictionary<string, List<(string Label, string Tooltip, int State, string Text)>>(StringComparer.Ordinal);
+        foreach (var kv in f.Features)
         {
-            ImGui.TableSetupColumn("Feature");
-            ImGui.TableSetupColumn("State");
-            ImGui.TableHeadersRow();
-            foreach (var kv in f.Features)
+            var (label, group, tooltip) = IltFeatureCatalog.Describe(kv.Key);
+            string text = IltFeatureCatalog.StateText((IltTri)Math.Clamp(kv.Value, -1, 1));
+            if (!byGroup.TryGetValue(group, out var list)) byGroup[group] = list = new();
+            list.Add((label, tooltip, kv.Value, text));
+        }
+        foreach (string group in FeatureGroups())
+        {
+            if (!byGroup.TryGetValue(group, out var rows)) continue;
+            int on = 0;
+            foreach (var r in rows) if (r.State == 1) on++;
+            if (!ImGui.CollapsingHeader($"{group} ({on} of {rows.Count} on)##iltfg_{group}",
+                    group == IltFeatureCatalog.GroupOther ? ImGuiTreeNodeFlags.None : ImGuiTreeNodeFlags.DefaultOpen))
+                continue;
+            if (!ImGui.BeginTable("##iltft_" + group, 2,
+                    ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp))
+                continue;
+            ImGui.TableSetupColumn("Feature", ImGuiTableColumnFlags.WidthStretch);
+            ImGui.TableSetupColumn("State", ImGuiTableColumnFlags.WidthFixed, 70f);
+            foreach (var (label, tooltip, state, text) in rows)
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
-                SafeImGui.Text(kv.Key);
+                SafeImGui.Text(label);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
                 ImGui.TableNextColumn();
-                SafeImGui.TextColored(kv.Value == 1 ? Teal : kv.Value == 0 ? Warn : Mute, IltSettingsModel.StateText(kv.Value));
+                SafeImGui.TextColored(state == 1 ? Teal : state == 0 ? Warn : Mute, text);
             }
             ImGui.EndTable();
         }
+    }
+
+    /// <summary>The feature sections in display order: the catalog's groups, then Charms and Other.</summary>
+    private static IEnumerable<string> FeatureGroups()
+    {
+        foreach (string g in IltFeatureCatalog.Groups) yield return g;
+        yield return IltFeatureCatalog.GroupCharms;
+        yield return IltFeatureCatalog.GroupOther;
     }
 
     /// <summary>Queues <paramref name="command"/>, or shows <paramref name="error"/> when it is empty.</summary>

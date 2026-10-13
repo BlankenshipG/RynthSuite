@@ -44,8 +44,8 @@ namespace RynthCore.Plugin.RynthILT;
 public sealed class RynthILTPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthILT");
-    // Previous release: 0.2.3.
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.4");
+    // Previous release: 0.2.4.
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.5");
 
     /// <summary>The settings view's surface in RynthCore's Mini Remote sections.</summary>
     internal const string SettingsSurface = "section:ilt-settings";
@@ -228,7 +228,33 @@ public sealed class RynthILTPlugin : RynthPluginBase
         DateTime last = options.LastRefreshUtc;
         string when = last == default ? string.Empty : last.ToLocalTime().ToString("HH:mm:ss");
         _settingsModel.PublishFeatures(new IltFeatureView(options.WorldName, options.Source ?? string.Empty, when,
-            options.IsRefreshing, options.IsIltLikeWorld, System.Linq.Enumerable.ToArray(options.SnapshotBits())));
+            options.IsRefreshing, options.IsIltLikeWorld, BuildFeatureRows(options)));
+    }
+
+    /// <summary>
+    /// The settings view's feature rows: every catalog feature with its state (IltFeatureCatalog),
+    /// then each ILT charm ("charm:...", on with the world unless refused in chat), then any other
+    /// bit chat or a probe set that the catalog doesn't show. Pump thread.
+    /// </summary>
+    private static KeyValuePair<string, int>[] BuildFeatureRows(IltServerOptions options)
+    {
+        bool ilt = options.IsIltLikeWorld;
+        var rows = new List<KeyValuePair<string, int>>(IltFeatureCatalog.All.Length + 32);
+        var shown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (IltFeatureInfo f in IltFeatureCatalog.All)
+        {
+            rows.Add(new KeyValuePair<string, int>(f.Key, (int)IltFeatureCatalog.StateOf(f, ilt, options.Get)));
+            if (f.ServerBit != null) shown.Add(f.ServerBit);
+        }
+        foreach (IltCharmDef def in IltInventory.Charms)
+        {
+            string key = IltFeature.Charm(def.Name);
+            rows.Add(new KeyValuePair<string, int>(key, (int)IltFeatureCatalog.CharmStateOf(ilt, options.Get(key))));
+            shown.Add(key);
+        }
+        foreach (var bit in options.SnapshotBits())
+            if (shown.Add(bit.Key)) rows.Add(bit);
+        return rows.ToArray();
     }
 
     /// <summary>

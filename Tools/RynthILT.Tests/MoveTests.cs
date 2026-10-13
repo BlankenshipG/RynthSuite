@@ -414,6 +414,8 @@ internal static class MoveTests
         TickFor(on, 6800);
         Check.True(on.Options.IsIltLikeWorld, "InfiniteLeaftide is ILT");
         Check.True(RynthCore.RynthAiHostTests.Fakes.FakeHost.ChatCommands.Count > 0, "on ILT the login probe asks the server");
+        Check.False(RynthCore.RynthAiHostTests.Fakes.FakeHost.ChatCommands.Any(c => c.Contains("/ilt features", StringComparison.OrdinalIgnoreCase)),
+                    "the server is never asked for a feature list (the ILT profile is Rynth-side)");
         Check.True(on.TabShown(IltSection.Character), "and the Character tab shows");
         on.OnLogout();
 

@@ -169,7 +169,7 @@ internal sealed class IltHubUi
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(f.Label);
                 if (ImGui.IsItemHovered())
-                    SafeImGui.SetTooltip(f.Description + (f.ServerBit == null ? "\nBuilt into ACECustom: on with the world." : "\nThe server's check decides."));
+                    SafeImGui.SetTooltip(IltFeatureCatalog.Describe(f.Key).Tooltip);
                 ImGui.TableNextColumn();
                 SafeImGui.TextColored(state switch
                 {

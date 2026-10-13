@@ -2,7 +2,7 @@
 // Originally SilentKelpie's ILT Hub (RynthAi IltHub/); moved to RynthILT 2026-10-13.
 //
 // Every ILT Hub feature that talks to ACECustom (/bank, /aug, /qb, /pets, /xp, /pb,
-// /ilt features, the login probe, ...) goes through this one queue so that:
+// the login probe, /myquests, ...) goes through this one queue so that:
 //   * only one capture is in flight at a time (replies can't be attributed to the wrong
 //     request),
 //   * reply lines can be eaten so a Hub refresh doesn't spam the chat window,
