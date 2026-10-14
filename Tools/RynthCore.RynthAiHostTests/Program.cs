@@ -54,6 +54,7 @@ internal static class Program
         T11LootTests.Register(runner);
         MagItemDescriberTests.Register(runner);
 SelfRatingsTests.Register(runner);
+IltClientLookupTests.Register(runner);
         ExpressionTests.Register(runner);
         GiveProfileTests.Register(runner);
         MetaTests.Register(runner);

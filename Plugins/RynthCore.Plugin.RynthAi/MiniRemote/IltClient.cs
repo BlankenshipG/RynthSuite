@@ -28,7 +28,8 @@ internal sealed unsafe class IltClient
 
     private readonly RynthCoreHost _host;
     private IntPtr _table;          // volatile reads/writes: the render thread uses what the pump found
-    private long _checkedAt = long.MinValue;
+    private long _checkedAt;
+    private bool _checkedOnce;      // false: look now (a sentinel time would overflow "now - _checkedAt")
     private readonly IltTabV1[] _tabBuf = new IltTabV1[MaxTabs];
     private readonly List<IltTabInfo> _tabs = new();
 
@@ -39,8 +40,8 @@ internal sealed unsafe class IltClient
     {
         long now = Environment.TickCount64;
         var t = (RynthIltHubApiV1*)System.Threading.Volatile.Read(ref _table);
-        if (t != null && t->Version >= 1 && now - _checkedAt < RecheckMs) return;
-        if (t == null && now - _checkedAt < RecheckMs) return;
+        if (!LookupDue(_checkedOnce, _checkedAt, now, haveTable: t != null, tableLive: t != null && t->Version >= 1)) return;
+        _checkedOnce = true;
         _checkedAt = now;
         IntPtr found = IntPtr.Zero;
         if (_host.HasGetPluginInterface)
@@ -55,7 +56,18 @@ internal sealed unsafe class IltClient
     public void Reset()
     {
         System.Threading.Volatile.Write(ref _table, IntPtr.Zero);
-        _checkedAt = long.MinValue;
+        _checkedOnce = false;
+    }
+
+    /// <summary>
+    /// Whether Tick looks the table up again. Pure. Always on the first call (and after Reset), at
+    /// once when the table RynthILT gave is shut down (Version 0), else every <see cref="RecheckMs"/>.
+    /// </summary>
+    internal static bool LookupDue(bool checkedOnce, long checkedAt, long now, bool haveTable, bool tableLive)
+    {
+        if (!checkedOnce) return true;
+        if (haveTable && !tableLive) return true;
+        return now - checkedAt >= RecheckMs;
     }
 
     private RynthIltHubApiV1* T
