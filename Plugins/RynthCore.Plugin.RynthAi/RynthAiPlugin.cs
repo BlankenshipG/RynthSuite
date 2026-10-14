@@ -2173,6 +2173,18 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // unguarded appraisal + health query here sent 4-6 identifies per corpse.
             RequestTargetVitals(currentTargetId, obj);
 
+            // Yourself: with Item Info on select, your ratings (RynthAiSelfRatings).
+            if (IsSelf(currentTargetId))
+            {
+                var selfInfo = _dashboard?.Settings.ItemInfoSettings;
+                if (selfInfo != null && selfInfo.OnSelect && !ItemInfo.SelfSelect.IsOurs(currentTargetId))
+                {
+                    ItemInfoLog($"select 0x{currentTargetId:X8} (yourself): ratings queue");
+                    QueueSelfRatings(auto: true);
+                }
+                return;
+            }
+
             // Skip non-items (monsters, players, NPCs, doors, corpses, portals, etc.)
             if (obj != null && IsLootableClass(obj.ObjectClass))
             {

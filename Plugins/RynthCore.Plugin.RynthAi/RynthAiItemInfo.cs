@@ -16,7 +16,8 @@ namespace RynthCore.Plugin.RynthAi;
 ///
 ///   /ra iteminfo                      describe the selected item (IDs it first when needed)
 ///   /ra iteminfo &lt;item name&gt;          describe an inventory item by name (exact, else partial)
-///   /ra iteminfo on|off               describe every item you select
+///   /ra iteminfo me                   your own ratings (also on selecting / clicking yourself)
+///   /ra iteminfo on|off               describe every item you select (yourself: your ratings)
 ///   /ra iteminfo settings             open/close the Item Info settings window
 ///   /ra iteminfo fields               list fields and ratings with their on/off state
 ///   /ra iteminfo field &lt;name&gt; on|off  show/hide one field (ratings, slayer, spells, …)
@@ -72,6 +73,12 @@ public sealed partial class RynthAiPlugin
 
         switch (sub)
         {
+            case "me":
+            case "self":
+            case "ratings":
+                QueueSelfRatings(auto: false);
+                return;
+
             case "settings":
             case "gui":
             case "window":
@@ -163,7 +170,7 @@ public sealed partial class RynthAiPlugin
             if (found != 0) { QueueItemInfo(unchecked((int)found), requestId: true); return; }
             ChatLine($"[RynthAi] Item info: no \"{name}\" in your inventory.");
         }
-        ChatLine("[RynthAi] Usage: /ra iteminfo [<item name>|on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|reset]");
+        ChatLine("[RynthAi] Usage: /ra iteminfo [<item name>|me|on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|reset]");
     }
 
     /// <summary>
@@ -240,6 +247,7 @@ public sealed partial class RynthAiPlugin
         if (!Host.HasGetSelectedItemId) { ChatLine("[RynthAi] Host does not expose the selected item."); return; }
         uint selected = Host.GetSelectedItemId();
         if (selected == 0) { ChatLine("[RynthAi] No item selected. Click an item first."); return; }
+        if (IsSelf(selected)) { QueueSelfRatings(auto: false); return; }
         QueueItemInfo(unchecked((int)selected), requestId: true);
     }
 
@@ -351,6 +359,12 @@ public sealed partial class RynthAiPlugin
         string button = MagItemInfoCatalog.ClickTriggers[s.ClickTrigger];
         uint selected = Host.GetSelectedItemId();
         if (selected == 0) { ItemInfoLog($"{button}: nothing selected"); return; }
+        if (IsSelf(selected))
+        {
+            ItemInfoLog($"{button}: 0x{selected:X8} (yourself): ratings queue");
+            QueueSelfRatings(auto: true);
+            return;
+        }
 
         int id = unchecked((int)selected);
         WorldObject? obj = _objectCache?[id];
@@ -368,6 +382,7 @@ public sealed partial class RynthAiPlugin
     private void TickItemInfo()
     {
         ResolveItemInfoClick();
+        TickSelfRatings();
 
         int id = _itemInfoPendingId;
         if (id == 0) return;
@@ -438,6 +453,14 @@ public sealed partial class RynthAiPlugin
         uint selected = Host.GetSelectedItemId();
         if (selected == 0) return null;
         int id = unchecked((int)selected);
+        if (IsSelf(selected))
+        {
+            // Cache only: the window redraws every frame, so it never asks for an identify.
+            bool known = !Host.HasHasAppraisalData || Host.HasAppraisalData(selected);
+            List<string> self = ItemInfo.SelfRatings.Build(_objectCache?[id]?.Name ?? string.Empty,
+                                                          stype => ReadSelfInt(id, stype), known, oneLine: false);
+            return string.Join("\n  ", self);
+        }
         List<string>? lines = BuildItemInfoLines(id, out string? error);
         if (lines == null || lines.Count == 0) return error;
         if (Host.HasHasAppraisalData && !Host.HasAppraisalData(selected))

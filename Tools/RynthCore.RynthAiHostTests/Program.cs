@@ -53,6 +53,7 @@ internal static class Program
         VTankLootTests.Register(runner);
         T11LootTests.Register(runner);
         MagItemDescriberTests.Register(runner);
+SelfRatingsTests.Register(runner);
         ExpressionTests.Register(runner);
         GiveProfileTests.Register(runner);
         MetaTests.Register(runner);
