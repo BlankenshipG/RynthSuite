@@ -21,6 +21,8 @@ internal sealed class OracleContext
     public readonly ServerIdentity Server = new();
     /// <summary>RynthILT's server profile (Leaftide features, fellowship rules); None without RynthILT.</summary>
     public readonly IltServerLink Ilt = new();
+    /// <summary>RynthCore's server list (API v85) and the active server owner's settings; State null on older engines.</summary>
+    public readonly RynthCore.Plugin.Shared.ServerStateClient ServerState = new();
     /// <summary>ConquestAC-only data (tag Conquest); fed only while on ConquestAC.</summary>
     public readonly ConquestData Conquest = new();
     /// <summary>Aelrynth's leaderboards (tag Aelrynth); fed only while on Aelrynth.</summary>

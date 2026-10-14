@@ -43,6 +43,7 @@ namespace RynthOracle.Tests
             QuestLines();
             Catalog();
             Servers();
+            EngineServers();
             IltProfile();
             QuestNotes();
             ConquestReplies();
@@ -158,6 +159,73 @@ namespace RynthOracle.Tests
             Check(cat.TryGet("zzzz_custom_aelrynth_flag", out Quest nq) && nq.IsNew && nq.Name == "Custom", "unknown flag added as new");
             Check(cat.TryGet("30minattributes", out Quest known) && !known.IsNew && known.IsComplete(flags) && known.IsRepeatable(flags), "known flag is complete and repeatable");
             Check(QuestCatalog.Validate(string.Join("\n", Enumerable.Repeat("x", 3)), out _) == false, "validation rejects junk");
+        }
+
+        /// <summary>A RynthCore GetServerStateJson answer (schema 1) with the given servers.</summary>
+        private static string EngineJson(string active, string activeName, string activePlugin, string pick, string world, params string[] servers)
+            => "{\"schema\":1,\"revision\":3,\"host\":\"h\",\"world\":\"" + world + "\",\"pick\":\"" + pick + "\",\"active\":\"" + active
+               + "\",\"activeName\":\"" + activeName + "\",\"activePlugin\":\"" + activePlugin + "\",\"servers\":[" + string.Join(",", servers) + "]}";
+
+        private static string EngineRow(string id, bool active, string force, string plugin = "", string reason = "")
+            => "{\"id\":\"" + id + "\",\"name\":\"" + id.ToUpperInvariant() + "\",\"active\":" + (active ? "true" : "false")
+               + ",\"detected\":" + (active && force == "auto" ? "true" : "false") + ",\"force\":\"" + force
+               + "\",\"builtIn\":false,\"plugin\":\"" + plugin + "\",\"reason\":\"" + reason + "\"}";
+
+        // RynthCore's server list (API v85) drives the identity: overrides and the Diagnostics pick included.
+        private static void EngineServers()
+        {
+            // The shared parser.
+            Check(RynthCore.Plugin.Shared.EngineServerState.Parse(null) == null && RynthCore.Plugin.Shared.EngineServerState.Parse("junk") == null, "engine state: junk is null");
+            Check(RynthCore.Plugin.Shared.EngineServerState.Parse("{\"schema\":2}") == null, "engine state: another schema is null");
+            var st = RynthCore.Plugin.Shared.EngineServerState.Parse(EngineJson("ilt", "Infinite Leaftide", "RynthILT", "auto", "InfiniteLeaftide",
+                EngineRow("ilt", true, "auto", "RynthILT", "host matches"), EngineRow("aelrynth", false, "auto")));
+            Check(st != null && st.HasActive && st.IsActive("ILT") && st.ActivePlugin == "RynthILT" && !st.Picked, "engine state: active ILT, detected");
+            Check(st!.Servers.Count == 2 && st.Find("aelrynth") != null && st.Find("x") == null && st.Revision == 3, "engine state: rows");
+
+            // Identity from it.
+            ServerIdentity.FromEngine(st, "Launcher Profile", out string tag, out string world, out string source);
+            Check(tag == ServerTags.InfiniteLeaftide && world == "InfiniteLeaftide", "engine: ILT active is the ILT tag: " + source);
+            Check(source.Contains("host matches"), "engine: the reason is shown: " + source);
+
+            var picked = RynthCore.Plugin.Shared.EngineServerState.Parse(EngineJson("conquest", "ConquestAC", "RynthConquest", "conquest", "",
+                EngineRow("ilt", false, "off"), EngineRow("conquest", true, "on", "RynthConquest")))!;
+            ServerIdentity.FromEngine(picked, "Leaftide Box", out tag, out world, out source);
+            Check(tag == ServerTags.Conquest && world == "Leaftide Box", "engine: a pick beats the world name (and the world falls back): " + source);
+            Check(source.Contains("picked by hand"), "engine: a pick says so: " + source);
+
+            var off = RynthCore.Plugin.Shared.EngineServerState.Parse(EngineJson("", "", "", "mixed", "InfiniteLeaftide", EngineRow("ilt", false, "off")))!;
+            ServerIdentity.FromEngine(off, "", out tag, out _, out source);
+            Check(tag == "", "engine: ILT forced off stays off despite the Leaftide world name: " + source);
+
+            var unknown = RynthCore.Plugin.Shared.EngineServerState.Parse(EngineJson("", "", "", "auto", "Levistras", EngineRow("ilt", false, "auto")))!;
+            ServerIdentity.FromEngine(unknown, "", out tag, out _, out source);
+            Check(tag == ServerTags.Levistras, "engine: a world the engine has no server for still tags by name: " + source);
+
+            var coldeve = RynthCore.Plugin.Shared.EngineServerState.Parse(EngineJson("coldeve", "Coldeve", "RynthColdeve", "auto", "Coldeve", EngineRow("coldeve", true, "auto", "RynthColdeve")))!;
+            ServerIdentity.FromEngine(coldeve, "", out tag, out _, out source);
+            Check(tag == "" && source.Contains("Coldeve"), "engine: a server without Oracle pages has no tag: " + source);
+
+            Check(ServerIdentity.TagForEngineId("AELRYNTH") == ServerTags.Aelrynth && ServerIdentity.TagForEngineId(null) == "", "engine id to tag");
+            Check(ServerIdentity.EngineIdForTag(ServerTags.InfiniteLeaftide) == "ilt" && ServerIdentity.EngineIdForTag("") == "", "tag to engine id");
+
+            // The owner's profile, read leniently (a server plugin's, and RynthILT's).
+            var prof = RynthCore.Plugin.Shared.ServerProfileView.Parse(
+                "{\"schema\":1,\"id\":\"coldeve\",\"name\":\"Coldeve\",\"plugin\":\"RynthColdeve\",\"ruleset\":\"PvE\",\"emulator\":\"ACE\",\"botting\":\"forbidden\",\"bottingNote\":\"no bots\",\"accountLimit\":\"3 accounts\"}");
+            Check(prof != null && prof.Botting == "forbidden" && prof.Summary() == "PvE, ACE; botting forbidden - no bots; accounts: 3 accounts", "profile: server plugin: " + prof?.Summary());
+            var iltProf = RynthCore.Plugin.Shared.ServerProfileView.Parse("{\"ilt\":true,\"features\":[{\"key\":\"bank\",\"state\":1},{\"key\":\"x\",\"state\":0},{\"key\":\"y\",\"state\":1}]}");
+            Check(iltProf != null && iltProf.Ilt && iltProf.FeaturesOn == 2 && iltProf.Summary() == "ILT world, 2 Leaftide features on", "profile: RynthILT: " + iltProf?.Summary());
+            Check(RynthCore.Plugin.Shared.ServerProfileView.Parse("") == null && RynthCore.Plugin.Shared.ServerProfileView.Parse("[1]") == null, "profile: junk is null");
+            // A user's server-name list (ub-Rythai's ILT Auto list) against the engine's verdict.
+            string[] list = { "InfiniteLeaftide", "Conquest" };
+            Check(RynthCore.Plugin.Shared.EngineServerState.MatchesNameList(null, "Infinite Leaftide", list), "names: no engine, the world name decides (spaces ignored)");
+            Check(!RynthCore.Plugin.Shared.EngineServerState.MatchesNameList(null, "Coldeve", list), "names: no engine, another world");
+            Check(RynthCore.Plugin.Shared.EngineServerState.MatchesNameList(st, "Launcher Profile", list), "names: ILT active matches a Leaftide name whatever the world");
+            Check(RynthCore.Plugin.Shared.EngineServerState.MatchesNameList(picked, "", list), "names: a picked Conquest matches by id");
+            Check(!RynthCore.Plugin.Shared.EngineServerState.MatchesNameList(coldeve, "InfiniteLeaftide", list), "names: Coldeve active beats a Leaftide world name");
+            Check(!RynthCore.Plugin.Shared.EngineServerState.MatchesNameList(off, "InfiniteLeaftide", list), "names: ILT listed and off stays off");
+            Check(RynthCore.Plugin.Shared.EngineServerState.MatchesNameList(unknown, "Conquest", list), "names: a server the engine doesn't list still matches by world");
+            Check(RynthCore.Plugin.Shared.ServerStateClient.InterfaceFor("RynthILT") == "RynthILT.Server"
+                  && RynthCore.Plugin.Shared.ServerStateClient.InterfaceFor("RynthColdeve") == "RynthServer.Profile", "profile: which interface to ask");
         }
 
         private static void Servers()

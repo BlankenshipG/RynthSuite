@@ -19,7 +19,7 @@ namespace RynthCore.Plugin.RynthOracle;
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.2.2.
-    public const string Version = "0.2.3";
+    public const string Version = "0.2.4";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -40,6 +40,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private bool _voidAutoDecided;
     private bool _dailyCheckStarted;
     private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1, _seenIltRevision = -1;
+    // RynthCore's server list (ServerStateClient.Revision) last applied to the server identity.
+    private int _seenServerStateRevision = -1;
     private bool _noUiLogged;
     private string? _catalogTag;          // the server tag the catalog and server data were loaded for
     private bool _conquestLoginRead;
@@ -108,7 +110,10 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Server.Reset();
         _c.Ilt.Clear();
         _c.Ilt.Poll(Host, Environment.TickCount64);
-        _c.Server.Refresh(Host, Host.GetPlayerId(), _c.Ilt.Profile.Ilt);
+        _c.ServerState.Clear();
+        _c.ServerState.Poll(Host, Environment.TickCount64, force: true);
+        _seenServerStateRevision = _c.ServerState.Revision;
+        _c.Server.Refresh(Host, Host.GetPlayerId(), _c.Ilt.Profile.Ilt, _c.ServerState.State);
         _catalogTag = null;
         ApplyServer();
         _conquestLoginRead = false;
@@ -145,6 +150,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Boards.Clear();
         _c.Server.Reset();
         _c.Ilt.Clear();
+        _c.ServerState.Clear();
         _c.TitlesKnown = false;
         _c.EarnedTitles.Clear();
     }
@@ -372,6 +378,16 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             if (_main != null) _main.NeedsPass = true;
         }
 
+        // RynthCore's server list (every 2 s): a new pick or override applies now, not at the next character read.
+        _c.ServerState.Poll(Host, now);
+        if (_c.ServerState.Revision != _seenServerStateRevision)
+        {
+            _seenServerStateRevision = _c.ServerState.Revision;
+            _c.Server.Refresh(Host, _c.Character.PlayerId != 0 ? _c.Character.PlayerId : Host.GetPlayerId(), _c.Ilt.Profile.Ilt, _c.ServerState.State);
+            ApplyServer();
+            if (_main != null) _main.NeedsPass = true;
+        }
+
         if (_questReadAtMs >= 0 && now >= _questReadAtMs)
         {
             _questReadAtMs = -1;
@@ -393,7 +409,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             _nextCharacterReadMs = now + CharacterReadMs;
             _c.Character.Read(Host);
             _c.Void.RemoveExpired(now);
-            _c.Server.Refresh(Host, _c.Character.PlayerId, _c.Ilt.Profile.Ilt);
+            _c.Server.Refresh(Host, _c.Character.PlayerId, _c.Ilt.Profile.Ilt, _c.ServerState.State);
             ApplyServer();
             LoadQuestBook(now);
             ReadTitles();

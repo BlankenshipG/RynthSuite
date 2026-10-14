@@ -58,23 +58,23 @@ public sealed partial class UbRythaiPlugin
         };
     }
 
+    /// <summary>RynthCore's server list (API v85): Auto follows its verdict, overrides and Diagnostics pick included.</summary>
+    private readonly ServerStateClient _serverState = new();
+
+    /// <summary>Polls RynthCore's server list (every 2 s, cheap when not due). Pump thread.</summary>
+    private void PollServerState(bool force = false) => _serverState.Poll(Host, Environment.TickCount64, force);
+
     private bool CurrentWorldMatchesLeaftideAutoList()
     {
-        if (!Host.HasGetWorldName || !Host.TryGetWorldName(out string worldName) || string.IsNullOrWhiteSpace(worldName))
-            return false;
-
+        string worldName = Host.HasGetWorldName && Host.TryGetWorldName(out string w) ? w.Trim() : "";
         string[] tokens = (_settings.LeaftideAutoWorldNames ?? "")
             .Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (tokens.Length == 0)
             return false;
 
-        foreach (string token in tokens)
-        {
-            if (string.Equals(token, worldName.Trim(), StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-
-        return false;
+        // Engines with GetServerStateJson decide (the same verdict as RynthCore's menus); older ones: the world name.
+        PollServerState();
+        return EngineServerState.MatchesNameList(_serverState.State, worldName, tokens);
     }
 
     private bool IsLeaftideFeaturesEnabled()
@@ -121,6 +121,11 @@ public sealed partial class UbRythaiPlugin
         bool bankEnabled = IsLeaftideBankingEnabled();
         Host.WriteToChat(
             $"[ub-Rythai] ILT mode={NormalizeLeaftideMode(_settings.LeaftideFeaturesMode)} | features={(iltEnabled ? "ON" : "OFF")} | banking={(bankEnabled ? "ON" : "OFF")} | world='{worldName}' | autoMatch={(autoMatch ? "yes" : "no")} | names='{_settings.LeaftideAutoWorldNames}'",
+            1);
+        EngineServerState? es = _serverState.State;
+        Host.WriteToChat(es == null
+                ? "[ub-Rythai] RynthCore server: not reported (engine older than API v85) - Auto uses the world name."
+                : $"[ub-Rythai] RynthCore server: {(es.HasActive ? es.ActiveName + " (" + es.Active + ")" : "none active")} | pick={es.Pick} | settings from {(es.ActivePlugin.Length > 0 ? es.ActivePlugin : "-")}",
             1);
         Host.WriteToChat("[ub-Rythai] Usage: /ub leaftide on|off|auto", 1);
     }

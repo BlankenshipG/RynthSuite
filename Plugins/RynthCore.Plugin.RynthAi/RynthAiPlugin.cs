@@ -3489,6 +3489,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "listgvars":    HandleListGvarsCommand(); break;
             case "dumpprops":    HandleDumpPropsCommand(parts); break;
             case "version":      HandleVersionCommand(); break;
+            case "server":       HandleServerCommand(); break;
             case "t11":          HandleT11Command(parts); break;
             case "wielded":      HandleWieldedCommand(); break;
             case "scan":         HandleScanCommand(); break;

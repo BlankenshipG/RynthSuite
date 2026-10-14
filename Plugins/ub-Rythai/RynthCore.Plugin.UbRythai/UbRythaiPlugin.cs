@@ -106,6 +106,9 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
         CopySettings(loaded, _settings);
 
         _loginComplete = true;
+        // A fresh read of RynthCore's server list for this character (its overrides may differ).
+        _serverState.Clear();
+        PollServerState(force: true);
         _automation?.OnLoginComplete();
         RunLoginMacroCommands();
         _xpMeter.SeedFromPlayer(Host, pid);

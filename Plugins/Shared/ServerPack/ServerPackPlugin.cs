@@ -59,8 +59,16 @@ public sealed partial class ServerPackPlugin : RynthPluginBase
 
     internal ServerPackInfo Info => _model.Info;
 
+    private static ServerPackInfo? _staticInfo;
+
+    /// <summary>The server's facts before the plugin object exists ("RynthServer.Profile" asked early).</summary>
+    internal static ServerPackInfo StaticInfo => _staticInfo ??= ServerData.Create();
+
     /// <summary>RynthCore (or the world name) says this is the plugin's server now.</summary>
     internal bool Active => _loginComplete && _model.IsActive(_world);
+
+    /// <summary>The world name the client reports ("" before login). Any thread.</summary>
+    internal string World => _world ?? string.Empty;
 
     // ── Hooks for a server's own features (implement in the server's project) ──
 

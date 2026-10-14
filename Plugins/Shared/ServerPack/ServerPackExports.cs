@@ -14,12 +14,34 @@ public static unsafe class ServerPackExports
 {
     private static readonly RynthPluginRuntime<ServerPackPlugin> Runtime = new();
 
+    /// <summary>The live plugin (null before init and after shutdown).</summary>
+    internal static ServerPackPlugin? Plugin => Runtime.Plugin;
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginInit", CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int Init(RynthCoreApiNative* api) => Runtime.Init(api);
+
+    /// <summary>
+    /// Plugin API v68 plugin-to-plugin interfaces: "RynthServer.Profile" v1 (ServerPackInterface),
+    /// the server's settings for any plugin RynthCore's GetServerStateJson points at this one.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginQueryInterface", CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static IntPtr QueryInterface(IntPtr ifaceAnsi, uint version)
+    {
+        try
+        {
+            string iface = ifaceAnsi == IntPtr.Zero ? "" : Marshal.PtrToStringAnsi(ifaceAnsi) ?? "";
+            return ServerPackInterface.Query(iface, version);
+        }
+        catch
+        {
+            return IntPtr.Zero;   // an exception crossing UnmanagedCallersOnly would fail-fast the client
+        }
+    }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginShutdown", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void Shutdown()
     {
+        try { ServerPackInterface.Release(); } catch { }
         Runtime.Shutdown();
         IntPtr old = Interlocked.Exchange(ref _sectionsPtr, IntPtr.Zero);
         if (old != IntPtr.Zero) Marshal.FreeCoTaskMem(old);

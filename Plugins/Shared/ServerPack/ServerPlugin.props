@@ -45,6 +45,10 @@
     <Compile Include="$(MSBuildThisFileDirectory)ServerPackUi.cs" Link="ServerPack\ServerPackUi.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)ServerPackPlugin.cs" Link="ServerPack\ServerPackPlugin.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)ServerPackExports.cs" Link="ServerPack\ServerPackExports.cs" />
+    <!-- "RynthServer.Profile": the server's settings for other plugins (RynthPluginQueryInterface). -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\RynthServerProfileApi.cs" Link="Shared\RynthServerProfileApi.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ServerPackProfile.cs" Link="ServerPack\ServerPackProfile.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ServerPackInterface.cs" Link="ServerPack\ServerPackInterface.cs" />
   </ItemGroup>
 
   <ItemGroup>

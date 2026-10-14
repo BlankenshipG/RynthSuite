@@ -19,6 +19,58 @@ internal static class ServerPackModelTests
         r.Add("server pack: the sections manifest declares the server and a server-only card", SectionsJson);
         r.Add("server pack: logout clears the verdict", ClearOnLogout);
         r.Add("server pack: the card's botting line and address", InfoText);
+        r.Add("server pack: the RynthServer.Profile JSON carries the server's settings", ProfileJson);
+        r.Add("server pack: the profile JSON is plain ASCII and escaped", ProfileJsonAscii);
+    }
+
+    private static void ProfileJson()
+    {
+        ServerPackInfo info = new("Coldeve", "Coldeve", new[] { "play.coldeve.ac" }, new[] { "Coldeve" })
+        {
+            Port = 9050, Ruleset = "PvP", Status = "Stable", Botting = BottingPolicy.Restricted, BottingNote = "attended only",
+            AccountLimit = "3 accounts", Facts = new[] { "fact one" }, Commands = new[] { new ServerCommand("/x", "does x") },
+            Discord = "https://discord.gg/x",
+        };
+        string json = ServerPackProfile.BuildJson(info, "RynthColdeve", "0.1.2", true, "Coldeve");
+        using JsonDocument doc = JsonDocument.Parse(json);
+        JsonElement root = doc.RootElement;
+        Check.Eq(root.GetProperty("schema").GetInt32(), ServerPackProfile.Schema, "schema");
+        Check.Eq(root.GetProperty("id").GetString(), "coldeve", "id (lower-cased)");
+        Check.Eq(root.GetProperty("plugin").GetString(), "RynthColdeve", "plugin");
+        Check.Eq(root.GetProperty("version").GetString(), "0.1.2", "version");
+        Check.True(root.GetProperty("active").GetBoolean(), "active");
+        Check.Eq(root.GetProperty("world").GetString(), "Coldeve", "world");
+        Check.Eq(root.GetProperty("hosts")[0].GetString(), "play.coldeve.ac", "hosts");
+        Check.Eq(root.GetProperty("port").GetInt32(), 9050, "port");
+        Check.Eq(root.GetProperty("ruleset").GetString(), "PvP", "ruleset");
+        Check.Eq(root.GetProperty("botting").GetString(), "restricted", "botting");
+        Check.Eq(root.GetProperty("bottingNote").GetString(), "attended only", "botting note");
+        Check.Eq(root.GetProperty("facts")[0].GetString(), "fact one", "facts");
+        Check.Eq(root.GetProperty("commands")[0].GetProperty("what").GetString(), "does x", "commands");
+        Check.Eq(root.GetProperty("discord").GetString(), "https://discord.gg/x", "links");
+
+        // What a reader (RynthOracle, RynthAi's /ra server) makes of it.
+        var view = RynthCore.Plugin.Shared.ServerProfileView.Parse(json);
+        Check.True(view != null, "the shared reader parses it");
+        Check.Eq(view!.Summary(), "PvP, ACE; botting restricted - attended only; accounts: 3 accounts", "the reader's summary");
+
+        string idle = ServerPackProfile.BuildJson(info, "RynthColdeve", "0.1.2", false, null);
+        using JsonDocument idleDoc = JsonDocument.Parse(idle);
+        Check.False(idleDoc.RootElement.GetProperty("active").GetBoolean(), "not active");
+        Check.Eq(idleDoc.RootElement.GetProperty("world").GetString(), "", "no world before login");
+        Check.Eq(ServerPackProfile.BottingName(BottingPolicy.Unknown), "unknown", "unknown botting");
+    }
+
+    private static void ProfileJsonAscii()
+    {
+        ServerPackInfo info = new("x", "Caf\u00e9 \"Q\"\n", Array.Empty<string>(), Array.Empty<string>()) { Summary = "a\\b\tc \u2014 d" };
+        string json = ServerPackProfile.BuildJson(info, "RynthX", "1", false, "");
+        bool ascii = true;
+        foreach (char c in json) if (c > 0x7e || c < 0x20) ascii = false;
+        Check.True(ascii, "only printable ASCII: " + json);
+        using JsonDocument doc = JsonDocument.Parse(json);
+        Check.Eq(doc.RootElement.GetProperty("name").GetString(), "Caf\u00e9 \"Q\"", "name round-trips (trimmed)");
+        Check.Eq(doc.RootElement.GetProperty("summary").GetString(), "a\\b\tc \u2014 d", "summary round-trips");
     }
 
     private static ServerPackInfo Coldeve() =>

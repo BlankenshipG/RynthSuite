@@ -23,6 +23,9 @@
   <ItemGroup>
     <Compile Include="..\..\Plugins\Shared\ServerPack\ServerPackInfo.cs" Link="Plugin\ServerPackInfo.cs" />
     <Compile Include="..\..\Plugins\Shared\ServerPack\ServerPackModel.cs" Link="Plugin\ServerPackModel.cs" />
+    <!-- "RynthServer.Profile": the profile JSON, and the shared reader's parser that consumes it. -->
+    <Compile Include="..\..\Plugins\Shared\ServerPack\ServerPackProfile.cs" Link="Plugin\ServerPackProfile.cs" />
+    <Compile Include="..\..\Plugins\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\Manifest\RynthPluginManifest.cs" Link="Sdk\RynthPluginManifest.cs" />
     <!-- The launcher's known-server picker, checked against the plugins it names. -->
     <Compile Include="..\..\..\RynthCore\src\RynthCore.App\LaunchServerProfile.cs" Link="Launcher\LaunchServerProfile.cs" />

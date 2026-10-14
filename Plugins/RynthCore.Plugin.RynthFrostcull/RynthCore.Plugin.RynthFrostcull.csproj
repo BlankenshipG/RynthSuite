@@ -5,7 +5,7 @@
   <PropertyGroup>
     <AssemblyName>RynthCore.Plugin.RynthFrostcull</AssemblyName>
     <!-- First release (no previous). -->
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <RynthPluginServerId>frostcull</RynthPluginServerId>
     <RynthPluginServerName>Frostcull</RynthPluginServerName>
     <RynthPluginServerHosts>frostcull.ddns.net</RynthPluginServerHosts>

@@ -5,7 +5,7 @@
   <PropertyGroup>
     <AssemblyName>RynthCore.Plugin.RynthPortalStorm</AssemblyName>
     <!-- First release (no previous). -->
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <RynthPluginServerId>portalstorm</RynthPluginServerId>
     <RynthPluginServerName>PortalStorm</RynthPluginServerName>
     <RynthPluginServerHosts>ac.portalstorm.us.com</RynthPluginServerHosts>
