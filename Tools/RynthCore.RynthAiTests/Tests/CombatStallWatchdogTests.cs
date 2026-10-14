@@ -22,6 +22,25 @@ internal static class CombatStallWatchdogTests
         r.Add("stall: a tick gap starts the count over", TickGapResets);
         r.Add("stall: ineligible never acts", Ineligible);
         r.Add("stall: Unfire takes a step back - the same step is due again next tick, not 3 s later", UnfireRetries);
+        r.Add("stall: a missile target at point blank starts the ladder at 3.5 s", PointBlank);
+    }
+
+    /// <summary>The caller passes PointBlankStallMs for a missile target within 3 m (Kelpie 2026-10-14).</summary>
+    private static void PointBlank()
+    {
+        var w = new CombatStallWatchdog();
+        Act first = Act.None;
+        int at = -1;
+        for (int t = 0; t <= 10_000 && first == Act.None; t += TickMs)
+        {
+            first = w.Tick(T0.AddMilliseconds(t), eligible: true, NoEvidence, out _,
+                           stallAfterMs: CombatStallWatchdog.PointBlankStallMs);
+            if (first != Act.None) at = t;
+        }
+        Check.Eq((first, at), (Act.Reissue, 3500), "step 1 after 3.5 s at point blank");
+
+        var normal = new CombatStallWatchdog();
+        Check.Eq(RunUntilAction(normal, 0, 10_000, NoEvidence), (Act.Reissue, 6000), "the default is still 6 s");
     }
 
     /// <summary>Ticks every 500 ms from <paramref name="fromMs"/> to <paramref name="toMs"/>

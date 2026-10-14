@@ -550,6 +550,25 @@ internal sealed class LegacyAdvancedSettingsUi
                                      "The only monster in reach is never skipped.");
                 DrawEnvironmentThrottleKnobs("missile");
 
+                ImGui.Spacing();
+                ImGui.Text("Weapon Swaps");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Wait After Target Lock (ms)", ref _settings.WeaponSwapSettleMs, 0, 3000);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("A new target must stay locked this long before a weapon swap starts, so a target\n" +
+                                     "that changes right after the lock doesn't cost a wasted swap. 0 = swap at once.");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("No Swap Under Target Health %", ref _settings.WeaponSwapMinHealthPct, 0, 100);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("A target at or under this health is finished with the weapon in hand\n" +
+                                     "(same kind of weapon only). A swap under way always completes. 0 = off.");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Weakness Swap Min Gain %", ref _settings.WeaponSwapMinGainPct, 0, 200);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Auto (weakness) picks only: swap to another element only when it does at least this\n" +
+                                     "much more damage than the weapon in hand. A launcher swap with other ammo costs about 4 s.\n" +
+                                     "Damage tab, slayer and Monsters rule picks always swap. 0 = off.");
+
                 ImGui.Separator();
                 ImGui.Spacing();
                 ImGui.Checkbox("Use Native Attack", ref _settings.UseNativeAttack);

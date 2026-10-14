@@ -3515,7 +3515,9 @@ public partial class CombatManager : IDisposable
             }
         }
 
-        var act = _stallWatch.Tick(now, eligible, _lastSwingEvidenceAt, out double stalledMs, quiet);
+        double stallAfter = mode == CombatMode.Missile && currentDist <= CombatStallWatchdog.PointBlankMissileM
+            ? CombatStallWatchdog.PointBlankStallMs : CombatStallWatchdog.StallMs;
+        var act = _stallWatch.Tick(now, eligible, _lastSwingEvidenceAt, out double stalledMs, quiet, stallAfter);
         switch (act)
         {
             case CombatStallWatchdog.StallAction.None:
@@ -4299,8 +4301,12 @@ public partial class CombatManager : IDisposable
             if (ctype == 0 && _slayerTypeUnknownNoted.TryAdd(wcid != 0 ? wcid.ToString() : target.Name ?? "", 0))
                 _host.Log($"[EquipDiag] '{target.Name}' (wcid {wcid}): creature type not known yet (not appraised, not in the creature data) - no slayer check until it is");
         }
+        // A weakness swap must beat the weapon in hand by WeaponSwapMinGainPct, but only while no
+        // swap is under way: a launcher whose ammo already went into the pack is never kept.
+        double minGain = _settings.WeaponSwapMinGainPct > 0 && SwapHoldsAllowed(InHandWeaponId())
+            ? _settings.WeaponSwapMinGainPct / 100.0 : 0;
         return WeaponPlanner.Choose(listed, ruleElement, weak, e => CanCastElement(e, rule),
-            fixedId, fixedSource, learnedId, ctype, fixedIsDefault);
+            fixedId, fixedSource, learnedId, ctype, fixedIsDefault, minGain);
     }
 
     // PropertyInt 166 SlayerCreatureType, PropertyFloat 138 SlayerDamageBonus (ACE.Entity).
@@ -4536,6 +4542,69 @@ public partial class CombatManager : IDisposable
 
     private DateTime _lastSwapHoldLogAt = DateTime.MinValue;
 
+    /// <summary>
+    /// Why a swap the tracker allows should not start now (null = start it). Settling: the
+    /// target was locked under WeaponSwapSettleMs ago; wait (Kelpie 2026-10-14 11:41:06: a lock,
+    /// the crossbow swap sent, then a switch to another monster 230 ms later). Not settling: keep
+    /// the weapon in hand, because the target is at or under WeaponSwapMinHealthPct (same kind of
+    /// weapon only). Never once a swap is under way (SwapHoldsAllowed), so a launcher is never
+    /// kept after its ammo went into the pack.
+    /// </summary>
+    private string? SwapDeferReason(WorldObject target, int chosenId, int inHand, out bool settling)
+    {
+        settling = false;
+        if (!SwapHoldsAllowed(inHand)) return null;
+
+        int settleMs = _settings.WeaponSwapSettleMs;
+        if (settleMs > 0 && _lockedTargetId == target.Id && _targetLockedAt != DateTime.MinValue)
+        {
+            double lockedMs = (DateTime.Now - _targetLockedAt).TotalMilliseconds;
+            if (lockedMs >= 0 && lockedMs < settleMs)
+            {
+                settling = true;
+                return $"target locked {lockedMs:0} ms ago";
+            }
+        }
+
+        int minHealth = _settings.WeaponSwapMinHealthPct;
+        if (minHealth > 0 && WeaponKind(inHand) != 0 && WeaponKind(inHand) == WeaponKind(chosenId))
+        {
+            float ratio = _worldFilter.GetHealthRatio(target.Id);
+            if (ratio >= 0f && ratio * 100f <= minHealth)
+                return $"target at {ratio * 100f:0}% health";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// True when a swap rule may keep or delay with <paramref name="inHand"/>: nothing of a swap
+    /// is under way (no wield in flight, no old ammo or off hand on its way into the pack, no
+    /// ammo follow-up armed), and a launcher in hand has fitting ammo on, so it can shoot.
+    /// </summary>
+    private bool SwapHoldsAllowed(int inHand)
+    {
+        if (inHand == 0 || SwapTracker.PendingId != 0) return false;
+        if (_ammoDequipPendingId != 0 || AmmoSwapInProgress || _offDequipPendingId != 0) return false;
+        int lt = LauncherTypeOf(_worldFilter[inHand]);
+        if (lt == 0) return true;
+        var wielded = PackAmmo().FirstOrDefault(a => a.Wielded);
+        return wielded != null && MissileAmmo.Fits(lt, wielded.AmmoType);
+    }
+
+    // Last swap deferral logged: (chosen, in hand, reason kind) and when.
+    private (int Chosen, int Hand, bool Settle) _lastSwapDeferLogged;
+    private DateTime _lastSwapDeferLogAt = DateTime.MinValue;
+
+    private void LogSwapDefer(int chosenId, int inHand, string why)
+    {
+        var key = (chosenId, inHand, why.StartsWith("target locked", StringComparison.Ordinal));
+        DateTime now = DateTime.Now;
+        if (key == _lastSwapDeferLogged && (now - _lastSwapDeferLogAt).TotalSeconds < 10) return;
+        _lastSwapDeferLogged = key;
+        _lastSwapDeferLogAt = now;
+        _host.Log($"[EquipDiag] not swapping 0x{(uint)inHand:X8} '{WeaponName(inHand)}' for 0x{(uint)chosenId:X8} '{WeaponName(chosenId)}' yet ({why})");
+    }
+
     private string WeaponName(int id) => id == 0 ? "" : (_worldFilter[id]?.Name ?? "");
 
     /// <summary>Send one combat wield of <paramref name="weaponId"/> and tell the swap tracker.</summary>
@@ -4717,6 +4786,23 @@ public partial class CombatManager : IDisposable
         {
             var step = SwapStep(targetWeaponId, inHand);
             if (step == WeaponSwapTracker.Step.Wait) { if (inHand != 0) _equippedWeaponId = inHand; return false; }
+            if (step == WeaponSwapTracker.Step.Swap && inHand != 0
+                && SwapDeferReason(target, targetWeaponId, inHand, out bool settling) is string defer)
+            {
+                LogSwapDefer(targetWeaponId, inHand, defer);
+                if (settling)
+                {
+                    _equippedWeaponId = inHand;
+                    LastCombatSkipReason = "swap-settle";
+                    return false;
+                }
+                if (_worldFilter[inHand] is WorldObject deferKeep)
+                {
+                    weaponSource = $"in hand ({defer}); wanted 0x{(uint)targetWeaponId:X8}";
+                    targetWeaponId = inHand;
+                    weaponObj = deferKeep;
+                }
+            }
             if (step == WeaponSwapTracker.Step.Hold)
             {
                 if (inHand != 0 && _worldFilter[inHand] is WorldObject handObj)

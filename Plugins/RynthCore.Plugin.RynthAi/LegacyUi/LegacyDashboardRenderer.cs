@@ -1079,6 +1079,9 @@ internal sealed partial class LegacyDashboardRenderer
                 EnvironmentApproachMeters  = s.EnvironmentApproachMeters,
                 EnvironmentMinDistance     = s.EnvironmentMinDistance,
                 EnvironmentSkipSec         = s.EnvironmentSkipSec,
+                WeaponSwapSettleMs         = s.WeaponSwapSettleMs,
+                WeaponSwapMinHealthPct     = s.WeaponSwapMinHealthPct,
+                WeaponSwapMinGainPct       = s.WeaponSwapMinGainPct,
                 // Spell Combat
                 SpellCastIntervalMs        = s.SpellCastIntervalMs,
                 AttackSpellIntervalMs      = s.AttackSpellIntervalMs,
@@ -1321,6 +1324,9 @@ internal sealed partial class LegacyDashboardRenderer
             if (p.EnvironmentApproachMeters is int envStep)   s.EnvironmentApproachMeters = envStep;
             if (p.EnvironmentMinDistance is int envMinDist)   s.EnvironmentMinDistance = envMinDist;
             if (p.EnvironmentSkipSec is int envSkip)          s.EnvironmentSkipSec = envSkip;
+            if (p.WeaponSwapSettleMs is int wsSettle)         s.WeaponSwapSettleMs = Math.Clamp(wsSettle, 0, 3000);
+            if (p.WeaponSwapMinHealthPct is int wsHealth)     s.WeaponSwapMinHealthPct = Math.Clamp(wsHealth, 0, 100);
+            if (p.WeaponSwapMinGainPct is int wsGain)         s.WeaponSwapMinGainPct = Math.Clamp(wsGain, 0, 200);
             // Spell Combat
             s.SpellCastIntervalMs        = p.SpellCastIntervalMs;
             if (p.AttackSpellIntervalMs is int attackDelay) s.AttackSpellIntervalMs = attackDelay;   // absent = unchanged
@@ -1875,6 +1881,9 @@ internal sealed partial class LegacyDashboardRenderer
         dst.EnvironmentApproachMeters = tmp.EnvironmentApproachMeters;
         dst.EnvironmentMinDistance   = tmp.EnvironmentMinDistance;
         dst.EnvironmentSkipSec       = tmp.EnvironmentSkipSec;
+        dst.WeaponSwapSettleMs       = Math.Clamp(tmp.WeaponSwapSettleMs, 0, 3000);
+        dst.WeaponSwapMinHealthPct   = Math.Clamp(tmp.WeaponSwapMinHealthPct, 0, 100);
+        dst.WeaponSwapMinGainPct     = Math.Clamp(tmp.WeaponSwapMinGainPct, 0, 200);
         dst.UseNativeAttack          = tmp.UseNativeAttack;
         dst.WieldUnlistedWandWhenNoneListed = tmp.WieldUnlistedWandWhenNoneListed;
         dst.OffhandDefault           = OffhandRules.SettingValue(OffhandRules.Parse(tmp.OffhandDefault, OffhandMode.Auto));

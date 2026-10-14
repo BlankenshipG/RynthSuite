@@ -35,6 +35,18 @@ internal sealed class CombatStallWatchdog
     /// it at once every time, so most of the 7-9 s per stall was the wait).</summary>
     public const double QuietStallMs = 2500;
 
+    /// <summary>
+    /// The stall time for a missile attack at point blank (target within
+    /// <see cref="PointBlankMissileM"/>). Silentkelpie 2026-10-14: 22 of 40 missile stalls were
+    /// at 1.5-2.5 m, and step 1 (re-issue) brought the swings back within half a second in most
+    /// of them, so the 6 s wait was the whole cost. A bow or crossbow there shows a hit or miss
+    /// every 1.5-2 s.
+    /// </summary>
+    public const double PointBlankStallMs = 3500;
+
+    /// <summary>Missile targets this close (metres) use <see cref="PointBlankStallMs"/>.</summary>
+    public const double PointBlankMissileM = 3.0;
+
     /// <summary>Time allowed for each step to show a swing before the next one.</summary>
     public const double StepMs = 3000;
 
@@ -70,11 +82,14 @@ internal sealed class CombatStallWatchdog
     /// Advance the watchdog. <paramref name="eligible"/> is the full precondition set;
     /// <paramref name="lastEvidenceAt"/> the last hit, miss or kill. <paramref name="quiet"/>:
     /// the caller sees no swing playing and the character standing still (step 1 after
-    /// <see cref="QuietStallMs"/>). Returns the step to carry out now (or Recovered / GaveUp for
-    /// logging), with the stalled time.
+    /// <see cref="QuietStallMs"/>). <paramref name="stallAfterMs"/>: how long without evidence
+    /// starts an episode otherwise (0 = <see cref="StallMs"/>). Returns the step to carry out now
+    /// (or Recovered / GaveUp for logging), with the stalled time.
     /// </summary>
-    public StallAction Tick(DateTime now, bool eligible, DateTime lastEvidenceAt, out double stalledMs, bool quiet = false)
+    public StallAction Tick(DateTime now, bool eligible, DateTime lastEvidenceAt, out double stalledMs,
+                            bool quiet = false, double stallAfterMs = 0)
     {
+        if (stallAfterMs <= 0) stallAfterMs = StallMs;
         stalledMs = 0;
         bool gap = _lastTick != DateTime.MinValue
                    && (now - _lastTick).TotalMilliseconds > TickGapResetMs;
@@ -108,8 +123,8 @@ internal sealed class CombatStallWatchdog
         if (_step == 0)
         {
             bool early = quiet && stalledMs >= QuietStallMs;
-            if (stalledMs < StallMs && !early) return StallAction.None;
-            LastFireWasEarly = stalledMs < StallMs;
+            if (stalledMs < stallAfterMs && !early) return StallAction.None;
+            LastFireWasEarly = stalledMs < stallAfterMs;
             Episodes++;
             _stallRef = refAt;
             return Fire(now);

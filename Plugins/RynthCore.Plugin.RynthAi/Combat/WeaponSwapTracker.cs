@@ -20,6 +20,8 @@ namespace RynthCore.Plugin.RynthAi;
 ///     was fought with the Quadrelle for 5-10 s until the 20 s dwell from the last swap ran out
 ///     - "he attacks for about 5 seconds with the wrong element weapon"). The window cap still
 ///     bounds a fight that alternates between two kinds of monster.
+///   * A swap counts as landed when its weapon reaches the hand, even if the choice moved on
+///     while it was in flight.
 /// </summary>
 internal sealed class WeaponSwapTracker
 {
@@ -69,6 +71,15 @@ internal sealed class WeaponSwapTracker
     {
         HoldReason = "";
         _askKey = forKey;
+        // The weapon in flight reached the hand although the choice has moved on (a new target
+        // wants another one). It still landed: without this the swap timed out as "not seen in
+        // hand", the A -> B landing was never recorded, and the swap straight back to A wasn't
+        // held (Fire -> Piercing -> Fire crossbow 2.5 s apart, 2026-10-14 11:41:06-08).
+        if (_pendingId != 0 && inHandId == _pendingId && inHandId != chosenId)
+        {
+            _tries.Remove(_pendingId);
+            Land(now);
+        }
         if (chosenId == 0) return Step.InHand;
 
         if (inHandId == chosenId)

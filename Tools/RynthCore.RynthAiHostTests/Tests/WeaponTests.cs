@@ -55,6 +55,8 @@ internal static class WeaponTests
         r.Add("weapon swap: no flip-flop between two weapons", SwapNoFlipFlop);
         r.Add("weapon swap: a new target that wants the weapon just swapped away from gets it at once (Drakkon 2026-10-12)", SwapBackForNewTarget);
         r.Add("weapon swap: a server refusal counts as a failed try", SwapRefused);
+        r.Add("weapon swap: a wield that lands after the choice moved still counts (no swap straight back)", SwapLandsWhenChoiceMoved);
+        r.Add("element choice: a weakness swap must beat the weapon in hand by the min gain", ChoiceMinSwapGain);
         r.Add("tester's case: Dragon's Isle, an unlisted fire wand and Blades", TesterDragonsIsle);
     }
 
@@ -862,6 +864,57 @@ internal static class WeaponTests
         }
         int next = hand == Tetsubo ? Quadrelle : Tetsubo;
         Check.Eq(tr2.Next(next, hand, u.AddSeconds(5), forKey: 0x8010), WeaponSwapTracker.Step.Hold, "a fifth swap inside a minute: held");
+    }
+
+    /// <summary>
+    /// Kelpie 2026-10-14 11:41:06-08: Fire -> Piercing sent, the target changed and the plan
+    /// wanted Fire again while Piercing reached the hand. The landing must count, so the swap
+    /// straight back is held (before: "not seen in hand", no landing, swapped back 2.5 s later).
+    /// </summary>
+    private static void SwapLandsWhenChoiceMoved()
+    {
+        var tr = new WeaponSwapTracker();
+        DateTime t = new(2026, 10, 14, 11, 41, 6);
+        const int fire = 1, piercing = 2;
+        Check.Eq(tr.Next(piercing, fire, t), WeaponSwapTracker.Step.Swap, "Piercing chosen: swap");
+        tr.Sent(piercing, fire, t);
+        Check.Eq(tr.Next(fire, piercing, t.AddMilliseconds(2500)), WeaponSwapTracker.Step.Hold,
+            "Piercing landed while Fire is wanted again: the swap back is held");
+        Check.Eq(tr.PendingId, 0, "nothing in flight once it landed");
+        Check.Eq(tr.TriesFor(piercing), 0, "the landed weapon's tries are cleared");
+        Check.Eq(tr.Notice, null, "no give-up notice: it didn't fail");
+
+        // A third weapon is not the one just swapped away from: allowed.
+        Check.Eq(tr.Next(3, piercing, t.AddMilliseconds(3000)), WeaponSwapTracker.Step.Swap, "another weapon may still swap");
+    }
+
+    /// <summary>WeaponPlanner.KeepInHand: a weakness swap must beat the hand by the min gain.</summary>
+    private static void ChoiceMinSwapGain()
+    {
+        var bows = new List<WeaponCandidate>
+        {
+            new(1, "Fire Bow", CombatMode.Missile, "Fire", "", InHand: true),
+            new(2, "Cold Bow", CombatMode.Missile, "Cold", "", InHand: false),
+        };
+        var close = Rank(("Cold", 1.1), ("Fire", 1.0));
+        var off = WeaponPlanner.Choose(bows, "", close, All);
+        Check.Eq(off.WeaponId, 2, "threshold off: the weakest element wins as before");
+        var keep = WeaponPlanner.Choose(bows, "", close, All, minSwapGain: 0.2);
+        Check.Eq(keep.WeaponId, 1, "Cold only 10% better than Fire in hand: keep the Fire bow");
+        Check.Eq(keep.Element, "Fire", "and its element");
+        Check.True(keep.Source.Contains("within 20%"), "source says why: " + keep.Source);
+
+        var far = Rank(("Cold", 1.5), ("Fire", 1.0));
+        Check.Eq(WeaponPlanner.Choose(bows, "", far, All, minSwapGain: 0.2).WeaponId, 2, "Cold 50% better: swap");
+
+        var learned = new CreatureWeakness.Ranking { Source = "learned", Order = { ("Cold", double.NaN), ("Fire", double.NaN) } };
+        Check.Eq(WeaponPlanner.Choose(bows, "", learned, All, minSwapGain: 0.2).WeaponId, 2, "order only (learned): no threshold, swap");
+
+        var immune = Rank(("Cold", 1.0), ("Fire", 0.0));
+        Check.Eq(WeaponPlanner.Choose(bows, "", immune, All, minSwapGain: 0.5).WeaponId, 2, "the hand does nothing to it: swap");
+
+        // An explicit Monsters rule element is never held back.
+        Check.Eq(WeaponPlanner.Choose(bows, "Cold", close, All, minSwapGain: 0.5).WeaponId, 2, "the rule's Cold: swap");
     }
 
     private static void SwapRefused()

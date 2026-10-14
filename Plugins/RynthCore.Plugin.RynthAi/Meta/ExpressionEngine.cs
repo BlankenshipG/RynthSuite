@@ -3640,6 +3640,9 @@ internal sealed class ExpressionEngine
             ["EnvironmentApproachMeters"]  = (() => I(s.EnvironmentApproachMeters),  v => { if (int.TryParse(v, out int i)) s.EnvironmentApproachMeters  = Math.Clamp(i, 1, 30); }),
             ["EnvironmentMinDistance"]     = (() => I(s.EnvironmentMinDistance),     v => { if (int.TryParse(v, out int i)) s.EnvironmentMinDistance     = Math.Clamp(i, 1, 30); }),
             ["EnvironmentSkipSec"]         = (() => I(s.EnvironmentSkipSec),         v => { if (int.TryParse(v, out int i)) s.EnvironmentSkipSec         = Math.Clamp(i, 5, 300); }),
+            ["WeaponSwapSettleMs"]         = (() => I(s.WeaponSwapSettleMs),         v => { if (int.TryParse(v, out int i)) s.WeaponSwapSettleMs         = Math.Clamp(i, 0, 3000); }),
+            ["WeaponSwapMinHealthPct"]     = (() => I(s.WeaponSwapMinHealthPct),     v => { if (int.TryParse(v, out int i)) s.WeaponSwapMinHealthPct     = Math.Clamp(i, 0, 100); }),
+            ["WeaponSwapMinGainPct"]       = (() => I(s.WeaponSwapMinGainPct),       v => { if (int.TryParse(v, out int i)) s.WeaponSwapMinGainPct       = Math.Clamp(i, 0, 200); }),
             ["UseNativeAttack"]     = (() => B(s.UseNativeAttack),     v => s.UseNativeAttack     = ToDouble(v) != 0),
             ["WieldUnlistedWandWhenNoneListed"] = (() => B(s.WieldUnlistedWandWhenNoneListed), v => s.WieldUnlistedWandWhenNoneListed = ToDouble(v) != 0),
             // The off hand when a monster rule doesn't choose: Auto, Shield, Weapon or None (or 0-3).

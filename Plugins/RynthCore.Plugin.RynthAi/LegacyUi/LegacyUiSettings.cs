@@ -494,6 +494,18 @@ public sealed class LegacyUiSettings
     /// <summary>Auto: dual wield rather than a shield when the Dual Wield skill is trained and a
     /// second one-handed melee weapon is listed. Off by default (the shield).</summary>
     public bool PreferDualWield;
+    /// <summary>
+    /// Weapon swaps (CombatManager.SwapDeferReason). A new lock waits this long (ms) before a
+    /// swap starts, so a target that changes right after the lock doesn't cost a wasted swap.
+    /// 0 = swap at once.
+    /// </summary>
+    public int WeaponSwapSettleMs = 750;
+    /// <summary>No new swap (same kind) onto a target at or under this health %: finish it with
+    /// the weapon in hand. 0 = off.</summary>
+    public int WeaponSwapMinHealthPct = 25;
+    /// <summary>A weakness pick (Auto) swaps only for at least this % more damage than the weapon
+    /// in hand (WeaponPlanner.KeepInHand). Damage tab, slayer and Monsters rule picks always swap. 0 = off.</summary>
+    public int WeaponSwapMinGainPct = 20;
     public int MeleeAttackHeight = 1;
     public int MissileAttackHeight = 1;
 
@@ -1059,6 +1071,10 @@ public sealed class SettingsBridgePayload
     public int? EnvironmentApproachMeters { get; set; }
     public int? EnvironmentMinDistance { get; set; }
     public int? EnvironmentSkipSec { get; set; }
+    // Weapon swaps (only when the sender includes them).
+    public int? WeaponSwapSettleMs { get; set; }
+    public int? WeaponSwapMinHealthPct { get; set; }
+    public int? WeaponSwapMinGainPct { get; set; }
 
     // Spell Combat
     public int SpellCastIntervalMs { get; set; }

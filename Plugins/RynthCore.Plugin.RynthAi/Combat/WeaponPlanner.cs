@@ -45,7 +45,9 @@ internal readonly record struct WeaponPlan(int WeaponId, string Element, string 
 ///      multiplier) down; the first element a listed weapon of the character's main kind has
 ///      wins, and that weapon is wielded. Elements tied on the multiplier count as one step,
 ///      and within a step the weapon in hand wins, then a rending, then the weakness order.
-///      A caster only counts for elements the character can cast.
+///      A caster only counts for elements the character can cast. The weapon in hand is kept
+///      when the winner is of another element and not at least minSwapGain more damage
+///      (KeepInHand; both multipliers must be known).
 ///      No listed weapon has any of them: keep the one in hand (else the learned best, else
 ///      the first), and cast the weakest element the character can.
 ///   6. Weakness unknown: keep the weapon in hand (else the learned best, else the first) and
@@ -76,7 +78,8 @@ internal static class WeaponPlanner
         string fixedSource = "Damage tab",
         int learnedBestId = 0,
         int creatureType = 0,
-        bool fixedIsDefault = false)
+        bool fixedIsDefault = false,
+        double minSwapGain = 0)
     {
         string rule = WeaponElements.Normalize(ruleElement);
         bool ruleSet = rule.Length > 0;
@@ -156,7 +159,13 @@ internal static class WeaponPlanner
                     if (rank < bestRank) { bestRank = rank; best = c; }
                 }
                 if (best != null)
+                {
+                    var held = KeepInHand(pool, best, weak, canCast, minSwapGain);
+                    if (held != null)
+                        return new WeaponPlan(held.Id, held.Element,
+                            $"weak to {best.Element} ({weak.Source}); {held.Element} in hand is within {minSwapGain * 100:0}%");
                     return new WeaponPlan(best.Id, best.Element, $"weak to {best.Element} ({weak.Source})");
+                }
             }
 
             // No listed weapon has any element of the ranking: keep what we have.
@@ -179,6 +188,34 @@ internal static class WeaponPlanner
         if (learned != null)
             return new WeaponPlan(learned.Id, ElementOrFallback(learned, canCast), "Damage tab learned");
         return new WeaponPlan(pool[0].Id, ElementOrFallback(pool[0], canCast), "ItemRules");
+    }
+
+    /// <summary>
+    /// Step 5's swap threshold: the weapon in hand, when <paramref name="best"/> is of another
+    /// element and does less than <paramref name="minSwapGain"/> (0.2 = 20%) more damage to the
+    /// monster than it. A swap costs seconds of not attacking (a launcher with other ammo about
+    /// 4 s), so a small edge isn't worth it. Null (swap) when either multiplier isn't known
+    /// (a learned or seeded ranking has the order only), the hand weapon is immune-resisted (0),
+    /// or the threshold is off.
+    /// </summary>
+    public static WeaponCandidate? KeepInHand(IReadOnlyList<WeaponCandidate> pool, WeaponCandidate best,
+        CreatureWeakness.Ranking weak, Func<string, bool> canCast, double minSwapGain)
+    {
+        if (minSwapGain <= 0) return null;
+        var hand = InHand(pool);
+        if (hand == null || hand.Id == best.Id || hand.Element.Length == 0 || hand.Element == best.Element) return null;
+        if (hand.Kind == CombatMode.Magic && !canCast(hand.Element)) return null;
+        double handMult = MultOf(weak, hand.Element), bestMult = MultOf(weak, best.Element);
+        if (double.IsNaN(handMult) || double.IsNaN(bestMult) || handMult <= 0) return null;
+        return bestMult < handMult * (1 + minSwapGain) - TieEpsilon ? hand : null;
+    }
+
+    /// <summary>The ranking's damage multiplier for <paramref name="element"/>; NaN when not listed or not known.</summary>
+    private static double MultOf(CreatureWeakness.Ranking weak, string element)
+    {
+        foreach (var (e, m) in weak.Order)
+            if (e == element) return m;
+        return double.NaN;
     }
 
     /// <summary>

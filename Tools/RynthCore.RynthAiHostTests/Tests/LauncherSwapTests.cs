@@ -31,9 +31,49 @@ internal static class LauncherSwapTests
         r.Add("launcher swap: the launcher goes once the old ammo reads off (not 3 s + 2 s)", ShortWaitAfterAmmoOff);
         r.Add("launcher swap: from peace mode the dequip still holds the stance", PeaceStartHoldsStance);
         r.Add("swap gate: MoveDone lets the next swap go on the server's answers", GateMoveDone);
+        r.Add("swap holds: a nearly dead target keeps the crossbow (nothing of the swap started)", LowHealthKeepsLauncher);
+        r.Add("swap holds: a swap under way finishes even when the target gets low (quarrels already off)", LowHealthMidSwapFinishes);
     }
 
-    // ── The rig ───────────────────────────────────────────────────────────────
+    /// <summary>WeaponSwapMinHealthPct: no swap starts onto a target at 25% or less.</summary>
+    private static void LowHealthKeepsLauncher()
+    {
+        var rig = new Rig(CombatMode.Missile);
+        rig.Cache.OnUpdateHealth(Monster, 0.2f);
+        Check.True(rig.Tick(0), "target at 20%: fight on with the crossbow");
+        Check.Eq(FakeHost.Moves.Count, 0, "the quarrels stay on");
+        Check.Eq(FakeHost.Uses.Count, 0, "no bow wield");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("not swapping") && l.Contains("20% health")), "the hold is logged");
+
+        rig.S.WeaponSwapMinHealthPct = 0;
+        rig.Tick(100);
+        Check.True(FakeHost.Moves.Count == 1 && FakeHost.Moves[0].Id == Quarrels, "setting off: the swap starts");
+    }
+
+    /// <summary>
+    /// The ammo fix (2026-10-12) must hold: once the quarrels went into the pack, a hold rule may
+    /// not keep the crossbow (it would stand there with no ammo on); the bow goes on as planned.
+    /// </summary>
+    private static void LowHealthMidSwapFinishes()
+    {
+        var rig = new Rig(CombatMode.Missile);
+        rig.C.AmmoOffSettleMs = 0;
+        Check.False(rig.Tick(0), "full health: the swap starts");
+        Check.True(FakeHost.Moves.Count == 1 && FakeHost.Moves[0].Id == Quarrels, "the quarrels go into the pack");
+
+        rig.Cache.OnUpdateHealth(Monster, 0.1f);
+        Rig.Unwield(Quarrels);
+        FakeHost.CombatModeValue = CombatMode.NonCombat;
+        Check.False(rig.Tick(500), "quarrels off, target at 10%: still not ready");
+        Check.Eq(FakeHost.Uses.LastOrDefault(), Bow, "the bow goes on anyway");
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "no Missile request until the bow and arrows are on");
+
+        rig.Landed(Bow, Crossbow, MissileSlot);
+        rig.Tick(1000);
+        Check.Eq(FakeHost.Uses.LastOrDefault(), Arrows, "then its arrows");
+    }
+
+    // â”€â”€ The rig â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private sealed class Rig
     {
@@ -42,6 +82,7 @@ internal static class LauncherSwapTests
         public readonly MonsterDamageStore Store = new();
         public readonly WorldObject Target;
         public readonly WeaponSwapGate Gate;
+        public readonly WorldObjectCache Cache;
         public long T;
         public int InHand;
         private readonly MethodInfo _equip = typeof(CombatManager).GetMethod("EquipWeaponAndSetStance", BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -61,6 +102,7 @@ internal static class LauncherSwapTests
             FakeHost.Wcids[Monster] = Wcid;
             var host = FakeHost.Create();
             var cache = FakeHost.MakeCache(host, Player, new[] { Crossbow, Bow, Quarrels, Arrows });
+            Cache = cache;
             C = new CombatManager(host, S, cache);
             C.SetPlayerId(Player);
             C.SetDamageStores(null, Store);
@@ -111,7 +153,7 @@ internal static class LauncherSwapTests
         }
     }
 
-    // ── Tests ────────────────────────────────────────────────────────────────
+    // â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private static void NoStanceMidSwap()
     {
