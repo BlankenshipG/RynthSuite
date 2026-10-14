@@ -94,3 +94,9 @@ never kept after its ammo went into the pack.
   `RynthAiVersionCommand.cs`
 - `Tools/RynthCore.RynthAiHostTests/Tests/WeaponTests.cs`, `LauncherSwapTests.cs`
 - `Tools/RynthCore.RynthAiTests/Tests/CombatStallWatchdogTests.cs`
+
+## Install
+
+Installed locally on 2026-10-14: RynthAi 0.5.64-legacy-ui (RynthSuite 53af975,
+NativeAOT publish) copied to C:\Games\RynthSuite\RynthAi. 0.5.63-legacy-ui was
+backed up to PreviousReleases\0.5.63-legacy-ui.
