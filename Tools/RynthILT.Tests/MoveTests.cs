@@ -364,7 +364,11 @@ internal static class MoveTests
         Check.Eq(sizeof(IltTabV1), 24 + 32 + 4 + 4 + 4, "IltTabV1: id, label, width, height, flags");
         Check.Eq((int)Marshal.OffsetOf<IltTabV1>(nameof(IltTabV1.Flags)), 64, "IltTabV1.Flags offset");
         Check.Eq(sizeof(RynthIltHubApiV1), 8 + 9 * IntPtr.Size, "RynthIltHubApiV1: header + 9 functions");
-        Check.Eq(sizeof(RynthAiHubApiV1), 8 + 10 * IntPtr.Size, "RynthAiHubApiV1: header + 10 functions");
+        // 10 functions in the first release, then SessionStatsMore appended (2026-10-13); readers accept
+        // any table at least BaseStructSize long, so an older RynthAi still connects.
+        Check.Eq(sizeof(RynthAiHubApiV1), 8 + 11 * IntPtr.Size, "RynthAiHubApiV1: header + 11 functions");
+        Check.Eq((int)RynthAiHubApiV1.BaseStructSize, 8 + 10 * IntPtr.Size, "RynthAiHubApiV1.BaseStructSize: the first release's 10 functions");
+        Check.Eq(RynthAiHubApiV1.SessionStatsMoreOffset, (int)RynthAiHubApiV1.BaseStructSize, "SessionStatsMore right after the base table");
         Check.Eq(sizeof(QuestFlagV1), 24, "QuestFlagV1");
         Check.Eq(sizeof(QuestStatusV1), 16, "QuestStatusV1");
         Check.Eq(RynthIltHubApiV1.InterfaceName, "RynthILT.Hub", "interface name");
