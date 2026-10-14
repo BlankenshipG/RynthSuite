@@ -43,6 +43,7 @@ internal static unsafe class HubInterface
             t->RenderSection = &RenderSection;
             t->SessionStats = &SessionStats;
             t->SessionReset = &SessionReset;
+            t->SessionStatsMore = &SessionStatsMore;
             t->Version = RynthAiHubApiV1.InterfaceVersion;
             _table = t;
         }
@@ -225,6 +226,25 @@ internal static unsafe class HubInterface
             stats->PassUpPerHour = v.PassUpPerHour;
             stats->Kills = v.Kills;
             stats->KillsPerHour = v.KillsPerHour;
+            return 1;
+        }
+        catch { return 0; }
+    }
+
+    /// <summary>The rest of the same session (RynthTracker's panel shows it whole). 0 before login.</summary>
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int SessionStatsMore(SessionStatsMoreV1* more)
+    {
+        try
+        {
+            var tracker = Plugin?.SessionStatsForIlt;
+            if (tracker == null || more == null) return 0;
+            var v = tracker.View;
+            more->XpPerKill = v.XpPerKill;
+            more->Deaths = v.Deaths;
+            more->MaxLevel = v.MaxLevel ? 1 : 0;
+            more->Rad = v.Rad;
+            more->RadPerHour = v.RadPerHour;
             return 1;
         }
         catch { return 0; }

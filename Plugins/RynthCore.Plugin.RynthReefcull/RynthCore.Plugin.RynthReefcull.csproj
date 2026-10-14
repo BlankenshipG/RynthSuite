@@ -4,8 +4,8 @@
        ServerData.cs holds what is known about the server. -->
   <PropertyGroup>
     <AssemblyName>RynthCore.Plugin.RynthReefcull</AssemblyName>
-    <!-- First release (no previous). -->
-    <Version>0.1.1</Version>
+    <!-- Previous release: 0.1.1. -->
+    <Version>0.1.2</Version>
     <RynthPluginServerId>reefcull</RynthPluginServerId>
     <RynthPluginServerName>Reefcull</RynthPluginServerName>
     <RynthPluginServerHosts>reefcull.gdleac.com</RynthPluginServerHosts>

@@ -5,16 +5,19 @@
 //     /rc bounties). Its reads run only while that window polls RynthILTGetBountiesJson, and the
 //     engine polls only on ILT.
 //   * The ILT Hub (Hub/, SilentKelpie's, moved here from RynthAi 2026-10-13): the Mini Remote's
-//     ILT tabs (Character, Banking, Gear, Charms, Games; RynthAi's Mini Remote hosts them through
-//     RynthILT.Hub, HubInterface.cs), their sections in its Quests / Pets / Remote tabs, the
+//     ILT tabs (Gear, Games; RynthAi's Mini Remote hosts them through RynthILT.Hub,
+//     HubInterface.cs; Character / Charms moved to RynthOracle's Character tab and Banking to
+//     RynthInventory's Global Inventory, both fed by "RynthILT.Data", DataInterface.cs), the ILT
+//     session extras in RynthCore's Session Stats section, its sections in RynthAi's Quests / Pets / Remote tabs, the
 //     Guardian panel (RynthPluginRenderEmbed "guardian"), the Skills panel's Progression data
 //     (RynthILTGetProgressionJson, "prog ..." through RynthILTCommand), server feature detection.
 //     Every feature stays dormant off an ILT-like world (IltServerOptions: no probes, no chat).
 //
 // Second: a copy of the ILT settings (IltSettingsView/): RynthCore's verdict, this character's
-// override, the ILT world names and the features the Hub read from the server, in RynthCore's
-// Mini Remote (Char section) and its own window ("/ilt settings"). The Hub follows RynthCore's
-// verdict once one arrives (IltEngineVerdict).
+// override (read only: it is set in RynthCore Options > Diagnostics), the ILT world names and a
+// summary of the features the Hub read from the server (the full list is RynthOracle's About tab),
+// in its own window ("/ilt settings"). The Hub follows RynthCore's verdict once one arrives
+// (IltEngineVerdict).
 //
 // Third: ILT's fellowship commands (IltFellowship/, ACECustom /fship) as buttons in RynthCore's
 // Fellowship section and their own window ("/ilt fellow"). While ILT is active the list is also
@@ -44,11 +47,17 @@ namespace RynthCore.Plugin.RynthILT;
 public sealed class RynthILTPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthILT");
-    // Previous release: 0.2.4.
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.5");
+    // Previous release: 0.2.5.
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.6");
 
-    /// <summary>The settings view's surface in RynthCore's Mini Remote sections.</summary>
+    /// <summary>
+    /// The settings view's surface. No longer in the sections manifest (the force-server override
+    /// lives only in RynthCore Options > Diagnostics), but still drawn for an engine that asks.
+    /// </summary>
     internal const string SettingsSurface = "section:ilt-settings";
+
+    /// <summary>The ILT session extras' surface in RynthCore's Mini Remote "Session Stats" section.</summary>
+    internal const string RatesSurface = "section:ilt-rates";
 
     /// <summary>The fellowship commands' surface in RynthCore's Fellowship section.</summary>
     internal const string FellowshipSurface = "section:ilt-fellowship";
@@ -371,6 +380,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         {
             SettingsSurface => _settingsUi.RenderBody,
             FellowshipSurface => _fellowshipUi.RenderBody,
+            RatesSurface => RenderRatesSurface,
             _ => null,
         };
         if (body == null) return false;
@@ -393,19 +403,27 @@ public sealed class RynthILTPlugin : RynthPluginBase
         finally { ImGui.SetCurrentContext(previous); }
     }
 
+    /// <summary>The ILT session extras (render thread), or a line saying they start with the Hub.</summary>
+    private void RenderRatesSurface()
+    {
+        IltHubController? hub = _hub;
+        if (hub == null) { ImGui.TextDisabled("ILT session rates start once RynthILT's Hub is ready."); return; }
+        hub.RenderRatesSection();
+    }
+
     /// <summary>
-    /// RynthPluginGetSectionsJson: the settings view in RynthCore's Char section and the
-    /// fellowship commands in its Fellowship section, Infinite Leaftide areas (shown while
-    /// RynthCore treats this world as ILT). Null before login.
+    /// RynthPluginGetSectionsJson: the ILT session extras in RynthCore's Session Stats section
+    /// (the "char" id) and the fellowship commands in its Fellowship section, Infinite Leaftide
+    /// areas (shown while RynthCore treats this world as ILT). Null before login.
     /// </summary>
     internal string? BuildSectionsJson() => _loginComplete ? SectionsJson : null;
 
     private const string SectionsJson =
         "{\"version\":1,\"sections\":[],\"contributions\":[" +
         "{\"section\":\"char\",\"server\":\"ilt\"," +
-        "\"label\":\"ILT settings (RynthILT)\",\"surface\":\"" + SettingsSurface + "\",\"primary\":false," +
-        "\"height\":300,\"enabled\":true,\"tooltip\":\"The Infinite Leaftide verdict, this character's override, " +
-        "the ILT world names and the server's ILT features (RynthILT; also /ilt settings).\",\"order\":120}," +
+        "\"label\":\"ILT session rates (RynthILT)\",\"surface\":\"" + RatesSurface + "\",\"primary\":false," +
+        "\"height\":220,\"enabled\":true,\"tooltip\":\"Enlightened Coins, pyreals and item conversions this session, " +
+        "on the same clock as RynthAi's session stats (RynthILT).\",\"order\":120}," +
         "{\"section\":\"fellowship\",\"server\":\"ilt\"," +
         "\"label\":\"ILT fellowship (RynthILT)\",\"surface\":\"" + FellowshipSurface + "\",\"primary\":false," +
         "\"height\":110,\"enabled\":true,\"tooltip\":\"Infinite Leaftide's /fship commands: create, invite, dismiss, " +
@@ -566,7 +584,9 @@ public sealed class RynthILTPlugin : RynthPluginBase
                 if (sub is "open")
                     return words.Length < 3 || !IltSections.IsUniversalTabName(words[2]);
                 if (sub is "tab")
-                    return words.Length >= 3 && IltSections.TryParse(words[2], out IltSection t) && IltSections.IsTab(t);
+                    // Gear / Games, and the sections that moved out (redirected to RynthOracle / RynthInventory).
+                    return words.Length >= 3 && IltSections.TryParse(words[2], out IltSection t)
+                           && (IltSections.IsTab(t) || IltSections.MovedCommand(t) != null);
                 return true;
             default:
                 return false;
@@ -625,7 +645,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
             case "help":
                 ChatLine("[RynthILT] /ilt hub ... (the Mini Remote's ILT tabs; same as /ra hub ...), /ilt guardian ..., /ilt servers [list|<names>|default],");
                 ChatLine("[RynthILT] /ilt bounty [list|refresh] - the tracked ACECustom bounties (the Bounties window: the ILT button on the RynthCore bar, or /rc bounties),");
-                ChatLine("[RynthILT] /ilt settings [show|hide|toggle] - the ILT settings: the world verdict, this character's override, the ILT world names and the server's ILT features (also in the Mini Remote's Char section),");
+                ChatLine("[RynthILT] /ilt settings [show|hide|toggle] - the ILT settings: the world verdict, the ILT world names and a feature summary (force a server: RynthCore Options > Diagnostics; all features: RynthOracle > About),");
                 ChatLine("[RynthILT] /ilt fellow [show|hide|toggle] - ILT's /fship commands as buttons (also in the Mini Remote's Fellowship section and RynthOracle's Fellowship tab),");
                 ChatLine("[RynthILT] /ilt trace <category|all|list> [on|off], /ilt debug [on|off].");
                 return;

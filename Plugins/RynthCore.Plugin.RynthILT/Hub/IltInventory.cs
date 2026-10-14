@@ -49,6 +49,12 @@ internal sealed class IltInventory
     public const uint IntImbuedEffect = 179;
     public const uint IntCleaving = 292;
     public const uint IntItemMaxLevel = 319;
+    /// <summary>Highest aetheria level on Infinite Leaftide (ACECustom AetheriaChance rolls up to 10; retail stops at 5).</summary>
+    public const int AetheriaMaxLevel = 10;
+    /// <summary>Gear ratings ILT aetheria can carry: C, CD and CDR (PropertyInt GearCrit / GearCritDamage / GearCritDamageResist).</summary>
+    public const uint IntGearCrit = 372;
+    public const uint IntGearCritDamage = 374;
+    public const uint IntGearCritDamageResist = 375;
     public const uint IntSummoningMastery = 362;
     public const uint IntEnlightenment = 390;
     public const uint IntSplitArrowCount = 9031;

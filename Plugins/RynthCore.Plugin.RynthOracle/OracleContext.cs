@@ -21,6 +21,17 @@ internal sealed class OracleContext
     public readonly ServerIdentity Server = new();
     /// <summary>RynthILT's server profile (Leaftide features, fellowship rules); None without RynthILT.</summary>
     public readonly IltServerLink Ilt = new();
+    /// <summary>RynthILT's "RynthILT.Data" (the Character tab's charms list and Toggle buttons).</summary>
+    public readonly RynthCore.Plugin.Shared.RynthIltDataClient IltData = new();
+    /// <summary>The charms RynthILT last reported (None without RynthILT); read while the Character tab shows.</summary>
+    public RynthCore.Plugin.Shared.IltCharmsView Charms = RynthCore.Plugin.Shared.IltCharmsView.None;
+    /// <summary>RynthAi's session (the one session every tracker shows); read while the Character tab shows.</summary>
+    public readonly RynthCore.Plugin.Shared.RynthAiSessionClient AiSession = new();
+    /// <summary>The last session RynthAi reported; SessionKnown false without RynthAi.</summary>
+    public RynthCore.Plugin.Shared.SessionStatsV1 Session;
+    public bool SessionKnown;
+    /// <summary>The last charm Toggle's outcome, shown under the charms list.</summary>
+    public string CharmMessage = "";
     /// <summary>RynthCore's server list (API v85) and the active server owner's settings; State null on older engines.</summary>
     public readonly RynthCore.Plugin.Shared.ServerStateClient ServerState = new();
     /// <summary>ConquestAC-only data (tag Conquest); fed only while on ConquestAC.</summary>
@@ -44,6 +55,12 @@ internal sealed class OracleContext
 
     /// <summary>Set by the plugin: sends a chat command to the server as if typed (the views' buttons).</summary>
     public Func<string, bool> Send = _ => false;
+
+    /// <summary>Set by the plugin: asks RynthILT to use a carried charm or Guardian Hand (its toggle id).</summary>
+    public Func<uint, bool> ToggleCharm = _ => false;
+
+    /// <summary>Set by the plugin: runs a chat command through RynthCore's plugin dispatch (another plugin's window).</summary>
+    public Func<string, bool> RunCommand = _ => false;
 
     /// <summary>Set by the plugin: shows or hides the Quest Timers window.</summary>
     public Action<bool> SetQuestTimersWindow = _ => { };

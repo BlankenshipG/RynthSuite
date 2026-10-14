@@ -1,0 +1,108 @@
+// DataInterface.cs - RynthILT's side of the "RynthILT.Data" interface (Plugins/Shared/RynthIltDataApi.cs):
+// the charms list RynthOracle's Character tab draws and the bank balances RynthInventory's Global
+// Inventory "Banking" tab draws (every character RynthILT has seen on this server), with the charm
+// Toggle and the bank verbs they send back. Replaced the Mini Remote's Charms and Banking tabs
+// on 2026-10-13.
+//
+// The table is allocated once per loaded copy of RynthILT and never freed (a plugin DLL is never
+// unloaded); after Release() it reports Version 0 and every function answers 0. Before login there
+// is no controller: the JSON getters answer 0 (nothing to report) and the actions are refused.
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using RynthCore.Plugin.RynthILT.Hub;
+using RynthCore.Plugin.Shared;
+
+namespace RynthCore.Plugin.RynthILT;
+
+internal static unsafe class DataInterface
+{
+    /// <summary>Longest bank verb line taken (a transfer with a long character name fits easily).</summary>
+    private const int MaxVerbBytes = 256;
+
+    private static RynthIltDataApiV1* _table;
+    private static volatile bool _released;
+
+    /// <summary>The table for (<paramref name="iface"/>, <paramref name="version"/>), or 0 when it isn't ours.</summary>
+    public static IntPtr Query(string iface, uint version)
+    {
+        if (iface != RynthIltDataApiV1.InterfaceName || version < 1 || version > RynthIltDataApiV1.InterfaceVersion || _released)
+            return IntPtr.Zero;
+        if (_table == null)
+        {
+            var t = (RynthIltDataApiV1*)NativeMemory.AllocZeroed((nuint)sizeof(RynthIltDataApiV1));
+            t->StructSize = (uint)sizeof(RynthIltDataApiV1);
+            t->GetCharmsJson = &GetCharmsJson;
+            t->GetBankJson = &GetBankJson;
+            t->ToggleCharm = &ToggleCharm;
+            t->BankCommand = &BankCommand;
+            t->Version = RynthIltDataApiV1.InterfaceVersion;
+            _table = t;
+        }
+        return (IntPtr)_table;
+    }
+
+    /// <summary>Plugin shutdown: readers see Version 0 and re-query; every function answers 0.</summary>
+    public static void Release()
+    {
+        _released = true;
+        if (_table != null) _table->Version = 0;
+    }
+
+    private static IltHubController? Hub => _released ? null : PluginExports.Runtime.Plugin?.Hub;
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetCharmsJson(byte* buffer, int capacity)
+    {
+        try
+        {
+            string? json = Hub?.CharmsJson;
+            return string.IsNullOrEmpty(json) ? 0 : ServerInterface.Write(json, buffer, capacity);
+        }
+        catch { return 0; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetBankJson(byte* buffer, int capacity)
+    {
+        try
+        {
+            string? json = Hub?.BankJson;
+            return string.IsNullOrEmpty(json) ? 0 : ServerInterface.Write(json, buffer, capacity);
+        }
+        catch { return 0; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int ToggleCharm(uint objectId)
+    {
+        try
+        {
+            IltHubController? hub = Hub;
+            if (hub == null || objectId == 0) return 0;
+            hub.RequestCharmToggle(objectId);
+            return 1;
+        }
+        catch { return 0; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int BankCommand(byte* utf8)
+    {
+        try
+        {
+            IltHubController? hub = Hub;
+            if (hub == null || utf8 == null) return 0;
+            int len = 0;
+            while (len < MaxVerbBytes && utf8[len] != 0) len++;
+            if (len == 0 || len >= MaxVerbBytes) return 0;
+            string line = System.Text.Encoding.UTF8.GetString(utf8, len);
+            // Plain ASCII verbs only: no control characters reach the chat command builder.
+            foreach (char c in line)
+                if (c < 0x20 || c > 0x7E) return 0;
+            hub.RequestBankVerb(line);
+            return 1;
+        }
+        catch { return 0; }
+    }
+}

@@ -151,8 +151,18 @@ internal sealed class ServerPackModel
     public static string SurfaceFor(string serverId) => "section:server-" + serverId;
 
     /// <summary>
+    /// The Mini Remote section the server cards share: right after Session Stats (core order 0) and
+    /// before Map (100). Every server plugin declares it the same way; the first declaration wins.
+    /// </summary>
+    public const string SectionId = "server";
+    public const string SectionLabel = "Server";
+    public const int SectionOrder = 50;
+
+    /// <summary>
     /// The plugin's sections manifest (schema 1): its server, for RynthCore to detect, and the server
-    /// card in the Char section, shown only while that server is active (detected or forced).
+    /// card in the shared "Server" section, shown only while that server is active (detected or
+    /// forced in RynthCore Options > Diagnostics). The card left the Char section on 2026-10-13: that
+    /// section is Session Stats now, session stats only.
     /// </summary>
     public static string BuildSectionsJson(ServerPackInfo info, string pluginName)
     {
@@ -162,7 +172,9 @@ internal sealed class ServerPackModel
         AppendList(sb, info.WorldNames);
         sb.Append("],\"hosts\":[");
         AppendList(sb, info.Hosts);
-        sb.Append("]}],\"sections\":[],\"contributions\":[{\"section\":\"char\",\"server\":").Append(Q(info.Id));
+        sb.Append("]}],\"sections\":[{\"id\":").Append(Q(SectionId)).Append(",\"label\":").Append(Q(SectionLabel));
+        sb.Append(",\"order\":").Append(SectionOrder).Append("}],\"contributions\":[{\"section\":").Append(Q(SectionId));
+        sb.Append(",\"server\":").Append(Q(info.Id));
         sb.Append(",\"label\":").Append(Q(info.Name + " server (" + pluginName + ")"));
         sb.Append(",\"surface\":").Append(Q(SurfaceFor(info.Id)));
         sb.Append(",\"primary\":false,\"height\":320,\"enabled\":true,\"tooltip\":");

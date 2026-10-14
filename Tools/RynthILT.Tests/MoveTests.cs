@@ -32,6 +32,8 @@ internal static class MoveTests
         r.Add("move: the interface structs have the agreed layout", InterfaceLayout);
         r.Add("move: server-list status lines", DescribeLines);
         r.Add("move: off ILT nothing is sent, no tab or section shows; on ILT the login probe runs", DormantOffIlt);
+        r.Add("move: Character / Charms / Banking redirect to RynthOracle and Global Inventory", MovedSections);
+        r.Add("move: the charms JSON RynthOracle reads carries the Guardian Hands", CharmsReaderJson);
         // Last: Release() switches the table off for the rest of the process.
         r.Add("move: the RynthILT.Hub table: query, functions, release", HubTable);
     }
@@ -394,6 +396,48 @@ internal static class MoveTests
         while (DateTime.UtcNow < until) { hub.Tick(); System.Threading.Thread.Sleep(50); }
     }
 
+    /// <summary>The Mini Remote tabs that moved out (2026-10-13) map to their new homes' commands.</summary>
+    private static void MovedSections()
+    {
+        Check.Eq(IltSections.MovedCommand(IltSection.Character), IltSections.OracleCharacterCommand, "Character -> RynthOracle Character");
+        Check.Eq(IltSections.MovedCommand(IltSection.Charms), IltSections.OracleCharacterCommand, "Charms -> RynthOracle Character");
+        Check.Eq(IltSections.MovedCommand(IltSection.Banking), IltSections.GlobalBankCommand, "Banking -> Global Inventory Banking");
+        Check.True(IltSections.MovedCommand(IltSection.Gear) == null && IltSections.MovedCommand(IltSection.Games) == null,
+                   "Gear and Games are still Mini Remote tabs");
+        Check.True(IltSections.Tabs.SequenceEqual(new[] { IltSection.Gear, IltSection.Games }), "the tab list is Gear, Games");
+        foreach (var moved in new[] { IltSection.Character, IltSection.Charms, IltSection.Banking })
+            Check.False(IltSections.IsTab(moved), $"{IltSections.Label(moved)} isn't a tab");
+        Check.Eq(IltSections.OracleCharacterCommand, "/ro character", "Oracle command");
+        Check.Eq(IltSections.GlobalBankCommand, "/ginv bank", "Global Inventory command");
+    }
+
+    /// <summary>
+    /// The charms JSON behind "RynthILT.Data" is valid JSON; on ILT it has a "hands" array (empty
+    /// with no hand carried) that the shared reader parses, off ILT it has none and still parses.
+    /// </summary>
+    private static void CharmsReaderJson()
+    {
+        var on = NewHub("InfiniteLeaftide", "charms-on");
+        string json = on.CharmsTab.BuildReaderJson();
+        using (var doc = System.Text.Json.JsonDocument.Parse(json))
+            Check.True(doc.RootElement.TryGetProperty("hands", out var hands) && hands.GetArrayLength() == 0,
+                       "on ILT: an empty hands array with no Guardian Hand carried");
+        Check.True(json.All(c => c < 128), "ASCII only");
+        var view = IltCharmsView.Parse(json);
+        Check.True(view.Loaded && view.Hands.Count == 0, "the shared reader takes it");
+
+        var withHands = IltCharmsView.Parse("{\"available\":true,\"charms\":[],\"hands\":[" +
+            "{\"id\":1234,\"name\":\"Guardian Hand\",\"active\":\"on\",\"server\":\"off\"},{\"id\":0,\"name\":\"no id\"}]}");
+        Check.Eq(withHands.Hands.Count, 1, "a hand without an id is skipped (nothing to toggle)");
+        Check.True(withHands.Hands[0] == new IltHandRow(1234, "Guardian Hand", "on", "off"), "id, name, active, server");
+
+        var off = NewHub("Aeshnidae", "charms-off");
+        string offJson = off.CharmsTab.BuildReaderJson();
+        using (var doc = System.Text.Json.JsonDocument.Parse(offJson))
+            Check.False(doc.RootElement.TryGetProperty("hands", out _), "off ILT: no hands");
+        Check.True(IltCharmsView.Parse(offJson).Hands.Count == 0, "and the reader shows none");
+    }
+
     private static void DormantOffIlt()
     {
         var off = NewHub("Aeshnidae", "dormant");
@@ -416,7 +460,10 @@ internal static class MoveTests
         Check.True(RynthCore.RynthAiHostTests.Fakes.FakeHost.ChatCommands.Count > 0, "on ILT the login probe asks the server");
         Check.False(RynthCore.RynthAiHostTests.Fakes.FakeHost.ChatCommands.Any(c => c.Contains("/ilt features", StringComparison.OrdinalIgnoreCase)),
                     "the server is never asked for a feature list (the ILT profile is Rynth-side)");
-        Check.True(on.TabShown(IltSection.Character), "and the Character tab shows");
+        // Character, Charms and Banking moved out of the Mini Remote (RynthOracle / Global Inventory).
+        foreach (var moved in new[] { IltSection.Character, IltSection.Charms, IltSection.Banking })
+            Check.False(on.TabShown(moved), $"{IltSections.Label(moved)} is no Mini Remote tab any more");
+        Check.Eq(on.TabShown(IltSection.Gear), on.Available, "Gear shows once the server features are known");
         on.OnLogout();
 
         var forced = NewHub("Aeshnidae", "forced");

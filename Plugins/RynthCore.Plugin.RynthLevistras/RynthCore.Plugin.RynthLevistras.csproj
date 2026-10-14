@@ -4,8 +4,8 @@
        (..\Shared\ServerPack\ServerPlugin.props); ServerData.cs holds what is known about the server. -->
   <PropertyGroup>
     <AssemblyName>RynthCore.Plugin.RynthLevistras</AssemblyName>
-    <!-- First release (no previous). -->
-    <Version>0.1.1</Version>
+    <!-- Previous release: 0.1.1. -->
+    <Version>0.1.2</Version>
     <RynthPluginServerId>levistras</RynthPluginServerId>
     <RynthPluginServerName>Levistras</RynthPluginServerName>
     <RynthPluginServerHosts>levistras.acportalstorm.com</RynthPluginServerHosts>

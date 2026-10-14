@@ -132,7 +132,9 @@ internal sealed class IltCharmTracker
             sb.Append(",\"server\":\"").Append(TriText(r.Server)).Append('"');
             sb.Append(",\"lastSeen\":\"")
               .Append(r.LastSeenUtc == default ? string.Empty : r.LastSeenUtc.ToString("yyyy-MM-dd"))
-              .Append("\"}");
+              .Append('"');
+            // The carried copy a reader's Toggle uses ("RynthILT.Data" ToggleCharm); 0 = none carried.
+            sb.Append(",\"toggleId\":").Append(unchecked((uint)r.ToggleId)).Append('}');
         }
         sb.Append("]}");
         return sb.ToString();

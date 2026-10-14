@@ -26,8 +26,14 @@ namespace RynthCore.Plugin.RynthInventory;
 /// </summary>
 public sealed class RynthInventoryPlugin : RynthPluginBase
 {
-    // Previous release: 0.1.0. Keep in step with PluginExports.GetVersion.
-    public const string Version = "0.1.1";
+    // Previous release: 0.1.1. Keep in step with PluginExports.GetVersion.
+    public const string Version = "0.1.2";
+
+    // RynthILT's bank JSON: every BankTabReadMs on the Banking tab, every BankIdleReadMs with the
+    // window on another tab (so the Banking button appears on ILT worlds), never with it closed.
+    private const long BankTabReadMs = 2000, BankIdleReadMs = 10_000;
+    private long _nextBankReadMs;
+    private string _bankJson = string.Empty;
 
     private const long IdentityRetryMs = 1000;
     private const long AccountWaitMs = 15_000;
@@ -87,6 +93,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _c.RequestRescan = () => { _scheduler.RequestFullScan(); _forceWrite = true; };
         _c.RequestReload = () => { _reloadWanted = true; _files.Clear(); };
         _c.Forget = ForgetCharacter;
+        _c.BankCommand = SendBankVerb;
         _ui.Log = msg => Host.Log(msg);
         _vault = new VaultFeed(text => Host.InvokeChatParser(text));
 
@@ -121,7 +128,42 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _carriedIds.Clear();
         _carriedPacks.Clear();
         RefreshIconSupport();
+        ClearBank();
         if (_window != null) { _window.Visible = _c.Settings.MainWindowOpen; _window.NeedsPass = true; }
+    }
+
+    /// <summary>Forgets the last bank read (login, logout): the next character's comes fresh.</summary>
+    private void ClearBank()
+    {
+        _c.Bank = Shared.IltBankView.None;
+        _bankJson = string.Empty;
+        _nextBankReadMs = 0;
+    }
+
+    /// <summary>The Banking tab's actions: a verb line for RynthILT, then a quick re-read for its reply.</summary>
+    private bool SendBankVerb(string verb)
+    {
+        long now = Environment.TickCount64;
+        bool ok = _c.InWorld && _c.IltData.BankCommand(Host, now, verb);
+        _nextBankReadMs = now + 500;
+        if (_window != null) _window.NeedsPass = true;
+        return ok;
+    }
+
+    /// <summary>
+    /// Reads RynthILT's bank JSON while the window is open (more often on the Banking tab) and
+    /// redraws when it changed. Reading is what tells RynthILT someone is looking.
+    /// </summary>
+    private void TickBank(long now)
+    {
+        if (!_c.InWorld || _window == null || _view == null || !_window.Visible) return;
+        if (now < _nextBankReadMs) return;
+        _nextBankReadMs = now + (_view.Tab == InventoryView.TabBanking ? BankTabReadMs : BankIdleReadMs);
+        string json = _c.IltData.ReadBank(Host, now);
+        if (string.Equals(json, _bankJson, StringComparison.Ordinal)) return;
+        _bankJson = json;
+        _c.Bank = Shared.IltBankView.Parse(json);
+        _window.NeedsPass = true;
     }
 
     public override void OnLogout()
@@ -136,6 +178,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _ui.SubmitEmpty(Host);
         _c.Live = null;
         _indexDirty = true;
+        ClearBank();
     }
 
     public override void Shutdown()
@@ -237,9 +280,17 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
             case "status":
                 PrintStatus();
                 break;
+            case "bank":
+            case "banking":
+                // The Banking tab (the Mini Remote's Banking tab moved here 2026-10-13; RynthCore,
+                // RynthAi and RynthILT link here). Shows, never toggles off.
+                _view?.ShowBanking();
+                _nextBankReadMs = 0;
+                if (_window != null) { _window.Visible = true; _window.NeedsPass = true; }
+                break;
             case "help":
             case "?":
-                _c.Print("/ginv (window), /ginv <text> (search), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv vault (read the Aelrynth account vault now), /ginv reload, /ginv status");
+                _c.Print("/ginv (window), /ginv <text> (search), /ginv bank (every character's Infinite Leaftide bank), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv vault (read the Aelrynth account vault now), /ginv reload, /ginv status");
                 break;
             default:
                 _view?.SetSearch(arg);
@@ -307,6 +358,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         }
         TickWrite(now);
         TickIndex(now);
+        TickBank(now);
 
         if (!Host.HasUi || _window == null || _view == null) return;
         Record(_window, now, 2000, _view.Draw);

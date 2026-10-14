@@ -29,6 +29,9 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\**\*.cs" Exclude="..\..\Plugins\RynthCore.Plugin.RynthOracle\obj\**;..\..\Plugins\RynthCore.Plugin.RynthOracle\bin\**" Link="RynthOracle\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="RynthOracle\Shared\FellowshipTracker.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthIltServerApi.cs" Link="RynthOracle\Shared\RynthIltServerApi.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthIltDataApi.cs" Link="RynthOracle\Shared\RynthIltDataApi.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthAiHubApi.cs" Link="RynthOracle\Shared\RynthAiHubApi.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthAiSessionClient.cs" Link="RynthOracle\Shared\RynthAiSessionClient.cs" />
     <!-- RynthCore's server list and the owner plugin's profile (as in the plugin's csproj). -->
     <Compile Include="..\..\Plugins\Shared\RynthServerProfileApi.cs" Link="RynthOracle\Shared\RynthServerProfileApi.cs" />
     <Compile Include="..\..\Plugins\Shared\EngineServerState.cs" Link="RynthOracle\Shared\EngineServerState.cs" />

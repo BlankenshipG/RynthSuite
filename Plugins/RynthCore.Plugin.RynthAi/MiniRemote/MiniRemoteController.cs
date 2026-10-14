@@ -251,6 +251,14 @@ internal sealed class MiniRemoteController
                 _ctx.Chat(QuestsMovedText);
                 return true;
             }
+            // "/ra hub open|tab character|charms|banking": those left the Mini Remote (2026-10-13);
+            // HudController.HandleTabCommand opens RynthOracle's Character tab or Global Inventory > Banking.
+            if (cmd is "open" or "tab" && args.Length > 1 && Huds.MovedTabs.CommandFor(args[1]) != null)
+            {
+                string? reply = MiniRemoteTabCommand?.Invoke(args[1].Trim().ToLowerInvariant(), "show");
+                if (cmd == "open" && reply != null) _ctx.Chat("[Mini Remote] " + reply);
+                return true;
+            }
             switch (cmd)
             {
                 case "show":
@@ -287,7 +295,8 @@ internal sealed class MiniRemoteController
     {
         _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)   /ra hub open pets|crafting [show|hide|toggle]");
         _ctx.Chat("[Mini Remote] /ra quests refresh (quiet /myquests)   /ra pets [show|hide]   Quest list, timers and rewards: RynthOracle (/ro).");
-        _ctx.Chat("[Mini Remote] Banking, gear, charms, games, the Guardian, bounties, /ra hub attr ...: Infinite Leaftide, the RynthILT plugin.");
+        _ctx.Chat("[Mini Remote] Gear, games, the Guardian, bounties, /ra hub attr ...: Infinite Leaftide, the RynthILT plugin.");
+        _ctx.Chat("[Mini Remote] Character and charms: RynthOracle (/ro character). Banking: Global Inventory (/ginv bank). Force a server: /rc diagnostics.");
     }
 
     private static bool IsRemoteTabName(string text)

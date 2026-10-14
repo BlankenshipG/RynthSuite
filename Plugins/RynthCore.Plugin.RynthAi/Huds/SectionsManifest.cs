@@ -1,15 +1,19 @@
 // SectionsManifest.cs - What RynthAi adds to RynthCore's Mini Remote sections.
 //
-// RynthCore 2026.10.5.46+ shows the Mini Remote as a rail of sections: its core twelve (Char, Map,
-// Skills, Combat, Nav, Inventory, Crafting, Spells, Chat, Friends, Fellowship, Pets) and any a
-// plugin adds. It reads each plugin's optional RynthPluginGetSectionsJson export every couple of
-// seconds (schema: UI/Sections/SectionManifest.cs in RynthCore). RynthAi fills:
-//   every world   Pets, Crafting, Spells and Fellowship (the views of those core sections)
+// RynthCore 2026.10.5.46+ shows the Mini Remote as a rail of sections: its core twelve (Session
+// Stats - id "char" -, Map, Skills, Combat, Nav, Inventory, Crafting, Spells, Chat, Friends,
+// Fellowship, Pets) and any a plugin adds. It reads each plugin's optional
+// RynthPluginGetSectionsJson export every couple of seconds (schema: UI/Sections/SectionManifest.cs
+// in RynthCore). RynthAi fills:
+//   every world   Session Stats (the one session: RynthTracker, RynthOracle and RynthILT read the
+//                 same numbers, and RynthCore drops its own overview for it), Pets, Crafting,
+//                 Spells and Fellowship (the views of those core sections)
 //   Infinite      RynthILT's tabs, hosted here as they are in RynthAi's own Mini Remote (RynthILT.Hub,
-//   Leaftide      MiniRemote/IltClient.cs): ILT Character and Charms in Char, Banking and Gear in
-//                 Inventory, and a Games section of RynthAi's own
-// Quests are RynthOracle's (since 2026-10-13), and RynthILT draws its ILT settings and /fship
-// views itself (its own manifest), so neither is listed here.
+//   Leaftide      MiniRemote/IltClient.cs): Gear in Inventory, and a Games section of RynthAi's own
+// Quests are RynthOracle's (since 2026-10-13), and RynthILT draws its ILT session extras and /fship
+// views itself (its own manifest), so neither is listed here. RynthILT's Character, Charms and
+// Banking tabs moved out on 2026-10-13 (MovedTabs.cs): RynthOracle's Character tab and
+// RynthInventory's Global Inventory "Banking" tab.
 // Each view is a surface "section:<name>" RynthCore draws through RynthPluginRenderEmbed. An ILT
 // view whose feature the server hasn't reported is listed but not enabled, with a note.
 //
@@ -33,6 +37,8 @@ internal static class SectionsManifest
     public const string CraftingSurface = SurfacePrefix + MiniRemoteTabs.Crafting;
     public const string SpellsSurface = SurfacePrefix + "spells";
     public const string FellowshipSurface = SurfacePrefix + "fellowship";
+    /// <summary>The session stats (RynthCore's Session Stats section, "char").</summary>
+    public const string SessionSurface = SurfacePrefix + "session";
 
     /// <summary>RynthCore's id for Infinite Leaftide.</summary>
     public const string IltServer = "ilt";
@@ -59,14 +65,11 @@ internal static class SectionsManifest
     private static readonly Dictionary<string, (string Section, string Label, int Order, string Tooltip)> IltPlacement =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["character"] = ("char", "ILT Character", 200, "Session rates and the ILT world status (RynthILT)."),
-            ["charms"] = ("char", "Charms", 210, "Registry charms and the Guardian Hand (RynthILT)."),
-            ["banking"] = ("inventory", "Banking", 200, "ILT bank balances, deposits, withdrawals and transfers (RynthILT)."),
             ["gear"] = ("inventory", "Gear", 210, "ILT gear tools (RynthILT)."),
             ["games"] = ("games", "Games", 100, "ILT games (RynthILT)."),
         };
 
-    /// <summary>The surface name of a tab's view ("section:banking").</summary>
+    /// <summary>The surface name of a tab's view ("section:gear").</summary>
     public static string SurfaceOf(string tabId) => SurfacePrefix + tabId;
 
     /// <summary>
@@ -78,7 +81,9 @@ internal static class SectionsManifest
     {
         var views = new List<View>
         {
-            // Every world.
+            // Every world. Session Stats first: a universal primary view, so RynthCore drops its own overview.
+            new("char", string.Empty, "Session stats", SessionSurface, true, new Vector2(360, 240), true, string.Empty,
+                "XP, luminance and kills this session, per hour (RynthAi; RynthTracker, RynthOracle and RynthILT show the same session).", 100),
             new("pets", string.Empty, "Pets", PetsSurface, true, MiniRemoteTabs.Size(MiniRemoteTabs.Pets), true, string.Empty,
                 "Combat pets: the summon out, essences, and the pet picker (RynthAi).", 100),
             new("crafting", string.Empty, "Crafting", CraftingSurface, true, MiniRemoteTabs.Size(MiniRemoteTabs.Crafting), true, string.Empty,

@@ -50,6 +50,7 @@ namespace RynthOracle.Tests
             AelrynthReplies();
             Void();
             Pages();
+            CharacterExtras();
             Events();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;
@@ -602,6 +603,66 @@ namespace RynthOracle.Tests
             fixed (byte* p = buf) rc = DisplayListParser.Parse(p, n, 4000f, out _, out windows, out error);
             Check(rc == 0, $"{what}: engine parser refused the submit ({rc}): {error}");
             maxOps = windows.Where(w => w.List != null).Select(w => w.List!.OpCount).DefaultIfEmpty(0).Max();
+        }
+
+        /// <summary>
+        /// The Character tab's RynthAi session and RynthILT charms (the Mini Remote's Character and
+        /// Charms tabs moved here 2026-10-13): drawn from what the plugin read, Toggle routed to RynthILT.
+        /// </summary>
+        private static void CharacterExtras()
+        {
+            const string charmsJson = "{\"available\":true,\"world\":\"InfiniteLeaftide\",\"acquiredCount\":2,\"activeCount\":1,"
+                + "\"charms\":[{\"name\":\"Mana Barrier\",\"effect\":\"Absorbs damage\",\"acquired\":\"carried\",\"count\":1,\"tier\":3,\"maxTier\":5,"
+                + "\"active\":\"on\",\"server\":\"on\",\"toggleId\":5001},"
+                + "{\"name\":\"Swift Feet\",\"acquired\":\"seen\",\"lastSeen\":\"2026-10-12\",\"active\":\"unknown\",\"server\":\"off\"}],"
+                + "\"hands\":[{\"id\":7001,\"name\":\"Guardian Hand\",\"active\":\"off\",\"server\":\"on\"}]}";
+
+            OracleContext c = Context();
+            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
+            c.Settings.TabName = OracleView.TabCharacter;
+            var view = new OracleView(c);
+            var host = new UiHost();
+            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
+
+            // Nothing from RynthILT or RynthAi yet: the tab says what to load.
+            main.Begin(); view.Draw(main); main.End();
+            string empty = Encoding.UTF8.GetString(main.Body);
+            Check(empty.Contains("Load RynthILT to list your Infinite Leaftide charms"), "ILT without RynthILT: says to load it");
+            Check(empty.Contains("Load RynthAi for the session rates"), "without RynthAi: says to load it");
+            main.MarkSubmitted(true);
+
+            uint toggled = 0;
+            c.ToggleCharm = id => { toggled = id; return true; };
+            c.Charms = RynthCore.Plugin.Shared.IltCharmsView.Parse(charmsJson);
+            c.Session = new RynthCore.Plugin.Shared.SessionStatsV1
+            {
+                StartUtcTicks = DateTime.UtcNow.AddHours(-1).Ticks, SessionSeconds = 3600, Xp = 1_234_567, XpPerHour = 1_234_567,
+                Lum = 4000, LumPerHour = 4000, LumLast5Min = 250, Kills = 42, KillsPerHour = 42,
+            };
+            c.SessionKnown = true;
+            main.Begin(); view.Draw(main); main.End();
+            ParseAll(host, "Character with charms and session", out int ops);
+            string body = Encoding.UTF8.GetString(main.Body);
+            Check(ops > 5 && ops < 1400, $"Character with charms: {ops} ops");
+            Check(body.Contains("1,234,567") && body.Contains("4,000") && body.Contains("42 (42/h)"), "the session shows RynthAi's XP, luminance and kills");
+            Check(body.Contains("Charms (2)") && body.Contains("Mana Barrier") && body.Contains("T3/5") && body.Contains("seen 2026-10-12"),
+                  "the charms RynthILT listed, with tier and acquired state");
+            Check(body.Contains("server off"), "a charm the server switched off is marked");
+            Check(body.Contains("Guardian Hands (1)"), "the Guardian Hands are listed");
+
+            Apply(host, Event(1, 10, main.Hash, main.KeyOf("c.charm.0"), new byte[] { 1, 0, 0 }));
+            Check(toggled == 5001, "the carried charm's Toggle goes to RynthILT with its id");
+            Check(body.Contains("###c.charm.0") && !body.Contains("###c.charm.1"), "an uncarried charm has no Toggle");
+            Apply(host, Event(1, 11, main.Hash, main.KeyOf("c.hand.0"), new byte[] { 1, 0, 0 }));
+            Check(toggled == 7001, "the Guardian Hand's Toggle goes to RynthILT with its id");
+            main.MarkSubmitted(true);
+
+            // Another world: RynthILT answers "not available", so no charms section at all.
+            c.Server.Force("", "");
+            c.Charms = RynthCore.Plugin.Shared.IltCharmsView.Parse("{\"available\":false,\"charms\":[]}");
+            main.Begin(); view.Draw(main); main.End();
+            Check(!Encoding.UTF8.GetString(main.Body).Contains("Charms ("), "off ILT: no charms section");
+            Check(OracleView.SessionStatsCommand == "/rc miniremote section char", "Session Stats opens the section, not the moved tab");
         }
 
         private static void Events()

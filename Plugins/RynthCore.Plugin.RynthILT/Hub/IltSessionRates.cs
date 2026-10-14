@@ -1,4 +1,6 @@
-// IltSessionRates.cs — Session earnings / per-hour rates for the ILT Hub Character tab.
+// IltSessionRates.cs — Session earnings / per-hour rates for Infinite Leaftide: the coins, pyreals and
+// item conversions RynthCore's Mini Remote "Session Stats" section shows under "Server: Infinite
+// Leaftide" (surface "section:ilt-rates", 2026-10-13; it was the ILT Character tab before).
 // Originally SilentKelpie's ILT Hub (RynthAi IltHub/); moved to RynthILT 2026-10-13.
 //
 // Sources (all passive — nothing is sent to the server except the optional bank refresh
@@ -44,7 +46,9 @@ internal sealed class IltSessionRates : IIltFeature
 
     // Render snapshot.
     private volatile RateRow[] _rows = Array.Empty<RateRow>();
-    private sealed record RateRow(string Label, string Total, string PerHour);
+    // Shared = one of RynthAi's session stats rows (XP, luminance, kills), which the Session Stats
+    // section already shows above this table; the embedded view leaves those out.
+    private sealed record RateRow(string Label, string Total, string PerHour, bool Shared = false);
 
     /// <summary>Coin and pyreal per-hour figures for the Mini Remote HUD (rebuilt every sample).</summary>
     public sealed record RateSummary(double CoinsPerHour, double PyrealsPerHour);
@@ -157,13 +161,13 @@ internal sealed class IltSessionRates : IIltFeature
         var rows = new List<RateRow>();
         if (_ctx.Ai.TryGetSessionStats(out SessionStatsV1 s))
         {
-            rows.Add(new RateRow("XP", IltParse.Compact(s.Xp), IltParse.Compact(s.XpPerHour)));
-            rows.Add(new RateRow("Luminance", IltParse.Compact(s.Lum), IltParse.Compact(s.LumPerHour)));
+            rows.Add(new RateRow("XP", IltParse.Compact(s.Xp), IltParse.Compact(s.XpPerHour), Shared: true));
+            rows.Add(new RateRow("Luminance", IltParse.Compact(s.Lum), IltParse.Compact(s.LumPerHour), Shared: true));
             // Per hour at the last five minutes' pace.
-            rows.Add(new RateRow("  last 5 min", IltParse.Compact(s.LumLast5Min), IltParse.Compact(s.LumLast5Min * 12.0)));
+            rows.Add(new RateRow("  last 5 min", IltParse.Compact(s.LumLast5Min), IltParse.Compact(s.LumLast5Min * 12.0), Shared: true));
             if (s.PassUpTracked != 0)
-                rows.Add(new RateRow(PassUpLabel, IltParse.Compact(s.LumPassUp), IltParse.Compact(s.PassUpPerHour)));
-            rows.Add(new RateRow("Kills", s.Kills.ToString(), s.KillsPerHour.ToString("0")));
+                rows.Add(new RateRow(PassUpLabel, IltParse.Compact(s.LumPassUp), IltParse.Compact(s.PassUpPerHour), Shared: true));
+            rows.Add(new RateRow("Kills", s.Kills.ToString(), s.KillsPerHour.ToString("0"), Shared: true));
         }
         rows.Add(new RateRow("Enlightened Coins", IltParse.Compact(_coins), IltParse.Compact(_coins / hours)));
         rows.Add(new RateRow("Pyreals", IltParse.Compact(_pyreals), IltParse.Compact(_pyreals / hours)));
@@ -189,7 +193,11 @@ internal sealed class IltSessionRates : IIltFeature
 
     // ── UI (render thread) ──────────────────────────────────────────────────
 
-    public void Render()
+    /// <param name="extrasOnly">
+    /// True in the Mini Remote's Session Stats section: RynthAi's XP / luminance / kills rows are
+    /// drawn there already (one session), so only the ILT coins, pyreals and items are listed.
+    /// </param>
+    public void Render(bool extrasOnly = false)
     {
         // The session clock is RynthAi's session stats' (it and the coins reset together).
         var start = _ctx.Ai.TryGetSessionStats(out SessionStatsV1 v) && v.SessionSeconds > 0 && v.StartUtcTicks > 0
@@ -206,6 +214,7 @@ internal sealed class IltSessionRates : IIltFeature
             ImGui.TableHeadersRow();
             foreach (var r in _rows)
             {
+                if (extrasOnly && r.Shared) continue;
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Label);
                 if (ReferenceEquals(r.Label, PassUpLabel) && ImGui.IsItemHovered()) SafeImGui.SetTooltip(PassUpTooltip);

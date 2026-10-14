@@ -1,11 +1,11 @@
 // ServerPackUi.cs - A server plugin's "server card".
 //
-// Drawn in two places: RynthCore's Mini Remote, Char section, this server's area (the surface
-// "section:server-<id>" through RynthPluginRenderEmbed), and its own window ("/rserver").
-// Shows RynthCore's verdict and this character's Auto / On / Off override, what is known about the
-// server (address, rule set, account limit, botting policy, its features), the commands it adds,
-// its links, and how to set an account up for it in the launcher. Override edits are RynthCore
-// commands, queued for the plugin tick; the next push shows the result. Render thread only.
+// Drawn in two places: RynthCore's Mini Remote, the shared "Server" section, this server's area
+// (the surface "section:server-<id>" through RynthPluginRenderEmbed), and its own window ("/rserver").
+// Shows RynthCore's verdict and this character's Auto / On / Off override (read only: it is set in
+// RynthCore Options > Diagnostics, 2026-10-13), what is known about the server (address, rule set,
+// account limit, botting policy, its features), the commands it adds, its links, and how to set an
+// account up for it in the launcher. Render thread only.
 using System;
 using System.Numerics;
 using ImGuiNET;
@@ -22,7 +22,6 @@ internal sealed class ServerPackUi
 
     private readonly ServerPackModel _model;
     private readonly string _pluginLabel;
-    private readonly Action<string> _runCommand;
     private readonly Func<string?> _world;
     private readonly string _windowTitle;
     private string _status = string.Empty;
@@ -31,13 +30,11 @@ internal sealed class ServerPackUi
     public bool WindowOpen;
 
     /// <param name="pluginLabel">"RynthColdeve 0.1.0", for the title and the card.</param>
-    /// <param name="runCommand">Queues a RynthCore command (run on the plugin tick).</param>
     /// <param name="world">The world name the client reports now (null when unknown).</param>
-    public ServerPackUi(ServerPackModel model, string pluginLabel, Action<string> runCommand, Func<string?> world)
+    public ServerPackUi(ServerPackModel model, string pluginLabel, Func<string?> world)
     {
         _model = model;
         _pluginLabel = pluginLabel;
-        _runCommand = runCommand;
         _world = world;
         _windowTitle = model.Info.Name + " server (" + pluginLabel + ")##server_" + model.Info.Id;
     }
@@ -103,33 +100,21 @@ internal sealed class ServerPackUi
             SafeImGui.TextWrapped(v.Reason);
             ImGui.PopStyleColor();
         }
-        ImGui.TextUnformatted("This character:");
-        ForceRadio(info, "Auto", "auto", v.Force);
-        ForceRadio(info, "On", "on", v.Force);
-        ForceRadio(info, "Off", "off", v.Force);
+        // Read only: a server is forced in one place, RynthCore Options > Diagnostics (2026-10-13).
+        SafeImGui.TextDisabled("This character: " + ForceText(ServerPackModel.NormalizeForce(v.Force))
+                               + "  (change it in RynthCore Options > Diagnostics)");
+        if (ImGui.IsItemHovered())
+            SafeImGui.SetTooltip("RynthCore's server selection (Options > Diagnostics) forces a server for this character,\n"
+                                 + "or /rc server " + info.Id + " auto|on|off in chat.");
     }
 
-    private void ForceRadio(ServerPackInfo info, string label, string mode, string current)
+    /// <summary>The override as words: Auto (detected), On (forced on) or Off (forced off).</summary>
+    private static string ForceText(string force) => force switch
     {
-        ImGui.SameLine();
-        if (ImGui.RadioButton(label + "##force_" + info.Id, current == mode) && current != mode)
-        {
-            string cmd = ServerPackModel.ForceCommand(info.Id, mode);
-            if (cmd.Length == 0) _status = "That override can't be sent.";
-            else
-            {
-                _runCommand(cmd);
-                _status = "Setting this character to " + label + "...";
-            }
-        }
-        if (ImGui.IsItemHovered())
-            SafeImGui.SetTooltip(mode switch
-            {
-                "on" => "Treat this world as " + info.Name + " for this character (/rc server " + info.Id + " on).",
-                "off" => "Never treat this world as " + info.Name + " for this character (/rc server " + info.Id + " off).",
-                _ => "RynthCore decides from the connect host and the world name (/rc server " + info.Id + " auto).",
-            });
-    }
+        "on" => "forced on",
+        "off" => "forced off",
+        _ => "auto (detected)",
+    };
 
     private static void RenderFacts(ServerPackInfo info)
     {

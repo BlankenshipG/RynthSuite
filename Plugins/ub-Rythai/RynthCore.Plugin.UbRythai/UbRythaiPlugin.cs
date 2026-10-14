@@ -333,6 +333,8 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
             return;
 
         string line = text.Trim();
+        // The XP meter's luminance lines (bank deposits / transfers aren't earnings).
+        _xpMeter.OnChat(line);
         TryParseBankChatLine(line);
         TryAutoTradeAcceptFromChatLine(line);
         TryAutoPercentConfirmationFromChatLine(line);
@@ -1162,6 +1164,8 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
             ImGui.TextUnformatted($"Rates: {xpHr:N0} XP/hr | {lumHr:N0} LUM/hr");
         else
             ImGui.TextUnformatted($"Rate: {xpHr:N0} XP/hr");
+        if (_xpMeter.FromRynthAi)
+            ImGui.TextDisabled("RynthAi's session (same as the Mini Remote)");
 
         ImGui.End();
     }
@@ -1238,11 +1242,13 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
 
         if (cmd == "reset")
         {
-            _xpMeter.Reset();
+            // With RynthAi this restarts its session (the one every tracker shows).
+            bool shared = _xpMeter.FromRynthAi;
+            _xpMeter.Reset(Host);
             uint pid = Host.GetPlayerId();
             if (pid != 0)
                 _xpMeter.SeedFromPlayer(Host, pid);
-            Host.WriteToChat("[ub-Rythai] XP meter reset.", 1);
+            Host.WriteToChat(shared ? "[ub-Rythai] XP meter reset (RynthAi's session, shared by every tracker)." : "[ub-Rythai] XP meter reset.", 1);
             return;
         }
 
@@ -1250,7 +1256,7 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
         {
             double sec = _xpMeter.RunTimeSeconds();
             Host.WriteToChat(
-                $"[ub-Rythai] xpmeter overlay={(_settings.XpMeterOverlayEnabled ? "on" : "off")}, xp={_xpMeter.AccumulatedXp:N0}, lum={_xpMeter.AccumulatedLum:N0}, sec={sec:0}, xp/hr={_xpMeter.XpPerHour():N0}, lum/hr={_xpMeter.LumPerHour():N0}",
+                $"[ub-Rythai] xpmeter overlay={(_settings.XpMeterOverlayEnabled ? "on" : "off")}, source={(_xpMeter.FromRynthAi ? "RynthAi session" : "ub-Rythai")}, xp={_xpMeter.AccumulatedXp:N0}, lum={_xpMeter.AccumulatedLum:N0}, sec={sec:0}, xp/hr={_xpMeter.XpPerHour():N0}, lum/hr={_xpMeter.LumPerHour():N0}",
                 1);
             return;
         }

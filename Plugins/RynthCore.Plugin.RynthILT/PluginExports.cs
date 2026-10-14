@@ -23,7 +23,9 @@ public static unsafe class PluginExports
         {
             string iface = ifaceAnsi == IntPtr.Zero ? "" : Marshal.PtrToStringAnsi(ifaceAnsi) ?? "";
             IntPtr hub = HubInterface.Query(iface, version);
-            return hub != IntPtr.Zero ? hub : ServerInterface.Query(iface, version);
+            if (hub != IntPtr.Zero) return hub;
+            IntPtr server = ServerInterface.Query(iface, version);
+            return server != IntPtr.Zero ? server : DataInterface.Query(iface, version);
         }
         catch
         {
@@ -41,6 +43,7 @@ public static unsafe class PluginExports
         try { Runtime.Shutdown(); } catch { }
         try { HubInterface.Release(); } catch { }
         try { ServerInterface.Release(); } catch { }
+        try { DataInterface.Release(); } catch { }
         foreach (IntPtr p in new[] { Interlocked.Exchange(ref _bountiesPtr, IntPtr.Zero), Interlocked.Exchange(ref _progressionPtr, IntPtr.Zero),
                      Interlocked.Exchange(ref _statusPtr, IntPtr.Zero), Interlocked.Exchange(ref _sectionsPtr, IntPtr.Zero) })
             if (p != IntPtr.Zero) Marshal.FreeCoTaskMem(p);
@@ -81,7 +84,8 @@ public static unsafe class PluginExports
 
     /// <summary>
     /// Engine panels drawn by RynthILT (render thread): "guardian" is the engine's Guardian ILT
-    /// panel (RynthCore's GuardianFace); "section:ilt-settings" (the ILT settings) and
+    /// panel (RynthCore's GuardianFace); "section:ilt-rates" (the ILT session extras, Session Stats),
+    /// "section:ilt-settings" (the ILT settings, for an engine that still asks) and
     /// "section:ilt-fellowship" (the /fship commands) are RynthCore's Mini Remote sections.
     /// ":popout" is added when one is popped out into a window of its own, and RynthILT draws in
     /// the engine's current context either way. The Guardian panel is user-sized (want echoes the
@@ -106,6 +110,7 @@ public static unsafe class PluginExports
             }
             string? view = name.SequenceEqual("section:ilt-settings"u8) ? RynthILTPlugin.SettingsSurface
                          : name.SequenceEqual("section:ilt-fellowship"u8) ? RynthILTPlugin.FellowshipSurface
+                         : name.SequenceEqual("section:ilt-rates"u8) ? RynthILTPlugin.RatesSurface
                          : null;
             if (view == null || !plugin.RenderEmbedded(view, out float wantH)) return 0;
             if (wantWidth != null) *wantWidth = width;

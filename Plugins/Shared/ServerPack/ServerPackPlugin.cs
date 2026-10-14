@@ -52,8 +52,7 @@ public sealed partial class ServerPackPlugin : RynthPluginBase
     {
         ServerPackInfo info = ServerData.Create();
         _model = new ServerPackModel(info);
-        _ui = new ServerPackUi(_model, RynthPluginInfo.Name + " " + Marshal.PtrToStringAnsi(VersionPointer),
-                               _engineCommands.Enqueue, () => _world);
+        _ui = new ServerPackUi(_model, RynthPluginInfo.Name + " " + Marshal.PtrToStringAnsi(VersionPointer), () => _world);
         _sectionsJson = ServerPackModel.BuildSectionsJson(info, RynthPluginInfo.Name);
     }
 

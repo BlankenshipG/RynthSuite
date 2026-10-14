@@ -37,7 +37,8 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginVersion", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static IntPtr GetVersion()
     {
-        try { return LiteralPointer("0.2.2"u8); }
+        // Keep in step with RynthOraclePlugin.Version (a u8 literal can't be built from a const string).
+        try { return LiteralPointer("0.2.5"u8); }
         catch { return IntPtr.Zero; }
     }
 

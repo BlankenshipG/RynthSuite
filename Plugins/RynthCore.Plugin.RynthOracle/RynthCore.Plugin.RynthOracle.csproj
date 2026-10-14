@@ -54,6 +54,11 @@
     <Compile Include="..\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="Shared\FellowshipTracker.cs" />
     <!-- RynthILT's "RynthILT.Server" interface (server profile: Leaftide features, fellowship rules). -->
     <Compile Include="..\Shared\RynthIltServerApi.cs" Link="Shared\RynthIltServerApi.cs" />
+    <Compile Include="..\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
+    <!-- RynthAi's session stats ("RynthAi.Hub" SessionStats): the Character tab's session rates
+         count the same session as the Mini Remote's Session Stats. -->
+    <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />
+    <Compile Include="..\Shared\RynthAiSessionClient.cs" Link="Shared\RynthAiSessionClient.cs" />
     <!-- RynthCore's server list (API v85) and the active server's settings from its plugin
          ("RynthServer.Profile" / "RynthILT.Server"): which server this is, overrides included. -->
     <Compile Include="..\Shared\RynthServerProfileApi.cs" Link="Shared\RynthServerProfileApi.cs" />

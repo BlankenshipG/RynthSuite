@@ -1,4 +1,6 @@
-// IltCharms.cs — The Mini Remote's "Charms" ILT tab: every ACECustom registry charm in one table.
+// IltCharms.cs — Every ACECustom registry charm and the Guardian Hand, with their toggles. Shown by
+// RynthOracle's Character tab since 2026-10-13 (BuildReaderJson / ToggleFromReader through
+// "RynthILT.Data"); Render is the old Mini Remote "Charms" tab's table, no longer a tab.
 // Originally SilentKelpie's ILT Hub (RynthAi IltHub/); moved to RynthILT 2026-10-13.
 //
 // Per charm (IltCharmTracker): acquired ("carried" now, "stored" = carried before and remembered
@@ -67,6 +69,52 @@ internal sealed class IltCharms : IIltFeature
         if (_ctx.Inventory.IsBusy) { _ctx.Chat("[Mini Remote] Busy - try the charm again in a moment."); return; }
         _ctx.Inventory.Use(wo);
         _lastScan = 0;   // re-read the status soon (the appraisal refresh is throttled per item)
+    }
+
+    /// <summary>
+    /// A Toggle from another plugin (RynthOracle's Character tab, "RynthILT.Data" ToggleCharm). Only
+    /// a registry charm or Guardian Hand the player carries is used, so a reader can't make the
+    /// client use anything else. Pump thread. True when it was used.
+    /// </summary>
+    public bool ToggleFromReader(uint id)
+    {
+        if (id == 0 || id > int.MaxValue) return false;
+        var inv = _ctx.Inventory;
+        foreach (var wo in inv.Items())
+        {
+            if (wo.Id != (int)id) continue;
+            if (inv.CharmDefFor(wo) == null && !IsGuardianHand(wo)) return false;
+            Toggle(wo.Id);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The "RynthILT.Data" charms JSON (RynthOracle's Character tab): the registry charms
+    /// (IltCharmTracker.BuildJson) plus a "hands" array, every Guardian Hand carried now with its
+    /// object id (the Toggle's id), status and the server's switch. Pump thread.
+    /// </summary>
+    public string BuildReaderJson()
+    {
+        string json = _tracker.BuildJson();
+        if (!_ctx.Options.IsIltLikeWorld || !json.EndsWith("]}", StringComparison.Ordinal)) return json;
+        var inv = _ctx.Inventory;
+        string server = _ctx.Options.Get(IltFeature.Charm("Guardian Hand")) switch { IltTri.On => "on", IltTri.Off => "off", _ => "unknown" };
+        var sb = new System.Text.StringBuilder(json, 0, json.Length - 1, json.Length + 256);
+        sb.Append(",\"hands\":[");
+        bool first = true;
+        foreach (var wo in inv.Items().Where(IsGuardianHand))
+        {
+            if (!first) sb.Append(',');
+            first = false;
+            string active = inv.CharmStatus(wo) switch { IltTri.On => "on", IltTri.Off => "off", _ => "unknown" };
+            sb.Append("{\"id\":").Append(unchecked((uint)wo.Id));
+            sb.Append(",\"name\":\"").Append(IltStyle.JsonEscape(wo.Name)).Append('"');
+            sb.Append(",\"active\":\"").Append(active).Append('"');
+            sb.Append(",\"server\":\"").Append(server).Append("\"}");
+        }
+        return sb.Append("]}").ToString();
     }
 
     // ── IIltFeature ─────────────────────────────────────────────────────────

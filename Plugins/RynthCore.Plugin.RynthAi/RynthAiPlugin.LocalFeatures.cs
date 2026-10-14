@@ -408,7 +408,13 @@ public sealed partial class RynthAiPlugin
         if (!_initialized || !_loginComplete || Host.ImGuiContext == IntPtr.Zero) return false;
 
         Func<bool>? draw = null;
-        if (surface == Huds.SectionsManifest.FellowshipSurface)
+        if (surface == Huds.SectionsManifest.SessionSurface)
+        {
+            // The one session (RynthCore's Session Stats section).
+            if (huds == null) return false;
+            draw = () => { huds.RenderSessionSection(); return true; };
+        }
+        else if (surface == Huds.SectionsManifest.FellowshipSurface)
         {
             // RynthILT's own pane carries ILT's /fship commands in RynthCore's section.
             draw = () => { FellowshipUi().Render(withServerCommands: false); return true; };

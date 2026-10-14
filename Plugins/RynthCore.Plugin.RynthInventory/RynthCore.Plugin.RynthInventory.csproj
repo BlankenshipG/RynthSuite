@@ -41,6 +41,8 @@
   <ItemGroup>
     <!-- Server signal vs a player's copy of it (VaultFeed). Also linked by RynthInventory.Tests. -->
     <Compile Include="..\Shared\ChatSource.cs" Link="Shared\ChatSource.cs" />
+    <!-- RynthILT's "RynthILT.Data" interface: the Banking tab's balances for every character on the server. -->
+    <Compile Include="..\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
   </ItemGroup>
 
 </Project>

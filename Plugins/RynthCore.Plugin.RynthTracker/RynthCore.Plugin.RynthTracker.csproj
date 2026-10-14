@@ -29,6 +29,9 @@
     <Compile Include="..\Shared\TrackerSessionStore.cs" Link="Shared\TrackerSessionStore.cs" />
     <Compile Include="..\Shared\SessionStats.cs" Link="Shared\SessionStats.cs" />
     <Compile Include="..\Shared\SessionStatsTracker.cs" Link="Shared\SessionStatsTracker.cs" />
+    <!-- One session (2026-10-13): RynthAi's session through "RynthAi.Hub" when RynthAi is loaded. -->
+    <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />
+    <Compile Include="..\Shared\RynthAiSessionClient.cs" Link="Shared\RynthAiSessionClient.cs" />
   </ItemGroup>
 
   <ItemGroup>

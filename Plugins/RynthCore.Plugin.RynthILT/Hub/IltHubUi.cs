@@ -4,14 +4,21 @@
 // Infinite Leaftide items) that read the Hub's state.
 //
 // The ILT sections are tabs of RynthAi's Mini Remote (its MiniRemoteHud draws the tab bar and
-// calls RenderTab through RynthILT.Hub): Character (world status, Force-ILT, server names,
-// profiles, session rates), Banking, Gear, Charms and Games. A tab is offered only while the
-// server reports its feature on. RenderSection draws the ILT pieces inside RynthAi's own
-// surfaces (the Remote tab, the Quests and Pets tabs, the Mini Remote menu). The Guardian is a
-// RynthCore ILT panel (the bar's ILT button, next to Bounties), drawn through
-// RenderGuardianPanel. Render() keeps the floating extras: the Games HUD and the confirmation
-// modal. Augmentations / Enlightenment / XP planning live on the engine Skills panel. All AC
-// actions go through IltHubContext.Post / Confirm so nothing here touches the game directly.
+// calls RenderTab through RynthILT.Hub): Gear and Games. A tab is offered only while the server
+// reports its feature on. Character, Charms and Banking left the Mini Remote on 2026-10-13:
+//   - the session rates are RynthCore's Mini Remote "Session Stats" section (RenderRatesSection,
+//     surface "section:ilt-rates"), below RynthAi's one session;
+//   - the Leaftide feature list is RynthOracle's About tab ("Server features", from the profile);
+//   - the charms are RynthOracle's Character tab, the bank balances RynthInventory's Global
+//     Inventory "Banking" tab (both read "RynthILT.Data");
+//   - the "Treat this world as ILT" override and the ILT world names are RynthCore's
+//     Options > Diagnostics server selection only ("/ra hub force" and "/ra hub servers" remain).
+// RenderSection draws the ILT pieces inside RynthAi's own surfaces (the Remote tab, the Quests and
+// Pets tabs, the Mini Remote menu). The Guardian is a RynthCore ILT panel (the bar's ILT button,
+// next to Bounties), drawn through RenderGuardianPanel. Render() keeps the floating extras: the
+// Games HUD and the confirmation modal. Augmentations / Enlightenment / XP planning live on the
+// engine Skills panel. All AC actions go through IltHubContext.Post / Confirm so nothing here
+// touches the game directly.
 using System;
 using System.Numerics;
 using ImGuiNET;
@@ -24,15 +31,16 @@ internal sealed class IltHubUi
     private const string ConfirmPopupId = "Confirm##iltconfirm";
     private static readonly Vector4 ColLabel = new(0.80f, 0.84f, 0.90f, 1f);
 
+    /// <summary>Where a server is forced now (the only place: RynthCore's Options window).</summary>
+    private const string ForceHint = "To force a server, use RynthCore Options > Diagnostics > server selection (/rc diagnostics).";
+
+    /// <summary>RynthCore's command that opens Options > Diagnostics (RynthCore 2026.10.5.54+).</summary>
+    private const string DiagnosticsCommand = "/rc diagnostics";
+
     private readonly IltHubController _hub;
     private readonly IltHubContext _ctx;
     private IltConfirmRequest? _confirm;
     private bool _confirmOpened;
-    private string _profileName = string.Empty;
-    private bool _profileShared;
-    private string[] _profileList = Array.Empty<string>();
-    private int _profileIdx;
-    private string? _serverNamesEdit;
     // The last tab body drawn (for one shown log event per tab change); -1 = none yet.
     private int _lastTabLogged = -1;
 
@@ -59,12 +67,31 @@ internal sealed class IltHubUi
         }
         switch (section)
         {
-            case IltSection.Character: RenderCharacterBody(); break;
-            case IltSection.Banking: _hub.Banking.Render(); break;
             case IltSection.Gear: _hub.Gear.Render(); break;
-            case IltSection.Charms: _hub.CharmsTab.Render(); break;
             case IltSection.Games: _hub.Games.Render(); break;
+            default:
+                // A saved tab id from before the move: say where the section lives now.
+                if (IltSections.MovedCommand(section) is string moved)
+                    MovedLink(section, moved);
+                break;
         }
+    }
+
+    /// <summary>
+    /// The ILT session extras in RynthCore's Mini Remote "Session Stats" section (surface
+    /// "section:ilt-rates", the Infinite Leaftide group): coins, pyreals and item conversions.
+    /// XP, luminance and kills are RynthAi's session stats, drawn above it in the same section.
+    /// </summary>
+    public void RenderRatesSection()
+    {
+        if (!_hub.Available)
+        {
+            RenderHeader();
+            RenderUnavailable();
+            return;
+        }
+        _hub.Rates.Render(extrasOnly: true);
+        ImGui.TextDisabled("XP planner, Augmentations and Enlightenment: Skills panel > Progression.");
     }
 
     /// <summary>
@@ -117,73 +144,17 @@ internal sealed class IltHubUi
         _hub.Guardian.Render();
     }
 
-    /// <summary>
-    /// Character tab: world / options header, then session rates (or why the ILT tabs are idle), then
-    /// the list of every Leaftide feature RynthILT supports with the server's state for each.
-    /// </summary>
-    private void RenderCharacterBody()
+    /// <summary>A button that opens a moved section's new home (posted: the command runs on the pump).</summary>
+    private void MovedLink(IltSection section, string command)
     {
-        RenderHeader();
-        ImGui.Separator();
-        if (!_hub.Available) RenderUnavailable();
-        else
-        {
-            if (ImGui.CollapsingHeader("Session rates", ImGuiTreeNodeFlags.DefaultOpen)) _hub.Rates.Render();
-            ImGui.Spacing();
-            ImGui.TextDisabled("XP planner, Augmentations and Enlightenment are on the Skills panel's Progression tab");
-            ImGui.TextDisabled("(right-click the dashboard's Char button > Progression).");
-        }
-        ImGui.Spacing();
-        RenderFeatureList();
+        string home = command == IltSections.GlobalBankCommand ? "Global Inventory > Banking" : "RynthOracle > Character";
+        ImGui.TextDisabled($"{IltSections.Label(section)} moved to {home}.");
+        if (ImGui.SmallButton($"Open {home}##moved{(int)section}"))
+            _ctx.Post(() => _hub.OpenMoved(section, command));
+        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip(command);
     }
 
-    /// <summary>
-    /// "Leaftide features": IltFeatureCatalog grouped by section, each with the server's state and where
-    /// the Rynth tools handle it. States come from the controller's per-second copy (FeatureStates).
-    /// </summary>
-    private void RenderFeatureList()
-    {
-        if (!ImGui.CollapsingHeader("Leaftide features", ImGuiTreeNodeFlags.None)) return;
-        IltTri[] states = _hub.FeatureStates;
-        bool ilt = _ctx.Options.IsIltLikeWorld;
-        SafeImGui.TextDisabled(ilt
-            ? $"Fellowships up to {IltFeatureCatalog.FellowshipMax(true)}. Built-in features are on with the world; the rest follow the server's check."
-            : "Not an ILT world: nothing is asked of the server, so every feature reads 'checking'.");
-        if (!ImGui.BeginTable("##iltfeatures", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp))
-            return;
-        ImGui.TableSetupColumn("Feature", ImGuiTableColumnFlags.WidthStretch, 1.2f);
-        ImGui.TableSetupColumn("Server", ImGuiTableColumnFlags.WidthFixed, 64f);
-        ImGui.TableSetupColumn("Where", ImGuiTableColumnFlags.WidthStretch, 1.6f);
-        ImGui.TableHeadersRow();
-        foreach (string group in IltFeatureCatalog.Groups)
-        {
-            ImGui.TableNextRow();
-            ImGui.TableNextColumn();
-            SafeImGui.TextColored(IltStyle.ColTeal, group);
-            for (int i = 0; i < IltFeatureCatalog.All.Length; i++)
-            {
-                IltFeatureInfo f = IltFeatureCatalog.All[i];
-                if (f.Group != group) continue;
-                IltTri state = i < states.Length ? states[i] : IltTri.Unknown;
-                ImGui.TableNextRow();
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(f.Label);
-                if (ImGui.IsItemHovered())
-                    SafeImGui.SetTooltip(IltFeatureCatalog.Describe(f.Key).Tooltip);
-                ImGui.TableNextColumn();
-                SafeImGui.TextColored(state switch
-                {
-                    IltTri.On => IltStyle.ColGreen,
-                    IltTri.Off => IltStyle.ColHp,
-                    _ => IltStyle.ColTextMute,
-                }, IltFeatureCatalog.StateText(state));
-                ImGui.TableNextColumn();
-                SafeImGui.TextDisabled(f.Where);
-            }
-        }
-        ImGui.EndTable();
-    }
-
+    /// <summary>The world and when the server's ILT features were last read, with a Refresh.</summary>
     private void RenderHeader()
     {
         var o = _ctx.Options;
@@ -195,88 +166,6 @@ internal sealed class IltHubUi
             : $"options via {o.Source} @ {o.LastRefreshUtc.ToLocalTime():t}");
         ImGui.SameLine();
         if (ImGui.SmallButton("Refresh##opts")) _ctx.Post(() => o.Refresh(manual: true));
-
-        bool force = _ctx.State.ForceLeaftideFeatures;
-        if (ImGui.Checkbox("Treat this world as ILT", ref force)) _hub.ForceIltWorld = force;
-        if (ImGui.IsItemHovered())
-            SafeImGui.SetTooltip("World-identity override only: the Mini Remote asks the server which ILT features exist.\nIt never turns a feature on by itself.");
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Servers...")) { _serverNamesEdit = null; ImGui.OpenPopup("##iltservers"); }
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Profiles...")) { ImGui.OpenPopup("##iltprofiles"); _ctx.Post(() => _profileList = _ctx.Store.ListProfiles().ToArray()); }
-        RenderServersPopup();
-        RenderProfilesPopup();
-    }
-
-    /// <summary>
-    /// The world names that count as Infinite Leaftide (RynthAi's Settings > Misc "Server Features"
-    /// list before the move; one list for every character now).
-    /// </summary>
-    private void RenderServersPopup()
-    {
-        if (!ImGui.BeginPopup("##iltservers")) return;
-        ImGui.TextColored(IltStyle.ColTeal, "Infinite Leaftide world names");
-        SafeImGui.TextDisabled(ServerFeatureGate.Describe(_ctx.Options.WorldName, _ctx.Settings, _ctx.State.ForceLeaftideFeatures));
-        string text = _serverNamesEdit ?? ServerFeatureGate.FormatList(ServerFeatureGate.Patterns(_ctx.Settings));
-        ImGui.SetNextItemWidth(320);
-        bool enter = ImGui.InputTextWithHint("##iltservernames", "InfiniteLeaftide, *Leaftide*", ref text, 512, ImGuiInputTextFlags.EnterReturnsTrue);
-        _serverNamesEdit = text;
-        if (ImGui.IsItemHovered())
-            SafeImGui.SetTooltip("Comma-separated world names that turn on the ILT tabs, the Guardian, the Progression\n" +
-                             "planners and the attribute raiser. * is a wildcard (*Leaftide* matches any\n" +
-                             "name containing Leaftide). Case does not matter. Also: /ra hub servers <list>.");
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Save") || enter)
-        {
-            var list = ServerFeatureGate.ParseList(_serverNamesEdit);
-            if (list.Count > 0)
-                _ctx.Post(() => { _ctx.Settings.ServerNames = list; _ctx.SaveSettings(); });
-            _serverNamesEdit = null;
-        }
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Default"))
-        {
-            _ctx.Post(() => { _ctx.Settings.ServerNames = new(ServerFeatureGate.DefaultServerNames); _ctx.SaveSettings(); });
-            _serverNamesEdit = null;
-        }
-        ImGui.EndPopup();
-    }
-
-    private void RenderProfilesPopup()
-    {
-        if (!ImGui.BeginPopup("##iltprofiles")) return;
-        ImGui.TextColored(IltStyle.ColTeal, "ILT profiles (settings only; no balances)");
-        ImGui.SetNextItemWidth(180);
-        ImGui.InputTextWithHint("##profname", "profile name", ref _profileName, 64u);
-        ImGui.SameLine();
-        ImGui.Checkbox("shared", ref _profileShared);
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Save"))
-        {
-            string n = _profileName; bool sh = _profileShared;
-            _ctx.Post(() =>
-            {
-                _ctx.Chat(_ctx.Store.SaveProfile(_ctx.State, n, sh, out string err) ? $"[Mini Remote] Saved profile '{n}'." : "[Mini Remote] Save failed: " + err);
-                _profileList = _ctx.Store.ListProfiles().ToArray();
-            });
-        }
-        var list = _profileList;
-        if (list.Length > 0)
-        {
-            _profileIdx = Math.Clamp(_profileIdx, 0, list.Length - 1);
-            ImGui.SetNextItemWidth(180);
-            ImGui.Combo("##proflist", ref _profileIdx, list, list.Length);
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Load"))
-            {
-                string n = list[_profileIdx];
-                _ctx.Confirm("Load ILT profile", $"Replace the current ILT settings with profile '{n}'?",
-                    () => _ctx.Chat(_ctx.Store.LoadProfile(_ctx.State, n, out string err) ? $"[Mini Remote] Loaded profile '{n}'." : "[Mini Remote] Load failed: " + err),
-                    "Load");
-            }
-        }
-        else ImGui.TextDisabled("No saved profiles.");
-        ImGui.EndPopup();
     }
 
     private void RenderUnavailable()
@@ -284,8 +173,7 @@ internal sealed class IltHubUi
         var o = _ctx.Options;
         if (!o.IsIltLikeWorld)
         {
-            SafeImGui.TextWrapped("This is not an Infinite Leaftide / ACECustom world, so the ILT tabs are idle. "
-                              + "If this shard runs ACECustom under another name, tick 'Treat this world as ILT' and press Refresh.");
+            SafeImGui.TextWrapped("This is not an Infinite Leaftide / ACECustom world, so the ILT tools are idle. " + ForceHint);
         }
         else if (o.IsRefreshing || o.LastRefreshUtc == DateTime.MinValue)
         {
@@ -308,11 +196,13 @@ internal sealed class IltHubUi
             ImGui.TextDisabled("Bank: not loaded yet");
             ImGui.SameLine();
             if (ImGui.SmallButton("Load##mrbank")) _ctx.Post(() => _hub.Banking.RequestRefresh(quiet: true));
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Reads your bank balances (/bank, reply hidden). The Mini Remote's Banking tab has the details.");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Reads your bank balances (/bank, reply hidden). Global Inventory > Banking (/ginv bank) has the details.");
+            BankLink();
             return;
         }
         Stat("P:", Compact(b.Pyreals));
         Stat("Lum:", Compact(b.Luminance));
+        BankLink();
         if (!ImGui.BeginTable("##mrbank", 2, ImGuiTableFlags.SizingStretchSame)) return;
         ImGui.TableNextColumn(); Stat("LK:", Compact(b.LegendaryKeys));
         ImGui.TableNextColumn(); Stat("MK:", Compact(b.MythicalKeys));
@@ -321,6 +211,16 @@ internal sealed class IltHubUi
         // Prestige Coins (ACECustom 2026-10-04): only once the server has reported some.
         if (b.PrestigeCoins > 0) { ImGui.TableNextColumn(); Stat("PC:", Compact(b.PrestigeCoins)); }
         ImGui.EndTable();
+    }
+
+    /// <summary>The Bank line's link to RynthInventory's Global Inventory "Banking" tab (every character here).</summary>
+    private void BankLink()
+    {
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Banks##mrbanklink"))
+            _ctx.Post(() => _hub.OpenMoved(IltSection.Banking, IltSections.GlobalBankCommand));
+        if (ImGui.IsItemHovered())
+            SafeImGui.SetTooltip("Global Inventory > Banking (/ginv bank): deposits, withdrawals, transfers and\nevery character's bank on this server.");
     }
 
     private static void Stat(string label, string value)
@@ -343,8 +243,9 @@ internal sealed class IltHubUi
     // ── RynthAi's Mini Remote menu: the Infinite Leaftide section ──────────
 
     /// <summary>
-    /// Under the Infinite Leaftide section while no ILT feature is on: why, this character's
-    /// "Treat this world as ILT" override and a server-features refresh. False when features are on.
+    /// Under the Infinite Leaftide section while no ILT feature is on: why, where a server is
+    /// forced (RynthCore Options > Diagnostics only) and a server-features refresh. False when
+    /// features are on.
     /// </summary>
     private bool RenderIltStatus()
     {
@@ -353,17 +254,17 @@ internal sealed class IltHubUi
         SafeImGui.TextDisabled(!o.IsIltLikeWorld ? "Not an ILT world."
             : o.IsRefreshing || o.LastRefreshUtc == DateTime.MinValue ? "Checking server features..."
             : "No ILT features reported.");
-        bool force = _hub.ForceIltWorld;
-        if (ImGui.Checkbox("Treat this world as ILT##mrforce", ref force)) _hub.ForceIltWorld = force;
-        if (ImGui.IsItemHovered())
-            SafeImGui.SetTooltip("World-identity override only: RynthILT asks the server which features exist.\nIt never turns a feature on by itself.");
+        if (!o.IsIltLikeWorld && ImGui.MenuItem("Force a server... (Options > Diagnostics)##mrforce", DiagnosticsCommand))
+            _ctx.Post(() => { if (_ctx.Host.HasInvokeChatParser) _ctx.Host.InvokeChatParser(DiagnosticsCommand); });
+        if (!o.IsIltLikeWorld && ImGui.IsItemHovered()) SafeImGui.SetTooltip(ForceHint);
         if (ImGui.MenuItem("Refresh server features##mrrefresh")) _hub.RequestOptionsRefresh();
         return true;
     }
 
     /// <summary>
     /// RynthILT's own Infinite Leaftide entries, for when RynthCore sends no server list (older
-    /// RynthCore, or its ImGui layer off): the tabs, and the Guardian / Bounties panels.
+    /// RynthCore, or its ImGui layer off): the tabs, where Character / Charms / Banking went, and
+    /// the Guardian / Bounties panels.
     /// </summary>
     private bool RenderLocalMenu()
     {
@@ -375,6 +276,10 @@ internal sealed class IltHubUi
             if (ImGui.MenuItem(IltSections.Label(section) + "##mrlocal", string.Empty, false, _hub.SectionAvailable(section)))
                 _ctx.Ai.MiniRemoteTab(IltSections.TabId(section), "show");
         }
+        if (ImGui.MenuItem("Character and charms##mrlocal", IltSections.OracleCharacterCommand))
+            _ctx.Post(() => _hub.OpenMoved(IltSection.Character, IltSections.OracleCharacterCommand));
+        if (ImGui.MenuItem("Banking##mrlocal", IltSections.GlobalBankCommand, false, _hub.SectionAvailable(IltSection.Banking)))
+            _ctx.Post(() => _hub.OpenMoved(IltSection.Banking, IltSections.GlobalBankCommand));
         if (ImGui.MenuItem("Guardian##mrlocal", "/rc guardian", false, _hub.SectionAvailable(IltSection.Guardian)))
             _ctx.Post(() => _hub.OpenEnginePanel("guardian", "Guardian", "show"));
         if (ImGui.MenuItem("Bounties##mrlocal", "/rc bounties"))

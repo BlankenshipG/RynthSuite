@@ -41,6 +41,18 @@ internal sealed class IltHubController
     private volatile string _profileJson = string.Empty;
     private volatile IltTri[] _featureStates = Array.Empty<IltTri>();
 
+    // "RynthILT.Data" (Plugins/Shared/RynthIltDataApi.cs): the charms and bank snapshots, rebuilt on
+    // the pump every DataRebuildMs only while a reader has asked within DataWatchMs.
+    private const long DataRebuildMs = 2000;
+    private const long DataWatchMs = 6000;
+    /// <summary>How often the other characters' saved balances are re-read for the bank export.</summary>
+    private const long SiblingReadMs = 15_000;
+    private long _charmsReadAt, _bankReadAt;       // set by readers (any thread, Interlocked)
+    private long _charmsBuiltAt, _bankBuiltAt, _siblingsReadAt;
+    private volatile string _charmsJson = string.Empty;
+    private volatile string _bankJson = string.Empty;
+    private List<IltBankExport.Row> _siblings = new();
+
     public IltBanking Banking { get; }
     public IltSessionRates Rates { get; }
     /// <summary>The quest bonus list (/qb): the Quests tab's section and the Temple tracker's stamps.</summary>
@@ -120,6 +132,67 @@ internal sealed class IltHubController
                                                           QuestBonus.Snapshot());
     }
 
+    /// <summary>
+    /// The charms JSON ("RynthILT.Data" GetCharmsJson). Reading it marks the charms as watched, so
+    /// the pump keeps the snapshot fresh while a reader (RynthOracle's Character tab) is showing it;
+    /// "" until the first rebuild after that. Any thread.
+    /// </summary>
+    public string CharmsJson
+    {
+        get { System.Threading.Interlocked.Exchange(ref _charmsReadAt, IltHubContext.NowMs); return _charmsJson; }
+    }
+
+    /// <summary>The bank JSON ("RynthILT.Data" GetBankJson; RynthInventory's Banking tab), as <see cref="CharmsJson"/>.</summary>
+    public string BankJson
+    {
+        get { System.Threading.Interlocked.Exchange(ref _bankReadAt, IltHubContext.NowMs); return _bankJson; }
+    }
+
+    /// <summary>A reader's charm Toggle, posted to the pump (IltCharms checks the id). Any thread.</summary>
+    public void RequestCharmToggle(uint objectId)
+        => _ctx.Post(() =>
+        {
+            if (!_ctx.Options.IsIltLikeWorld) return;
+            if (!CharmsTab.ToggleFromReader(objectId))
+                RynthLog.Trace(LogCat.IltGear, $"reader toggle refused: 0x{objectId:X8} isn't a carried charm");
+            _charmsBuiltAt = 0;   // show the new state on the next tick
+        });
+
+    /// <summary>A reader's bank verb line, posted to the pump (IltBanking.RunVerb). Any thread.</summary>
+    public void RequestBankVerb(string line)
+        => _ctx.Post(() =>
+        {
+            if (!_ctx.Options.IsIltLikeWorld) return;
+            Banking.RunVerb(line);
+            _bankBuiltAt = 0;
+        });
+
+    /// <summary>Pump: rebuilds the charms / bank snapshots a reader is watching.</summary>
+    private void RebuildReaderData(long now)
+    {
+        if (now - System.Threading.Interlocked.Read(ref _charmsReadAt) < DataWatchMs && now - _charmsBuiltAt >= DataRebuildMs)
+        {
+            _charmsBuiltAt = now;
+            _charmsJson = CharmsTab.BuildReaderJson();
+        }
+
+        bool bankWatched = now - System.Threading.Interlocked.Read(ref _bankReadAt) < DataWatchMs;
+        Banking.ReaderWatching = bankWatched;
+        if (!bankWatched || now - _bankBuiltAt < DataRebuildMs) return;
+        _bankBuiltAt = now;
+        if (_siblingsReadAt == 0 || now - _siblingsReadAt >= SiblingReadMs)
+        {
+            _siblingsReadAt = now;
+            _siblings = IltBankExport.ReadSiblings(_ctx.Store.CharFolder);
+        }
+        IltServerOptions o = _ctx.Options;
+        string me = _ctx.CharName.Length > 0 ? _ctx.CharName : System.IO.Path.GetFileName(_ctx.Store.CharFolder.TrimEnd('\\', '/'));
+        var rows = new List<IltBankExport.Row>(_siblings.Count + 1) { new(me, true, _ctx.State.Bank) };
+        rows.AddRange(_siblings);
+        int enabled = o.IsOn(IltFeature.Bank) ? 1 : o.IsOff(IltFeature.Bank) ? 0 : -1;
+        _bankJson = IltBankExport.Build(o.IsIltLikeWorld, enabled, o.WorldName, me, rows, Banking.LatestResult, Banking.Transactions);
+    }
+
     public IltHubState State => _ctx.State;
     public IltServerOptions Options => _ctx.Options;
     internal IltHubContext Context => _ctx;
@@ -128,8 +201,8 @@ internal sealed class IltHubController
     public bool Available => _ctx.Options.IsIltLikeWorld && _ctx.Options.AnyFeatureOn;
 
     /// <summary>
-    /// Whether a section can be shown now. Character always can (it explains why the ILT tabs are
-    /// idle and holds the Force-ILT override); the rest need server features.
+    /// Whether a section can be shown now: the ILT tabs and the Guardian need server features.
+    /// Character (moved to RynthOracle) always answers true so its redirect is never refused.
     /// </summary>
     public bool SectionAvailable(IltSection section) => section switch
     {
@@ -141,12 +214,18 @@ internal sealed class IltHubController
 
     /// <summary>
     /// The Mini Remote offers the Infinite Leaftide tabs: an ILT-like world (or the Force-ILT
-    /// override). The Character tab then always shows; the others follow <see cref="SectionAvailable"/>.
+    /// override from RynthCore Options > Diagnostics). Gear and Games then follow <see cref="SectionAvailable"/>.
     /// </summary>
     public bool OffersTabs => _ctx.Options.IsIltLikeWorld;
 
     /// <summary>Whether the Mini Remote's tab bar shows <paramref name="section"/>.</summary>
     public bool TabShown(IltSection section) => OffersTabs && IltSections.IsTab(section) && SectionAvailable(section);
+
+    /// <summary>
+    /// Render thread: the ILT session extras (coins, pyreals, item conversions) in RynthCore's Mini
+    /// Remote "Session Stats" section, below RynthAi's session stats (surface "section:ilt-rates").
+    /// </summary>
+    public void RenderRatesSection() => _ui.RenderRatesSection();
 
     /// <summary>Render thread: one Mini Remote ILT tab's body (RynthAi's MiniRemoteHud draws the tab bar).</summary>
     public void RenderTab(IltSection section) => _ui.RenderTab(section);
@@ -220,6 +299,10 @@ internal sealed class IltHubController
             _profileBuiltAt = now;
             RebuildProfile();
         }
+
+        // The charms / bank snapshots other plugins read (RynthILT.Data), only while watched.
+        try { RebuildReaderData(now); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "RebuildReaderData"); }
 
         // "Mini Remote on screen" gates bank auto-refresh and the gear / split-arrow scans.
         _ctx.State.WindowVisible = _ctx.Ai.MiniRemoteVisible;
@@ -394,14 +477,16 @@ internal sealed class IltHubController
                 {
                     // Quests and Pets are RynthAi's tabs: not ours to open.
                     if (args.Length >= 2 && IltSections.IsUniversalTabName(args[1])) return false;
-                    _ctx.Chat("[Mini Remote] Usage: /ra hub open character|quests|pets|banking|gear|charms|games|guardian|bounties [show|hide|toggle]");
+                    _ctx.Chat("[Mini Remote] Usage: /ra hub open quests|pets|gear|games|guardian|bounties [show|hide|toggle]  (character and charms: /ro character, banking: /ginv bank)");
                     break;
                 }
                 OpenSection(section, args.Length > 2 ? args[2] : "toggle");
                 break;
             case "tab":
                 // The engine's dashboard: it opens its Mini Remote window itself, so only switch tabs.
-                if (args.Length > 1 && IltSections.TryParse(args[1], out IltSection tab) && IltSections.IsTab(tab))
+                if (args.Length > 1 && IltSections.TryParse(args[1], out IltSection tab) && IltSections.MovedCommand(tab) is string moved)
+                    OpenMoved(tab, moved);
+                else if (args.Length > 1 && IltSections.TryParse(args[1], out tab) && IltSections.IsTab(tab))
                     _ctx.Ai.MiniRemoteTab(IltSections.TabId(tab), "select");
                 else
                     return false;   // the Remote tab or a RynthAi tab: RynthAi's
@@ -430,7 +515,7 @@ internal sealed class IltHubController
                 break;
             default:
                 _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|features|force on|off|servers [list]|clap|confirm|cancel");
-                _ctx.Chat("[Mini Remote] /ra hub open character|quests|pets|banking|gear|charms|games [show|hide|toggle]  (Mini Remote tabs)");
+                _ctx.Chat("[Mini Remote] /ra hub open quests|pets|gear|games [show|hide|toggle]  (Mini Remote tabs; character and charms: /ro character, banking: /ginv bank)");
                 _ctx.Chat("[Mini Remote] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
                 _ctx.Chat("[Mini Remote] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
                 _ctx.Chat("[Mini Remote] /ra quests [refresh|check <regex>|window [show|hide]|favhud [show|hide]]   /ra pets [show|hide]");
@@ -505,6 +590,12 @@ internal sealed class IltHubController
     /// </summary>
     private void OpenSection(IltSection section, string mode)
     {
+        if (IltSections.MovedCommand(section) is string moved)
+        {
+            // Character / Charms / Banking left the Mini Remote: open their new home instead.
+            if (!mode.Equals("hide", StringComparison.OrdinalIgnoreCase)) OpenMoved(section, moved);
+            return;
+        }
         if (!IltSections.IsTab(section))
         {
             OpenEnginePanel(IltSections.TabId(section), IltSections.Label(section), mode);
@@ -514,6 +605,19 @@ internal sealed class IltHubController
         if (!SectionAvailable(section) && !mode.Equals("hide", StringComparison.OrdinalIgnoreCase))
             reply = $"The {IltSections.Label(section)} tab shows once the server reports that feature on.";
         _ctx.Chat("[Mini Remote] " + reply);
+    }
+
+    /// <summary>
+    /// Opens the new home of a section that moved out of the Mini Remote (RynthOracle's Character
+    /// tab, RynthInventory's Banking tab) by running its chat command, or says where it is when
+    /// the command can't run (an older RynthCore, or that plugin not loaded). Pump thread.
+    /// </summary>
+    public void OpenMoved(IltSection section, string command)
+    {
+        if (_ctx.Host.HasInvokeChatParser && _ctx.Host.InvokeChatParser(command))
+            return;
+        string home = command == IltSections.GlobalBankCommand ? "RynthInventory's Global Inventory > Banking" : "RynthOracle's Character tab";
+        _ctx.Chat($"[Mini Remote] {IltSections.Label(section)} moved to {home} ({command}).");
     }
 
     /// <summary>

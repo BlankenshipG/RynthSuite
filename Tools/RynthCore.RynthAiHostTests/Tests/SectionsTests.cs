@@ -21,6 +21,20 @@ internal static class SectionsTests
         r.Add("sections: RynthAi's manifest passes the engine parser unchanged", ManifestRoundTrip);
         r.Add("sections: the engine catalog places RynthAi's views by server", CatalogPlacement);
         r.Add("sections: tab surfaces map back to their tabs; foreign ids are refused", SurfaceRoundTrip);
+        r.Add("sections: Character / Charms / Banking redirect to RynthOracle and Global Inventory", MovedTabRedirects);
+    }
+
+    private static void MovedTabRedirects()
+    {
+        foreach (string tab in new[] { "character", "Char", " rates ", "charms", "CHARM" })
+            Check.Eq(MovedTabs.CommandFor(tab), MovedTabs.OracleCharacter, tab + " -> RynthOracle's Character tab");
+        foreach (string tab in new[] { "banking", "Bank" })
+            Check.Eq(MovedTabs.CommandFor(tab), MovedTabs.GlobalBank, tab + " -> Global Inventory > Banking");
+        foreach (string tab in new[] { "gear", "games", "pets", "crafting", "", null })
+            Check.True(MovedTabs.CommandFor(tab) == null, (tab ?? "null") + " is still a Mini Remote tab (or none)");
+        Check.Eq(MovedTabs.OracleCharacter, "/ro character", "the Oracle command");
+        Check.Eq(MovedTabs.GlobalBank, "/ginv bank", "the Global Inventory command");
+        Check.Eq(MovedTabs.Diagnostics, "/rc diagnostics", "the engine's Diagnostics command");
     }
 
     private const string Payload =
@@ -31,12 +45,16 @@ internal static class SectionsTests
         "S\tilt\tInfinite Leaftide\t1\t/rc server ilt on\n" +
         "I\tProgression\t/rc progression\tPlanners.\t\n";
 
-    /// <summary>RynthILT's tabs as its GetTabs would give them (Banking not reported, Games hidden).</summary>
+    /// <summary>
+    /// RynthILT's tabs as its GetTabs would give them (Gear not reported yet, Games hidden), plus the
+    /// Character / Charms / Banking tabs an older RynthILT still reports: those moved out of the Mini
+    /// Remote (2026-10-13) and must not be placed any more.
+    /// </summary>
     private static readonly IltTabInfo[] IltTabs =
     {
         new("character", "Character", 520, 440, Shown: true, Available: true),
-        new("banking", "Banking", 560, 520, Shown: true, Available: false),
-        new("gear", "Gear", 560, 520, Shown: true, Available: true),
+        new("banking", "Banking", 560, 520, Shown: true, Available: true),
+        new("gear", "Gear", 560, 520, Shown: true, Available: false),
         new("charms", "Charms", 560, 520, Shown: true, Available: true),
         new("games", "Games", 520, 440, Shown: false, Available: false),
         new("bogus id!", "Nope", 100, 100, Shown: true, Available: true),
@@ -73,8 +91,8 @@ internal static class SectionsTests
             ServerMenuModel.Apply(Payload);
             Check.Eq(ServerMenuModel.ServerActive("ilt"), true, "forced on");
 
-            // An older RynthCore: groups only, no verdicts (the Mini Remote's ILT force then also
-            // sets RynthILT's own "Treat this world as ILT").
+            // An older RynthCore: groups only, no verdicts (a server is forced in RynthCore's
+            // Options > Diagnostics, not from the Mini Remote, since 2026-10-13).
             ServerMenuModel.Apply("S\tilt\tInfinite Leaftide\t1\t/rc ilt on\n");
             Check.True(ServerMenuModel.ServerActive("ilt") == null, "no verdicts: none to follow");
         }
@@ -105,15 +123,22 @@ internal static class SectionsTests
             Check.Eq(c.Enabled, v.Enabled, "enabled " + v.Surface);
             Check.Eq(c.Order, v.Order, "order " + v.Surface);
         }
-        SectionContribution banking = m.Contributions.Single(c => c.Surface == SectionsManifest.SurfaceOf("banking"));
-        Check.False(banking.Enabled, "unavailable Banking is disabled");
-        Check.True(banking.Note.Length > 0, "with a note");
+        SectionContribution gear = m.Contributions.Single(c => c.Surface == SectionsManifest.SurfaceOf("gear"));
+        Check.False(gear.Enabled, "unavailable Gear is disabled");
+        Check.True(gear.Note.Length > 0, "with a note");
+        foreach (string moved in new[] { "character", "charms", "banking" })
+            Check.False(views.Any(v => v.Surface == SectionsManifest.SurfaceOf(moved)), moved + " moved out: not placed even if RynthILT reports it");
         Check.True(json.Length < SectionManifestParser.MaxJsonLength / 16, "small");
+
+        SectionsManifest.View session = views.Single(v => v.Surface == SectionsManifest.SessionSurface);
+        Check.Eq(session.Section, "char", "session stats in the char (Session Stats) section");
+        Check.Eq(session.Server, string.Empty, "every world");
+        Check.True(session.Primary, "a primary view (RynthCore drops its own overview)");
 
         string noIlt = SectionsManifest.Build(SectionsManifest.Views(System.Array.Empty<IltTabInfo>()), SectionsManifest.OwnSections);
         SectionManifest plain = SectionManifestParser.Parse("RynthAi", noIlt, out string error2);
         Check.Eq(error2, string.Empty, "without RynthILT: no parse error");
-        Check.Eq(plain.Contributions.Length, 4, "without RynthILT: Pets, Crafting, Spells, Fellowship");
+        Check.Eq(plain.Contributions.Length, 5, "without RynthILT: Session stats, Pets, Crafting, Spells, Fellowship");
     }
 
     private static void CatalogPlacement()
@@ -130,25 +155,32 @@ internal static class SectionsTests
         Check.False(off.Any(v => v.Id == "quests"), "no Quests section of RynthAi's");
         Check.False(off.Any(v => v.Id == "games"), "no Games off ILT");
         SectionView charOff = off.Single(v => v.Id == "char");
-        Check.Eq(charOff.Panes.Length, 1, "Char: only the overview off ILT");
+        Check.Eq(charOff.Label, SectionCatalog.SessionStatsLabel, "the char section is Session Stats");
+        Check.True(charOff.Panes.Length == 1 && charOff.Panes[0].Contribution?.Surface == SectionsManifest.SessionSurface,
+            "Session Stats: RynthAi's session view replaces the engine overview");
 
         List<SectionView> on = SectionCatalog.Build(new[] { m }, _ => false, new[] { iltOn });
         SectionView charOn = on.Single(v => v.Id == "char");
-        Check.True(charOn.Panes.Any(p => p.Title == "ILT Character") && charOn.Panes.Any(p => p.Title == "Charms"), "Char: ILT views on ILT");
+        Check.True(charOn.Panes.Length == 1 && charOn.Panes[0].Contribution?.Surface == SectionsManifest.SessionSurface,
+            "Session Stats on ILT: session stats only (no ILT Character / Charms)");
         SectionView inventoryOn = on.Single(v => v.Id == "inventory");
-        Check.True(inventoryOn.Panes.Any(p => p.Title == "Banking") && inventoryOn.Panes.Any(p => p.Title == "Gear"), "Inventory: Banking and Gear on ILT");
+        Check.True(inventoryOn.Panes.Any(p => p.Title == "Gear") && !inventoryOn.Panes.Any(p => p.Title == "Banking"),
+            "Inventory: Gear on ILT; Banking is Global Inventory's");
         Check.True(on.Single(v => v.Id == "spells").Panes.Any(p => p.Contribution?.Surface == SectionsManifest.SpellsSurface), "Spells");
         Check.True(on.Single(v => v.Id == "fellowship").Panes.Any(p => p.Contribution?.Surface == SectionsManifest.FellowshipSurface), "Fellowship");
     }
 
     private static void SurfaceRoundTrip()
     {
-        foreach (string id in new[] { "character", "charms", "banking", "gear", "games" })
+        foreach (string id in new[] { "gear", "games" })
         {
             string surface = SectionsManifest.SurfaceOf(id);
             Check.True(SectionsManifest.TryIltTabOf(surface, out string back) && back == id, "round trip " + surface);
             Check.Eq(SectionManifestParser.Surface(surface), surface, "the engine accepts " + surface);
         }
+        foreach (string moved in new[] { "character", "charms", "banking" })
+            Check.False(SectionsManifest.TryIltTabOf(SectionsManifest.SurfaceOf(moved), out _), moved + " isn't a section tab any more");
+        Check.Eq(SectionManifestParser.Surface(SectionsManifest.SessionSurface), SectionsManifest.SessionSurface, "the engine accepts the session surface");
         Check.True(SectionsManifest.TryOwnTabOf(SectionsManifest.PetsSurface, out string pets) && pets == MiniRemoteTabs.Pets, "pets is RynthAi's");
         Check.True(SectionsManifest.TryOwnTabOf(SectionsManifest.CraftingSurface, out string craft) && craft == MiniRemoteTabs.Crafting, "crafting is RynthAi's");
         Check.False(SectionsManifest.TryIltTabOf(SectionsManifest.PetsSurface, out _), "pets isn't an ILT tab");

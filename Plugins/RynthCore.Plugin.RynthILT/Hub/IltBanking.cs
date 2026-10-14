@@ -1,6 +1,8 @@
-// IltBanking.cs — ILT Hub "Banking" tab: /bank balances, deposits, withdrawals, confirmed
-// Originally SilentKelpie's ILT Hub (RynthAi IltHub/); moved to RynthILT 2026-10-13.
-// transfers, transaction log.
+// IltBanking.cs — ILT banking: /bank balances, deposits, withdrawals, confirmed transfers,
+// transaction log. Originally SilentKelpie's ILT Hub (RynthAi IltHub/); moved to RynthILT 2026-10-13.
+// Shown by RynthInventory's Global Inventory "Banking" tab since 2026-10-13 (every character on
+// this server, IltBankExport; the verbs come back through RunVerb). Render is the old Mini
+// Remote "Banking" tab, no longer a tab.
 //
 // Server contract (ACECustom PlayerCommands bank handler, upstream 2026-10-11):
 //   /bank                  → "[BANK] Your balances are:" then "[BANK] Pyreals: N", "Luminance:",
@@ -63,6 +65,23 @@ internal sealed class IltBanking : IIltFeature
     private string _txFilter = string.Empty;
     private string _lastResult = string.Empty;
     private volatile string _actionResult = string.Empty;
+    /// <summary>The newest action reply or error (deposit, withdrawal or transfer), for the bank export.</summary>
+    private volatile string _latestResult = string.Empty;
+
+    /// <summary>
+    /// Another plugin is showing the balances (RynthInventory's Banking tab reads "RynthILT.Data"):
+    /// the periodic quiet refresh runs as it does while the Mini Remote is open. Pump thread.
+    /// </summary>
+    public bool ReaderWatching;
+
+    /// <summary>The newest action reply or error (any thread).</summary>
+    public string LatestResult => _latestResult;
+
+    /// <summary>The transaction log as last published (any thread; oldest first).</summary>
+    public IReadOnlyList<IltBankTransaction> Transactions => _txSnapshot;
+
+    /// <summary>The bank state (pump thread).</summary>
+    public IltBankState State => Bank;
 
     /// <summary>Raised (pump thread) after a balance line updates the state; Character rates use the deltas.</summary>
     public event Action<string, long, long>? BalanceChanged;
@@ -151,6 +170,7 @@ internal sealed class IltBanking : IIltFeature
             OnComplete = r =>
             {
                 _lastResult = r.Lines.Count > 0 ? r.Lines[^1] : (r.TimedOut ? "No reply from server." : string.Empty);
+                _latestResult = _lastResult;
                 // Balances changed: read them again shortly.
                 _refreshDueAt = IltHubContext.NowMs + RefreshAfterActionMs;
             },
@@ -201,19 +221,51 @@ internal sealed class IltBanking : IIltFeature
             {
                 _actionResult = r.Lines.Count > 0 ? string.Join("\n", r.Lines.TakeLast(6))
                     : r.TimedOut ? "No reply from the server." : string.Empty;
+                _latestResult = _actionResult;
                 _refreshDueAt = IltHubContext.NowMs + RefreshAfterActionMs;
             },
         });
         return string.Empty;
     }
 
+    /// <summary>
+    /// A bank verb line from "RynthILT.Data" BankCommand (Plugins/Shared/RynthIltDataApi.cs):
+    /// "refresh", "deposit i", "withdraw i amount note", "transfer i amount note name". The reader
+    /// has already confirmed a transfer with the player. Pump thread. Returns an error, or empty
+    /// when it was queued; either way the outcome shows in <see cref="LatestResult"/>.
+    /// </summary>
+    public string RunVerb(string line)
+    {
+        string[] p = (line ?? string.Empty).Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string err;
+        if (p.Length == 0) err = "Empty bank command.";
+        else if (p[0] == "refresh" && p.Length == 1) { RequestRefresh(quiet: true); return string.Empty; }
+        else if (p[0] == "deposit" && p.Length == 2 && int.TryParse(p[1], out int d)) err = SendDeposit(d);
+        else if (p[0] == "withdraw" && p.Length == 4 && int.TryParse(p[1], out int w) && long.TryParse(p[2], out long wa)
+                 && int.TryParse(p[3], out int wn))
+            err = SendWithdraw(w, wa, wn);
+        else if (p[0] == "transfer" && p.Length >= 5 && int.TryParse(p[1], out int c) && long.TryParse(p[2], out long ta)
+                 && int.TryParse(p[3], out int tn))
+        {
+            // The name may hold spaces; SendTransfer checks it is a character name.
+            string who = string.Join(' ', p, 4, p.Length - 4);
+            err = SendTransfer(c, ta, who, IltBankCommands.IsNoteTransfer(c) ? tn : -1);
+            if (err.Length == 0) _latestResult = "Transfer sent...";
+        }
+        else err = "Unknown bank command.";
+        if (err.Length > 0) _latestResult = err;
+        RynthLog.Trace(LogCat.IltBanking, $"reader verb '{line}' -> {(err.Length > 0 ? err : "queued")}");
+        return err;
+    }
+
     // ── IIltFeature ─────────────────────────────────────────────────────────
 
     public void Tick(long nowMs)
     {
-        // Periodic quiet refresh only while the Hub is open and the server has /bank.
+        // Periodic quiet refresh only while the balances are on screen (the Hub, or a reader's
+        // Banking tab) and the server has /bank.
         int every = Bank.AutoRefreshSeconds;
-        if (Enabled && _ctx.WindowOpen && every > 0 && nowMs - _lastAutoRefreshAt >= every * 1000L
+        if (Enabled && (_ctx.WindowOpen || ReaderWatching) && every > 0 && nowMs - _lastAutoRefreshAt >= every * 1000L
             && nowMs - _lastBalanceAt >= BalanceSpacingMs)
         {
             _lastAutoRefreshAt = nowMs;

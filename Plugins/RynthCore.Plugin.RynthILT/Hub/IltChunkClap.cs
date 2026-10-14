@@ -3,8 +3,9 @@
 //
 // Chunk: uses a Lugian (Aetheria) Hammer on eligible items, one at a time:
 //   Aetheria  — "Aetheria"/"Coalesced Aetheria" gems, not equipped, appraised, not flagged
-//               never-chunk (bool 9030), never levelled (ItemTotalXp quad 4 == 0), and
-//               max level (int 319) under the configured cap (Coalesced always qualifies).
+//               never-chunk (bool 9030), never levelled (ItemTotalXp quad 4 == 0), no kept
+//               C / CD / CDR rating (gear ints 372 / 374 / 375; on by default), and max level
+//               (int 319, up to 10 on ILT) under the configured cap (Coalesced always qualifies).
 //   Corrupted — "Corrupted" melee/missile weapons with no tinks (171), no imbue (179),
 //               not equipped, not never-chunk, cleave (292) <= 1.
 //   Peace mode only unless ChunkInCombat; waits for the result line (10 s max).
@@ -78,8 +79,23 @@ internal sealed class IltChunkClap : IIltFeature
         if (!inv.HasAppraisal(wo)) { inv.RequestAppraisal(wo); return null; }
         if (inv.Bool(wo, IltInventory.BoolNeverChunk)) return false;
         if (inv.Quad(wo, IltInventory.QuadItemTotalXp) != 0) return false;
-        return coalesced || inv.Int(wo, IltInventory.IntItemMaxLevel) < Math.Max(1, G.ChunkAetheriaUnderLevel);
+        if (KeptForRatings(G, inv.Int(wo, IltInventory.IntGearCrit), inv.Int(wo, IltInventory.IntGearCritDamage),
+                           inv.Int(wo, IltInventory.IntGearCritDamageResist)))
+            return false;
+        return coalesced || inv.Int(wo, IltInventory.IntItemMaxLevel) < ClampUnderLevel(G.ChunkAetheriaUnderLevel);
     }
+
+    /// <summary>The chunk cap in range: 1 (chunk nothing by level) to one past the ILT maximum (every level).</summary>
+    internal static int ClampUnderLevel(int under) => Math.Clamp(under, 1, IltInventory.AetheriaMaxLevel + 1);
+
+    /// <summary>
+    /// True when an aetheria's C / CD / CDR rating is one the settings keep (any rating above 0 with
+    /// its keep switch on). Pure: the tests drive it.
+    /// </summary>
+    internal static bool KeptForRatings(IltGearState g, int crit, int critDamage, int critDamageResist)
+        => (g.KeepAetheriaWithCrit && crit > 0)
+           || (g.KeepAetheriaWithCritDamage && critDamage > 0)
+           || (g.KeepAetheriaWithCritDamageResist && critDamageResist > 0);
 
     private bool? IsChunkableCorrupted(WorldObject wo)
     {
@@ -258,7 +274,20 @@ internal sealed class IltChunkClap : IIltFeature
         if (ImGui.Checkbox("Allow while in combat mode", ref comb)) G.ChunkInCombat = comb;
         int under = G.ChunkAetheriaUnderLevel;
         ImGui.SetNextItemWidth(100);
-        if (ImGui.InputInt("Chunk aetheria with max level below", ref under)) G.ChunkAetheriaUnderLevel = Math.Clamp(under, 1, 6);
+        if (ImGui.InputInt("Chunk aetheria with max level below", ref under)) G.ChunkAetheriaUnderLevel = ClampUnderLevel(under);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip($"Infinite Leaftide aetheria goes up to level {IltInventory.AetheriaMaxLevel}; {IltInventory.AetheriaMaxLevel + 1} chunks every level.");
+        bool kc = G.KeepAetheriaWithCrit, kcd = G.KeepAetheriaWithCritDamage, kcdr = G.KeepAetheriaWithCritDamageResist;
+        ImGui.TextUnformatted("Never chunk aetheria with:");
+        ImGui.SameLine();
+        if (ImGui.Checkbox("C##keepc", ref kc)) G.KeepAetheriaWithCrit = kc;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("A Crit rating (GearCrit).");
+        ImGui.SameLine();
+        if (ImGui.Checkbox("CD##keepcd", ref kcd)) G.KeepAetheriaWithCritDamage = kcd;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("A Crit Damage rating (GearCritDamage).");
+        ImGui.SameLine();
+        if (ImGui.Checkbox("CDR##keepcdr", ref kcdr)) G.KeepAetheriaWithCritDamageResist = kcdr;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("A Crit Damage Resist rating (GearCritDamageResist).");
         if (ImGui.Button("Chunk eligible items now...")) _ctx.Confirm("Chunk items",
             "Run one chunk pass now on every eligible aetheria and corrupted weapon?\nChunked items are destroyed.",
             ChunkNow, "Chunk");

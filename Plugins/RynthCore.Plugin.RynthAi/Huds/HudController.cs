@@ -521,8 +521,16 @@ internal sealed class HudController
     {
         tab ??= string.Empty;
         string label = tab.Length == 0 ? "Remote" : char.ToUpperInvariant(tab[0]) + tab.Substring(1);
-        bool selected = string.Equals(State.MiniRemoteTab, tab, StringComparison.OrdinalIgnoreCase);
         string m = (mode ?? string.Empty).ToLowerInvariant();
+        // Character / Charms / Banking left the Mini Remote (2026-10-13): open their new home.
+        if (MovedTabs.CommandFor(tab) is string moved)
+        {
+            if (string.Equals(State.MiniRemoteTab, tab, StringComparison.OrdinalIgnoreCase)) _miniRemote.RequestTab(string.Empty);
+            if (m is "hide" or "off" or "close") return $"{label} isn't a Mini Remote tab any more ({MovedTabs.HomeOf(moved)}, {moved}).";
+            RunEngineCommand(moved);
+            return $"{label} moved to {MovedTabs.HomeOf(moved)} ({moved}).";
+        }
+        bool selected = string.Equals(State.MiniRemoteTab, tab, StringComparison.OrdinalIgnoreCase);
         // RynthCore shows the tabs as sections: open it there. Not for "select", which is how
         // RynthCore itself falls back to this tab bar (re-sending would bounce between the two).
         if (EngineHostsSections && m is not ("select" or "hide" or "off" or "close"))
@@ -546,6 +554,9 @@ internal sealed class HudController
     }
 
     // ── Render thread ───────────────────────────────────────────────────────
+
+    /// <summary>RynthCore's Mini Remote "Session Stats" section (SectionsManifest.SessionSurface). Render thread.</summary>
+    public void RenderSessionSection() => _miniRemote.RenderSessionSection();
 
     public void Render()
     {

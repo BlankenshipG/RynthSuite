@@ -89,10 +89,11 @@ internal sealed class IltSettingsUi
                 ImGui.PopStyleColor();
             }
 
-            ImGui.TextUnformatted("This character:");
-            ForceRadio("Auto", "auto", s.Force);
-            ForceRadio("On", "on", s.Force);
-            ForceRadio("Off", "off", s.Force);
+            // Read only: a server is forced in one place, RynthCore Options > Diagnostics (2026-10-13).
+            string force = s.Force switch { "on" => "forced on", "off" => "forced off", _ => "auto (detected)" };
+            SafeImGui.TextDisabled("This character: " + force + "  (change it in RynthCore Options > Diagnostics)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("RynthCore's server selection (Options > Diagnostics) forces a server for this character,\nor /rc server ilt auto|on|off in chat.");
         }
 
         ImGui.Spacing();
@@ -121,20 +122,10 @@ internal sealed class IltSettingsUi
         }
     }
 
-    private void ForceRadio(string label, string mode, string current)
-    {
-        ImGui.SameLine();
-        if (ImGui.RadioButton(label + "##iltforce", current == mode) && current != mode)
-            Send(IltSettingsModel.ForceCommand(mode), "Unknown mode.", "Setting this character to " + label + "...");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(mode switch
-            {
-                "on" => "Treat this world as Infinite Leaftide for this character (/rc server ilt on).",
-                "off" => "Never treat this world as Infinite Leaftide for this character (/rc server ilt off).",
-                _ => "RynthCore decides from the world name and launch host (/rc server ilt auto).",
-            });
-    }
-
+    /// <summary>
+    /// A summary of the server's ILT features (how many are on in each group) and a link to the full
+    /// list, which is RynthOracle's About tab ("Server features", read from RynthILT's profile).
+    /// </summary>
     private void RenderFeatures()
     {
         IltFeatureView? f = _model.Features;
@@ -157,46 +148,33 @@ internal sealed class IltSettingsUi
             ImGui.TextDisabled("The server hasn't reported any ILT features yet.");
             return;
         }
-        if (f.IltLike)
-            SafeImGui.TextWrapped("The ILT profile: what Infinite Leaftide runs beyond retail, from ACECustom. Detected on "
-                                  + "this client only: the login check and the server's replies in chat can turn a feature "
-                                  + "on or off; hover a row for where its state comes from.");
-
-        // One collapsible section per group (Character, Items, Pets, Fellowship, Combat,
-        // Activities), then the charms and any other bit chat or a probe set.
-        var byGroup = new Dictionary<string, List<(string Label, string Tooltip, int State, string Text)>>(StringComparer.Ordinal);
+        // How many are on in each group (Character, Items, Pets, Fellowship, Combat, Activities,
+        // then the charms and any other bit chat or a probe set). The rows themselves are drawn by
+        // RynthOracle's About tab, the one place the Leaftide feature list lives (2026-10-13).
+        var counts = new Dictionary<string, (int On, int Off, int All)>(StringComparer.Ordinal);
         foreach (var kv in f.Features)
         {
-            var (label, group, tooltip) = IltFeatureCatalog.Describe(kv.Key);
-            string text = IltFeatureCatalog.StateText((IltTri)Math.Clamp(kv.Value, -1, 1));
-            if (!byGroup.TryGetValue(group, out var list)) byGroup[group] = list = new();
-            list.Add((label, tooltip, kv.Value, text));
+            string group = IltFeatureCatalog.Describe(kv.Key).Group;
+            counts.TryGetValue(group, out var c);
+            counts[group] = (c.On + (kv.Value == 1 ? 1 : 0), c.Off + (kv.Value == 0 ? 1 : 0), c.All + 1);
         }
         foreach (string group in FeatureGroups())
         {
-            if (!byGroup.TryGetValue(group, out var rows)) continue;
-            int on = 0;
-            foreach (var r in rows) if (r.State == 1) on++;
-            if (!ImGui.CollapsingHeader($"{group} ({on} of {rows.Count} on)##iltfg_{group}",
-                    group == IltFeatureCatalog.GroupOther ? ImGuiTreeNodeFlags.None : ImGuiTreeNodeFlags.DefaultOpen))
-                continue;
-            if (!ImGui.BeginTable("##iltft_" + group, 2,
-                    ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp))
-                continue;
-            ImGui.TableSetupColumn("Feature", ImGuiTableColumnFlags.WidthStretch);
-            ImGui.TableSetupColumn("State", ImGuiTableColumnFlags.WidthFixed, 70f);
-            foreach (var (label, tooltip, state, text) in rows)
-            {
-                ImGui.TableNextRow();
-                ImGui.TableNextColumn();
-                SafeImGui.Text(label);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
-                ImGui.TableNextColumn();
-                SafeImGui.TextColored(state == 1 ? Teal : state == 0 ? Warn : Mute, text);
-            }
-            ImGui.EndTable();
+            if (!counts.TryGetValue(group, out var c)) continue;
+            SafeImGui.Text(group);
+            ImGui.SameLine(140);
+            SafeImGui.TextColored(c.On > 0 ? Teal : c.Off > 0 ? Warn : Mute, $"{c.On} of {c.All} on");
         }
+        ImGui.Spacing();
+        if (ImGui.SmallButton("Open the full list (RynthOracle > About)##iltfeatlist"))
+            _runCommand(OracleAboutCommand);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Every Leaftide feature with its state on this server and where the Rynth tools handle it\n"
+                             + "(RynthOracle's About tab, Server features; " + OracleAboutCommand + ").");
     }
+
+    /// <summary>RynthOracle's About tab, whose "Server features" section lists every Leaftide feature.</summary>
+    private const string OracleAboutCommand = "/ro about";
 
     /// <summary>The feature sections in display order: the catalog's groups, then Charms and Other.</summary>
     private static IEnumerable<string> FeatureGroups()

@@ -75,11 +75,44 @@ public struct SessionStatsV1
     public double KillsPerHour;
 }
 
+/// <summary>
+/// The rest of the Mini Remote's session (SessionStatsMore, appended 2026-10-13): what RynthTracker's
+/// panel shows beyond <see cref="SessionStatsV1"/>, so it can show RynthAi's session whole. Blittable.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SessionStatsMoreV1
+{
+    /// <summary>XP per kill of your own kills (0 = none yet).</summary>
+    public long XpPerKill;
+    public int Deaths;
+    /// <summary>1 at the level cap (experience can't rise).</summary>
+    public int MaxLevel;
+    /// <summary>Radiance (Aelrynth); 0 elsewhere.</summary>
+    public long Rad;
+    public double RadPerHour;
+}
+
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct RynthAiHubApiV1
 {
     public const string InterfaceName = "RynthAi.Hub";
     public const uint InterfaceVersion = 1;
+
+    /// <summary>
+    /// The table's size up to and including SessionReset, as every RynthAi since the interface's
+    /// first release fills it. Readers check StructSize against this (not sizeof, which grows as
+    /// functions are appended) and check for the appended functions with <see cref="Has"/>.
+    /// </summary>
+    public static uint BaseStructSize => (uint)(2 * sizeof(uint) + 10 * sizeof(nint));
+
+    /// <summary>Whether a table RynthAi built is big enough to hold the function at <paramref name="offset"/>.</summary>
+    public static bool Has(RynthAiHubApiV1* t, int offset) => t != null && t->StructSize >= (uint)(offset + sizeof(nint));
+
+    /// <summary>
+    /// The byte offset of <see cref="SessionStatsMore"/> (for <see cref="Has"/>): the first function
+    /// appended after the base table. Sequential layout of 4-byte fields and pointers has no padding.
+    /// </summary>
+    public static int SessionStatsMoreOffset => (int)BaseStructSize;
 
     public uint Version;      // InterfaceVersion of the table RynthAi filled; 0 once it has shut down
     public uint StructSize;   // sizeof(RynthAiHubApiV1) as RynthAi built it
@@ -125,4 +158,12 @@ public unsafe struct RynthAiHubApiV1
 
     /// <summary>SessionReset(): starts the Mini Remote's session over (as its Reset XP button). Any thread.</summary>
     public delegate* unmanaged[Cdecl]<void> SessionReset;
+
+    // ── Appended 2026-10-13 (check with Has before calling) ─────────────────
+
+    /// <summary>
+    /// SessionStatsMore(more): the rest of the same session (XP per kill, deaths, Radiance, level
+    /// cap); 0 before login. RynthTracker shows RynthAi's session through this and SessionStats. Any thread.
+    /// </summary>
+    public delegate* unmanaged[Cdecl]<SessionStatsMoreV1*, int> SessionStatsMore;
 }

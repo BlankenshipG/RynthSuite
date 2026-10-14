@@ -201,8 +201,17 @@ public sealed class IltGearState
     public bool AutoChunkCorrupted;
     public bool ChunkInCombat;
     public int ChunkIntervalMs = 2000;
-    /// <summary>Only chunk aetheria whose max level is below this (Coalesced always chunks).</summary>
+    /// <summary>
+    /// Only chunk aetheria whose max level is below this (Coalesced always chunks). Infinite Leaftide
+    /// aetheria goes up to level <see cref="IltInventory.AetheriaMaxLevel"/>, so the cap runs to one past it.
+    /// </summary>
     public int ChunkAetheriaUnderLevel = 4;
+    /// <summary>Never chunk aetheria carrying a Crit rating (C, GearCrit 372; ILT tier-10 sigils of level 6+).</summary>
+    public bool KeepAetheriaWithCrit = true;
+    /// <summary>Never chunk aetheria carrying a Crit Damage rating (CD, GearCritDamage 374).</summary>
+    public bool KeepAetheriaWithCritDamage = true;
+    /// <summary>Never chunk aetheria carrying a Crit Damage Resist rating (CDR, GearCritDamageResist 375).</summary>
+    public bool KeepAetheriaWithCritDamageResist = true;
 
     // Auto-clap (/clap all)
     public bool AutoClap;

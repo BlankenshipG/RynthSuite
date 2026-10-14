@@ -15,7 +15,7 @@
 //     "checking" until the reply arrives, then on or off.
 //   * No server bit at all (the Temple guardians, Paragon gear): content, on with the ILT world.
 // Off an ILT world nothing is claimed: every state is unknown.
-// The list feeds the Mini Remote's Character tab ("Leaftide features"), "/ra hub features",
+// The list feeds RynthOracle's About tab ("Server features", via the profile JSON), "/ra hub features",
 // and the "RynthILT.Server" profile JSON other plugins read (Plugins/Shared/RynthIltServerApi.cs:
 // RynthOracle's Fellowship tab takes the fellowship rules from it, and its Quests tab the /qb list).
 // Server facts copied from ACECustom: Fellowship.MaxFellows = 29 (Source/ACE.Server/Entity/
@@ -79,9 +79,9 @@ internal static class IltFeatureCatalog
     public static readonly IltFeatureInfo[] All =
     {
         // Character progression and money.
-        new("bank", "Banking", GroupCharacter, "Mini Remote > Banking tab; Remote tab bank line",
+        new("bank", "Banking", GroupCharacter, "Global Inventory > Banking (/ginv bank); Remote tab bank line",
             "Bank pyreals, luminance, keys and coins; deposit, withdraw and transfer (/bank).", IltFeature.Bank, IltKnown.Checked),
-        new("bank_notes", "Trade note banking", GroupCharacter, "Mini Remote > Banking tab (notes)",
+        new("bank_notes", "Trade note banking", GroupCharacter, "Global Inventory > Banking (/ginv bank, notes)",
             "Deposit trade notes as pyreals, withdraw any note from I to MMD, transfer note value (/bank d n).", "bank_notes"),
         new("guardian", "Guardian (infinite base attributes)", GroupCharacter, "Guardian panel (/rc guardian)",
             "Temple of Enlightenment guardians raise base attributes past the retail cap.", null),
@@ -114,7 +114,7 @@ internal static class IltFeatureCatalog
             "t11_craft_gate"),
         new("split_arrows", "Split arrows", GroupItems, "Mini Remote > Gear > Split arrows",
             "Missile weapons carry split arrows, added with White Quartz salvage.", "split_arrows"),
-        new("charms", "Charms", GroupItems, "Mini Remote > Charms tab",
+        new("charms", "Charms", GroupItems, "RynthOracle > Character (/ro character)",
             "Registry charms and the Guardian Hand, with their toggles; each charm is listed in the Charms section.", "charms"),
         new("clap", "Chunk clap (auto craft)", GroupItems, "Mini Remote > Gear tab",
             "Turns aetheria, chunks and trinkets into banked enlightened coins (/clap all).", IltFeature.Clap, IltKnown.Checked),
@@ -146,9 +146,9 @@ internal static class IltFeatureCatalog
             "Fellowships hold up to 29 members instead of retail's 9.", "fellowship_size"),
         new("fship", "Fellowship commands", GroupFellowship, "RynthOracle > Fellowship (ILT /fship)",
             "Create, invite, invite your landblock, list nearby, leave and disband from chat (/fship).", "fship"),
-        new("zone_share", "Zone Share", GroupFellowship, "Mini Remote > Character > Session rates",
+        new("zone_share", "Zone Share", GroupFellowship, "Mini Remote > Session Stats (luminance, pass-up)",
             "XP and luminance shared with everyone in a Zone Share area, capped at a fellowship's size.", "zone_share"),
-        new("fellowship_luminance", "Fellowship luminance share", GroupFellowship, "Mini Remote > Character > Session rates",
+        new("fellowship_luminance", "Fellowship luminance share", GroupFellowship, "Mini Remote > Session Stats (luminance, pass-up)",
             "Luminance splits among fellows the way XP does.", "fellowship_luminance"),
         new("fellowship_blackjack", "Fellowship Blackjack", GroupFellowship, "Mini Remote > Games tab",
             "Blackjack played as a fellowship (/fblackjack).", IltFeature.FBlackjack, IltKnown.Checked),
@@ -238,7 +238,7 @@ internal static class IltFeatureCatalog
             foreach (IltCharmDef def in IltInventory.Charms)
                 if (IltFeature.Charm(def.Name).Equals(key, StringComparison.OrdinalIgnoreCase))
                     return (def.Name, GroupCharms, (def.Effect.Length > 0 ? def.Effect + "\n" : string.Empty)
-                                                   + "Where: Mini Remote > Charms tab\n" + charmNote);
+                                                   + "Where: RynthOracle > Character (/ro character)\n" + charmNote);
             return (key.Substring(CharmKeyPrefix.Length), GroupCharms, charmNote);
         }
         return (key, GroupOther, "A server switch RynthILT reads from chat.");

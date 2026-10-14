@@ -10,21 +10,28 @@ namespace RynthCore.Plugin.RynthTracker;
 // luminance (with ACECustom's bank and allegiance pass-up), luminance of the last five minutes,
 // kills (including a multi-target spell's extra kills found by their corpses), XP per kill,
 // deaths and Radiance. SessionStatsTracker reads the game and keeps the session across reloads.
+//
+// One session (0.4.1, 2026-10-13): with RynthAi loaded the panel shows RynthAi's own session
+// (the Mini Remote's Session Stats, read through "RynthAi.Hub"), so the Tracker, the Mini Remote,
+// RynthOracle and RynthILT count the same session from the same start, and Reset starts that one
+// over. Without RynthAi (or before its login) the Tracker's own session, kept running all along,
+// is shown instead.
 public sealed class RynthTrackerPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthTracker");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.4.0");   // previous release: 0.3.0
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.4.1");   // previous release: 0.4.0
 
     private SessionStatsTracker? _session;
+    private readonly RynthAiSessionClient _ai = new();
     private int _tickCounter;
+    // Set by the engine's UI thread (Reset export), acted on by the next OnTick on the pump.
+    private volatile bool _resetWanted;
 
     // Written on the game thread every ~0.5s, read on the engine's UI thread.
     // Reference reads are atomic on x86 so volatile is sufficient; no lock needed.
     private volatile string _snapshot = EmptySnapshot;
 
-    private const string EmptySnapshot =
-        "{\"ss\":0.0,\"xt\":0,\"xh\":0,\"lt\":0,\"lh\":0,\"l5\":0,\"pt\":0,\"ph\":0,\"pk\":0,"
-        + "\"kt\":0,\"kh\":0.0,\"xk\":0,\"dt\":0,\"rt\":0,\"rh\":0,\"ml\":0}";
+    private const string EmptySnapshot = TrackerSnapshot.Empty;
 
     public override int Initialize()
     {
@@ -33,11 +40,16 @@ public sealed class RynthTrackerPlugin : RynthPluginBase
         return 0;
     }
 
-    public override void OnLoginComplete() => _session?.OnLoginComplete();
+    public override void OnLoginComplete()
+    {
+        _ai.Reset();
+        _session?.OnLoginComplete();
+    }
 
     public override void OnLogout()
     {
         _session?.OnLogout();
+        _ai.Reset();
         _snapshot = EmptySnapshot;
     }
 
@@ -58,39 +70,31 @@ public sealed class RynthTrackerPlugin : RynthPluginBase
     {
         var session = _session;
         if (session == null) return;
+        long nowMs = Environment.TickCount64;
+        if (_resetWanted)
+        {
+            _resetWanted = false;
+            // RynthAi's session when it is the one shown; the Tracker's own either way, so a later
+            // fallback doesn't jump back to an old start.
+            _ai.ResetSession(Host, nowMs);
+            session.RequestReset();
+        }
         session.Tick();
         if (++_tickCounter < 30) return; // rebuild every ~0.5s at 60Hz
         _tickCounter = 0;
-        _snapshot = session.Active ? BuildSnapshot(session.View, DateTime.UtcNow) : EmptySnapshot;
+        DateTime now = DateTime.UtcNow;
+        if (_ai.TryGet(Host, nowMs, out SessionStatsV1 s))
+        {
+            SessionStatsMoreV1? more = _ai.TryGetMore(Host, nowMs, out SessionStatsMoreV1 m) ? m : null;
+            _snapshot = TrackerSnapshot.Build(TrackerSnapshot.FromRynthAi(s, more, session.Active ? session.View : null), now);
+        }
+        else
+            _snapshot = session.Active ? TrackerSnapshot.Build(session.View, now) : EmptySnapshot;
     }
 
     internal string GetSnapshot() => _snapshot;
 
     /// <summary>Called from the RynthTrackerReset export (engine UI thread): just flags a reset;
     /// the next OnTick performs it on the pump thread.</summary>
-    internal void Reset() => _session?.RequestReset();
-
-    private static string BuildSnapshot(SessionStatsView v, DateTime now)
-    {
-        // The session clock runs between polls; the totals and rates are the poll's.
-        double ss = Math.Max(0, (now - v.SessionStartUtc).TotalSeconds);
-        var ic = System.Globalization.CultureInfo.InvariantCulture;
-        return "{\"ss\":"  + ss.ToString("F1", ic)
-             + ",\"xt\":"  + v.Xp
-             + ",\"xh\":"  + (long)v.XpPerHour
-             + ",\"lt\":"  + v.Lum
-             + ",\"lh\":"  + (long)v.LumPerHour
-             + ",\"l5\":"  + v.LumLast5Min              // luminance of the last five minutes
-             + ",\"pt\":"  + v.LumPassUp                // allegiance pass-up (ACECustom bank)
-             + ",\"ph\":"  + (long)v.PassUpPerHour
-             + ",\"pk\":"  + (v.PassUpTracked ? 1 : 0)  // 1 = the bank is read, pass-up is known
-             + ",\"kt\":"  + v.Kills
-             + ",\"kh\":"  + v.KillsPerHour.ToString("F1", ic)
-             + ",\"xk\":"  + v.XpPerKill                // your kills only
-             + ",\"dt\":"  + v.Deaths
-             + ",\"rt\":"  + v.Rad                      // Radiance (Aelrynth); 0 elsewhere
-             + ",\"rh\":"  + (long)v.RadPerHour
-             + ",\"ml\":"  + (v.MaxLevel ? 1 : 0)       // at the level cap: experience can't rise
-             + "}";
-    }
+    internal void Reset() => _resetWanted = true;
 }
