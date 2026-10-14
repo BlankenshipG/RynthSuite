@@ -4,8 +4,8 @@
        (..\Shared\ServerPack\ServerPlugin.props); ServerData.cs holds what is known about the server. -->
   <PropertyGroup>
     <AssemblyName>RynthCore.Plugin.RynthConquest</AssemblyName>
-    <!-- Previous release: 0.1.1. -->
-    <Version>0.1.2</Version>
+    <!-- Previous release: 0.1.2. -->
+    <Version>0.1.3</Version>
     <RynthPluginServerId>conquest</RynthPluginServerId>
     <RynthPluginServerName>Conquest</RynthPluginServerName>
     <RynthPluginServerHosts>acconquest.ddns.net</RynthPluginServerHosts>

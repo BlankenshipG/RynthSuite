@@ -17,7 +17,7 @@ namespace RynthCore.Plugin.RynthJuice;
 public sealed class RynthJuicePlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthJuice");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.2");
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.1.3");
 
     private sealed class HState
     {
@@ -67,6 +67,13 @@ public sealed class RynthJuicePlugin : RynthPluginBase
     private PendingExact _pending;
 
     private const int CritWindowMs = 450;
+
+    /// <summary>
+    /// True when the last crit line came at most <see cref="CritWindowMs"/> before <paramref name="now"/>.
+    /// <c>_lastCritMs</c> is <c>long.MinValue</c> until the first crit, and <c>now - long.MinValue</c>
+    /// wraps negative, which would pass the window test and draw every hit as a crit.
+    /// </summary>
+    private bool WithinCritWindow(long now) => _lastCritMs != long.MinValue && (now - _lastCritMs) <= CritWindowMs;
     private const int ExactWindowMs = 600;  // pair a combat-log amount with its health packet
     private const int HealMinDelta = 8;     // filters small regen ticks
     private const long DeleteKillRecentDamageMs = 8_000; // delete counts as a kill only if we hit it this recently
@@ -151,7 +158,7 @@ public sealed class RynthJuicePlugin : RynthPluginBase
             if (_killedIds.Add(targetId))
             {
                 int killAmt = (maxHealth > 0) ? (int)Math.Round(prevRatio * maxHealth) : 0;
-                bool kcrit = (now - _lastCritMs) <= CritWindowMs;
+                bool kcrit = WithinCritWindow(now);
                 if (_pending.Has && (now - _pending.Ts) <= ExactWindowMs && !_pending.Incoming)
                 {
                     killAmt = _pending.Amount;
@@ -220,7 +227,7 @@ public sealed class RynthJuicePlugin : RynthPluginBase
             if (delta < _cfg.MinDamage) return;
             st.LastDmgMs = now;
             int amount = delta;
-            bool crit = (now - _lastCritMs) <= CritWindowMs;
+            bool crit = WithinCritWindow(now);
             // Prefer the exact combat-log value if its line already arrived (reverse order).
             if (_pending.Has && (now - _pending.Ts) <= ExactWindowMs && _pending.Incoming == isPlayer)
             {
@@ -258,7 +265,7 @@ public sealed class RynthJuicePlugin : RynthPluginBase
         // "points of" lines are ignored.
         if (TryParseDamage(text, out int amount, out bool incoming))
         {
-            bool crit = isCrit || (now - _lastCritMs) <= CritWindowMs;
+            bool crit = isCrit || WithinCritWindow(now);
             if (isCrit) _lastCritMs = now;
             var kind = incoming ? JuiceEffects.Kind.PlayerDamage : JuiceEffects.Kind.MobDamage;
             // Correct an already-spawned number, else stash for the health packet.
