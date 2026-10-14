@@ -6,7 +6,7 @@
   <PropertyGroup>
     <AssemblyName>RynthCore.Plugin.RynthAelrynth</AssemblyName>
     <!-- Previous release: 0.1.2. -->
-    <Version>0.1.3</Version>
+    <Version>0.1.4</Version>
     <RynthPluginServerId>aelrynth</RynthPluginServerId>
     <RynthPluginServerName>Aelrynth</RynthPluginServerName>
     <RynthPluginServerHosts>aelrynth.com|144.217.84.148</RynthPluginServerHosts>

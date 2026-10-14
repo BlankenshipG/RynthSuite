@@ -144,8 +144,12 @@ public sealed partial class ServerPackPlugin : RynthPluginBase
             _model.ApplyEngine(value, Environment.TickCount64);
     }
 
-    /// <summary>RynthPluginGetSectionsJson: the server and the card's Mini Remote spot. Null before login.</summary>
-    internal string? BuildSectionsJson() => _loginComplete ? _sectionsJson : null;
+    /// <summary>
+    /// RynthPluginGetSectionsJson: the server and the card's Mini Remote spot. Always declared
+    /// (the manifest is static): the engine only collects it once in game, and keeping it across
+    /// logout and character switches stops the server dropping out of Options > Diagnostics.
+    /// </summary>
+    internal string? BuildSectionsJson() => _sectionsJson;
 
     // ── Drawing ──────────────────────────────────────────────────────────
 
