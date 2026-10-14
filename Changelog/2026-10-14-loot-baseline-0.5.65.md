@@ -67,6 +67,16 @@ settings profile starts at the baseline. Saved profiles keep their own values.
   way on 0.5.64: it depends on the game data files on this machine.
 - The plugin builds.
 
+## Install
+
+- Installed locally on 2026-10-14: RynthAi 0.5.65-legacy-ui (RynthSuite 81205e9, NativeAOT
+  publish) copied to C:\Games\RynthSuite\RynthAi. 0.5.64-legacy-ui (53af975) was backed up
+  to PreviousReleases\0.5.64-legacy-ui. Clients load it when they restart.
+- Silentkelpie's loot timers set to the baseline with his client closed (Content Settle
+  125 -> 100, Empty Corpse Wait 550 -> 300, Assess Window 450 -> 300, Corpse Open Retry
+  1200 -> 1500). His Approach Range Min (240 yd) is left as it is. The previous file is
+  `SettingsProfiles\InfiniteLeaftide\Silentkelpie\Default.json.pre-loot-baseline-20261014.bak`.
+
 ## Files
 
 - `Plugins/RynthCore.Plugin.RynthAi/LootBaseline.cs` (new)
