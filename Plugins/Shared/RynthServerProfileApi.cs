@@ -4,7 +4,7 @@
 //  RynthConquest, ... - Plugins/Shared/ServerPack) knows about its game server,
 //  for any plugin that wants the server's settings without drawing the card.
 //  RynthCore says which server is active and which plugin owns it (plugin API
-//  v85, GetServerStateJson: "active", "activePlugin"); the reader then asks that
+//  v86, GetServerStateJson: "active", "activePlugin"); the reader then asks that
 //  plugin for this interface (host GetPluginInterface). RynthILT answers its own
 //  "RynthILT.Server" instead (RynthIltServerApi.cs).
 //  Compiled into the server plugins and their readers (linked source), so the

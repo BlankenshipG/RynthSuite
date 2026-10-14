@@ -58,7 +58,7 @@ public sealed partial class UbRythaiPlugin
         };
     }
 
-    /// <summary>RynthCore's server list (API v85): Auto follows its verdict, overrides and Diagnostics pick included.</summary>
+    /// <summary>RynthCore's server list (API v86): Auto follows its verdict, overrides and Diagnostics pick included.</summary>
     private readonly ServerStateClient _serverState = new();
 
     /// <summary>Polls RynthCore's server list (every 2 s, cheap when not due). Pump thread.</summary>
@@ -124,7 +124,7 @@ public sealed partial class UbRythaiPlugin
             1);
         EngineServerState? es = _serverState.State;
         Host.WriteToChat(es == null
-                ? "[ub-Rythai] RynthCore server: not reported (engine older than API v85) - Auto uses the world name."
+                ? "[ub-Rythai] RynthCore server: not reported (engine older than API v86) - Auto uses the world name."
                 : $"[ub-Rythai] RynthCore server: {(es.HasActive ? es.ActiveName + " (" + es.Active + ")" : "none active")} | pick={es.Pick} | settings from {(es.ActivePlugin.Length > 0 ? es.ActivePlugin : "-")}",
             1);
         Host.WriteToChat("[ub-Rythai] Usage: /ub leaftide on|off|auto", 1);

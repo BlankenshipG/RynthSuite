@@ -282,20 +282,31 @@ internal static class UseAtLoginTests
             bot.S.IsMacroRunning = true;
             bot.S.OpenDoors = false;          // only the requested door
             bot.Set("_doorRequestedId", unchecked((int)Door));
+            long now = 70_000_000;
+            RynthAiPlugin.DoorClock = () => now;
 
+            // The targeting tick stops the character; the use goes on the next one (2026-10-13:
+            // it waits for its turn - ActionPacer, the client's busy count).
+            bot.Call("TickDoorInteraction");
             bot.Call("TickDoorInteraction");
             Check.Eq(FakeHost.Uses.Count(u => u == Door), 1, "the requested door is used once");
             Check.True(FakeHost.Logs.Any(l => l.Contains("[Use] RynthAi/Door") && l.Contains("nav detour")), "logged with the reason");
 
             // The fake never reports the door open. Right after the use: still waiting.
             for (int i = 0; i < 5; i++) bot.Call("TickDoorInteraction");
-            Check.False(FakeHost.Logs.Any(l => l.Contains("not open after use")), "not judged 'not open' within ms of the use");
+            Check.False(FakeHost.Logs.Any(l => l.Contains("not open")), "not judged 'not open' within ms of the use");
             Check.Eq(FakeHost.Uses.Count(u => u == Door), 1, "and not used again (a second use would close it)");
 
-            Thread.Sleep(1300);
+            // No UseDone count on this fake engine: the use counts as answered after 600 ms, then
+            // the door gets its time to swing.
+            now += 700;
             bot.Call("TickDoorInteraction");
-            Check.True(FakeHost.Logs.Any(l => l.Contains("not open after use")), "judged once the door had time to swing");
+            Check.False(FakeHost.Logs.Any(l => l.Contains("not open")), "not judged right at the answer");
+            now += 1300;
+            bot.Call("TickDoorInteraction");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("not open")), "judged once the door had time to swing");
+            Check.False(FakeHost.Logs.Any(l => l.Contains("is locked")), "and not called locked (the server never said so)");
         }
-        finally { Done(); }
+        finally { RynthAiPlugin.DoorClock = static () => Environment.TickCount64; Done(); }
     }
 }

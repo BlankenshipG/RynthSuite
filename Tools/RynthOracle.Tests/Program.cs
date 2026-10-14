@@ -172,7 +172,7 @@ namespace RynthOracle.Tests
                + ",\"detected\":" + (active && force == "auto" ? "true" : "false") + ",\"force\":\"" + force
                + "\",\"builtIn\":false,\"plugin\":\"" + plugin + "\",\"reason\":\"" + reason + "\"}";
 
-        // RynthCore's server list (API v85) drives the identity: overrides and the Diagnostics pick included.
+        // RynthCore's server list (API v86) drives the identity: overrides and the Diagnostics pick included.
         private static void EngineServers()
         {
             // The shared parser.

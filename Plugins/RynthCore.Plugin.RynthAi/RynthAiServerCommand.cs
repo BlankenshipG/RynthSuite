@@ -23,7 +23,7 @@ public sealed partial class RynthAiPlugin
         {
             ChatLine(_serverState.Supported
                 ? "[RynthAi] Server: RynthCore didn't answer GetServerStateJson."
-                : $"[RynthAi] Server: this engine (plugin API v{Host.Version}) doesn't report its server list (v85 does). World name: '{world}'.");
+                : $"[RynthAi] Server: this engine (plugin API v{Host.Version}) doesn't report its server list (v86 does). World name: '{world}'.");
             return;
         }
 

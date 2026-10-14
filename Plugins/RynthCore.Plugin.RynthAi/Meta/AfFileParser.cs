@@ -63,6 +63,7 @@ internal static class AfFileParser
 
                 if (trimmed.StartsWith("STATE:"))
                 {
+                    result.DeclaredStates.Add(ExtractBraceContent(lines[idx], out _));
                     ParseState(lines, ref idx, result.Rules);
                 }
                 else if (trimmed.StartsWith("NAVDATA:"))
@@ -565,17 +566,11 @@ internal static class AfFileParser
             case MetaActionType.EmbeddedNavRoute:
             {
                 // EmbedNav navname {type/filename}
+                // (metaf: EmbedNav tag {name} {transform}; the tag names the NAV block.)
+                // Stray brackets go ("None]" from VTank's "[None]"), the same as on the NAV keys.
                 int braceStart = rest.IndexOf('{');
-                if (braceStart >= 0)
-                {
-                    string navName = rest.Substring(0, braceStart).Trim();
-                    // Store nav name as ActionData — will be resolved later
-                    rule.ActionData = navName;
-                }
-                else
-                {
-                    rule.ActionData = rest.Trim();
-                }
+                string navName = braceStart >= 0 ? rest.Substring(0, braceStart) : rest;
+                rule.ActionData = EmbedNavName.Clean(navName);
                 break;
             }
 
@@ -653,6 +648,7 @@ internal static class AfFileParser
 
         if (idx < lines.Length && lines[idx].Trim() == "~~ }") idx++; // consume closer
 
+        name = EmbedNavName.Clean(name);
         if (!string.IsNullOrEmpty(name) && navLines.Count >= 3)
             navRoutes[name] = navLines;
     }
@@ -670,7 +666,7 @@ internal static class AfFileParser
 
         // Parse "navname type"
         string[] parts = afterNav.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        string navName = parts.Length > 0 ? parts[0] : "";
+        string navName = EmbedNavName.Clean(parts.Length > 0 ? parts[0] : "");
         string navType = parts.Length > 1 ? parts[1] : "circular";
         idx++;
 

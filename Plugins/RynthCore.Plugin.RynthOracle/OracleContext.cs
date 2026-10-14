@@ -32,7 +32,7 @@ internal sealed class OracleContext
     public bool SessionKnown;
     /// <summary>The last charm Toggle's outcome, shown under the charms list.</summary>
     public string CharmMessage = "";
-    /// <summary>RynthCore's server list (API v85) and the active server owner's settings; State null on older engines.</summary>
+    /// <summary>RynthCore's server list (API v86) and the active server owner's settings; State null on older engines.</summary>
     public readonly RynthCore.Plugin.Shared.ServerStateClient ServerState = new();
     /// <summary>ConquestAC-only data (tag Conquest); fed only while on ConquestAC.</summary>
     public readonly ConquestData Conquest = new();

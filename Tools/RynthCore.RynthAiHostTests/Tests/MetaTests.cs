@@ -48,6 +48,10 @@ internal static class MetaTests
         r.Add("meta action: SetMetaState, CallMetaState and ReturnFromCall", CallReturn);
         r.Add("meta action: All runs every child in order", AllAction);
         r.Add("meta action: embedded nav route", EmbeddedNav);
+        r.Add("meta .af: EmbedNav and NAV names lose stray brackets ('None]' was loaded as a route named 'None]')", EmbedNavStrayBrackets);
+        r.Add("meta action: EmbedNav [None] with no route behind it is an empty route (no 'None.nav', no 'Route missing')", EmbedNavNoneKeepsRoute);
+        r.Add("meta action: a [None] route with points loads, as in VTank (an old 'None]' key too)", EmbedNavNoneWithPointsLoads);
+        r.Add("meta .met: VTank's [None] embedded nav - with points it is a route, empty it is no nav", MetEmbedNavNone);
         r.Add("meta action: watchdog", Watchdog);
         r.Add("meta action: RA options, chat expression, expression, views", MiscActions);
         r.Add("meta: an exception in a tick is caught and forces a reset", ExceptionInTick);
@@ -883,6 +887,8 @@ internal static class MetaTests
         Check.True(rig.Ra.Contains("/ra stop"), "/vt stop");
         RunAction(rig, A.ChatCommand, "/vt nav load Hive Loop");
         Check.True(rig.Ra.Contains("/ra nav load Hive Loop"), "/vt nav load keeps spaces");
+        RunAction(rig, A.ChatCommand, "/vt meta load Night Farm");
+        Check.True(rig.Ra.Contains("/ra meta load Night Farm"), "/vt meta load is /ra meta load (one implementation; a new name makes a blank meta)");
         RunAction(rig, A.ChatCommand, "/vt setattackbar 0.75");
         Check.True(rig.Ra.Contains("/ra power 75"), "/vt setattackbar 0.75 -> 75%");
         RunAction(rig, A.ChatCommand, "/vt setattackbar 3");
@@ -1018,6 +1024,135 @@ internal static class MetaTests
         RunAction(rig, A.EmbeddedNavRoute, "Patrol");
         Check.Eq(rig.Ra.Count, 0, "an embedded route named Patrol is used instead");
         Check.Eq(rig.S.CurrentNavPath, "<embedded:Patrol>", "...and loaded");
+    }
+
+    // The CQ meta family on DreamWeave (C:\Games\metaf\CQHunt~0.af, decompiled by metaf): VTank's
+    // "[None]" routes become tags like nav9___None_ - a one-point hunt spot, and an empty one.
+    // "None]" is the broken spelling from the 10-13 player log ("EmbedNav: loaded 'None]' (1 pts)").
+    private const string CqNoneSnippet =
+        "STATE: {Hunt} ~~ {\n" +
+        "\tIF:\tAlways\n" +
+        "\t\tDO:\tDoAll\n" +
+        "\t\t\t\tChat {/vt opt set enablenav true}\n" +
+        "\t\t\t\tEmbedNav nav9___None_ {[none]}\n" +
+        "\t\t\t\tEmbedNav None] {[None]}\n" +
+        "\t\t\t\tEmbedNav [None] {[None]}\n" +
+        "\t\t\t\tEmbedNav nav42___None_ {[none]}\n" +
+        "~~ }\n" +
+        "NAV: nav9___None_ circular ~~ {\n" +
+        "\tpnt 12.7402540842692 64.8717851956685 1.15794169108073\n" +
+        "~~ }\n" +
+        "NAV: None] circular ~~ {\n" +
+        "\tpnt 12.7402540842692 64.8717851956685 1.15794169108073\n" +
+        "~~ }\n" +
+        "NAV: nav42___None_ circular ~~ {\n" +
+        "~~ }\n";
+
+    private static void EmbedNavStrayBrackets()
+    {
+        var m = AfFileParser.LoadFromText(CqNoneSnippet);
+        var all = m.Rules.Single();
+        var data = all.ActionChildren.Select(c => c.ActionData).ToList();
+        Check.Eq(string.Join("|", data), "/vt opt set enablenav true|nav9___None_|None|None|", "action names: the tag, 'None]' and '[None]' cleaned to None, the empty route's ref cleared");
+        Check.True(m.EmbeddedNavs.ContainsKey("None"), "the NAV block 'None]' is filed as 'None'");
+        Check.False(m.EmbeddedNavs.Keys.Any(k => k.Contains('[') || k.Contains(']')), "no key keeps a stray bracket");
+        Check.True(m.EmbeddedNavs.ContainsKey("nav9___None_"), "metaf's tag is kept as it is");
+        Check.False(m.EmbeddedNavs.ContainsKey("nav42___None_"), "the empty [None] route is dropped");
+
+        // Saved and read back: the same names (the Meta panel saves through AfFileWriter).
+        var back = AfFileParser.LoadFromText(AfFileWriter.SaveToString(m.Rules, m.EmbeddedNavs));
+        Check.Eq(string.Join("|", back.Rules.Single().ActionChildren.Select(c => c.ActionData)),
+            "/vt opt set enablenav true|nav9___None_|None|None|", "round trip keeps the names");
+        Check.True(back.EmbeddedNavs.ContainsKey("None") && back.EmbeddedNavs.ContainsKey("nav9___None_"), "round trip keeps the routes");
+
+        // The clean-up itself.
+        Check.Eq(EmbedNavName.Clean(" [None] "), "None", "wrapping brackets");
+        Check.Eq(EmbedNavName.Clean("None]"), "None", "a stray closing bracket");
+        Check.Eq(EmbedNavName.Clean("[None"), "None", "a stray opening bracket");
+        Check.Eq(EmbedNavName.Clean("Hive [East]"), "Hive [East]", "brackets inside a name are kept");
+        Check.Eq(EmbedNavName.Clean("[a] [b]"), "[a] [b]", "two bracketed parts are not unwrapped");
+        Check.True(EmbedNavName.IsNone("[none]") && EmbedNavName.IsNone("None]") && !EmbedNavName.IsNone("nav9___None_"), "IsNone");
+    }
+
+    private static void EmbedNavNoneKeepsRoute()
+    {
+        FakeHost.Reset();
+        FakeHost.PlayerPose = (0xA9B4001Cu, 96f, 96f, 0f);
+        var host = FakeHost.Create();
+        var rig = new Rig(host, Player);
+        rig.S.EmbeddedNavs["Hive Route"] = NavLines(1, (0, 30, 40, NoTrailer), (0, 33.65, 42.45, NoTrailer), (0, 36, 44, NoTrailer));
+        RunAction(rig, A.EmbeddedNavRoute, "Hive Route");
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 3, "a route is running");
+        foreach (string none in new[] { "[None]", "None]", "None", "[none]" })
+        {
+            FakeHost.Chat.Clear();
+            RunAction(rig, A.EmbeddedNavRoute, "Hive Route");
+            RunAction(rig, A.EmbeddedNavRoute, none);
+            Check.Eq(rig.S.CurrentRoute.Points.Count, 0, $"'{none}': an empty route");
+            Check.Eq(rig.S.CurrentNavPath, "", $"'{none}': no nav file");
+            Check.False(FakeHost.Chat.Exists(c => c.Contains("Route missing")), $"'{none}': no 'Route missing'");
+        }
+        // An empty [None] route is no route either.
+        rig.S.EmbeddedNavs["None"] = NavLines(1);
+        RunAction(rig, A.EmbeddedNavRoute, "Hive Route");
+        RunAction(rig, A.EmbeddedNavRoute, "[None]");
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 0, "an empty [None] route: an empty route");
+    }
+
+    private static void EmbedNavNoneWithPointsLoads()
+    {
+        FakeHost.Reset();
+        FakeHost.PlayerPose = (0xA9B4001Cu, 96f, 96f, 0f);
+        var host = FakeHost.Create();
+        var rig = new Rig(host, Player);
+        // A key from a settings file or meta saved before names were cleaned.
+        rig.S.EmbeddedNavs["None]"] = NavLines(1, (0, 33.65, 42.45, NoTrailer));
+        RunAction(rig, A.EmbeddedNavRoute, "[None]");
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 1, "the one-point [None] route (a hunt spot) loads");
+        Check.True(rig.S.EnableNavigation, "...and navigation runs");
+        RunAction(rig, A.EmbeddedNavRoute, "None]");
+        Check.Eq(rig.S.CurrentNavPath, "<embedded:None]>", "the old key is found from any spelling");
+    }
+
+    /// <summary>A VTank .met with two rules (Always / Never) whose action is an embedded nav named
+    /// "[None]": one with a one-point route, one with an empty route. The layout is VTank's (the
+    /// CQ metas, S_Tusks.met): name line, point count, then the .nav lines, byte-counted.</summary>
+    private static string MetWithNoneNavs()
+    {
+        static string Block(params string[] lines) => string.Join("\r\n", lines) + "\r\n";
+        string onePoint = Block("[None]", "1", "uTank2 NAV 1.2", "1", "1", "0", "33.65", "42.45", "0", "0");
+        string empty = Block("[None]", "0", "uTank2 NAV 1.2", "1", "0");
+        var met = new List<string> { "1", "CondAct", "5", "CType", "AType", "CData", "AData", "State", "n", "n", "n", "n", "n", "2" };
+        met.AddRange(new[] { "i", "1", "i", "4", "i", "0", "ba", System.Text.Encoding.UTF8.GetByteCount(onePoint).ToString() });
+        string head = string.Join("\r\n", met) + "\r\n" + onePoint;
+        var mid = new List<string> { "s", "Default", "i", "0", "i", "4", "i", "0", "ba", System.Text.Encoding.UTF8.GetByteCount(empty).ToString() };
+        return head + string.Join("\r\n", mid) + "\r\n" + empty + "s\r\nDefault\r\n";
+    }
+
+    private static void MetEmbedNavNone()
+    {
+        string path = System.IO.Path.Combine(Program.TempRoot, "embednav-none-test.met");
+        System.IO.File.WriteAllText(path, MetWithNoneNavs());
+        var m = MetFileParser.Load(path);
+        Check.Eq(m.Warnings.Count, 0, "parses cleanly");
+        Check.Eq(m.Rules.Count, 2, "two rules");
+        string first = m.Rules[0].ActionData;
+        Check.True(first.Length > 0 && m.EmbeddedNavs.ContainsKey(first), $"the one-point [None] route is a route ('{first}')");
+        Check.False(first.Contains('[') || first.Contains(']'), "its name has no bracket");
+        Check.Eq(NavRouteParser.LoadFromLines(m.EmbeddedNavs[first]).Points.Count, 1, "...with its point");
+        Check.Eq(m.Rules[1].ActionData, "", "the empty [None] route: no nav");
+
+        // Through the meta: the empty one keeps the running route, the one-point one replaces it.
+        FakeHost.Reset();
+        FakeHost.PlayerPose = (0xA9B4001Cu, 96f, 96f, 0f);
+        var rig = new Rig(FakeHost.Create(), Player);
+        foreach (var kv in m.EmbeddedNavs) rig.S.EmbeddedNavs[kv.Key] = kv.Value;
+        rig.S.EmbeddedNavs["Hive Route"] = NavLines(1, (0, 30, 40, NoTrailer), (0, 36, 44, NoTrailer));
+        RunAction(rig, A.EmbeddedNavRoute, "Hive Route");
+        RunAction(rig, A.EmbeddedNavRoute, m.Rules[1].ActionData);
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 2, "empty [None]: the running route is kept");
+        RunAction(rig, A.EmbeddedNavRoute, first);
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 1, "one-point [None]: loaded");
     }
 
     private static void Watchdog()

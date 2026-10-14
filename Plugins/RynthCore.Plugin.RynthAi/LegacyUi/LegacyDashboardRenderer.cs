@@ -2386,12 +2386,20 @@ internal sealed partial class LegacyDashboardRenderer
     /// <summary>Writes an edited route back to its file (or the meta's embedded nav).</summary>
     public void AutoSaveRoute() => _navigationUi.TryAutoSaveNav();
 
-    /// <summary>/ra nav load &lt;name&gt;. Returns the chat line.</summary>
+    /// <summary>
+    /// /ra nav load &lt;name&gt; (and /vt nav load). Returns the chat line. No such nav in
+    /// NavProfiles: a blank one (Circular, no points) is created and loaded, as VTank's
+    /// "/vt nav load newroute" does, so a route can be recorded into it (2026-10-13).
+    /// </summary>
     public string LoadNavByName(string name)
     {
+        ProfileFileResult r = NewProfileFiles.FindOrCreateNav(_navFolder, name, out string want, out _, out string error);
+        if (r == ProfileFileResult.Rejected)
+            return $"[RynthAi] Can't use '{want}' as a nav name: {error}.";
+        if (r == ProfileFileResult.Failed)
+            return $"[RynthAi] Couldn't create nav '{want}': {error}";
+
         RefreshNavFiles();
-        string want = name.Trim();
-        if (want.EndsWith(".nav", StringComparison.OrdinalIgnoreCase)) want = want[..^4].TrimEnd();
         int idx;
         lock (_profileListsLock)
             idx = _navFiles.FindIndex(f => f != "None" && f.Equals(want, StringComparison.OrdinalIgnoreCase));
@@ -2399,7 +2407,54 @@ internal sealed partial class LegacyDashboardRenderer
         _selectedNavIdx = idx;
         LoadSelectedNav();
         SaveSettings();
-        return $"[RynthAi] Loaded {want} ({_settings.CurrentRoute.Points.Count} waypoints).";
+        return r == ProfileFileResult.Created
+            ? $"[RynthAi] Created new nav '{want}' (empty, {NewProfileFiles.BlankNavType}) and loaded it."
+            : $"[RynthAi] Loaded {want} ({_settings.CurrentRoute.Points.Count} waypoints).";
+    }
+
+    /// <summary>
+    /// /ra meta load &lt;name&gt; and /vt meta load &lt;name&gt; (one implementation). Returns the
+    /// chat line. &lt;name&gt;.af, else &lt;name&gt;.met, in MetaFiles; when neither exists a blank
+    /// &lt;name&gt;.af (one state "Default", no rules) is created and loaded: the old rules are
+    /// cleared and the meta starts in Default (VTank's "load makes a new one", 2026-10-13).
+    /// <paramref name="createOnly"/>: /ra meta new &lt;name&gt; (an existing meta is left alone).
+    /// </summary>
+    public string LoadMetaByName(string name, bool createOnly = false)
+    {
+        ProfileFileResult r = NewProfileFiles.FindOrCreateMeta(_metaFolder, name, out string want, out string path, out string error, createOnly);
+        switch (r)
+        {
+            case ProfileFileResult.Rejected:
+                return $"[RynthAi] Can't use '{want}' as a meta name: {error}.";
+            case ProfileFileResult.Failed:
+                return $"[RynthAi] Couldn't create meta '{want}': {error}";
+            case ProfileFileResult.Exists:
+                return $"[RynthAi] Meta '{Path.GetFileName(path)}' already exists. /ra meta load {want} loads it.";
+        }
+
+        if (!_metaUi.LoadMacroFile(path))
+        {
+            string why = _metaUi.LastLoadStatus.Length > 0 ? _metaUi.LastLoadStatus : "no rules loaded";
+            return $"[RynthAi] Meta '{want}' not loaded: {why}";
+        }
+        _metaUi.RefreshFileListIfShown();
+        RefreshMetaFiles();   // MetaProfileIdx follows the loaded file
+        SaveSettings();
+        if (r == ProfileFileResult.Created)
+            return $"[RynthAi] Created new meta '{want}' (one state '{AfFileWriter.BlankState}', no rules) and loaded it.";
+        int rules, navs;
+        lock (_settings.MetaRulesLock) { rules = _settings.MetaRules.Count; navs = _settings.EmbeddedNavs.Count; }
+        var warnings = _metaUi.LastLoadWarnings;
+        return $"[RynthAi] Loaded meta '{want}': {rules} rules, {navs} navs"
+            + (warnings.Count > 0 ? $" — {warnings.Count} warning(s): {warnings[0]}" : "");
+    }
+
+    /// <summary>/ra meta list: the metas in MetaFiles (file names, with extension).</summary>
+    public List<string> MetaFileNames()
+    {
+        RefreshMetaFiles();
+        lock (_profileListsLock)
+            return _metaFiles.FindAll(f => f != "None");
     }
 
     /// <summary>/ra nav list: the .nav files in NavProfiles.</summary>

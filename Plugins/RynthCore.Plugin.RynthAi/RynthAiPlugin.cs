@@ -197,6 +197,18 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         CombatHook.LastUseDone = () => hookHost.HasUseDoneSeq && hookHost.TryGetLastUseDone(out int s, out uint e) ? (s, e) : null;
         RynthCore.Plugin.Shared.UseAudit.AfterSend = RecordUseForPacing;
         RynthCore.Plugin.Shared.UseAudit.WorldUseHold = SalvagePanelHold;
+        // "The door is locked!" comes as a transient string (ACE Door.ActOnUse): the door logic picks a
+        // lock only when the server says so (DoorInteractionController). The chat line is the fallback.
+        try
+        {
+            if (Host.HasServerMessages)
+            {
+                int sm = Host.SetServerMessageInterest(ReadOnlySpan<uint>.Empty,
+                    new uint[] { RynthCore.PluginSdk.Net.GameEventType.TransientString });
+                if (sm != 1) Host.Log($"[RynthAi] Server messages: not streaming ({sm}); locked doors are read from chat only.");
+            }
+        }
+        catch (Exception ex) { Host.Log($"[RynthAi] Server messages: {ex.Message}"); }
         _objectCache = new WorldObjectCache(Host); // must exist before CreateObject events fire during login
         // Items we use (or use something on) get re-identified before a meta reads them.
         // ObjectUsed is a static event and Shutdown never unsubscribes: when the engine
@@ -439,6 +451,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _pendingGives.Clear();
         // A /ub delay armed before logout must not fire into the next character's session.
         _delayedCommands.Clear();
+        ClearPropertyDump();
         // The engine drops its appraisal cache at logout; ask for worn gear again next login.
         _equipIdRequested.Clear();
         // Callers save first (Shutdown, OnLogout); after this nothing writes to this
@@ -1377,6 +1390,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             CombatHook.ObserveUseDone();        // ctx.last.err: the answer to the hook's last cast
             TickDelayedCommands();              // /ub delay
             DrainEngineCommands();              // fellowship command buttons (RynthCore's Fellowship section)
+            TickPropertyDump();                 // /ub propertydump: waits for the ID, chat in chunks
             if (_loginComplete) _dashboard?.TickPackSetup(_objectCache, _playerId);   // new/copied profile items
 
             // /ra pause <sec>: restart the macro once the window elapses. Cleared by
@@ -2268,6 +2282,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     public override void OnChatWindowText(string? text, int chatType, ref int eat)
     {
         if (string.IsNullOrEmpty(text)) return;
+        try { NoteDoorServerText(text); } catch { }   // "The door is locked!" (the door logic)
         try { _sessionStats?.OnChatWindowText(text); } catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "session stats chat"); }
         // The Meta Manager eats the reply to its own /myquests poll (only that).
         bool mmEat = false;
@@ -3530,6 +3545,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "groundloot":   HandleGroundLootCommand(parts); break;
             case "addnavpt":     HandleAddNavPointCommand(); break;
             case "nav":          HandleNavCommand(parts); break;
+            case "meta":         HandleMetaCommand(parts); break;
             case "lua":          ForwardLuaCommand(parts); break;
             case "items":
                 if (parts.Length >= 3 && parts[2].Equals("fill", StringComparison.OrdinalIgnoreCase))

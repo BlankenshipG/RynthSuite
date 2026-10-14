@@ -47,6 +47,14 @@ internal static class AfFileWriter
         var navNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         CollectNavNames(rules, navNames);
 
+        // No rules: an empty "Default" state, so the file is still a meta that loads (a blank
+        // meta that had its last rule deleted). An empty file is refused as "no rules" (2026-10-13).
+        if (grouped.Count == 0)
+        {
+            WriteBlankState(writer);
+            return;
+        }
+
         // Write states
         foreach (var group in grouped)
         {
@@ -62,6 +70,26 @@ internal static class AfFileWriter
             if (embeddedNavs.TryGetValue(navName, out var content))
                 WriteNavSection(writer, navName, content);
         }
+    }
+
+    /// <summary>The state a blank meta has.</summary>
+    public const string BlankState = "Default";
+
+    /// <summary>
+    /// A blank meta: one state, <see cref="BlankState"/>, with no rules. What /ra meta load and
+    /// /vt meta load create for a name that doesn't exist (VTank's "load makes a new one").
+    /// </summary>
+    public static string BlankMetaText()
+    {
+        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+        WriteBlankState(writer);
+        return writer.ToString();
+    }
+
+    private static void WriteBlankState(TextWriter writer)
+    {
+        writer.WriteLine($"STATE: {{{BlankState}}} ~~ {{");
+        writer.WriteLine("~~ }");
     }
 
     // ── Rule writing ────────────────────────────────────────────────────────

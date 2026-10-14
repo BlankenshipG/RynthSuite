@@ -1179,7 +1179,9 @@ internal sealed class LegacyMetaUi
             }
 
             LastLoadWarnings = loaded.Warnings;
-            if (loaded.Rules.Count == 0)
+            // A blank meta (a state, no rules) loads: it clears the old rules. Anything else
+            // without rules (a profile, an empty file) is refused as before.
+            if (loaded.Rules.Count == 0 && !loaded.IsBlank)
             {
                 _statusMessage = loaded.Warnings.Count > 0
                     ? $"No rules parsed — {loaded.Warnings.Count} warning(s): {loaded.Warnings[0]}"
@@ -1218,6 +1220,15 @@ internal sealed class LegacyMetaUi
 
     /// <summary>The status line of the last load (why it failed, or what it loaded).</summary>
     internal string LastLoadStatus => _statusMessage ?? string.Empty;
+
+    /// <summary>
+    /// Lists MetaFiles again once the panel has listed it (a meta /ra meta load just created shows
+    /// in the picker, selected). Before the panel's first draw it lists itself then.
+    /// </summary>
+    internal void RefreshFileListIfShown()
+    {
+        if (_macroFiles.Count > 0) RefreshMacroFileList();
+    }
 
 
     private void TryAutoSaveMeta()

@@ -1,7 +1,7 @@
 // ============================================================================
 //  RynthSuite - Plugins/Shared/ServerStateClient.cs
 //  A plugin's live view of "which server is this, and what are its settings":
-//    1. RynthCore's server list (plugin API v85 GetServerStateJson, parsed by
+//    1. RynthCore's server list (plugin API v86 GetServerStateJson, parsed by
 //       EngineServerState.cs): the active server, overrides and the Diagnostics
 //       pick included, and the plugin that owns it;
 //    2. that plugin's profile JSON: "RynthServer.Profile" from a server plugin
@@ -10,7 +10,7 @@
 //  either changes, so a reader re-applies its server-specific state then.
 //
 //  Needs, linked into the reader: EngineServerState.cs, RynthServerProfileApi.cs,
-//  RynthIltServerApi.cs. Engines older than v85 report Supported = false (the
+//  RynthIltServerApi.cs. Engines older than v86 report Supported = false (the
 //  reader keeps its own detection).
 //  Pump thread only.
 // ============================================================================
@@ -35,9 +35,9 @@ internal sealed unsafe class ServerStateClient
     private delegate* unmanaged[Cdecl]<byte*, int, int> _getProfileJson;
     private byte[] _buffer = new byte[4096];
 
-    /// <summary>The engine has GetServerStateJson (API v85+). False until the first poll.</summary>
+    /// <summary>The engine has GetServerStateJson (API v86+). False until the first poll.</summary>
     public bool Supported { get; private set; }
-    /// <summary>The engine's server list, null before the first answer (or without v85).</summary>
+    /// <summary>The engine's server list, null before the first answer (or without v86).</summary>
     public EngineServerState? State { get; private set; }
     /// <summary>The active server owner's profile JSON ("" when none is active, or its plugin has none).</summary>
     public string ProfileJson { get; private set; } = string.Empty;

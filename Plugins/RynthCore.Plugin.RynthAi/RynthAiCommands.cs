@@ -65,8 +65,11 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra navdebug      — show nav coordinate/debug info");
         ChatLine("[RynthAi] /ra addnavpt      — append a waypoint at current location to loaded nav");
         ChatLine("[RynthAi] /ra nav save [name] — save the route; a name saves it as <name>.nav");
-        ChatLine("[RynthAi] /ra nav load <name> — load a nav from NavProfiles");
+        ChatLine("[RynthAi] /ra nav load <name> — load a nav from NavProfiles (none by that name: a new empty one)");
         ChatLine("[RynthAi] /ra nav list        — list the navs in NavProfiles");
+        ChatLine("[RynthAi] /ra meta load <name> — load a meta from MetaFiles (none by that name: a new blank one)");
+        ChatLine("[RynthAi] /ra meta new <name>  — create a blank meta and load it");
+        ChatLine("[RynthAi] /ra meta list        — list the metas in MetaFiles");
         ChatLine("[RynthAi] /ra lua run <name>  — run a RynthLua script (same as /lua run; also stop, list, exec <code>)");
         ChatLine("[RynthAi] /ra items fill      — add weapons, healing kits, lockpicks and pet essences from your pack");
         ChatLine("[RynthAi] /ra offhand [auto|shield|weapon|none] [rule] — the off hand (shield / dual wield), global or for a Monsters rule; dual on|off");
@@ -766,126 +769,6 @@ public sealed partial class RynthAiPlugin
             ChatLine($"[RynthAi]   {kv.Key} = {kv.Value}");
     }
 
-    /// <summary>
-    /// /ra dumpprops [0xId] (and /ub propertydump): every property of the given object, else
-    /// the selected one, else the character - as UB's propertydump does. It was always the
-    /// character, whatever was selected.
-    /// </summary>
-    private void HandleDumpPropsCommand(string[] parts)
-    {
-        uint me = Host.GetPlayerId();
-        if (me == 0)
-        {
-            ChatLine("[RynthAi] Not logged in.");
-            return;
-        }
-        uint playerId = me;   // the object dumped (the name below predates the target choice)
-        if (parts.Length >= 3 && uint.TryParse(parts[2].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? parts[2][2..] : parts[2],
-                System.Globalization.NumberStyles.HexNumber, null, out uint given) && given != 0)
-            playerId = given;
-        else if (_currentTargetId != 0)
-            playerId = _currentTargetId;
-        string label = Host.TryGetObjectName(playerId, out string nm) && nm.Length > 0 ? nm : "?";
-        ChatLine($"[RynthAi] === Properties of {label} (0x{playerId:X8}){(playerId == me ? " - nothing selected, your character" : "")} ===");
-
-        // Int properties 0-400
-        int intCount = 0;
-        if (Host.HasGetObjectIntProperty)
-        {
-            ChatLine("[RynthAi] === Int Properties (0-400) ===");
-            for (uint i = 0; i <= 400; i++)
-            {
-                if (Host.TryGetObjectIntProperty(playerId, i, out int v))
-                {
-                    string? name = PropertyNames.GetIntName(i);
-                    ChatLine(name != null
-                        ? $"[RynthAi]   IntProp[{i}] = {v} ({name})"
-                        : $"[RynthAi]   IntProp[{i}] = {v}");
-                    intCount++;
-                }
-            }
-            ChatLine($"[RynthAi] Found {intCount} int properties.");
-        }
-        else ChatLine("[RynthAi] Int property API not available.");
-
-        // Bool properties 0-300
-        int boolCount = 0;
-        if (Host.HasGetObjectBoolProperty)
-        {
-            ChatLine("[RynthAi] === Bool Properties (0-300) ===");
-            for (uint i = 0; i <= 300; i++)
-            {
-                if (Host.TryGetObjectBoolProperty(playerId, i, out bool v))
-                {
-                    string? name = PropertyNames.GetBoolName(i);
-                    ChatLine(name != null
-                        ? $"[RynthAi]   BoolProp[{i}] = {(v ? "1" : "0")} ({name})"
-                        : $"[RynthAi]   BoolProp[{i}] = {(v ? "1" : "0")}");
-                    boolCount++;
-                }
-            }
-            ChatLine($"[RynthAi] Found {boolCount} bool properties.");
-        }
-        else ChatLine("[RynthAi] Bool property API not available.");
-
-        // String properties 0-60
-        int strCount = 0;
-        if (Host.HasGetObjectStringProperty)
-        {
-            ChatLine("[RynthAi] === String Properties (0-60) ===");
-            for (uint i = 0; i <= 60; i++)
-            {
-                if (Host.TryGetObjectStringProperty(playerId, i, out string v))
-                {
-                    string? name = PropertyNames.GetStringName(i);
-                    ChatLine(name != null
-                        ? $"[RynthAi]   StringProp[{i}] = {v} ({name})"
-                        : $"[RynthAi]   StringProp[{i}] = {v}");
-                    strCount++;
-                }
-            }
-            ChatLine($"[RynthAi] Found {strCount} string properties.");
-        }
-        else ChatLine("[RynthAi] String property API not available.");
-
-        // Int64 (0-12: experience, luminance, item XP), float (0-400), data id (0-80) and
-        // instance id (0-50) properties, unnamed. Data ids and instance ids print in hex.
-        int quadCount = 0, floatCount = 0, didCount = 0, iidCount = 0;
-        if (Host.HasGetObjectQuadProperty)
-            for (uint i = 0; i <= 12; i++)
-                if (Host.TryGetObjectQuadProperty(playerId, i, out long q))
-                {
-                    ChatLine($"[RynthAi]   Int64Prop[{i}] = {q}");
-                    quadCount++;
-                }
-        for (uint i = 0; i <= 400; i++)
-            if (Host.TryGetObjectDoubleProperty(playerId, i, out double d))
-            {
-                ChatLine($"[RynthAi]   FloatProp[{i}] = {d.ToString("0.#####", System.Globalization.CultureInfo.InvariantCulture)}");
-                floatCount++;
-            }
-        if (Host.HasGetObjectDataIdProperty)
-            for (uint i = 0; i <= 80; i++)
-                if (Host.TryGetObjectDataIdProperty(playerId, i, out uint did))
-                {
-                    ChatLine($"[RynthAi]   DataIdProp[{i}] = 0x{did:X8}");
-                    didCount++;
-                }
-        if (Host.HasGetObjectInstanceIdProperty)
-            for (uint i = 0; i <= 50; i++)
-                if (Host.TryGetObjectInstanceIdProperty(playerId, i, out uint iid))
-                {
-                    string who = Host.TryGetObjectName(iid, out string wn) && wn.Length > 0 ? $" ({wn})" : "";
-                    ChatLine($"[RynthAi]   InstanceIdProp[{i}] = 0x{iid:X8}{who}");
-                    iidCount++;
-                }
-
-        ChatLine($"[RynthAi] Total: {intCount} int, {boolCount} bool, {strCount} string, {quadCount} int64, {floatCount} float, " +
-                 $"{didCount} data id, {iidCount} instance id.");
-        if (playerId != me && intCount + boolCount + strCount + quadCount + floatCount < 5)
-            ChatLine("[RynthAi] Few properties: the item may not be identified yet - run it again in a moment.");
-    }
-
     private void HandleWieldedCommand()
     {
         if (_objectCache == null) { ChatLine("[RynthAi] Cache not ready."); return; }
@@ -1268,6 +1151,28 @@ public sealed partial class RynthAiPlugin
                 break;
             default:
                 ChatLine("[RynthAi] /ra nav save [name] | /ra nav load <name> | /ra nav list");
+                break;
+        }
+    }
+
+    private void HandleMetaCommand(string[] parts)
+    {
+        if (_dashboard == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        string sub = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
+        string rest = parts.Length > 3 ? string.Join(" ", parts, 3, parts.Length - 3) : "";
+        switch (sub)
+        {
+            case "load":
+            case "new":
+                if (rest.Length == 0) { ChatLine($"[RynthAi] Usage: /ra meta {sub} <name>"); break; }
+                ChatLine(_dashboard.LoadMetaByName(rest, createOnly: sub == "new"));
+                break;
+            case "list":
+                var names = _dashboard.MetaFileNames();
+                ChatLine(names.Count == 0 ? "[RynthAi] No metas in MetaFiles." : $"[RynthAi] Metas ({names.Count}): {string.Join(", ", names)}");
+                break;
+            default:
+                ChatLine("[RynthAi] /ra meta load <name> | /ra meta new <name> | /ra meta list");
                 break;
         }
     }

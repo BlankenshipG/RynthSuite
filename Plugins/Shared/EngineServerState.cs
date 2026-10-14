@@ -1,6 +1,6 @@
 // ============================================================================
 //  RynthSuite - Plugins/Shared/EngineServerState.cs
-//  RynthCore's answer to "which server is this?" (plugin API v85,
+//  RynthCore's answer to "which server is this?" (plugin API v86,
 //  GetServerStateJson), parsed: every server the engine knows (built-in ILT and
 //  Aelrynth, plus each loaded server plugin's declaration), whether it is
 //  active, this character's override, and which plugin owns it (the one to ask

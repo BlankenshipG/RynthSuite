@@ -900,12 +900,24 @@ internal sealed class MetaManager
                     RynthLog.Write(LogCat.Meta, "[Meta] EmbedNav: empty ActionData, ignored");
                     break;
                 }
-                string routeName = rule.ActionData.Split(';')[0];
+                string routeName = EmbedNavName.Clean(rule.ActionData.Split(';')[0]);
                 int priorPoints = _settings.CurrentRoute?.Points?.Count ?? 0;
 
                 try
                 {
                     // Embedded nav routes live in memory alongside the loaded meta.
+                    // A key saved before names were cleaned ("None]", "[None]") still matches.
+                    if (!_settings.EmbeddedNavs.ContainsKey(routeName))
+                    {
+                        foreach (var key in _settings.EmbeddedNavs.Keys)
+                        {
+                            if (string.Equals(EmbedNavName.Clean(key), routeName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                routeName = key;
+                                break;
+                            }
+                        }
+                    }
                     // If the direct key misses, try normalizing legacy names
                     // like "nav0__MatronHive1_nav" → "MatronHive1".
                     if (!_settings.EmbeddedNavs.ContainsKey(routeName))
@@ -935,6 +947,20 @@ internal sealed class MetaManager
                         _host.Log("[Meta] EmbedNav: Patrol -> /ra dunnav-patrol");
                         if (_raCommandHandler != null) _raCommandHandler("/ra dunnav-patrol");
                         else _host.WriteToChat("[RynthAi Meta] Patrol: no /ra command handler", 1);
+                        break;
+                    }
+
+                    // VTank's "[None]" with no route behind it (no embedded route of that name, or an
+                    // empty one) is an empty nav route, as in VTank: the current route is cleared, and no
+                    // "None.nav" is looked for. A [None] route WITH points is a real route VTank loads
+                    // (see EmbedNavName).
+                    if (EmbedNavName.IsNone(routeName)
+                        && (!_settings.EmbeddedNavs.TryGetValue(routeName, out var noneLines) || NavRouteParser.LoadFromLines(noneLines).Points.Count == 0))
+                    {
+                        _settings.CurrentNavPath = string.Empty;
+                        _settings.CurrentRoute   = new NavRouteParser();
+                        _settings.ActiveNavIndex = 0;
+                        RynthLog.Write(LogCat.Meta, $"[Meta] EmbedNav: [None] - empty route (was {priorPoints} pts)");
                         break;
                     }
 
@@ -1145,50 +1171,13 @@ internal sealed class MetaManager
             return true;
         }
 
-        // /vt meta load <name> — load a meta file from MetaFiles folder
+        // /vt meta load <name> — the same load as /ra meta load (LegacyDashboardRenderer.LoadMetaByName):
+        // a meta in MetaFiles, or, when there is none by that name, a new blank one (2026-10-13).
         if (sub == "meta" && parts.Length >= 4 &&
             parts[2].Equals("load", StringComparison.OrdinalIgnoreCase))
         {
             string name = string.Join(" ", parts, 3, parts.Length - 3);
-            string metaDir = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "MetaFiles");
-            string afPath = Path.Combine(metaDir, name + ".af");
-            string metPath = Path.Combine(metaDir, name + ".met");
-
-            string loadPath = File.Exists(afPath) ? afPath : File.Exists(metPath) ? metPath : "";
-            if (!string.IsNullOrEmpty(loadPath))
-            {
-                try
-                {
-                    LoadedMeta loaded = loadPath.EndsWith(".met", StringComparison.OrdinalIgnoreCase)
-                        ? MetFileParser.Load(loadPath)
-                        : AfFileParser.Load(loadPath);
-                    if (loaded.Rules.Count > 0)
-                    {
-                        _settings.MetaRules = loaded.Rules;
-                        _settings.EmbeddedNavs.Clear();
-                        foreach (var kvp in loaded.EmbeddedNavs)
-                            _settings.EmbeddedNavs[kvp.Key] = kvp.Value;
-                        _settings.CurrentState = loaded.StartState;
-                        _settings.ForceStateReset = true;
-                        _settings.MetaCallStackReset = true;
-                        _settings.CurrentMetaPath = loadPath;
-                        _host.WriteToChat(
-                            $"[RynthAi] Loaded meta '{name}': {loaded.Rules.Count} rules, {loaded.EmbeddedNavs.Count} navs"
-                            + (loaded.Warnings.Count > 0 ? $" — {loaded.Warnings.Count} warning(s): {loaded.Warnings[0]}" : ""), 1);
-                    }
-                    else
-                    {
-                        _host.WriteToChat(
-                            $"[RynthAi] Meta '{name}' parsed 0 rules"
-                            + (loaded.Warnings.Count > 0 ? $" — {loaded.Warnings[0]}" : " (profile/empty?)"), 1);
-                    }
-                }
-                catch { }
-            }
-            else
-            {
-                _host.WriteToChat($"[RynthAi] Meta not found: {name}", 1);
-            }
+            _raCommandHandler?.Invoke($"/ra meta load {name}");
             return true;
         }
 

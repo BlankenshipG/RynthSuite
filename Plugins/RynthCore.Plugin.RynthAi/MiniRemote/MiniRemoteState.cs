@@ -34,7 +34,7 @@ public sealed class CraftingTabState
     public Dictionary<string, TinkerBenchSettings> Benches = new();
     /// <summary>The player's extra salvage rows, keyed by world name (custom shards' own recipes).</summary>
     public Dictionary<string, List<CustomTinker>> CustomByWorld = new();
-    /// <summary>Answer the server's craft-chance dialog for the runner (engine API v84).</summary>
+    /// <summary>Answer the server's craft-chance dialog for the runner (engine API v85).</summary>
     public bool AnswerCraftDialog = true;
     /// <summary>Items per scan (UB-IT's 20).</summary>
     public int BatchSize = 20;

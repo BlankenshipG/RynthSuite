@@ -69,7 +69,7 @@
     <Compile Include="..\Shared\ImGuiNativeBinding.cs" Link="Shared\ImGuiNativeBinding.cs" />
     <!-- Infinite Leaftide: RynthILT.Hub (its tabs in the Mini Remote) and RynthAi.Hub (what RynthILT borrows). -->
     <Compile Include="..\Shared\RynthIltHubApi.cs" Link="Shared\RynthIltHubApi.cs" />
-    <!-- /ra server: RynthCore's server list (API v85) and the active server owner's settings. -->
+    <!-- /ra server: RynthCore's server list (API v86) and the active server owner's settings. -->
     <Compile Include="..\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
     <Compile Include="..\Shared\ServerStateClient.cs" Link="Shared\ServerStateClient.cs" />
     <Compile Include="..\Shared\RynthServerProfileApi.cs" Link="Shared\RynthServerProfileApi.cs" />

@@ -40,7 +40,7 @@
   <ItemGroup>
     <!-- ImGui text calls for non-literal text ('%' escaped): see the file's header. -->
     <Compile Include="..\..\Shared\SafeImGui.cs" Link="Shared\SafeImGui.cs" />
-    <!-- RynthCore's server list (API v85) and the active server's settings: ILT Auto follows the engine. -->
+    <!-- RynthCore's server list (API v86) and the active server's settings: ILT Auto follows the engine. -->
     <Compile Include="..\..\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
     <Compile Include="..\..\Shared\ServerStateClient.cs" Link="Shared\ServerStateClient.cs" />
     <Compile Include="..\..\Shared\RynthServerProfileApi.cs" Link="Shared\RynthServerProfileApi.cs" />

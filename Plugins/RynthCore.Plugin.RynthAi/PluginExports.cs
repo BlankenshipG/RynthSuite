@@ -230,6 +230,22 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnEnchantmentRemoved", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnEnchantmentRemoved(uint enchantmentId) => Runtime.OnEnchantmentRemoved(enchantmentId);
 
+    // API v78 server messages: only what RynthAiPlugin asked for (SetServerMessageInterest in
+    // Initialize: the transient-text game event, for "The door is locked!"). `data` lives only
+    // during the call; the text is copied out by the parser.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnServerMessage", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void OnServerMessage(uint opcode, byte* data, int length)
+    {
+        try
+        {
+            var msg = RynthCore.PluginSdk.Net.ServerMessage.FromCallback(opcode, data, length);
+            if (msg.IsGameEvent && msg.EventType == RynthCore.PluginSdk.Net.GameEventType.TransientString
+                && RynthCore.PluginSdk.Net.SystemText.TryParse(msg.EventBody, true, out var text))
+                Runtime.Plugin?.NoteDoorServerText(text.Text);
+        }
+        catch { }
+    }
+
     // ── Snapshot bridge for the engine-side Avalonia RynthAi panel ──────────
     // The panel polls these exports every ~250ms to mirror the live dashboard.
     // The returned ANSI buffer is freed on the next call; the caller MUST copy

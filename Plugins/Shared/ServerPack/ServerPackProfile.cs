@@ -1,7 +1,7 @@
 // ServerPackProfile.cs - A server plugin's settings as JSON, for other plugins ("RynthServer.Profile",
 // Plugins/Shared/RynthServerProfileApi.cs, served by ServerPackExports' RynthPluginQueryInterface).
 //
-// RynthCore's GetServerStateJson (plugin API v85) names the active server and the plugin that owns
+// RynthCore's GetServerStateJson (plugin API v86) names the active server and the plugin that owns
 // it; a reader (RynthOracle, RynthAi's "/ra server", ...) asks that plugin for this profile to get
 // the server's rules without knowing the server: connection, rule set, botting policy, account
 // limits, commands and links. Everything ServerPackInfo holds, nothing guessed.

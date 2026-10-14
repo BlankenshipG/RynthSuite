@@ -63,6 +63,10 @@
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\Sections\SectionCatalog.cs" Link="Engine\SectionCatalog.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\Compatibility\IltDetect.cs" Link="Engine\IltDetect.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\Compatibility\AelrynthWire.cs" Link="Engine\AelrynthWire.cs" />
+    <!-- The engine's v84 GetObjectProperties record writer (pure), so the propertydump tests feed
+         RynthAi exactly what the engine sends (engine 2026-10-13). -->
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\Compatibility\PropertyWire.cs" Link="Engine\PropertyWire.cs" />
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\Compatibility\ObjectPropertyRecord.cs" Link="Engine\ObjectPropertyRecord.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -226,6 +226,21 @@ internal static unsafe class FakeHost
     public static int ForceResets;
     public static int BusyStateValue;
 
+    /// <summary>Opt-in (set before Create): GetObjectProperties (API v84), answering the record
+    /// <see cref="PropertyRecord"/> returns for an id (null = the engine knows nothing: 0).</summary>
+    public static bool ObjectPropertiesCalls;
+    public static Func<uint, byte[]?>? PropertyRecord;
+    /// <summary>GetObjectProperties calls, in order (the buffer-size retries included).</summary>
+    public static readonly List<uint> PropertyQueries = new();
+
+    /// <summary>Object id -> CPhysicsObj m_state (GetObjectState; 0x4 ETHEREAL = a door that is open).
+    /// When it has entries at Create() time the host also gets GetObjectState (opt-in, as Bitfields).</summary>
+    public static readonly Dictionary<uint, uint> ObjectStates = new();
+    /// <summary>Runs inside UseObject, after the use is recorded (the test plays the server here).</summary>
+    public static Action<uint>? OnUseObject;
+    /// <summary>Runs inside UseObjectOn, after it is recorded.</summary>
+    public static Action<uint, uint>? OnUseObjectOn;
+
     // ANSI strings handed back to tested code stay alive for the whole run.
     private static readonly Dictionary<string, IntPtr> _ansi = new();
 
@@ -268,6 +283,8 @@ internal static unsafe class FakeHost
         PluginCommandCalls = false; PluginCommandDelivered = true; PluginCommands.Clear();
         CombatModeCalls = false; CombatModeRequests.Clear(); CombatModeRefuse = false; CombatModeRefusals = 0;
         BusyCalls = false; ForceResets = 0; BusyStateValue = 0;
+        ObjectPropertiesCalls = false; PropertyRecord = null; PropertyQueries.Clear();
+        ObjectStates.Clear(); OnUseObject = null; OnUseObjectOn = null;
     }
 
     /// <summary>
@@ -306,6 +323,8 @@ internal static unsafe class FakeHost
             api.GetContainerContentsFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint*, int, int>)&GetContainerContents;
         if (Bitfields.Count > 0)
             api.GetObjectBitfieldFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint>)&GetObjectBitfield;
+        if (ObjectStates.Count > 0)
+            api.GetObjectStateFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint*, int>)&GetObjectState;
         if (InstanceIds.Count > 0)
             api.GetObjectInstanceIdPropertyFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint, uint*, int>)&GetObjectInstanceIdProperty;
         api.SetAutoRunFn            = (IntPtr)(delegate* unmanaged[Cdecl]<int, int>)&SetAutoRun;
@@ -423,6 +442,11 @@ internal static unsafe class FakeHost
         {
             api.Version = Math.Max(api.Version, 64u);
             api.SendPluginCommandFn = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)&SendPluginCommand;
+        }
+        if (ObjectPropertiesCalls)
+        {
+            api.Version = Math.Max(api.Version, 84u);
+            api.GetObjectPropertiesFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, byte*, int, int>)&GetObjectProperties;
         }
         LastApi = api;
         return new RynthCoreHost(api);
@@ -647,6 +671,16 @@ internal static unsafe class FakeHost
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetObjectProperties(uint id, byte* buf, int size)
+    {
+        PropertyQueries.Add(id);
+        byte[]? rec = PropertyRecord?.Invoke(id);
+        if (rec == null) return 0;
+        if (rec.Length <= size) rec.AsSpan().CopyTo(new Span<byte>(buf, size));
+        return rec.Length;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int GetObjectPalettes(uint id, uint* subIds, uint* offsets, int max)
     {
         if (!Palettes.TryGetValue(id, out uint[]? p)) return -1;
@@ -750,10 +784,17 @@ internal static unsafe class FakeHost
     private static int ChangeCombatMode(int mode) { if (CombatModeRefuse) { CombatModeRefusals++; return 0; } CombatModeRequests.Add(mode); return 1; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    private static int UseObject(uint id) { Uses.Add(id); return 1; }
+    private static int UseObject(uint id) { Uses.Add(id); OnUseObject?.Invoke(id); return 1; }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetObjectState(uint id, uint* state)
+    {
+        if (!ObjectStates.TryGetValue(id, out uint s)) return 0;
+        *state = s;
+        return 1;
+    }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    private static int UseObjectOn(uint source, uint target) { UsesOn.Add((source, target)); return 1; }
+    private static int UseObjectOn(uint source, uint target) { UsesOn.Add((source, target)); OnUseObjectOn?.Invoke(source, target); return 1; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int WieldItem(uint id, uint mask) { Wields.Add((id, mask)); return 1; }

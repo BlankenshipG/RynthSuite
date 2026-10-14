@@ -23,7 +23,7 @@ internal static class ServerTags
 /// only load or show where <see cref="Allows"/> says so; untagged (retail) ones work anywhere.
 ///
 /// Sources, best first:
-///   0. Engine API v85 GetServerStateJson (ServerStateClient): RynthCore's active server, with
+///   0. Engine API v86 GetServerStateJson (ServerStateClient): RynthCore's active server, with
 ///      this character's overrides and the Diagnostics page's server pick applied (FromEngine).
 ///   1. Engine API v75 GetServerInfo: the engine's own verdict for Aelrynth (connect host,
 ///      announced world name, Bank mod properties) and the world name the server announced
@@ -60,7 +60,7 @@ internal sealed class ServerIdentity
 
     /// <param name="rynthIltSaysIlt">RynthILT's profile reports an ILT world (IltServerLink); false without RynthILT.</param>
     /// <param name="engine">
-    /// RynthCore's server list (plugin API v85, ServerStateClient); null on older engines. When there,
+    /// RynthCore's server list (plugin API v86, ServerStateClient); null on older engines. When there,
     /// it decides: it already applies this character's overrides and the Diagnostics page's pick.
     /// </param>
     public void Refresh(RynthCoreHost host, uint playerId, bool rynthIltSaysIlt = false, EngineServerState? engine = null)
