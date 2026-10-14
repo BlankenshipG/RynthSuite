@@ -145,6 +145,26 @@ public sealed partial class RynthAiPlugin
         Log(message);
     }
 
+    // The values behind the last [LootSettings] line; a new line goes out only when one changes.
+    private (LootBaseline.Timers Timers, double Max, double Min)? _lootSettingsLogged;
+
+    /// <summary>
+    /// Logs the loot timers against the measured baseline (LootBaseline.cs), each marked "baseline"
+    /// or "custom (baseline N)", so a loot log says which settings it ran with. Runs every loot tick,
+    /// so it compares the raw values and builds the line only on a change.
+    /// </summary>
+    private void NoteLootSettings(LegacyUiSettings settings)
+    {
+        var timers = new LootBaseline.Timers(
+            settings.LootContentSettleMs, settings.LootEmptyCorpseMs, settings.LootAssessWindowMs,
+            settings.LootRetryTimeoutMs, settings.LootOpenRetryMs, settings.LootCorpseTimeoutMs);
+        var current = (timers, settings.CorpseApproachRangeMax, settings.CorpseApproachRangeMin);
+        if (_lootSettingsLogged == current)
+            return;
+        _lootSettingsLogged = current;
+        LootDiag(LootBaseline.Describe(timers, settings.CorpseApproachRangeMax, settings.CorpseApproachRangeMin));
+    }
+
     public override void OnBusyCountIncremented()
     {
         if (_busyCount == 0)
@@ -579,6 +599,7 @@ public sealed partial class RynthAiPlugin
             ResetCorpseTarget();
             return;
         }
+        NoteLootSettings(settings);
 
         // Wedge halt: AC's item-action state is locked (consecutive open
         // timeouts). Stop firing opens into a dead client until the halt window

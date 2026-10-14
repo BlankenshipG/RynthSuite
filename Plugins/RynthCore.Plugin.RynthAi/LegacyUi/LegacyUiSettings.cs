@@ -112,14 +112,19 @@ public sealed class LegacyUiSettings
     public bool EnableMissileCrafting = true;
     public int MissileCraftAmmoThreshold = 1000;
 
+    /// <summary>Not read by the corpse looting (pickups are paced by the server's confirmations);
+    /// kept so saved profiles round-trip. Hidden in Advanced Settings.</summary>
     public int LootInterItemDelayMs = 50;
-    public int LootContentSettleMs = 100;
-    public int LootEmptyCorpseMs = 300;
+    // Loot timer defaults are the measured baseline (LootBaseline.cs).
+    public int LootContentSettleMs = LootBaseline.ContentSettleMs;
+    public int LootEmptyCorpseMs = LootBaseline.EmptyCorpseMs;
+    /// <summary>Not read by the corpse looting (a close is timed by the deferred-close logic); kept
+    /// so saved profiles round-trip. Hidden in Advanced Settings.</summary>
     public int LootClosingDelayMs = 200;
-    public int LootAssessWindowMs = 200;
-    public int LootRetryTimeoutMs = 500;
-    public int LootOpenRetryMs = 1500;
-    public int LootCorpseTimeoutMs = 12000;
+    public int LootAssessWindowMs = LootBaseline.AssessWindowMs;
+    public int LootRetryTimeoutMs = LootBaseline.RetryTimeoutMs;
+    public int LootOpenRetryMs = LootBaseline.OpenRetryMs;
+    public int LootCorpseTimeoutMs = LootBaseline.CorpseTimeoutMs;
     public bool LootJumpEnabled = false;
     public int LootJumpHeight = 10; // 0–100; maps to 0.0–1.0 JumpNonAutonomous extent
 
@@ -265,6 +270,8 @@ public sealed class LegacyUiSettings
     /// on the way as usual, recover the corpse, then carry on. Off by default.
     /// </summary>
     public bool TravelToOwnCorpse;
+    /// <summary>Not read by the corpse looting (no rare-corpse check exists); kept so saved profiles
+    /// round-trip. Hidden in Advanced Settings. The meta/MagTools option of that name sets Mine Only.</summary>
     public bool LootOnlyRareCorpses;
     /// <summary>Also pick up loose ground items that match the loot profile, within the corpse max range.</summary>
     public bool EnableGroundLoot;

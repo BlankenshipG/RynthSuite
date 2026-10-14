@@ -541,17 +541,20 @@ internal static class LootCorpseTests
         }
         Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "the pickup goes out once the character is still");
 
+        // The bot's Loot Retry Timeout (the LootBaseline default).
+        int retryWindowMs = bot.S.LootRetryTimeoutMs;
+
         // Its own bend-down plays for longer than 3 retry windows: no retry, no give-up.
         FakeHost.CastBusy = 1;
-        TickFor(bot, 1800);
+        TickFor(bot, retryWindowMs * 3 + 300);
         Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "no retry while the pickup animates");
         Check.False(FakeHost.Logs.Any(l => l.Contains("pickup failed")), "the item is not given up on");
 
         // Still again and the item still on the corpse: the retry window starts now.
         FakeHost.CastBusy = 0;
-        TickFor(bot, 250);
+        TickFor(bot, retryWindowMs / 2);
         Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "the retry window counts from when the character is still");
-        TickFor(bot, 500);
+        TickFor(bot, retryWindowMs);
         Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 2, "then one retry");
     }
 

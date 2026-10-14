@@ -233,6 +233,35 @@ internal sealed class LegacyAdvancedSettingsUi
             _settings.SetBuffEnabled(toggle.Buff, on);
     }
 
+    /// <summary>
+    /// One loot timer: the input, then "baseline" when it matches LootBaseline, or "baseline N" when
+    /// it doesn't (hover for what the timer does).
+    /// </summary>
+    private static void LootTimerInput(string label, ref int value, int baseline, string tip)
+    {
+        ImGui.SetNextItemWidth(120);
+        ImGui.InputInt(label, ref value);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(tip);
+        ImGui.SameLine();
+        if (value == baseline)
+            ImGui.TextDisabled("baseline");
+        else
+            ImGui.TextColored(new Vector4(0.9f, 0.7f, 0.2f, 1.0f), $"baseline {baseline}");
+    }
+
+    /// <summary>Writes the six loot timers' baseline values (LootBaseline.cs) into the settings.</summary>
+    private void ApplyLootBaseline()
+    {
+        LootBaseline.Timers b = LootBaseline.Values;
+        _settings.LootContentSettleMs = b.ContentSettleMs;
+        _settings.LootEmptyCorpseMs   = b.EmptyCorpseMs;
+        _settings.LootAssessWindowMs  = b.AssessWindowMs;
+        _settings.LootRetryTimeoutMs  = b.RetryTimeoutMs;
+        _settings.LootOpenRetryMs     = b.OpenRetryMs;
+        _settings.LootCorpseTimeoutMs = b.CorpseTimeoutMs;
+    }
+
     private void RenderTabContent(int tabIndex)
     {
         if (tabIndex < 0 || tabIndex >= _settings.AdvancedTabs.Length)
@@ -971,7 +1000,7 @@ internal sealed class LegacyAdvancedSettingsUi
             case "Looting":
                 ImGui.Checkbox("Enable Looting", ref _settings.EnableLooting);
                 ImGui.Checkbox("Boost Loot Priority", ref _settings.BoostLootPriority);
-                ImGui.Checkbox("Loot Only Rare Corpses", ref _settings.LootOnlyRareCorpses);
+                // "Loot Only Rare Corpses" is hidden: nothing reads LootOnlyRareCorpses.
                 ImGui.Checkbox("Learn Unknown Spells", ref _settings.ReadUnknownScrolls);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Loots scrolls of spells you don't know and can learn (magic school trained or\nspecialized, skill high enough), and reads them when it's safe. Scrolls already\nin your pack are read too.");
@@ -1018,22 +1047,26 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Separator();
                 ImGui.Text("Loot Timers (ms)");
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Inter-Item Delay", ref _settings.LootInterItemDelayMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Content Settle", ref _settings.LootContentSettleMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Empty Corpse Wait", ref _settings.LootEmptyCorpseMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Closing Delay", ref _settings.LootClosingDelayMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Assess Window", ref _settings.LootAssessWindowMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Loot Retry Timeout", ref _settings.LootRetryTimeoutMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Corpse Open Retry", ref _settings.LootOpenRetryMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Corpse Timeout", ref _settings.LootCorpseTimeoutMs);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("The baseline is measured from live looting on ACE (2026-10-14). The log's\n[LootSettings] line lists each timer as baseline or custom.");
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Use Baseline##lootTimers"))
+                    ApplyLootBaseline();
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Set all six loot timers to the baseline.");
+                // Inter-Item Delay and Closing Delay are hidden: the corpse looting never reads them.
+                LootTimerInput("Content Settle", ref _settings.LootContentSettleMs, LootBaseline.ContentSettleMs,
+                    "Wait after an open for the container's items. Only used when the items\naren't already known; on ACE they always were.");
+                LootTimerInput("Empty Corpse Wait", ref _settings.LootEmptyCorpseMs, LootBaseline.EmptyCorpseMs,
+                    "Wait for a corpse's contents before probing it or calling it empty.");
+                LootTimerInput("Assess Window", ref _settings.LootAssessWindowMs, LootBaseline.AssessWindowMs,
+                    "Hold items for their appraisal. Measured replies: 127 ms typical,\n256 ms at the 95th percentile, 350 ms at most.");
+                LootTimerInput("Loot Retry Timeout", ref _settings.LootRetryTimeoutMs, LootBaseline.RetryTimeoutMs,
+                    "Wait, once the character is still, before resending a pickup that hasn't\nlanded. Too short resends pickups the server is still doing.");
+                LootTimerInput("Corpse Open Retry", ref _settings.LootOpenRetryMs, LootBaseline.OpenRetryMs,
+                    "Wait before sending another open to a corpse that hasn't opened.");
+                LootTimerInput("Corpse Timeout", ref _settings.LootCorpseTimeoutMs, LootBaseline.CorpseTimeoutMs,
+                    "Give up on a claimed corpse after this long. The clock stops during combat\nand buffing.");
 
                 ImGui.Spacing();
                 ImGui.Separator();
