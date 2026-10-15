@@ -10,8 +10,9 @@
 //               not equipped, not never-chunk, cleave (292) <= 1.
 //   Peace mode only unless ChunkInCombat; waits for the result line (10 s max).
 //   The tool is the "Lugian Aetheria Hammer" only. The Lugian Hammer weapons (Flaming, Acid, ...)
-//   are loot and chunk nothing: the server answers with no result line, so every item timed out
-//   into the skip list and the status sat on "nothing eligible" (SilentKelpie, 2026-10-15).
+//   are loot and chunk nothing on ILT: the server answers "done" with no result line. Matching
+//   them by name ending used the Flaming Lugian Hammer on Silentkelpie's 9 Coalesced Aetheria,
+//   every one timed out and was skipped, and the status sat on "nothing eligible" (2026-10-15).
 // Clap: "/clap all" converts aetheria chunks + trinkets into coins server-side. Needs the
 //   AutoCraftingEnabled stamp; 30 min ± 2 min interval, first attempt ~1 min after enable.
 using System;
@@ -296,7 +297,7 @@ internal sealed class IltChunkClap : IIltFeature
 
     public void Render()
     {
-        SafeImGui.TextColored(IltStyle.ColTeal, $"Chunking ({HammerName})");
+        ImGui.TextColored(IltStyle.ColTeal, $"Chunking ({HammerName})");
         bool a = G.AutoChunkAetheria, c = G.AutoChunkCorrupted, comb = G.ChunkInCombat;
         if (ImGui.Checkbox("Auto-chunk low aetheria", ref a)) G.AutoChunkAetheria = a;
         ImGui.SameLine();
@@ -306,7 +307,7 @@ internal sealed class IltChunkClap : IIltFeature
         ImGui.SetNextItemWidth(100);
         if (ImGui.InputInt("Chunk aetheria with max level below", ref under)) G.ChunkAetheriaUnderLevel = ClampUnderLevel(under);
         if (ImGui.IsItemHovered())
-            SafeImGui.SetTooltip($"Infinite Leaftide aetheria goes up to level {IltInventory.AetheriaMaxLevel}; {IltInventory.AetheriaMaxLevel + 1} chunks every level.");
+            ImGui.SetTooltip($"Infinite Leaftide aetheria goes up to level {IltInventory.AetheriaMaxLevel}; {IltInventory.AetheriaMaxLevel + 1} chunks every level.");
         bool kc = G.KeepAetheriaWithCrit, kcd = G.KeepAetheriaWithCritDamage, kcdr = G.KeepAetheriaWithCritDamageResist;
         ImGui.TextUnformatted("Never chunk aetheria with:");
         ImGui.SameLine();
