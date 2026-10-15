@@ -690,6 +690,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager.SetWeaponSwapGate(_weaponSwapGate);
         _combatManager.Vitals = _vitals;   // the script hook's request carries the player's vitals
         _combatManager.HoldIdlePeace = LootHoldsIdlePeace;
+        _combatManager.HoldNewTarget = BoostLootHoldsNewTarget;   // Boost Loot Priority: one kill, one loot
         _combatManager.ManaReserveHold = spellId => _buffManager?.OffensiveCastHold(spellId);   // the mana reserve
         _combatManager.ManaCanEverAfford = spellId => _buffManager?.CanEverAfford(spellId) ?? true;   // script hook: never-payable spells
         _combatManager.SetStaleBusyCallback(OnCombatBusyStale);
@@ -2321,6 +2322,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "session stats kill"); }
         if (string.IsNullOrEmpty(deathMessage)) return;
         _killClock.RecordKill();    // the only kill source: KillerNotification goes to the killer alone
+        NoteBoostLootKill();        // before combat sees the kill: its next target waits for the corpse
         _combatManager?.OnKillNotification(deathMessage);
         _dashboard?.RecordKill();   // feeds the kills/hour session stat
     }

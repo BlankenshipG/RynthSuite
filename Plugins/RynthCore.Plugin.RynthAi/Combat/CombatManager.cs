@@ -292,6 +292,14 @@ public partial class CombatManager : IDisposable
     private bool _idlePeaceHeldLogged;
 
     /// <summary>
+    /// True = don't lock a new target yet. RynthAi answers true with Boost Loot Priority on while
+    /// our kill's corpse forms or is looted (RynthAiPlugin.BoostLootHoldsNewTarget): one kill, one
+    /// loot. A monster within CloseAttackYards is still fought at once. Null = never hold.
+    /// </summary>
+    public Func<bool>? HoldNewTarget { get; set; }
+    private bool _newTargetHeldLogged;
+
+    /// <summary>
     /// RynthAi's mana reserve (BuffManager.OffensiveCastHold): given the attack or debuff spell
     /// about to be cast, a reason to hold it (mana under its cost, or under the reserve kept for
     /// Stamina to Mana), or null to cast. Null hook = never hold (2026-10-11).
@@ -726,6 +734,28 @@ public partial class CombatManager : IDisposable
     /// is the non-circular signal.
     /// </summary>
     public bool IsUnderCloseAttack => IsActivelyEngaged || HasCloseThreat(CloseAttackYards);
+
+    /// <summary>
+    /// HoldNewTarget says wait (Boost Loot Priority, a kill's corpse to loot) and no monster is
+    /// within CloseAttackYards. One log line per hold.
+    /// </summary>
+    private bool NewTargetHeldForLoot()
+    {
+        bool held;
+        try { held = HoldNewTarget?.Invoke() == true && !HasCloseThreat(CloseAttackYards); }
+        catch { held = false; }
+        if (!held)
+        {
+            _newTargetHeldLogged = false;
+            return false;
+        }
+        if (!_newTargetHeldLogged)
+        {
+            _newTargetHeldLogged = true;
+            _host.Log("[CombatTarget] next target waits: Boost Loot Priority loots the kill first");
+        }
+        return true;
+    }
 
     /// <summary>
     /// Pure predicate for the ActivityArbiter: should Combat claim this tick?
@@ -3987,6 +4017,10 @@ public partial class CombatManager : IDisposable
     {
         if (_scannedTargets.Count == 0) return;
         if (TryLockForcedTarget()) return;   // Target lock (/ra targetlock): CombatManager.TargetLock.cs
+        // Boost Loot Priority: the next target waits for the last kill's corpse. Without this the
+        // next lock went out a few ms after each kill, 1-3 s before ACE creates the corpse, so the
+        // arbiter always saw combat engaged and corpses were looted in batches (2026-10-14).
+        if (_lockedTargetId == 0 && NewTargetHeldForLoot()) return;
 
         DateTime now = TargetClock();
         double acquireRange = Math.Max(1.0, _settings.MonsterRange);
