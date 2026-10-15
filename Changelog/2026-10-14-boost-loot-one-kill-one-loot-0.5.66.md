@@ -49,6 +49,13 @@ With Boost Loot Priority on, each of our kills is looted before the next fight:
     doesn't.
 - RynthCore.RynthAiTests: 39/39.
 
+## Install
+
+Installed locally on 2026-10-14: RynthAi 0.5.66-legacy-ui (RynthSuite e85b49c, clean NativeAOT
+publish) copied to C:\Games\RynthSuite\RynthAi. 0.5.65-legacy-ui was backed up to
+PreviousReleases\0.5.65-legacy-ui. Running clients load it on a restart or the overlay's RL
+(hot reload).
+
 ## Files
 
 - `Plugins/RynthCore.Plugin.RynthAi/Combat/CombatManager.cs`
