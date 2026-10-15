@@ -1,7 +1,7 @@
 // IltChunkClap.cs — Lugian-hammer chunking and /clap automation (Gear tab).
 // Originally SilentKelpie's ILT Hub (RynthAi IltHub/); moved to RynthILT 2026-10-13.
 //
-// Chunk: uses a Lugian (Aetheria) Hammer on eligible items, one at a time:
+// Chunk: uses the Lugian Aetheria Hammer on eligible items, one at a time:
 //   Aetheria  — "Aetheria"/"Coalesced Aetheria" gems, not equipped, appraised, not flagged
 //               never-chunk (bool 9030), never levelled (ItemTotalXp quad 4 == 0), no kept
 //               C / CD / CDR rating (gear ints 372 / 374 / 375; on by default), and max level
@@ -9,6 +9,10 @@
 //   Corrupted — "Corrupted" melee/missile weapons with no tinks (171), no imbue (179),
 //               not equipped, not never-chunk, cleave (292) <= 1.
 //   Peace mode only unless ChunkInCombat; waits for the result line (10 s max).
+//   The tool is the "Lugian Aetheria Hammer" only. The Lugian Hammer weapons (Flaming, Acid, ...)
+//   are loot and chunk nothing on ILT: the server answers "done" with no result line. Matching
+//   them by name ending used the Flaming Lugian Hammer on Silentkelpie's 9 Coalesced Aetheria,
+//   every one timed out and was skipped, and the status sat on "nothing eligible" (2026-10-15).
 // Clap: "/clap all" converts aetheria chunks + trinkets into coins server-side. Needs the
 //   AutoCraftingEnabled stamp; 30 min ± 2 min interval, first attempt ~1 min after enable.
 using System;
@@ -62,10 +66,14 @@ internal sealed class IltChunkClap : IIltFeature
 
     // ── Chunk ───────────────────────────────────────────────────────────────
 
+    /// <summary>Infinite Leaftide's chunking tool.</summary>
+    internal const string HammerName = "Lugian Aetheria Hammer";
+
+    /// <summary>True for the chunking tool only, never a Lugian Hammer weapon. Pure: the tests drive it.</summary>
+    internal static bool IsChunkHammer(string name) => name.Equals(HammerName, StringComparison.OrdinalIgnoreCase);
+
     private WorldObject? FindHammer()
-        => _ctx.Inventory.FindByName(n => n.Equals("Lugian Aetheria Hammer", StringComparison.OrdinalIgnoreCase)
-                                          || n.Equals("Lugian Hammer", StringComparison.OrdinalIgnoreCase)
-                                          || n.EndsWith(" Lugian Hammer", StringComparison.OrdinalIgnoreCase));
+        => _ctx.Inventory.Items().FirstOrDefault(wo => IsChunkHammer(wo.Name) && !_ctx.Inventory.IsEquipped(wo));
 
     /// <summary>True/false when decidable; null when appraisal is still needed.</summary>
     private bool? IsChunkableAetheria(WorldObject wo)
@@ -126,6 +134,7 @@ internal sealed class IltChunkClap : IIltFeature
         RynthLog.Trace(LogCat.IltGear, $"ChunkNow()");
         _manualPass = true;
         _lastChunkAt = 0;
+        _skip.Clear();   // a manual pass gives the items that got no answer another try
         _chunkStatus = "manual pass started";
     }
 
@@ -137,6 +146,7 @@ internal sealed class IltChunkClap : IIltFeature
         {
             if (now - _waitStartedAt < ChunkResultWaitMs) return;
             _skip.Add(_waitingOn); // no result line — don't hammer the same item forever
+            RynthLog.Write(LogCat.IltGear, $"chunk: no result line for 0x{(uint)_waitingOn:X8} in {ChunkResultWaitMs / 1000} s, skipped until a manual pass");
             _waitingOn = 0;
         }
         if (now - _lastChunkAt < Math.Max(500, G.ChunkIntervalMs)) return;
@@ -146,11 +156,12 @@ internal sealed class IltChunkClap : IIltFeature
         if (_ctx.Inventory.IsBusy) return;
 
         var hammer = FindHammer();
-        if (hammer == null) { _chunkStatus = "no Lugian Hammer carried"; _manualPass = false; return; }
+        if (hammer == null) { _chunkStatus = $"no {HammerName} carried"; _manualPass = false; return; }
         var target = NextChunkTarget();
         if (target == null)
         {
-            _chunkStatus = _chunked > 0 ? $"nothing left to chunk ({_chunked} this session)" : "nothing eligible";
+            _chunkStatus = (_chunked > 0 ? $"nothing left to chunk ({_chunked} this session)" : "nothing eligible")
+                         + (_skip.Count > 0 ? $"; {_skip.Count} skipped with no answer (Chunk now retries them)" : "");
             _manualPass = false;
             return;
         }
@@ -233,23 +244,43 @@ internal sealed class IltChunkClap : IIltFeature
         TickClap(nowMs);
     }
 
+    internal enum ChunkResult { None, Busy, Done, Refused }
+
+    /// <summary>
+    /// What a chat line says about the chunk in flight. ILT names the item and the tool ("You
+    /// smash the Corrupted Sword with the Lugian Aetheria Hammer."), so a line naming a corrupted
+    /// item with the hammer, powder or shatter is a result too (combat's "You smash Foo for 147"
+    /// names neither). Pure: the tests drive it.
+    /// </summary>
+    internal static ChunkResult ClassifyChat(string text)
+    {
+        if (text.StartsWith("You're too busy", StringComparison.OrdinalIgnoreCase) || text.StartsWith("You are too busy", StringComparison.OrdinalIgnoreCase))
+            return ChunkResult.Busy;
+        if (ChunkRefusedLines.Any(l => text.Contains(l, StringComparison.OrdinalIgnoreCase))) return ChunkResult.Refused;
+        if (ChunkDoneLines.Any(l => text.Contains(l, StringComparison.OrdinalIgnoreCase))) return ChunkResult.Done;
+        if (text.Contains("corrupted", StringComparison.OrdinalIgnoreCase)
+            && (text.Contains("hammer", StringComparison.OrdinalIgnoreCase) || text.Contains("powder", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("shatter", StringComparison.OrdinalIgnoreCase)))
+            return ChunkResult.Done;
+        return ChunkResult.None;
+    }
+
     public bool OnChat(string text)
     {
         if (_waitingOn == 0) return false;
-        if (text.StartsWith("You're too busy", StringComparison.OrdinalIgnoreCase) || text.StartsWith("You are too busy", StringComparison.OrdinalIgnoreCase))
+        switch (ClassifyChat(text))
         {
-            _waitingOn = 0; // retry the same item next interval
-            return false;
-        }
-        if (ChunkDoneLines.Any(l => text.Contains(l, StringComparison.OrdinalIgnoreCase)))
-        {
-            _chunked++;
-            _waitingOn = 0;
-        }
-        else if (ChunkRefusedLines.Any(l => text.Contains(l, StringComparison.OrdinalIgnoreCase)))
-        {
-            _skip.Add(_waitingOn);
-            _waitingOn = 0;
+            case ChunkResult.Busy:
+                _waitingOn = 0; // retry the same item next interval
+                break;
+            case ChunkResult.Done:
+                _chunked++;
+                _waitingOn = 0;
+                break;
+            case ChunkResult.Refused:
+                _skip.Add(_waitingOn);
+                _waitingOn = 0;
+                break;
         }
         return false;
     }
@@ -266,7 +297,7 @@ internal sealed class IltChunkClap : IIltFeature
 
     public void Render()
     {
-        ImGui.TextColored(IltStyle.ColTeal, "Chunking (Lugian Hammer)");
+        ImGui.TextColored(IltStyle.ColTeal, $"Chunking ({HammerName})");
         bool a = G.AutoChunkAetheria, c = G.AutoChunkCorrupted, comb = G.ChunkInCombat;
         if (ImGui.Checkbox("Auto-chunk low aetheria", ref a)) G.AutoChunkAetheria = a;
         ImGui.SameLine();
