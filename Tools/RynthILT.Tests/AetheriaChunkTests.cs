@@ -6,6 +6,7 @@ namespace RynthILT.Tests;
 // The Lugian-hammer aetheria rules (Hub/IltChunkClap.cs): Infinite Leaftide aetheria goes up to
 // level 10, and aetheria carrying a C, CD or CDR rating is kept unless its keep switch is off.
 // Only the Lugian Aetheria Hammer chunks, and ILT's result lines name the item and the tool.
+// The cap covers Coalesced Aetheria too, and /clap needs a colour with its own trinket.
 internal static class AetheriaChunkTests
 {
     public static void Register(Runner r)
@@ -14,6 +15,57 @@ internal static class AetheriaChunkTests
         r.Add("aetheria: C / CD / CDR ratings are kept by default, each with its own switch", Ratings);
         r.Add("chunk: only the Lugian Aetheria Hammer is the tool, never a Lugian Hammer weapon", HammerOnly);
         r.Add("chunk: ILT's result lines (item and tool named) end the wait; combat lines don't", ResultLines);
+        r.Add("aetheria: the level cap applies to Coalesced Aetheria too; no level read = never chunked", CoalescedCap);
+        r.Add("clap: the server's WCIDs, each colour paired with its trinket, Coalesced only unrevealed level 1-3", ClapPairs);
+    }
+
+    /// <summary>
+    /// Coalesced Aetheria has its level from loot (ACECustom 1-10, ratings at 6+); it used to skip
+    /// the cap, so a cap of 9 still chunked a level 10 Coalesced piece.
+    /// </summary>
+    private static void CoalescedCap()
+    {
+        Check.True(IltChunkClap.UnderChunkCap(8, 9), "level 8 under a cap of 9");
+        Check.False(IltChunkClap.UnderChunkCap(9, 9), "level 9 is not below 9");
+        Check.False(IltChunkClap.UnderChunkCap(10, 9), "a level 10 Coalesced piece is kept");
+        Check.True(IltChunkClap.UnderChunkCap(10, 11), "11 chunks every level");
+        Check.False(IltChunkClap.UnderChunkCap(0, 11), "no level read: never chunked");
+    }
+
+    /// <summary>
+    /// ACECustom /clap: red (Coalesced 42636 at 1-3, chunk 310147, powder 42644) with Empyrean
+    /// Trinkets (34276); blue (42635, 310149, 300019) with Falatacot (34277). 42635/42636 were taken
+    /// for chunks, and one side alone counted, so auto-clap sent /clap with nothing to pair.
+    /// </summary>
+    private static void ClapPairs()
+    {
+        const string Co = "Coalesced Aetheria";
+        Check.Eq(IltChunkClap.ClapPartOf(42636, Co, 2), IltChunkClap.ClapPart.Red, "red Coalesced level 2");
+        Check.Eq(IltChunkClap.ClapPartOf(42635, Co, 3), IltChunkClap.ClapPart.Blue, "blue Coalesced level 3");
+        Check.Eq(IltChunkClap.ClapPartOf(42636, Co, 0), IltChunkClap.ClapPart.Red, "level not read yet: the server decides");
+        Check.Eq(IltChunkClap.ClapPartOf(42636, Co, 4), IltChunkClap.ClapPart.None, "level 4 Coalesced is not clapped");
+        Check.Eq(IltChunkClap.ClapPartOf(42636, "Aetheria", 1), IltChunkClap.ClapPart.None, "revealed aetheria is not clapped");
+        Check.Eq(IltChunkClap.ClapPartOf(42637, Co, 1), IltChunkClap.ClapPart.None, "yellow has no clap use");
+        Check.Eq(IltChunkClap.ClapPartOf(310147, "Red Aetheria Chunk", 0), IltChunkClap.ClapPart.Red, "red chunk");
+        Check.Eq(IltChunkClap.ClapPartOf(310149, "Blue Aetheria Chunk", 0), IltChunkClap.ClapPart.Blue, "blue chunk");
+        Check.Eq(IltChunkClap.ClapPartOf(310150, "Yellow Aetheria Chunk", 0), IltChunkClap.ClapPart.None, "yellow chunk");
+        Check.Eq(IltChunkClap.ClapPartOf(42644, "Aetheria Powder", 0), IltChunkClap.ClapPart.Red, "red powder");
+        Check.Eq(IltChunkClap.ClapPartOf(300019, "Aetheria Powder", 0), IltChunkClap.ClapPart.Blue, "blue powder");
+        Check.Eq(IltChunkClap.ClapPartOf(34276, "Ancient Empyrean Trinket", 0), IltChunkClap.ClapPart.Empyrean, "Empyrean trinket");
+        Check.Eq(IltChunkClap.ClapPartOf(34277, "Ancient Falatacot Trinket", 0), IltChunkClap.ClapPart.Falatacot, "Falatacot trinket");
+        Check.Eq(IltChunkClap.ClapPartOf(0, "Red Aetheria Chunk", 0), IltChunkClap.ClapPart.Red, "no WCID yet: the chunk name");
+        Check.Eq(IltChunkClap.ClapPartOf(0, Co, 1), IltChunkClap.ClapPart.None, "no WCID yet: a Coalesced piece's colour is unknown");
+        Check.Eq(IltChunkClap.ClapPartOf(273, "Pyreal", 0), IltChunkClap.ClapPart.None, "anything else");
+
+        var R = IltChunkClap.ClapPart.Red; var B = IltChunkClap.ClapPart.Blue;
+        var E = IltChunkClap.ClapPart.Empyrean; var F = IltChunkClap.ClapPart.Falatacot;
+        Check.True(IltChunkClap.CanClap(new[] { R, E }), "red + Empyrean");
+        Check.True(IltChunkClap.CanClap(new[] { B, F }), "blue + Falatacot");
+        Check.False(IltChunkClap.CanClap(new[] { R, F }), "red needs Empyrean, not Falatacot");
+        Check.False(IltChunkClap.CanClap(new[] { B, E }), "blue needs Falatacot, not Empyrean");
+        Check.False(IltChunkClap.CanClap(new[] { E, F }), "trinkets alone");
+        Check.False(IltChunkClap.CanClap(new[] { R, B }), "aetheria alone");
+        Check.False(IltChunkClap.CanClap(System.Array.Empty<IltChunkClap.ClapPart>()), "nothing carried");
     }
 
     /// <summary>

@@ -36,8 +36,18 @@ internal sealed class IltInventory
     public const uint WcidSummonRefillCharm = 78780030;
     public const uint WcidUniversalMasteryCharm = 78780031;
     public static readonly uint[] WcidInfiniteCastingStone = { 777700019, 777700055 };
-    public const uint WcidRedAetheriaChunk = 42636;
-    public const uint WcidBlueAetheriaChunk = 42635;
+    // Aetheria (ACECustom Aetheria.cs / PlayerCommands /clap). The Coalesced WCIDs stay the same once
+    // revealed (name "Aetheria", equipment set given), and /clap takes only unrevealed level 1-3 ones.
+    public const uint WcidBlueCoalescedAetheria = 42635;
+    public const uint WcidRedCoalescedAetheria = 42636;
+    public const uint WcidYellowCoalescedAetheria = 42637;
+    public const uint WcidRedAetheriaChunk = 310147;
+    public const uint WcidBlueAetheriaChunk = 310149;
+    public const uint WcidYellowAetheriaChunk = 310150;
+    public const uint WcidRedAetheriaPowder = 42644;
+    public const uint WcidBlueAetheriaPowder = 300019;
+    public const uint WcidEmpyreanTrinket = 34276;
+    public const uint WcidFalatacotTrinket = 34277;
 
     // ── Property ids used by several features ───────────────────────────────
     public const uint IntStackSize = 12;
