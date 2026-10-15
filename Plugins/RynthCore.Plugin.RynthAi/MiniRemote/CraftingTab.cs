@@ -5,8 +5,10 @@
 // chunking / clap and split-arrow tools stay on RynthILT's Gear tab.) Every tinker tab has
 // two sections:
 //   * Retail tinkering - stock ACE salvage (TinkerCatalog.Retail), chance from TinkerMath;
-//   * Server tinkering - the connected world's extras: Infinite Leaftide's rows on ILT-like
-//     worlds, then the player's own rows for this world (CraftingTabState.CustomByWorld).
+//   * Server tinkering - the connected server's own salvage: RynthAi's built-in rows on
+//     Infinite Leaftide, otherwise the active server plugin's (its profile's "salvage" list,
+//     MiniRemoteContext.ServerSalvage), then the player's own rows for this world
+//     (CraftingTabState.CustomByWorld). With none defined it says so.
 // One TinkerRunner works one tab's scan at a time; the RingChainRunner and it never run together.
 using System;
 using System.Collections.Generic;
@@ -68,7 +70,17 @@ internal sealed class CraftingTab
 
     /// <summary>Retail + server + custom rows for a bench on this world.</summary>
     private IReadOnlyList<TinkerMaterial> RowsFor(TinkerBench bench)
-        => TinkerPlanner.Rows(bench, _ctx.Ilt.IsIltWorld, CustomRows());
+        => TinkerPlanner.Rows(bench, ServerRowsFor(bench), CustomRows());
+
+    /// <summary>
+    /// The connected server's own salvage for a bench: RynthAi's built-in rows on Infinite Leaftide
+    /// (RynthILT says so), otherwise what the active server plugin's profile defines.
+    /// </summary>
+    private IReadOnlyList<TinkerMaterial> ServerRowsFor(TinkerBench bench)
+        => _ctx.Ilt.IsIltWorld ? TinkerCatalog.ServerFor(bench) : TinkerCatalog.FromServerPlugin(bench, _ctx.ServerSalvage);
+
+    /// <summary>The connected server defines salvage for at least one bench.</summary>
+    private bool ServerHasSalvage => _ctx.Ilt.IsIltWorld || _ctx.ServerSalvage.Count > 0;
 
     // ── Lifecycle (MiniRemoteController) ─────────────────────────────────────────────────────────
 
@@ -143,22 +155,23 @@ internal sealed class CraftingTab
             else RenderRows(s, retail, "retail");
         }
 
-        string serverTitle = $"Server tinkering - {(world.Length > 0 ? world : "this server")}###server";
+        // The server plugin's name when RynthCore has an active server, else the world name.
+        string server = _ctx.ServerName.Length > 0 ? _ctx.ServerName : world.Length > 0 ? world : "this server";
+        string serverTitle = $"Server tinkering - {server}###server";
         if (ImGui.CollapsingHeader(serverTitle, ImGuiTreeNodeFlags.DefaultOpen))
         {
-            var iltRows = TinkerCatalog.ServerFor(bench);
-            if (ilt && iltRows.Count > 0)
+            var serverRows = ServerRowsFor(bench);
+            if (serverRows.Count > 0)
             {
-                ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Infinite Leaftide");
-                RenderRows(s, iltRows, "ilt");
-                if (weapon)
-                    SafeImGui.TextDisabled("Leaftide weapon lines don't show on the item: a run applies each once, and items\n"
+                RenderRows(s, serverRows, "server");
+                if (ilt && weapon)
+                    SafeImGui.TextDisabled("These weapon lines don't show on the item: a run applies each once, and items\n"
                                        + "finished this session are left out of later scans (Forget brings them back).");
             }
-            else if (ilt)
-                ImGui.TextDisabled("Infinite Leaftide has no extra salvage for this tab.");
+            else if (ServerHasSalvage)
+                ImGui.TextDisabled("This server doesn't have any dynamic salvage defined for this tab.");
             else
-                ImGui.TextDisabled("Not an Infinite Leaftide server: add this server's own salvage below.");
+                ImGui.TextDisabled("This server doesn't have any dynamic salvage defined.");
             RenderCustom(bench, s, world);
         }
 

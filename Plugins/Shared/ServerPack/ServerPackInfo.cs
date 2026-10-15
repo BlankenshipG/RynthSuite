@@ -24,6 +24,19 @@ internal enum BottingPolicy
 /// <summary>A chat command the server adds, and what it does.</summary>
 internal sealed record ServerCommand(string Command, string What);
 
+/// <summary>
+/// A salvage the server's own recipes apply (beyond retail tinkering), shown on the Mini Remote's
+/// Crafting tab under "Server tinkering".
+/// </summary>
+/// <param name="Bench">The Crafting tab: "armor", "melee", "missile", "caster", "jewelry", "items" or "trinkets".</param>
+/// <param name="Material">The bag's MaterialType (131), e.g. 64 = Steel.</param>
+/// <param name="Effect">What it does, one short line.</param>
+/// <param name="Kind">"tink" (repeatable), "imbue" (one per item) or "once" (one application).</param>
+/// <param name="UsesTinkSlot">Counts toward the item's 10 tinks.</param>
+/// <param name="NameMatch">The bag's name must contain this (bags that share a material id); "" = any.</param>
+internal sealed record ServerSalvage(string Bench, int Material, string Effect, string Kind = "tink",
+                                     bool UsesTinkSlot = true, string NameMatch = "");
+
 internal sealed class ServerPackInfo
 {
     public ServerPackInfo(string id, string name, string[] hosts, string[] worldNames)
@@ -55,6 +68,8 @@ internal sealed class ServerPackInfo
     public string[] Facts { get; init; } = Array.Empty<string>();
     /// <summary>Chat commands the server adds (only ones known to exist).</summary>
     public ServerCommand[] Commands { get; init; } = Array.Empty<ServerCommand>();
+    /// <summary>The server's own tinkering salvage (only recipes known to exist); empty = none defined.</summary>
+    public ServerSalvage[] Salvage { get; init; } = Array.Empty<ServerSalvage>();
     /// <summary>"3 accounts", "3 active characters", ...; empty when not published.</summary>
     public string AccountLimit { get; init; } = string.Empty;
     public BottingPolicy Botting { get; init; } = BottingPolicy.Unknown;

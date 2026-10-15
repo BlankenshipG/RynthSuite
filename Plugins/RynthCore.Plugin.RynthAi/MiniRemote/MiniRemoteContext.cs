@@ -10,7 +10,9 @@
 //     confirmed action is then posted).
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginSdk;
 
 namespace RynthCore.Plugin.RynthAi.MiniRemote;
@@ -62,6 +64,43 @@ internal sealed class MiniRemoteContext
     /// <summary>The connected world's name ("" before login or on an engine without it); keys the Crafting tab's custom rows.</summary>
     public string WorldName
         => Host.HasGetWorldName && Host.TryGetWorldName(out string world) ? (world ?? string.Empty).Trim() : string.Empty;
+
+    // ── Active server (RynthCore's verdict and its server plugin's profile) ─────────────────────
+
+    /// <summary>What the render thread reads about the active server: replaced whole, never edited.</summary>
+    private sealed record ServerView(string Name, IReadOnlyList<ServerSalvageView> Salvage)
+    {
+        public static readonly ServerView None = new(string.Empty, Array.Empty<ServerSalvageView>());
+    }
+
+    private readonly ServerStateClient _server = new();
+    private int _serverRevision = -1;
+    private volatile ServerView _serverView = ServerView.None;
+
+    /// <summary>The active server's display name from RynthCore ("" when none is active or the engine is pre-v86).</summary>
+    public string ServerName => _serverView.Name;
+
+    /// <summary>The active server plugin's own tinkering salvage (empty when it defines none). Any thread.</summary>
+    public IReadOnlyList<ServerSalvageView> ServerSalvage => _serverView.Salvage;
+
+    /// <summary>Pump thread: polls RynthCore's server state (cheap until due) and rebuilds the view when it changed.</summary>
+    public void PollServer(long now)
+    {
+        _server.Poll(Host, now);
+        if (_server.Revision == _serverRevision) return;
+        _serverRevision = _server.Revision;
+        EngineServerState? st = _server.State;
+        string name = st != null && st.HasActive ? st.ActiveName : string.Empty;
+        _serverView = new ServerView(name, ServerSalvageView.ParseList(_server.ProfileJson));
+    }
+
+    /// <summary>Logout: forget the server; the next login polls fresh.</summary>
+    public void ClearServer()
+    {
+        _server.Clear();
+        _serverRevision = -1;
+        _serverView = ServerView.None;
+    }
 
     /// <summary>
     /// Shows the Mini Remote on one of its tabs (tab id; set by the controller). Any thread: it

@@ -4,7 +4,7 @@
 // RynthCore's GetServerStateJson (plugin API v86) names the active server and the plugin that owns
 // it; a reader (RynthOracle, RynthAi's "/ra server", ...) asks that plugin for this profile to get
 // the server's rules without knowing the server: connection, rule set, botting policy, account
-// limits, commands and links. Everything ServerPackInfo holds, nothing guessed.
+// limits, commands, tinkering salvage and links. Everything ServerPackInfo holds, nothing guessed.
 //
 // The JSON is plain ASCII (anything else is \u-escaped), so a reader can show it in the AC client.
 // Pure (no host calls): RynthServerPack.Tests covers it.
@@ -60,6 +60,25 @@ internal static class ServerPackProfile
             Str(sb, info.Commands[i].Command);
             sb.Append(",\"what\":");
             Str(sb, info.Commands[i].What);
+            sb.Append('}');
+        }
+        sb.Append(']');
+        // Added within schema 1: readers that don't know "salvage" skip it.
+        sb.Append(",\"salvage\":[");
+        for (int i = 0; i < info.Salvage.Length; i++)
+        {
+            ServerSalvage s = info.Salvage[i];
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"bench\":");
+            Str(sb, s.Bench);
+            sb.Append(",\"material\":").Append(s.Material);
+            sb.Append(",\"kind\":");
+            Str(sb, s.Kind);
+            sb.Append(",\"effect\":");
+            Str(sb, s.Effect);
+            sb.Append(",\"slot\":").Append(s.UsesTinkSlot ? "true" : "false");
+            sb.Append(",\"nameMatch\":");
+            Str(sb, s.NameMatch);
             sb.Append('}');
         }
         sb.Append(']');

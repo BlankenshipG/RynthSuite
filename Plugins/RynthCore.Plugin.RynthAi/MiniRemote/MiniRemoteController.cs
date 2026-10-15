@@ -100,6 +100,8 @@ internal sealed class MiniRemoteController
     {
         long now = MiniRemoteContext.NowMs;
         _ctx.DrainPosted();
+        try { _ctx.PollServer(now); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Crafting, ex, "MiniRemoteContext.PollServer"); }
         try { Pets.Tick(now); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Pets, ex, "PetsTab.Tick"); }
         try { Crafting.Tick(now); }
@@ -129,6 +131,7 @@ internal sealed class MiniRemoteController
         catch (Exception ex) { RynthLog.Exception(LogCat.Pets, ex, "PetsTab.OnLogout"); }
         try { Crafting.OnLogout(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Crafting, ex, "CraftingTab.OnLogout"); }
+        _ctx.ClearServer();
         _ctx.Store.SaveIfDirty(_ctx.State);
     }
 

@@ -56,9 +56,16 @@ internal static class TinkerPlanner
     /// player's custom rows for this world.
     /// </summary>
     public static List<TinkerMaterial> Rows(TinkerBench bench, bool iltWorld, IEnumerable<CustomTinker>? custom)
+        => Rows(bench, iltWorld ? TinkerCatalog.ServerFor(bench) : null, custom);
+
+    /// <summary>
+    /// The rows a tab offers: retail, then <paramref name="server"/> (the connected server's own
+    /// salvage: RynthAi's Leaftide rows on ILT, or the server plugin's), then the player's custom rows.
+    /// </summary>
+    public static List<TinkerMaterial> Rows(TinkerBench bench, IEnumerable<TinkerMaterial>? server, IEnumerable<CustomTinker>? custom)
     {
         var rows = new List<TinkerMaterial>(TinkerCatalog.RetailFor(bench));
-        if (iltWorld) rows.AddRange(TinkerCatalog.ServerFor(bench));
+        if (server != null) rows.AddRange(server);
         if (custom != null)
         {
             foreach (var c in custom)

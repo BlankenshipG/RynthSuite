@@ -28,6 +28,7 @@ internal static class TinkerTests
         r.Add("tinker: bag choice by chance and minimum", BagChoice);
         r.Add("tinker: Crafting is a universal Mini Remote tab", Section);
         r.Add("tinker: ILT trinkets (flags, order, tier bags, Ammunition)", Trinkets);
+        r.Add("tinker: a server plugin's salvage (per tab, own keys, no Leaftide rules)", PluginSalvage);
         r.Add("rings: ingredient names, alternates and excludes", RingIngredients);
         r.Add("rings: craft queue runs Step 1, then 2, then 3", RingQueue);
         r.Add("rings: scroll glyph and UB-IT pairing", RingScrolls);
@@ -108,6 +109,35 @@ internal static class TinkerTests
         var last = TinkerPlanner.Plan(TinkerBench.Melee, Item(AcObjectClass.MeleeWeapon, damageType: 32), s, rows);
         Check.Eq(last[^1].Material, TinkerCatalog.Emerald, "rend last");
         Check.Eq(last.Count, 3, "rend + 2 Iron");
+    }
+
+    /// <summary>
+    /// Rows from a server plugin's profile (ServerPackInfo.Salvage): only the tab's own, in kind order,
+    /// keyed "p" (never sharing a count with retail "r" or Leaftide "s"), and free of the Leaftide
+    /// rules (a plugin's Leather on a weapon doesn't wait for the 10 ordinary tinks).
+    /// </summary>
+    private static void PluginSalvage()
+    {
+        var salvage = new List<RynthCore.Plugin.Shared.ServerSalvageView>
+        {
+            new("melee", TinkerCatalog.Leather, "once", "server Leather", false, ""),
+            new("melee", TinkerCatalog.Iron, "tink", "server Iron", true, ""),
+            new("melee", TinkerCatalog.Emerald, "imbue", "server imbue", true, ""),
+            new("melee", TinkerCatalog.Steel, "bogus", "unknown kind", true, ""),
+            new("armor", TinkerCatalog.Steel, "tink", "other tab", true, ""),
+        };
+        var server = TinkerCatalog.FromServerPlugin(TinkerBench.Melee, salvage);
+        Check.Eq(server.Count, 3, "this tab's rows; the unknown kind is left out");
+        Check.True(server.All(r => r.Origin == TinkerOrigin.Plugin), "plugin origin");
+        Check.Eq(TinkerCatalog.Key(server[0]), "p" + TinkerCatalog.Leather, "own key");
+        Check.Eq(server[0].Name, TinkerCatalog.MaterialName(TinkerCatalog.Leather), "material name");
+        Check.Eq(TinkerCatalog.FromServerPlugin(TinkerBench.Melee, null).Count, 0, "nothing defined, no rows");
+
+        var rows = TinkerPlanner.Rows(TinkerBench.Melee, server, null);
+        var s = Settings(("p" + TinkerCatalog.Leather, 1), ("p" + TinkerCatalog.Iron, 2), ("p" + TinkerCatalog.Emerald, 1));
+        var plan = TinkerPlanner.Plan(TinkerBench.Melee, Item(AcObjectClass.MeleeWeapon, tinks: 5), s, rows);
+        Check.Eq(Seq(plan), Seq(TinkerCatalog.Emerald, TinkerCatalog.Iron, TinkerCatalog.Iron, TinkerCatalog.Leather),
+                 "imbue, tinks, then once; Leather doesn't wait for the cap");
     }
 
     private static void IltWeapon()

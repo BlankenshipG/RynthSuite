@@ -201,3 +201,44 @@ internal sealed record ServerProfileView(string Id, string Name, string Plugin, 
         return parts.Count == 0 ? "no details" : string.Join("; ", parts);
     }
 }
+
+/// <summary>
+/// One salvage from a server plugin's profile "salvage" list (ServerPackInfo.Salvage): a tinkering
+/// recipe the server adds, for the Mini Remote's Crafting tab.
+/// </summary>
+internal sealed record ServerSalvageView(string Bench, int Material, string Kind, string Effect, bool UsesTinkSlot, string NameMatch)
+{
+    /// <summary>
+    /// The profile's salvage rows, read leniently: a missing list (an older plugin, or RynthILT's
+    /// profile) is empty; a row without a bench or a material id is skipped; "slot" defaults to true.
+    /// </summary>
+    public static IReadOnlyList<ServerSalvageView> ParseList(string? json)
+    {
+        var rows = new List<ServerSalvageView>();
+        if (string.IsNullOrWhiteSpace(json)) return rows;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("salvage", out JsonElement list) || list.ValueKind != JsonValueKind.Array)
+                return rows;
+            foreach (JsonElement e in list.EnumerateArray())
+            {
+                if (e.ValueKind != JsonValueKind.Object) continue;
+                string bench = EngineServerState.Str(e, "bench").Trim().ToLowerInvariant();
+                int material = EngineServerState.Int(e, "material");
+                if (bench.Length == 0 || material <= 0) continue;
+                string kind = EngineServerState.Str(e, "kind").Trim().ToLowerInvariant();
+                bool slot = !(e.TryGetProperty("slot", out JsonElement s) && s.ValueKind == JsonValueKind.False);
+                rows.Add(new ServerSalvageView(bench, material, kind.Length > 0 ? kind : "tink",
+                                               EngineServerState.Str(e, "effect"), slot, EngineServerState.Str(e, "nameMatch")));
+            }
+        }
+        catch (JsonException)
+        {
+            rows.Clear();
+        }
+        return rows;
+    }
+}

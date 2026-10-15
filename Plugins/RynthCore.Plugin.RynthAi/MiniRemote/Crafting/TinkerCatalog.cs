@@ -39,6 +39,11 @@ internal enum TinkerOrigin
     Server,
     /// <summary>A row the player added for this server.</summary>
     Custom,
+    /// <summary>
+    /// A row the server's own plugin defines (its profile's "salvage" list, ServerPackInfo.Salvage).
+    /// Kept apart from <see cref="Server"/> so the Leaftide-only planner rules never apply to it.
+    /// </summary>
+    Plugin,
 }
 
 /// <summary>How often a material can go on one item.</summary>
@@ -243,11 +248,47 @@ internal static class TinkerCatalog
     /// <summary>The Infinite Leaftide / ACECustom rows of a tab.</summary>
     public static IReadOnlyList<TinkerMaterial> ServerFor(TinkerBench bench) => Server[bench];
 
+    /// <summary>
+    /// A server plugin's salvage rows for one tab (its profile's "salvage" list). Rows for other
+    /// tabs, unknown tab names and unknown kinds are left out; imbues run before tinks, and
+    /// one-application rows after them, each in the plugin's own order.
+    /// </summary>
+    public static List<TinkerMaterial> FromServerPlugin(TinkerBench bench, IEnumerable<RynthCore.Plugin.Shared.ServerSalvageView>? salvage)
+    {
+        var rows = new List<TinkerMaterial>();
+        if (salvage == null) return rows;
+        string benchName = bench.ToString().ToLowerInvariant();
+        int i = 0;
+        foreach (var s in salvage)
+        {
+            if (s == null || s.Material <= 0 || !string.Equals(s.Bench, benchName, StringComparison.OrdinalIgnoreCase)) continue;
+            TinkerKind? kind = s.Kind switch
+            {
+                "tink" or "" => TinkerKind.Tink,
+                "imbue" => TinkerKind.Imbue,
+                "once" => TinkerKind.Once,
+                _ => null,
+            };
+            if (kind == null) continue;
+            int order = kind switch
+            {
+                TinkerKind.Imbue => 115,
+                TinkerKind.Once => 600,
+                _ => 400,
+            } + i++;
+            rows.Add(new TinkerMaterial(s.Material, MaterialName(s.Material), TinkerOrigin.Plugin, kind.Value,
+                string.IsNullOrWhiteSpace(s.Effect) ? "server recipe" : s.Effect.Trim(), order,
+                UsesTinkSlot: s.UsesTinkSlot, NameMatch: s.NameMatch ?? string.Empty));
+        }
+        return rows;
+    }
+
     /// <summary>Settings key for a row: retail and server rows of one tab share ids (Wool, Steel...).</summary>
     public static string Key(TinkerMaterial m) => m.Origin switch
     {
         TinkerOrigin.Retail => "r" + m.Id,
         TinkerOrigin.Server => "s" + m.Id,
+        TinkerOrigin.Plugin => "p" + m.Id,
         _ => "c" + m.Id,
     };
 

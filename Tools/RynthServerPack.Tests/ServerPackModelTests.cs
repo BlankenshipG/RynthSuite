@@ -54,6 +54,32 @@ internal static class ServerPackModelTests
         Check.True(view != null, "the shared reader parses it");
         Check.Eq(view!.Summary(), "PvP, ACE; botting restricted - attended only; accounts: 3 accounts", "the reader's summary");
 
+        // No salvage defined: an empty list, which the Crafting tab reads as "none defined".
+        Check.Eq(root.GetProperty("salvage").GetArrayLength(), 0, "no salvage: empty list");
+        Check.Eq(RynthCore.Plugin.Shared.ServerSalvageView.ParseList(json).Count, 0, "the reader sees none");
+
+        // Salvage defined: each row round-trips through the shared reader.
+        ServerPackInfo withSalvage = new("x", "X", new[] { "x.example" }, new[] { "X" })
+        {
+            Salvage = new[]
+            {
+                new ServerSalvage("melee", 52, "+1 tink past the cap", "once", UsesTinkSlot: false),
+                new ServerSalvage("Armor", 64, "+30 armor level"),
+                new ServerSalvage("", 64, "no bench: skipped"),
+            },
+        };
+        var salvage = RynthCore.Plugin.Shared.ServerSalvageView.ParseList(
+            ServerPackProfile.BuildJson(withSalvage, "RynthX", "1", true, "X"));
+        Check.Eq(salvage.Count, 2, "rows without a bench are skipped");
+        Check.Eq(salvage[0].Bench, "melee", "bench");
+        Check.Eq(salvage[0].Material, 52, "material id");
+        Check.Eq(salvage[0].Kind, "once", "kind");
+        Check.False(salvage[0].UsesTinkSlot, "no tink slot");
+        Check.Eq(salvage[1].Bench, "armor", "bench lower-cased");
+        Check.Eq(salvage[1].Kind, "tink", "default kind");
+        Check.True(salvage[1].UsesTinkSlot, "slot by default");
+        Check.Eq(RynthCore.Plugin.Shared.ServerSalvageView.ParseList("{\"id\":\"ilt\"}").Count, 0, "a profile without the list (RynthILT, older plugins)");
+
         string idle = ServerPackProfile.BuildJson(info, "RynthColdeve", "0.1.2", false, null);
         using JsonDocument idleDoc = JsonDocument.Parse(idle);
         Check.False(idleDoc.RootElement.GetProperty("active").GetBoolean(), "not active");
