@@ -75,6 +75,7 @@ IltClientLookupTests.Register(runner);
         VTankYieldTests.Register(runner);
         OffhandTests.Register(runner);
         LauncherSwapTests.Register(runner);
+        MissileCraftingTests.Register(runner);
         FloodPerfTests.Register(runner);
         LootSalvageTests.Register(runner);
         LootCorpseTests.Register(runner);
