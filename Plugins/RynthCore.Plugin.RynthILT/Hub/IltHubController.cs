@@ -59,6 +59,8 @@ internal sealed class IltHubController
     public IltQuestBonus QuestBonus { get; }
     /// <summary>The /pets and /shinies logs (the Pets tab's section).</summary>
     public IltPetLogs PetLogs { get; }
+    /// <summary>The pet breeding tracker (the Pets tab's Breeding section and RynthOracle's Pet Breeding tab).</summary>
+    public IltPetBreeding Breeding { get; }
     public IltProgression Progression { get; }
     public IltGear Gear { get; }
     public IltGames Games { get; }
@@ -87,6 +89,7 @@ internal sealed class IltHubController
 
         Banking = new IltBanking(_ctx);
         PetLogs = new IltPetLogs(_ctx);
+        Breeding = new IltPetBreeding(_ctx);
         Rates = new IltSessionRates(_ctx);
         QuestBonus = new IltQuestBonus(_ctx);
         Progression = new IltProgression(_ctx);
@@ -95,7 +98,7 @@ internal sealed class IltHubController
         Charms = new IltCharmTracker(_ctx);
         CharmsTab = new IltCharms(_ctx, Charms);
         Guardian = new IltGuardian(_ctx, QuestBonus);
-        _features.AddRange(new IIltFeature[] { Banking, PetLogs, Rates, QuestBonus, Progression, Gear, CharmsTab, Games, Guardian });
+        _features.AddRange(new IIltFeature[] { Banking, PetLogs, Breeding, Rates, QuestBonus, Progression, Gear, CharmsTab, Games, Guardian });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
         Rates.MovingMoney = () => Banking.MovingMoney;
@@ -156,6 +159,20 @@ internal sealed class IltHubController
             if (!CharmsTab.ToggleFromReader(objectId))
                 RynthLog.Trace(LogCat.IltGear, $"reader toggle refused: 0x{objectId:X8} isn't a carried charm");
             _charmsBuiltAt = 0;   // show the new state on the next tick
+        });
+
+    /// <summary>
+    /// The pet breeding JSON ("RynthILT.Data" GetPetBreedingJson; RynthOracle's Pet Breeding tab).
+    /// Reading it keeps the tracker scanning; "" off an ILT world or before its first scan. Any thread.
+    /// </summary>
+    public string PetBreedingJson => _ctx.Options.IsIltLikeWorld ? Breeding.ReaderJson : string.Empty;
+
+    /// <summary>A reader's breeding verb line, posted to the pump (IltPetBreeding.RunVerb). Any thread.</summary>
+    public void RequestBreedingVerb(string line)
+        => _ctx.Post(() =>
+        {
+            if (!_ctx.Options.IsIltLikeWorld) return;
+            Breeding.RunVerb(line);
         });
 
     /// <summary>A reader's bank verb line, posted to the pump (IltBanking.RunVerb). Any thread.</summary>
@@ -361,7 +378,7 @@ internal sealed class IltHubController
     private static LogCat CategoryOf(IIltFeature f) => f switch
     {
         IltBanking => LogCat.IltBanking,
-        IltPetLogs => LogCat.IltPets,
+        IltPetLogs or IltPetBreeding => LogCat.IltPets,
         IltSessionRates => LogCat.IltRates,
         IltQuestBonus => LogCat.IltQuests,
         IltProgression => LogCat.IltProgression,

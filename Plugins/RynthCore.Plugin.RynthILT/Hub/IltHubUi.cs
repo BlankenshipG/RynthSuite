@@ -119,6 +119,10 @@ internal sealed class IltHubUi
                 if (!o.IsIltLikeWorld) return false;
                 _hub.PetLogs.RenderSection();
                 return true;
+            case RynthIltHub.SectionPetBreeding:
+                if (!o.IsIltLikeWorld) return false;
+                _hub.Breeding.RenderSection();
+                return true;
             case RynthIltHub.SectionIltStatus:
                 return RenderIltStatus();
             case RynthIltHub.SectionServerMenu:

@@ -46,6 +46,8 @@ public static class RynthIltHub
     public const string SectionQuestBonus = "quests-qb";
     /// <summary>Pets tab: the /pets and /shinies logs.</summary>
     public const string SectionPetLogs = "pets-logs";
+    /// <summary>Pets tab, Breeding sub-tab: the pet breeding tracker (RynthILT 0.2.7+; older copies draw nothing).</summary>
+    public const string SectionPetBreeding = "pets-breeding";
     /// <summary>Mini Remote menu, under Infinite Leaftide: why no ILT feature is on, the Force-ILT override, Refresh.</summary>
     public const string SectionIltStatus = "ilt-status";
     /// <summary>Mini Remote menu without RynthCore's server list: RynthILT's own Infinite Leaftide items.</summary>

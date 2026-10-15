@@ -19,7 +19,7 @@ namespace RynthCore.Plugin.RynthOracle;
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.2.5.
-    public const string Version = "0.2.6";
+    public const string Version = "0.2.7";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -41,6 +41,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private long _nextCharacterReadMs;
     private long _nextCharacterExtrasMs;
     private string _charmsJson = "";
+    private long _nextBreedingMs;
+    private string _breedingJson = "";
     private bool _voidAutoDecided;
     private bool _dailyCheckStarted;
     private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1, _seenIltRevision = -1;
@@ -61,6 +63,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Send = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
         _c.RunCommand = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
         _c.ToggleCharm = ToggleCharm;
+        _c.BreedingCommand = BreedingCommand;
         _ui.Log = msg => Host.Log(msg);
 
         _mainView = new OracleView(_c);
@@ -170,6 +173,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Charms = Shared.IltCharmsView.None;
         _charmsJson = "";
         _c.CharmMessage = "";
+        _c.Breeding = Shared.IltBreedingView.None;
+        _breedingJson = "";
+        _c.BreedingMessage = "";
         _c.Session = default;
         _c.SessionKnown = false;
         _c.AiSession.Reset();
@@ -209,12 +215,40 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Session = known ? s : default;
     }
 
+    /// <summary>The Pet Breeding tab's buttons: a verb for RynthILT's tracker, then a quick re-read.</summary>
+    private bool BreedingCommand(string verb)
+    {
+        long now = Environment.TickCount64;
+        bool ok = _c.InWorld && _c.IltData.PetBreedingCommand(Host, now, verb);
+        _c.BreedingMessage = ok ? "Sent to RynthILT; the tab updates in a moment." : "RynthILT didn't take that (not loaded, or older than 0.2.7).";
+        _nextBreedingMs = now + 800;
+        if (_main != null) _main.NeedsPass = true;
+        return ok;
+    }
+
+    /// <summary>
+    /// While the Pet Breeding tab is on screen: RynthILT's breeding JSON every <see cref="CharacterExtrasReadMs"/>
+    /// (reading it keeps RynthILT's tracker scanning). Nothing is read with the window closed or on another tab.
+    /// </summary>
+    private void ReadBreeding(long now)
+    {
+        if (_main == null || _mainView == null || !_main.Visible || _mainView.Tab != OracleView.TabBreeding) return;
+        if (now < _nextBreedingMs) return;
+        _nextBreedingMs = now + CharacterExtrasReadMs;
+        string json = _c.IltData.ReadPetBreeding(Host, now);
+        if (string.Equals(json, _breedingJson, StringComparison.Ordinal)) return;
+        _breedingJson = json;
+        _c.Breeding = Shared.IltBreedingView.Parse(json);
+        _main.NeedsPass = true;
+    }
+
     /// <summary>Shows the main window on a tab (another plugin's link, or a /ro tab command).</summary>
     private void ShowTab(string tab)
     {
         if (_mainView != null) _mainView.Tab = tab;
         if (_main != null) { _main.Visible = true; _main.NeedsPass = true; }
         if (tab == OracleView.TabCharacter) _nextCharacterExtrasMs = 0;   // read at once
+        if (tab == OracleView.TabBreeding) _nextBreedingMs = 0;
     }
 
     /// <summary>
@@ -341,6 +375,14 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 // RynthAi, RynthILT and RynthCore's menus link here; it shows, never toggles off.
                 ShowTab(OracleView.TabCharacter);
                 break;
+            case "breeding":
+            case "breed":
+            case "pets":
+                // The Pet Breeding tab (Infinite Leaftide): RynthAi's Character menu and its Pets > Breeding tab link here.
+                if (!_c.Server.Is(ServerTags.InfiniteLeaftide))
+                    _c.Print("Pet breeding is an Infinite Leaftide feature; this server isn't recognised as Infinite Leaftide.");
+                ShowTab(OracleView.TabBreeding);
+                break;
             case "status":
                 string pack = _c.Catalog.PackServer.Length > 0 ? $" + {_c.Catalog.ServerCount} {_c.Catalog.PackServer}" : "";
                 string titles = _c.TitlesKnown ? $", {_c.EarnedTitles.Count} titles held" : "";
@@ -355,12 +397,13 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 break;
             default:
                 _c.Print("Commands: /ro (window), /ro character (Character tab: status, session, charms), /ro void (Void window), "
-                         + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), /ro quests (read quest flags), /ro status, "
+                         + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), /ro breeding (Pet Breeding tab, Infinite Leaftide), "
+                         + "/ro quests (read quest flags), /ro status, "
                          + "/ro about (About tab: settings, server features)");
                 break;
         }
         if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char" or "charms" or "charm"
-                or "about" or "features" && !Host.HasUi && !_noUiLogged)
+                or "breeding" or "breed" or "pets" or "about" or "features" && !Host.HasUi && !_noUiLogged)
         {
             _noUiLogged = true;
             _c.Print("This RynthCore engine can't show plugin windows (it needs script windows, API v71, with ImGui on). /ro status still works.");
@@ -454,6 +497,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         }
 
         ReadCharacterExtras(now);
+        ReadBreeding(now);
 
         // RynthCore's server list (every 2 s): a new pick or override applies now, not at the next character read.
         _c.ServerState.Poll(Host, now);

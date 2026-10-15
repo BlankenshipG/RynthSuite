@@ -108,6 +108,8 @@ public sealed class IltPetState
     /// <summary>Last captured /pets and /shinies rosters (display only; the Pets tab's logs).</summary>
     public List<string> PetLog = new();
     public List<string> ShinyLog = new();
+    /// <summary>The breeding tracker: rules this server showed, growth stage names, recent events (IltPetBreeding).</summary>
+    public IltBreedingState Breeding = new();
     // The Pets tab's own settings (roster, healing / cosmetic pets, refill path) are RynthAi's
     // (its miniremote.json); older ilt-hub.json files still carry them, and they are ignored here.
 }

@@ -221,7 +221,7 @@ internal sealed class MiniRemoteController
     // ── Commands ────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// "/ra hub [show|hide|toggle|open pets|crafting [show|hide|toggle]|tab pets|crafting|remote]",
+    /// "/ra hub [show|hide|toggle|open pets|breeding|crafting [show|hide|toggle]|tab pets|breeding|crafting|remote]",
     /// "/ra quests [refresh]", "/ra pets [show|hide|toggle]"; every other "/ra hub ..." verb,
     /// "/ra guardian ..." and "/ra bounty|bounties|bountys ..." go to RynthILT. The retired quest
     /// verbs and tab names ("/ra quests window", "/ra hub open quests", ...) say where quests went.
@@ -262,6 +262,14 @@ internal sealed class MiniRemoteController
                 if (cmd == "open" && reply != null) _ctx.Chat("[Mini Remote] " + reply);
                 return true;
             }
+            // "/ra hub open|tab breeding": the Pets tab on its Breeding sub-tab (RynthOracle's Pet Breeding tab links here).
+            if (cmd is "open" or "tab" && args.Length > 1 && args[1].Trim().ToLowerInvariant() is "breeding" or "breed")
+            {
+                Pets.SelectBreeding();
+                if (cmd == "open") OpenTab(MiniRemoteTabs.Pets, "show");
+                else MiniRemoteTabCommand?.Invoke(MiniRemoteTabs.Pets, "select");
+                return true;
+            }
             switch (cmd)
             {
                 case "show":
@@ -296,7 +304,7 @@ internal sealed class MiniRemoteController
 
     private void PrintHelp()
     {
-        _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)   /ra hub open pets|crafting [show|hide|toggle]");
+        _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)   /ra hub open pets|breeding|crafting [show|hide|toggle]");
         _ctx.Chat("[Mini Remote] /ra quests refresh (quiet /myquests)   /ra pets [show|hide]   Quest list, timers and rewards: RynthOracle (/ro).");
         _ctx.Chat("[Mini Remote] Gear, games, the Guardian, bounties, /ra hub attr ...: Infinite Leaftide, the RynthILT plugin.");
         _ctx.Chat("[Mini Remote] Character and charms: RynthOracle (/ro character). Banking: Global Inventory (/ginv bank). Force a server: /rc diagnostics.");

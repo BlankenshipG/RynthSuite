@@ -45,6 +45,28 @@
 //    withdraw <withdrawIndex> <amount> <noteIndex>   (amount = note count for trade notes)
 //    transfer <currencyIndex> <amount> <noteIndex> <recipient name...>
 //  The reader confirms a transfer with the player before sending it (RynthILT doesn't ask again).
+//
+//  Version 2 (RynthILT 0.2.7) appends GetPetBreedingJson and PetBreedingCommand (RynthOracle's
+//  Pet Breeding tab). Readers still query version 1 and accept a version-1 table, so charms and
+//  the bank keep working with an older RynthILT; they use the breeding functions only when the
+//  table says Version >= 2 and is that big (HasPetBreeding).
+//
+//  GetPetBreedingJson payload (IltPetBreeding.BuildJson; read leniently):
+//  { "available": true, "world": "...", "enabled": "on"|"off"|"unknown", "maturity": "...", "bond": "...",
+//    "room": "landblock 0x0106 variant 2", "freeSlots": 12, "message": "...",
+//    "essences": [ { "id": 1234, "name": "...", "sex": "M"|"F", "tier": 150, "bond": 120, "ready": true,
+//                    "status": "Ready (9/10)", "readyIn": 0, "charges": 9, "chargesMax": 10, "juvenile": false,
+//                    "stage": "Adult", "kills": 300, "killsRequired": 300, "mutations": 2, "potencyMutations": 1,
+//                    "problems": ["..."], "boosters": ["..."] } ],
+//    "pairs": [ { "stud": "...", "dam": "...", "chanceBest": 0.05, "chanceWorst": 0.04, "inheritMin": 0, "inheritMax": 2 } ],
+//    "supplies": [ { "key": "incense2", "name": "...", "effect": "...", "count": 1, "price": 2500000, "apply": true,
+//                    "targets": [1234] } ],
+//    "rules": [ { "label": "...", "value": "10", "source": "seen on server", "help": "..." } ],
+//    "events": [ { "when": "2026-10-15 20:15", "kind": "birth", "text": "..." } ],   newest first
+//    "debug": { "when": "...", "enabled": "on", "location": "...", "match": "valid"|"invalid"|"", "pet": "...",
+//               "sex": "...", "partners": 1 } }
+//  PetBreedingCommand verbs (ASCII): refresh | debug | dance | apply <supplyKey> <essenceId>
+//  The reader confirms "apply" and "dance" with the player first (RynthILT doesn't ask again).
 // ============================================================================
 
 using System;
@@ -61,7 +83,17 @@ namespace RynthCore.Plugin.Shared;
 public unsafe struct RynthIltDataApiV1
 {
     public const string InterfaceName = "RynthILT.Data";
-    public const uint InterfaceVersion = 1;
+    public const uint InterfaceVersion = 2;
+
+    /// <summary>The size of a version-1 table (everything before GetPetBreedingJson) on this platform.</summary>
+    public static uint V1Size
+    {
+        get
+        {
+            RynthIltDataApiV1 t = default;
+            return (uint)((byte*)&t.GetPetBreedingJson - (byte*)&t);
+        }
+    }
 
     public uint Version;      // InterfaceVersion of the table RynthILT filled; 0 once it has shut down
     public uint StructSize;   // sizeof(RynthIltDataApiV1) as RynthILT built it
@@ -83,6 +115,14 @@ public unsafe struct RynthIltDataApiV1
 
     /// <summary>BankCommand(utf8 verb line): queues a bank verb (header above). 1 = queued, 0 = refused.</summary>
     public delegate* unmanaged[Cdecl]<byte*, int> BankCommand;
+
+    // ── Version 2 ───────────────────────────────────────────────────────────
+
+    /// <summary>GetPetBreedingJson(buffer, capacity): the pet breeding JSON, same contract as GetCharmsJson.</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, int> GetPetBreedingJson;
+
+    /// <summary>PetBreedingCommand(utf8 verb line): queues a breeding verb (header above). 1 = queued, 0 = refused.</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int> PetBreedingCommand;
 }
 
 /// <summary>
@@ -117,6 +157,32 @@ public sealed unsafe class RynthIltDataClient
         return t == null || t->GetBankJson == null ? "" : Read(t->GetBankJson);
     }
 
+    /// <summary>The pet breeding JSON now ("" without a RynthILT that has the tracker).</summary>
+    public string ReadPetBreeding(RynthCoreHost host, long now)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        return !HasPetBreeding(t) || t->GetPetBreedingJson == null ? "" : Read(t->GetPetBreedingJson);
+    }
+
+    /// <summary>The loaded RynthILT has the breeding tracker (table version 2 or later).</summary>
+    public bool PetBreedingSupported => HasPetBreeding(_table);
+
+    /// <summary>Queues a breeding verb line (see the header). False without RynthILT or when it refused.</summary>
+    public bool PetBreedingCommand(RynthCoreHost host, long now, string verbLine)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        if (!HasPetBreeding(t) || t->PetBreedingCommand == null || string.IsNullOrWhiteSpace(verbLine)) return false;
+        byte[] bytes = Encoding.UTF8.GetBytes(verbLine + "\0");
+        try
+        {
+            fixed (byte* p = bytes) return t->PetBreedingCommand(p) == 1;
+        }
+        catch { return false; }
+    }
+
+    private static bool HasPetBreeding(RynthIltDataApiV1* t)
+        => t != null && t->Version >= 2 && t->StructSize >= (uint)sizeof(RynthIltDataApiV1);
+
     /// <summary>Asks RynthILT to use a carried charm. False without RynthILT or when it refused.</summary>
     public bool ToggleCharm(RynthCoreHost host, long now, uint objectId)
     {
@@ -146,8 +212,9 @@ public sealed unsafe class RynthIltDataClient
         _table = null;
         if (now < _nextQueryAt || !host.HasGetPluginInterface) return null;
         _nextQueryAt = now + RequeryMs;
-        var p = (RynthIltDataApiV1*)host.GetPluginInterface(PluginName, RynthIltDataApiV1.InterfaceName, RynthIltDataApiV1.InterfaceVersion);
-        if (p != null && p->Version >= 1 && p->StructSize >= (uint)sizeof(RynthIltDataApiV1))
+        // Version 1 is asked for and a version-1-sized table taken, so an older RynthILT still answers.
+        var p = (RynthIltDataApiV1*)host.GetPluginInterface(PluginName, RynthIltDataApiV1.InterfaceName, 1);
+        if (p != null && p->Version >= 1 && p->StructSize >= RynthIltDataApiV1.V1Size)
             _table = p;
         return _table;
     }
@@ -354,6 +421,131 @@ public sealed class IltBankView
                        note.ToString(CultureInfo.InvariantCulture), (recipient ?? "").Trim());
 }
 
+/// <summary>One carried combat essence from the pet breeding JSON.</summary>
+public sealed record IltBreedEssenceRow(int Id, string Name, bool Male, int Tier, int Bond, bool Ready, string Status, long ReadyIn,
+                                        int Charges, int ChargesMax, bool Juvenile, string Stage, int Kills, int KillsRequired,
+                                        int Mutations, int PotencyMutations, IReadOnlyList<string> Problems, IReadOnlyList<string> Boosters);
+
+/// <summary>A ready stud + dam pairing and its stat mutation odds (0..1).</summary>
+public sealed record IltBreedPairRow(string Stud, string Dam, double ChanceBest, double ChanceWorst, int InheritMin, int InheritMax);
+
+/// <summary>A breeding supply: count carried, Ivo's price, and the essence ids the server would take it on now.</summary>
+public sealed record IltBreedSupplyRow(string Key, string Name, string Effect, long Count, long Price, bool Apply, IReadOnlyList<int> Targets);
+
+/// <summary>One breeding rule: its value and where it came from ("seen on server", "ILT profile", "ACE default").</summary>
+public sealed record IltBreedRuleRow(string Label, string Value, string Source, string Help);
+
+/// <summary>One breeding event (newest first in the view).</summary>
+public sealed record IltBreedEventRow(string When, string Kind, string Text);
+
+/// <summary>The last "@breed-debug" reply: when, the switch, where you were, the room check, your pet, partners nearby.</summary>
+public sealed record IltBreedDebugRow(string When, string Enabled, string Location, string Match, string Pet, string Sex, int Partners);
+
+/// <summary>The pet breeding JSON parsed. <see cref="None"/> without RynthILT; every field read leniently.</summary>
+public sealed class IltBreedingView
+{
+    public static readonly IltBreedingView None = new();
+
+    /// <summary>RynthILT answered.</summary>
+    public bool Loaded { get; private init; }
+    public bool Available { get; private init; }
+    public string World { get; private init; } = "";
+    /// <summary>"on", "off" or "unknown": the server's pet breeding switch as RynthILT knows it.</summary>
+    public string Enabled { get; private init; } = "unknown";
+    public string Maturity { get; private init; } = "unknown";
+    public string Bond { get; private init; } = "unknown";
+    public string Room { get; private init; } = "";
+    /// <summary>Free main-pack slots (-1 unknown).</summary>
+    public int FreeSlots { get; private init; } = -1;
+    public string Message { get; private init; } = "";
+    public IReadOnlyList<IltBreedEssenceRow> Essences { get; private init; } = Array.Empty<IltBreedEssenceRow>();
+    public IReadOnlyList<IltBreedPairRow> Pairs { get; private init; } = Array.Empty<IltBreedPairRow>();
+    public IReadOnlyList<IltBreedSupplyRow> Supplies { get; private init; } = Array.Empty<IltBreedSupplyRow>();
+    public IReadOnlyList<IltBreedRuleRow> Rules { get; private init; } = Array.Empty<IltBreedRuleRow>();
+    public IReadOnlyList<IltBreedEventRow> Events { get; private init; } = Array.Empty<IltBreedEventRow>();
+    public IltBreedDebugRow? Debug { get; private init; }
+
+    public static IltBreedingView Parse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return None;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return None;
+
+            var essences = new List<IltBreedEssenceRow>();
+            foreach (JsonElement e in IltJson.Array(root, "essences"))
+            {
+                string name = IltJson.Str(e, "name");
+                if (name.Length == 0) continue;
+                essences.Add(new IltBreedEssenceRow((int)IltJson.Long(e, "id"), name, IltJson.Str(e, "sex") == "M",
+                    (int)IltJson.Long(e, "tier"), (int)IltJson.Long(e, "bond"), IltJson.Bool(e, "ready"), IltJson.Str(e, "status"),
+                    IltJson.Long(e, "readyIn"), (int)IltJson.Long(e, "charges"), (int)IltJson.Long(e, "chargesMax"),
+                    IltJson.Bool(e, "juvenile"), IltJson.Str(e, "stage"), (int)IltJson.Long(e, "kills"), (int)IltJson.Long(e, "killsRequired"),
+                    (int)IltJson.Long(e, "mutations"), (int)IltJson.Long(e, "potencyMutations"),
+                    IltJson.Strings(e, "problems"), IltJson.Strings(e, "boosters")));
+            }
+
+            var pairs = new List<IltBreedPairRow>();
+            foreach (JsonElement p in IltJson.Array(root, "pairs"))
+                pairs.Add(new IltBreedPairRow(IltJson.Str(p, "stud"), IltJson.Str(p, "dam"), IltJson.Double(p, "chanceBest"),
+                    IltJson.Double(p, "chanceWorst"), (int)IltJson.Long(p, "inheritMin"), (int)IltJson.Long(p, "inheritMax")));
+
+            var supplies = new List<IltBreedSupplyRow>();
+            foreach (JsonElement s in IltJson.Array(root, "supplies"))
+            {
+                var targets = new List<int>();
+                if (s.TryGetProperty("targets", out JsonElement ts) && ts.ValueKind == JsonValueKind.Array)
+                    foreach (JsonElement t in ts.EnumerateArray())
+                        if (t.ValueKind == JsonValueKind.Number && t.TryGetInt32(out int id)) targets.Add(id);
+                supplies.Add(new IltBreedSupplyRow(IltJson.Str(s, "key"), IltJson.Str(s, "name"), IltJson.Str(s, "effect"),
+                    IltJson.Long(s, "count"), IltJson.Long(s, "price"), IltJson.Bool(s, "apply"), targets));
+            }
+
+            var rules = new List<IltBreedRuleRow>();
+            foreach (JsonElement r in IltJson.Array(root, "rules"))
+                rules.Add(new IltBreedRuleRow(IltJson.Str(r, "label"), IltJson.Str(r, "value"), IltJson.Str(r, "source"), IltJson.Str(r, "help")));
+
+            var events = new List<IltBreedEventRow>();
+            foreach (JsonElement ev in IltJson.Array(root, "events"))
+                events.Add(new IltBreedEventRow(IltJson.Str(ev, "when"), IltJson.Str(ev, "kind"), IltJson.Str(ev, "text")));
+
+            IltBreedDebugRow? debug = null;
+            if (root.TryGetProperty("debug", out JsonElement d) && d.ValueKind == JsonValueKind.Object)
+                debug = new IltBreedDebugRow(IltJson.Str(d, "when"), IltJson.Str(d, "enabled", "unknown"), IltJson.Str(d, "location"),
+                    IltJson.Str(d, "match"), IltJson.Str(d, "pet"), IltJson.Str(d, "sex"), (int)IltJson.Long(d, "partners", -1));
+
+            return new IltBreedingView
+            {
+                Loaded = true,
+                Available = IltJson.Bool(root, "available"),
+                World = IltJson.Str(root, "world"),
+                Enabled = IltJson.Str(root, "enabled", "unknown"),
+                Maturity = IltJson.Str(root, "maturity", "unknown"),
+                Bond = IltJson.Str(root, "bond", "unknown"),
+                Room = IltJson.Str(root, "room"),
+                FreeSlots = (int)IltJson.Long(root, "freeSlots", -1),
+                Message = IltJson.Str(root, "message"),
+                Essences = essences,
+                Pairs = pairs,
+                Supplies = supplies,
+                Rules = rules,
+                Events = events,
+                Debug = debug,
+            };
+        }
+        catch (JsonException) { return None; }
+    }
+
+    /// <summary>The breeding verb lines (header of this file); pure so the tests check them.</summary>
+    public static string RefreshVerb() => "refresh";
+    public static string DebugVerb() => "debug";
+    public static string DanceVerb() => "dance";
+    public static string ApplyVerb(string supplyKey, int essenceId)
+        => string.Join(' ', "apply", (supplyKey ?? "").Trim(), essenceId.ToString(CultureInfo.InvariantCulture));
+}
+
 /// <summary>Lenient JSON field reads shared by the views above.</summary>
 internal static class IltJson
 {
@@ -365,6 +557,19 @@ internal static class IltJson
 
     public static long Long(JsonElement o, string name, long fallback = 0) =>
         o.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out long l) ? l : fallback;
+
+    public static double Double(JsonElement o, string name, double fallback = 0) =>
+        o.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out double d) ? d : fallback;
+
+    /// <summary>The string items of an array field (other kinds skipped).</summary>
+    public static List<string> Strings(JsonElement o, string name)
+    {
+        var list = new List<string>();
+        if (!o.TryGetProperty(name, out JsonElement a) || a.ValueKind != JsonValueKind.Array) return list;
+        foreach (JsonElement e in a.EnumerateArray())
+            if (e.ValueKind == JsonValueKind.String) list.Add(e.GetString() ?? "");
+        return list;
+    }
 
     public static IEnumerable<JsonElement> Array(JsonElement o, string name)
     {

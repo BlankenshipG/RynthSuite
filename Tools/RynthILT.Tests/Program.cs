@@ -42,6 +42,7 @@ internal static class Program
         IltSettingsTests.Register(runner);
         FellowshipCommandTests.Register(runner);
         AetheriaChunkTests.Register(runner);
+        BreedingTests.Register(runner);
         return runner.Run("RynthILT tests", args.Length > 0 ? args[0] : null);
     }
 }

@@ -32,6 +32,13 @@ internal sealed class OracleContext
     public bool SessionKnown;
     /// <summary>The last charm Toggle's outcome, shown under the charms list.</summary>
     public string CharmMessage = "";
+    /// <summary>RynthILT's pet breeding tracker (None without it); read while the Pet Breeding tab shows.</summary>
+    public RynthCore.Plugin.Shared.IltBreedingView Breeding = RynthCore.Plugin.Shared.IltBreedingView.None;
+    /// <summary>The last breeding button's outcome, shown under the tab's buttons.</summary>
+    public string BreedingMessage = "";
+
+    /// <summary>Set by the plugin: sends a verb to RynthILT's breeding tracker (RynthIltDataApi PetBreedingCommand).</summary>
+    public Func<string, bool> BreedingCommand = _ => false;
     /// <summary>RynthCore's server list (API v86) and the active server owner's settings; State null on older engines.</summary>
     public readonly RynthCore.Plugin.Shared.ServerStateClient ServerState = new();
     /// <summary>ConquestAC-only data (tag Conquest); fed only while on ConquestAC.</summary>

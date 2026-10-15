@@ -19,6 +19,9 @@ internal static class MovedTabs
     /// <summary>RynthOracle's Character tab.</summary>
     public const string OracleCharacter = "/ro character";
 
+    /// <summary>RynthOracle's Pet Breeding tab (Infinite Leaftide; the same tracker as the Pets tab's Breeding sub-tab).</summary>
+    public const string OracleBreeding = "/ro breeding";
+
     /// <summary>RynthInventory's Global Inventory "Banking" tab.</summary>
     public const string GlobalBank = "/ginv bank";
 
@@ -40,6 +43,7 @@ internal static class MovedTabs
     public static string HomeOf(string command) => command switch
     {
         OracleCharacter => "RynthOracle's Character tab",
+        OracleBreeding => "RynthOracle's Pet Breeding tab",
         GlobalBank => "Global Inventory > Banking",
         _ => command,
     };

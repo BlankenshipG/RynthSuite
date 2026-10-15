@@ -694,11 +694,69 @@ internal sealed class PetsTab
 
     // ── UI (render thread) ──────────────────────────────────────────────────
 
+    /// <summary>Set from any thread: the next frame opens the Breeding sub-tab ("/ra hub open breeding").</summary>
+    private volatile bool _selectBreeding;
+
+    /// <summary>Shows the Breeding sub-tab on the next frame (any thread).</summary>
+    public void SelectBreeding() => _selectBreeding = true;
+
+    /// <summary>
+    /// The Pets tab: the universal Roster, and Breeding (RynthILT's breeding tracker, section
+    /// "pets-breeding", the same tracker as RynthOracle's Pet Breeding tab).
+    /// </summary>
     public void Render()
     {
         var settings = _ctx.Settings;
         if (settings == null) { ImGui.TextDisabled("Not logged in."); return; }
 
+        if (!ImGui.BeginTabBar("##petsub")) return;
+        if (ImGui.BeginTabItem("Roster##petroster"))
+        {
+            RenderRoster(settings);
+            ImGui.EndTabItem();
+        }
+        ImGuiTabItemFlags breedFlags = _selectBreeding ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+        _selectBreeding = false;
+        if (BeginTab(BreedingTabLabel, breedFlags))
+        {
+            RenderBreeding();
+            ImGui.EndTabItem();
+        }
+        ImGui.EndTabBar();
+    }
+
+    private static readonly byte[] BreedingTabLabel = System.Text.Encoding.UTF8.GetBytes("Breeding##petbreeding\0");
+
+    /// <summary>BeginTabItem with flags but no close button (ImGui.NET pairs the flags overload with p_open, which draws an X).</summary>
+    private static unsafe bool BeginTab(byte[] labelUtf8Z, ImGuiTabItemFlags flags)
+    {
+        fixed (byte* label = labelUtf8Z)
+            return ImGuiNative.igBeginTabItem(label, null, flags) != 0;
+    }
+
+    /// <summary>
+    /// Breeding is Infinite Leaftide's and RynthILT's: drawn by RynthILT, with a pointer when it
+    /// isn't loaded or this isn't an ILT world.
+    /// </summary>
+    private void RenderBreeding()
+    {
+        if (!_ctx.Ilt.Loaded)
+        {
+            ImGui.TextDisabled("Pet breeding is tracked by RynthILT (the Infinite Leaftide plugin), which isn't loaded.");
+            return;
+        }
+        if (!_ctx.Ilt.IsIltWorld)
+        {
+            ImGui.TextDisabled("Pet breeding is an Infinite Leaftide feature; this world isn't Infinite Leaftide.");
+            return;
+        }
+        if (!_ctx.Ilt.RenderSection(RynthIltHub.SectionPetBreeding))
+            ImGui.TextDisabled("This RynthILT has no breeding tracker yet; update RynthILT to 0.2.7 or later.");
+    }
+
+    /// <summary>The universal roster: types, summons, ILT charms, healing pets and RynthILT's /pets logs.</summary>
+    private void RenderRoster(LegacyUiSettings settings)
+    {
         RenderRosterHeader(settings);
         RenderRosterTable();
         // The tab is universal; the charms and the /pets and /shinies logs are ILT's (the logs RynthILT's).

@@ -27,7 +27,7 @@ namespace RynthCore.Plugin.RynthInventory;
 public sealed class RynthInventoryPlugin : RynthPluginBase
 {
     // Previous release: 0.1.1. Keep in step with PluginExports.GetVersion.
-    public const string Version = "0.1.2";
+    public const string Version = "0.1.3";
 
     // RynthILT's bank JSON: every BankTabReadMs on the Banking tab, every BankIdleReadMs with the
     // window on another tab (so the Banking button appears on ILT worlds), never with it closed.

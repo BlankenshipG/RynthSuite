@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using RynthCore.Plugin.RynthAi;
+using RynthCore.Plugin.RynthAi.Huds;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.MiniRemote;
 using RynthCore.Plugin.Shared;
@@ -20,6 +21,9 @@ namespace RynthCore.RynthAiHostTests.Tests;
 internal static class MiniRemoteMoveTests
 {
     private const uint Player = 0x50000E01;
+
+    [System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Field, Name = "_selectBreeding")]
+    private static extern ref bool SelectBreedingPending(PetsTab pets);
 
     private const string LegacyHubJson = """
         {
@@ -123,9 +127,22 @@ internal static class MiniRemoteMoveTests
         Check.True(c.HandleCommand("pets", new[] { "show" }), "pets show");
         Check.True(FakeHost.Chat.Any(x => x.Contains("tab pets:show")), "same tab");
         FakeHost.Chat.Clear();
+        // RynthOracle's Pet Breeding tab links back here: the Pets tab, on its Breeding sub-tab.
+        Check.False(SelectBreedingPending(c.Pets), "no Breeding sub-tab request yet");
+        Check.True(c.HandleCommand("hub", new[] { "open", "breeding" }), "hub open breeding");
+        Check.True(FakeHost.Chat.Any(x => x.Contains("tab pets:show")), "shows the Pets tab");
+        Check.True(SelectBreedingPending(c.Pets), "and asks for the Breeding sub-tab on the next frame");
+        SelectBreedingPending(c.Pets) = false;
+        FakeHost.Chat.Clear();
+        Check.True(c.HandleCommand("hub", new[] { "tab", "Breed" }), "hub tab breed");
+        Check.False(FakeHost.Chat.Any(), "tab selects quietly");
+        Check.True(SelectBreedingPending(c.Pets), "the Breeding sub-tab again");
+        Check.Eq(MovedTabs.OracleBreeding, "/ro breeding", "the Character menu's Pet Breeding opens RynthOracle's tab");
+        Check.Eq(MovedTabs.HomeOf(MovedTabs.OracleBreeding), "RynthOracle's Pet Breeding tab", "and names it");
+        FakeHost.Chat.Clear();
         Check.True(c.HandleCommand("hub", new[] { "bank" }), "hub bank is handled (answered)");
         Check.True(FakeHost.Chat.Any(x => x.Contains("RynthILT")), "it says the ILT verbs come with RynthILT");
-        Check.True(FakeHost.Chat.Any(x => x.Contains("/ra hub open pets|crafting")), "and lists what RynthAi still has");
+        Check.True(FakeHost.Chat.Any(x => x.Contains("/ra hub open pets|breeding|crafting")), "and lists what RynthAi still has");
         FakeHost.Chat.Clear();
         // The Quests tab moved to RynthOracle (2026-10-13): its verbs and tab names say so.
         Check.True(c.HandleCommand("hub", new[] { "open", "quests" }), "hub open quests is answered");

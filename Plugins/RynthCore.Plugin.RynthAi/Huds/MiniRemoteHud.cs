@@ -880,6 +880,9 @@ internal sealed class MiniRemoteHud
             {
                 if (ImGui.MenuItem("Banking##mrbanking", MovedTabs.GlobalBank)) _hud.RunEngineCommand(MovedTabs.GlobalBank);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("Global Inventory > Banking: every character's bank on this server, deposits, withdrawals and transfers.");
+                // ILT pet breeding: RynthOracle's tab, fed by RynthILT (the Pets tab's Breeding sub-tab is the same tracker).
+                if (ImGui.MenuItem("Pet Breeding##mrbreeding", MovedTabs.OracleBreeding)) _hud.RunEngineCommand(MovedTabs.OracleBreeding);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Pet Breeding tab: essences ready to breed, rest and charge timers, growth, boosters, supplies and this server's breeding rules.");
             }
             if (ImGui.MenuItem("Quests##mrquests", "/ro")) _hud.RunEngineCommand("/ro");
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle: quest timers, tracking, rewards and the /qb list.");

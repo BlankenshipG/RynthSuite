@@ -145,6 +145,16 @@ internal sealed class IltHubStore
         s.Pet ??= new IltPetState();
         s.Pet.PetLog ??= new();
         s.Pet.ShinyLog ??= new();
+        s.Pet.Breeding ??= new();
+        s.Pet.Breeding.Rules ??= new();
+        s.Pet.Breeding.StageNames ??= new();
+        s.Pet.Breeding.Log ??= new();
+        s.Pet.Breeding.LastDebug ??= new();
+        s.Pet.Breeding.Rules.RemoveAll(r => r == null || string.IsNullOrEmpty(r.Key));
+        s.Pet.Breeding.Log.RemoveAll(e => e == null);
+        for (int i = 0; i < s.Pet.Breeding.StageNames.Count; i++) s.Pet.Breeding.StageNames[i] ??= string.Empty;
+        if (s.Pet.Breeding.Log.Count > IltBreedingRules.MaxEvents)
+            s.Pet.Breeding.Log.RemoveRange(0, s.Pet.Breeding.Log.Count - IltBreedingRules.MaxEvents);
         s.Character ??= new IltCharacterState();
         s.Character.ItemConversions ??= new();
         s.Character.AugTargets = new Dictionary<string, int>(s.Character.AugTargets ?? new(), StringComparer.OrdinalIgnoreCase);
@@ -286,6 +296,8 @@ internal sealed class IltHubStore
     {
         incoming.PetLog = current.PetLog;
         incoming.ShinyLog = current.ShinyLog;
+        // The breeding tracker holds this object; it is the character's own (not a profile setting).
+        incoming.Breeding = current.Breeding;
         return incoming;
     }
 
@@ -301,6 +313,7 @@ internal sealed class IltHubStore
         s.Bank = new IltBankState { AutoRefreshSeconds = keepRefresh };
         s.Pet.PetLog = new();
         s.Pet.ShinyLog = new();
+        s.Pet.Breeding = new();
         s.UbSidecarsImported = false;
         s.WindowVisible = false;
     }

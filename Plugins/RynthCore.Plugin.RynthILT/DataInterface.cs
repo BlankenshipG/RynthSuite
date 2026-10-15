@@ -36,6 +36,8 @@ internal static unsafe class DataInterface
             t->GetBankJson = &GetBankJson;
             t->ToggleCharm = &ToggleCharm;
             t->BankCommand = &BankCommand;
+            t->GetPetBreedingJson = &GetPetBreedingJson;
+            t->PetBreedingCommand = &PetBreedingCommand;
             t->Version = RynthIltDataApiV1.InterfaceVersion;
             _table = t;
         }
@@ -92,17 +94,51 @@ internal static unsafe class DataInterface
         try
         {
             IltHubController? hub = Hub;
-            if (hub == null || utf8 == null) return 0;
-            int len = 0;
-            while (len < MaxVerbBytes && utf8[len] != 0) len++;
-            if (len == 0 || len >= MaxVerbBytes) return 0;
-            string line = System.Text.Encoding.UTF8.GetString(utf8, len);
-            // Plain ASCII verbs only: no control characters reach the chat command builder.
-            foreach (char c in line)
-                if (c < 0x20 || c > 0x7E) return 0;
+            if (hub == null) return 0;
+            string? line = ReadVerb(utf8);
+            if (line == null) return 0;
             hub.RequestBankVerb(line);
             return 1;
         }
         catch { return 0; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetPetBreedingJson(byte* buffer, int capacity)
+    {
+        try
+        {
+            string? json = Hub?.PetBreedingJson;
+            return string.IsNullOrEmpty(json) ? 0 : ServerInterface.Write(json, buffer, capacity);
+        }
+        catch { return 0; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int PetBreedingCommand(byte* utf8)
+    {
+        try
+        {
+            IltHubController? hub = Hub;
+            if (hub == null) return 0;
+            string? line = ReadVerb(utf8);
+            if (line == null) return 0;
+            hub.RequestBreedingVerb(line);
+            return 1;
+        }
+        catch { return 0; }
+    }
+
+    /// <summary>A reader's verb line, or null when it is empty, too long or not plain ASCII (no control characters reach a chat command).</summary>
+    private static string? ReadVerb(byte* utf8)
+    {
+        if (utf8 == null) return null;
+        int len = 0;
+        while (len < MaxVerbBytes && utf8[len] != 0) len++;
+        if (len == 0 || len >= MaxVerbBytes) return null;
+        string line = System.Text.Encoding.UTF8.GetString(utf8, len);
+        foreach (char c in line)
+            if (c < 0x20 || c > 0x7E) return null;
+        return line;
     }
 }

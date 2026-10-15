@@ -9,6 +9,7 @@ using RynthCore.Plugin.RynthOracle;
 using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 using RynthCore.Plugin.RynthOracle.Views;
+using IltBreedingView = RynthCore.Plugin.Shared.IltBreedingView;
 
 // The engine parser's only outside dependency: the registry's limits (the engine's values).
 namespace RynthCore.Engine.UI.ScriptWindows
@@ -51,6 +52,7 @@ namespace RynthOracle.Tests
             Void();
             Pages();
             CharacterExtras();
+            Breeding();
             Events();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;
@@ -663,6 +665,122 @@ namespace RynthOracle.Tests
             main.Begin(); view.Draw(main); main.End();
             Check(!Encoding.UTF8.GetString(main.Body).Contains("Charms ("), "off ILT: no charms section");
             Check(OracleView.SessionStatsCommand == "/rc miniremote section char", "Session Stats opens the section, not the moved tab");
+        }
+
+        /// <summary>RynthILT's breeding JSON with <paramref name="essences"/> essences (one ready stud and one ready dam first).</summary>
+        private static string BreedingJson(int essences)
+        {
+            var sb = new StringBuilder("{\"available\":true,\"world\":\"InfiniteLeaftide\",\"enabled\":\"on\",\"maturity\":\"on\",\"bond\":\"on\","
+                + "\"room\":\"landblock 0x0106 variant 2\",\"freeSlots\":12,\"message\":\"\",\"essences\":[");
+            for (int i = 0; i < essences; i++)
+            {
+                if (i > 0) sb.Append(',');
+                bool male = i % 2 == 0, ready = i < 2;
+                sb.Append("{\"id\":").Append(1000 + i).Append(",\"name\":\"Essence ").Append(i).Append("\",\"sex\":\"").Append(male ? 'M' : 'F')
+                  .Append("\",\"tier\":125,\"bond\":100,\"ready\":").Append(ready ? "true" : "false")
+                  .Append(",\"status\":\"").Append(ready ? "Ready" : "Rest 1h 05m").Append("\",\"readyIn\":").Append(ready ? 0 : 3900)
+                  .Append(",\"charges\":7,\"chargesMax\":10,\"juvenile\":false,\"stage\":\"\",\"kills\":0,\"killsRequired\":300,")
+                  .Append("\"mutations\":1,\"potencyMutations\":0,\"problems\":").Append(ready ? "[]" : "[\"resting after a breed\"]")
+                  .Append(",\"boosters\":").Append(i == 0 ? "[\"Incense +10%\"]" : "[]").Append('}');
+            }
+            sb.Append("],\"pairs\":[{\"stud\":\"Essence 0\",\"dam\":\"Essence 1\",\"chanceBest\":0.13636,\"chanceWorst\":0.05,\"inheritMin\":1,\"inheritMax\":2}],")
+              .Append("\"supplies\":[{\"key\":\"incense1\",\"name\":\"Breeding Incense\",\"effect\":\"+10% mutation chance\",\"count\":2,\"price\":250000,\"apply\":true,\"targets\":[1000,1001]},")
+              .Append("{\"key\":\"neuter\",\"name\":\"Neutering Kit\",\"effect\":\"Permanent\",\"count\":1,\"price\":0,\"apply\":false,\"targets\":[]}],")
+              .Append("\"rules\":[{\"label\":\"Stud charges\",\"value\":\"10/day\",\"source\":\"seen on server\",\"help\":\"Breeds per refill.\"},")
+              .Append("{\"label\":\"Mutation decay\",\"value\":\"0.1\",\"source\":\"ILT profile\",\"help\":\"\"}],")
+              .Append("\"events\":[{\"when\":\"10-15 12:00\",\"kind\":\"birth\",\"text\":\"Congratulations! A baby pet has been born: Pup\"}],")
+              .Append("\"debug\":{\"when\":\"10-15 12:01\",\"enabled\":\"on\",\"location\":\"0x0106 variant 2\",\"match\":\"valid\",\"pet\":\"Essence 0\",\"sex\":\"M\",\"partners\":1}}");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// The Pet Breeding tab (Infinite Leaftide only): RynthILT's breeding JSON drawn within the op budget,
+        /// Dance and supply uses asked first, then sent to RynthILT as its verbs.
+        /// </summary>
+        private static void Breeding()
+        {
+            // The tab exists only on Infinite Leaftide.
+            OracleContext c = Context();
+            var view = new OracleView(c);
+            Check(!view.VisibleTabs().Contains(OracleView.TabBreeding), "Aelrynth: no Pet Breeding tab");
+            c.Server.Force("", "Coldeve");
+            Check(!view.VisibleTabs().Contains(OracleView.TabBreeding), "other servers: no Pet Breeding tab");
+            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
+            Check(view.VisibleTabs().Contains(OracleView.TabBreeding), "Infinite Leaftide: the Pet Breeding tab");
+
+            // The parser: fields, lists, the debug block, and bad input.
+            IltBreedingView v = IltBreedingView.Parse(BreedingJson(2));
+            Check(v.Loaded && v.Available && v.Enabled == "on" && v.Room == "landblock 0x0106 variant 2" && v.FreeSlots == 12, "breeding JSON header");
+            Check(v.Essences.Count == 2 && v.Essences[0].Male && !v.Essences[1].Male && v.Essences[0].Ready && v.Essences[0].Boosters.Count == 1,
+                  "breeding essences with sex, readiness and boosters");
+            Check(v.Pairs.Count == 1 && Math.Abs(v.Pairs[0].ChanceBest - 0.13636) < 1e-9 && v.Pairs[0].InheritMax == 2, "breeding pair odds");
+            Check(v.Supplies.Count == 2 && v.Supplies[0].Targets.Count == 2 && !v.Supplies[1].Apply, "breeding supplies and their targets");
+            Check(v.Debug is { Match: "valid", Partners: 1 }, "breeding diagnostics");
+            Check(!IltBreedingView.Parse("not json").Loaded && !IltBreedingView.Parse("").Loaded && !IltBreedingView.Parse("[1]").Loaded,
+                  "bad breeding JSON is not loaded");
+            Check(IltBreedingView.ApplyVerb(" incense1 ", 1000) == "apply incense1 1000" && IltBreedingView.DanceVerb() == "dance",
+                  "breeding verbs");
+
+            // Nothing from RynthILT yet: the tab says to load it.
+            var host = new UiHost();
+            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
+            c.Settings.TabName = OracleView.TabBreeding;
+            main.Begin(); view.Draw(main); main.End();
+            Check(Encoding.UTF8.GetString(main.Body).Contains("Load RynthILT (0.2.7 or later)"), "without RynthILT: says to load it");
+            main.MarkSubmitted(true);
+
+            // 50 essences with every section open: rows cut at 40, the page still fits.
+            var sent = new List<string>();
+            string ran = "";
+            c.BreedingCommand = verb => { sent.Add(verb); return true; };
+            c.RunCommand = cmd => { ran = cmd; return true; };
+            c.Breeding = IltBreedingView.Parse(BreedingJson(50));
+            main.Begin(); view.Draw(main); main.End();
+            uint seq = 200;
+            foreach (string header in new[] { "br.sup", "br.rules", "br.events" })
+                Apply(host, Event(6, seq++, main.Hash, main.KeyOf(header), new byte[] { 1 }));
+            main.Begin(); view.Draw(main); main.End();
+            ParseAll(host, "Pet Breeding with 50 essences", out int ops);
+            string body = Encoding.UTF8.GetString(main.Body);
+            Check(ops > 5 && ops < 1400, $"Pet Breeding with 50 essences: {ops} ops");
+            Console.WriteLine($"  InfiniteLeaftide/Pet Breeding (50 essences, all open): {ops} ops, {main.Body.Length} bytes");
+            Check(body.Contains("Essences (2 ready of 50)") && body.Contains("... and 10 more"), "essence rows cut at 40 with a count");
+            Check(body.Contains("Essence 0 x Essence 1") && body.Contains("5%-13.6%"), "the ready pair with its odds");
+            Check(body.Contains("Supplies (3 carried)") && body.Contains("250,000 pyreals"), "supplies with Ivo's price");
+            Check(body.Contains("Stud charges") && body.Contains("seen on server") && body.Contains("In the breeding room"), "rules and diagnostics");
+            Check(body.Contains("A baby pet has been born"), "recent events");
+
+            // Dance asks first; No drops it, Yes sends it.
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.dance"), new byte[] { 1, 0, 0 }));
+            Check(sent.Count == 0, "Dance asks before sending");
+            main.Begin(); view.Draw(main); main.End();
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.no"), new byte[] { 1, 0, 0 }));
+            main.Begin(); view.Draw(main); main.End();
+            Check(sent.Count == 0 && !Encoding.UTF8.GetString(main.Body).Contains("###br.yes"), "No drops the question");
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.dance"), new byte[] { 1, 0, 0 }));
+            main.Begin(); view.Draw(main); main.End();
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.yes"), new byte[] { 1, 0, 0 }));
+            Check(sent.Count == 1 && sent[0] == "dance", "Yes sends the dance verb");
+
+            // A supply use on the selected essence (the first) goes the same way.
+            main.Begin(); view.Draw(main); main.End();
+            Check(Encoding.UTF8.GetString(main.Body).Contains("###br.use.0") && !Encoding.UTF8.GetString(main.Body).Contains("###br.use.1"),
+                  "only a usable, carried supply has Use");
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.use.0"), new byte[] { 1, 0, 0 }));
+            main.Begin(); view.Draw(main); main.End();
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.yes"), new byte[] { 1, 0, 0 }));
+            Check(sent.Count == 2 && sent[1] == "apply incense1 1000", "Use then Yes sends apply with the essence id: " + string.Join("|", sent));
+
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.refresh"), new byte[] { 1, 0, 0 }));
+            Check(sent.Count == 3 && sent[2] == "refresh", "Refresh is sent straight away");
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.remote"), new byte[] { 1, 0, 0 }));
+            Check(ran == "/ra hub open breeding", "Mini Remote opens Pets > Breeding: " + ran);
+            main.MarkSubmitted(true);
+
+            // Breeding switched off on the server: said in red, page still drawn.
+            c.Breeding = IltBreedingView.Parse("{\"available\":true,\"enabled\":\"off\",\"essences\":[]}");
+            main.Begin(); view.Draw(main); main.End();
+            Check(Encoding.UTF8.GetString(main.Body).Contains("Pet breeding is off on this server."), "breeding off is shown");
         }
 
         private static void Events()
