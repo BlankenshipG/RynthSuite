@@ -1119,6 +1119,8 @@ internal sealed partial class LegacyDashboardRenderer
                 NavLabelMode               = NavLabelModes.Clamp(s.NavLabelMode),
                 NavGuideLine               = s.NavGuideLine,
                 NavResumeNearest           = s.NavResumeNearest,
+                TrackBreadcrumbs           = s.NavOverlay.TrackBreadcrumbs,
+                ShowRouteOverlay           = s.NavOverlay.ShowRouteMarkers,
                 OpenDoors                  = s.OpenDoors,
                 OpenDoorRange              = s.OpenDoorRange,
                 AutoUnlockDoors            = s.AutoUnlockDoors,
@@ -1364,6 +1366,8 @@ internal sealed partial class LegacyDashboardRenderer
             if (p.NavLabelMode >= 0) s.NavLabelMode = NavLabelModes.Clamp(p.NavLabelMode);
             if (p.NavGuideLine is bool guideLine) s.NavGuideLine = guideLine;
             if (p.NavResumeNearest is bool resumeNearest) s.NavResumeNearest = resumeNearest;   // absent = unchanged
+            if (p.TrackBreadcrumbs is bool crumbs) s.NavOverlay.TrackBreadcrumbs = crumbs;        // absent = unchanged
+            if (p.ShowRouteOverlay is bool routeOverlay) s.NavOverlay.ShowRouteMarkers = routeOverlay;
             s.OpenDoors                  = p.OpenDoors;
             s.OpenDoorRange              = p.OpenDoorRange;
             s.AutoUnlockDoors            = p.AutoUnlockDoors;

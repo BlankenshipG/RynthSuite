@@ -1127,6 +1127,10 @@ public sealed class SettingsBridgePayload
     public int NavLabelMode { get; set; } = -1;
     public bool? NavGuideLine { get; set; }
     public bool? NavResumeNearest { get; set; }
+    // NavOverlay.TrackBreadcrumbs / ShowRouteMarkers: the Nav panel's "Breadcrumbs" and "Route
+    // overlay" switches, also on Settings > Navigation. Null (an older engine) = unchanged.
+    public bool? TrackBreadcrumbs { get; set; }
+    public bool? ShowRouteOverlay { get; set; }
     public bool OpenDoors { get; set; }
     public float OpenDoorRange { get; set; }
     public bool AutoUnlockDoors { get; set; }
