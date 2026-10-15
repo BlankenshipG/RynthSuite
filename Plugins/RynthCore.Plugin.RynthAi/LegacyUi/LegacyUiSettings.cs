@@ -502,9 +502,9 @@ public sealed class LegacyUiSettings
     /// second one-handed melee weapon is listed. Off by default (the shield).</summary>
     public bool PreferDualWield;
     /// <summary>
-    /// Weapon swaps (CombatManager.SwapDeferReason). A new lock waits this long (ms) before a
-    /// swap starts, so a target that changes right after the lock doesn't cost a wasted swap.
-    /// 0 = swap at once.
+    /// Weapon swaps (CombatManager.SwapDeferReason). A switch from one live target to another
+    /// waits this long (ms) before a swap starts, so a target that changes again doesn't cost a
+    /// wasted swap. A lock after a kill or drop swaps at once. 0 = never wait.
     /// </summary>
     public int WeaponSwapSettleMs = 750;
     /// <summary>No new swap (same kind) onto a target at or under this health %: finish it with

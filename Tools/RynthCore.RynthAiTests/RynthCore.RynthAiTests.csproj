@@ -21,6 +21,7 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\LegacyUi\NavRouteParser.cs" Link="Linked\NavRouteParser.cs" />
     <!-- Combat: the melee/missile stall ladder (pure timing state, time passed in). -->
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\CombatStallWatchdog.cs" Link="Linked\CombatStallWatchdog.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\PointBlankFacing.cs" Link="Linked\PointBlankFacing.cs" />
     <!-- Weapon weakness selection: element ranking per monster. Its only outside reference is
          CreatureProfileStore.Folder (the user override folder), faked in Fakes\. -->
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\CreatureData\CreatureWeakness.cs" Link="Linked\CreatureWeakness.cs" />

@@ -405,6 +405,8 @@ public partial class CombatManager : IDisposable
     private int _pendingJudgeTargetId = 0;
     private bool _damageSincePendingCast;
     private DateTime _targetLockedAt     = DateTime.MinValue;
+    // The current lock replaced another live target (a switch), not a lock after a kill or drop.
+    private bool     _lockWasSwitch;
     private DateTime _lastDamageDealtAt  = DateTime.MinValue;
 
     // ── Server attack binding (the 2026-09-29 melee stall) ───────────────────
@@ -429,6 +431,8 @@ public partial class CombatManager : IDisposable
     private DateTime _lastMissAt = DateTime.MinValue;
     private DateTime _lastKillAt = DateTime.MinValue;   // stall-watchdog evidence only; metas and the status feed read the plugin's KillClock
     private string   _lastSwingEvidenceKind = "none";
+    // Missile at point blank with the target behind: the server doesn't rotate, so one heading snap.
+    private readonly PointBlankFacing _pointBlankFacing = new();
 
     private readonly CombatStallWatchdog _stallWatch = new();
 
@@ -3289,6 +3293,15 @@ public partial class CombatManager : IDisposable
                 ClearCombatTurnMotions();
             }
 
+            // The exception to "missile never turns": a target at point blank with the character's
+            // back to it (PointBlankFacing). One snap, then the attack waits for it to settle.
+            if (HoldForPointBlankFacing(currentDist))
+            {
+                LastCombatSkipReason = "point-blank-face"; // D4 record-only
+                _tickWait = CombatLatencyTracker.Wait.Face;
+                return true;
+            }
+
             // Don't attack in missile mode without ammo
             if (CurrentCombatMode == CombatMode.Missile && !HasWieldedAmmo())
             {
@@ -3576,6 +3589,8 @@ public partial class CombatManager : IDisposable
         {
             case CombatStallWatchdog.StallAction.Reissue:
             {
+                // A re-issue alone never fixed a point-blank target behind the character.
+                HoldForPointBlankFacing(currentDist, force: true);
                 ReleaseServerAttack("stall watchdog", log: false);
                 lastAttackCmd = AttackAfterCancel(now); // the attack goes out again once the cancel has landed
                 _ghostCheck.Arm(activeTargetId, now, TargetSpot(activeTargetId));
@@ -3915,6 +3930,8 @@ public partial class CombatManager : IDisposable
 
     public void OnHeartbeat()
     {
+        NoteSwapPortal();
+
         if (!_settings.IsMacroRunning)
         {
             // Clear turn motions once on the transition from running → stopped,
@@ -4116,6 +4133,7 @@ public partial class CombatManager : IDisposable
     private void LockTarget(ScannedTarget best, int bestPriority, string picked, string? switchWhy)
     {
         int bestId = best.Id;
+        _lockWasSwitch = _lockedTargetId != 0 && _lockedTargetId != bestId;
         if (_lockedTargetId != 0)
             _host.Log($"[CombatTarget] switch 0x{_lockedTargetId:X8} '{_worldFilter[_lockedTargetId]?.Name}' ({switchWhy}, {DescribeTargetPos(_lockedTargetId)}) " +
                       $"-> 0x{bestId:X8} '{_worldFilter[bestId]?.Name}' ({picked})");
@@ -4559,7 +4577,7 @@ public partial class CombatManager : IDisposable
     private WeaponSwapTracker.Step SwapStep(int chosenId, int inHandId)
     {
         DateTime now = DateTime.Now;
-        if (SwapTracker.PendingId != 0 && ServerRefusedSinceSend()) SwapTracker.Refused(now, WeaponName);
+        FoldServerAnswer(SwapTracker, now);
         var step = SwapTracker.Next(chosenId, inHandId, now, WeaponName, forKey: activeTargetId);
         if (SwapTracker.Notice != null)
         {
@@ -4578,11 +4596,14 @@ public partial class CombatManager : IDisposable
 
     /// <summary>
     /// Why a swap the tracker allows should not start now (null = start it). Settling: the
-    /// target was locked under WeaponSwapSettleMs ago; wait (Kelpie 2026-10-14 11:41:06: a lock,
-    /// the crossbow swap sent, then a switch to another monster 230 ms later). Not settling: keep
-    /// the weapon in hand, because the target is at or under WeaponSwapMinHealthPct (same kind of
-    /// weapon only). Never once a swap is under way (SwapHoldsAllowed), so a launcher is never
-    /// kept after its ammo went into the pack.
+    /// target was switched to (it replaced another live target) under WeaponSwapSettleMs ago;
+    /// wait (Kelpie 2026-10-14 11:41:06: the crossbow swap sent, then a switch to another monster
+    /// 230 ms later). A lock after a kill or a drop swaps at once: in Kelpie's 2026-10-14/15 logs
+    /// 2-4% of those were followed by a quick switch, and waiting on every one put 0.75 s in front
+    /// of 22 of 25 swaps that went ahead anyway. Not settling: keep the weapon in hand, because
+    /// the target is at or under WeaponSwapMinHealthPct (same kind of weapon only). Never once a
+    /// swap is under way (SwapHoldsAllowed), so a launcher is never kept after its ammo went into
+    /// the pack.
     /// </summary>
     private string? SwapDeferReason(WorldObject target, int chosenId, int inHand, out bool settling)
     {
@@ -4590,13 +4611,13 @@ public partial class CombatManager : IDisposable
         if (!SwapHoldsAllowed(inHand)) return null;
 
         int settleMs = _settings.WeaponSwapSettleMs;
-        if (settleMs > 0 && _lockedTargetId == target.Id && _targetLockedAt != DateTime.MinValue)
+        if (settleMs > 0 && _lockWasSwitch && _lockedTargetId == target.Id && _targetLockedAt != DateTime.MinValue)
         {
             double lockedMs = (DateTime.Now - _targetLockedAt).TotalMilliseconds;
             if (lockedMs >= 0 && lockedMs < settleMs)
             {
                 settling = true;
-                return $"target locked {lockedMs:0} ms ago";
+                return $"target switched {lockedMs:0} ms ago";
             }
         }
 
@@ -4631,7 +4652,7 @@ public partial class CombatManager : IDisposable
 
     private void LogSwapDefer(int chosenId, int inHand, string why)
     {
-        var key = (chosenId, inHand, why.StartsWith("target locked", StringComparison.Ordinal));
+        var key = (chosenId, inHand, why.StartsWith("target switched", StringComparison.Ordinal));
         DateTime now = DateTime.Now;
         if (key == _lastSwapDeferLogged && (now - _lastSwapDeferLogAt).TotalSeconds < 10) return;
         _lastSwapDeferLogged = key;
@@ -4662,21 +4683,71 @@ public partial class CombatManager : IDisposable
         _lastEquipTime = now;
     }
 
-    /// <summary>A WeenieError, or a UseDone with an error, arrived after the wield was sent.</summary>
-    private bool ServerRefusedSinceSend()
+    // The character was in portal space at the last heartbeat (a portal, recall or teleport).
+    private bool _swapSawPortal;
+
+    /// <summary>On leaving portal space, the swap tracker forgets tries and rests from the old place.</summary>
+    private void NoteSwapPortal()
     {
-        if (_host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out int wSeq, out uint wErr, out _, out _)
-            && wSeq != _swapWeenieSeq && wErr != 0)
+        bool inPortal;
+        try { inPortal = _host.HasIsPortaling && _host.IsPortaling(); }
+        catch { return; }   // a failed read must never stop the heartbeat
+        if (inPortal) { _swapSawPortal = true; return; }
+        if (!_swapSawPortal) return;
+        _swapSawPortal = false;
+        SwapTracker.NewPlace();
+        AmmoTracker.NewPlace();
+        OffhandTracker.NewPlace();
+    }
+
+    private enum WieldAnswer { None, Refused, Busy }
+
+    /// <summary>
+    /// Folds the server's answer to the wield <paramref name="tracker"/> has in flight into it: a
+    /// refusal is a failed try, 'too busy' is not (logged).
+    /// </summary>
+    private void FoldServerAnswer(WeaponSwapTracker tracker, DateTime now)
+    {
+        int pending = tracker.PendingId;
+        if (pending == 0) return;
+        switch (ServerAnswerSinceSend())
+        {
+            case WieldAnswer.Refused:
+                tracker.Refused(now, WeaponName);
+                break;
+            case WieldAnswer.Busy:
+                if (tracker.Busy(now, WeaponName))
+                    _host.Log($"[EquipDiag] wield of 0x{(uint)pending:X8} '{WeaponName(pending)}' answered 'too busy': not counted, again in {tracker.BusyRetryMs / 1000:0.#} s");
+                break;
+        }
+    }
+
+    // GameEvent InventoryServerSaveFailed: the server refused an inventory change.
+    private const uint InventorySaveFailedEvent = 0x00A0;
+
+    /// <summary>
+    /// What the server said to the wield since it was sent. Busy: 'too busy' (0x1D), or an
+    /// InventoryServerSaveFailed with no error. ACE answers a wield while busy (a recall, a
+    /// portal, an animation) with a WeenieError 0x1D and then that SaveFailed, and the engine
+    /// keeps only the last record, so the 0x1D is usually read as "error 0" (flight recorder
+    /// 2026-10-15 00:44:23-31: three of these, read as no answer, cost all 3 tries).
+    /// </summary>
+    private WieldAnswer ServerAnswerSinceSend()
+    {
+        if (_host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out int wSeq, out uint wErr, out uint wEvt, out _)
+            && wSeq != _swapWeenieSeq)
         {
             _swapWeenieSeq = wSeq;
-            return true;
+            if (wErr == ActionPacer.TooBusyErr || (wEvt == InventorySaveFailedEvent && wErr == 0)) return WieldAnswer.Busy;
+            if (wErr != 0) return WieldAnswer.Refused;
         }
         if (_host.HasGetLastUseDone && _host.TryGetLastUseDone(out int uSeq, out uint uErr) && uSeq != _swapUseDoneSeq)
         {
             _swapUseDoneSeq = uSeq;
-            return uErr != 0;
+            if (uErr == ActionPacer.TooBusyErr) return WieldAnswer.Busy;
+            if (uErr != 0) return WieldAnswer.Refused;
         }
-        return false;
+        return WieldAnswer.None;
     }
 
     /// <summary>
@@ -5513,6 +5584,29 @@ public partial class CombatManager : IDisposable
         _wallFaceAt = now;
         _wallFaceSnaps++;
         _host.Log($"[CombatCast] wall: facing 0x{(uint)targetId:X8} first ({error:0} deg off), casting in {WallFaceSettleMs:0} ms");
+        return true;
+    }
+
+    /// <summary>
+    /// Missile only: snap the heading to a point-blank target the character faces away from
+    /// (<see cref="PointBlankFacing"/>). <paramref name="force"/> skips the no-shot wait (the
+    /// stall watchdog's re-issue already waited longer). True = a snap was just sent or is still
+    /// settling, so don't attack this tick.
+    /// </summary>
+    private bool HoldForPointBlankFacing(double currentDist, bool force = false)
+    {
+        if (CurrentCombatMode != CombatMode.Missile || !_host.HasTurnToHeading) return false;
+        DateTime now = DateTime.Now;
+        int tid = activeTargetId;
+        if (_pointBlankFacing.Settling(now, tid)) return true;
+        if (!TryGetHeadingTo(tid, out double desiredDeg, out double error)) return false;
+        DateTime evidence = force ? DateTime.MinValue : _lastSwingEvidenceAt;
+        if (!_pointBlankFacing.ShouldSnap(now, tid, currentDist, error, evidence)) return false;
+        if (!_host.TurnToHeadingBy("Combat/PointBlank", (float)desiredDeg)) return false;   // held by the pacer: attack as is
+        _pointBlankFacing.Snapped(now, tid);
+        _host.Log($"[Combat] point blank: turning to 0x{(uint)tid:X8} ({error:0} deg off at {currentDist:0.0} m, " +
+                  $"last shot {(_lastSwingEvidenceAt == DateTime.MinValue ? "never" : $"{(now - _lastSwingEvidenceAt).TotalSeconds:0.0}s ago")}" +
+                  $"{(force ? ", stall re-issue" : "")}; snaps={_pointBlankFacing.Snaps})");
         return true;
     }
 

@@ -22,6 +22,11 @@ namespace RynthCore.Plugin.RynthAi;
 ///     bounds a fight that alternates between two kinds of monster.
 ///   * A swap counts as landed when its weapon reaches the hand, even if the choice moved on
 ///     while it was in flight.
+///   * A 'too busy' answer (<see cref="Busy"/>) is not a try: the server never looked at the
+///     weapon. The wield goes again after <see cref="BusyRetryMs"/>, at most
+///     <see cref="MaxBusyRefunds"/> times per weapon before they count. A portal or recall
+///     (<see cref="NewPlace"/>) ends every rest (2026-10-15, Silentkelpie: a house recall and a
+///     portal each spent all 3 tries on 'too busy' and benched the better weapon for 2 min).
 /// </summary>
 internal sealed class WeaponSwapTracker
 {
@@ -43,10 +48,14 @@ internal sealed class WeaponSwapTracker
     public double MinDwellMs { get; set; } = 20_000;
     public int MaxSwapsPerWindow { get; set; } = 4;
     public double SwapWindowMs { get; set; } = 60_000;
+    public double BusyRetryMs { get; set; } = 1500;
+    public int MaxBusyRefunds { get; set; } = 6;
 
     private int _pendingId, _pendingFrom;
     private DateTime _pendingAt;
+    private DateTime _busyUntil = DateTime.MinValue;
     private readonly Dictionary<int, int> _tries = new();
+    private readonly Dictionary<int, int> _busyRefunds = new();
     private readonly Dictionary<int, DateTime> _restUntil = new();
     private readonly List<DateTime> _landed = new();
     private int _lastFrom, _lastTo;
@@ -86,6 +95,7 @@ internal sealed class WeaponSwapTracker
         {
             if (_pendingId == chosenId) Land(now);
             _tries.Remove(chosenId);
+            _busyRefunds.Remove(chosenId);
             return Step.InHand;
         }
 
@@ -94,6 +104,8 @@ internal sealed class WeaponSwapTracker
             if ((now - _pendingAt).TotalMilliseconds < ResolveMs) return Step.Wait;
             Fail(now, "not seen in hand", nameOf);
         }
+
+        if (now < _busyUntil) return Step.Wait;
 
         if (_restUntil.TryGetValue(chosenId, out DateTime rest) && now < rest)
         {
@@ -135,6 +147,39 @@ internal sealed class WeaponSwapTracker
         if (_pendingId != 0) Fail(now, "refused by the server", nameOf);
     }
 
+    /// <summary>
+    /// The server answered the wield in flight 'too busy' (a recall, a portal, an animation):
+    /// it never looked at the weapon, so the try is given back and the wield goes again after
+    /// <see cref="BusyRetryMs"/>. Past <see cref="MaxBusyRefunds"/> for one weapon it counts as
+    /// a refusal, so a weapon the server always answers that way still gets rested.
+    /// True when the try was given back.
+    /// </summary>
+    public bool Busy(DateTime now, Func<int, string>? nameOf = null)
+    {
+        int id = _pendingId;
+        if (id == 0) return false;
+        int refunds = _busyRefunds.TryGetValue(id, out int r) ? r : 0;
+        if (refunds >= MaxBusyRefunds) { Fail(now, "server too busy", nameOf); return false; }
+        _busyRefunds[id] = refunds + 1;
+        if (_tries.TryGetValue(id, out int t) && t > 0) _tries[id] = t - 1;
+        _pendingId = _pendingFrom = 0;
+        _busyUntil = now.AddMilliseconds(BusyRetryMs);
+        return true;
+    }
+
+    /// <summary>
+    /// The character went through a portal or recalled: tries and rests from the last place no
+    /// longer say anything about the weapon (they were spent while the server was busy moving us).
+    /// </summary>
+    public void NewPlace()
+    {
+        _pendingId = _pendingFrom = 0;
+        _tries.Clear();
+        _busyRefunds.Clear();
+        _restUntil.Clear();
+        _busyUntil = DateTime.MinValue;
+    }
+
     /// <summary>The chosen weapon was seen in hand some other way (the wield-location read).</summary>
     public void Confirmed(int id, DateTime now)
     {
@@ -146,6 +191,8 @@ internal sealed class WeaponSwapTracker
     {
         _pendingId = _pendingFrom = 0;
         _tries.Clear();
+        _busyRefunds.Clear();
+        _busyUntil = DateTime.MinValue;
         _restUntil.Clear();
         _landed.Clear();
         _lastFrom = _lastTo = 0;

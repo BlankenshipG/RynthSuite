@@ -294,7 +294,7 @@ public partial class CombatManager
         if (wo == null || lt == 0) { EndAmmoFollowUp(); return false; }
 
         SwapTracker.Confirmed(launcherId, now);              // the launcher landed
-        if (AmmoTracker.PendingId != 0 && ServerRefusedSinceSend()) AmmoTracker.Refused(now, WeaponName);
+        FoldServerAnswer(AmmoTracker, now);
 
         var pack = PackAmmo();
         var wielded = pack.FirstOrDefault(a => a.Wielded);

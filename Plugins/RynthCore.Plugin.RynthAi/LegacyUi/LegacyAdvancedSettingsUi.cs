@@ -582,10 +582,11 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Text("Weapon Swaps");
                 ImGui.SetNextItemWidth(150);
-                ImGui.SliderInt("Wait After Target Lock (ms)", ref _settings.WeaponSwapSettleMs, 0, 3000);
+                ImGui.SliderInt("Wait After Target Switch (ms)", ref _settings.WeaponSwapSettleMs, 0, 3000);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("A new target must stay locked this long before a weapon swap starts, so a target\n" +
-                                     "that changes right after the lock doesn't cost a wasted swap. 0 = swap at once.");
+                    ImGui.SetTooltip("After switching from one live target to another, wait this long before a weapon\n" +
+                                     "swap starts, so a target that changes again doesn't cost a wasted swap.\n" +
+                                     "A new target after a kill swaps at once. 0 = never wait.");
                 ImGui.SetNextItemWidth(150);
                 ImGui.SliderInt("No Swap Under Target Health %", ref _settings.WeaponSwapMinHealthPct, 0, 100);
                 if (ImGui.IsItemHovered())

@@ -303,7 +303,7 @@ public partial class CombatManager
     private bool OffhandFollowUp(WorldObject target, MonsterRule? rule, int mainId)
     {
         DateTime now = DateTime.Now;
-        if (OffhandTracker.PendingId != 0 && ServerRefusedSinceSend()) OffhandTracker.Refused(now, WeaponName);
+        FoldServerAnswer(OffhandTracker, now);
         var plan = OffhandPlanFor(target, rule, mainId);
         int off = OffhandInSlot();
 

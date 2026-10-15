@@ -33,6 +33,31 @@ internal static class LauncherSwapTests
         r.Add("swap gate: MoveDone lets the next swap go on the server's answers", GateMoveDone);
         r.Add("swap holds: a nearly dead target keeps the crossbow (nothing of the swap started)", LowHealthKeepsLauncher);
         r.Add("swap holds: a swap under way finishes even when the target gets low (quarrels already off)", LowHealthMidSwapFinishes);
+        r.Add("swap holds: a lock after a kill swaps at once; a switch from a live target waits", SettleOnlyAfterSwitch);
+    }
+
+    /// <summary>
+    /// WeaponSwapSettleMs (2026-10-15): Kelpie's logs had 22 of 25 settle holds swap anyway within
+    /// 3 s, nearly all on a fresh lock after a kill. Only a switch from another live target waits.
+    /// </summary>
+    private static void SettleOnlyAfterSwitch()
+    {
+        var rig = new Rig(CombatMode.Missile);
+        rig.Lock(Monster, wasSwitch: false);
+        Check.False(rig.Tick(0), "fresh lock 0 ms ago: the swap starts");
+        Check.True(FakeHost.Moves.Count == 1 && FakeHost.Moves[0].Id == Quarrels, "the quarrels go into the pack at once");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("not swapping")), "no settle hold logged");
+
+        rig = new Rig(CombatMode.Missile);
+        rig.Lock(Monster, wasSwitch: true);
+        Check.False(rig.Tick(0), "switched 0 ms ago: the attack waits for the target to settle");
+        Check.Eq(FakeHost.Moves.Count, 0, "nothing of the swap started");
+        Check.Eq(FakeHost.Uses.Count, 0, "no bow wield");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("not swapping") && l.Contains("target switched")), "the hold says why");
+
+        rig.S.WeaponSwapSettleMs = 0;
+        rig.Tick(100);
+        Check.True(FakeHost.Moves.Count == 1 && FakeHost.Moves[0].Id == Quarrels, "setting 0: the swap starts");
     }
 
     /// <summary>WeaponSwapMinHealthPct: no swap starts onto a target at 25% or less.</summary>
@@ -143,6 +168,15 @@ internal static class LauncherSwapTests
         {
             T = atMs;
             return (bool)_equip.Invoke(C, new object[] { Target, "Auto" })!;
+        }
+
+        /// <summary>Combat locked <paramref name="target"/> just now (a switch from another live target or not).</summary>
+        public void Lock(uint target, bool wasSwitch)
+        {
+            const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic;
+            typeof(CombatManager).GetField("_lockedTargetId", F)!.SetValue(C, unchecked((int)target));
+            typeof(CombatManager).GetField("_targetLockedAt", F)!.SetValue(C, DateTime.Now);
+            typeof(CombatManager).GetField("_lockWasSwitch", F)!.SetValue(C, wasSwitch);
         }
 
         public void Landed(uint weapon, uint old, int slot)
