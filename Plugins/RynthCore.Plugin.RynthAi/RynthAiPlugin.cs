@@ -695,6 +695,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager.ManaReserveHold = spellId => _buffManager?.OffensiveCastHold(spellId);   // the mana reserve
         _combatManager.ManaCanEverAfford = spellId => _buffManager?.CanEverAfford(spellId) ?? true;   // script hook: never-payable spells
         _combatManager.SetStaleBusyCallback(OnCombatBusyStale);
+        // Empyrean Handler lethal-ring: face the Handler, run-back jump (Jumper "xs"), re-engage.
+        // Read _jumper at call time — it is constructed later in this session setup.
+        _combatManager.RequestBackJump = (faceHeading, ms) => _jumper != null && _jumper.Start("xs", faceHeading, ms);
+        _combatManager.JumpBusy = () => _jumper?.IsBusy == true;
         _buffManager?.SetStaleBusyCallback(OnCombatBusyStale);   // a heal ahead of a leftover busy count
         if (_buffManager != null)
             _buffManager.OffhandStowed = id => _combatManager?.NoteOffhandStowed(id);
@@ -2307,6 +2311,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager?.TraceCastChat(text, chatType);
         _combatManager?.HandleChatForDebuffs(text);
         _combatManager?.HandleChatForDamage(text, chatType);
+        _combatManager?.HandleChatForRingEvade(text, chatType);
         _missileCraftingManager?.HandleChat(text);
         _scrollLearner?.OnChat(text);
         _metaManager?.HandleChat(text, chatType);

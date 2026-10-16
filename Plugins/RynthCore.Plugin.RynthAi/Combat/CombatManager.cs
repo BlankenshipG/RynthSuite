@@ -1885,6 +1885,203 @@ public partial class CombatManager : IDisposable
     /// <summary>Test seam: one judged magic cast with no damage.</summary>
     internal void MagicMissForTest(int tid) => NoteMagicMissForResync(tid);
 
+    // ── Empyrean Handler lethal-ring evade (chat-triggered back-jump) ─────────
+    // ACECustom Handler emote: "The handler briefly channels infused Empyrean hatred
+    // to release a lethal ring." The ring can't be melee-evaded — if the character is
+    // inside its cast radius they die. On that line, when still in range of a Handler,
+    // cancel the current swing/cast and back-jump away, then resume combat (target kept).
+    private const string HandlerRingChannelHint = "channels infused Empyrean hatred to release a lethal ring";
+    private const string HandlerRingChannelStart = "The handler briefly channels";
+    private const string HandlerNameHint = "Empyrean Handler";
+    /// <summary>Yards: Handler lethal ring is treated as at least this wide (RingRange when larger).</summary>
+    internal const double HandlerRingDangerYards = 12.0;
+    /// <summary>Back-jump charge (ms) — run-back + jump must clear ~ring radius.</summary>
+    private const int HandlerRingJumpHoldMs = 750;
+    private const double HandlerRingEvadeCooldownMs = 4_000;
+
+    private DateTime _handlerRingEvadeAt = DateTime.MinValue;
+    private DateTime _handlerRingEvadeUntil = DateTime.MinValue;
+    private int _handlerRingEvadeId;
+    private bool _handlerRingJumpStarted;
+
+    /// <summary>
+    /// Plugin wires this to <c>Jumper.Start("xs", faceHeading, ms)</c> — face the Handler
+    /// then run-back jump (x+s) so the body moves away. Returns false if the jumper refused.
+    /// </summary>
+    public Func<float, int, bool>? RequestBackJump { get; set; }
+
+    /// <summary>True while the wired jumper is mid-turn / charge / settle.</summary>
+    public Func<bool>? JumpBusy { get; set; }
+
+    /// <summary>True while a Handler-ring evade is holding combat (jump or settle).</summary>
+    public bool RingEvadeActive =>
+        _handlerRingEvadeUntil != DateTime.MinValue && DateTime.Now < _handlerRingEvadeUntil;
+
+    /// <summary>
+    /// Chat line from RynthAiPlugin.OnChatWindowText. Starts a back-jump evade when the
+    /// Handler channels its lethal ring and the character is still inside ring range.
+    /// </summary>
+    public void HandleChatForRingEvade(string? text, int chatType = -1)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        // Handler channel is an Emote (0x0C). ChatSource.IsPlayerAuthored treats Emote as
+        // player speech, which would skip every real Handler line — anchor on the unique
+        // phrase starting the line instead (player copies are "Name says, \"...\").
+        bool anchored =
+            RynthCore.Plugin.Shared.ChatSource.StartsWithMarker(text, HandlerRingChannelStart, StringComparison.OrdinalIgnoreCase)
+            || (RynthCore.Plugin.Shared.ChatSource.StartsWithMarker(text, "The handler", StringComparison.OrdinalIgnoreCase)
+                && text.IndexOf(HandlerRingChannelHint, StringComparison.OrdinalIgnoreCase) >= 0);
+        if (!anchored)
+        {
+            // Mid-line only when the type is clearly not player speech (some clients strip "The ").
+            if (chatType is RynthCore.Plugin.Shared.ChatSource.Speech
+                or RynthCore.Plugin.Shared.ChatSource.Tell
+                or RynthCore.Plugin.Shared.ChatSource.OutgoingTell
+                or RynthCore.Plugin.Shared.ChatSource.Channel
+                or RynthCore.Plugin.Shared.ChatSource.ChannelSend
+                or RynthCore.Plugin.Shared.ChatSource.Allegiance
+                or RynthCore.Plugin.Shared.ChatSource.Fellowship)
+                return;
+            if (text.IndexOf(HandlerRingChannelHint, StringComparison.OrdinalIgnoreCase) < 0) return;
+            if (text.IndexOf(" says,", StringComparison.OrdinalIgnoreCase) >= 0
+                || text.IndexOf(" tells you,", StringComparison.OrdinalIgnoreCase) >= 0)
+                return;
+        }
+
+        DateTime now = DateTime.Now;
+        if (_handlerRingEvadeAt != DateTime.MinValue
+            && (now - _handlerRingEvadeAt).TotalMilliseconds < HandlerRingEvadeCooldownMs)
+            return;
+
+        if (!TryFindHandlerForRingEvade(out int handlerId, out double dist, out string name))
+        {
+            _host.Log("[CombatEvade] Handler lethal-ring channel heard, but no Empyrean Handler is nearby — no jump.");
+            return;
+        }
+
+        double danger = Math.Max(HandlerRingDangerYards, Math.Max(1, _settings.RingRange));
+        if (dist > danger)
+        {
+            _host.Log($"[CombatEvade] Handler lethal-ring channel; '{name}' at {dist:0.0} m (outside {danger:0.#} m) — staying put.");
+            return;
+        }
+
+        // Face the Handler, then Jumper "xs" (back + run) moves the body away from it.
+        // Facing away + back-jump would leap into the ring.
+        float faceHandler = 0f;
+        if (TryGetHeadingTo(handlerId, out double toHandler, out _))
+            faceHandler = (float)(toHandler % 360.0);
+        else if (_host.TryGetPlayerHeading(out float curr))
+            faceHandler = curr;
+
+        _handlerRingEvadeAt = now;
+        _handlerRingEvadeId = handlerId;
+        _handlerRingJumpStarted = false;
+        // Hold combat long enough for turn + charge + land + one re-engage tick.
+        _handlerRingEvadeUntil = now.AddMilliseconds(HandlerRingJumpHoldMs + 2_200);
+
+        // Stop the bound melee/missile attack so the jump isn't eaten by the swing servo.
+        try
+        {
+            if (_host.HasCancelAttack) _host.CancelAttack();
+            ReleaseHeldTurn();
+        }
+        catch { }
+
+        bool started = RequestBackJump?.Invoke(faceHandler, HandlerRingJumpHoldMs) == true;
+        if (started)
+        {
+            _handlerRingJumpStarted = true;
+            _host.Log($"[CombatEvade] Empyrean Handler lethal ring — back-jump away from '{name}' " +
+                      $"at {dist:0.0} m (danger {danger:0.#} m), face {faceHandler:0}° then xs.");
+        }
+        else
+        {
+            _handlerRingEvadeUntil = DateTime.MinValue;
+            _handlerRingEvadeId = 0;
+            _host.Log("[CombatEvade] Empyrean Handler lethal ring heard in range, but the back-jump did not start.");
+        }
+    }
+
+    /// <summary>
+    /// Holds Think from attacking while the Handler-ring back-jump runs. Keeps the target
+    /// so combat re-engages as soon as the jumper settles.
+    /// </summary>
+    private bool TickRingEvade()
+    {
+        if (_handlerRingEvadeUntil == DateTime.MinValue) return false;
+        DateTime now = DateTime.Now;
+        bool jumperBusy = JumpBusy?.Invoke() == true;
+
+        // Jump never started / failed: clear early.
+        if (_handlerRingJumpStarted && !jumperBusy && now >= _handlerRingEvadeUntil)
+        {
+            _handlerRingEvadeUntil = DateTime.MinValue;
+            _handlerRingEvadeId = 0;
+            _handlerRingJumpStarted = false;
+            _host.Log("[CombatEvade] Handler ring evade done — re-engaging.");
+            return false;
+        }
+
+        if (jumperBusy || now < _handlerRingEvadeUntil)
+        {
+            LastCombatSkipReason = "handler-ring-evade";
+            _tickWait = CombatLatencyTracker.Wait.Other;
+            return true;
+        }
+
+        _handlerRingEvadeUntil = DateTime.MinValue;
+        _handlerRingEvadeId = 0;
+        _handlerRingJumpStarted = false;
+        _host.Log("[CombatEvade] Handler ring evade done — re-engaging.");
+        return false;
+    }
+
+    /// <summary>Nearest Empyrean Handler (active target preferred when it is one).</summary>
+    private bool TryFindHandlerForRingEvade(out int handlerId, out double dist, out string name)
+    {
+        handlerId = 0; dist = double.MaxValue; name = "";
+        int me = _host.GetPlayerId() == 0 ? 0 : (int)_host.GetPlayerId();
+        if (me == 0) return false;
+
+        int bestId = 0;
+        double bestDist = double.MaxValue;
+        string bestName = "";
+
+        void Consider(int id, string? nm)
+        {
+            if (id == 0 || string.IsNullOrEmpty(nm)) return;
+            if (nm.IndexOf(HandlerNameHint, StringComparison.OrdinalIgnoreCase) < 0) return;
+            double d = _worldFilter.Distance(me, id);
+            if (d < 0 || d >= bestDist) return;
+            bestDist = d; bestId = id; bestName = nm;
+        }
+
+        if (activeTargetId != 0)
+            Consider(activeTargetId, _worldFilter[activeTargetId]?.Name);
+
+        foreach (var s in _scannedTargets)
+            Consider(s.Id, s.Name);
+
+        // Landscape fallback when the scan hasn't listed it yet (channel can land mid-approach).
+        if (bestId == 0)
+        {
+            try
+            {
+                foreach (WorldObject wo in _worldFilter.GetLandscape())
+                {
+                    if ((int)wo.ObjectClass != (int)AcObjectClass.Monster) continue;
+                    Consider(wo.Id, wo.Name);
+                }
+            }
+            catch { }
+        }
+
+        if (bestId == 0) return false;
+        handlerId = bestId; dist = bestDist; name = bestName;
+        return true;
+    }
+
     public void ReportDamageOnTarget(int targetId)
     {
         _magicMissesSinceHit = 0;   // something we cast landed: the server's position is fine
@@ -2890,6 +3087,11 @@ public partial class CombatManager : IDisposable
             _stallWatch.Hold(DateTime.Now);
             return true;
         }
+
+        // Empyrean Handler lethal-ring back-jump: hold casts/swings until the jump settles,
+        // then fall through and re-engage the same target.
+        if (TickRingEvade())
+            return true;
 
         double acDistanceLimit = _settings.MonsterRange;
         // Hysteresis: a locked target is retained (and kept under attack) out to
