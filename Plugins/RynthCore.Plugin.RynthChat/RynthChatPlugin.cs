@@ -7,8 +7,8 @@ namespace RynthCore.Plugin.RynthChat;
 public sealed class RynthChatPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthChat");
-    // Previous release: 0.3.1.
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.3.2");
+    // Previous release: 0.3.2.
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.3.3");
 
     private readonly ChatBuffer _buffer = new();
 
