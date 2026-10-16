@@ -58,8 +58,6 @@
     <Compile Include="..\Shared\RynthIltServerApi.cs" Link="Shared\RynthIltServerApi.cs" />
     <Compile Include="..\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
     <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />
-    <!-- "RynthILT.Data": the charms list and bank balances for other plugins (DataInterface.cs). -->
-    <Compile Include="..\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
     <!-- RynthCore's server list (API v86): the ILT verdict the Hub follows (IltSettingsView/). -->
     <Compile Include="..\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
     <!-- "RynthServer.Profile": ILT's settings and tinkering salvage (Hub/IltSalvage.cs) for other

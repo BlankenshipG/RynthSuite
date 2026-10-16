@@ -69,6 +69,7 @@ internal sealed class IltHubUi
         {
             case IltSection.Gear: _hub.Gear.Render(); break;
             case IltSection.Games: _hub.Games.Render(); break;
+            case IltSection.VaultedDungeons: _hub.VaultedDungeons.Render(); break;
             default:
                 // A saved tab id from before the move: say where the section lives now.
                 if (IltSections.MovedCommand(section) is string moved)

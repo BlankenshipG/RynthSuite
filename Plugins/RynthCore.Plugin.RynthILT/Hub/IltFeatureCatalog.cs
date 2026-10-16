@@ -175,6 +175,10 @@ internal static class IltFeatureCatalog
         new("quest_bonus", "Quest bonus", GroupActivities, "RynthOracle > Quests tab",
             "Each quest completed adds to your XP bonus; the list (/qb).", IltFeature.Qb, IltKnown.Checked),
         new("bounties", "Bounties", GroupActivities, "Bounties window (/rc bounties)", "ACECustom bounties and your progress.", "bounties"),
+        new("vaulted_dungeons", "Vaulted Dungeons", GroupActivities,
+            "Mini Remote > Vaulted Dungeons (/ilt vaulted; Options > Navigation)",
+            "Keeps you in one Vaulted Dungeon via a tied portal recall gem; optional kill-client on no luminance kill.",
+            null),   // content: on with the ILT world; the Options checkbox only shows the Mini Remote tab
         new("rifts", "Greater Rifts", GroupActivities, "Chat: /rift", "Private, timed dungeon runs that scale by tier (/rift).", "rifts"),
         new("room_assign", "Room Assign dungeons", GroupActivities, "Portals and recalls",
             "One-player rooms with their own spawns.", "room_assign"),

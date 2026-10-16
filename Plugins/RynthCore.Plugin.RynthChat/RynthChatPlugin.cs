@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using RynthCore.PluginCore;
 
@@ -7,7 +7,8 @@ namespace RynthCore.Plugin.RynthChat;
 public sealed class RynthChatPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthChat");
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.3.0");
+    // Previous release: 0.3.1.
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.3.2");
 
     private readonly ChatBuffer _buffer = new();
 
@@ -29,9 +30,7 @@ public sealed class RynthChatPlugin : RynthPluginBase
 
     public override void OnChatWindowText(string? text, int chatType, ref int eat)
     {
-        // A plugin earlier in the dispatch ate the line (RynthAi's Meta Manager eats the
-        // reply to its own /myquests poll): keep it out of the chat window.
-        if (eat != 0) return;
+        // Always buffer for RynthChat, even when an earlier plugin ate the line for retail.
         _buffer.Add(text, chatType);
     }
 

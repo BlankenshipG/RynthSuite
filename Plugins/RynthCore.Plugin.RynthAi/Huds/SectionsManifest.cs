@@ -67,6 +67,8 @@ internal static class SectionsManifest
         {
             ["gear"] = ("inventory", "Gear", 210, "ILT gear tools (RynthILT)."),
             ["games"] = ("games", "Games", 100, "ILT games (RynthILT)."),
+            ["vaulted"] = ("nav", "Vaulted Dungeons", 220,
+                "Keep the character in one Vaulted Dungeon (RynthILT; Options > Navigation)."),
         };
 
     /// <summary>The surface name of a tab's view ("section:gear").</summary>

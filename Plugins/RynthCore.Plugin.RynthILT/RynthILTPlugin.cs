@@ -1,4 +1,4 @@
-// RynthILTPlugin.cs - Infinite Leaftide (ACECustom) features, kept out of RynthAi and the engine core.
+﻿// RynthILTPlugin.cs - Infinite Leaftide (ACECustom) features, kept out of RynthAi and the engine core.
 //
 // Two features, both shown only on ILT:
 //   * Bounties (Bounty/BountyTracker.cs): the engine's Bounties window (the bar's ILT button,
@@ -47,8 +47,8 @@ namespace RynthCore.Plugin.RynthILT;
 public sealed class RynthILTPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthILT");
-    // Previous release: 0.2.9.
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.10");
+    // Previous release: 0.2.11.
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.12");
 
     /// <summary>
     /// The settings view's surface. No longer in the sections manifest (the force-server override
@@ -278,7 +278,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         DataWriteGuard.DrainChat(line => Host.WriteToChat(line, 2));
     }
 
-    // ── ILT fellowship commands (IltFellowship/) ────────────────────────────
+    // â”€â”€ ILT fellowship commands (IltFellowship/) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private const long FellowshipShareCheckMs = 2000;
     private const long FellowshipShareResendMs = 10_000;
@@ -338,7 +338,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         return IltFellowshipCommands.IsActive(engine, world);
     }
 
-    // ── ILT settings ─────────────────────────────────────────────────────────
+    // â”€â”€ ILT settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// The broker actions parsed on arrival rather than queued for the tick: RynthCore's
@@ -479,7 +479,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
             _bounties?.NoteTypedCommand(typed);
     }
 
-    // ── Rendering (render thread) ────────────────────────────────────────────
+    // â”€â”€ Rendering (render thread) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// The Hub's floating extras (Games HUD, confirmations) and the standalone ILT settings and
@@ -551,7 +551,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         }
     }
 
-    // ── Commands ─────────────────────────────────────────────────────────────
+    // â”€â”€ Commands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// RynthILT.Hub Command: an ILT "/ra" verb RynthAi forwards ("hub bank", "guardian handin",
@@ -627,6 +627,14 @@ public sealed class RynthILTPlugin : RynthPluginBase
             case "hub":
             case "rates":
                 break;
+            case "vaulted":
+            case "vaulteddungeons":
+            {
+                // "/ilt vaulted [on|off|toggle|status]": the Vaulted Dungeons keeper.
+                if (_hub == null) { ChatLine("[RynthILT] ILT features not ready (log in first)."); return; }
+                _hub.VaultedDungeons.HandleCommand(args);
+                return;
+            }
             case "settings":
             case "options":
             {
@@ -647,6 +655,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
             case "help":
                 ChatLine("[RynthILT] /ilt hub ... (the Mini Remote's ILT tabs; same as /ra hub ...), /ilt guardian ..., /ilt servers [list|<names>|default],");
                 ChatLine("[RynthILT] /ilt bounty [list|refresh] - the tracked ACECustom bounties (the Bounties window: the ILT button on the RynthCore bar, or /rc bounties),");
+                ChatLine("[RynthILT] /ilt vaulted [on|off|toggle|status] - Vaulted Dungeons (Mini Remote tab; enable in Options > Navigation),");
                 ChatLine("[RynthILT] /ilt settings [show|hide|toggle] - the ILT settings: the world verdict, the ILT world names and a feature summary (force a server: RynthCore Options > Diagnostics; all features: RynthOracle > About),");
                 ChatLine("[RynthILT] /ilt fellow [show|hide|toggle] - ILT's /fship commands as buttons (also in the Mini Remote's Fellowship section and RynthOracle's Fellowship tab),");
                 ChatLine("[RynthILT] /ilt trace <category|all|list> [on|off], /ilt debug [on|off].");
@@ -729,7 +738,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         if (Host.HasWriteToChat) Host.WriteToChat(text, 1);
     }
 
-    // ── The ILT Hub ──────────────────────────────────────────────────────────
+    // â”€â”€ The ILT Hub â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// Starts the Hub once the character's name is known (its files are per character). The first
@@ -825,7 +834,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
     internal static string CharacterFolder(string world, string charName)
         => Path.Combine(SettingsRoot, SafeName(world.Length > 0 ? world : "UnknownWorld"), SafeName(charName));
 
-    // ── Bounties ─────────────────────────────────────────────────────────────
+    // â”€â”€ Bounties â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>Starts the tracker once the character's name is known (its save file is per character).</summary>
     private void TryStartBounties()

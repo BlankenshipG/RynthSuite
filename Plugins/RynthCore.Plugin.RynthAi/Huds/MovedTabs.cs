@@ -28,6 +28,9 @@ internal static class MovedTabs
     /// <summary>RynthCore Options > Diagnostics (the server picker; RynthCore 2026.10.5.54+).</summary>
     public const string Diagnostics = "/rc diagnostics";
 
+    /// <summary>RynthAi Settings (Advanced Settings panel; RynthCore SettingsFace).</summary>
+    public const string Settings = "/rc ui open Settings";
+
     /// <summary>
     /// The chat command that opens where tab <paramref name="tab"/> lives now, or null when it is
     /// still a Mini Remote tab (or not a tab at all). Case and padding don't matter.

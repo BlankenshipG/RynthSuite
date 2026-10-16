@@ -11,7 +11,8 @@
 // Quest Timers and Fellowship, Skills, Inventory, Item Count, Inventory HUDs: windows every server
 // has), then "Server: <name>", i.e. the installed server plugins' windows for the world you're on,
 // which RynthCore sends (ServerMenuModel), or a link to RynthCore's Options > Diagnostics (where a
-// server is forced) when none matches. The Options button holds the Mini Remote's own settings.
+// server is forced) when none matches. The Options button opens RynthAi Settings; right-click it for
+// the Mini Remote's own section/layout settings.
 // The V/H button stacks the sections (vertical) or lays them out in three columns (horizontal).
 //
 // Remote sections (each can be hidden from the Options menu):
@@ -183,8 +184,14 @@ internal sealed class MiniRemoteHud
         {
             foreach (string id in MiniRemoteTabs.Universal)
                 _tabs.Add(new TabEntry(id, MiniRemoteTabs.Label(id), MiniRemoteTabs.Size(id), Ilt: false));
+            bool vaultedOn = _hud.Dashboard.Settings.EnableVaultedDungeons;
             foreach (IltTabInfo t in remote.Ilt.Tabs())
-                if (t.Shown) _tabs.Add(new TabEntry(t.Id, t.Label, new Vector2(t.Width, t.Height), Ilt: true));
+            {
+                // Vaulted Dungeons: ILT-only (RynthILT TabShown) and gated by Options > Navigation.
+                if (!t.Shown) continue;
+                if (string.Equals(t.Id, "vaulted", StringComparison.OrdinalIgnoreCase) && !vaultedOn) continue;
+                _tabs.Add(new TabEntry(t.Id, t.Label, new Vector2(t.Width, t.Height), Ilt: true));
+            }
         }
         if (_tabs.Count == 0)
         {
@@ -318,9 +325,15 @@ internal sealed class MiniRemoteHud
         if (ImGui.IsItemHovered())
             SafeImGui.SetTooltip(s.MiniRemoteHorizontal ? "Horizontal: sections in columns. Click to stack them." : "Vertical: sections stacked. Click to lay them out in columns.");
         ImGui.SameLine();
-        // Opened by RenderOptions: this row sits inside the Remote tab, whose ID the popup must not get.
-        if (ImGui.Button("Options##mropts", new Vector2(HeaderButtonWidth, 0))) _openOptions = true;
-        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("Mini Remote settings: sections, layout, slot size.\nRight-click the remote for the Character and server windows.");
+        // Left-click: RynthAi Settings. Right-click: Mini Remote section/layout popup (RenderOptions).
+        if (ImGui.Button("Options##mropts", new Vector2(HeaderButtonWidth, 0)))
+        {
+            if (_hud.Host.HasInvokeChatParser) _hud.RunEngineCommand(MovedTabs.Settings);
+            else _openOptions = true;   // no chat parser: fall back to the Mini Remote popup
+        }
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Right)) _openOptions = true;
+        if (ImGui.IsItemHovered())
+            SafeImGui.SetTooltip("Open RynthAi Settings (Advanced Settings).\nRight-click: Mini Remote sections, layout, slot size.");
     }
 
     private void RenderVertical(HudState s, MiniRemoteController? remote)

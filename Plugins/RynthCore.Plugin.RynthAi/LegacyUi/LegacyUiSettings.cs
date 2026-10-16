@@ -252,6 +252,11 @@ public sealed class LegacyUiSettings
     public double CorpseApproachRangeMin = 2.0;
 
     public bool BoostNavPriority;
+    /// <summary>
+    /// Options > Navigation: show RynthILT's Mini Remote "Vaulted Dungeons" tab on ILT worlds.
+    /// Off by default; the feature still lives in RynthILT and only runs on ILT-like servers.
+    /// </summary>
+    public bool EnableVaultedDungeons;
     public bool BoostLootPriority;
     public bool OpenDoors;
     public float OpenDoorRange = 5.0f;
@@ -1093,11 +1098,6 @@ public sealed class SettingsBridgePayload
     public int? WeaponSwapMinHealthPct { get; set; }
     public int? WeaponSwapMinGainPct { get; set; }
 
-    // Weapon swaps (only when the sender includes them).
-    public int? WeaponSwapSettleMs { get; set; }
-    public int? WeaponSwapMinHealthPct { get; set; }
-    public int? WeaponSwapMinGainPct { get; set; }
-
     // Spell Combat
     public int SpellCastIntervalMs { get; set; }
     // Nullable since 0 became a real value (2026-10-08): a file without it keeps the default.
@@ -1132,6 +1132,8 @@ public sealed class SettingsBridgePayload
 
     // Navigation
     public bool BoostNavPriority { get; set; }
+    /// <summary>Options > Navigation > Vaulted Dungeons (Mini Remote ILT tab gate).</summary>
+    public bool EnableVaultedDungeons { get; set; }
     public float FollowNavMin { get; set; }
     public float NavRingThickness { get; set; }
     public float NavLineThickness { get; set; }

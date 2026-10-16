@@ -64,6 +64,8 @@ internal sealed class IltHubController
     public IltProgression Progression { get; }
     public IltGear Gear { get; }
     public IltGames Games { get; }
+    /// <summary>Vaulted Dungeons keeper (Mini Remote tab; Options > Navigation gate in RynthAi).</summary>
+    public IltVaultedDungeons VaultedDungeons { get; }
     /// <summary>Registry charm acquired / active / server state (the Charms tab and RynthILTGetCharmsJson).</summary>
     public IltCharmTracker Charms { get; }
     /// <summary>The Mini Remote's Charms tab (registry charms with toggles, the Guardian Hand).</summary>
@@ -95,10 +97,11 @@ internal sealed class IltHubController
         Progression = new IltProgression(_ctx);
         Gear = new IltGear(_ctx);
         Games = new IltGames(_ctx);
+        VaultedDungeons = new IltVaultedDungeons(_ctx);
         Charms = new IltCharmTracker(_ctx);
         CharmsTab = new IltCharms(_ctx, Charms);
         Guardian = new IltGuardian(_ctx, QuestBonus);
-        _features.AddRange(new IIltFeature[] { Banking, PetLogs, Breeding, Rates, QuestBonus, Progression, Gear, CharmsTab, Games, Guardian });
+        _features.AddRange(new IIltFeature[] { Banking, PetLogs, Breeding, Rates, QuestBonus, Progression, Gear, CharmsTab, Games, VaultedDungeons, Guardian });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
         Rates.MovingMoney = () => Banking.MovingMoney;
@@ -210,81 +213,6 @@ internal sealed class IltHubController
         _bankJson = IltBankExport.Build(o.IsIltLikeWorld, enabled, o.WorldName, me, rows, Banking.LatestResult, Banking.Transactions);
     }
 
-    /// <summary>
-    /// The charms JSON ("RynthILT.Data" GetCharmsJson). Reading it marks the charms as watched, so
-    /// the pump keeps the snapshot fresh while a reader is showing it; "" until the first rebuild
-    /// after that. Any thread.
-    /// </summary>
-    public string CharmsJson
-    {
-        get { System.Threading.Interlocked.Exchange(ref _charmsReadAt, IltHubContext.NowMs); return _charmsJson; }
-    }
-
-    /// <summary>The bank JSON ("RynthILT.Data" GetBankJson), as <see cref="CharmsJson"/>.</summary>
-    public string BankJson
-    {
-        get { System.Threading.Interlocked.Exchange(ref _bankReadAt, IltHubContext.NowMs); return _bankJson; }
-    }
-
-    /// <summary>A reader's charm Toggle, posted to the pump (IltCharms checks the id). Any thread.</summary>
-    public void RequestCharmToggle(uint objectId)
-        => _ctx.Post(() =>
-        {
-            if (!_ctx.Options.IsIltLikeWorld) return;
-            if (!CharmsTab.ToggleFromReader(objectId))
-                RynthLog.Trace(LogCat.IltGear, $"reader toggle refused: 0x{objectId:X8} isn't a carried charm");
-            _charmsBuiltAt = 0;   // show the new state on the next tick
-        });
-
-    /// <summary>
-    /// The pet breeding JSON ("RynthILT.Data" GetPetBreedingJson).
-    /// Reading it keeps the tracker scanning; "" off an ILT world or before its first scan. Any thread.
-    /// </summary>
-    public string PetBreedingJson => _ctx.Options.IsIltLikeWorld ? Breeding.ReaderJson : string.Empty;
-
-    /// <summary>A reader's breeding verb line, posted to the pump (IltPetBreeding.RunVerb). Any thread.</summary>
-    public void RequestBreedingVerb(string line)
-        => _ctx.Post(() =>
-        {
-            if (!_ctx.Options.IsIltLikeWorld) return;
-            Breeding.RunVerb(line);
-        });
-
-    /// <summary>A reader's bank verb line, posted to the pump (IltBanking.RunVerb). Any thread.</summary>
-    public void RequestBankVerb(string line)
-        => _ctx.Post(() =>
-        {
-            if (!_ctx.Options.IsIltLikeWorld) return;
-            Banking.RunVerb(line);
-            _bankBuiltAt = 0;
-        });
-
-    /// <summary>Pump: rebuilds the charms / bank snapshots a reader is watching.</summary>
-    private void RebuildReaderData(long now)
-    {
-        if (now - System.Threading.Interlocked.Read(ref _charmsReadAt) < DataWatchMs && now - _charmsBuiltAt >= DataRebuildMs)
-        {
-            _charmsBuiltAt = now;
-            _charmsJson = CharmsTab.BuildReaderJson();
-        }
-
-        bool bankWatched = now - System.Threading.Interlocked.Read(ref _bankReadAt) < DataWatchMs;
-        Banking.ReaderWatching = bankWatched;
-        if (!bankWatched || now - _bankBuiltAt < DataRebuildMs) return;
-        _bankBuiltAt = now;
-        if (_siblingsReadAt == 0 || now - _siblingsReadAt >= SiblingReadMs)
-        {
-            _siblingsReadAt = now;
-            _siblings = IltBankExport.ReadSiblings(_ctx.Store.CharFolder);
-        }
-        IltServerOptions o = _ctx.Options;
-        string me = _ctx.CharName.Length > 0 ? _ctx.CharName : System.IO.Path.GetFileName(_ctx.Store.CharFolder.TrimEnd('\\', '/'));
-        var rows = new List<IltBankExport.Row>(_siblings.Count + 1) { new(me, true, _ctx.State.Bank) };
-        rows.AddRange(_siblings);
-        int enabled = o.IsOn(IltFeature.Bank) ? 1 : o.IsOff(IltFeature.Bank) ? 0 : -1;
-        _bankJson = IltBankExport.Build(o.IsIltLikeWorld, enabled, o.WorldName, me, rows, Banking.LatestResult, Banking.Transactions);
-    }
-
     public IltHubState State => _ctx.State;
     public IltServerOptions Options => _ctx.Options;
     internal IltHubContext Context => _ctx;
@@ -321,12 +249,6 @@ internal sealed class IltHubController
 
     /// <summary>Render thread: one Mini Remote ILT tab's body (RynthAi's MiniRemoteHud draws the tab bar).</summary>
     public void RenderTab(IltSection section) => _ui.RenderTab(section);
-
-    /// <summary>
-    /// Render thread: the ILT session extras (coins, pyreals, item conversions) in RynthCore's Mini
-    /// Remote "Session Stats" section, below RynthAi's session stats (surface "section:ilt-rates").
-    /// </summary>
-    public void RenderRatesSection() => _ui.RenderRatesSection();
 
     /// <summary>Render thread: the /qb list in RynthILT's own Quests section (surface "section:ilt-questbonus").</summary>
     public void RenderQuestBonusSection() => _ui.RenderQuestBonusSection();
@@ -468,6 +390,7 @@ internal sealed class IltHubController
         IltProgression => LogCat.IltProgression,
         IltGear or IltCharms => LogCat.IltGear,
         IltGames => LogCat.IltGames,
+        IltVaultedDungeons => LogCat.IltHub,
         _ => LogCat.IltHub,
     };
 
@@ -578,7 +501,7 @@ internal sealed class IltHubController
                 {
                     // Quests and Pets are RynthAi's tabs: not ours to open.
                     if (args.Length >= 2 && IltSections.IsUniversalTabName(args[1])) return false;
-                    _ctx.Chat("[Mini Remote] Usage: /ra hub open quests|pets|gear|games|guardian|bounties [show|hide|toggle]  (character and charms: /ro character, banking: /ginv bank)");
+                    _ctx.Chat("[Mini Remote] Usage: /ra hub open quests|pets|gear|games|vaulted|guardian|bounties [show|hide|toggle]  (character and charms: /ro character, banking: /ginv bank)");
                     break;
                 }
                 OpenSection(section, args.Length > 2 ? args[2] : "toggle");
@@ -616,12 +539,13 @@ internal sealed class IltHubController
                 break;
             default:
                 _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|features|force on|off|servers [list]|clap|confirm|cancel");
-                _ctx.Chat("[Mini Remote] /ra hub open quests|pets|gear|games [show|hide|toggle]  (Mini Remote tabs; character and charms: /ro character, banking: /ginv bank)");
+                _ctx.Chat("[Mini Remote] /ra hub open quests|pets|gear|games|vaulted [show|hide|toggle]  (Mini Remote tabs; character and charms: /ro character, banking: /ginv bank)");
                 _ctx.Chat("[Mini Remote] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
                 _ctx.Chat("[Mini Remote] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
                 _ctx.Chat("[Mini Remote] /ra quests refresh (quiet /myquests)   /ra pets [show|hide]   /ilt qb (the quest bonus list)");
                 _ctx.Chat("[Mini Remote] /ra guardian [window|translate <text>|handin|stop|chat on|off|auto on|off|buy on|off|refresh|status]  (window: ILT button > Guardian)");
                 _ctx.Chat("[Mini Remote] /ra bounty [show|hide|toggle]  (RynthCore's ILT button > Bounties, /rc bounties)");
+                _ctx.Chat("[Mini Remote] /ilt vaulted [on|off|toggle|status]  (Vaulted Dungeons; Options > Navigation > Vaulted Dungeons)");
                 _ctx.Chat("[Mini Remote] The ILT verbs also work as /ilt hub ..., /ilt guardian ... (RynthILT).");
                 break;
         }

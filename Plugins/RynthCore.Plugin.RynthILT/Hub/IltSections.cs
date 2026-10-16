@@ -30,6 +30,11 @@ internal enum IltSection
     Banking,
     Gear,
     Games,
+    /// <summary>
+    /// Vaulted Dungeons keeper (portal-recall gem + kill-client). Mini Remote tab on ILT worlds when
+    /// Options > Navigation > Vaulted Dungeons is enabled (RynthAi filters the tab).
+    /// </summary>
+    VaultedDungeons,
     /// <summary>Moved out (2026-10-13): RynthOracle's Character tab (the charms list).</summary>
     Charms,
     // Keep Guardian last.
@@ -41,7 +46,7 @@ internal static class IltSections
     /// <summary>The ILT tabs, in tab-bar order (RynthAi puts them after its own tabs).</summary>
     public static readonly IltSection[] Tabs =
     {
-        IltSection.Gear, IltSection.Games,
+        IltSection.Gear, IltSection.Games, IltSection.VaultedDungeons,
     };
 
     /// <summary>The Mini Remote's own tab (the remote itself): its tab id.</summary>
@@ -59,6 +64,7 @@ internal static class IltSections
         IltSection.Banking => "Banking",
         IltSection.Gear => "Gear",
         IltSection.Games => "Games",
+        IltSection.VaultedDungeons => "Vaulted Dungeons",
         IltSection.Charms => "Charms",
         IltSection.Guardian => "Guardian",
         _ => s.ToString(),
@@ -74,13 +80,14 @@ internal static class IltSections
         IltSection.Banking => "banking",
         IltSection.Gear => "gear",
         IltSection.Games => "games",
+        IltSection.VaultedDungeons => "vaulted",
         IltSection.Charms => "charms",
         IltSection.Guardian => "guardian",
         _ => s.ToString().ToLowerInvariant(),
     };
 
-    /// <summary>True for the sections drawn as Mini Remote tabs (Gear and Games).</summary>
-    public static bool IsTab(IltSection s) => s is IltSection.Gear or IltSection.Games;
+    /// <summary>True for the sections drawn as Mini Remote tabs (Gear, Games, Vaulted Dungeons).</summary>
+    public static bool IsTab(IltSection s) => s is IltSection.Gear or IltSection.Games or IltSection.VaultedDungeons;
 
     /// <summary>
     /// Where a section that moved out of the Mini Remote lives now, as the chat command that opens
@@ -90,16 +97,6 @@ internal static class IltSections
     {
         IltSection.Character or IltSection.Charms => OracleCharacterCommand,
         IltSection.Banking => GlobalBankCommand,
-        _ => null,
-    };
-
-    /// <summary>
-    /// Where a section that moved out of the Mini Remote lives now, as the chat command that opens
-    /// it; null for a section that is still RynthILT's (a tab or the Guardian panel).
-    /// </summary>
-    public static string? MovedCommand(IltSection s) => s switch
-    {
-        IltSection.Character => OracleCharacterCommand,
         _ => null,
     };
 
@@ -119,6 +116,8 @@ internal static class IltSections
             case "banking": case "bank": section = IltSection.Banking; return true;
             case "gear": section = IltSection.Gear; return true;
             case "games": case "game": section = IltSection.Games; return true;
+            case "vaulted": case "vaulteddungeons": case "vaulted-dungeons":
+                section = IltSection.VaultedDungeons; return true;
             case "charms": case "charm": section = IltSection.Charms; return true;
             case "guardian": case "temple": case "riddle": section = IltSection.Guardian; return true;
             default: section = IltSection.Gear; return false;
@@ -133,6 +132,7 @@ internal static class IltSections
     {
         IltSection.Gear => new Vector2(560, 520),
         IltSection.Games => new Vector2(520, 440),
+        IltSection.VaultedDungeons => new Vector2(360, 420),
         _ => new Vector2(520, 440),
     };
 
