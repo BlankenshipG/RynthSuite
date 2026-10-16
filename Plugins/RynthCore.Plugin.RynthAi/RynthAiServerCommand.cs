@@ -41,8 +41,8 @@ public sealed partial class RynthAiPlugin
         {
             ServerProfileView? p = ServerProfileView.Parse(_serverState.ProfileJson);
             ChatLine(p != null
-                ? $"[RynthAi] {_serverState.ProfilePlugin} {RynthServerProfileApiV1.InterfaceName}: {p.Summary()}"
-                : $"[RynthAi] {st.ActivePlugin} sent no server settings ({RynthServerProfileApiV1.InterfaceName} not answered - an older plugin?).");
+                ? $"[RynthAi] {_serverState.ProfilePlugin} {_serverState.ProfileInterface}: {p.Summary()}"
+                : $"[RynthAi] {st.ActivePlugin} sent no server settings ({ServerStateClient.InterfaceFor(st.ActivePlugin)} not answered - an older plugin?).");
         }
 
         bool iltTabs = _ilt != null && _ilt.Loaded;

@@ -1,7 +1,9 @@
 // IltFellowshipUi.cs - The "ILT fellowship" view: Infinite Leaftide's /fship commands as buttons.
 //
-// Drawn in its own window ("/ilt fellow"). Clicks queue the chat command for the plugin tick.
-// Render thread only.
+// Drawn in RynthCore's Fellowship section, under RynthAi's member list (the surface
+// "section:ilt-fellowship" through RynthPluginRenderEmbed; RynthCore shows it only while it treats
+// this world as ILT), and in its own window ("/ilt fellow"). Clicks queue the chat command for
+// the plugin tick. Render thread only.
 using System;
 using System.Numerics;
 using ImGuiNET;
@@ -38,7 +40,7 @@ internal sealed class IltFellowshipUi
     /// <summary>The view's content, into the current window.</summary>
     public void RenderBody()
     {
-        SafeImGui.TextDisabled("Infinite Leaftide /fship (up to " + IltFellowshipCommands.MaxFellows + " members)");
+        ImGui.TextDisabled("Infinite Leaftide /fship (up to " + IltFellowshipCommands.MaxFellows + " members)");
         _panel.Render(Set, _send);
     }
 }

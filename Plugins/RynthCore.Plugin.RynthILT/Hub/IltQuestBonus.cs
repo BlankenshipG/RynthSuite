@@ -1,8 +1,8 @@
-// IltQuestBonus.cs — The ACECustom quest bonus list ("/qb list"), shown in RynthAi's universal
-// Quests tab (RynthILT.Hub section "quests-qb") and read by the Temple attribute tracker.
-// Originally the /qb half of SilentKelpie's IltQuests (ILT Hub, RynthAi); split out and moved to
-// RynthILT 2026-10-13. The /myquests tracker half stayed in RynthAi (MiniRemote/QuestsTab.cs):
-// /myquests is every server's, /qb is ACECustom's.
+// IltQuestBonus.cs — The ACECustom quest bonus list ("/qb list"), shown in RynthOracle's Quests
+// tab (the "questBonus" object of the RynthILT.Server profile; loaded with "/ilt qb") and read by
+// the Temple attribute tracker. Originally the /qb half of SilentKelpie's IltQuests (ILT Hub,
+// RynthAi); split out and moved to RynthILT 2026-10-13. RynthAi's Mini Remote Quests tab moved to
+// RynthOracle 2026-10-13; the "quests-qb" section below is kept for older RynthAi builds.
 //
 // "/qb list" prints a completed and an incomplete section; both are tracked separately (UB
 // merged them). Server throttles /qb to once per minute.
@@ -46,7 +46,7 @@ internal sealed class IltQuestBonus : IIltFeature
         return QuestKind.Timed;
     }
 
-    /// <summary>Captures "/qb list" (quiet).</summary>
+    /// <summary>Captures "/qb list" (quiet). "/ilt qb" and RynthOracle's Load button land here.</summary>
     public string RefreshQb()
     {
         RynthLog.Trace(LogCat.IltQuests, $"RefreshQb()");
@@ -124,6 +124,19 @@ internal sealed class IltQuestBonus : IIltFeature
 
     /// <summary>Increments each time a "/qb list" reply is parsed (0 = not loaded this session).</summary>
     public int QbGeneration => _qbGeneration;
+
+    /// <summary>The last "/qb list" completed flags, sorted (shared with RynthOracle through the server profile).</summary>
+    public string[] QbCompleted => _qbCompleted;
+    /// <summary>The last "/qb list" incomplete flags, sorted.</summary>
+    public string[] QbIncomplete => _qbIncomplete;
+    /// <summary>The server's quest bonus count; -1 until the login probe or a "/qb list" reads it.</summary>
+    public long QbCount => _qbCount;
+    /// <summary>"not loaded", "loading...", "N completed, M incomplete", or why the last request failed.</summary>
+    public string QbStatus => _qbStatus;
+
+    /// <summary>The list as RynthOracle's Quests tab shows it (the "questBonus" object of the RynthILT.Server profile).</summary>
+    public IltQuestBonusInfo Snapshot() =>
+        new(_ctx.Options.IsOff(IltFeature.Qb), _qbGeneration, _qbCount, _qbStatus, _qbCompleted, _qbIncomplete);
 
     /// <summary>True when the last "/qb list" (completed or incomplete) contains the flag.</summary>
     public bool QbHasFlag(string flag)

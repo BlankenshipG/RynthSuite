@@ -11,7 +11,7 @@ internal sealed partial class OracleView
 {
     public const string TabQuests = "Quests", TabCharacter = "Character", TabAugs = "Augs", TabSociety = "Society",
         TabMarkers = "Markers", TabTitles = "Titles", TabVoid = "Void", TabFellowship = "Fellowship",
-        TabBoards = "Leaderboards", TabConquest = "Conquest", TabAbout = "About";
+        TabBoards = "Leaderboards", TabConquest = "Conquest", TabBreeding = "Pet Breeding", TabAbout = "About";
 
     /// <summary>A tab: shown where any of its server tags matches the server; no tags = everywhere (retail).</summary>
     private sealed record TabDef(string Name, string[] Servers, Action<UiWindow> Draw, bool LiveTimers);
@@ -40,6 +40,7 @@ internal sealed partial class OracleView
             // Server-specific: each parser and its commands only exist on its own server.
             new(TabBoards, new[] { Data.ServerTags.Conquest, Data.ServerTags.Aelrynth }, DrawBoards, false),
             new(TabConquest, new[] { Data.ServerTags.Conquest }, DrawConquest, true),
+            new(TabBreeding, new[] { Data.ServerTags.InfiniteLeaftide }, DrawBreeding, false),
             new(TabAbout, any, DrawAbout, false),
         };
     }

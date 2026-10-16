@@ -5,22 +5,19 @@
 //     /rc bounties). Its reads run only while that window polls RynthILTGetBountiesJson, and the
 //     engine polls only on ILT.
 //   * The ILT Hub (Hub/, SilentKelpie's, moved here from RynthAi 2026-10-13): the Mini Remote's
-//     ILT tabs (Banking, Gear, Charms, Games; RynthAi's Mini Remote hosts them through
-//     RynthILT.Hub, HubInterface.cs, and lists them on RynthCore's sections rail; the Gear tab has
-//     the Rings inscription chain; the Character tab moved to RynthOracle's Character tab), its
-//     own Mini Remote sections (BuildSectionsJson: the ILT session extras in Session Stats, the
-//     /fship buttons in Fellowship, the /qb list in a Quests section), its sections in RynthAi's
-//     Pets / Remote tabs, the Guardian panel (RynthPluginRenderEmbed "guardian"),
-//     the Skills panel's Progression data (RynthILTGetProgressionJson, "prog ..." through
-//     RynthILTCommand), server feature detection, and the charms and bank balances for other
-//     plugins ("RynthILT.Data", DataInterface.cs). Every feature stays dormant off an ILT-like
-//     world (IltServerOptions: no probes, no chat).
+//     ILT tabs (Gear, Games; RynthAi's Mini Remote hosts them through RynthILT.Hub,
+//     HubInterface.cs; Character / Charms moved to RynthOracle's Character tab and Banking to
+//     RynthInventory's Global Inventory, both fed by "RynthILT.Data", DataInterface.cs), the ILT
+//     session extras in RynthCore's Session Stats section, its sections in RynthAi's Quests / Pets / Remote tabs, the
+//     Guardian panel (RynthPluginRenderEmbed "guardian"), the Skills panel's Progression data
+//     (RynthILTGetProgressionJson, "prog ..." through RynthILTCommand), server feature detection.
+//     Every feature stays dormant off an ILT-like world (IltServerOptions: no probes, no chat).
 //
 // Second: a copy of the ILT settings (IltSettingsView/): RynthCore's verdict, this character's
-// override (read only: it is set in RynthCore Options > Diagnostics), the ILT world names and
-// every feature the Hub read from the server, in its own window ("/ilt settings"). The verdict
-// comes from RynthCore's server list (plugin API v86, polled every 2 s), and the Hub follows it
-// once one arrives (IltEngineVerdict).
+// override (read only: it is set in RynthCore Options > Diagnostics), the ILT world names and a
+// summary of the features the Hub read from the server (the full list is RynthOracle's About tab),
+// in its own window ("/ilt settings"). The Hub follows RynthCore's verdict once one arrives
+// (IltEngineVerdict).
 //
 // Third: ILT's fellowship commands (IltFellowship/, ACECustom /fship) as buttons in RynthCore's
 // Fellowship section and their own window ("/ilt fellow"). While ILT is active the list is also
@@ -31,7 +28,7 @@
 // there, our own InvokeChatParser too), and RynthAi forwards its "/ra hub ..." verbs from there too,
 // so commands only queue and run on the next tick. OnRender / RenderEmbed and the RynthILT.Hub
 // render functions run on the render thread and only read what the pump built; the settings and
-// fellowship windows queue their chat commands for the tick.
+// fellowship views queue their chat commands for the tick.
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -50,12 +47,12 @@ namespace RynthCore.Plugin.RynthILT;
 public sealed class RynthILTPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthILT");
-    // Previous release: 0.3.1.
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.3.2");
+    // Previous release: 0.2.8.
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.9");
 
     /// <summary>
-    /// The settings view's surface. Not in the sections manifest (the force-server override lives
-    /// only in RynthCore Options > Diagnostics), but still drawn for an engine that asks.
+    /// The settings view's surface. No longer in the sections manifest (the force-server override
+    /// lives only in RynthCore Options > Diagnostics), but still drawn for an engine that asks.
     /// </summary>
     internal const string SettingsSurface = "section:ilt-settings";
 
@@ -65,19 +62,13 @@ public sealed class RynthILTPlugin : RynthPluginBase
     /// <summary>The fellowship commands' surface in RynthCore's Fellowship section.</summary>
     internal const string FellowshipSurface = "section:ilt-fellowship";
 
-    /// <summary>
-    /// The quest bonus list (/qb) in RynthILT's own Mini Remote "Quests" section (it was part of
-    /// RynthAi's Quests tab, which moved to RynthOracle; Infinite Leaftide's /qb stays RynthILT's).
-    /// </summary>
-    internal const string QuestBonusSurface = "section:ilt-questbonus";
-
     /// <summary>RynthAi's name for the plugin-command broker (its Fellowship view draws our commands).</summary>
     private const string RynthAiPlugin = "RynthAi";
 
     private readonly IltSettingsModel _settingsModel = new();
     private readonly IltSettingsUi _settingsUi;
     private readonly IltFellowshipUi _fellowshipUi;
-    // Chat commands from the settings and fellowship windows (render thread), run on the next tick.
+    // Chat commands from the settings and fellowship views (render thread), run on the next tick.
     private readonly ConcurrentQueue<string> _chatCommands = new();
     private const int MaxQueuedChatCommands = 32;
 
@@ -178,9 +169,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         while (_commands.TryDequeue(out _)) { }
         while (_typedBounty.TryDequeue(out _)) { }
         while (_engineCommands.TryDequeue(out _)) { }
-        while (_chatCommands.TryDequeue(out _)) { }
         _settingsModel.Clear();
-        _serverStateJson = string.Empty;
     }
 
     // Plugin unload (hot reload, update, client closing): keep the list and the Hub state for the
@@ -212,168 +201,11 @@ public sealed class RynthILTPlugin : RynthPluginBase
         catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "Tick"); }
         RetryPendingMigration();
         PostDataWriteProblems();
-        try { PublishHubFeatures(); }
-        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "PublishHubFeatures"); }
         try { ShareFellowshipCommands(); }
         catch (Exception ex) { Host.Log($"[RynthILT] Fellowship commands to RynthAi failed: {ex.Message}"); }
+        try { PublishHubFeatures(); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "PublishHubFeatures"); }
     }
-
-    // ── ILT fellowship commands for RynthAi's Fellowship view (IltFellowship/) ──
-
-    private const long FellowshipShareCheckMs = 2000;
-    private const long FellowshipShareResendMs = 10_000;
-    private long _fellowshipShareNextAt;
-    private long _fellowshipShareSentAt;
-    // The last payload RynthAi took; empty when nothing was delivered (or after a clear).
-    private string _fellowshipShareLast = string.Empty;
-
-    /// <summary>
-    /// Plugin tick: sends RynthAi ILT's fellowship commands while ILT is active (an empty list when
-    /// it isn't), when that changes and every <see cref="FellowshipShareResendMs"/> (RynthAi may load
-    /// later, and drops a list that stops arriving). Nothing on an engine without the broker.
-    /// </summary>
-    private void ShareFellowshipCommands()
-    {
-        if (!Host.HasSendPluginCommand) return;
-        long now = Environment.TickCount64;
-        if (now < _fellowshipShareNextAt) return;
-        _fellowshipShareNextAt = now + FellowshipShareCheckMs;
-
-        bool active = IltActive();
-        // Nothing to clear when RynthAi never got a list.
-        if (!active && _fellowshipShareLast.Length == 0) return;
-        string payload = IltFellowshipCommands.Payload(active);
-        if (payload == _fellowshipShareLast && now - _fellowshipShareSentAt < FellowshipShareResendMs) return;
-        _fellowshipShareSentAt = now;
-        // Not delivered (RynthAi not installed or not loaded yet): the resend timer tries again.
-        if (Host.SendPluginCommand(RynthAiPlugin, ServerCommandShare.Action, payload))
-            _fellowshipShareLast = active ? payload : string.Empty;
-    }
-
-    /// <summary>Clears RynthAi's copy of the fellowship commands (logout) if it has one.</summary>
-    private void ClearSharedFellowshipCommands()
-    {
-        if (_fellowshipShareLast.Length == 0) return;
-        _fellowshipShareLast = string.Empty;
-        _fellowshipShareNextAt = 0;
-        try
-        {
-            if (Host.HasSendPluginCommand)
-                Host.SendPluginCommand(RynthAiPlugin, ServerCommandShare.Action, IltFellowshipCommands.Payload(active: false));
-        }
-        catch { /* RynthAi drops a list that stops arriving */ }
-    }
-
-    /// <summary>
-    /// The Hub's world check (RynthCore's verdict once it has one, else RynthILT's server list and
-    /// "Treat this world as ILT"); before the Hub exists, the engine verdict or the world name
-    /// (IltFellowshipCommands.IsActive).
-    /// </summary>
-    private bool IltActive()
-    {
-        var hub = _hub;
-        if (hub != null) return hub.Options.IsIltLikeWorld;
-        bool? engine = IltEngineVerdict.Active;
-        string world = engine == null && Host.HasGetWorldName && Host.TryGetWorldName(out string w) ? w : string.Empty;
-        return IltFellowshipCommands.IsActive(engine, world);
-    }
-
-    // ── RynthCore's Mini Remote sections ─────────────────────────────────────
-
-    /// <summary>
-    /// The broker actions answered on arrival rather than queued for the tick: RynthCore's
-    /// "servermenu" push (2026.10.5.47+, every 10 s) and the older "iltfeatures" text.
-    /// </summary>
-    internal static bool IsParsedRemoteAction(string action) =>
-        action.Equals("servermenu", StringComparison.OrdinalIgnoreCase)
-        || action.Equals("iltfeatures", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// RynthPluginApplyRemoteCommand "servermenu" / "iltfeatures". Any thread. Taken and dropped:
-    /// the same verdicts, overrides and world names reach the settings model from RynthCore's
-    /// server list (plugin API v86, PollServerState), which RynthILT reads itself, so the push is
-    /// only acknowledged (it must not fall through to the ILT verbs).
-    /// </summary>
-    internal void ApplyRemoteCommand(string action, string value) { }
-
-    /// <summary>
-    /// RynthPluginRenderEmbed: <see cref="RatesSurface"/> (Session Stats), <see cref="FellowshipSurface"/>
-    /// (Fellowship), <see cref="QuestBonusSurface"/> (RynthILT's Quests section) or
-    /// <see cref="SettingsSurface"/> in RynthCore's Mini Remote, drawn into the engine's current
-    /// window and context (popped-out windows have their own). <paramref name="wantHeight"/> is the
-    /// height it used. False until login or for another surface. Render thread.
-    /// </summary>
-    internal bool RenderEmbedded(string surface, out float wantHeight)
-    {
-        wantHeight = 0;
-        if (!_loginComplete) return false;
-        Action? body = surface switch
-        {
-            SettingsSurface => _settingsUi.RenderBody,
-            FellowshipSurface => _fellowshipUi.RenderBody,
-            RatesSurface => RenderRatesSurface,
-            QuestBonusSurface => RenderQuestBonusSurface,
-            _ => null,
-        };
-        if (body == null) return false;
-        IntPtr previous = ImGui.GetCurrentContext();
-        IntPtr context = previous != IntPtr.Zero ? previous : Host.ImGuiContext;
-        if (context == IntPtr.Zero) return false;
-        ImGui.SetCurrentContext(context);
-        try
-        {
-            float startY = ImGui.GetCursorPosY();
-            body();
-            wantHeight = MathF.Max(40f, ImGui.GetCursorPosY() - startY + 4f);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Host.Log($"[RynthILT] View {surface} failed: {ex.Message}");
-            return false;
-        }
-        finally { ImGui.SetCurrentContext(previous); }
-    }
-
-    /// <summary>The ILT session extras (render thread), or a line saying they start with the Hub.</summary>
-    private void RenderRatesSurface()
-    {
-        IltHubController? hub = _hub;
-        if (hub == null) { ImGui.TextDisabled("ILT session rates start once RynthILT's Hub is ready."); return; }
-        hub.RenderRatesSection();
-    }
-
-    /// <summary>The /qb list (render thread), or a line saying it starts with the Hub.</summary>
-    private void RenderQuestBonusSurface()
-    {
-        IltHubController? hub = _hub;
-        if (hub == null) { ImGui.TextDisabled("The quest bonus list starts once RynthILT's Hub is ready."); return; }
-        hub.RenderQuestBonusSection();
-    }
-
-    /// <summary>
-    /// RynthPluginGetSectionsJson (schema 1, UI/Sections/SectionManifest.cs in RynthCore): the ILT
-    /// session extras in Session Stats ("char"), the fellowship commands in Fellowship and the /qb
-    /// list in a Quests section of RynthILT's own, all Infinite Leaftide areas (shown while RynthCore
-    /// treats this world as ILT). The Mini Remote ILT tabs (Banking, Gear, Charms, Games) are listed
-    /// by RynthAi, which hosts them. Null before login.
-    /// </summary>
-    internal string? BuildSectionsJson() => _loginComplete ? SectionsJson : null;
-
-    internal const string SectionsJson =
-        "{\"version\":1,\"sections\":[{\"id\":\"quests\",\"label\":\"Quests\",\"order\":1160}],\"contributions\":[" +
-        "{\"section\":\"char\",\"server\":\"ilt\"," +
-        "\"label\":\"ILT session rates (RynthILT)\",\"surface\":\"" + RatesSurface + "\",\"primary\":false," +
-        "\"height\":220,\"enabled\":true,\"tooltip\":\"Enlightened Coins, pyreals and item conversions this session, " +
-        "on the same clock as RynthAi's session stats (RynthILT).\",\"order\":120}," +
-        "{\"section\":\"fellowship\",\"server\":\"ilt\"," +
-        "\"label\":\"ILT fellowship (RynthILT)\",\"surface\":\"" + FellowshipSurface + "\",\"primary\":false," +
-        "\"height\":110,\"enabled\":true,\"tooltip\":\"Infinite Leaftide's /fship commands: create, invite, dismiss, " +
-        "invite your landblock, list nearby, leave, disband (RynthILT; also /ilt fellow).\",\"order\":120}," +
-        "{\"section\":\"quests\",\"server\":\"ilt\"," +
-        "\"label\":\"Quest bonus (/qb)\",\"surface\":\"" + QuestBonusSurface + "\",\"primary\":true," +
-        "\"width\":520,\"height\":440,\"enabled\":true,\"tooltip\":\"Infinite Leaftide's quest bonus list: completed and " +
-        "incomplete /qb flags (RynthILT; the quest list, timers and rewards are RynthOracle's, /ro).\",\"order\":100}]}";
 
     /// <summary>Plugin tick: runs the settings and fellowship views' chat commands through the engine.</summary>
     private void DrainChatCommands()
@@ -383,30 +215,6 @@ public sealed class RynthILTPlugin : RynthPluginBase
             if (!Host.HasInvokeChatParser || !Host.InvokeChatParser(command))
                 ChatLine("[RynthILT] RynthCore didn't take: " + command);
         }
-    }
-
-    private const long ServerStatePollMs = 2000;
-    private long _serverStateNextAt;
-    private string _serverStateJson = string.Empty;
-
-    /// <summary>
-    /// Plugin tick, every 2 s (and at login): RynthCore's server list (plugin API v86,
-    /// GetServerStateJson) into the settings model, whose "ilt" entry the Hub's world check follows
-    /// (IltEngineVerdict). Parsed only when the text changed. An older engine leaves it empty, and
-    /// RynthILT's own list decides.
-    /// </summary>
-    private void PollServerState(bool force)
-    {
-        long now = Environment.TickCount64;
-        if (!force && now < _serverStateNextAt) return;
-        _serverStateNextAt = now + ServerStatePollMs;
-        try
-        {
-            if (!Host.HasGetServerStateJson || !Host.TryGetServerStateJson(out string json) || json == _serverStateJson) return;
-            _serverStateJson = json;
-            _settingsModel.ApplyServerState(EngineServerState.Parse(json));
-        }
-        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "PollServerState"); }
     }
 
     private const long FeaturePublishMs = 1000;
@@ -470,7 +278,86 @@ public sealed class RynthILTPlugin : RynthPluginBase
         DataWriteGuard.DrainChat(line => Host.WriteToChat(line, 2));
     }
 
+    // ── ILT fellowship commands (IltFellowship/) ────────────────────────────
+
+    private const long FellowshipShareCheckMs = 2000;
+    private const long FellowshipShareResendMs = 10_000;
+    private long _fellowshipShareNextAt;
+    private long _fellowshipShareSentAt;
+    // The last payload RynthAi took; empty when nothing was delivered (or after a clear).
+    private string _fellowshipShareLast = string.Empty;
+
+    /// <summary>
+    /// Plugin tick: sends RynthAi ILT's fellowship commands while ILT is active (an empty list when
+    /// it isn't), when that changes and every <see cref="FellowshipShareResendMs"/> (RynthAi may load
+    /// later, and drops a list that stops arriving). Nothing on an engine without the broker.
+    /// </summary>
+    private void ShareFellowshipCommands()
+    {
+        if (!Host.HasSendPluginCommand) return;
+        long now = Environment.TickCount64;
+        if (now < _fellowshipShareNextAt) return;
+        _fellowshipShareNextAt = now + FellowshipShareCheckMs;
+
+        bool active = IltActive();
+        // Nothing to clear when RynthAi never got a list.
+        if (!active && _fellowshipShareLast.Length == 0) return;
+        string payload = IltFellowshipCommands.Payload(active);
+        if (payload == _fellowshipShareLast && now - _fellowshipShareSentAt < FellowshipShareResendMs) return;
+        _fellowshipShareSentAt = now;
+        // Not delivered (RynthAi not installed or not loaded yet): the resend timer tries again.
+        if (Host.SendPluginCommand(RynthAiPlugin, ServerCommandShare.Action, payload))
+            _fellowshipShareLast = active ? payload : string.Empty;
+    }
+
+    /// <summary>Clears RynthAi's copy of the fellowship commands (logout) if it has one.</summary>
+    private void ClearSharedFellowshipCommands()
+    {
+        if (_fellowshipShareLast.Length == 0) return;
+        _fellowshipShareLast = string.Empty;
+        _fellowshipShareNextAt = 0;
+        try
+        {
+            if (Host.HasSendPluginCommand)
+                Host.SendPluginCommand(RynthAiPlugin, ServerCommandShare.Action, IltFellowshipCommands.Payload(active: false));
+        }
+        catch { /* RynthAi drops a list that stops arriving */ }
+    }
+
+    /// <summary>
+    /// The Hub's world check (RynthCore's verdict once it has sent one, else RynthILT's server list
+    /// and "Treat this world as ILT"); before the Hub exists, the engine verdict or the world name
+    /// (IltFellowshipCommands.IsActive).
+    /// </summary>
+    private bool IltActive()
+    {
+        var hub = _hub;
+        if (hub != null) return hub.Options.IsIltLikeWorld;
+        bool? engine = IltEngineVerdict.Active;
+        string world = engine == null && Host.HasGetWorldName && Host.TryGetWorldName(out string w) ? w : string.Empty;
+        return IltFellowshipCommands.IsActive(engine, world);
+    }
+
     // ── ILT settings ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The broker actions parsed on arrival rather than queued for the tick: RynthCore's
+    /// "servermenu" push and the older "iltfeatures" text (IltSettingsModel has both formats).
+    /// </summary>
+    internal static bool IsParsedRemoteAction(string action) =>
+        action.Equals("servermenu", StringComparison.OrdinalIgnoreCase)
+        || action.Equals("iltfeatures", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// RynthPluginApplyRemoteCommand: "servermenu" from RynthCore, "iltfeatures" from an older
+    /// sender. Any thread: parsed and published, nothing else. The Hub's next world check follows
+    /// a changed verdict (IltEngineVerdict).
+    /// </summary>
+    internal void ApplyRemoteCommand(string action, string value)
+    {
+        if (action.Equals("servermenu", StringComparison.OrdinalIgnoreCase)) _settingsModel.ApplyEngine(value);
+        else if (action.Equals("iltfeatures", StringComparison.OrdinalIgnoreCase)) _settingsModel.ApplyFeatures(value);
+    }
 
     /// <summary>Asks the Hub to read the server's ILT features again (as "/ilt hub refresh", on the next tick). Render thread.</summary>
     private bool RefreshFeatures()
@@ -479,6 +366,70 @@ public sealed class RynthILTPlugin : RynthPluginBase
         _commands.Enqueue(new[] { "/ilt", "hub", "refresh" });
         return true;
     }
+
+    /// <summary>
+    /// RynthPluginRenderEmbed: <see cref="SettingsSurface"/> (the settings view, Char section) or
+    /// <see cref="FellowshipSurface"/> (the fellowship commands, Fellowship section) in RynthCore's
+    /// Mini Remote, drawn into the engine's current window and context (popped-out windows have
+    /// their own). <paramref name="wantHeight"/> is the height it used. False until login or for
+    /// another surface. Render thread.
+    /// </summary>
+    internal bool RenderEmbedded(string surface, out float wantHeight)
+    {
+        wantHeight = 0;
+        if (!_loginComplete) return false;
+        Action? body = surface switch
+        {
+            SettingsSurface => _settingsUi.RenderBody,
+            FellowshipSurface => _fellowshipUi.RenderBody,
+            RatesSurface => RenderRatesSurface,
+            _ => null,
+        };
+        if (body == null) return false;
+        IntPtr previous = ImGui.GetCurrentContext();
+        IntPtr context = previous != IntPtr.Zero ? previous : Host.ImGuiContext;
+        if (context == IntPtr.Zero) return false;
+        ImGui.SetCurrentContext(context);
+        try
+        {
+            float startY = ImGui.GetCursorPosY();
+            body();
+            wantHeight = MathF.Max(40f, ImGui.GetCursorPosY() - startY + 4f);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Host.Log($"[RynthILT] View {surface} failed: {ex.Message}");
+            return false;
+        }
+        finally { ImGui.SetCurrentContext(previous); }
+    }
+
+    /// <summary>The ILT session extras (render thread), or a line saying they start with the Hub.</summary>
+    private void RenderRatesSurface()
+    {
+        IltHubController? hub = _hub;
+        if (hub == null) { ImGui.TextDisabled("ILT session rates start once RynthILT's Hub is ready."); return; }
+        hub.RenderRatesSection();
+    }
+
+    /// <summary>
+    /// RynthPluginGetSectionsJson: the ILT session extras in RynthCore's Session Stats section
+    /// (the "char" id) and the fellowship commands in its Fellowship section, Infinite Leaftide
+    /// areas (shown while RynthCore treats this world as ILT). Null before login.
+    /// </summary>
+    internal string? BuildSectionsJson() => _loginComplete ? SectionsJson : null;
+
+    private const string SectionsJson =
+        "{\"version\":1,\"sections\":[],\"contributions\":[" +
+        "{\"section\":\"char\",\"server\":\"ilt\"," +
+        "\"label\":\"ILT session rates (RynthILT)\",\"surface\":\"" + RatesSurface + "\",\"primary\":false," +
+        "\"height\":220,\"enabled\":true,\"tooltip\":\"Enlightened Coins, pyreals and item conversions this session, " +
+        "on the same clock as RynthAi's session stats (RynthILT).\",\"order\":120}," +
+        "{\"section\":\"fellowship\",\"server\":\"ilt\"," +
+        "\"label\":\"ILT fellowship (RynthILT)\",\"surface\":\"" + FellowshipSurface + "\",\"primary\":false," +
+        "\"height\":110,\"enabled\":true,\"tooltip\":\"Infinite Leaftide's /fship commands: create, invite, dismiss, " +
+        "invite your landblock, list nearby, leave, disband (RynthILT; also /ilt fellow).\",\"order\":120}]}";
 
     public override void OnChatWindowText(string? text, int chatType, ref int eat)
     {
@@ -635,7 +586,9 @@ public sealed class RynthILTPlugin : RynthPluginBase
                 if (sub is "open")
                     return words.Length < 3 || !IltSections.IsUniversalTabName(words[2]);
                 if (sub is "tab")
-                    return words.Length >= 3 && IltSections.TryParse(words[2], out IltSection t) && IltSections.IsTab(t);
+                    // Gear / Games, and the sections that moved out (redirected to RynthOracle / RynthInventory).
+                    return words.Length >= 3 && IltSections.TryParse(words[2], out IltSection t)
+                           && (IltSections.IsTab(t) || IltSections.MovedCommand(t) != null);
                 return true;
             default:
                 return false;
@@ -694,8 +647,8 @@ public sealed class RynthILTPlugin : RynthPluginBase
             case "help":
                 ChatLine("[RynthILT] /ilt hub ... (the Mini Remote's ILT tabs; same as /ra hub ...), /ilt guardian ..., /ilt servers [list|<names>|default],");
                 ChatLine("[RynthILT] /ilt bounty [list|refresh] - the tracked ACECustom bounties (the Bounties window: the ILT button on the RynthCore bar, or /rc bounties),");
-                ChatLine("[RynthILT] /ilt settings [show|hide|toggle] - the ILT settings: the world verdict, the ILT world names and the server's features (force a server: RynthCore Options > Diagnostics),");
-                ChatLine("[RynthILT] /ilt fellow [show|hide|toggle] - ILT's /fship commands as buttons (also in the Mini Remote's Fellowship section),");
+                ChatLine("[RynthILT] /ilt settings [show|hide|toggle] - the ILT settings: the world verdict, the ILT world names and a feature summary (force a server: RynthCore Options > Diagnostics; all features: RynthOracle > About),");
+                ChatLine("[RynthILT] /ilt fellow [show|hide|toggle] - ILT's /fship commands as buttons (also in the Mini Remote's Fellowship section and RynthOracle's Fellowship tab),");
                 ChatLine("[RynthILT] /ilt trace <category|all|list> [on|off], /ilt debug [on|off].");
                 return;
             default:

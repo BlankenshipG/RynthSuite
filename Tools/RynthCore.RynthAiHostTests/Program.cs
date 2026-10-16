@@ -54,7 +54,10 @@ internal static class Program
         PropertyDumpTests.Register(runner);
         T11LootTests.Register(runner);
         MagItemDescriberTests.Register(runner);
+SelfRatingsTests.Register(runner);
+IltClientLookupTests.Register(runner);
         ExpressionTests.Register(runner);
+        GiveProfileTests.Register(runner);
         MetaTests.Register(runner);
         NoKillTests.Register(runner);
         MetaSchedulerTests.Register(runner);
@@ -71,6 +74,8 @@ internal static class Program
         AmmoTests.Register(runner);
         VTankYieldTests.Register(runner);
         OffhandTests.Register(runner);
+        LauncherSwapTests.Register(runner);
+        MissileCraftingTests.Register(runner);
         FloodPerfTests.Register(runner);
         LootSalvageTests.Register(runner);
         LootCorpseTests.Register(runner);
@@ -127,6 +132,9 @@ internal static class Program
         CorpseCloseTests.Register(runner);
         VTankHotkeyTests.Register(runner);
         SaveFailureTests.Register(runner);
+        EnvironmentImpactTests.Register(runner);
+        PetDamageTintTests.Register(runner);
+        TinkerTests.Register(runner);
         DoorTests.Register(runner);
         ServerPolicyTests.Register(runner);
         BlankLoadTests.Register(runner);

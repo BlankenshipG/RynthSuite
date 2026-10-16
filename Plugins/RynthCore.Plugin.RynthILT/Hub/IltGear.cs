@@ -4,8 +4,8 @@
 // The sections are separate modules (buff keepers, chunk/clap, split arrows, equipment suits)
 // that this tab just lays out, plus RynthAi's VTank .usd importer (it edits RynthAi's own rules,
 // so it stayed in RynthAi and is drawn here through RynthAi.Hub RenderSection). The charm strip (registry charms and the Guardian
-// Hand, with their toggles) is the Charms tab now (IltCharms). The Rings inscription chain
-// (IltRingChainRunner) is SilentKelpie's RynthAi Crafting > Rings, moved here 2026-10-15.
+// Hand, with their toggles) is RynthOracle's Character tab now (IltCharms feeds it through
+// "RynthILT.Data", 2026-10-13).
 using ImGuiNET;
 
 namespace RynthCore.Plugin.RynthILT.Hub;
@@ -73,6 +73,6 @@ internal sealed class IltGear : IIltFeature
         if (ImGui.CollapsingHeader("Rings (inscription chain)")) Rings.Render();
         if (ImGui.CollapsingHeader("VirindiTank import") && !_ctx.Ai.RenderSection(RynthCore.Plugin.Shared.RynthAiHub.SectionVTankImport))
             ImGui.TextDisabled("The VirindiTank .usd import fills RynthAi's rules: it comes with RynthAi, which isn't loaded.");
-        ImGui.TextDisabled("Charms and the Guardian Hand are on the Charms tab.");
+        ImGui.TextDisabled("Charms and the Guardian Hand: RynthOracle > Character (" + IltSections.OracleCharacterCommand + ").");
     }
 }

@@ -21,7 +21,7 @@ public sealed class MiniRemoteState
     public int SchemaVersion = 1;
     public PetTabState Pet = new();
     public QuestsTabState Quests = new();
-    /// <summary>The Crafting tab (tinker benches); the ILT Hub's Crafting before.</summary>
+    /// <summary>The Crafting tab (tinker benches, Rings chain); the ILT Hub's Crafting before.</summary>
     public CraftingTabState Crafting = new();
     /// <summary>Last VTank .usd file the importer read (the ILT Hub's Gear.LastUsdPath before).</summary>
     public string LastUsdPath = string.Empty;
@@ -44,17 +44,18 @@ public sealed class CraftingTabState
     public bool AutoNextBatch;
     /// <summary>...and start it without asking again.</summary>
     public bool AutoStartNextBatch;
-    /// <summary>Prepared salvage tier: 0 Minor, 1 Moderate, 2 Major (TinkerCatalog.TrinketTiers).</summary>
+    /// <summary>Trinket salvage tier: 0 Minor, 1 Moderate, 2 Major (TinkerCatalog.TrinketTiers).</summary>
     public int TrinketTier;
-    /// <summary>Prepare a raw bag on the tier's Ammunition when no prepared bag is carried.</summary>
+    /// <summary>Prepare a raw trinket bag on the tier's Ammunition when no prepared bag is carried.</summary>
     public bool TrinketPrep;
-    // "RingRuns" (the Rings chain, now left to RynthILT) may still be in older files: it is ignored.
+    /// <summary>Rings chain: recipe id (RingChain) to how many times to craft it.</summary>
+    public Dictionary<string, int> RingRuns = new();
 }
 
 /// <summary>One tinker bench's choices.</summary>
 public sealed class TinkerBenchSettings
 {
-    /// <summary>Row key (TinkerCatalog.Key: r/p/c + material id) to how many times (imbues and flags: 0 or 1).</summary>
+    /// <summary>Row key (TinkerCatalog.Key: r/s/c + material id) to how many times (imbues and flags: 0 or 1).</summary>
     public Dictionary<string, int> Counts = new();
     /// <summary>Skip a step whose chance is under this percent (0 = any chance).</summary>
     public int MinChancePercent;
@@ -257,6 +258,7 @@ internal sealed class MiniRemoteStore
         s.Crafting ??= new CraftingTabState();
         s.Crafting.Benches ??= new();
         s.Crafting.CustomByWorld ??= new();
+        s.Crafting.RingRuns ??= new();
         s.Crafting.BatchSize = Math.Clamp(s.Crafting.BatchSize, 1, 200);
         s.Crafting.TrinketTier = Math.Clamp(s.Crafting.TrinketTier, 0, 2);
         s.LastUsdPath ??= string.Empty;

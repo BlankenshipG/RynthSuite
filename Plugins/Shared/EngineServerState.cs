@@ -4,7 +4,7 @@
 //  GetServerStateJson), parsed: every server the engine knows (built-in ILT and
 //  Aelrynth, plus each loaded server plugin's declaration), whether it is
 //  active, this character's override, and which plugin owns it (the one to ask
-//  for its settings through "RynthServer.Profile"; RynthILT answers it for "ilt").
+//  for its settings: "RynthServer.Profile", or RynthILT's "RynthILT.Server").
 //  The same verdict the Mini Remote, the menus and the Diagnostics server
 //  picker use, so every plugin follows one choice, overrides included.
 //
@@ -28,6 +28,8 @@ internal sealed class EngineServerState
     /// <summary>Engine server ids with a meaning across RynthSuite.</summary>
     public const string IltId = "ilt";
     public const string AelrynthId = "aelrynth";
+    /// <summary>RynthILT serves "RynthILT.Server" for the "ilt" server, not "RynthServer.Profile".</summary>
+    public const string IltPlugin = "RynthILT";
 
     public int Revision { get; private init; }
     /// <summary>The connect host the client was launched with ("" when not known).</summary>
@@ -155,8 +157,8 @@ internal sealed class EngineServerState
 }
 
 /// <summary>
-/// The headline facts of a server owner's profile JSON ("RynthServer.Profile" from the plugin that
-/// owns the server), read leniently: a field the owner doesn't send stays "".
+/// The headline facts of a server owner's profile JSON ("RynthServer.Profile" from a server plugin,
+/// or RynthILT's "RynthILT.Server"), read leniently: a field the owner doesn't send stays "".
 /// </summary>
 internal sealed record ServerProfileView(string Id, string Name, string Plugin, string Ruleset, string Emulator,
                                          string Botting, string BottingNote, string AccountLimit, bool Ilt, int FeaturesOn)
@@ -202,23 +204,13 @@ internal sealed record ServerProfileView(string Id, string Name, string Plugin, 
 
 /// <summary>
 /// One salvage from a server plugin's profile "salvage" list (ServerPackInfo.Salvage): a tinkering
-/// recipe the server adds, for the Mini Remote's Crafting tab. The fields after
-/// <paramref name="NameMatch"/> are optional in the JSON; absent, a row behaves as before them.
+/// recipe the server adds, for the Mini Remote's Crafting tab.
 /// </summary>
-/// <param name="AppliedInt">"applied": an int property of the item that reads 2 once the row is on it (0 = none).</param>
-/// <param name="Prepared">"prepared": the bag must first be prepared on the chosen tier's Ammunition.</param>
-/// <param name="Order">"order": apply order (lower first); 0 = the kind-based default.</param>
-/// <param name="AfterCap">"afterCap": applied last, only once the item's tink slots are full.</param>
-/// <param name="StackGroup">"stackGroup": rows in one group share <paramref name="StackCap"/> per item ("" = none).</param>
-/// <param name="StackCap">"stackCap": the group's combined cap per item.</param>
-internal sealed record ServerSalvageView(string Bench, int Material, string Kind, string Effect, bool UsesTinkSlot, string NameMatch,
-                                         int AppliedInt = 0, bool Prepared = false, int Order = 0, bool AfterCap = false,
-                                         string StackGroup = "", int StackCap = 0)
+internal sealed record ServerSalvageView(string Bench, int Material, string Kind, string Effect, bool UsesTinkSlot, string NameMatch)
 {
     /// <summary>
-    /// The profile's salvage rows, read leniently: a missing list (an older plugin) is empty; a row
-    /// without a bench or a material id is skipped; "slot" defaults to true, the optional fields to
-    /// none (a stack group without a positive cap is no group).
+    /// The profile's salvage rows, read leniently: a missing list (an older plugin, or RynthILT's
+    /// profile) is empty; a row without a bench or a material id is skipped; "slot" defaults to true.
     /// </summary>
     public static IReadOnlyList<ServerSalvageView> ParseList(string? json)
     {
@@ -239,16 +231,8 @@ internal sealed record ServerSalvageView(string Bench, int Material, string Kind
                 if (bench.Length == 0 || material <= 0) continue;
                 string kind = EngineServerState.Str(e, "kind").Trim().ToLowerInvariant();
                 bool slot = !(e.TryGetProperty("slot", out JsonElement s) && s.ValueKind == JsonValueKind.False);
-                string group = EngineServerState.Str(e, "stackGroup").Trim();
-                int cap = EngineServerState.Int(e, "stackCap");
-                if (cap <= 0) group = string.Empty;
                 rows.Add(new ServerSalvageView(bench, material, kind.Length > 0 ? kind : "tink",
-                                               EngineServerState.Str(e, "effect"), slot, EngineServerState.Str(e, "nameMatch"),
-                                               AppliedInt: EngineServerState.Int(e, "applied"),
-                                               Prepared: EngineServerState.Bool(e, "prepared"),
-                                               Order: EngineServerState.Int(e, "order"),
-                                               AfterCap: EngineServerState.Bool(e, "afterCap"),
-                                               StackGroup: group, StackCap: group.Length > 0 ? cap : 0));
+                                               EngineServerState.Str(e, "effect"), slot, EngineServerState.Str(e, "nameMatch")));
             }
         }
         catch (JsonException)

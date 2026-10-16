@@ -1,7 +1,6 @@
 // Ported from Oracle of Dereth by Advis Eveldan (advis61), MIT. See THIRD_PARTY_NOTICES.md.
-// Tracking, kill tasks and rewards merged in from RynthAi's Mini Remote Quests tab and
-// UtilityBelt ILT's quest tracker (2026-10-13). Infinite Leaftide's quest bonus list (/qb) stays
-// RynthILT's (the Quests section it draws in the Mini Remote).
+// Tracking, kill tasks, rewards and the quest bonus list merged in from RynthAi's Mini Remote
+// Quests tab and UtilityBelt ILT's quest tracker (2026-10-13).
 using System;
 using System.Collections.Generic;
 using RynthCore.Plugin.RynthOracle.Data;
@@ -13,11 +12,13 @@ namespace RynthCore.Plugin.RynthOracle.Views;
 /// Quests: every flag the character holds, cross-referenced with the master quest list, in one
 /// searchable, sortable, paged list (upstream's Quest Flags tab). The * column tracks a quest in
 /// the Quest Timers window; clicking a quest opens it below the list, with its notes and the
-/// rewards editor (UtilityBelt ILT's).
+/// rewards editor (UtilityBelt ILT's). On Infinite Leaftide the quest bonus list (/qb, read by
+/// RynthILT) follows.
 /// </summary>
 internal sealed partial class OracleView
 {
     private const int QuestPageSize = 40;
+    private const int QbShownMax = 150;          // per /qb list on one pass (the rest: narrow with Search)
     private const float QuestListHeightWithPanel = 300f;
     private static readonly string[] QuestSorts = { "Flag", "Name", "Done first", "Not done first", "Ready soonest", "Most solves" };
 
@@ -64,7 +65,7 @@ internal sealed partial class OracleView
             : $"{cat.RetailCount} retail quests");
 
         w.InputText("Search", "q.search", _questSearch, 64, s => { _questSearch = s; _questPage = 0; });
-        w.Tooltip("Words to find in the quest's flag or name, e.g. \"kill task\". ");
+        w.Tooltip("Words to find in the quest's flag or name, e.g. \"kill task\". Also filters the quest bonus list.");
         w.Checkbox("Done", "q.done", _qDone, v => { _qDone = v; _questPage = 0; });
         w.SameLine();
         w.Checkbox("Not done", "q.notdone", _qNotDone, v => { _qNotDone = v; _questPage = 0; });
@@ -93,9 +94,10 @@ internal sealed partial class OracleView
         w.SameLine(160f);
         _questPage = Pager(w, "q.page", _questPage, rows.Count, QuestPageSize, p => _questPage = p);
 
-        // A fixed-height list when the opened quest follows it; else it fills the page.
+        // A fixed-height list when something follows it (the opened quest, the /qb list); else it fills the page.
+        IltQuestBonusList? qb = _c.Server.Is(ServerTags.InfiniteLeaftide) ? _c.Ilt.Profile.QuestBonus : null;
         bool selected = _questSel.Length > 0;
-        w.BeginChild("q.list", 0f, selected ? QuestListHeightWithPanel : 0f, border: true);
+        w.BeginChild("q.list", 0f, selected || qb != null ? QuestListHeightWithPanel : 0f, border: true);
         w.TextDisabled("*");
         w.Tooltip("Track: list the quest in the Quest Timers window.");
         w.SameLine(28f);
@@ -146,6 +148,7 @@ internal sealed partial class OracleView
         w.EndChild();
 
         if (selected) DrawSelectedQuest(w);
+        if (qb != null) DrawQuestBonus(w, qb);
     }
 
     /// <summary>The timer column: "ready" (green once done), a countdown, "N left" (yellow) or done (grey).</summary>
@@ -277,6 +280,47 @@ internal sealed partial class OracleView
         string status = q.IsComplete(_c.Flags) ? q.Status(_c.Flags, _c.UtcNow) : "not done";
         PrintEntry(q.IsNew ? (q.Name.Length > 0 ? q.Name : "Not in the quest list") : q.DisplayName, q.Flag, status, q.Details(), q.Url);
         if (_c.Book.TryGetReward(q.Flag, out QuestReward r)) _c.Print("Rewards: " + r.LongSummary());
+    }
+
+    // ── Quest bonus (/qb, Infinite Leaftide through RynthILT) ──────────────
+
+    private void DrawQuestBonus(UiWindow w, IltQuestBonusList qb)
+    {
+        string count = qb.Count >= 0 ? $" - count {TimeText.Number(qb.Count)}" : "";
+        if (!w.CollapsingHeader($"Quest bonus (/qb){count}", "q.qb")) return;
+        if (qb.Disabled)
+        {
+            w.TextDisabled("/qb is turned off on this server.");
+            return;
+        }
+        w.Button("Load /qb list", "q.qb.load", () =>
+        {
+            if (!_c.Send("/ilt qb")) _c.Print("Log in first.");
+        });
+        w.Tooltip("RynthILT asks the server for your quest bonus list (the server allows once a minute).");
+        w.SameLine();
+        w.TextDisabled(qb.Generation == 0 && qb.Status == "not loaded" ? "Not loaded yet this session." : qb.Status);
+
+        string[] terms = _questSearch.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        QbList(w, "Incomplete", "q.qb.todo", qb.Incomplete, terms, UiColors.Yellow);
+        QbList(w, "Completed", "q.qb.done", qb.Completed, terms, UiColors.Green);
+    }
+
+    private static void QbList(UiWindow w, string label, string id, IReadOnlyList<string> items, string[] terms, uint color)
+    {
+        var shown = new List<string>();
+        foreach (string s in items)
+        {
+            bool all = true;
+            foreach (string t in terms)
+                if (s.IndexOf(t, StringComparison.OrdinalIgnoreCase) < 0) { all = false; break; }
+            if (all) shown.Add(s);
+        }
+        string counts = terms.Length > 0 ? $"{shown.Count} of {items.Count}" : items.Count.ToString();
+        if (!w.CollapsingHeader($"{label} ({counts})", id)) return;
+        for (int i = 0; i < shown.Count && i < QbShownMax; i++) w.TextColored(color, shown[i]);
+        if (shown.Count > QbShownMax) w.TextDisabled($"... and {shown.Count - QbShownMax} more. Narrow them with Search.");
+        if (shown.Count == 0) w.TextDisabled(items.Count == 0 ? "None." : "None match the search.");
     }
 
     // ── Rows ──────────────────────────────────────────────────────────────

@@ -4,15 +4,14 @@
 //    1. RynthCore's server list (plugin API v86 GetServerStateJson, parsed by
 //       EngineServerState.cs): the active server, overrides and the Diagnostics
 //       pick included, and the plugin that owns it;
-//    2. that plugin's profile JSON through "RynthServer.Profile"
-//       (RynthServerProfileApi.cs): a server plugin for its server, RynthILT
-//       for "ilt".
+//    2. that plugin's profile JSON: "RynthServer.Profile" from a server plugin
+//       (RynthServerProfileApi.cs), "RynthILT.Server" from RynthILT for "ilt".
 //  Both are polled (every 2 s, cheap when not due) and Revision goes up when
 //  either changes, so a reader re-applies its server-specific state then.
 //
-//  Needs, linked into the reader: EngineServerState.cs, RynthServerProfileApi.cs.
-//  Engines older than v86 report Supported = false (the reader keeps its own
-//  detection).
+//  Needs, linked into the reader: EngineServerState.cs, RynthServerProfileApi.cs,
+//  RynthIltServerApi.cs. Engines older than v86 report Supported = false (the
+//  reader keeps its own detection).
 //  Pump thread only.
 // ============================================================================
 
@@ -30,7 +29,7 @@ internal sealed unsafe class ServerStateClient
 
     private long _nextPollAt, _nextQueryAt;
     private string _stateJson = string.Empty;
-    // The owner's "RynthServer.Profile" table.
+    // The owner's table: both interfaces start Version, StructSize, GetProfileJson.
     private string _tableOwner = string.Empty;
     private uint* _tableVersion;
     private delegate* unmanaged[Cdecl]<byte*, int, int> _getProfileJson;
@@ -44,6 +43,8 @@ internal sealed unsafe class ServerStateClient
     public string ProfileJson { get; private set; } = string.Empty;
     /// <summary>The plugin <see cref="ProfileJson"/> came from ("" with none).</summary>
     public string ProfilePlugin { get; private set; } = string.Empty;
+    /// <summary>The interface it came through ("RynthServer.Profile" / "RynthILT.Server", "" with none).</summary>
+    public string ProfileInterface { get; private set; } = string.Empty;
     /// <summary>Goes up whenever <see cref="State"/> or <see cref="ProfileJson"/> changes.</summary>
     public int Revision { get; private set; }
 
@@ -56,7 +57,7 @@ internal sealed unsafe class ServerStateClient
         bool changed = State != null || ProfileJson.Length > 0;
         _stateJson = string.Empty;
         State = null;
-        ProfileJson = ProfilePlugin = string.Empty;
+        ProfileJson = ProfilePlugin = ProfileInterface = string.Empty;
         if (changed) Revision++;
     }
 
@@ -85,8 +86,15 @@ internal sealed unsafe class ServerStateClient
             changed = true;
         }
         ProfilePlugin = profile.Length > 0 ? owner : string.Empty;
+        ProfileInterface = profile.Length > 0 ? InterfaceFor(owner) : string.Empty;
         if (changed) Revision++;
     }
+
+    /// <summary>The interface the owner of a server serves its settings through.</summary>
+    public static string InterfaceFor(string owner)
+        => owner.Equals(EngineServerState.IltPlugin, StringComparison.OrdinalIgnoreCase)
+            ? RynthIltServerApiV1.InterfaceName
+            : RynthServerProfileApiV1.InterfaceName;
 
     /// <summary>The owner's profile JSON, querying (or re-querying) its table as needed.</summary>
     private string ReadProfile(RynthCoreHost host, string owner, long now)
@@ -109,6 +117,14 @@ internal sealed unsafe class ServerStateClient
 
     private bool Query(RynthCoreHost host, string owner)
     {
+        if (InterfaceFor(owner) == RynthIltServerApiV1.InterfaceName)
+        {
+            var t = (RynthIltServerApiV1*)host.GetPluginInterface(owner, RynthIltServerApiV1.InterfaceName, RynthIltServerApiV1.InterfaceVersion);
+            if (t == null || t->Version < 1 || t->StructSize < (uint)sizeof(RynthIltServerApiV1) || t->GetProfileJson == null) return false;
+            _tableVersion = &t->Version;
+            _getProfileJson = t->GetProfileJson;
+            return true;
+        }
         var p = (RynthServerProfileApiV1*)host.GetPluginInterface(owner, RynthServerProfileApiV1.InterfaceName, RynthServerProfileApiV1.InterfaceVersion);
         if (p == null || p->Version < 1 || p->StructSize < (uint)sizeof(RynthServerProfileApiV1) || p->GetProfileJson == null) return false;
         _tableVersion = &p->Version;

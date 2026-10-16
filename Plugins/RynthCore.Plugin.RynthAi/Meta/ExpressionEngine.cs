@@ -3049,7 +3049,7 @@ internal sealed class ExpressionEngine
 
         DateTime mtime = File.GetLastWriteTime(profilePath);
 
-        // Each pulse: fire MoveItemExternal for the first matching item still in inventory.
+        // Each pulse: give (whole object) the first matching item still in inventory.
         // We retry the same item until it vanishes from the cache (server confirmed).
         // Once gone, the next iteration naturally picks up the next item.
         // Returns 1 while matching items remain, 0 when inventory is clear.
@@ -3629,6 +3629,17 @@ internal sealed class ExpressionEngine
             ["CastDispelSelf"]      = (() => B(s.CastDispelSelf),      v => s.CastDispelSelf      = ToDouble(v) != 0),
             ["AutoFellowMgmt"]      = (() => B(s.AutoFellowMgmt),      v => s.AutoFellowMgmt      = ToDouble(v) != 0),
             ["UseRecklessness"]     = (() => B(s.UseRecklessness),     v => s.UseRecklessness     = ToDouble(v) != 0),
+            // The range a monster rule's Variable attack power picks from (percent of the bar).
+            ["VariablePowerMin"]    = (() => I(s.VariablePowerMin),    v => { if (int.TryParse(v, out int i)) s.VariablePowerMin = Math.Clamp(i, 0, 100); }),
+            ["VariablePowerMax"]    = (() => I(s.VariablePowerMax),    v => { if (int.TryParse(v, out int i)) s.VariablePowerMax = Math.Clamp(i, 0, 100); }),
+            // Environment hits: 0 Off, 1 Move closer, 2 New target, 3 Move closer then new target.
+            ["MissileEnvironmentResponse"] = (() => I(s.MissileEnvironmentResponse), v => { if (int.TryParse(v, out int i)) s.MissileEnvironmentResponse = Math.Clamp(i, 0, 3); }),
+            ["MagicEnvironmentResponse"]   = (() => I(s.MagicEnvironmentResponse),   v => { if (int.TryParse(v, out int i)) s.MagicEnvironmentResponse   = Math.Clamp(i, 0, 3); }),
+            ["EnvironmentImpactLimit"]     = (() => I(s.EnvironmentImpactLimit),     v => { if (int.TryParse(v, out int i)) s.EnvironmentImpactLimit     = Math.Clamp(i, 1, 10); }),
+            ["EnvironmentImpactWindowSec"] = (() => I(s.EnvironmentImpactWindowSec), v => { if (int.TryParse(v, out int i)) s.EnvironmentImpactWindowSec = Math.Clamp(i, 5, 120); }),
+            ["EnvironmentApproachMeters"]  = (() => I(s.EnvironmentApproachMeters),  v => { if (int.TryParse(v, out int i)) s.EnvironmentApproachMeters  = Math.Clamp(i, 1, 30); }),
+            ["EnvironmentMinDistance"]     = (() => I(s.EnvironmentMinDistance),     v => { if (int.TryParse(v, out int i)) s.EnvironmentMinDistance     = Math.Clamp(i, 1, 30); }),
+            ["EnvironmentSkipSec"]         = (() => I(s.EnvironmentSkipSec),         v => { if (int.TryParse(v, out int i)) s.EnvironmentSkipSec         = Math.Clamp(i, 5, 300); }),
             ["WeaponSwapSettleMs"]         = (() => I(s.WeaponSwapSettleMs),         v => { if (int.TryParse(v, out int i)) s.WeaponSwapSettleMs         = Math.Clamp(i, 0, 3000); }),
             ["WeaponSwapMinHealthPct"]     = (() => I(s.WeaponSwapMinHealthPct),     v => { if (int.TryParse(v, out int i)) s.WeaponSwapMinHealthPct     = Math.Clamp(i, 0, 100); }),
             ["WeaponSwapMinGainPct"]       = (() => I(s.WeaponSwapMinGainPct),       v => { if (int.TryParse(v, out int i)) s.WeaponSwapMinGainPct       = Math.Clamp(i, 0, 200); }),

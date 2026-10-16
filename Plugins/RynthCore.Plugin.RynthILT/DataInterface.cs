@@ -1,7 +1,8 @@
 // DataInterface.cs - RynthILT's side of the "RynthILT.Data" interface (Plugins/Shared/RynthIltDataApi.cs):
-// the charms list and the bank balances (every character RynthILT has seen on this server) the
-// Mini Remote's Charms and Banking tabs show, for other plugins to draw, with the charm Toggle and
-// the bank verbs they send back; since version 2 also the pet breeding tracker's JSON and verbs.
+// the charms list RynthOracle's Character tab draws and the bank balances RynthInventory's Global
+// Inventory "Banking" tab draws (every character RynthILT has seen on this server), with the charm
+// Toggle and the bank verbs they send back. Replaced the Mini Remote's Charms and Banking tabs
+// on 2026-10-13.
 //
 // The table is allocated once per loaded copy of RynthILT and never freed (a plugin DLL is never
 // unloaded); after Release() it reports Version 0 and every function answers 0. Before login there
@@ -16,7 +17,7 @@ namespace RynthCore.Plugin.RynthILT;
 
 internal static unsafe class DataInterface
 {
-    /// <summary>Longest bank / breeding verb line taken (a transfer with a long character name fits easily).</summary>
+    /// <summary>Longest bank verb line taken (a transfer with a long character name fits easily).</summary>
     private const int MaxVerbBytes = 256;
 
     private static RynthIltDataApiV1* _table;
@@ -58,7 +59,7 @@ internal static unsafe class DataInterface
         try
         {
             string? json = Hub?.CharmsJson;
-            return string.IsNullOrEmpty(json) ? 0 : ProfileInterface.Write(json, buffer, capacity);
+            return string.IsNullOrEmpty(json) ? 0 : ServerInterface.Write(json, buffer, capacity);
         }
         catch { return 0; }
     }
@@ -69,7 +70,7 @@ internal static unsafe class DataInterface
         try
         {
             string? json = Hub?.BankJson;
-            return string.IsNullOrEmpty(json) ? 0 : ProfileInterface.Write(json, buffer, capacity);
+            return string.IsNullOrEmpty(json) ? 0 : ServerInterface.Write(json, buffer, capacity);
         }
         catch { return 0; }
     }
@@ -108,7 +109,7 @@ internal static unsafe class DataInterface
         try
         {
             string? json = Hub?.PetBreedingJson;
-            return string.IsNullOrEmpty(json) ? 0 : ProfileInterface.Write(json, buffer, capacity);
+            return string.IsNullOrEmpty(json) ? 0 : ServerInterface.Write(json, buffer, capacity);
         }
         catch { return 0; }
     }

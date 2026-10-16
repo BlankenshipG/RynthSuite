@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Text.Json;
 using RynthCore.Plugin.ServerPack;
 using RynthCore.RynthAiTests.Harness;
@@ -79,38 +78,7 @@ internal static class ServerPackModelTests
         Check.Eq(salvage[1].Bench, "armor", "bench lower-cased");
         Check.Eq(salvage[1].Kind, "tink", "default kind");
         Check.True(salvage[1].UsesTinkSlot, "slot by default");
-        Check.Eq(RynthCore.Plugin.Shared.ServerSalvageView.ParseList("{\"id\":\"x\"}").Count, 0, "a profile without the list (older plugins)");
-
-        // The optional row fields: absent = off / the default, and the writer leaves them out then.
-        Check.True(salvage.All(v => v.AppliedInt == 0 && !v.Prepared && v.Order == 0 && !v.AfterCap
-                                    && v.StackGroup.Length == 0 && v.StackCap == 0), "optional fields default when absent");
-        string plain = ServerPackProfile.BuildJson(withSalvage, "RynthX", "1", true, "X");
-        Check.True(!plain.Contains("\"applied\"") && !plain.Contains("\"prepared\"") && !plain.Contains("\"order\"")
-                   && !plain.Contains("\"afterCap\"") && !plain.Contains("\"stackGroup\""), "unset fields are not written");
-
-        ServerPackInfo withRules = new("x", "X", new[] { "x.example" }, new[] { "X" })
-        {
-            Salvage = new[]
-            {
-                new ServerSalvage("melee", 52, "post-cap", "once", UsesTinkSlot: false, Order: 995, AfterCap: true),
-                new ServerSalvage("jewelry", 71, "stack", UsesTinkSlot: false, Order: 50, StackGroup: "jewelry-stack", StackCap: 10),
-                new ServerSalvage("trinkets", 20, "tier", "once", UsesTinkSlot: false, AppliedInt: 384, Prepared: true, Order: 10),
-            },
-        };
-        var rules = RynthCore.Plugin.Shared.ServerSalvageView.ParseList(
-            ServerPackProfile.BuildJson(withRules, "RynthX", "1", true, "X"));
-        Check.Eq(rules.Count, 3, "rows with rules");
-        Check.True(rules[0].AfterCap && rules[0].Order == 995 && !rules[0].Prepared && rules[0].StackGroup.Length == 0, "after cap + order");
-        Check.Eq(rules[1].StackGroup, "jewelry-stack", "stack group");
-        Check.Eq(rules[1].StackCap, 10, "stack cap");
-        Check.True(rules[2].Prepared && rules[2].AppliedInt == 384 && rules[2].Order == 10 && !rules[2].AfterCap, "prepared + applied + order");
-        Check.Eq(RynthCore.Plugin.Shared.ServerSalvageView.ParseList(
-            "{\"salvage\":[{\"bench\":\"jewelry\",\"material\":64,\"stackGroup\":\"g\"},{\"bench\":\"jewelry\",\"material\":71,\"stackGroup\":\"g\",\"stackCap\":0}]}")
-            .Count(v => v.StackGroup.Length > 0), 0, "a stack group without a positive cap is no group");
-        var odd = RynthCore.Plugin.Shared.ServerSalvageView.ParseList(
-            "{\"salvage\":[{\"bench\":\"melee\",\"material\":52,\"applied\":\"x\",\"prepared\":1,\"order\":null,\"afterCap\":\"yes\"}]}");
-        Check.True(odd.Count == 1 && odd[0].AppliedInt == 0 && !odd[0].Prepared && odd[0].Order == 0 && !odd[0].AfterCap,
-            "fields of the wrong type read as absent");
+        Check.Eq(RynthCore.Plugin.Shared.ServerSalvageView.ParseList("{\"id\":\"ilt\"}").Count, 0, "a profile without the list (RynthILT, older plugins)");
 
         string idle = ServerPackProfile.BuildJson(info, "RynthColdeve", "0.1.2", false, null);
         using JsonDocument idleDoc = JsonDocument.Parse(idle);
@@ -234,9 +202,9 @@ internal static class ServerPackModelTests
         Check.Eq(c.Address, "play.coldeve.ac:9000", "address");
         Check.True(c.BottingText.StartsWith("Not published"), "unknown policy says so");
         Check.True(c.BottingText.Contains("Discord"), "and points at the Discord");
-        var lev = new ServerPackInfo("example", "Example", new[] { "play.example.test" }, new[] { "Example" })
-        { Botting = BottingPolicy.Forbidden, BottingNote = "no automation" };
-        Check.Eq(lev.BottingText, "Forbidden - no automation", "forbidden");
+        var lev = new ServerPackInfo("levistras", "Levistras", new[] { "levistras.acportalstorm.com" }, new[] { "Levistras" })
+        { Botting = BottingPolicy.Forbidden, BottingNote = "100% Botting-Free" };
+        Check.Eq(lev.BottingText, "Forbidden - 100% Botting-Free", "forbidden");
         Check.Eq(new ServerPackInfo("x", "", Array.Empty<string>(), Array.Empty<string>()).Address, "", "no host, no address");
         Check.True(ServerPackModel.LauncherSteps(c)[0].Contains("play.coldeve.ac:9000"), "setup names the address");
     }

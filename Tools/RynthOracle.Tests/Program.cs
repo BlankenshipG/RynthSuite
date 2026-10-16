@@ -9,6 +9,7 @@ using RynthCore.Plugin.RynthOracle;
 using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 using RynthCore.Plugin.RynthOracle.Views;
+using IltBreedingView = RynthCore.Plugin.Shared.IltBreedingView;
 
 // The engine parser's only outside dependency: the registry's limits (the engine's values).
 namespace RynthCore.Engine.UI.ScriptWindows
@@ -44,12 +45,14 @@ namespace RynthOracle.Tests
             Catalog();
             Servers();
             EngineServers();
+            IltProfile();
             QuestNotes();
             ConquestReplies();
             AelrynthReplies();
             Void();
             Pages();
             CharacterExtras();
+            Breeding();
             Events();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;
@@ -184,7 +187,7 @@ namespace RynthOracle.Tests
 
             // Identity from it.
             ServerIdentity.FromEngine(st, "Launcher Profile", out string tag, out string world, out string source);
-            Check(tag == "" && world == "InfiniteLeaftide" && source.Contains("no RynthOracle pages"), "engine: ILT active has no Oracle tag (its screens are RynthILT's): " + source);
+            Check(tag == ServerTags.InfiniteLeaftide && world == "InfiniteLeaftide", "engine: ILT active is the ILT tag: " + source);
             Check(source.Contains("host matches"), "engine: the reason is shown: " + source);
 
             var picked = RynthCore.Plugin.Shared.EngineServerState.Parse(EngineJson("conquest", "ConquestAC", "RynthConquest", "conquest", "",
@@ -206,7 +209,7 @@ namespace RynthOracle.Tests
             Check(tag == "" && source.Contains("Coldeve"), "engine: a server without Oracle pages has no tag: " + source);
 
             Check(ServerIdentity.TagForEngineId("AELRYNTH") == ServerTags.Aelrynth && ServerIdentity.TagForEngineId(null) == "", "engine id to tag");
-            Check(ServerIdentity.EngineIdForTag(ServerTags.Aelrynth) == "aelrynth" && ServerIdentity.EngineIdForTag("") == "", "tag to engine id");
+            Check(ServerIdentity.EngineIdForTag(ServerTags.InfiniteLeaftide) == "ilt" && ServerIdentity.EngineIdForTag("") == "", "tag to engine id");
 
             // The owner's profile, read leniently (a server plugin's, and RynthILT's).
             var prof = RynthCore.Plugin.Shared.ServerProfileView.Parse(
@@ -224,6 +227,8 @@ namespace RynthOracle.Tests
             Check(!RynthCore.Plugin.Shared.EngineServerState.MatchesNameList(coldeve, "InfiniteLeaftide", list), "names: Coldeve active beats a Leaftide world name");
             Check(!RynthCore.Plugin.Shared.EngineServerState.MatchesNameList(off, "InfiniteLeaftide", list), "names: ILT listed and off stays off");
             Check(RynthCore.Plugin.Shared.EngineServerState.MatchesNameList(unknown, "Conquest", list), "names: a server the engine doesn't list still matches by world");
+            Check(RynthCore.Plugin.Shared.ServerStateClient.InterfaceFor("RynthILT") == "RynthILT.Server"
+                  && RynthCore.Plugin.Shared.ServerStateClient.InterfaceFor("RynthColdeve") == "RynthServer.Profile", "profile: which interface to ask");
         }
 
         private static void Servers()
@@ -233,7 +238,8 @@ namespace RynthOracle.Tests
             Check(ServerIdentity.TagForWorld("Conquest") == ServerTags.Conquest, "Conquest");
             Check(ServerIdentity.TagForWorld("Levistras") == ServerTags.Levistras, "Levistras");
             Check(ServerIdentity.TagForWorld("Coldeve") == "" && ServerIdentity.TagForWorld("") == "", "other servers have no tag");
-            Check(ServerIdentity.TagForWorld("InfiniteLeaftide") == "", "Infinite Leaftide has no Oracle tag (RynthILT draws its screens)");
+            Check(ServerIdentity.TagForWorld("InfiniteLeaftide") == ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
+            Check(ServerIdentity.TagForWorld("Infinite Leaftide Staging") == ServerTags.InfiniteLeaftide, "a Leaftide staging world is ILT");
             var id = new ServerIdentity();
             id.Force("", "Coldeve");
             Check(id.Allows(null) && id.Allows("") && !id.Allows(ServerTags.Conquest) && !id.Allows(ServerTags.Aelrynth), "untagged everywhere, tagged nowhere else");
@@ -256,6 +262,38 @@ namespace RynthOracle.Tests
             c.Server.Force(ServerTags.Aelrynth, "Aeshnidae");
             Check(view.Tab == OracleView.TabQuests, "a Conquest tab left selected falls back to Quests elsewhere");
         }
+
+        /// <summary>RynthILT's "RynthILT.Server" profile JSON as the Fellowship tab reads it.</summary>
+        private static void IltProfile()
+        {
+            const string json = "{\"ilt\":true,\"world\":\"InfiniteLeaftide\",\"forced\":false,\"source\":\"probe\",\"checked\":\"2026-10-13T21:25:37Z\","
+                + "\"features\":[{\"key\":\"bank\",\"label\":\"Banking\",\"group\":\"Character\",\"state\":1,\"where\":\"Mini Remote > Banking tab\"},"
+                + "{\"key\":\"zone_share\",\"label\":\"Zone Share\",\"group\":\"Fellowship\",\"state\":1,\"where\":\"server\"},"
+                + "{\"key\":\"fellowship_blackjack\",\"label\":\"Fellowship Blackjack\",\"group\":\"Fellowship\",\"state\":0,\"where\":\"/fblackjack\"}],"
+                + "\"fellowship\":{\"maxMembers\":29,\"zoneShare\":1,\"blackjack\":0,\"luminanceShare\":-1},\"later\":{\"x\":1}}";
+            IltServerProfile p = IltServerProfile.Parse(json);
+            Check(p.Available && p.Ilt && p.World == "InfiniteLeaftide" && p.Source == "probe", "ILT profile header");
+            Check(p.FellowshipMax == 29 && p.ZoneShare == 1 && p.Blackjack == 0 && p.LuminanceShare == -1, "ILT fellowship rules");
+            Check(p.Features.Count == 3 && p.InGroup("Fellowship").Count() == 2, $"ILT features: {p.Features.Count}");
+            Check(p.CheckedUtc == new DateTime(2026, 10, 13, 21, 25, 37, DateTimeKind.Utc), "checked time is UTC: " + p.CheckedUtc.ToString("o"));
+
+            IltServerProfile none = IltServerProfile.Parse("");
+            Check(!none.Available && none.FellowshipMax == 9, "no RynthILT: a retail fellowship");
+            Check(!IltServerProfile.Parse("not json").Available, "garbage is ignored");
+            Check(IltServerProfile.Parse("{\"ilt\":false}").FellowshipMax == 9, "an older profile without fellowship rules: retail size");
+            Check(IltServerProfile.Parse("{\"fellowship\":{\"maxMembers\":5000}}").FellowshipMax == 9, "an absurd size is not believed");
+            Check(IltServerProfile.StateText(1) == "on" && IltServerProfile.StateText(0) == "off" && IltServerProfile.StateText(-1) == "checking", "state words");
+
+            // The /qb list RynthILT 0.2.3 adds to the profile.
+            Check(p.QuestBonus == null, "no questBonus object: no /qb list");
+            IltServerProfile qb = IltServerProfile.Parse(QbProfileJson);
+            Check(qb.QuestBonus is { Disabled: false, Generation: 3, Count: 41 } b && b.Completed.Count == 2 && b.Incomplete.Count == 1
+                  && b.Incomplete[0] == "qbflagthree" && b.Status == "2 completed, 1 incomplete", "quest bonus list parsed");
+        }
+
+        private const string QbProfileJson = "{\"ilt\":true,\"world\":\"InfiniteLeaftide\",\"fellowship\":{\"maxMembers\":29},"
+            + "\"questBonus\":{\"disabled\":false,\"generation\":3,\"count\":41,\"status\":\"2 completed, 1 incomplete\","
+            + "\"completed\":[\"qbflagone\",\"qbflagtwo\"],\"incomplete\":[\"qbflagthree\"]}}";
 
         // Quest notes: tracking and rewards saved per character, UB's reward format and import, kill-task timers.
         private static void QuestNotes()
@@ -507,22 +545,26 @@ namespace RynthOracle.Tests
                     main.MarkSubmitted(true);
                 }
             }
-            // The Quests tab with a quest opened (rewards editor) and the Tracked filter on.
-            c.Server.Force("", "Coldeve");
+            // Infinite Leaftide: the Quests tab with a quest opened (rewards editor) and the /qb list open.
+            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
+            c.Ilt.SetJson(QbProfileJson);
             c.Settings.TabName = OracleView.TabQuests;
             main.Begin(); view.Draw(main); main.End();
             Apply(host, Event(2, 89, main.Hash, main.KeyOf("q.tracked"), new byte[] { 1 }));
             main.Begin(); view.Draw(main); main.End();
             Check(Encoding.UTF8.GetString(main.Body).Contains("2 shown"), "the Tracked filter lists the two tracked quests");
             Apply(host, Event(1, 90, main.Hash, main.KeyOf("q.r.30minattributes"), new byte[] { 1, 0, 0 }));
+            Apply(host, Event(6, 91, main.Hash, main.KeyOf("q.qb"), new byte[] { 1 }));
+            main.Begin(); view.Draw(main); main.End();   // the inner header exists once the outer one is open
+            Apply(host, Event(6, 92, main.Hash, main.KeyOf("q.qb.todo"), new byte[] { 1 }));
             main.Begin(); view.Draw(main); main.End();
-            ParseAll(host, "quests with a quest opened", out int openOps);
-            string openBody = Encoding.UTF8.GetString(main.Body);
-            Check(openOps > 5 && openOps < 1400, $"quests page with a quest opened: {openOps} ops");
-            Check(openBody.Contains("Save rewards") && openBody.Contains("Level: 126"), "the opened quest shows the rewards editor");
-            Check(openBody.Contains("1.5%XP 2C L126"), "the Rewards column shows the recorded rewards");
-            Check(!openBody.Contains("/qb"), "no quest bonus list here (Infinite Leaftide's /qb is RynthILT's)");
-            Console.WriteLine($"  Quests (opened): {openOps} ops, {main.Body.Length} bytes");
+            ParseAll(host, "ILT quests with a quest opened", out int iltOps);
+            string iltBody = Encoding.UTF8.GetString(main.Body);
+            Check(iltOps > 5 && iltOps < 1400, $"ILT quests page: {iltOps} ops");
+            Check(iltBody.Contains("Save rewards") && iltBody.Contains("Level: 126"), "the opened quest shows the rewards editor");
+            Check(iltBody.Contains("1.5%XP 2C L126"), "the Rewards column shows the recorded rewards");
+            Check(iltBody.Contains("Quest bonus (/qb) - count 41") && iltBody.Contains("qbflagthree"), "the /qb list from RynthILT");
+            Console.WriteLine($"  InfiniteLeaftide/Quests (opened, /qb): {iltOps} ops, {main.Body.Length} bytes");
             main.MarkSubmitted(true);
 
             // The Conquest tab's sub-pages and the Aelrynth board views.
@@ -566,25 +608,34 @@ namespace RynthOracle.Tests
         }
 
         /// <summary>
-        /// The Character tab's RynthAi session (the generic part of the Mini Remote's old Character
-        /// tab, moved here 2026-10-13). Infinite Leaftide's charms are RynthILT's and never drawn here.
+        /// The Character tab's RynthAi session and RynthILT charms (the Mini Remote's Character and
+        /// Charms tabs moved here 2026-10-13): drawn from what the plugin read, Toggle routed to RynthILT.
         /// </summary>
         private static void CharacterExtras()
         {
+            const string charmsJson = "{\"available\":true,\"world\":\"InfiniteLeaftide\",\"acquiredCount\":2,\"activeCount\":1,"
+                + "\"charms\":[{\"name\":\"Mana Barrier\",\"effect\":\"Absorbs damage\",\"acquired\":\"carried\",\"count\":1,\"tier\":3,\"maxTier\":5,"
+                + "\"active\":\"on\",\"server\":\"on\",\"toggleId\":5001},"
+                + "{\"name\":\"Swift Feet\",\"acquired\":\"seen\",\"lastSeen\":\"2026-10-12\",\"active\":\"unknown\",\"server\":\"off\"}],"
+                + "\"hands\":[{\"id\":7001,\"name\":\"Guardian Hand\",\"active\":\"off\",\"server\":\"on\"}]}";
+
             OracleContext c = Context();
-            c.Server.Force("", "InfiniteLeaftide");
+            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
             c.Settings.TabName = OracleView.TabCharacter;
             var view = new OracleView(c);
             var host = new UiHost();
             UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
 
-            // Nothing from RynthAi yet: the tab says what to load.
+            // Nothing from RynthILT or RynthAi yet: the tab says what to load.
             main.Begin(); view.Draw(main); main.End();
             string empty = Encoding.UTF8.GetString(main.Body);
+            Check(empty.Contains("Load RynthILT to list your Infinite Leaftide charms"), "ILT without RynthILT: says to load it");
             Check(empty.Contains("Load RynthAi for the session rates"), "without RynthAi: says to load it");
-            Check(!empty.Contains("Charms") && !empty.Contains("RynthILT"), "no charms section on any world (RynthILT's Charms tab)");
             main.MarkSubmitted(true);
 
+            uint toggled = 0;
+            c.ToggleCharm = id => { toggled = id; return true; };
+            c.Charms = RynthCore.Plugin.Shared.IltCharmsView.Parse(charmsJson);
             c.Session = new RynthCore.Plugin.Shared.SessionStatsV1
             {
                 StartUtcTicks = DateTime.UtcNow.AddHours(-1).Ticks, SessionSeconds = 3600, Xp = 1_234_567, XpPerHour = 1_234_567,
@@ -592,12 +643,144 @@ namespace RynthOracle.Tests
             };
             c.SessionKnown = true;
             main.Begin(); view.Draw(main); main.End();
-            ParseAll(host, "Character with the session", out int ops);
+            ParseAll(host, "Character with charms and session", out int ops);
             string body = Encoding.UTF8.GetString(main.Body);
-            Check(ops > 5 && ops < 1400, $"Character with the session: {ops} ops");
+            Check(ops > 5 && ops < 1400, $"Character with charms: {ops} ops");
             Check(body.Contains("1,234,567") && body.Contains("4,000") && body.Contains("42 (42/h)"), "the session shows RynthAi's XP, luminance and kills");
-            Check(OracleView.SessionStatsCommand == "/rc miniremote section char", "Session Stats opens the section, not the moved tab");
+            Check(body.Contains("Charms (2)") && body.Contains("Mana Barrier") && body.Contains("T3/5") && body.Contains("seen 2026-10-12"),
+                  "the charms RynthILT listed, with tier and acquired state");
+            Check(body.Contains("server off"), "a charm the server switched off is marked");
+            Check(body.Contains("Guardian Hands (1)"), "the Guardian Hands are listed");
+
+            Apply(host, Event(1, 10, main.Hash, main.KeyOf("c.charm.0"), new byte[] { 1, 0, 0 }));
+            Check(toggled == 5001, "the carried charm's Toggle goes to RynthILT with its id");
+            Check(body.Contains("###c.charm.0") && !body.Contains("###c.charm.1"), "an uncarried charm has no Toggle");
+            Apply(host, Event(1, 11, main.Hash, main.KeyOf("c.hand.0"), new byte[] { 1, 0, 0 }));
+            Check(toggled == 7001, "the Guardian Hand's Toggle goes to RynthILT with its id");
             main.MarkSubmitted(true);
+
+            // Another world: RynthILT answers "not available", so no charms section at all.
+            c.Server.Force("", "");
+            c.Charms = RynthCore.Plugin.Shared.IltCharmsView.Parse("{\"available\":false,\"charms\":[]}");
+            main.Begin(); view.Draw(main); main.End();
+            Check(!Encoding.UTF8.GetString(main.Body).Contains("Charms ("), "off ILT: no charms section");
+            Check(OracleView.SessionStatsCommand == "/rc miniremote section char", "Session Stats opens the section, not the moved tab");
+        }
+
+        /// <summary>RynthILT's breeding JSON with <paramref name="essences"/> essences (one ready stud and one ready dam first).</summary>
+        private static string BreedingJson(int essences)
+        {
+            var sb = new StringBuilder("{\"available\":true,\"world\":\"InfiniteLeaftide\",\"enabled\":\"on\",\"maturity\":\"on\",\"bond\":\"on\","
+                + "\"room\":\"landblock 0x0106 variant 2\",\"freeSlots\":12,\"message\":\"\",\"essences\":[");
+            for (int i = 0; i < essences; i++)
+            {
+                if (i > 0) sb.Append(',');
+                bool male = i % 2 == 0, ready = i < 2;
+                sb.Append("{\"id\":").Append(1000 + i).Append(",\"name\":\"Essence ").Append(i).Append("\",\"sex\":\"").Append(male ? 'M' : 'F')
+                  .Append("\",\"tier\":125,\"bond\":100,\"ready\":").Append(ready ? "true" : "false")
+                  .Append(",\"status\":\"").Append(ready ? "Ready" : "Rest 1h 05m").Append("\",\"readyIn\":").Append(ready ? 0 : 3900)
+                  .Append(",\"charges\":7,\"chargesMax\":10,\"juvenile\":false,\"stage\":\"\",\"kills\":0,\"killsRequired\":300,")
+                  .Append("\"mutations\":1,\"potencyMutations\":0,\"problems\":").Append(ready ? "[]" : "[\"resting after a breed\"]")
+                  .Append(",\"boosters\":").Append(i == 0 ? "[\"Incense +10%\"]" : "[]").Append('}');
+            }
+            sb.Append("],\"pairs\":[{\"stud\":\"Essence 0\",\"dam\":\"Essence 1\",\"chanceBest\":0.13636,\"chanceWorst\":0.05,\"inheritMin\":1,\"inheritMax\":2}],")
+              .Append("\"supplies\":[{\"key\":\"incense1\",\"name\":\"Breeding Incense\",\"effect\":\"+10% mutation chance\",\"count\":2,\"price\":250000,\"apply\":true,\"targets\":[1000,1001]},")
+              .Append("{\"key\":\"neuter\",\"name\":\"Neutering Kit\",\"effect\":\"Permanent\",\"count\":1,\"price\":0,\"apply\":false,\"targets\":[]}],")
+              .Append("\"rules\":[{\"label\":\"Stud charges\",\"value\":\"10/day\",\"source\":\"seen on server\",\"help\":\"Breeds per refill.\"},")
+              .Append("{\"label\":\"Mutation decay\",\"value\":\"0.1\",\"source\":\"ILT profile\",\"help\":\"\"}],")
+              .Append("\"events\":[{\"when\":\"10-15 12:00\",\"kind\":\"birth\",\"text\":\"Congratulations! A baby pet has been born: Pup\"}],")
+              .Append("\"debug\":{\"when\":\"10-15 12:01\",\"enabled\":\"on\",\"location\":\"0x0106 variant 2\",\"match\":\"valid\",\"pet\":\"Essence 0\",\"sex\":\"M\",\"partners\":1}}");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// The Pet Breeding tab (Infinite Leaftide only): RynthILT's breeding JSON drawn within the op budget,
+        /// Dance and supply uses asked first, then sent to RynthILT as its verbs.
+        /// </summary>
+        private static void Breeding()
+        {
+            // The tab exists only on Infinite Leaftide.
+            OracleContext c = Context();
+            var view = new OracleView(c);
+            Check(!view.VisibleTabs().Contains(OracleView.TabBreeding), "Aelrynth: no Pet Breeding tab");
+            c.Server.Force("", "Coldeve");
+            Check(!view.VisibleTabs().Contains(OracleView.TabBreeding), "other servers: no Pet Breeding tab");
+            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
+            Check(view.VisibleTabs().Contains(OracleView.TabBreeding), "Infinite Leaftide: the Pet Breeding tab");
+
+            // The parser: fields, lists, the debug block, and bad input.
+            IltBreedingView v = IltBreedingView.Parse(BreedingJson(2));
+            Check(v.Loaded && v.Available && v.Enabled == "on" && v.Room == "landblock 0x0106 variant 2" && v.FreeSlots == 12, "breeding JSON header");
+            Check(v.Essences.Count == 2 && v.Essences[0].Male && !v.Essences[1].Male && v.Essences[0].Ready && v.Essences[0].Boosters.Count == 1,
+                  "breeding essences with sex, readiness and boosters");
+            Check(v.Pairs.Count == 1 && Math.Abs(v.Pairs[0].ChanceBest - 0.13636) < 1e-9 && v.Pairs[0].InheritMax == 2, "breeding pair odds");
+            Check(v.Supplies.Count == 2 && v.Supplies[0].Targets.Count == 2 && !v.Supplies[1].Apply, "breeding supplies and their targets");
+            Check(v.Debug is { Match: "valid", Partners: 1 }, "breeding diagnostics");
+            Check(!IltBreedingView.Parse("not json").Loaded && !IltBreedingView.Parse("").Loaded && !IltBreedingView.Parse("[1]").Loaded,
+                  "bad breeding JSON is not loaded");
+            Check(IltBreedingView.ApplyVerb(" incense1 ", 1000) == "apply incense1 1000" && IltBreedingView.DanceVerb() == "dance",
+                  "breeding verbs");
+
+            // Nothing from RynthILT yet: the tab says to load it.
+            var host = new UiHost();
+            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
+            c.Settings.TabName = OracleView.TabBreeding;
+            main.Begin(); view.Draw(main); main.End();
+            Check(Encoding.UTF8.GetString(main.Body).Contains("Load RynthILT (0.2.7 or later)"), "without RynthILT: says to load it");
+            main.MarkSubmitted(true);
+
+            // 50 essences with every section open: rows cut at 40, the page still fits.
+            var sent = new List<string>();
+            string ran = "";
+            c.BreedingCommand = verb => { sent.Add(verb); return true; };
+            c.RunCommand = cmd => { ran = cmd; return true; };
+            c.Breeding = IltBreedingView.Parse(BreedingJson(50));
+            main.Begin(); view.Draw(main); main.End();
+            uint seq = 200;
+            foreach (string header in new[] { "br.sup", "br.rules", "br.events" })
+                Apply(host, Event(6, seq++, main.Hash, main.KeyOf(header), new byte[] { 1 }));
+            main.Begin(); view.Draw(main); main.End();
+            ParseAll(host, "Pet Breeding with 50 essences", out int ops);
+            string body = Encoding.UTF8.GetString(main.Body);
+            Check(ops > 5 && ops < 1400, $"Pet Breeding with 50 essences: {ops} ops");
+            Console.WriteLine($"  InfiniteLeaftide/Pet Breeding (50 essences, all open): {ops} ops, {main.Body.Length} bytes");
+            Check(body.Contains("Essences (2 ready of 50)") && body.Contains("... and 10 more"), "essence rows cut at 40 with a count");
+            Check(body.Contains("Essence 0 x Essence 1") && body.Contains("5%-13.6%"), "the ready pair with its odds");
+            Check(body.Contains("Supplies (3 carried)") && body.Contains("250,000 pyreals"), "supplies with Ivo's price");
+            Check(body.Contains("Stud charges") && body.Contains("seen on server") && body.Contains("In the breeding room"), "rules and diagnostics");
+            Check(body.Contains("A baby pet has been born"), "recent events");
+
+            // Dance asks first; No drops it, Yes sends it.
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.dance"), new byte[] { 1, 0, 0 }));
+            Check(sent.Count == 0, "Dance asks before sending");
+            main.Begin(); view.Draw(main); main.End();
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.no"), new byte[] { 1, 0, 0 }));
+            main.Begin(); view.Draw(main); main.End();
+            Check(sent.Count == 0 && !Encoding.UTF8.GetString(main.Body).Contains("###br.yes"), "No drops the question");
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.dance"), new byte[] { 1, 0, 0 }));
+            main.Begin(); view.Draw(main); main.End();
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.yes"), new byte[] { 1, 0, 0 }));
+            Check(sent.Count == 1 && sent[0] == "dance", "Yes sends the dance verb");
+
+            // A supply use on the selected essence (the first) goes the same way.
+            main.Begin(); view.Draw(main); main.End();
+            Check(Encoding.UTF8.GetString(main.Body).Contains("###br.use.0") && !Encoding.UTF8.GetString(main.Body).Contains("###br.use.1"),
+                  "only a usable, carried supply has Use");
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.use.0"), new byte[] { 1, 0, 0 }));
+            main.Begin(); view.Draw(main); main.End();
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.yes"), new byte[] { 1, 0, 0 }));
+            Check(sent.Count == 2 && sent[1] == "apply incense1 1000", "Use then Yes sends apply with the essence id: " + string.Join("|", sent));
+
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.refresh"), new byte[] { 1, 0, 0 }));
+            Check(sent.Count == 3 && sent[2] == "refresh", "Refresh is sent straight away");
+            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.remote"), new byte[] { 1, 0, 0 }));
+            Check(ran == "/ra hub open breeding", "Mini Remote opens Pets > Breeding: " + ran);
+            main.MarkSubmitted(true);
+
+            // Breeding switched off on the server: said in red, page still drawn.
+            c.Breeding = IltBreedingView.Parse("{\"available\":true,\"enabled\":\"off\",\"essences\":[]}");
+            main.Begin(); view.Draw(main); main.End();
+            Check(Encoding.UTF8.GetString(main.Body).Contains("Pet breeding is off on this server."), "breeding off is shown");
         }
 
         private static void Events()

@@ -8,6 +8,7 @@ internal static class ServerData
     public static ServerPackInfo Create() =>
         new(RynthPluginInfo.ServerId, RynthPluginInfo.ServerName, RynthPluginInfo.ServerHosts, RynthPluginInfo.ServerWorldNames)
         {
+            // The live world; staging runs on 9030 on the same host.
             Port = 9020,
             Emulator = "ACE",
             Ruleset = "PvE",
@@ -18,6 +19,7 @@ internal static class ServerData
                 "Skill Mastery mod (RynthCore shows mastery progress).",
                 "Account vault for mules (RynthCore reads its contents).",
                 "RynthOracle has an Aelrynth quest pack (quests.aelrynth.csv).",
+                "A staging world runs on port 9030 of the same host.",
                 "The world was named Aeshnidae before; both names count.",
             },
             Website = "https://aelrynth.com",

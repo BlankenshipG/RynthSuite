@@ -31,6 +31,35 @@ internal static class NavOverlayTests
         r.Add("nav overlay: the frame is a snapshot - emptying the route afterwards changes nothing", FrameIsSnapshot);
         r.Add("nav overlay: the label triangle budget holds for long names", TriangleBudget);
         r.Add("nav overlay: settings round-trip; an older engine's payload leaves them alone", SettingsRoundTrip);
+        r.Add("nav overlay: Settings > Navigation shows the Nav panel's Breadcrumbs and Route overlay switches", SettingsLinksNavPanelSwitches);
+    }
+
+    /// <summary>
+    /// Settings > Navigation carries the Nav panel's two switches (NavOverlay.TrackBreadcrumbs and
+    /// ShowRouteMarkers), so either place changes the same setting. An engine that predates them
+    /// sends neither, and its save must leave them alone.
+    /// </summary>
+    private static void SettingsLinksNavPanelSwitches()
+    {
+        var s = new LegacyUiSettings();
+        s.NavOverlay.TrackBreadcrumbs = false;
+        s.NavOverlay.ShowRouteMarkers = true;
+        var dash = (LegacyDashboardRenderer)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+        var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+        typeof(LegacyDashboardRenderer).GetField("_settings", flags)!.SetValue(dash, s);
+        typeof(LegacyDashboardRenderer).GetField("_advancedSettingsUi", flags)!.SetValue(dash, new LegacyAdvancedSettingsUi(s));
+
+        var sent = JsonSerializer.Deserialize(dash.BuildSettingsJson(), RynthAiJsonContext.Default.SettingsBridgePayload)!;
+        Check.True(sent.TrackBreadcrumbs == false, "Breadcrumbs sent to the Settings face (off)");
+        Check.True(sent.ShowRouteOverlay == true, "Route overlay sent to the Settings face (on)");
+
+        dash.ApplySettingsJson("{\"TrackBreadcrumbs\":true,\"ShowRouteOverlay\":false}");
+        Check.True(s.NavOverlay.TrackBreadcrumbs, "Settings turns Breadcrumbs on (the Nav panel's switch)");
+        Check.False(s.NavOverlay.ShowRouteMarkers, "Settings turns Route overlay off (the Nav panel's switch)");
+
+        dash.ApplySettingsJson("{\"NavRingThickness\":6}");
+        Check.True(s.NavOverlay.TrackBreadcrumbs, "an older engine's save leaves Breadcrumbs alone");
+        Check.False(s.NavOverlay.ShowRouteMarkers, "an older engine's save leaves Route overlay alone");
     }
 
     // ── Rig ─────────────────────────────────────────────────────────────

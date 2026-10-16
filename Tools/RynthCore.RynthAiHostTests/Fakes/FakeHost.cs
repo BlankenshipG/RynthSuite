@@ -328,6 +328,8 @@ internal static unsafe class FakeHost
         if (InstanceIds.Count > 0)
             api.GetObjectInstanceIdPropertyFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint, uint*, int>)&GetObjectInstanceIdProperty;
         api.SetAutoRunFn            = (IntPtr)(delegate* unmanaged[Cdecl]<int, int>)&SetAutoRun;
+        if (SetMotionCalls)
+            api.SetMotionFn         = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int>)&SetMotion;
         api.TurnToHeadingFn         = (IntPtr)(delegate* unmanaged[Cdecl]<float, int>)&TurnToHeading;
         api.JumpNonAutonomousFn     = (IntPtr)(delegate* unmanaged[Cdecl]<float, int>)&JumpNonAutonomous;
         if (TapJumpCalls)
@@ -335,8 +337,6 @@ internal static unsafe class FakeHost
         api.CastSpellFn             = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int>)&CastSpell;
         if (StopCalls)
             api.StopCompletelyFn    = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&StopCompletely;
-        if (SetMotionCalls)
-            api.SetMotionFn         = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int>)&SetMotion;
         if (Nav3DCalls)
         {
             api.Nav3DClearFn       = (IntPtr)(delegate* unmanaged[Cdecl]<void>)&Nav3DClear;

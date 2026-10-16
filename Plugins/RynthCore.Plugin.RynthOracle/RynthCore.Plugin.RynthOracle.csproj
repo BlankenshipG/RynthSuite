@@ -52,15 +52,22 @@
   <ItemGroup>
     <!-- Fellowship reader (client memory, VirtualQuery-guarded), shared source with RynthAi. -->
     <Compile Include="..\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="Shared\FellowshipTracker.cs" />
+    <!-- RynthILT's "RynthILT.Server" interface (server profile: Leaftide features, fellowship rules). -->
+    <Compile Include="..\Shared\RynthIltServerApi.cs" Link="Shared\RynthIltServerApi.cs" />
+    <Compile Include="..\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
     <!-- RynthAi's session stats ("RynthAi.Hub" SessionStats): the Character tab's session rates
          count the same session as the Mini Remote's Session Stats. -->
     <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />
     <Compile Include="..\Shared\RynthAiSessionClient.cs" Link="Shared\RynthAiSessionClient.cs" />
     <!-- RynthCore's server list (API v86) and the active server's settings from its plugin
-         ("RynthServer.Profile"): which server this is, overrides included. -->
+         ("RynthServer.Profile" / "RynthILT.Server"): which server this is, overrides included. -->
     <Compile Include="..\Shared\RynthServerProfileApi.cs" Link="Shared\RynthServerProfileApi.cs" />
     <Compile Include="..\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
     <Compile Include="..\Shared\ServerStateClient.cs" Link="Shared\ServerStateClient.cs" />
+    <!-- Infinite Leaftide's /fship commands for the Fellowship tab: RynthILT's list and the shared
+         argument rules (quoting, required names), shared source rather than copied. Both are pure. -->
+    <Compile Include="..\Shared\ServerCommandShare.cs" Link="Shared\ServerCommandShare.cs" />
+    <Compile Include="..\RynthCore.Plugin.RynthILT\IltFellowship\IltFellowshipCommands.cs" Link="Shared\IltFellowshipCommands.cs" />
   </ItemGroup>
 
   <ItemGroup>

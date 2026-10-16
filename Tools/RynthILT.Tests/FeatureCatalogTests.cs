@@ -1,21 +1,24 @@
 using System;
 using System.Text;
+using System.Text.Json;
 using RynthCore.Plugin.RynthILT;
 using RynthCore.Plugin.RynthILT.Hub;
 using RynthCore.RynthAiTests.Harness;
 
 namespace RynthILT.Tests;
 
-// Leaftide feature list (IltFeatureCatalog): every feature the player asked RynthILT to cover is
-// listed and the states follow the server bits. Also the NUL-terminated copy RynthILT's interfaces
-// ("RynthServer.Profile", "RynthILT.Data") hand their JSON out with.
+// Leaftide feature list (IltFeatureCatalog) and the "RynthILT.Server" profile it builds: every
+// feature the player asked RynthILT to cover is listed, states follow the server bits, and the JSON
+// other plugins read (RynthOracle's Fellowship tab) is valid ASCII with the fellowship rules.
 internal static class FeatureCatalogTests
 {
     public static void Register(Runner r)
     {
         r.Add("features: banking, guardian, attributes, augs, paragon x3, split arrows, T11 and fellowship are listed", Listed);
         r.Add("features: state follows the server bit on ILT, built-ins are on, nothing is known off ILT", States);
+        r.Add("features: profile JSON is valid ASCII with features and the fellowship rules", ProfileJson);
         r.Add("features: the interface copies the JSON only when it fits, NUL-terminated", InterfaceWrite);
+        r.Add("features: the /qb list rides the profile JSON on ILT worlds only", QuestBonusJson);
         r.Add("features: the ILT profile is on with the world; a refusal in chat turns a feature off", ProfileOnWithTheWorld);
         r.Add("features: probed features read checking; options ILT runs off are off until chat shows them", ProbedAndOffInIlt);
         r.Add("features: charms are on with the ILT world unless refused; rows describe themselves", Charms);
@@ -86,6 +89,27 @@ internal static class FeatureCatalogTests
         Check.Eq(IltFeatureCatalog.Describe("something_new").Group, IltFeatureCatalog.GroupOther, "an unknown bit goes to Other");
     }
 
+    private static void QuestBonusJson()
+    {
+        var qb = new IltQuestBonusInfo(false, 2, 41, "2 completed, 1 incomplete",
+                                       new[] { "flag\"one", "flagTwo" }, new[] { "flagThree" });
+        string json = IltFeatureCatalog.BuildProfileJson(true, "Infinite Leaftide", false, "probe", DateTime.MinValue, _ => IltTri.On, qb);
+        using JsonDocument doc = JsonDocument.Parse(json);
+        JsonElement q = doc.RootElement.GetProperty("questBonus");
+        Check.False(q.GetProperty("disabled").GetBoolean(), "enabled");
+        Check.Eq(q.GetProperty("generation").GetInt32(), 2, "generation");
+        Check.Eq(q.GetProperty("count").GetInt64(), 41L, "count");
+        Check.Eq(q.GetProperty("status").GetString(), "2 completed, 1 incomplete", "status");
+        Check.Eq(q.GetProperty("completed").GetArrayLength(), 2, "completed flags");
+        Check.Eq(q.GetProperty("completed")[0].GetString(), "flag\"one", "quotes in a flag survive");
+        Check.Eq(q.GetProperty("incomplete")[0].GetString(), "flagThree", "incomplete flags");
+        Check.True(doc.RootElement.TryGetProperty("fellowship", out _), "the fellowship rules are still there");
+
+        string off = IltFeatureCatalog.BuildProfileJson(false, "", false, "", DateTime.MinValue, _ => IltTri.On, qb);
+        using JsonDocument d2 = JsonDocument.Parse(off);
+        Check.False(d2.RootElement.TryGetProperty("questBonus", out _), "off ILT: no /qb list");
+    }
+
     private static readonly string[] Requested =
     {
         "bank", "guardian", "attributes", "augmentations", "paragon_armor", "paragon_weapons",
@@ -121,19 +145,45 @@ internal static class FeatureCatalogTests
         Check.Eq(IltFeatureCatalog.FellowshipMax(false), 9, "retail fellowships hold 9");
     }
 
+    private static void ProfileJson()
+    {
+        string json = IltFeatureCatalog.BuildProfileJson(true, "Infinite \"Leaftide\"", false, "probe",
+            new DateTime(2026, 10, 13, 21, 25, 37, DateTimeKind.Utc),
+            key => key == IltFeature.FBlackjack ? IltTri.Off : IltTri.On);
+        bool ascii = true;
+        foreach (char c in json) if (c < 0x20 || c > 0x7E) ascii = false;
+        Check.True(ascii, "plain printable ASCII");
+
+        using JsonDocument doc = JsonDocument.Parse(json);
+        JsonElement root = doc.RootElement;
+        Check.True(root.GetProperty("ilt").GetBoolean(), "ilt");
+        Check.Eq(root.GetProperty("world").GetString(), "Infinite \"Leaftide\"", "quotes in the world name survive");
+        Check.Eq(root.GetProperty("checked").GetString(), "2026-10-13T21:25:37Z", "checked time in UTC");
+        Check.Eq(root.GetProperty("features").GetArrayLength(), IltFeatureCatalog.All.Length, "every feature in the JSON");
+        JsonElement fel = root.GetProperty("fellowship");
+        Check.Eq(fel.GetProperty("maxMembers").GetInt32(), 29, "fellowship size");
+        Check.Eq(fel.GetProperty("zoneShare").GetInt32(), 1, "Zone Share on (built in)");
+        Check.Eq(fel.GetProperty("blackjack").GetInt32(), 0, "Fellowship Blackjack off (server bit)");
+
+        string off = IltFeatureCatalog.BuildProfileJson(false, "", false, "", DateTime.MinValue, _ => IltTri.On);
+        using JsonDocument d2 = JsonDocument.Parse(off);
+        Check.Eq(d2.RootElement.GetProperty("fellowship").GetProperty("maxMembers").GetInt32(), 9, "off ILT: retail size");
+        Check.Eq(d2.RootElement.GetProperty("checked").GetString(), "", "never checked: empty time");
+    }
+
     private static unsafe void InterfaceWrite()
     {
         const string json = "{\"ilt\":true}";
         byte* small = stackalloc byte[4];
         small[0] = 0x55;
-        Check.Eq(ProfileInterface.Write(json, small, 4), json.Length, "too small: the length is returned");
+        Check.Eq(ServerInterface.Write(json, small, 4), json.Length, "too small: the length is returned");
         Check.Eq(small[0], (byte)0x55, "too small: nothing written");
 
         byte* exact = stackalloc byte[json.Length];
-        Check.Eq(ProfileInterface.Write(json, exact, json.Length), json.Length, "no room for the NUL: too small");
+        Check.Eq(ServerInterface.Write(json, exact, json.Length), json.Length, "no room for the NUL: too small");
 
         byte* big = stackalloc byte[64];
-        int n = ProfileInterface.Write(json, big, 64);
+        int n = ServerInterface.Write(json, big, 64);
         Check.Eq(n, json.Length, "fits: the length without the NUL");
         Check.Eq(big[n], (byte)0, "NUL-terminated");
         Check.Eq(Encoding.UTF8.GetString(big, n), json, "the JSON copied whole");

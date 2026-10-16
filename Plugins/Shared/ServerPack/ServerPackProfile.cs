@@ -63,8 +63,7 @@ internal static class ServerPackProfile
             sb.Append('}');
         }
         sb.Append(']');
-        // Added within schema 1: readers that don't know "salvage" skip it. The optional row fields
-        // (applied, prepared, order, afterCap, stackGroup + stackCap) are written only when set.
+        // Added within schema 1: readers that don't know "salvage" skip it.
         sb.Append(",\"salvage\":[");
         for (int i = 0; i < info.Salvage.Length; i++)
         {
@@ -80,16 +79,6 @@ internal static class ServerPackProfile
             sb.Append(",\"slot\":").Append(s.UsesTinkSlot ? "true" : "false");
             sb.Append(",\"nameMatch\":");
             Str(sb, s.NameMatch);
-            if (s.AppliedInt != 0) sb.Append(",\"applied\":").Append(s.AppliedInt);
-            if (s.Prepared) sb.Append(",\"prepared\":true");
-            if (s.Order != 0) sb.Append(",\"order\":").Append(s.Order);
-            if (s.AfterCap) sb.Append(",\"afterCap\":true");
-            if (!string.IsNullOrEmpty(s.StackGroup))
-            {
-                sb.Append(",\"stackGroup\":");
-                Str(sb, s.StackGroup);
-                sb.Append(",\"stackCap\":").Append(s.StackCap);
-            }
             sb.Append('}');
         }
         sb.Append(']');

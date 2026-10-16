@@ -2,8 +2,8 @@
 //
 // ACECustom (Source/ACE.Server/Command/Handlers/PlayerCommands.cs, "fship") adds these on top
 // of retail's fellowship panel; its fellowships hold up to 29 (Fellowship.MaxFellows). The list
-// is kept in the shared "servercommands" form (Plugins/Shared/ServerCommandShare.cs) and drawn by
-// RynthILT's fellowship window (IltFellowshipUi, "/ilt fellow").
+// is drawn by RynthILT in RynthCore's Fellowship section (IltFellowshipUi) and sent to RynthAi's
+// Fellowship tab ("servercommands", Plugins/Shared/ServerCommandShare.cs) while ILT is active.
 // A name with spaces is sent quoted; ACE's command parser joins "two words". Pure: no ImGui, no host.
 using System;
 using System.Collections.Generic;
@@ -46,7 +46,7 @@ internal static class IltFellowshipCommands
             "The server's /fship help."),
     };
 
-    /// <summary>The set while ILT is active; with no commands when it isn't (a receiver drops it).</summary>
+    /// <summary>The set RynthILT sends while ILT is active; with no commands when it isn't (the receiver drops it).</summary>
     public static ServerCommandSet Set(bool active) =>
         new(Section, ServerId, ServerName, active ? Commands : Array.Empty<ServerCommand>());
 

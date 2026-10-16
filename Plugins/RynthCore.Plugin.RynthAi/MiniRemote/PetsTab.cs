@@ -704,25 +704,14 @@ internal sealed class PetsTab
     public void SelectBreeding() => _selectBreeding = true;
 
     /// <summary>
-    /// RynthILT offers the Breeding sub-tab: it calls this world Infinite Leaftide and the server
-    /// hasn't reported pet breeding off. False without RynthILT. Any thread.
-    /// </summary>
-    public bool BreedingOffered => _ctx.Ilt.IsIltWorld && !_ctx.Ilt.IsOff(RynthIltHub.FeaturePetBreeding);
-
-    /// <summary>
-    /// The Pets tab: the universal roster, and on Infinite Leaftide the Roster | Breeding sub-tabs
-    /// (Breeding is drawn by RynthILT).
+    /// The Pets tab: the universal Roster, and Breeding (RynthILT's breeding tracker, section
+    /// "pets-breeding", the same tracker as RynthOracle's Pet Breeding tab).
     /// </summary>
     public void Render()
     {
         var settings = _ctx.Settings;
         if (settings == null) { ImGui.TextDisabled("Not logged in."); return; }
 
-        if (!BreedingOffered)
-        {
-            RenderRoster(settings);
-            return;
-        }
         if (!ImGui.BeginTabBar("##petsub")) return;
         if (ImGui.BeginTabItem("Roster##petroster"))
         {
@@ -733,9 +722,7 @@ internal sealed class PetsTab
         _selectBreeding = false;
         if (BeginTab(BreedingTabLabel, breedFlags))
         {
-            // RynthILT's tracker; an older RynthILT (before 0.3.1) has no such section and draws nothing.
-            if (!_ctx.Ilt.RenderSection(RynthIltHub.SectionPetBreeding))
-                ImGui.TextDisabled("This RynthILT has no pet breeding tracker; update RynthILT to 0.3.1 or later.");
+            RenderBreeding();
             ImGui.EndTabItem();
         }
         ImGui.EndTabBar();
@@ -743,14 +730,31 @@ internal sealed class PetsTab
 
     private static readonly byte[] BreedingTabLabel = System.Text.Encoding.UTF8.GetBytes("Breeding##petbreeding\0");
 
-    /// <summary>
-    /// BeginTabItem with flags but no close button (ImGui.NET pairs the flags overload with p_open,
-    /// which draws an X on the tab).
-    /// </summary>
+    /// <summary>BeginTabItem with flags but no close button (ImGui.NET pairs the flags overload with p_open, which draws an X).</summary>
     private static unsafe bool BeginTab(byte[] labelUtf8Z, ImGuiTabItemFlags flags)
     {
         fixed (byte* label = labelUtf8Z)
             return ImGuiNative.igBeginTabItem(label, null, flags) != 0;
+    }
+
+    /// <summary>
+    /// Breeding is Infinite Leaftide's and RynthILT's: drawn by RynthILT, with a pointer when it
+    /// isn't loaded or this isn't an ILT world.
+    /// </summary>
+    private void RenderBreeding()
+    {
+        if (!_ctx.Ilt.Loaded)
+        {
+            ImGui.TextDisabled("Pet breeding is tracked by RynthILT (the Infinite Leaftide plugin), which isn't loaded.");
+            return;
+        }
+        if (!_ctx.Ilt.IsIltWorld)
+        {
+            ImGui.TextDisabled("Pet breeding is an Infinite Leaftide feature; this world isn't Infinite Leaftide.");
+            return;
+        }
+        if (!_ctx.Ilt.RenderSection(RynthIltHub.SectionPetBreeding))
+            ImGui.TextDisabled("This RynthILT has no breeding tracker yet; update RynthILT to 0.2.7 or later.");
     }
 
     /// <summary>The universal roster: types, summons, ILT charms, healing pets and RynthILT's /pets logs.</summary>
@@ -796,7 +800,7 @@ internal sealed class PetsTab
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Dismiss the pet that is out.");
         ImGui.SameLine();
         if (ImGui.Button("Scan pack")) _ctx.Post(ScanPack);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Appraise every pet to refresh bond, potency and breeding, and check pet-named items\n(an \"... Essence\" name alone isn't enough — the item must be a summoning pet device).");
+        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("Appraise every pet to refresh bond, potency and breeding, and check pet-named items\n(an \"... Essence\" name alone isn't enough — the item must be a summoning pet device).");
         ImGui.SameLine();
         if (ImGui.Button("Add sel.")) _ctx.Post(() => AddSelectedAs(summonKind));
         if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"Make the item selected in your pack a {KindNames[(int)kind].ToLowerInvariant()} pet.");
@@ -894,7 +898,7 @@ internal sealed class PetsTab
                 _highlightId = _highlightId == r.Id ? 0 : r.Id;
             RenderRowContextMenu(r);
             ImGui.SetCursorPos(start);
-            SafeImGui.TextColored(DamageColor(r.DamageType), r.Line1);
+            SafeImGui.TextColored(PetDamageTint.ForName(r.DamageType), r.Line1);
             SafeImGui.TextColored(LegacyDashboardRenderer.ColAmber, "  " + r.Line2);
             if (r.UsesMax > 0 && r.UsesCur == 0) SafeImGui.TextColored(LegacyDashboardRenderer.ColHp, "  " + r.Line3);
             else SafeImGui.TextDisabled("  " + r.Line3);
@@ -928,17 +932,6 @@ internal sealed class PetsTab
             _ctx.Post(() => SetKind(row.Id, row.Name, null));
         ImGui.EndPopup();
     }
-
-    /// <summary>Line-1 colour by the pet's damage type (white when unknown / not appraised).</summary>
-    private static Vector4 DamageColor(string damageType) => damageType switch
-    {
-        "Fire"      => new Vector4(1.00f, 0.55f, 0.30f, 1f),
-        "Cold"      => new Vector4(0.55f, 0.80f, 1.00f, 1f),
-        "Acid"      => new Vector4(0.55f, 0.95f, 0.45f, 1f),
-        "Lightning" => new Vector4(0.85f, 0.70f, 1.00f, 1f),
-        "Nether"    => new Vector4(0.75f, 0.50f, 0.90f, 1f),
-        _           => new Vector4(0.95f, 0.95f, 0.95f, 1f),
-    };
 
     private void RenderCharms()
     {

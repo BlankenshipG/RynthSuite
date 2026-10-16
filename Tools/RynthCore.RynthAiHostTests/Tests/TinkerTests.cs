@@ -4,18 +4,15 @@ using System.Linq;
 using RynthCore.Loot;
 using RynthCore.Plugin.RynthAi.MiniRemote;
 using RynthCore.Plugin.RynthAi.MiniRemote.Crafting;
-using RynthCore.Plugin.Shared;
 using RynthCore.RynthAiTests.Harness;
 
 namespace RynthCore.RynthAiHostTests.Tests;
 
-// The Crafting tab's tinkering (SilentKelpie's, 2026-10-12): ACE's retail chance
-// (RecipeManager.GetTinkerChance), the planner's caps and order (imbue once, rend last), bag
-// matching / choice, and the universal Crafting tab id. Server rows come from the server plugin's
-// profile ("salvage", ServerSalvageView) and carry their own rules, checked here on rows shaped
-// like Infinite Leaftide's (RynthILT serves those; RynthILT.Tests checks its data): no tink slot,
-// applied ints, stack groups (Steel + Serpentine 10), after-cap rows (Leather), an own order, and
-// prepared rows (tier bags, Ammunition).
+// The Crafting tab's tinkering (2026-10-12): ACE's retail chance (RecipeManager.GetTinkerChance),
+// the planner's caps and order (imbue once, ILT no-slot salvage, Steel + Serpentine 10, Leather
+// after the cap, rend last), bag matching / choice, and the universal Crafting tab id.
+// Phase 2: ILT trinkets (flags 384-387, tier-prepared bags, Ammunition) and the Rings
+// inscription chain (UB-IT's ingredient names, queue order and scroll pairing).
 internal static class TinkerTests
 {
     public static void Register(Runner r)
@@ -23,15 +20,18 @@ internal static class TinkerTests
         r.Add("tinker: retail difficulty and chance (ACE GetTinkerChance)", Chance);
         r.Add("tinker: slot cap, one imbue, attempts this run", SlotsAndImbue);
         r.Add("tinker: damage-type rend and rend last", Rend);
-        r.Add("tinker: server weapon rows (no slot, an after-cap row last only when the slots are full)", AfterCap);
-        r.Add("tinker: server jewelry rows (applied ints skip, a stack group shares one cap)", StackAndApplied);
+        r.Add("tinker: ILT weapon rows (no slot, Leather after the cap)", IltWeapon);
+        r.Add("tinker: ILT jewelry flags and Steel + Serpentine cap", IltJewelry);
         r.Add("tinker: item rows (Moonstone, Leather, Sandstone)", ItemRows);
         r.Add("tinker: scan filters", Filters);
         r.Add("tinker: bag matching (full, Abyssal, Foolproof)", Bags);
         r.Add("tinker: bag choice by chance and minimum", BagChoice);
         r.Add("tinker: Crafting is a universal Mini Remote tab", Section);
-        r.Add("tinker: prepared server rows (applied ints, order, tier bags, Ammunition)", Trinkets);
-        r.Add("tinker: a server plugin's salvage (per tab, own keys, own order, no rules unless asked)", PluginSalvage);
+        r.Add("tinker: ILT trinkets (flags, order, tier bags, Ammunition)", Trinkets);
+        r.Add("tinker: a server plugin's salvage (per tab, own keys, no Leaftide rules)", PluginSalvage);
+        r.Add("rings: ingredient names, alternates and excludes", RingIngredients);
+        r.Add("rings: craft queue runs Step 1, then 2, then 3", RingQueue);
+        r.Add("rings: scroll glyph and UB-IT pairing", RingScrolls);
     }
 
     private static TinkerBenchSettings Settings(params (string Key, int Count)[] counts)
@@ -47,41 +47,6 @@ internal static class TinkerTests
                    Workmanship = work, FlagInt = flags ?? (_ => 0) };
 
     private static List<int> Mats(List<TinkerStep> plan) => plan.Select(p => p.Material).ToList();
-
-    private static ServerSalvageView Row(string bench, int material, string kind, bool slot = false, string nameMatch = "",
-                                         int applied = 0, bool prepared = false, int order = 0, bool afterCap = false,
-                                         string group = "", int cap = 0)
-        => new(bench, material, kind, "server row", slot, nameMatch, applied, prepared, order, afterCap, group, cap);
-
-    /// <summary>The tab's rows with these server rows (as the Crafting tab builds them).</summary>
-    private static List<TinkerMaterial> WithServer(TinkerBench bench, params ServerSalvageView[] server)
-        => TinkerPlanner.Rows(bench, TinkerCatalog.FromServerPlugin(bench, server), null);
-
-    // ILT-shaped rows (RynthILT's Hub/IltSalvage.cs has the real ones).
-    private const int JewelSilverInt = 374, TrinketDiamondInt = 384, TrinketGromnieInt = 386;
-
-    private static readonly ServerSalvageView[] Weapon =
-    {
-        Row("melee", TinkerCatalog.YellowGarnet, "once", order: 70),
-        Row("melee", TinkerCatalog.BlackGarnet, "once", slot: true, nameMatch: "Abyssal", order: 100),
-        Row("melee", TinkerCatalog.Leather, "once", order: 995, afterCap: true),
-    };
-
-    private static readonly ServerSalvageView[] Jewelry =
-    {
-        Row("jewelry", TinkerCatalog.Silver, "once", applied: JewelSilverInt, order: 10),
-        Row("jewelry", TinkerCatalog.Copper, "once", applied: 370, order: 20),
-        Row("jewelry", TinkerCatalog.Serpentine, "tink", order: 50, group: "jewelry-stack", cap: 10),
-        Row("jewelry", TinkerCatalog.Steel, "tink", order: 60, group: "jewelry-stack", cap: 10),
-    };
-
-    private static readonly ServerSalvageView[] TrinketRows =
-    {
-        Row("trinkets", TinkerCatalog.Diamond, "once", applied: TrinketDiamondInt, prepared: true, order: 10),
-        Row("trinkets", TinkerCatalog.Ruby, "once", applied: 385, prepared: true, order: 20),
-        Row("trinkets", TinkerCatalog.GromnieHide, "once", applied: TrinketGromnieInt, prepared: true, order: 30),
-        Row("trinkets", TinkerCatalog.Pyreal, "once", applied: 387, prepared: true, order: 40),
-    };
 
     /// <summary>A plan's materials as "a,b,c" (Check.Eq compares lists by reference).</summary>
     private static string Seq(List<TinkerStep> plan) => string.Join(",", Mats(plan));
@@ -109,7 +74,7 @@ internal static class TinkerTests
 
     private static void SlotsAndImbue()
     {
-        var rows = TinkerPlanner.Rows(TinkerBench.Melee, null, null);
+        var rows = TinkerPlanner.Rows(TinkerBench.Melee, false, null);
         var s = Settings(("r" + TinkerCatalog.Iron, 10), ("r" + TinkerCatalog.BlackOpal, 1), ("r" + TinkerCatalog.FireOpal, 1));
         var plan = TinkerPlanner.Plan(TinkerBench.Melee, Item(AcObjectClass.MeleeWeapon, tinks: 6), s, rows);
         Check.Eq(Mats(plan).Count(m => m == TinkerCatalog.BlackOpal), 1, "first imbue in order");
@@ -136,7 +101,7 @@ internal static class TinkerTests
         Check.Eq(TinkerCatalog.RendFor(0x400, false), TinkerCatalog.Onyx, "nether");
         Check.Eq(TinkerCatalog.RendFor(0, false), 0, "no damage type, no rend");
 
-        var rows = TinkerPlanner.Rows(TinkerBench.Melee, null, null);
+        var rows = TinkerPlanner.Rows(TinkerBench.Melee, false, null);
         var s = Settings(("r" + TinkerCatalog.RendId, 1), ("r" + TinkerCatalog.Iron, 2));
         var first = TinkerPlanner.Plan(TinkerBench.Melee, Item(AcObjectClass.MeleeWeapon, damageType: 32), s, rows);
         Check.Eq(first[0].Material, TinkerCatalog.Emerald, "acid weapon: Emerald first");
@@ -147,9 +112,9 @@ internal static class TinkerTests
     }
 
     /// <summary>
-    /// Rows from a server plugin's profile (ServerPackInfo.Salvage): only the tab's own, in kind order
-    /// unless a row gives its own, keyed "p" (never sharing a count with retail "r"), and with no rule
-    /// the row doesn't ask for (a Leather without "afterCap" doesn't wait for the 10 ordinary tinks).
+    /// Rows from a server plugin's profile (ServerPackInfo.Salvage): only the tab's own, in kind order,
+    /// keyed "p" (never sharing a count with retail "r" or Leaftide "s"), and free of the Leaftide
+    /// rules (a plugin's Leather on a weapon doesn't wait for the 10 ordinary tinks).
     /// </summary>
     private static void PluginSalvage()
     {
@@ -173,83 +138,46 @@ internal static class TinkerTests
         var plan = TinkerPlanner.Plan(TinkerBench.Melee, Item(AcObjectClass.MeleeWeapon, tinks: 5), s, rows);
         Check.Eq(Seq(plan), Seq(TinkerCatalog.Emerald, TinkerCatalog.Iron, TinkerCatalog.Iron, TinkerCatalog.Leather),
                  "imbue, tinks, then once; Leather doesn't wait for the cap");
-        Check.True(server.All(r => !r.AfterCap && r.StackGroup.Length == 0 && r.AppliedInt == 0 && !r.Prepared), "no rules unless asked");
-
-        // A row's own order: this once-row runs before the retail imbues (101) and the plugin's tinks.
-        var ordered = TinkerCatalog.FromServerPlugin(TinkerBench.Melee, new[]
-        {
-            Row("melee", TinkerCatalog.Iron, "tink", slot: true),
-            Row("melee", TinkerCatalog.Turquoise, "once", order: 80),
-        });
-        Check.Eq(ordered[1].Order, 80, "the row's order");
-        Check.Eq(ordered[0].Order, 400, "no order: the kind's default");
-        var first = TinkerPlanner.Plan(TinkerBench.Melee, Item(AcObjectClass.MeleeWeapon),
-            Settings(("r" + TinkerCatalog.BlackOpal, 1), ("p" + TinkerCatalog.Iron, 1), ("p" + TinkerCatalog.Turquoise, 1)),
-            TinkerPlanner.Rows(TinkerBench.Melee, ordered, null));
-        Check.Eq(Seq(first), Seq(TinkerCatalog.Turquoise, TinkerCatalog.BlackOpal, TinkerCatalog.Iron), "order 80 goes first");
-
-        // The optional fields map onto the planner's row.
-        var mapped = TinkerCatalog.FromServerPlugin(TinkerBench.Jewelry, Jewelry.Concat(new[]
-        {
-            Row("jewelry", TinkerCatalog.Moonstone, "tink", group: "no-cap"),
-        }));
-        Check.Eq(mapped[0].AppliedInt, JewelSilverInt, "applied int");
-        Check.Eq(mapped[2].StackGroup + "/" + mapped[2].StackCap, "jewelry-stack/10", "stack group and cap");
-        Check.Eq(mapped[4].StackGroup, "", "a group without a cap is no group");
-        Check.True(TinkerCatalog.FromServerPlugin(TinkerBench.Melee, Weapon)[2].AfterCap, "after cap");
-        Check.True(TinkerCatalog.FromServerPlugin(TinkerBench.Trinkets, TrinketRows).All(r => r.Prepared), "prepared");
     }
 
-    private static void AfterCap()
+    private static void IltWeapon()
     {
-        var rows = WithServer(TinkerBench.Melee, Weapon);
-        var s = Settings(("p" + TinkerCatalog.YellowGarnet, 1), ("r" + TinkerCatalog.Iron, 10), ("p" + TinkerCatalog.Leather, 1));
+        var rows = TinkerPlanner.Rows(TinkerBench.Melee, true, null);
+        var s = Settings(("s" + TinkerCatalog.YellowGarnet, 1), ("r" + TinkerCatalog.Iron, 10), ("s" + TinkerCatalog.Leather, 1));
         var full = TinkerPlanner.Plan(TinkerBench.Melee, Item(AcObjectClass.MeleeWeapon, tinks: 10), s, rows);
         Check.Eq(Seq(full), Seq(TinkerCatalog.YellowGarnet, TinkerCatalog.Leather), "capped item: no-slot rows, then Leather");
 
         var some = TinkerPlanner.Plan(TinkerBench.Melee, Item(AcObjectClass.MeleeWeapon, tinks: 5), s, rows);
         Check.Eq(some[^1].Material, TinkerCatalog.Leather, "Irons fill the last 5 slots, then Leather");
         Check.Eq(Mats(some).Count(m => m == TinkerCatalog.Iron), 5, "five Irons");
-        Check.Eq(Mats(some).Count(m => m == TinkerCatalog.Leather), 1, "Leather once");
 
         var open = TinkerPlanner.Plan(TinkerBench.Melee, Item(AcObjectClass.MeleeWeapon, tinks: 5),
-            Settings(("p" + TinkerCatalog.Leather, 1), ("r" + TinkerCatalog.Iron, 2)), rows);
+            Settings(("s" + TinkerCatalog.Leather, 1), ("r" + TinkerCatalog.Iron, 2)), rows);
         Check.True(!Mats(open).Contains(TinkerCatalog.Leather), "Leather waits for the 10 ordinary tinks");
 
         var retailOnly = TinkerPlanner.Plan(TinkerBench.Melee, Item(AcObjectClass.MeleeWeapon, tinks: 10), s,
-            TinkerPlanner.Rows(TinkerBench.Melee, null, null));
-        Check.Eq(retailOnly.Count, 0, "no server rows: nothing offered past the cap");
+            TinkerPlanner.Rows(TinkerBench.Melee, false, null));
+        Check.Eq(retailOnly.Count, 0, "off ILT: the server rows aren't offered");
     }
 
-    private static void StackAndApplied()
+    private static void IltJewelry()
     {
-        var rows = WithServer(TinkerBench.Jewelry, Jewelry);
-        var s = Settings(("p" + TinkerCatalog.Serpentine, 8), ("p" + TinkerCatalog.Steel, 8),
-                         ("p" + TinkerCatalog.Silver, 1), ("p" + TinkerCatalog.Copper, 1));
+        var rows = TinkerPlanner.Rows(TinkerBench.Jewelry, true, null);
+        var s = Settings(("s" + TinkerCatalog.Serpentine, 8), ("s" + TinkerCatalog.Steel, 8),
+                         ("s" + TinkerCatalog.Silver, 1), ("s" + TinkerCatalog.Copper, 1));
         var plan = TinkerPlanner.Plan(TinkerBench.Jewelry, Item(AcObjectClass.Jewelry, tinks: 0,
-            flags: k => k == JewelSilverInt ? 2 : 0), s, rows);
+            flags: k => k == TinkerCatalog.IntJewelSilver ? 2 : 0), s, rows);
         var m = Mats(plan);
         Check.Eq(m.Count(x => x == TinkerCatalog.Serpentine), 8, "8 Serpentine");
         Check.Eq(m.Count(x => x == TinkerCatalog.Steel), 2, "Steel stops at 10 combined");
-        Check.True(!m.Contains(TinkerCatalog.Silver), "Silver's applied int already reads 2");
-        Check.Eq(m[0], TinkerCatalog.Copper, "flag rows first (their order)");
-
-        // Two groups don't share; a row outside any group isn't capped.
-        var split = WithServer(TinkerBench.Jewelry,
-            Row("jewelry", TinkerCatalog.Serpentine, "tink", order: 50, group: "a", cap: 3),
-            Row("jewelry", TinkerCatalog.Steel, "tink", order: 60, group: "b", cap: 4),
-            Row("jewelry", TinkerCatalog.Iron, "tink", order: 70));
-        var p2 = Mats(TinkerPlanner.Plan(TinkerBench.Jewelry, Item(AcObjectClass.Jewelry),
-            Settings(("p" + TinkerCatalog.Serpentine, 9), ("p" + TinkerCatalog.Steel, 9), ("p" + TinkerCatalog.Iron, 9)), split));
-        Check.Eq(p2.Count(x => x == TinkerCatalog.Serpentine), 3, "group a: its cap");
-        Check.Eq(p2.Count(x => x == TinkerCatalog.Steel), 4, "group b: its own cap");
-        Check.Eq(p2.Count(x => x == TinkerCatalog.Iron), 9, "no group, no slot: all 9");
-        Check.True(TinkerCatalog.IsTrinket("Ornate Compass") && !TinkerCatalog.IsTrinket("Yellow Topaz Ring"), "trinkets left to their tab");
+        Check.True(!m.Contains(TinkerCatalog.Silver), "Silver flag already 2");
+        Check.Eq(m[0], TinkerCatalog.Copper, "flag rows first");
+        Check.True(TinkerCatalog.IsTrinket("Ornate Compass") && !TinkerCatalog.IsTrinket("Yellow Topaz Ring"), "trinkets left to their recipes");
     }
 
     private static void ItemRows()
     {
-        var rows = TinkerPlanner.Rows(TinkerBench.Items, null, null);
+        var rows = TinkerPlanner.Rows(TinkerBench.Items, false, null);
         var s = Settings(("r" + TinkerCatalog.Moonstone, 2), ("r" + TinkerCatalog.Leather, 1), ("r" + TinkerCatalog.Sandstone, 1));
         var noMana = TinkerPlanner.Plan(TinkerBench.Items, Item(AcObjectClass.Armor), s, rows);
         Check.Eq(Seq(noMana), Seq(TinkerCatalog.Leather), "no mana: no Moonstone; not retained: Leather, not Sandstone");
@@ -279,7 +207,7 @@ internal static class TinkerTests
 
     private static void Bags()
     {
-        var melee = WithServer(TinkerBench.Melee, Weapon);
+        var melee = TinkerPlanner.Rows(TinkerBench.Melee, true, null);
         var rend = new TinkerStep(melee.First(r => r.Id == TinkerCatalog.RendId), TinkerCatalog.BlackGarnet);
         var abyssal = new TinkerStep(melee.First(r => r.NameMatch == "Abyssal"), TinkerCatalog.BlackGarnet);
         var iron = new TinkerStep(melee.First(r => r.Id == TinkerCatalog.Iron), TinkerCatalog.Iron);
@@ -318,18 +246,18 @@ internal static class TinkerTests
 
     private static void Trinkets()
     {
-        Check.Eq(TinkerPlanner.Rows(TinkerBench.Trinkets, null, null).Count, 0, "retail has no trinket rows");
-        var rows = WithServer(TinkerBench.Trinkets, TrinketRows);
-        var s = Settings(("p" + TinkerCatalog.Pyreal, 1), ("p" + TinkerCatalog.Diamond, 1), ("p" + TinkerCatalog.Ruby, 1),
-                         ("p" + TinkerCatalog.GromnieHide, 1));
+        Check.Eq(TinkerPlanner.Rows(TinkerBench.Trinkets, false, null).Count, 0, "off ILT: no trinket rows");
+        var rows = TinkerPlanner.Rows(TinkerBench.Trinkets, true, null);
+        var s = Settings(("s" + TinkerCatalog.Pyreal, 1), ("s" + TinkerCatalog.Diamond, 1), ("s" + TinkerCatalog.Ruby, 1),
+                         ("s" + TinkerCatalog.GromnieHide, 1));
         var all = TinkerPlanner.Plan(TinkerBench.Trinkets, Item(AcObjectClass.Jewelry), s, rows);
         Check.Eq(Seq(all), Seq(TinkerCatalog.Diamond, TinkerCatalog.Ruby, TinkerCatalog.GromnieHide, TinkerCatalog.Pyreal),
-            "the rows' order: Diamond, Ruby, Gromnie Hide, Pyreal");
+            "UB-IT order: Diamond, Ruby, Gromnie Hide, Pyreal");
         var some = TinkerPlanner.Plan(TinkerBench.Trinkets, Item(AcObjectClass.Jewelry,
-            flags: k => k is TrinketDiamondInt or TrinketGromnieInt ? 2 : 0), s, rows);
-        Check.Eq(Seq(some), Seq(TinkerCatalog.Ruby, TinkerCatalog.Pyreal), "applied ints 384 / 386 already 2");
+            flags: k => k is TinkerCatalog.IntTrinketDiamond or TinkerCatalog.IntTrinketGromnie ? 2 : 0), s, rows);
+        Check.Eq(Seq(some), Seq(TinkerCatalog.Ruby, TinkerCatalog.Pyreal), "flags 384 / 386 already 2");
         var capped = TinkerPlanner.Plan(TinkerBench.Trinkets, Item(AcObjectClass.Jewelry, tinks: 10), s, rows);
-        Check.Eq(capped.Count, 4, "no-slot rows ignore the tink cap");
+        Check.Eq(capped.Count, 4, "trinket salvage doesn't use tink slots");
 
         var diamond = new TinkerStep(rows.First(r => r.Id == TinkerCatalog.Diamond), TinkerCatalog.Diamond);
         Check.True(TinkerPlanner.BagMatches(diamond, "Major Diamond Salvage", TinkerCatalog.Diamond, 100, 2), "Major bag at Major");
@@ -348,5 +276,49 @@ internal static class TinkerTests
         Check.True(TinkerCatalog.IsTrinket("Spinning Top") && TinkerCatalog.IsTrinket("Copper Pocket Watch")
                    && !TinkerCatalog.IsTrinket("Imperial Topaz Necklace"), "trinket names (topaz isn't a top)");
         Check.True(TinkerCatalog.Targets(TinkerBench.Trinkets, AcObjectClass.Jewelry), "trinkets are jewelry");
+    }
+
+    private static void RingIngredients()
+    {
+        var step1 = RingChain.Recipes[0];
+        Check.True(RingChain.Matches("Quill of Infliction", step1.Tool), "base quill");
+        Check.True(RingChain.Matches("Infliction Quill", step1.Tool), "alternate name");
+        Check.True(!RingChain.Matches("Enlightened Quill of Infliction", step1.Tool), "Enlightened excluded from Step 1");
+        Check.True(RingChain.Matches("Empyrean Trophy", step1.Target) && RingChain.Matches("Royal Summons", step1.Target), "trophies");
+        Check.True(!RingChain.Matches("Trophy Kit", step1.Target), "not every Trophy");
+
+        var step2 = RingChain.Recipes[1];
+        Check.True(RingChain.Matches("Enlightened Quill of Infliction", step2.Tool), "Step 2 quill");
+        Check.True(!RingChain.Matches("Enlightened Infliction Quill of Partition", step2.Tool), "partition quill excluded from Step 2");
+        Check.True(RingChain.Matches("Vial of Ink of Partition", step2.Target), "ink");
+
+        var flame = RingChain.Recipes.First(r => r.Id == "ring2_glyph_flame");
+        Check.True(RingChain.Matches("Enlightened Infliction Quill of Partition", flame.Tool), "Step 3 quill");
+        Check.True(RingChain.Matches("Glyph of Flame", flame.Target) && !RingChain.Matches("Glyph of Frost", flame.Target), "glyph by full name");
+        Check.True(!RingChain.Matches(null, flame.Target), "no name");
+    }
+
+    private static void RingQueue()
+    {
+        var runs = new Dictionary<string, int> { ["ring2_glyph_frost"] = 1, ["ring2_step2_ink"] = 2, ["ring2_step1_quill_trophy"] = 2, ["ring2_glyph_bludgeoning"] = 1 };
+        var q = RingChain.Expand(id => runs.TryGetValue(id, out int n) ? n : 0);
+        Check.Eq(string.Join(",", q.Select(r => r.Tier)), "1,1,2,2,3,3", "tiers in order");
+        Check.Eq(q[4].Id, "ring2_glyph_bludgeoning", "glyphs in definition order");
+        Check.Eq(RingChain.Expand(_ => 500).Count, RingChain.Recipes.Length * RingChain.MaxRuns, "runs capped at 99");
+        Check.Eq(RingChain.Expand(_ => 0).Count, 0, "nothing queued");
+    }
+
+    private static void RingScrolls()
+    {
+        Check.Eq(RingChain.GlyphOf("Inscription of Halo of Frost")?.Id, "ring2_glyph_frost", "Halo of Frost");
+        Check.Eq(RingChain.GlyphOf("Inscription of Cassius' Ring of Fire")?.Id, "ring2_glyph_flame", "Ring of Fire");
+        Check.Eq(RingChain.GlyphOf("Inscription of Something"), null, "unknown scroll");
+        Check.True(RingChain.IsInscriptionScroll("Inscription of Clouded Soul") && !RingChain.IsInscriptionScroll("Glyph of Nether"), "scroll marker");
+
+        var scrolls = new[] { (30, "Inscription of Searing Disc"), (10, "Inscription of Tectonic Rifts"), (20, "Inscription of Mystery") };
+        var pairs = RingChain.PairScrolls(scrolls, new[] { 900, 500, 700, 800 });
+        // Recipe ids sort bludgeoning < corrosion, unknown last; targets by id.
+        Check.Eq(string.Join(";", pairs.Select(p => $"{p.Scroll}>{p.Target}")), "10>500;30>700;20>800", "glyph order onto target id order");
+        Check.Eq(RingChain.PairScrolls(scrolls, Array.Empty<int>()).Count, 0, "no targets");
     }
 }

@@ -2,17 +2,17 @@
 //
 // Pure: the scan reads the item into TinkerItemFacts and the runner re-plans from fresh facts,
 // so these rules are the only place the apply order and caps live (and the host tests drive
-// them directly). Server rows say which rules apply to them (TinkerMaterial, from the server
-// plugin's profile); nothing here knows a server:
-//   * rows run in TinkerMaterial.Order (imbues and server crit lines before stat tinks; with
+// them directly):
+//   * rows run in TinkerMaterial.Order (imbues and ILT crit lines before stat tinks; with
 //     "rend last" the rend moves to the end, the way UB-IT's foolproof-rend option does);
-//   * a tink-slot row is cut to the free slots (10 minus the item's tinks); no-slot rows aren't;
+//   * a tink-slot row is cut to the free slots (10 minus the item's tinks); ILT's no-slot
+//     salvages aren't;
 //   * one imbue per item (the item's own, or the first planned one);
-//   * a row with an applied int is skipped once that int reads 2 on the item;
-//   * rows of one stack group stop at the group's cap combined;
-//   * an after-cap row goes on last, once, and only when the tink slots are full;
-//   * a prepared row needs a bag prepared at the chosen tier (its name says Minor, Moderate or
-//     Major); a raw bag becomes one on that tier's Ammunition.
+//   * an ILT flag row (jewelry Copper...) is skipped once its flag reads 2;
+//   * ILT jewelry Steel + Serpentine stop at 10 combined;
+//   * ILT Leather on a weapon goes on once, after the 10 ordinary tinks are on;
+//   * an ILT trinket salvage needs a bag prepared at the chosen tier (its name says Minor,
+//     Moderate or Major); a raw bag becomes one on that tier's Ammunition.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -39,7 +39,7 @@ internal sealed class TinkerItemFacts
     /// <summary>ItemMaxMana (108).</summary>
     public int MaxMana;
     public bool Equipped;
-    /// <summary>Reads an int property of the item (a row's applied int: 2 = that salvage is on).</summary>
+    /// <summary>Reads an ILT flag int (370-376); 2 = that salvage is on.</summary>
     public Func<int, int> FlagInt = _ => 0;
 }
 
@@ -52,8 +52,15 @@ internal readonly record struct TinkerBagChoice(int Id, double Workmanship, doub
 internal static class TinkerPlanner
 {
     /// <summary>
+    /// The rows a tab offers on this world: retail, the server's (ILT-like worlds) and the
+    /// player's custom rows for this world.
+    /// </summary>
+    public static List<TinkerMaterial> Rows(TinkerBench bench, bool iltWorld, IEnumerable<CustomTinker>? custom)
+        => Rows(bench, iltWorld ? TinkerCatalog.ServerFor(bench) : null, custom);
+
+    /// <summary>
     /// The rows a tab offers: retail, then <paramref name="server"/> (the connected server's own
-    /// salvage, from the plugin that owns it), then the player's custom rows.
+    /// salvage: RynthAi's Leaftide rows on ILT, or the server plugin's), then the player's custom rows.
     /// </summary>
     public static List<TinkerMaterial> Rows(TinkerBench bench, IEnumerable<TinkerMaterial>? server, IEnumerable<CustomTinker>? custom)
     {
@@ -91,8 +98,8 @@ internal static class TinkerPlanner
     /// <summary>
     /// The ordered steps for one item (empty when nothing ticked applies).
     /// <paramref name="attempted"/> is how many times this run already tried a row key on the
-    /// item: the item's tinks count failures too, but no-slot server rows and the ticked counts
-    /// don't show on it, so a re-plan would otherwise repeat them.
+    /// item: the item's tinks count failures too, but ILT rows and the ticked counts don't show
+    /// on it, so a re-plan would otherwise repeat them.
     /// </summary>
     public static List<TinkerStep> Plan(TinkerBench bench, TinkerItemFacts item, TinkerBenchSettings s,
                                          IReadOnlyList<TinkerMaterial> rows, Func<string, int>? attempted = null)
@@ -100,8 +107,9 @@ internal static class TinkerPlanner
         var steps = new List<TinkerStep>();
         int free = Math.Max(0, TinkerCatalog.MaxTinks - item.Tinks);
         bool imbueTaken = item.Imbued;
-        Dictionary<string, int>? stacked = null;
-        List<TinkerStep>? afterCap = null;
+        int jewelryStack = 0;
+        TinkerStep? leatherLast = null;
+        bool weapon = bench is TinkerBench.Melee or TinkerBench.Missile or TinkerBench.Caster;
 
         foreach (var row in rows.OrderBy(r => OrderOf(r, s)))
         {
@@ -121,16 +129,15 @@ internal static class TinkerPlanner
                 imbueTaken = true;
             }
             if (row.AppliedInt != 0 && item.FlagInt(row.AppliedInt) == 2) continue;
-            if (row.StackGroup.Length > 0 && row.StackCap > 0)
+            if (bench == TinkerBench.Jewelry && row.Origin == TinkerOrigin.Server
+                && material is TinkerCatalog.Steel or TinkerCatalog.Serpentine)
             {
-                stacked ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                int used = stacked.TryGetValue(row.StackGroup, out int u) ? u : 0;
-                n = Math.Min(n, row.StackCap - used);
-                stacked[row.StackGroup] = used + Math.Max(0, n);
+                n = Math.Min(n, TinkerCatalog.JewelryStackCap - jewelryStack);
+                jewelryStack += Math.Max(0, n);
             }
-            if (row.AfterCap)
+            if (weapon && row.Origin == TinkerOrigin.Server && material == TinkerCatalog.Leather)
             {
-                (afterCap ??= new List<TinkerStep>()).Add(new TinkerStep(row, material));
+                leatherLast = new TinkerStep(row, material);
                 continue;
             }
             if (row.UsesTinkSlot)
@@ -140,7 +147,7 @@ internal static class TinkerPlanner
             }
             for (int i = 0; i < n; i++) steps.Add(new TinkerStep(row, material));
         }
-        if (afterCap != null && free == 0) steps.AddRange(afterCap);
+        if (leatherLast is TinkerStep leather && free == 0) steps.Add(leather);
         return steps;
     }
 
@@ -158,7 +165,7 @@ internal static class TinkerPlanner
     }
 
     /// <summary>
-    /// Whether a salvage bag can serve a step: a full bag (100 units) of the material, server bags
+    /// Whether a salvage bag can serve a step: a full bag (100 units) of the material, ILT bags
     /// matched by name (Abyssal-Touched Gems share Black Garnet's id, Foolproof rend bags may not
     /// carry a material at all).
     /// </summary>
@@ -176,7 +183,7 @@ internal static class TinkerPlanner
         return step.Row.Id == TinkerCatalog.RendId && TinkerCatalog.RendFromFoolproofName(bagName) == step.Material;
     }
 
-    /// <summary>The prepared tier a name carries (0 Minor, 1 Moderate, 2 Major), else -1.</summary>
+    /// <summary>The trinket tier a name carries (0 Minor, 1 Moderate, 2 Major), else -1.</summary>
     public static int TierOf(string name)
     {
         name ??= string.Empty;
@@ -185,11 +192,11 @@ internal static class TinkerPlanner
         return -1;
     }
 
-    /// <summary>A full, not yet prepared bag of a prepared row's salvage (no tier in its name).</summary>
+    /// <summary>A full, not yet prepared bag of a trinket salvage (no tier in its name).</summary>
     public static bool IsRawTrinketBag(int material, string bagName, int bagMaterial, int bagUses)
         => bagUses >= 100 && bagMaterial == material && TierOf(bagName) < 0;
 
-    /// <summary>The Ammunition that prepares a raw bag into a tier bag.</summary>
+    /// <summary>The Ammunition that prepares a raw trinket bag into a tier bag.</summary>
     public static bool IsTierAmmunition(string name, int tier)
         => (name ?? string.Empty).IndexOf("Ammunition", StringComparison.OrdinalIgnoreCase) >= 0
            && TierOf(name!) == Math.Clamp(tier, 0, TinkerCatalog.TrinketTiers.Length - 1);

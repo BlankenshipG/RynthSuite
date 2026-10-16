@@ -35,6 +35,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- ILT's /fship commands: RynthILT's list and the shared "servercommands" format (both in the
+         plugin above) checked against RynthAi's store for them. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Huds\ServerCommandModel.cs" Link="RynthAi\ServerCommandModel.cs" />
     <!-- The RynthAi test tools' check/runner harness and fake engine host (no plugin code in them). -->
     <Compile Include="..\RynthCore.RynthAiTests\Harness\Check.cs" Link="Harness\Check.cs" />
     <Compile Include="..\RynthCore.RynthAiTests\Harness\Runner.cs" Link="Harness\Runner.cs" />

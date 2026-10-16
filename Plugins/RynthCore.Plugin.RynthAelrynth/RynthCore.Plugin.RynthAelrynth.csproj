@@ -5,10 +5,11 @@
        The build is shared (..\Shared\ServerPack\ServerPlugin.props); ServerData.cs holds what is known. -->
   <PropertyGroup>
     <AssemblyName>RynthCore.Plugin.RynthAelrynth</AssemblyName>
-    <Version>0.1.0</Version>
+    <!-- Previous release: 0.1.2. -->
+    <Version>0.1.4</Version>
     <RynthPluginServerId>aelrynth</RynthPluginServerId>
     <RynthPluginServerName>Aelrynth</RynthPluginServerName>
-    <RynthPluginServerHosts>aelrynth.com</RynthPluginServerHosts>
+    <RynthPluginServerHosts>aelrynth.com|144.217.84.148</RynthPluginServerHosts>
     <RynthPluginServerWorldNames>Aelrynth*|Aeshnidae*</RynthPluginServerWorldNames>
     <RynthPluginDescription>Aelrynth only: the server card (its mods, links, account setup) in the Mini Remote.</RynthPluginDescription>
   </PropertyGroup>
