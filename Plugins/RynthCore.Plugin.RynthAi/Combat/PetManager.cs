@@ -22,7 +22,8 @@ namespace RynthCore.Plugin.RynthAi;
 /// Behaviour (per user spec):
 ///   * Summon only when mobs are near — at least <c>PetMinMonsters</c> scanned,
 ///     attackable monsters within <c>CustomPetRange</c> — and no pet is currently
-///     active. Re-summon when the pet despawns mid-fight.
+///     active. Re-summon when the pet despawns mid-fight (lifespan / death), after
+///     the essence's retail ~45 s use cooldown (Summoning wiki / ACE PetDevice).
 ///   * Auto-refill an empty essence from an Encapsulated Spirit in inventory
 ///     (gated on <c>PetAutoRefill</c>).
 ///
@@ -30,6 +31,12 @@ namespace RynthCore.Plugin.RynthAi;
 /// guarded, one in-flight action at a time. Entirely plugin-side; the only AC
 /// actions issued are <c>Host.UseObject</c> (summon) and <c>Host.UseObjectOn</c>
 /// (refill), both selection-free.
+///
+/// Stuck/fail (Kelpie 2026-10-16): a Use that the server refused (cooldown, incline,
+/// busy) never drops Structure and never spawns a pet. The old path still assumed a
+/// pet for 10 s and parked the essence only 30 s — short of the 45 s item cooldown —
+/// so the next try timed out again. Failed summons no longer assume a pet; every
+/// Use parks the essence for <see cref="DeviceUseCooldownMs"/>.
 /// </summary>
 internal sealed class PetManager
 {
@@ -76,8 +83,14 @@ internal sealed class PetManager
 
     private const long ThinkIntervalMs           = 1000;
     private const long ActionTimeoutMs           = 8000;
-    private const long AssumeActiveAfterSummonMs = 10_000;
-    private const long DeviceFailCooldownMs      = 30_000;
+    /// <summary>Brief hold after a confirmed summon until the pet lands in the landscape cache.</summary>
+    private const long AssumeActiveAfterSummonMs = 5_000;
+    /// <summary>
+    /// Retail / ACE PetDevice use cooldown (~45 s). Applies after every Use we fire — success
+    /// or fail — so we do not re-Use while the server still refuses the essence.
+    /// </summary>
+    private const long DeviceUseCooldownMs        = 45_000;
+    private const long DeviceFailCooldownMs      = DeviceUseCooldownMs; // alias: failed Use still burns the CD
     private const long DeviceNoSpiritCooldownMs  = 15_000;
     private const long ServerSaidFullTrustMs     = 30 * 60_000;
     private const long RefillWindowMs            = 120_000;  // two refills inside this and the
@@ -158,13 +171,25 @@ internal sealed class PetManager
         // decrement that never lands), and waiting on it would wedge the subsystem.
         if (_state != PetState.Idle && now - _actionIssuedAt > ActionTimeoutMs)
         {
-            RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: action timeout in {_state} after {now - _actionIssuedAt}ms (essence 0x{(uint)_activeDeviceId:X8}); cooling down.");
-            if (_activeDeviceId != 0)
-                _deviceCooldownUntil[_activeDeviceId] = now + DeviceFailCooldownMs;
-            // A summon that we simply couldn't confirm very likely DID work — assume
-            // a pet for a bit so we don't immediately re-issue into "already active".
-            if (_state == PetState.Summoning)
+            bool summonConfirmed = _state == PetState.Summoning
+                && (SummonLanded() || IsPetActive());
+            // Host.Log so FakeHost / in-game logs see it; RynthLog for the Pets category file.
+            string timeoutMsg =
+                $"[RynthAi] Pet: action timeout in {_state} after {now - _actionIssuedAt}ms (essence 0x{(uint)_activeDeviceId:X8})"
+                + (summonConfirmed
+                    ? "; summon confirmed late."
+                    : "; no charge drop / no pet — treating as failed Use.");
+            _host.Log(timeoutMsg);
+            RynthLog.Write(LogCat.Pets, timeoutMsg);
+            // Do NOT restart DeviceUseCooldownMs here — IssueSummon already parked the essence
+            // from the Use instant. Re-arming from timeout would wait ~53 s and leave gaps
+            // after a refused Use (Kelpie stuck/fail).
+            // Only assume a pet when the Use clearly landed; a failed Use must not block
+            // resummon after the cooldown (false assume + short park left gaps).
+            if (summonConfirmed)
                 _assumePetActiveUntil = now + AssumeActiveAfterSummonMs;
+            else if (_state == PetState.Summoning)
+                _assumePetActiveUntil = 0;
             Reset();
             return;
         }
@@ -196,10 +221,15 @@ internal sealed class PetManager
             {
                 _host.Log($"[RynthAi] Pet: essence 0x{(uint)_activeDeviceId:X8} reports empty; will refill.");
                 _serverSaidFullUntil.Remove(_activeDeviceId);   // really empty: the read is right again
-                // The server-side pyreal refill didn't happen (charm off / no pyreals):
-                // park the essence so the empty-summon path can't spin on it.
-                if (AllowSummonOnEmpty?.Invoke() == true && _activeDeviceId != 0)
-                    _deviceCooldownUntil[_activeDeviceId] = NowMs + DeviceNoSpiritCooldownMs;
+                // Empty Use does not burn the retail 45 s spawn cooldown the way a real summon
+                // does; drop the Use park so the next think can refill (or re-try pyreal path).
+                if (_activeDeviceId != 0)
+                {
+                    if (AllowSummonOnEmpty?.Invoke() == true)
+                        _deviceCooldownUntil[_activeDeviceId] = NowMs + DeviceNoSpiritCooldownMs;
+                    else
+                        _deviceCooldownUntil.Remove(_activeDeviceId);
+                }
                 GoIdle();
                 return;
             }
@@ -226,8 +256,15 @@ internal sealed class PetManager
     private void TryBeginAction(long now)
     {
         // A pet is already up (just summoned, or detected in the world) — done.
-        if (now < _assumePetActiveUntil) return;
-        if (IsPetActive())
+        // If the assume window is still open but the pet is gone (despawn / death), clear it
+        // so we can wait on the essence cooldown and resummon.
+        bool petOut = IsPetActive();
+        if (now < _assumePetActiveUntil)
+        {
+            if (petOut) return;
+            _assumePetActiveUntil = 0;
+        }
+        if (petOut)
         {
             // A cosmetic pet in the slot steps aside for the fight; wait for the dismiss to land.
             if (YieldPetForCombat != null && MonstersNearby() && YieldPetForCombat())
@@ -298,15 +335,18 @@ internal sealed class PetManager
     private void IssueSummon(int deviceId, int charges)
     {
         // Don't fire the essence-use while a cast gesture is animating — AC
-        // refuses item use mid-gesture, which would burn the 8s timeout and a
-        // 30s device park for nothing. No state change; caller retries next tick.
+        // refuses item use mid-gesture, which would burn the 8s timeout and the
+        // 45 s essence cooldown for nothing. No state change; caller retries next tick.
         if (!_host.CanCastNow) return;
+        long now = NowMs;
         _state            = PetState.Summoning;
         _activeDeviceId   = deviceId;
         _activeSpiritId   = 0;
         _preActionCharges = charges;
-        _actionIssuedAt   = NowMs;
-        RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: summoning from essence 0x{(uint)deviceId:X8} (charges={charges}).");
+        _actionIssuedAt   = now;
+        // Server starts the PetDevice cooldown on Use, whether the pet spawns or not.
+        _deviceCooldownUntil[deviceId] = now + DeviceUseCooldownMs;
+        RynthLog.Write(LogCat.Pets, $"[RynthAi] Pet: summoning from essence 0x{(uint)deviceId:X8} (charges={charges}); essence cooldown {DeviceUseCooldownMs / 1000}s.");
         _host.UseFor(unchecked((uint)deviceId), "Pet", "summon a pet from the essence");
     }
 
@@ -455,9 +495,14 @@ internal sealed class PetManager
         foreach (var wo in _objectCache.GetLandscape())
         {
             if (wo == null) continue;
+            // Corpses keep the pet's name briefly; don't treat them as a live summon.
+            if (wo.ObjectClass == AcObjectClass.Corpse) continue;
+            if (wo.ObjectClass is not (AcObjectClass.Monster or AcObjectClass.CombatPet or AcObjectClass.Unknown))
+                continue;
             string n = wo.Name;
-            if (!string.IsNullOrEmpty(n) && n.StartsWith(prefix, StringComparison.Ordinal))
-                return true;
+            if (string.IsNullOrEmpty(n) || !n.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            if (n.Contains("Corpse", StringComparison.OrdinalIgnoreCase)) continue;
+            return true;
         }
         return false;
     }

@@ -38,6 +38,7 @@ internal static class PetRefillTests
         r.Add("pets: 'not enough charges' after a confirmed refill ends the trust; refill again", TrustEndsOnEmptySummon);
         r.Add("pets: refilled twice in 2 min and still empty (no reply) -> parked 5 min", SilentRefillsParked);
         r.Add("pets: the server's 'full' trust expires after 30 min", TrustExpires);
+        r.Add("pets: failed summon (no charge drop) does not assume a pet; waits the 45 s essence cooldown", FailedSummonRespectsCooldown);
     }
 
     // ── Rig ───────────────────────────────────────────────────────────────
@@ -191,8 +192,32 @@ internal static class PetRefillTests
         int refills = rig.Refills;
         Check.Eq(refills, 1, "trusted: no second refill");
         // No summon lands (no pet appears, the read never moves): each summon times out and
-        // parks the essence for 30 s. After 30 minutes the trust is gone and the read rules.
+        // parks the essence for the 45 s PetDevice cooldown. After 30 minutes the trust is gone.
         rig.Run(31 * 60_000);
         Check.True(rig.Refills > refills, "after 30 minutes the empty read is believed again");
+    }
+
+    /// <summary>
+    /// Kelpie 2026-10-16: Use refused (cooldown / environment) leaves Structure unchanged.
+    /// Must not assume a pet is out, and must wait the full ~45 s essence cooldown before retry.
+    /// </summary>
+    private static void FailedSummonRespectsCooldown()
+    {
+        using var rig = new Rig(charges: 50);
+        rig.Run(1500);
+        Check.Eq(rig.Summons, 1, "first Use fired");
+        // Structure never drops and no pet appears → timeout treats it as a failed Use.
+        Rig.SetCharges(50);
+        rig.Run(9_000);
+        Check.Eq(rig.Summons, 1, "still one Use during the 45 s cooldown (no false re-issue)");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("failed Use", StringComparison.OrdinalIgnoreCase)
+                                          || l.Contains("no charge drop", StringComparison.OrdinalIgnoreCase)),
+            "failed Use is logged");
+        // Park is from IssueSummon (~t=100 ms), not from the 8 s timeout. At ~44 s from start
+        // still cooling; a few seconds more clears the 45 s essence cooldown.
+        rig.Run(34_000);
+        Check.Eq(rig.Summons, 1, "still cooling at ~44 s from first Use");
+        rig.Run(4_000);
+        Check.Eq(rig.Summons, 2, "second Use after the 45 s essence cooldown");
     }
 }
