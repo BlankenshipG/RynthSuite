@@ -353,7 +353,7 @@ internal sealed class RynthRadarUi
         }
 
         if (_objectCache != null && _host.HasGetObjectPosition && landblock != 0)
-            AddMarkers(payload, landblock, gxLB, gyLB);
+            AddMarkers(payload, landblock, isIndoor);
 
         return payload;
     }
@@ -363,7 +363,21 @@ internal sealed class RynthRadarUi
     // decided once and kept (per object id and name) wherever the answer is settled, because
     // this runs on every radar poll (10-30 Hz) over every creature and world object nearby.
 
-    private void AddMarkers(RadarSnapshotPayload payload, uint landblock, float gxLB, float gyLB)
+    /// <summary>
+    /// Where an object's landblock puts it in world space. Outdoors every landblock counts: the client has the
+    /// neighbours loaded and an object's position is local to its own landblock, so it is offset by that one
+    /// (2026-10-15: objects over the border used to show only once you crossed it). In a dungeon only the
+    /// player's own landblock counts (the neighbours' cells are other places).
+    /// </summary>
+    private static bool TryLandblockOffset(uint cell, uint playerLandblock, bool indoor, out float gx, out float gy)
+    {
+        uint lb = cell >> 16;
+        gx = ((lb >> 8) & 0xFF) * 192f;
+        gy = (lb & 0xFF) * 192f;
+        return lb != 0 && (!indoor || lb == playerLandblock);
+    }
+
+    private void AddMarkers(RadarSnapshotPayload payload, uint landblock, bool indoor)
     {
         var cache = _objectCache!;
         if (_creatureNpcLandblock != (int)landblock)
@@ -382,9 +396,9 @@ internal sealed class RynthRadarUi
         {
             if (!_host.TryGetObjectPosition((uint)wo.Id, out uint cCellId,
                     out float cox, out float coy, out float coz)) continue;
-            if ((cCellId >> 16) != landblock) continue;
+            if (!TryLandblockOffset(cCellId, landblock, indoor, out float cgx, out float cgy)) continue;
             _drawnCreatures.Add(wo.Id);
-            AddCreature(payload, wo, petPrefix, cox + gxLB, coy + gyLB, coz);
+            AddCreature(payload, wo, petPrefix, cox + cgx, coy + cgy, coz);
         }
 
         foreach (var wo in cache.GetLandscapeObjects())
@@ -399,20 +413,20 @@ internal sealed class RynthRadarUi
             {
                 if (wo.ObjectClass == AcObjectClass.Monster || _drawnCreatures.Contains(wo.Id)) continue;
                 if (!_host.TryGetObjectPosition(uid, out uint cc, out float cx, out float cy, out float cz)) continue;
-                if ((cc >> 16) != landblock) continue;
-                AddCreature(payload, wo, petPrefix, cx + gxLB, cy + gyLB, cz);
+                if (!TryLandblockOffset(cc, landblock, indoor, out float rgx, out float rgy)) continue;
+                AddCreature(payload, wo, petPrefix, cx + rgx, cy + rgy, cz);
                 continue;
             }
 
             if (wo.ObjectClass == AcObjectClass.Corpse)
             {
                 if (!_host.TryGetObjectPosition(uid, out uint kc, out float kx, out float ky, out float kz)) continue;
-                if ((kc >> 16) != landblock) continue;
+                if (!TryLandblockOffset(kc, landblock, indoor, out float kgx, out float kgy)) continue;
                 bool own = IsOwnCorpse(wo, woName, me, myCorpse, now);
                 payload.Markers.Add(new RadarMarker
                 {
                     Kind = own ? KindOwnCorpse : KindCorpse,
-                    X = kx + gxLB, Y = ky + gyLB, Z = kz,
+                    X = kx + kgx, Y = ky + kgy, Z = kz,
                     Label = woName,
                     Id = uid,
                 });
@@ -421,7 +435,7 @@ internal sealed class RynthRadarUi
 
             if (uid >= 0x80000000u)
             {
-                AddDynamicObject(payload, wo, woName, landblock, gxLB, gyLB);
+                AddDynamicObject(payload, wo, woName, landblock, indoor);
                 continue;
             }
 
@@ -431,7 +445,7 @@ internal sealed class RynthRadarUi
 
             if (!_host.TryGetObjectPosition(uid, out uint oCellId,
                     out float oox, out float ooy, out float ooz)) continue;
-            if ((oCellId >> 16) != landblock) continue;
+            if (!TryLandblockOffset(oCellId, landblock, indoor, out float ogx, out float ogy)) continue;
 
             byte kind;
             string label;
@@ -459,7 +473,7 @@ internal sealed class RynthRadarUi
             payload.Markers.Add(new RadarMarker
             {
                 Kind = kind,
-                X = oox + gxLB, Y = ooy + gyLB, Z = ooz,
+                X = oox + ogx, Y = ooy + ogy, Z = ooz,
                 Label = label,
                 Id = uid,
             });
@@ -525,7 +539,7 @@ internal sealed class RynthRadarUi
     }
 
     /// <summary>A summoned portal, a lifestone or an item on the ground; other dynamic objects aren't drawn.</summary>
-    private void AddDynamicObject(RadarSnapshotPayload payload, WorldObject wo, string woName, uint landblock, float gxLB, float gyLB)
+    private void AddDynamicObject(RadarSnapshotPayload payload, WorldObject wo, string woName, uint landblock, bool indoor)
     {
         byte kind;
         if (_dynamicKinds.TryGetValue(wo.Id, out var known) && known.Name == woName)
@@ -545,11 +559,11 @@ internal sealed class RynthRadarUi
             _dynamicKinds[wo.Id] = (woName, kind);
         }
         if (!_host.TryGetObjectPosition((uint)wo.Id, out uint cell, out float x, out float y, out float z)) return;
-        if ((cell >> 16) != landblock) return;
+        if (!TryLandblockOffset(cell, landblock, indoor, out float dgx, out float dgy)) return;
         payload.Markers.Add(new RadarMarker
         {
             Kind = kind,
-            X = x + gxLB, Y = y + gyLB, Z = z,
+            X = x + dgx, Y = y + dgy, Z = z,
             Label = kind == KindPortal ? GetPortalLabel(wo) : woName,
             Id = (uint)wo.Id,
         });

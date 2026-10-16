@@ -33,6 +33,8 @@ internal static class ManaReserveTests
         r.Add("mana reserve: a melee fighter's attacks aren't held; Get Mana At off means no reserve", MeleeAndOff);
         r.Add("mana reserve: the dat's BaseMana is read (when this PC has a portal.dat)", DatBaseMana);
         r.Add("mana reserve: a buff that would leave mana under the reserve waits for Stamina to Mana (melee too)", BuffWaitsForReserve);
+        r.Add("mana reserve: Stamina to Mana can't go yet (stamina low): the buff waits instead of spending the reserve, up to a minute", BuffWaitsWhenStaminaToManaCantGo);
+        r.Add("mana reading: unchanged over three buff casts, buffs wait for it to move", StuckManaReadingHoldsBuffs);
     }
 
     private static int Family(string name) => SpellTableStub.GetById(SpellTable.Named(name).First().Id)!.Family;
@@ -105,6 +107,39 @@ internal static class ManaReserveTests
         var low = new Rig(mana: 5);
         Check.True(low.B.BuffWaitsForMana(bane, "Blade Bane"), "5/383: buffing waits for regen");
         Check.Eq(FakeHost.Casts.Count, 0, "nothing the server would refuse is sent");
+    }
+
+    // 2026-10-15, Drakkon after a death: under the reserve with Stamina to Mana unable to go, buffs went
+    // anyway, down to 5% - under Stamina to Mana's own cost.
+    private static void BuffWaitsWhenStaminaToManaCantGo()
+    {
+        var r = new Rig(mana: 300, stamina: 10);   // 10/383 stamina: under Stamina to Mana's 15% line, no kit or potion
+        int bane = Id("Blade Bane VI");
+        r.V.CurrentMana = (uint)(r.B.ManaReserve() + 30);
+        Check.True(r.B.BuffWaitsForMana(bane, "Blade Bane"), "the buff waits: it would spend the reserve");
+        Check.Eq(FakeHost.Casts.Count, 0, "Stamina to Mana can't go, and the buff doesn't either");
+        Check.True(r.B.BuffWaitsForMana(bane, "Blade Bane"), "still waiting");
+        typeof(BuffManager).GetField("_reserveWaitSince", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(r.B, DateTime.Now.AddSeconds(-BuffManager.ReserveWaitMaxSec - 1));
+        Check.False(r.B.BuffWaitsForMana(bane, "Blade Bane"), "after a minute the buff goes (no stall for good)");
+        Check.True(r.LogCount("goes under the mana reserve") == 1, "and that is logged");
+    }
+
+    private static void StuckManaReadingHoldsBuffs()
+    {
+        var r = new Rig(mana: 300);
+        r.B.NoteBuffCastMana(60);
+        r.V.CurrentMana = 240;
+        r.B.NoteBuffCastMana(60);
+        Check.False(r.B.ManaReadingStuck(), "the reading moves with each cast");
+        r.B.NoteBuffCastMana(60);
+        Check.False(r.B.ManaReadingStuck(), "one cast at the same reading is not enough");
+        r.B.NoteBuffCastMana(60);
+        Check.True(r.B.ManaReadingStuck(), "three casts at 240: the reading is stale, buffs wait");
+        Check.True(r.LogCount("has not moved") == 1, "logged once");
+        r.V.CurrentMana = 60;
+        Check.False(r.B.ManaReadingStuck(), "a fresh reading: buffs go on (and judge 60, not 240)");
+        Check.False(r.B.ManaReadingStuck(), "and stay going");
     }
 
     private static void ReserveChoosesStaminaToMana()

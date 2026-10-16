@@ -21,6 +21,10 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavCoarse.cs" Link="Linked\NavCoarse.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PortalAvoid.cs" Link="Linked\PortalAvoid.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\AvoidFilter.cs" Link="Linked\AvoidFilter.cs" />
+    <!-- The navmesh drawn in the world (green floor, red walls) and the sink it writes to. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavMeshView.cs" Link="Linked\NavMeshView.cs" />
+    <Compile Include="..\..\Plugins\Shared\Nav3DText.cs" Link="Linked\Nav3DText.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\DungeonTileFile.cs" Link="Linked\DungeonTileFile.cs" />
     <Compile Include="..\RynthNav.Baker\GraphBuild.cs" Link="Linked\GraphBuild.cs" />
     <!-- A planned trip's walk from the tile files (TilePathFinder) and what it needs. -->
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TilePathFinder.cs" Link="Linked\TilePathFinder.cs" />

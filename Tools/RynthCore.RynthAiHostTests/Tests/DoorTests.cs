@@ -39,6 +39,9 @@ internal static class DoorTests
         r.Add("door: nothing in portal space, nor just after it", NothingInPortalSpace);
         r.Add("door: a door that opens is released at once (no fixed waits)", OpensFast);
         r.Add("door: 'locked' from chat counts only as the server's line, not a player's", LockedChatLine);
+        r.Add("door: Only Doors On My Path - a door beside the way is left shut, one straight ahead is opened", PathOnlyAhead);
+        r.Add("door: Only Doors On My Path - on a route the door on the next leg goes, not a nearer one beside it", PathOnlyRoute);
+        r.Add("door: Only Doors On My Path - not a door past the range along the path, nor one behind the route's direction", PathOnlyRange);
     }
 
     // ── Rig ─────────────────────────────────────────────────────────────────
@@ -295,6 +298,94 @@ internal static class DoorTests
         b.Now += 50;
         Check.False(b.Tick(), "released the tick it reads open");
         Check.Eq(b.State, "None", "done without waiting for anything else");
+    });
+
+    // ── Only Doors On My Path (OpenDoorsOnPathOnly) ──────────────────────────────
+
+    private const uint Door2 = 0x701C913A;
+
+    private static int Uses(uint id) => FakeHost.Uses.Count(u => u == id);
+
+    /// <summary>A second closed door at an offset from where the player stands (world units: east, north).</summary>
+    private static void AddDoor(Bot b, uint id, float east, float north)
+    {
+        FakeHost.Names[id] = "Door";
+        FakeHost.Positions[id] = (Me0.Cell, Me0.X + east, Me0.Y + north, Me0.Z);
+        FakeHost.Bitfields[id] = BfDoor;
+        FakeHost.ObjectStates[id] = Closed;
+        b.Cache.OnCreateObject(id);
+        b.Cache.Tick();
+    }
+
+    private static void MoveDoor(uint id, float east, float north) => FakeHost.Positions[id] = (Me0.Cell, Me0.X + east, Me0.Y + north, Me0.Z);
+
+    /// <summary>A route of straight points from the player: each (east, north) offset in world units, as nav coordinates.</summary>
+    private static void SetRoute(Bot b, params (float East, float North)[] points)
+    {
+        double ax = ((Me0.Cell >> 24) & 0xFF) * 192.0 + Me0.X, ay = ((Me0.Cell >> 16) & 0xFF) * 192.0 + Me0.Y;
+        var route = new NavRouteParser { RouteType = NavRouteType.Linear };
+        foreach (var (e, n) in points)
+            route.Points.Add(new NavPoint { Type = NavPointType.Point, EW = ((ax + e) / 24.0 - 1019.5) / 10.0, NS = ((ay + n) / 24.0 - 1019.5) / 10.0 });
+        b.S.CurrentRoute = route;
+        b.S.ActiveNavIndex = 0;
+        b.S.EnableNavigation = true;
+    }
+
+    private static void PathOnlyAhead() => With(() =>
+    {
+        // No route, the character faces north. A door 2 yd east is beside the way.
+        FakeHost.HeadingDeg = 0;
+        var off = new Bot(); off.S.OpenDoorsOnPathOnly = false;
+        off.Tick(); off.Run(600);
+        Check.Eq(Uses(Door), 1, "control: with the setting off the door beside the character is opened");
+
+        FakeHost.Uses.Clear();
+        var b = new Bot(); b.S.OpenDoorsOnPathOnly = true;
+        b.Tick(); b.Run(600);
+        Check.Eq(Uses(Door), 0, "with it on, a door 2 yd to the east of a character facing north is left shut");
+        Check.Eq(b.State, "None", "and no door is being handled");
+
+        MoveDoor(Door, 0f, 2f);   // now straight ahead
+        b.Tick(); b.Run(600);
+        Check.Eq(Uses(Door), 1, "a door 2 yd straight ahead is opened");
+    });
+
+    private static void PathOnlyRoute() => With(() =>
+    {
+        // The route runs east. Door2 stands 2.5 yd south of the character (nearer, beside the way); Door is 4 yd ahead on it.
+        FakeHost.HeadingDeg = 0;
+        MoveDoor(Door, 4f, 0f);
+        var off = new Bot(); AddDoor(off, Door2, 0f, -2.5f); MoveDoor(Door, 4f, 0f); SetRoute(off, (12f, 0f));
+        off.S.OpenDoorsOnPathOnly = false;
+        off.Tick(); off.Run(600);
+        Check.Eq(Uses(Door2), 1, "control: with the setting off the nearer door beside the route goes first");
+
+        FakeHost.Uses.Clear();
+        var b = new Bot(); AddDoor(b, Door2, 0f, -2.5f); MoveDoor(Door, 4f, 0f); SetRoute(b, (12f, 0f));
+        b.S.OpenDoorsOnPathOnly = true;
+        b.Tick(); b.Run(600);
+        Check.Eq(Uses(Door2), 0, "with it on, the door beside the route is not touched");
+        Check.Eq(Uses(Door), 1, "the door 4 yd along the route is opened");
+    });
+
+    private static void PathOnlyRange() => With(() =>
+    {
+        FakeHost.HeadingDeg = 0;
+        // 9 yd along the route, range 5: not yet.
+        var b = new Bot(); b.S.OpenDoorsOnPathOnly = true; MoveDoor(Door, 9f, 0f); SetRoute(b, (20f, 0f));
+        b.Tick(); b.Run(600);
+        Check.Eq(Uses(Door), 0, "a door 9 yd along the route is past the 5 yd range");
+        // The character walks on: now 3 yd along.
+        FakeHost.PlayerPose = (Me0.Cell, Me0.X + 6f, Me0.Y, Me0.Z);
+        FakeHost.Positions[Player] = FakeHost.PlayerPose;
+        b.Tick(); b.Run(600);
+        Check.Eq(Uses(Door), 1, "3 yd along it, it is opened");
+
+        // A route going west, the door east of the character: behind the way it is going.
+        FakeHost.Uses.Clear();
+        var c = new Bot(); c.S.OpenDoorsOnPathOnly = true; MoveDoor(Door, 3f, 0f); SetRoute(c, (-12f, 0f));
+        c.Tick(); c.Run(600);
+        Check.Eq(Uses(Door), 0, "a door 3 yd east of a route going west is not on the path");
     });
 
     private static void LockedChatLine() => With(() =>

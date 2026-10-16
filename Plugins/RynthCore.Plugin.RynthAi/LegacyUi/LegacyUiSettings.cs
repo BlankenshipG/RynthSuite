@@ -260,6 +260,8 @@ public sealed class LegacyUiSettings
     public bool BoostLootPriority;
     public bool OpenDoors;
     public float OpenDoorRange = 5.0f;
+    /// <summary>Open Doors opens only a closed door on the path of travel (the route's next legs, or straight ahead when not on a route), not every door within OpenDoorRange.</summary>
+    public bool OpenDoorsOnPathOnly;
     public bool AutoUnlockDoors;
     public int LootOwnership;
     /// <summary>
@@ -1109,6 +1111,7 @@ public sealed class SettingsBridgePayload
     public bool? ShowRouteOverlay { get; set; }
     public bool OpenDoors { get; set; }
     public float OpenDoorRange { get; set; }
+    public bool? OpenDoorsOnPathOnly { get; set; }   // absent (an older profile or plugin) = unchanged
     public bool AutoUnlockDoors { get; set; }
     public int MovementMode { get; set; }
     public float NavStopTurnAngle { get; set; }

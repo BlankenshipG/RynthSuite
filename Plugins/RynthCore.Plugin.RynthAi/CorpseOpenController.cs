@@ -625,6 +625,15 @@ public sealed partial class RynthAiPlugin
             return;
         }
 
+        // ── Mana tapping: an item looted to tap is drained before the next pickup or corpse ──
+        // (2026-10-15: the looter went on opening corpses over the drain; a pickup still in
+        // flight finishes first, since its answer is what lets the drain go.)
+        if (!_currentLootItemMovePending && _manaStoneManager?.HoldsLootForDrain() == true)
+        {
+            FreezeCorpseTimeout(CorpseNowMs);
+            return;
+        }
+
         // ── Combat takes priority over claiming NEW corpses ───────────────
         // But if we already have an opened container, finish looting it
         // (no movement, no conflict with combat).
@@ -1688,7 +1697,7 @@ public sealed partial class RynthAiPlugin
             // confirming it, and the item may still land in the pack. If it never
             // does, ManaStoneManager prunes the id.
             if (matchActionLabel == ManaTapActionLabel)
-                _manaStoneManager?.MarkLootedForTap(firstMatchId);
+                _manaStoneManager?.MarkLootedForTap(firstMatchId, arrived: false);
             // Same for salvage: the confirm below can be lost the same ways, and an
             // unconfirmed salvage item used to sit in the pack for good. The salvage
             // manager's sweep queues it once it shows up in the pack.
@@ -2156,9 +2165,9 @@ public sealed partial class RynthAiPlugin
         if (_currentLootItemIsSalvage)
             _salvageManager?.EnqueueItem(unchecked((uint)_currentLootItemId));
 
-        // Refresh the loot-for-tap record so its arrival grace counts from now.
+        // It is in the pack: the drain may go (and the arrival grace counts from now).
         if (_currentLootItemActionLabel == ManaTapActionLabel)
-            _manaStoneManager?.MarkLootedForTap(_currentLootItemId);
+            _manaStoneManager?.MarkLootedForTap(_currentLootItemId, arrived: true);
 
         ResetCurrentLootItem();
         _lastLootActionAt = now;
@@ -2774,9 +2783,8 @@ public sealed partial class RynthAiPlugin
             return true;
         }
 
-        // Quota: each ManaTap pickup consumes one empty stone. Don't loot more
-        // candidates than we have free empty-stone slots, otherwise we end up
-        // with a pile of mana items the bot can't drain.
+        // Quota: one item at a time (FreeEmptyStoneSlots is 1 with an empty stone in the pack and
+        // no tap item waiting for its drain), so the pack never fills with items it can't drain.
         int freeSlots = _manaStoneManager.FreeEmptyStoneSlots() - _pendingManaTapIds.Count;
         if (freeSlots <= 0) return false;
 

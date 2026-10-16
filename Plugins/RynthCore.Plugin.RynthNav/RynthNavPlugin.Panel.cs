@@ -153,11 +153,16 @@ public sealed partial class RynthNavPlugin
           .Append("\",\"tileHere\":").Append(_tileHere).Append(",\"indoors\":").Append(_hasPose && (cell & 0xFFFF) >= 0x100 ? 1 : 0)
           .Append(",\"onDisk\":").Append(_tilesOnDisk)
           .Append(",\"townNet\":").Append(_townNet != null ? 1 : 0).Append(",\"townNetStatus\":\"").Append(Esc(_townNetStatus)).Append("\"}");
-        // Path markers (RynthNavPlugin.Markers.cs) and "save as nav route" (RynthNavPlugin.SaveRoute.cs), 0.6.6+.
+        // Path markers (RynthNavPlugin.Markers.cs) and "save as nav route" (RynthNavPlugin.SaveRoute.cs), 0.6.6+. The mesh view (RynthNavPlugin.MeshView.cs), 0.6.7+.
+        sb.Append(",\"mesh\":{\"on\":").Append(_meshOn ? 1 : 0).Append(",\"floor\":").Append(_meshFloor ? 1 : 0)
+          .Append(",\"walls\":").Append(_meshWalls ? 1 : 0).Append(",\"radius\":").Append(_meshRadius.ToString("F0", ci))
+          .Append(",\"triangles\":").Append(_meshBudget).Append(",\"drawn\":").Append(_meshDrawn).Append('}');
         PlannedTrip? trip = _trip;
         sb.Append(",\"markers\":{\"on\":").Append(_markersOn ? 1 : 0).Append(",\"labels\":").Append(_markerLabels ? 1 : 0)
           .Append(",\"guide\":").Append(_markerGuide ? 1 : 0).Append(",\"shown\":").Append(trip != null && _tripShown ? 1 : 0)
           .Append(",\"status\":\"").Append(Esc(_markerStatus)).Append("\"}");
+        string pathJson = PathJson();                       // the walking path, for the engine's World Map
+        if (pathJson.Length > 0) sb.Append(",\"path\":").Append(pathJson);
         sb.Append(",\"save\":{\"can\":").Append(trip != null ? 1 : 0).Append(",\"for\":\"").Append(Esc(trip?.Goal ?? ""))
           .Append("\",\"name\":\"").Append(Esc(_saveDefault)).Append("\",\"conflict\":\"").Append(Esc(_saveConflict))
           .Append("\",\"busy\":").Append(_saveBusy ? 1 : 0).Append(",\"last\":\"").Append(Esc(_saveLast)).Append("\"}");

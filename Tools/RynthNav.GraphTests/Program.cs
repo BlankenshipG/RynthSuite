@@ -39,6 +39,11 @@ internal static class Program
             Run(nameof(PathGoesRoundAPortal), PathGoesRoundAPortal);
             Run(nameof(TripWalkFromTileFiles), TripWalkFromTileFiles);
             Run(nameof(RealTripWalk), RealTripWalk);
+            Run(nameof(MeshViewFloorAndWalls), MeshViewFloorAndWalls);
+            Run(nameof(MeshViewEmitBudgetAndFrame), MeshViewEmitBudgetAndFrame);
+            Run(nameof(RealMeshView), RealMeshView);
+            Run(nameof(DungeonFileAndLayer), DungeonFileAndLayer);
+            Run(nameof(RealDungeons), RealDungeons);
         }
         finally { try { Directory.Delete(_root, true); } catch { } }
         Console.WriteLine();
@@ -424,6 +429,285 @@ internal static class Program
         Check(round != null && gap >= PortalAvoid.MapRadius - 0.01, $"the walk keeps out of the portal's circle ({gap:F2} u)");
         var own = new TilePathFinder(open, null, spot).Walk(new(30, 96, 0), new(95, 96, 0), true, out _);
         Check(own != null && Math.Abs(own[^1].X - 95) < 3, "walking into that portal: it's the goal, not avoided");
+    }
+
+    // ── The navmesh view (NavMeshView) ───────────────────────────────────────────
+
+    private sealed class TriSink : RynthCore.Plugin.Shared.INav3DSink
+    {
+        public readonly List<(float X1, float Y1, float Z1, float X2, float Y2, float Z2, float X3, float Y3, float Z3, uint Color)> Tris = new();
+        public int Lines;
+        public void Line(float x1, float y1, float z1, float x2, float y2, float z2, float t, uint c) => Lines++;
+        public void Triangle(float x1, float y1, float z1, float x2, float y2, float z2, float x3, float y3, float z3, uint c)
+            => Tris.Add((x1, y1, z1, x2, y2, z2, x3, y3, z3, c));
+    }
+
+    private static void MeshViewFloorAndWalls()
+    {
+        // Two floors with a 40 m gap between them (x 70..110): green on the floors, nothing in the gap,
+        // red walls along the lips of the gap (and the floors' outer edges).
+        string dir = Bake("meshview", (10, 10, 70, 180), (110, 10, 180, 180));
+        var t = NavMeshView.BuildTile(0, ReadTile(dir, 0));
+        Check(t.FloorCount > 0 && t.WallCount > 0, $"floor and walls found ({t.FloorCount} triangles, {t.WallCount} wall edges)");
+
+        bool inGap = false; float minY = float.MaxValue, maxY = float.MinValue;
+        for (int k = 0; k < t.FloorCount; k++)
+            for (int v = 0; v < 3; v++)
+            {
+                float x = t.Floor[k * 9 + v * 3], y = t.Floor[k * 9 + v * 3 + 1];
+                if (x > 71 && x < 109) inGap = true;
+                minY = Math.Min(minY, y); maxY = Math.Max(maxY, y);
+            }
+        Check(!inGap, "no floor triangle reaches into the gap");
+        Check(minY > -1 && maxY < 1, $"the floor lies at the floor's height ({minY:F2}..{maxY:F2})");
+
+        // Wall edges along the gap: the west lip (x about 68, the floor shrunk by the 2 m body radius) and the east lip (about 112).
+        int west = 0, east = 0;
+        for (int k = 0; k < t.WallCount; k++)
+        {
+            float mx = (t.Walls[k * 6] + t.Walls[k * 6 + 3]) / 2, mz = (t.Walls[k * 6 + 2] + t.Walls[k * 6 + 5]) / 2;
+            if (mx > 60 && mx < 71 && mz > 12 && mz < 178) west++;
+            if (mx > 109 && mx < 120 && mz > 12 && mz < 178) east++;
+        }
+        Check(west > 0 && east > 0, $"walls stand along both lips of the gap (west {west}, east {east})");
+        // Every wall edge is on the floor's edge, none out in the middle of a floor.
+        bool stray = false;
+        for (int k = 0; k < t.WallCount; k++)
+        {
+            float mx = (t.Walls[k * 6] + t.Walls[k * 6 + 3]) / 2, mz = (t.Walls[k * 6 + 2] + t.Walls[k * 6 + 5]) / 2;
+            bool nearEdge = Math.Abs(mx - 68) < 3 || Math.Abs(mx - 112) < 3 || Math.Abs(mx - 12) < 3 || Math.Abs(mx - 178) < 3
+                || Math.Abs(mz - 12) < 3 || Math.Abs(mz - 178) < 3;
+            if (!nearEdge) stray = true;
+        }
+        Check(!stray, "no wall edge inside a floor");
+    }
+
+    private static void MeshViewEmitBudgetAndFrame()
+    {
+        string dir = Bake("meshview2", (10, 10, 70, 180), (110, 10, 180, 180));
+        DtMeshData md = ReadTile(dir, 0);
+        var view = new NavMeshView();
+        view.Register(0, md);
+        var big = new NavMeshView.Options(500f, 100000, true, true);
+
+        var all = new TriSink();
+        int n = view.Emit(all, 40, 100, 0, big);
+        var tile = NavMeshView.BuildTile(0, md);
+        Check(n == tile.FloorCount + tile.WallCount * 2 && all.Tris.Count == n, $"everything in range is drawn ({n} = {tile.FloorCount} floor + 2 x {tile.WallCount} walls)");
+        Check(all.Tris.Any(x => x.Color == NavMeshView.DefaultFloorColor) && all.Tris.Any(x => x.Color == NavMeshView.DefaultWallColor), "green and red both drawn");
+        float meshY = tile.Floor[1];   // the mesh surface sits a voxel above the input floor
+        Check(all.Tris.Where(x => x.Color == NavMeshView.DefaultFloorColor).All(x => Math.Abs(x.Y1 - (meshY + 0.15f)) < 0.01f), "floor is lifted 15 cm off the mesh");
+        float wallTop = all.Tris.Where(x => x.Color == NavMeshView.DefaultWallColor).Max(x => Math.Max(x.Y1, Math.Max(x.Y2, x.Y3)));
+        Check(Math.Abs(wallTop - (meshY + 0.15f + 1.5f)) < 0.01f, $"walls stand 1.5 m high ({wallTop - meshY - 0.15f:F2})");
+
+        // Radius: a small circle at the west floor leaves the east floor out.
+        var near = new TriSink();
+        view.Emit(near, 30, 100, 0, new NavMeshView.Options(20f, 100000, true, true));
+        Check(near.Tris.Count > 0 && near.Tris.Count < n && near.Tris.All(x => x.X1 < 100), "a small radius draws only what is near");
+
+        // The cap holds, and walls survive it (nearest first, walls favoured).
+        var capped = new TriSink();
+        int c = view.Emit(capped, 66, 100, 0, new NavMeshView.Options(500f, 40, true, true));
+        Check(c <= 40 && c > 30, $"a 40-triangle budget draws about 40 ({c})");
+        Check(capped.Tris.Any(x => x.Color == NavMeshView.DefaultWallColor), "walls are kept under the cap");
+        var wallsOnly = new TriSink();
+        view.Emit(wallsOnly, 40, 100, 0, new NavMeshView.Options(500f, 100000, false, true));
+        Check(wallsOnly.Tris.Count > 0 && wallsOnly.Tris.All(x => x.Color == NavMeshView.DefaultWallColor), "walls alone");
+        var floorOnly = new TriSink();
+        view.Emit(floorOnly, 40, 100, 0, new NavMeshView.Options(500f, 100000, true, false));
+        Check(floorOnly.Tris.Count == tile.FloorCount && floorOnly.Tris.All(x => x.Color == NavMeshView.DefaultFloorColor), "floor alone");
+
+        // Frame: the same tile registered as landblock 0x0100 (east of the first), character at world x = 192 + 40.
+        string dir2 = Bake("meshview3", (192 + 10, 10, 192 + 70, 180), (192 + 110, 10, 192 + 180, 180));
+        var shifted = new NavMeshView();
+        shifted.Register(0x0100, ReadTile(dir2, 0x0100));
+        var s = new TriSink();
+        int sn = shifted.Emit(s, 192 + 40, 100, 0, big);
+        Check(sn == n, "the same floors one landblock east draw the same");
+        Check(Math.Abs(s.Tris.Min(x => x.X1) - all.Tris.Min(x => x.X1)) < 0.01f, "positions are in the character's landblock (X = east metres)");
+        // ...and from the next landblock over (character at world x = 192 + 4): the tile is one landblock west of the character's.
+        var west = new TriSink();
+        shifted.Emit(west, 192 * 2 + 4, 100, 0, new NavMeshView.Options(500f, 100000, true, true));
+        Check(west.Tris.Count == 0 || west.Tris.Min(x => x.X1) < 0, "a tile in the landblock to the west is drawn at negative X");
+
+        // The pick follows the character: moving 50 m re-picks.
+        var moved = new TriSink();
+        int a1 = view.Emit(moved, 30, 100, 0, new NavMeshView.Options(20f, 100000, true, true));
+        moved.Tris.Clear();
+        int a2 = view.Emit(moved, 150, 100, 0, new NavMeshView.Options(20f, 100000, true, true));
+        Check(a1 > 0 && a2 > 0 && moved.Tris.All(x => x.X1 > 100), "after moving to the east floor, it is the east floor that is drawn");
+        view.Unregister(0);
+        moved.Tris.Clear();
+        Check(view.Emit(moved, 150, 100, 0, big) == 0, "an unloaded tile is no longer drawn");
+    }
+
+    /// <summary>
+    /// A dungeon file: tiles on a shifted frame (mesh = local + shift) that read back, draw in the character's
+    /// landblock-local frame (negative x/y included) and stay apart from the outdoor tiles.
+    /// </summary>
+    private static void DungeonFileAndLayer()
+    {
+        // A floor at mesh x 10..70, y 10..180 with shift (192, 192): landblock-local x -182..-122, y -182..-12.
+        string dir = Bake("dun1", (10, 10, 70, 180));
+        DtMeshData md = ReadTile(dir, 0);
+        string file = Path.Combine(_root, DungeonTileFile.FileName(0x0505));
+        DungeonTileFile.Write(file, 192, 192, new[] { md });
+        var back = DungeonTileFile.Read(file);
+        Check(back != null && back.ShiftX == 192 && back.ShiftY == 192 && back.Tiles.Count == 1, "the dungeon file reads back");
+        Check(back != null && back.Tiles[0].header.polyCount == md.header.polyCount && back.Tiles[0].header.x == 0, "its tile is intact");
+        Check(DungeonTileFile.Read(Path.Combine(_root, "nonexistent.tile")) == null, "a missing file is null, not a throw");
+        File.WriteAllBytes(Path.Combine(_root, "junk.tile"), new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 });
+        Check(DungeonTileFile.Read(Path.Combine(_root, "junk.tile")) == null, "junk is null");
+        byte[] cut = File.ReadAllBytes(file); File.WriteAllBytes(Path.Combine(_root, "cut.tile"), cut.AsSpan(0, cut.Length / 2).ToArray());
+        Check(DungeonTileFile.Read(Path.Combine(_root, "cut.tile")) == null, "a cut-short file is null");
+
+        // The mesh navigates on its own frame: a point on the floor is found at mesh (40, 100).
+        var nav = back!.BuildNavMesh();
+        var q = new DtNavMeshQuery(nav);
+        q.FindNearestPoly(new RcVec3f(40, 0.2f, 100), new RcVec3f(2, 4, 2), new DtQueryDefaultFilter(), out long poly, out _, out _);
+        Check(poly != 0, "the dungeon's own navmesh finds the floor at its mesh position");
+
+        // Drawing: landblock 0x0505 is world (960, 960); the character stands at local (-150, -100) = world (810, 860).
+        var view = new NavMeshView();
+        view.RegisterDungeon(0x0505, back);
+        Check(view.DungeonLandblock == 0x0505, "the dungeon is registered");
+        var s = new TriSink();
+        var dun = new NavMeshView.Options(100f, 100000, true, true, layer: 1, frameX: 960, frameY: 960);
+        int n = view.Emit(s, 810, 860, 0, dun);
+        Check(n > 0, "the dungeon draws");
+        float lo = s.Tris.Min(t => Math.Min(t.X1, Math.Min(t.X2, t.X3))), hi = s.Tris.Max(t => Math.Max(t.X1, Math.Max(t.X2, t.X3)));
+        Check(lo > -184 && hi < -120, $"drawn in the landblock-local frame, negative x ({lo:F1}..{hi:F1})");
+        float zlo = s.Tris.Min(t => Math.Min(t.Z1, Math.Min(t.Z2, t.Z3))), zhi = s.Tris.Max(t => Math.Max(t.Z1, Math.Max(t.Z2, t.Z3)));
+        Check(zlo > -184 && zhi < -10, $"and negative z/north ({zlo:F1}..{zhi:F1})");
+
+        // Layers: asking for the outdoor layer draws none of the dungeon, and an outdoor tile never shows in the dungeon.
+        var outdoor = new TriSink();
+        Check(view.Emit(outdoor, 810, 860, 0, new NavMeshView.Options(100f, 100000, true, true)) == 0, "the outdoor layer is empty while only a dungeon is registered");
+        view.Register(0x0505, md);
+        var again = new TriSink();
+        int n2 = view.Emit(again, 810, 860, 0, dun);
+        Check(n2 == n, "registering an outdoor tile doesn't change the dungeon's draw");
+        view.UnregisterDungeon();
+        Check(view.DungeonLandblock == 0 && view.Emit(new TriSink(), 810, 860, 0, dun) == 0, "unregistering the dungeon empties its layer");
+
+        // Floors above and below the character are left out (maxUpDown).
+        var tall = new NavMeshView();
+        tall.RegisterDungeon(0x0505, back);
+        var farUp = new TriSink();
+        Check(tall.Emit(farUp, 810, 860, 50, new NavMeshView.Options(100f, 100000, true, true, maxUpDown: 8f, layer: 1, frameX: 960, frameY: 960)) == 0, "a floor 50 m away vertically isn't drawn");
+    }
+
+    /// <summary>The dungeon tiles a bake wrote (RYNTHNAV_DUNGEONS, or the live NavData), when there are any.</summary>
+    private static void RealDungeons()
+    {
+        string dir = Environment.GetEnvironmentVariable("RYNTHNAV_DUNGEONS") ?? @"C:\Projects\meshview\_dun";
+        if (!Directory.Exists(dir) || !Directory.EnumerateFiles(dir, "dun_*.tile").Any()) { Console.WriteLine("     (no baked dungeons here: skipped)"); return; }
+        int files = 0, tiles = 0, bad = 0; long polys = 0, wallEdges = 0, floorTris = 0;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        foreach (string f in Directory.EnumerateFiles(dir, "dun_*.tile"))
+        {
+            files++;
+            var d = DungeonTileFile.Read(f);
+            if (d == null) { bad++; continue; }
+            tiles += d.Tiles.Count;
+            uint lb = Convert.ToUInt32(Path.GetFileNameWithoutExtension(f).Substring(4), 16);
+            var view = new NavMeshView(); view.RegisterDungeon(lb, d);
+            foreach (var md in d.Tiles)
+            {
+                polys += md.header.polyCount;
+                var t = NavMeshView.BuildTile(md, md.header.x * 192, md.header.y * 192, 0, 0);
+                floorTris += t.FloorCount; wallEdges += t.WallCount;
+                if (!t.Floor.All(float.IsFinite)) bad++;
+            }
+        }
+        Console.WriteLine($"     {files} dungeon files: {tiles} tiles, {polys} polygons, {floorTris} floor triangles, {wallEdges} wall edges; {sw.ElapsedMilliseconds} ms to read all");
+        Check(bad == 0, $"every dungeon file reads and is finite ({bad} bad)");
+
+        // Connectivity: how much of a dungeon's walkable ground is one connected piece (polygon links, across tiles).
+        // A sound mesh has most of its area in one region; a low share means stairs, ramps or doorways were lost.
+        var shares = new List<(uint lb, double share, int regions, int polys)>();
+        foreach (string f in Directory.EnumerateFiles(dir, "dun_*.tile").Take(400))
+        {
+            var d = DungeonTileFile.Read(f);
+            if (d == null) continue;
+            uint lb = Convert.ToUInt32(Path.GetFileNameWithoutExtension(f).Substring(4), 16);
+            var comp = Components(d.BuildNavMesh());
+            if (comp.Count == 0) continue;
+            int total = comp.Sum(), big = comp.Max();
+            shares.Add((lb, (double)big / total, comp.Count, total));
+        }
+        if (shares.Count == 0) return;
+        var sorted = shares.Select(s => s.share).OrderBy(x => x).ToList();
+        double Pct(double p) => sorted[Math.Min(sorted.Count - 1, (int)(p * sorted.Count))];
+        Console.WriteLine($"     connectivity of {shares.Count} dungeons (share of polygons in the largest piece): " +
+            $"worst {sorted[0]:P0}, 10th pct {Pct(0.10):P0}, median {Pct(0.5):P0}; {shares.Count(s => s.share >= 0.9)} are 90%+ one piece, {shares.Count(s => s.share < 0.5)} under 50%");
+        foreach (var s in shares.OrderBy(s => s.share).Take(5)) Console.WriteLine($"       0x{s.lb:X4}: {s.share:P0} of {s.polys} polygons in the biggest of {s.regions} pieces");
+        // No assertion on the share: many dungeons are areas joined by drops and teleports, so a low share is the dungeon, not the mesh.
+        // The baker's --dungeons-check compares against the game's own doorway graph, which is the fidelity measure.
+    }
+
+    /// <summary>Sizes (polygon counts) of the connected pieces of a navmesh, joined by Detour's polygon links.</summary>
+    private static List<int> Components(DtNavMesh nav)
+    {
+        var seen = new HashSet<long>();
+        var sizes = new List<int>();
+        for (int ti = 0; ti < nav.GetMaxTiles(); ti++)
+        {
+            DtMeshTile? tile = nav.GetTile(ti);
+            if (tile?.data?.header == null) continue;
+            long baseRef = nav.GetPolyRefBase(tile);
+            for (int pi = 0; pi < tile.data.header.polyCount; pi++)
+            {
+                long start = baseRef | (long)pi;
+                if (!seen.Add(start)) continue;
+                int size = 0;
+                var stack = new Stack<long>(); stack.Push(start);
+                while (stack.Count > 0)
+                {
+                    long r = stack.Pop(); size++;
+                    if (nav.GetTileAndPolyByRef(r, out DtMeshTile t, out DtPoly p).Failed()) continue;
+                    for (int k = p.firstLink; k != DtDetour.DT_NULL_LINK; k = t.links[k].next)
+                    {
+                        long n = t.links[k].refs;
+                        if (n != 0 && seen.Add(n)) stack.Push(n);
+                    }
+                }
+                sizes.Add(size);
+            }
+        }
+        return sizes;
+    }
+
+    /// <summary>Real tiles (when installed): the triangle and wall counts of a town tile, and a whole 5 x 5 window.</summary>
+    private static void RealMeshView()
+    {
+        string dir = Environment.GetEnvironmentVariable("RYNTHNAV_NAVDATA") ?? @"C:\Games\RynthCore\NavData";
+        uint holtburg = 0xA9B4;   // Holtburg
+        string file = Path.Combine(dir, $"nav_{holtburg:X4}.tile");
+        if (!File.Exists(file)) { Console.WriteLine("     (no real NavData here: skipped)"); return; }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var view = new NavMeshView();
+        int loaded = 0, floor = 0, walls = 0;
+        for (int dx = -2; dx <= 2; dx++)
+            for (int dy = -2; dy <= 2; dy++)
+            {
+                uint lb = (uint)((((int)(holtburg >> 8) + dx) << 8) | ((int)(holtburg & 0xFF) + dy));
+                if (!File.Exists(Path.Combine(dir, $"nav_{lb:X4}.tile"))) continue;
+                DtMeshData md = ReadTile(dir, lb);
+                view.Register(lb, md); loaded++;
+                var t = NavMeshView.BuildTile(lb, md);
+                floor += t.FloorCount; walls += t.WallCount;
+                Check(t.Floor.All(float.IsFinite) && t.Walls.All(float.IsFinite), $"tile 0x{lb:X4}: all finite");
+            }
+        long buildMs = sw.ElapsedMilliseconds;
+        var s = new TriSink();
+        double px = (holtburg >> 8) * 192.0 + 96, py = (holtburg & 0xFF) * 192.0 + 96;
+        sw.Restart();
+        int n = view.Emit(s, px, py, 100, new NavMeshView.Options(40f, 3000, true, true, maxUpDown: 1000f));
+        long emitMs = sw.ElapsedMilliseconds;
+        Console.WriteLine($"     Holtburg window: {loaded} tiles, {floor} floor triangles, {walls} wall edges in all; {buildMs} ms to read+build; a 40 m draw = {n} triangles in {emitMs} ms");
+        Check(loaded > 0 && floor > 0, "real tiles read");
+        Check(n <= 3000, $"the budget holds on real tiles ({n})");
     }
 
     /// <summary>

@@ -728,6 +728,10 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SetNextItemWidth(180);
                     ImGui.SliderFloat("Door Detection Range (yd)", ref _settings.OpenDoorRange, 0.1f, 70.0f, "%.1f");
 
+                    ImGui.Checkbox("Only Doors On My Path", ref _settings.OpenDoorsOnPathOnly);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("Open only a closed door that is on the way: within the range along the route's next legs (or straight ahead when not on a route).\nOff: every closed door within the range is opened.");
+
                     ImGui.Checkbox("Auto-Unlock Doors", ref _settings.AutoUnlockDoors);
                     if (ImGui.IsItemHovered())
                         ImGui.SetTooltip("If a door is locked, try to use a lockpick from your Consumable Items list.");

@@ -1630,6 +1630,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                         _vitals.CurrentStamina = st;
                         _vitals.MaxStamina = maxSt;
                         _vitals.CurrentMana = mp;
+                        // A big move in the max-mana reading (a death, buffs landing or dropping) is logged:
+                        // the floor and the reserve judge mana by it (2026-10-15).
+                        if (_vitals.MaxMana > 0 && maxMp > 0
+                            && Math.Abs((long)maxMp - _vitals.MaxMana) * 100 >= 15L * _vitals.MaxMana)
+                            Host.Log($"[RynthAi] Vitals: max mana reading {_vitals.MaxMana} -> {maxMp} (mana {mp}).");
                         _vitals.MaxMana = maxMp;
                     }
                 }

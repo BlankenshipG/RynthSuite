@@ -986,6 +986,7 @@ public sealed partial class RynthNavPlugin
         "/rnav goto <coords> | preview <coords> | portals on|off | stop | here | load | test | navdata\n" +
         "/rnav avoid — show; avoid portals on|off|<m> | walls on|off|<m> | corners <m>\n" +
         "/rnav markers on|off | markers labels on|off | markers guide on|off — the trip on the ground\n" +
+        "/rnav mesh on|off | floor on|off | walls on|off | radius <m> | triangles <n> — draw the navmesh: green floor, red walls\n" +
         "/rnav saveroute [name] [overwrite] — save the last trip as a RynthAi nav route (NavProfiles)";
 
     /// <summary>One /rnav command. Tick thread.</summary>
@@ -1029,6 +1030,7 @@ public sealed partial class RynthNavPlugin
             case "recalls": CmdRecalls(rest); break;
             case "tie": CmdTie(rest); break;
             case "markers": CmdMarkers(rest); break;
+            case "mesh": CmdMesh(rest); break;
             case "saveroute": CmdSaveRoute(rest); break;
             case "arrive":
                 if (double.TryParse(rest, NumberStyles.Float, CultureInfo.InvariantCulture, out double yd) && yd >= 2 && yd <= 200)

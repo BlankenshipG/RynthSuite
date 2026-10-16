@@ -12,6 +12,9 @@ using RynthNav.Baker;
 //            pauses when the output drive has under --min-free-mb (default 1024) left;
 //            --priority <locations.json> bakes the chunks nearest a town first
 //   survey:  --survey --out <dir>                 (classify landblocks: land / water / none; no baking)
+//   map:     --map --out <dir> [--ppc 2] [--area x0,x1,y0,y1] [--map-tiles] [--textured [--objects]]
+//   world:   --map-world --ppc 2|4|8|16|32 --out <dir> [--no-objects] [--threads n] [--name f.rmap] [--chunks x0,x1,y0,y1]   (the whole world, textured: worldmap.rmap v2, DXT1 tiles; resumable)
+//   (map:   (and --map-vectors: worldmap.vec, building outlines + roads; with --area also a PNG preview)   (top-down render of Dereth, world_map.png; --map-tiles also writes worldmap.rmap, the in-game map's tile pyramid)
 //   seams:   --seams <tile dir>                   (how many neighbouring tiles link at their shared edge)
 //   graph:   --graph <tile dir> [--graph-out <file>]  (the coarse route graph, navgraph.bin; no rebake)
 //   watch:   --watch --out <dir> --force-live     (bake ahead of the player; the live folder needs --force-live)
@@ -86,6 +89,8 @@ if (graphDir != null)
 }
 
 string acFolder = GetArg("--ac") ?? @"C:\Games\ACE\Dats";
+if (float.TryParse(GetArg("--cell"), NumberStyles.Float, CultureInfo.InvariantCulture, out float cellArg) && cellArg >= 0.1f && Math.Abs(192f / cellArg - Math.Round(192f / cellArg)) < 1e-3)
+    NavBake.TiledCellSizeValue = cellArg;
 
 // ── Path query (reads tiles + dats; writes nothing) ───────────────────────────
 //   --path LLLL:x,y LLLL:x,y --tiles <dir>   (landblock hex : local metres)
@@ -97,6 +102,63 @@ if (args.Contains("--audit"))
     if (!samplerA.Initialize(acFolder)) { Console.Error.WriteLine(samplerA.Status); return 1; }
     Diag.Audit(samplerA, geoA, Console.WriteLine);
     return 0;
+}
+
+// ── Dungeons (the cell dat's non-building EnvCells) ───────────────────────────
+//   --dungeons-survey [--limit n]        read them all and print sizes/bounds; writes nothing
+//   --dungeons all|LLLL,LLLL --out <dir> [--radius r] [--limit n]   bake dun_LLLL.tile for each
+if (GetArg("--probe-dungeon") is string pdSpec)
+{
+    var pts = args.SkipWhile(a => a != "--probe-dungeon").Skip(2).TakeWhile(a => !a.StartsWith("--")).ToArray();
+    return ProbeCheck.Dungeon(pdSpec, pts, GetArg("--tiles") ?? OutputGuard.LiveNavData, Console.WriteLine);
+}
+
+if (GetArg("--probe") is string probeSpec)
+{
+    using var samplerPr = new TerrainSampler();
+    if (!samplerPr.Initialize(acFolder)) { Console.Error.WriteLine(samplerPr.Status); return 1; }
+    return ProbeCheck.Run(samplerPr, probeSpec, GetArg("--tiles") ?? OutputGuard.LiveNavData, Console.WriteLine);
+}
+
+if (args.Contains("--buildings-list"))
+{
+    var geoL = new RynthCore2.Raycast.GeometryLoader();
+    if (!geoL.Initialize(acFolder)) { Console.Error.WriteLine(geoL.StatusMessage); return 1; }
+    return BuildingCheck.List(geoL, Console.Error.WriteLine);
+}
+
+if (GetArg("--buildings-check") is string bcheck)
+{
+    var geoB = new RynthCore2.Raycast.GeometryLoader();
+    if (!geoB.Initialize(acFolder)) { Console.Error.WriteLine(geoB.StatusMessage); return 1; }
+    return BuildingCheck.Run(geoB, bcheck, GetArg("--tiles") ?? OutputGuard.LiveNavData, Console.WriteLine);
+}
+
+if (GetArg("--dungeons-check") is string dcheck)
+{
+    var geoK = new RynthCore2.Raycast.GeometryLoader();
+    if (!geoK.Initialize(acFolder)) { Console.Error.WriteLine(geoK.StatusMessage); return 1; }
+    return DungeonCheck.Run(geoK, dcheck, GetArg("--tiles") ?? "", Console.WriteLine);
+}
+
+if (args.Contains("--dungeons-survey") || GetArg("--dungeons") != null)
+{
+    var geoD = new RynthCore2.Raycast.GeometryLoader();
+    if (!geoD.Initialize(acFolder)) { Console.Error.WriteLine(geoD.StatusMessage); return 1; }
+    var cgD = NavBake.Collision(geoD);
+    int limD = int.TryParse(GetArg("--limit"), out int ld) ? ld : int.MaxValue;
+    if (args.Contains("--dungeons-survey")) return DungeonBake.Survey(cgD, limD, Console.WriteLine);
+    if (GetArg("--dungeons") == "near") return DungeonBake.Near(cgD, Convert.ToUInt32(GetArg("--lb") ?? "7", 16), GetArg("--at") ?? "0,0", Console.WriteLine);
+    if (GetArg("--dungeons") == "model") return DungeonBake.ModelInfo(cgD, Convert.ToUInt32(GetArg("--model") ?? "0", 16), Console.WriteLine);
+    if (GetArg("--dungeons") == "models") return DungeonBake.Models(cgD, Convert.ToUInt32(GetArg("--lb") ?? "7", 16), Console.WriteLine);
+    string? dOut = GetArg("--out");
+    if (dOut == null) { Console.Error.WriteLine("--out <folder> is required for --dungeons"); return 2; }
+    dOut = Path.GetFullPath(dOut);
+    OutputGuard.ForceLive = args.Contains("--force-live");
+    try { OutputGuard.Check(dOut); } catch (InvalidOperationException ex) { Console.Error.WriteLine(ex.Message); return 2; }
+    Directory.CreateDirectory(dOut);
+    float radD = float.TryParse(GetArg("--radius"), NumberStyles.Float, CultureInfo.InvariantCulture, out float rD) ? rD : 0.6f;
+    return DungeonBake.Run(cgD, GetArg("--dungeons")!, limD, dOut, radD, Console.WriteLine);
 }
 
 if (args.Contains("--check"))
@@ -232,6 +294,54 @@ if (args.Contains("--survey"))
     var map = WorldBake.Survey(sampler, outDir);
     Console.WriteLine(WorldBake.Describe(map));
     return 0;
+}
+
+if (GetArg("--rmap-png") is string rmapFile)
+    return WorldMapBake.ExtractPng(rmapFile, int.TryParse(GetArg("--level"), out int rlv) ? rlv : 0, GetArg("--tiles"), outDir, Console.WriteLine);
+
+if (args.Contains("--map-world"))
+{
+    // The in-game world map in the game's own look (worldmap.rmap version 2, DXT1 tiles). See WorldMapBake.
+    var geoW2 = new RynthCore2.Raycast.GeometryLoader();
+    if (!geoW2.Initialize(acFolder)) { Console.Error.WriteLine(geoW2.StatusMessage); return 1; }
+    int wppc = int.TryParse(GetArg("--ppc"), out int wp) ? wp : 8;
+    int wthreads = int.TryParse(GetArg("--threads"), out int wt) ? wt : Math.Max(1, Environment.ProcessorCount - 1);
+    int cx0 = 0, cx1 = 255, cy0 = 0, cy1 = 255;
+    if (GetArg("--chunks") is string chunkArg)
+    {
+        var cp = chunkArg.Split(',', StringSplitOptions.TrimEntries);
+        if (cp.Length != 4 || !int.TryParse(cp[0], out cx0) || !int.TryParse(cp[1], out cx1) || !int.TryParse(cp[2], out cy0) || !int.TryParse(cp[3], out cy1))
+        { Console.Error.WriteLine("--chunks needs x0,x1,y0,y1 (chunk columns from the west, rows from the north, decimal)"); return 1; }
+    }
+    var wopts = new WorldMapBake.Options(wppc, !args.Contains("--no-objects"), wthreads, GetArg("--name") ?? WorldMapBake.DefaultName(wppc), cx0, cx1, cy0, cy1);
+    return WorldMapBake.Run(sampler, geoW2, outDir, wopts, Console.WriteLine);
+}
+
+if (args.Contains("--map-vectors"))
+{
+    // worldmap.vec: building outlines and roads for the World Map. With --area (and --ppc) also a PNG crop of the terrain with them drawn on, to check by eye.
+    using var geoV = new RynthCore2.Raycast.GeometryLoader();
+    if (!geoV.Initialize(acFolder)) { Console.Error.WriteLine(geoV.StatusMessage); return 1; }
+    var vec = WorldMapVectors.Build(sampler, geoV, Console.WriteLine);
+    OutputGuard.Check(outDir);
+    string vecFile = Path.Combine(outDir, "worldmap.vec");
+    WorldMapVectors.Write(vecFile, vec);
+    Console.WriteLine($"wrote {vecFile} ({new FileInfo(vecFile).Length / 1024} KB)");
+    if (GetArg("--area") != null)
+        return WorldMapRender.Run(sampler, outDir, int.TryParse(GetArg("--ppc"), out int ppcV) ? ppcV : 8, GetArg("--area"), acFolder, false, vec);
+    return 0;
+}
+
+if (args.Contains("--map"))
+{
+    // --textured: the game's own terrain textures, blended per cell as the client does (TexturedTerrain), instead of flat colours.
+    RynthCore2.Raycast.GeometryLoader? geoM = null;
+    if (args.Contains("--textured"))
+    {
+        geoM = new RynthCore2.Raycast.GeometryLoader();
+        if (!geoM.Initialize(acFolder)) { Console.Error.WriteLine(geoM.StatusMessage); return 1; }
+    }
+    return WorldMapRender.Run(sampler, outDir, int.TryParse(GetArg("--ppc"), out int ppcArg) ? ppcArg : 2, GetArg("--area"), acFolder, args.Contains("--map-tiles"), null, geoM, args.Contains("--objects"));
 }
 
 if (args.Contains("--world"))

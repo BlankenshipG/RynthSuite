@@ -158,7 +158,9 @@ public sealed partial class RynthAiPlugin
                 }
             }
             if (doorId == 0 && settings.OpenDoors)
-                doorId = FindNearestClosedDoor(settings.OpenDoorRange, now);
+                doorId = settings.OpenDoorsOnPathOnly
+                    ? FindClosedDoorOnPath(settings.OpenDoorRange, now)
+                    : FindNearestClosedDoor(settings.OpenDoorRange, now);
             if (doorId == 0) return false;
 
             string why = _doorTargetRequested ? " (asked for by the nav detour)" : "";
@@ -311,6 +313,7 @@ public sealed partial class RynthAiPlugin
                 ? $"try {_doorAttempts + 1}: still closed after the last use"
                 : _doorPicks > 0 ? "open after the lockpick"
                 : _doorTargetRequested ? "the nav detour asked to open this door"
+                : settings.OpenDoorsOnPathOnly ? $"Open Doors: closed door on the path, within {settings.OpenDoorRange:0} yd"
                 : $"Open Doors: closed door within {settings.OpenDoorRange:0} yd";
             sent = Host.UseFor(unchecked((uint)_doorTargetId), "Door", reason);
             if (sent) _doorState = DoorState.Opening;
@@ -504,6 +507,101 @@ public sealed partial class RynthAiPlugin
             double cx = ax + dx * t - px, cy = ay + dy * t - py;
             if (cx * cx + cy * cy > corridor * corridor) continue;
             if (t < bestT) { bestT = t; bestId = wo.Id; }
+        }
+        return bestId;
+    }
+
+    // ── Only doors on the path of travel ─────────────────────────────────────
+
+    /// <summary>A door counts as on the path when it stands this close (world units, about yards) to it.</summary>
+    private const double PathDoorCorridorYd = 1.5;
+    private const int PathDoorMaxPoints = 12;
+
+    /// <summary>
+    /// The path of travel from the character, in world units, as far as <paramref name="rangeYd"/> yards:
+    /// along the route's next points when the macro is navigating a route (in the direction it is walking it),
+    /// else straight ahead along the character's heading (a RynthNav walk, or no nav at all).
+    /// </summary>
+    private System.Collections.Generic.List<(double X, double Y)> PathAhead(RynthCore.Plugin.RynthAi.LegacyUi.LegacyUiSettings s, double ax, double ay, float qw, float qz, double rangeYd)
+    {
+        var path = new System.Collections.Generic.List<(double X, double Y)> { (ax, ay) };
+        var route = s.CurrentRoute;
+        if (s.EnableNavigation && route != null && route.Points.Count > 0 && route.RouteType != NavRouteType.Follow)
+        {
+            int n = route.Points.Count, idx = s.ActiveNavIndex;
+            int dir = route.RouteType == NavRouteType.Linear ? (_navigationEngine?.GetStateSnapshot().LinearDir ?? 1) : 1;
+            double used = 0, cx = ax, cy = ay;
+            for (int k = 0; k < PathDoorMaxPoints && idx >= 0 && idx < n && used < rangeYd; k++)
+            {
+                var pt = route.Points[idx];
+                if (pt.NS != 0 || pt.EW != 0)
+                {
+                    double wx = (pt.EW * 10.0 + 1019.5) * 24.0, wy = (pt.NS * 10.0 + 1019.5) * 24.0;   // nav coordinates to world units
+                    double leg = Math.Sqrt((wx - cx) * (wx - cx) + (wy - cy) * (wy - cy));
+                    path.Add((wx, wy)); used += leg; cx = wx; cy = wy;
+                }
+                idx = route.RouteType == NavRouteType.Circular ? (idx + 1) % n : idx + dir;
+            }
+            if (path.Count > 1) return path;
+        }
+        // Straight ahead (physics yaw is counter-clockwise from north).
+        double yaw = 2.0 * Math.Atan2(qz, qw);
+        path.Add((ax - Math.Sin(yaw) * rangeYd, ay + Math.Cos(yaw) * rangeYd));
+        return path;
+    }
+
+    /// <summary>
+    /// Open Doors with "Only Doors On My Path": the closed door nearest the character along the path of
+    /// travel (<see cref="PathAhead"/>), within <paramref name="rangeYards"/> of path, never one that merely
+    /// stands within range. Same door rules as the proximity scan (static BF_DOOR objects, none opened or
+    /// found locked a moment ago, none already open, about the character's height).
+    /// </summary>
+    private int FindClosedDoorOnPath(float rangeYards, long now)
+    {
+        var s = _dashboard?.Settings;
+        if (s == null || _objectCache == null || !Host.HasGetObjectPosition) return 0;
+        if (!Host.TryGetPlayerPose(out uint cell, out float lx, out float ly, out float lz, out float qw, out _, out _, out float qz)) return 0;
+        double ax = ((cell >> 24) & 0xFF) * 192.0 + lx, ay = ((cell >> 16) & 0xFF) * 192.0 + ly;
+        var path = PathAhead(s, ax, ay, qw, qz, rangeYards);
+        bool hasBitfield = Host.HasGetObjectBitfield;
+
+        int bestId = 0;
+        double bestAlong = double.MaxValue;
+        foreach (var wo in _objectCache.GetLandscapeObjects())
+        {
+            uint uid = unchecked((uint)wo.Id);
+            if (uid >= 0x80000000u) continue;
+            if (hasBitfield)
+            {
+                if (!Host.TryGetObjectBitfield(uid, out uint bf) || (bf & 0x1000u) == 0) continue;
+            }
+            else
+            {
+                string nl = (wo.Name ?? string.Empty).ToLowerInvariant();
+                if (!nl.Contains("door") && !nl.Contains("gate") && !nl.Contains("hatch") && !nl.Contains("portcullis")) continue;
+            }
+            if (_doorOpenedRecently.TryGetValue(wo.Id, out long openedAt) && (now - openedAt) < DoorOpenedSkipMs) continue;
+            if (_doorLockedRecently.ContainsKey(wo.Id)) continue;
+            if (IsDoorOpen(wo.Id)) continue;
+            if (!Host.TryGetObjectPosition(uid, out uint dcell, out float x, out float y, out float oz)) continue;
+            if (Math.Abs(oz - lz) > 4.0) continue;
+
+            double px = ((dcell >> 24) & 0xFF) * 192.0 + x, py = ((dcell >> 16) & 0xFF) * 192.0 + y;
+            double along = 0;
+            for (int i = 0; i + 1 < path.Count; i++)
+            {
+                double x1 = path[i].X, y1 = path[i].Y, dx = path[i + 1].X - x1, dy = path[i + 1].Y - y1;
+                double len2 = dx * dx + dy * dy, len = Math.Sqrt(len2);
+                double t = len2 < 1e-6 ? 0.0 : Math.Clamp(((px - x1) * dx + (py - y1) * dy) / len2, 0.0, 1.0);
+                double ex = x1 + dx * t - px, ey = y1 + dy * t - py;
+                if (ex * ex + ey * ey <= PathDoorCorridorYd * PathDoorCorridorYd)
+                {
+                    double a = along + len * t;
+                    if (a <= rangeYards + PathDoorCorridorYd && a < bestAlong) { bestAlong = a; bestId = wo.Id; }
+                    break;
+                }
+                along += len;
+            }
         }
         return bestId;
     }

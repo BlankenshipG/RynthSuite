@@ -25,7 +25,7 @@ namespace RynthCore.Plugin.RynthNav;
 public sealed partial class RynthNavPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthNav");
-    internal const string PluginVersion = "0.6.6";
+    internal const string PluginVersion = "0.6.7";
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi(PluginVersion);
 
     /// <summary>Lets PluginExports log through this plugin's host (the base Log is protected).</summary>
@@ -144,6 +144,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         _recallsEnabled = NavDataConfig.ReadSwitch("recalls", true);
         LoadAvoidSettings();
         LoadMarkerSettings();
+        LoadMeshSettings();
         Host.Log($"[RynthNav] Initialized v{PluginVersion} (tiled streaming + long-range goto + portal/recall routing + arrow + atlas). Panel: RynthNav. Tiles: {NavDataDir} ({NavConfig.Source})");
         InitTravel();
         LoadGraph();
@@ -185,6 +186,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         _chatOut.Clear();
         _goNote = "";
         HideMarkers("logged out");
+        _meshView.Clear(); _meshDunLb = 0;
         _trip = null; _tripPath = null;
         OnLogoutTravel();
     }
@@ -206,6 +208,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         ProcessRequests();
         ApplyMovement();
         TickMarkers();
+        TickMeshView();
         UpdateGoLine();
         FlushChat();
     }
@@ -1192,10 +1195,15 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         bool exists = File.Exists(Path.Combine(NavDataDir, $"nav_{lb:X4}.tile"));
         int onDisk = 0;
         try { if (Directory.Exists(NavDataDir)) onDisk = Directory.GetFiles(NavDataDir, "nav_*.tile").Length; } catch { }
-        bool indoors = (_cellId & 0xFFFF) >= 0x0100, dungeon = InDungeon(_cellId);
+        bool indoors = (_cellId & 0xFFFF) >= 0x0100;
+        bool dunFile = indoors && File.Exists(Path.Combine(NavDataDir, DungeonTileFile.FileName(lb)));
+        bool dungeon = InDungeon(_cellId) || dunFile;
         string status; lock (_gate) status = _status;
-        return $"landblock 0x{lb:X4}{(dungeon ? " (a dungeon)" : indoors ? " (indoors)" : "")} — tile "
-             + $"{(dungeon ? (exists ? "surface only, no dungeon navmesh" : "MISSING") : exists ? "FOUND" : "MISSING")}, {_tileCount} loaded, "
+        // Where exactly: the cell and the landblock-local position (what a dungeon's tile and its objects are placed in).
+        double lx = _wx - ((_cellId >> 24) & 0xFF) * 192.0, ly = _wy - ((_cellId >> 16) & 0xFF) * 192.0;
+        string at = $" cell {_cellId:X8} local ({lx:F1}, {ly:F1}, {_wz:F1}),";
+        return $"landblock 0x{lb:X4}{(dungeon ? " (a dungeon)" : indoors ? " (indoors)" : "")},{at} — tile "
+             + $"{(dungeon ? (dunFile ? $"dungeon navmesh {DungeonTileFile.FileName(lb)} FOUND (the mesh view draws it; goto doesn't walk dungeons yet)" : "no dungeon navmesh baked") : exists ? "FOUND" : "MISSING")}, {_tileCount} loaded, "
              + $"{onDisk} tile(s) in {NavDataDir}; route graph: {_graphStatus}; Town Network: {_townNetStatus}; goto {(_gotoActive ? "ACTIVE" : "off")}"
              + $"{(_coarse != null ? $" (route {_coarse.Crossed}/{_coarse.Count})" : "")}, portals {(_portalsEnabled ? "on" : "off")}; status: {status}";
     }

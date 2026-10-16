@@ -22,8 +22,14 @@ internal static class NavBake
     private const float CL = LandblockData.CellLength;     // 24
     public const int VertsPerPoly = 6;
     // Tiled tiles align 1:1 to landblocks: tileSize(cells) * cellSize = 192.
-    private const float TiledCellSize = 0.5f;
-    private const int TiledTileSize = 384;                 // 384 * 0.5 = 192
+    /// <summary>
+    /// The tiled bake's cell size (--cell). Recast erodes the walkable ground by ceil(agentRadius / cell) whole
+    /// cells, so a 0.6 m radius at 0.5 m cells takes 1.0 m off each side and shuts every doorway under 2 m;
+    /// finer cells keep the erosion near the real radius. Tiles stay one landblock: tileSize = 192 / cell.
+    /// </summary>
+    internal static float TiledCellSizeValue = 0.5f;
+    private static float TiledCellSize => TiledCellSizeValue;
+    private static int TiledTileSize => (int)Math.Round(192f / TiledCellSizeValue);
 
     /// <summary>--draw-geometry: bake from the drawing meshes like before (for comparisons only).</summary>
     public static bool DrawMeshes;
@@ -113,7 +119,7 @@ internal static class NavBake
     /// </summary>
     internal static float EdgeMaxError(float radius) => Math.Min(1.3f, radius + 0.15f);
 
-    private static RcNavMeshBuildSettings Settings(float radius, bool tiled, float cellSize)
+    internal static RcNavMeshBuildSettings Settings(float radius, bool tiled, float cellSize)
     {
         float slopeDeg = (float)(Math.Acos(TerrainSampler.FloorZ) * 180.0 / Math.PI);
         return new RcNavMeshBuildSettings
@@ -305,7 +311,7 @@ internal static class NavBake
 
     // Written to a .tmp and moved into place, so a bake stopped half way never
     // leaves a truncated tile behind (a resumed batch bake trusts tiles on disk).
-    private static void WriteTile(string path, DtMeshData md)
+    internal static void WriteTile(string path, DtMeshData md)
     {
         OutputGuard.Check(Path.GetDirectoryName(path)!);
         string tmp = path + ".tmp";

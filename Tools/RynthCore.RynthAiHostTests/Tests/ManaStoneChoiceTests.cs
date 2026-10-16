@@ -30,6 +30,9 @@ internal static class ManaStoneChoiceTests
         r.Add("mana stones: worn gear is identified again, so a stale-high read follows the gear", GearReadRefreshed);
         r.Add("mana charges: overnight idle, the gear never runs dry (re-identify)", () => Overnight(identify: true));
         r.Add("mana charges: overnight idle, the gear never runs dry (server warnings only)", () => Overnight(identify: false));
+        r.Add("mana tapping: one item at a time - the stone first, then one item, drained before the next", OneTapItemAtATime);
+        r.Add("mana tapping: no drain until the pickup is confirmed in the pack", NoDrainBeforeArrival);
+        r.Add("mana tapping: a drain that never completes keeps the item's place, tries the next stone, then gives up", FailedDrainKeepsPlace);
     }
 
     private const uint ChargeA = 0x80400031, ChargeB = 0x80400032, ChargeC = 0x80400033;
@@ -223,7 +226,8 @@ internal static class ManaStoneChoiceTests
         /// <param name="stones">Stone id and its charge read (null = can't be read).</param>
         /// <param name="identify">The engine can identify objects (RequestId).</param>
         public Rig(bool tapping, (uint Id, int? Mana)[] stones, bool ringToDrain = false,
-                   string stoneName = "Moderate Mana Stone", int maceMana = 0, bool identify = true)
+                   string stoneName = "Moderate Mana Stone", int maceMana = 0, bool identify = true,
+                   bool ringArrived = true)
         {
             FakeHost.Reset();
             FakeHost.UseOnCalls = true;
@@ -259,7 +263,7 @@ internal static class ManaStoneChoiceTests
             S.IsMacroRunning = true;
             ManaStoneManager.Clock = () => Now;
             M = new ManaStoneManager(host, S, C);
-            if (ringToDrain) M.MarkLootedForTap(unchecked((int)Ring));
+            if (ringToDrain) M.MarkLootedForTap(unchecked((int)Ring), arrived: ringArrived);
         }
 
         public static void SetMana(uint id, int? mana)
@@ -299,10 +303,76 @@ internal static class ManaStoneChoiceTests
             C.OnDeleteObject(id);
         }
 
+        /// <summary>A ring with mana lands in the pack (looted).</summary>
+        public void AddRing()
+        {
+            FakeHost.Names[Ring] = "Ring";
+            FakeHost.Containers[Ring] = Player;
+            FakeHost.Ints[(Ring, MaxManaKey)] = 4000;
+            FakeHost.Ints[(Ring, CurManaKey)] = 4000;
+            _ = C[unchecked((int)Ring)];
+        }
+
         public List<uint> OnPlayer => FakeHost.UsesOn.Where(u => u.Target == Player).Select(u => u.Source).ToList();
         public List<uint> OnRing => FakeHost.UsesOn.Where(u => u.Target == Ring).Select(u => u.Source).ToList();
 
         public void Dispose() => ManaStoneManager.Clock = static () => Environment.TickCount64;
+    }
+
+    // 2026-10-15: the pack filled with items looted to tap. A drain that never completed shelved
+    // its item for 5 minutes and the item stopped counting against the empty stones, so the looter
+    // took another in its place; and the looter went on opening corpses over the drain.
+    private static void OneTapItemAtATime()
+    {
+        using var rig = new Rig(tapping: true, new (uint, int?)[] { (StoneA, null), (StoneB, null), (StoneC, null) }, maceMana: 5000);
+        Check.Eq(rig.M.FreeEmptyStoneSlots(), 1, "three empty stones: one item may be looted to tap");
+        Check.False(rig.M.HoldsLootForDrain(), "nothing to drain: the looter goes on");
+        rig.AddRing();
+        rig.M.MarkLootedForTap(unchecked((int)Ring), arrived: false);
+        Check.Eq(rig.M.FreeEmptyStoneSlots(), 0, "the pickup is out: no second item");
+        rig.M.MarkLootedForTap(unchecked((int)Ring), arrived: true);
+        rig.Run(600);
+        Check.True(rig.M.HoldsLootForDrain(), "the ring is in the pack with a stone ready: the looter waits");
+        rig.Run(1000);
+        Check.Eq(rig.OnRing.Count, 1, "the ring is drained");
+        Check.True(rig.M.HoldsLootForDrain(), "the drain is out: the looter still waits");
+        Check.Eq(rig.M.FreeEmptyStoneSlots(), 0, "still no second item");
+        rig.Chat("The Mana Stone drains 3,600 points of mana from the Ring.\nThe Ring is destroyed.");
+        rig.Destroy(Ring);
+        rig.Run(200);
+        Check.False(rig.M.HoldsLootForDrain(), "drained: the looter goes on");
+        Check.Eq(rig.M.FreeEmptyStoneSlots(), 1, "the next item may be looted");
+    }
+
+    private static void NoDrainBeforeArrival()
+    {
+        using var rig = new Rig(tapping: true, new (uint, int?)[] { (StoneA, null) }, ringToDrain: true, maceMana: 5000, ringArrived: false);
+        rig.Run(2000);
+        Check.Eq(rig.OnRing.Count, 0, "the pickup is only sent: no drain yet");
+        Check.False(rig.M.HoldsLootForDrain(), "the pickup's answer is what the looter waits for, not the drain");
+        rig.M.MarkLootedForTap(unchecked((int)Ring), arrived: true);
+        rig.Run(1000);
+        Check.Eq(rig.OnRing.Count, 1, "confirmed in the pack: drained");
+    }
+
+    private static void FailedDrainKeepsPlace()
+    {
+        using var rig = new Rig(tapping: true, new (uint, int?)[] { (StoneA, null), (StoneB, null), (StoneC, null) }, ringToDrain: true, maceMana: 5000);
+        rig.Run(1000);
+        Check.Eq(rig.OnRing.Count, 1, "first try");
+        rig.Run(9000);   // no answer: the drain times out
+        Check.Eq(rig.M.FreeEmptyStoneSlots(), 0, "the ring keeps its place: nothing else is looted to tap");
+        Check.False(rig.M.HoldsLootForDrain(), "waiting to retry does not hold the looter");
+        rig.Run(21_000);
+        Check.Eq(rig.OnRing.Count, 2, "second try");
+        Check.True(rig.OnRing[1] != rig.OnRing[0], "with another stone");
+        rig.Run(30_000);
+        Check.Eq(rig.OnRing.Count, 3, "third try");
+        rig.Run(10_000);
+        Check.Eq(rig.M.FreeEmptyStoneSlots(), 1, "given up after three: the next item may be looted");
+        rig.Run(60_000);
+        Check.Eq(rig.OnRing.Count, 3, "a given-up item is never drained again");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("would not drain")), "the player is told");
     }
 
     private static void KnownChargedRefills()

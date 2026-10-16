@@ -1100,6 +1100,7 @@ internal sealed partial class LegacyDashboardRenderer
                 ShowRouteOverlay           = s.NavOverlay.ShowRouteMarkers,
                 OpenDoors                  = s.OpenDoors,
                 OpenDoorRange              = s.OpenDoorRange,
+                OpenDoorsOnPathOnly        = s.OpenDoorsOnPathOnly,
                 AutoUnlockDoors            = s.AutoUnlockDoors,
                 MovementMode               = s.MovementMode,
                 NavStopTurnAngle           = s.NavStopTurnAngle,
@@ -1342,6 +1343,7 @@ internal sealed partial class LegacyDashboardRenderer
             if (p.ShowRouteOverlay is bool routeOverlay) s.NavOverlay.ShowRouteMarkers = routeOverlay;
             s.OpenDoors                  = p.OpenDoors;
             s.OpenDoorRange              = p.OpenDoorRange;
+            if (p.OpenDoorsOnPathOnly is bool doorsOnPath) s.OpenDoorsOnPathOnly = doorsOnPath;   // absent = unchanged
             s.AutoUnlockDoors            = p.AutoUnlockDoors;
             s.MovementMode               = p.MovementMode is 1 or 2 ? 0 : p.MovementMode;   // Tier 1/2 off for now
             s.NavStopTurnAngle           = p.NavStopTurnAngle;
@@ -1830,6 +1832,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.BoostLootPriority        = tmp.BoostLootPriority;
         dst.OpenDoors                = tmp.OpenDoors;
         dst.OpenDoorRange            = tmp.OpenDoorRange;
+        dst.OpenDoorsOnPathOnly      = tmp.OpenDoorsOnPathOnly;
         dst.AutoUnlockDoors          = tmp.AutoUnlockDoors;
         dst.LootOwnership            = tmp.LootOwnership;
         dst.LootOwnCorpse            = tmp.LootOwnCorpse;

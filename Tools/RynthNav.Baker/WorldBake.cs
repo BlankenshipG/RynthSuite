@@ -111,8 +111,8 @@ internal static class WorldBake
         string settingsFile = Path.Combine(bakeDir, "settings.txt");
         // geometry= names what the obstacles are made from: tiles from the drawing meshes (before
         // 2026-10-02) and from the collision geometry must not be mixed in one set.
-        string geometry = NavBake.DrawMeshes ? "" : $" geometry=collision-v1" + (NavBake.AgentMaxClimb != 1f ? $" climb={NavBake.AgentMaxClimb:0.##}" : "");
-        string settings = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"radius={radius:0.###} chunk={chunk}{geometry}");
+        string geometry = NavBake.DrawMeshes ? "" : $" geometry=collision-v2" + (NavBake.AgentMaxClimb != 1f ? $" climb={NavBake.AgentMaxClimb:0.##}" : "");
+        string settings = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"radius={radius:0.###} chunk={chunk}{geometry}{(NavBake.TiledCellSizeValue != 0.5f ? $" cell={NavBake.TiledCellSizeValue:0.###}" : "")}");
         if (File.Exists(settingsFile))
         {
             string was = File.ReadAllText(settingsFile).Trim();

@@ -93,6 +93,13 @@ public sealed partial class RynthAiPlugin
             return true;
         }
 
+        // /ub videopatch [enable|disable|...] (UtilityBelt's video patch) is the engine's: /rc videopatch.
+        if (cmd is "videopatch" or "video")
+        {
+            ForwardVideoPatch(parts, 2);
+            return true;
+        }
+
         // /ub bc, /ub bct, /ub netclients (UtilityBelt's networking) belong to the RynthNet plugin.
         if (cmd is "bc" or "bct" or "netclients")
         {

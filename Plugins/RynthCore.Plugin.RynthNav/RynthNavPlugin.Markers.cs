@@ -49,6 +49,55 @@ public sealed partial class RynthNavPlugin
         _markerGuide = NavDataConfig.ReadSwitch("markerGuide", false);
     }
 
+    // ── The walking path, for the engine's World Map ─────────────────────
+    // The trip's walks (and the walks inside the Town Network) as the status JSON's "path": an array of
+    // segments, each a flat list of ns, ew pairs in map degrees (4 decimals: 0.02 yd), thinned to about
+    // MaxPathPoints in all (a segment keeps its ends). Built once per TripPath and kept; empty (the field
+    // is left out) while the markers are off the ground or the path isn't worked out yet. Pump thread.
+    private const int MaxPathPoints = 800;
+    private TripPath? _pathJsonFor;
+    private string _pathJson = "";
+
+    private string PathJson()
+    {
+        TripPath? p = _tripPath;
+        if (p == null || !_tripShown) return "";
+        lock (_gate)
+        {
+            if (ReferenceEquals(p, _pathJsonFor)) return _pathJson;
+            var segs = new List<WorldPt[]>();
+            for (int i = 0; i < p.Walks.Length; i++)
+            {
+                if (p.Walks[i] is { Length: >= 2 } w) segs.Add(w);
+                if (i < p.Hub.Length && p.Hub[i] is { Length: >= 2 } h) segs.Add(h);
+            }
+            int total = 0;
+            foreach (WorldPt[] s in segs) total += s.Length;
+            int stride = Math.Max(1, (total + MaxPathPoints - 1) / MaxPathPoints);
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            var sb = new System.Text.StringBuilder(total * 20 + 8);
+            sb.Append('[');
+            bool firstSeg = true;
+            foreach (WorldPt[] s in segs)
+            {
+                if (!firstSeg) sb.Append(',');
+                firstSeg = false;
+                sb.Append('[');
+                for (int i = 0; i < s.Length; i++)
+                {
+                    if (i % stride != 0 && i != s.Length - 1) continue;
+                    if (i > 0) sb.Append(',');
+                    sb.Append(NavCoords.NsFromWorld(s[i].Y).ToString("F4", ci)).Append(',').Append(NavCoords.EwFromWorld(s[i].X).ToString("F4", ci));
+                }
+                sb.Append(']');
+            }
+            sb.Append(']');
+            _pathJsonFor = p;
+            _pathJson = segs.Count == 0 ? "" : sb.ToString();
+            return _pathJson;
+        }
+    }
+
     // ── The trip ─────────────────────────────────────────────────────────
 
     /// <summary>A new plan (Route) or goto (Go): its trip, shown, its path worked out. Tick thread.</summary>

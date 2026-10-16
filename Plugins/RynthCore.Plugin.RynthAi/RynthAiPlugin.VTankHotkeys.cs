@@ -25,12 +25,27 @@ public sealed partial class RynthAiPlugin
 {
     private static readonly string[] MeleeHeightNames = { "Low", "Medium", "High" };
 
+    /// <summary>
+    /// /ra videopatch and /ub videopatch [enable|disable|off|world|unfocused|all|fps &lt;n&gt;|status]: the
+    /// engine's video patch (stop drawing AC's 3D world to save CPU and GPU, like UtilityBelt's), run as
+    /// /rc videopatch. <paramref name="argsFrom"/>: the index in <paramref name="parts"/> the arguments start at.
+    /// </summary>
+    internal void ForwardVideoPatch(string[] parts, int argsFrom)
+    {
+        string args = parts.Length > argsFrom ? string.Join(" ", parts, argsFrom, parts.Length - argsFrom) : "";
+        string command = "/rc videopatch" + (args.Length > 0 ? " " + args : "");
+        if (!Host.HasInvokeChatParser || !Host.InvokeChatParser(command))
+            ChatLine("[RynthAi] The video patch is RynthCore's: type " + command + " (this engine can't run it for RynthAi).");
+    }
+
     /// <summary>The VTank-style /ra commands; false when <paramref name="cmd"/> isn't one of them.</summary>
     private bool TryHandleVTankHotkeyCommand(string cmd, string[] parts)
     {
         switch (cmd)
         {
             case "vtkeys":        VTankKeysHelp(); return true;
+            case "videopatch":
+            case "video":         ForwardVideoPatch(parts, 2); return true;
             case "setmetastate":
             case "metastate":     HandleSetMetaStateCommand(parts); return true;
             case "targetlock":    HandleTargetLockCommand(parts); return true;

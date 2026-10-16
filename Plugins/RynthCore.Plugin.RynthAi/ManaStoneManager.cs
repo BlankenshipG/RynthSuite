@@ -42,10 +42,9 @@ internal sealed class ManaStoneManager
     private readonly Dictionary<int, long> _stoneUseOnPlayerCooldownUntil = new();
     private const long StoneUseOnPlayerCooldownMs = 5 * 60 * 1000;
 
-    // Same idea for tap targets: an item that won't drain (wielded server-side,
-    // already at 0 mana, etc.) gets shelved for 5 minutes so we move on.
+    // Same idea for tap targets: an item whose drain never completed waits TapTargetRetryMs
+    // before it is tried again (with the next stone).
     private readonly Dictionary<int, long> _tapTargetCooldownUntil = new();
-    private const long TapTargetCooldownMs = 5 * 60 * 1000;
 
     // And for the stone half of the pair: a "stone" that AC silently refuses
     // to use (often because it's actually charged but our cache reads its
@@ -140,6 +139,34 @@ internal sealed class ManaStoneManager
     private const long LootedForTapPruneIntervalMs = 1_000;
     private long _lootedForTapPrunedAt;
 
+    // When each tap item's pickup was confirmed (it is in the pack). A drain is only sent for an
+    // item that has arrived: one went out 30 ms before its pickup was confirmed (2026-10-15) and
+    // the server never answered it. An item whose confirm was lost counts as arrived once it is
+    // owned and TapArrivalFallbackMs have passed since the pickup was sent.
+    private readonly Dictionary<int, long> _tapArrivedAt = new();
+    private const long TapArrivalSettleMs = 500;
+    private const long TapArrivalFallbackMs = 5_000;
+
+    // Drains that never completed, per item and per stone. An item gets TapTargetMaxTries (each
+    // with the next stone), then it is given up: it stays in the pack as ordinary loot. A stone
+    // that failed twice is parked for StoneTapLongCooldownMs. Before this a failed item was
+    // shelved for 5 minutes and stopped counting against the stones, so the looter took another
+    // item in its place, and the pack filled with undrained tap items (9 in 10 drains timed out).
+    private readonly Dictionary<int, int> _tapTargetFailures = new();
+    private readonly Dictionary<int, int> _stoneTapFailures = new();
+    private const int TapTargetMaxTries = 3;
+    private const long TapTargetRetryMs = 20_000;
+    private const long StoneTapLongCooldownMs = 30 * 60 * 1000;
+
+    // The server's lines while a drain is out, logged so a drain that never completes shows why.
+    private int _tapChatLogged;
+    private const int TapChatLogMax = 4;
+
+    // HoldsLootForDrain's answer, worked out at most every HoldCheckMs (the finders walk the cache).
+    private bool _holdLoot;
+    private long _holdLootAt = -HoldCheckMs;
+    private const long HoldCheckMs = 250;
+
     public ManaStoneManager(RynthCoreHost host, LegacyUiSettings settings, WorldObjectCache objectCache)
     {
         _host        = host;
@@ -176,7 +203,7 @@ internal sealed class ManaStoneManager
             if (itemGone || stoneGone)
             {
                 _host.Log($"[RynthAi] ManaStone: tap completion detected (itemGone={itemGone} stoneGone={stoneGone}).");
-                if (itemGone) _lootedForTap.Remove(_activeItemId); // drained and destroyed
+                if (itemGone) ForgetTapItem(_activeItemId); // drained and destroyed
                 GoIdle();
             }
         }
@@ -211,8 +238,11 @@ internal sealed class ManaStoneManager
             // failing on every tap target. Park the stone, not the item.
             if (_state == TapState.TappingItem && _activeStoneId != 0)
             {
-                _stoneTapCooldownUntil[_activeStoneId] = now + StoneTapCooldownMs;
-                _host.Log($"[RynthAi] ManaStone: blacklisting stone 0x{(uint)_activeStoneId:X8} for tap ({StoneTapCooldownMs / 1000}s cooldown).");
+                int stoneFails = _stoneTapFailures.TryGetValue(_activeStoneId, out int sf) ? sf + 1 : 1;
+                _stoneTapFailures[_activeStoneId] = stoneFails;
+                long park = stoneFails >= 2 ? StoneTapLongCooldownMs : StoneTapCooldownMs;
+                _stoneTapCooldownUntil[_activeStoneId] = now + park;
+                _host.Log($"[RynthAi] ManaStone: blacklisting stone 0x{(uint)_activeStoneId:X8} for tap ({park / 1000}s cooldown, {stoneFails} failed drain(s)).");
             }
             // ALSO shelve the TARGET item. A target that never completes a drain
             // (server can't resolve the stone guid, item is retained/undrainable,
@@ -223,10 +253,19 @@ internal sealed class ManaStoneManager
             // bot's own casts) out of movement/combat. Shelving only the stone
             // (above) does NOT break this loop because the WAND keeps getting
             // selected. See [rynthai_respawn_blind_wedge] / 2026-06-22 wedge.
+            // It keeps its place against the stones meanwhile (FreeEmptyStoneSlots), so no other
+            // item is looted to tap while it waits; after TapTargetMaxTries it is given up.
             if (_state == TapState.TappingItem && _activeItemId != 0)
             {
-                _tapTargetCooldownUntil[_activeItemId] = now + TapTargetCooldownMs;
-                _host.Log($"[RynthAi] ManaStone: shelving tap target 0x{(uint)_activeItemId:X8} for {TapTargetCooldownMs / 1000}s (drain never completed).");
+                int fails = _tapTargetFailures.TryGetValue(_activeItemId, out int f) ? f + 1 : 1;
+                _tapTargetFailures[_activeItemId] = fails;
+                if (fails >= TapTargetMaxTries)
+                    GiveUpTapTarget(_activeItemId, fails);
+                else
+                {
+                    _tapTargetCooldownUntil[_activeItemId] = now + TapTargetRetryMs;
+                    _host.Log($"[RynthAi] ManaStone: tap target 0x{(uint)_activeItemId:X8} did not drain (try {fails} of {TapTargetMaxTries}); trying again in {TapTargetRetryMs / 1000}s.");
+                }
             }
             Reset();
             return; // let things settle before starting a new action this tick
@@ -277,8 +316,12 @@ internal sealed class ManaStoneManager
                 || text.Contains("has been destroyed"))
             {
                 // The stone is charged now; its read still shows it empty until it is appraised again.
-                if (text.Contains("The Mana Stone drains")) MarkStoneCharged(_activeStoneId);
-                if (_activeItemId != 0) _lootedForTap.Remove(_activeItemId); // drained and destroyed
+                if (text.Contains("The Mana Stone drains"))
+                {
+                    MarkStoneCharged(_activeStoneId);
+                    _host.Log($"[RynthAi] ManaStone: drained 0x{(uint)_activeItemId:X8} into stone 0x{(uint)_activeStoneId:X8}.");
+                }
+                if (_activeItemId != 0) ForgetTapItem(_activeItemId); // drained and destroyed
                 GoIdle();
                 return;
             }
@@ -305,6 +348,11 @@ internal sealed class ManaStoneManager
                 _host.Log($"[RynthAi] ManaStone: stone 0x{(uint)_activeStoneId:X8} is actually charged (server: 'already full') — marking known-charged.");
                 GoIdle();
                 return;
+            }
+            if (_tapChatLogged < TapChatLogMax)
+            {
+                _tapChatLogged++;
+                _host.Log($"[RynthAi] ManaStone: while draining 0x{(uint)_activeItemId:X8} with 0x{(uint)_activeStoneId:X8} the server said '{text.Trim()}'.");
             }
             return;
         }
@@ -407,9 +455,36 @@ internal sealed class ManaStoneManager
     /// rule matched, it holds enough mana and an empty stone is free): when the pickup
     /// is sent, and again when it is confirmed. Only these items are ever drained.
     /// </summary>
-    public void MarkLootedForTap(int itemId)
+    /// <param name="arrived">The pickup is confirmed: the item is in the pack (false: just sent).</param>
+    public void MarkLootedForTap(int itemId, bool arrived = true)
     {
-        if (itemId != 0) _lootedForTap[itemId] = NowMs;
+        if (itemId == 0) return;
+        _lootedForTap[itemId] = NowMs;
+        if (arrived) _tapArrivedAt[itemId] = NowMs;
+    }
+
+    private void ForgetTapItem(int itemId)
+    {
+        _lootedForTap.Remove(itemId);
+        _tapArrivedAt.Remove(itemId);
+        _tapTargetFailures.Remove(itemId);
+        _tapTargetCooldownUntil.Remove(itemId);
+    }
+
+    /// <summary>Drains of this item never completed: it stays in the pack as ordinary loot.</summary>
+    private void GiveUpTapTarget(int itemId, int tries)
+    {
+        string name = _objectCache[itemId]?.Name ?? $"0x{(uint)itemId:X8}";
+        _host.Log($"[RynthAi] ManaStone: giving up on tap target 0x{(uint)itemId:X8} '{name}' after {tries} drains that never completed.");
+        _host.WriteToChat($"[RynthAi] Mana tapping: {name} would not drain after {tries} tries; it stays in your pack.", 1);
+        ForgetTapItem(itemId);
+    }
+
+    /// <summary>The pickup is confirmed and has settled, or its confirm was lost and it has long since been sent.</summary>
+    private bool TapItemArrived(int itemId, long now)
+    {
+        if (_tapArrivedAt.TryGetValue(itemId, out long at)) return now - at >= TapArrivalSettleMs;
+        return _lootedForTap.TryGetValue(itemId, out long sent) && now - sent >= TapArrivalFallbackMs;
     }
 
     /// <summary>The looter picked this item up as "ManaTap" this session (it is waiting to be drained).</summary>
@@ -445,7 +520,7 @@ internal sealed class ManaStoneManager
         }
         if (drop == null) return;
         foreach (int id in drop)
-            _lootedForTap.Remove(id);
+            ForgetTapItem(id);
         _host.Log($"[RynthAi] ManaStone: {drop.Count} looted-for-tap item(s) left the pack or were kept by the player; {_lootedForTap.Count} left to drain.");
     }
 
@@ -497,6 +572,7 @@ internal sealed class ManaStoneManager
 
     private void IssueTapItem(int stoneId, int itemId)
     {
+        _tapChatLogged   = 0;
         _state           = TapState.TappingItem;
         _actionIssuedAt  = NowMs;
         _host.UseOnFor(unchecked((uint)stoneId), unchecked((uint)itemId), "ManaStone", "tap an item into a mana stone");
@@ -565,39 +641,6 @@ internal sealed class ManaStoneManager
     }
 
     /// <summary>
-    /// Items looted for tapping that are in the player's inventory and match the
-    /// tap-target criteria (mana ≥ threshold, not equipped, not on the Weapons tab,
-    /// not loot-kept, not blacklisted). Each one
-    /// will eventually consume one empty stone, so they count against the
-    /// "free slots" quota that CorpseOpenController uses for ManaTap pickup.
-    /// </summary>
-    public int CountPendingDrainItems()
-    {
-        if (!_host.HasGetObjectIntProperty) return 0;
-        int threshold = _settings.ManaTapMinMana;
-        if (threshold <= 0) return 0;
-        int playerId = unchecked((int)_host.GetPlayerId());
-        long now = NowMs;
-        int count = 0;
-
-        foreach (int id in _lootedForTap.Keys) // keep in sync with FindTapTarget
-        {
-            WorldObject? item = _objectCache[id];
-            if (item == null) continue;
-            if (IsManaStone(item)) continue;
-            if (!IsOwnedByPlayer(item, playerId)) continue;
-            if (_tapTargetCooldownUntil.TryGetValue(item.Id, out long until) && now < until) continue;
-            if (_host.TryGetObjectIntProperty(unchecked((uint)item.Id), (uint)AcIntProperty.WieldedSlot, out int wield)
-                && wield != 0) continue;
-            if (!_host.TryGetObjectIntProperty(unchecked((uint)item.Id), (uint)AcIntProperty.CurrentMana, out int curMana)
-                || curMana < threshold) continue;
-            if (IsProtectedFromTap(item, playerId)) continue; // keep in sync with FindTapTarget
-            count++;
-        }
-        return count;
-    }
-
-    /// <summary>
     /// Items a drain must never touch (the drain destroys the item): gear the player
     /// is wearing or wielding, weapons and wands on the Weapons tab (the bow sits in
     /// the pack while the wand buffs), and loot the profile keeps. Stype 10 can read 0
@@ -619,11 +662,35 @@ internal sealed class ManaStoneManager
     }
 
     /// <summary>
-    /// Free empty-stone slots = empty stones in inventory minus drain candidates
-    /// already in inventory waiting to be tapped. CorpseOpenController only
-    /// looks for new ManaTap pickups when this is &gt; 0.
+    /// How many items the looter may pick up to tap: 1 when an empty stone is in the pack and
+    /// no item looted to tap is waiting for its drain, else 0. One at a time (2026-10-15): the
+    /// stone first, then one item, drained before the next is looted. An item whose drain is
+    /// retrying still holds its place (it used to stop counting once shelved, and the looter
+    /// took another in its place). CorpseOpenController only looks for new ManaTap pickups when
+    /// this is &gt; 0.
     /// </summary>
-    public int FreeEmptyStoneSlots() => Math.Max(0, CountEmptyStones() - CountPendingDrainItems());
+    public int FreeEmptyStoneSlots()
+    {
+        if (_lootedForTap.Count > 0) return 0;
+        return CountEmptyStones() > 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// True while a drain is out, or an item looted to tap is in the pack with an empty stone
+    /// ready for it: the looter waits (no next item, no next corpse) so the drain goes first.
+    /// An item waiting to retry a failed drain does not hold the looter.
+    /// </summary>
+    public bool HoldsLootForDrain()
+    {
+        if (_state == TapState.TappingItem) return true;
+        if (_lootedForTap.Count == 0) return false;
+        if (!_settings.EnableManaTapping || !_settings.IsMacroRunning || !_host.HasUseObjectOn) return false;
+        long now = NowMs;
+        if (now - _holdLootAt < HoldCheckMs) return _holdLoot;
+        _holdLootAt = now;
+        _holdLoot = FindEmptyStone() != 0 && FindTapTarget(_settings.ManaTapMinMana) != 0;
+        return _holdLoot;
+    }
 
     /// <summary>
     /// True when the item is a mana stone.
@@ -893,6 +960,7 @@ internal sealed class ManaStoneManager
             WorldObject? item = _objectCache[id];
             if (item == null) continue;
             if (IsManaStone(item)) continue;
+            if (!TapItemArrived(id, now)) continue;   // its pickup is still on the way
             if (!IsOwnedByPlayer(item, playerId)) continue;
 
             // Wands, staves and orbs drain like any other item (ACE's ManaStone only refuses

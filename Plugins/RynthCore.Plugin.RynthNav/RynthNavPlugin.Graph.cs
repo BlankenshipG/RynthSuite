@@ -58,11 +58,12 @@ public sealed partial class RynthNavPlugin
     {
         _tileRegions[lb] = NavRegions.Build(md, out _);
         _tilePrints[lb] = NavRegions.Fingerprint(md);
+        _meshView.Register(lb, md);
         NavGraph? g = _graph;
         if (g != null && ReferenceEquals(g, _graphChecked)) CheckTile(g, lb);
     }
 
-    private void OnTileUnloaded(uint lb) { _tileRegions.Remove(lb); _tilePrints.Remove(lb); }
+    private void OnTileUnloaded(uint lb) { _tileRegions.Remove(lb); _tilePrints.Remove(lb); _meshView.Unregister(lb); }
 
     private void CheckTile(NavGraph g, uint lb)
     {

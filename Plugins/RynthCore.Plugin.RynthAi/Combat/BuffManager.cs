@@ -505,6 +505,56 @@ public partial class BuffManager : IDisposable
     }
 
     private DateTime _buffManaWaitLoggedAt = DateTime.MinValue;
+    // Since when buffs have waited for Stamina to Mana that can't go yet (BuffWaitsForMana).
+    private DateTime _reserveWaitSince = DateTime.MinValue;
+    private DateTime _reserveOverLoggedAt = DateTime.MinValue;
+    /// <summary>The longest buffs wait under the reserve for a Stamina to Mana that can't go yet
+    /// (stamina under its line with nothing to refill it): then the buff goes, as before.</summary>
+    internal const double ReserveWaitMaxSec = 60;
+
+    // A mana reading that does not move from one buff cast to the next: every buff costs mana, so
+    // the reading is stale and the floor and the reserve would judge a number that is gone. Drakkon's
+    // rebuff after a death (2026-10-15) sent a dozen buffs with neither of them holding, then read
+    // 5%. After StuckManaCasts casts at the same reading, buffs wait for it to move (at most
+    // StuckManaHoldSec).
+    private uint _lastBuffCastMana = uint.MaxValue;
+    private int _sameManaCasts;
+    private DateTime _stuckManaSince = DateTime.MinValue;
+    internal const int StuckManaCasts = 2;
+    internal const double StuckManaHoldSec = 30;
+
+    /// <summary>Notes the mana reading a buff cast goes out at (see _lastBuffCastMana).</summary>
+    internal void NoteBuffCastMana(int cost)
+    {
+        uint cur = _vitals.CurrentMana;
+        if (cost > 0 && cur == _lastBuffCastMana && cur < _vitals.MaxMana)
+        {
+            _sameManaCasts++;
+            if (_sameManaCasts == StuckManaCasts)
+            {
+                _stuckManaSince = DateTime.Now;
+                _host.Log($"[RynthAi] Vitals: the mana reading has not moved over {StuckManaCasts + 1} buff casts ({cur}/{_vitals.MaxMana}); buffs wait for a fresh reading (up to {StuckManaHoldSec:0} s).");
+            }
+        }
+        else
+            _sameManaCasts = 0;
+        _lastBuffCastMana = cur;
+    }
+
+    /// <summary>True while buffs wait for a stale mana reading to move (NoteBuffCastMana).</summary>
+    internal bool ManaReadingStuck()
+    {
+        if (_sameManaCasts < StuckManaCasts) return false;
+        if (_vitals.CurrentMana != _lastBuffCastMana
+            || (DateTime.Now - _stuckManaSince).TotalSeconds >= StuckManaHoldSec)
+        {
+            _host.Log($"[RynthAi] Vitals: mana reading {(_vitals.CurrentMana != _lastBuffCastMana ? "moved" : "still the same after " + StuckManaHoldSec.ToString("0") + " s")}: {_lastBuffCastMana} -> {_vitals.CurrentMana}/{_vitals.MaxMana}; buffs go on.");
+            _sameManaCasts = 0;
+            _lastBuffCastMana = uint.MaxValue;
+            return false;
+        }
+        return true;
+    }
 
     /// <summary>
     /// Before a buff: true when it waits for mana. Casting it would leave mana under the reserve
@@ -513,17 +563,42 @@ public partial class BuffManager : IDisposable
     /// </summary>
     internal bool BuffWaitsForMana(int spellId, string buffName)
     {
-        if (!BuffNeedsManaFirst(spellId, out bool cantPay, out int cost)) return false;
+        if (!BuffNeedsManaFirst(spellId, out bool cantPay, out int cost)) { _reserveWaitSince = DateTime.MinValue; return false; }
         uint cur = _vitals.CurrentMana;
 
         _vitalWhy = "";
         if ((StaminaAllowsStaminaToMana() && AttemptVitalCast("Stamina to Mana Self")) || AttemptPotion("ManaPotion"))
         {
             _isRechargingMana = true;
+            _reserveWaitSince = DateTime.MinValue;
             LastBuffSkipReason = $"mana {cur}/{_vitals.MaxMana} before {buffName}: Stamina to Mana first";
             return true;
         }
-        if (!cantPay) return false;   // under the reserve after it, but nothing refills: cast the buff anyway
+        if (!cantPay)
+        {
+            // Under the reserve after it and Stamina to Mana can't go right now (stamina under its line
+            // with nothing to refill it, the server finishing a cast). Spending on regardless is how a
+            // rebuff ran mana under Stamina to Mana's own cost (2026-10-15): wait for it instead, up to
+            // ReserveWaitMaxSec. With no Stamina to Mana at all nothing refills: the buff goes.
+            if (TopStaminaToManaId() == 0) return false;
+            if (_reserveWaitSince == DateTime.MinValue) _reserveWaitSince = DateTime.Now;
+            if ((DateTime.Now - _reserveWaitSince).TotalSeconds >= ReserveWaitMaxSec)
+            {
+                if ((DateTime.Now - _reserveOverLoggedAt).TotalSeconds >= 30)
+                {
+                    _reserveOverLoggedAt = DateTime.Now;
+                    _host.Log($"[RynthAi] Vitals: {buffName} goes under the mana reserve ({cur}/{_vitals.MaxMana}, reserve {ManaReserve()}): Stamina to Mana could not go for {ReserveWaitMaxSec:0} s ({Why(_vitalWhy)}).");
+                }
+                return false;
+            }
+            LastBuffSkipReason = $"mana {cur}/{_vitals.MaxMana}: {buffName} would leave it under the reserve ({ManaReserve()}); waiting for Stamina to Mana";
+            if ((DateTime.Now - _buffManaWaitLoggedAt).TotalSeconds >= 30)
+            {
+                _buffManaWaitLoggedAt = DateTime.Now;
+                _host.Log($"[RynthAi] Vitals: buffing waits: {LastBuffSkipReason} (Stamina to Mana: {Why(_vitalWhy)})");
+            }
+            return true;
+        }
         LastBuffSkipReason = $"mana {cur}/{_vitals.MaxMana} is under {buffName}'s cost ({cost}); waiting for regen";
         if ((DateTime.Now - _buffManaWaitLoggedAt).TotalSeconds >= 30)
         {
@@ -1542,6 +1617,14 @@ public partial class BuffManager : IDisposable
         if (_vitals.MaxHealth > 0 && HealthUnderAnyLine(_vitals.HealthPct, _vitals.StaminaPct))
         {
             Hold("health under a heal line");
+            return;
+        }
+
+        // A stale mana reading: the floor below would judge a number that is gone.
+        if (ManaReadingStuck())
+        {
+            LastBuffSkipReason = $"mana reading stuck at {_vitals.CurrentMana}/{_vitals.MaxMana}";
+            Hold("mana reading stuck");
             return;
         }
 
@@ -2709,6 +2792,9 @@ public partial class BuffManager : IDisposable
             // buffed when it wasn't and never retried the known tier.
 
             if (diagnose) _host.Log($"[FR] CAST '{buffBaseName}' resolvedSpellId={spellId} (pending now set)");
+            // The mana each buff went out at: the reading the floor and the reserve judged.
+            NoteBuffCastMana(SpellManaCost(spellId));
+            _host.Log($"[Buff] mana {_vitals.CurrentMana}/{_vitals.MaxMana} ({_vitals.ManaPct}%) before {spellInfo?.Name ?? buffBaseName} (cost {SpellManaCost(spellId)}, reserve {ManaReserve()}, Get Mana At {_settings.GetManaAt}%)");
             bool fast = _fastChainTick;
             if (fast)
                 _host.Log($"[BuffChain] '{spellInfo?.Name ?? buffBaseName}' goes without waiting for the animation: {_fastChainWhy}");
