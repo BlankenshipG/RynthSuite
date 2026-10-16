@@ -65,6 +65,8 @@ internal sealed class IltProgression : IIltFeature
     private bool _augAutoTried;
     /// <summary>Second Refresh current while /aug is already queued or in flight (UB coalesces the same way).</summary>
     private bool _augRefreshAgain;
+    /// <summary>One silent retry after the login probe left Current empty (chat-hold / ArmsIdle race).</summary>
+    private bool _augProbeRetryDone;
     /// <summary>Passive /aug window: accept AugLine chat until this tick (like T11's report parser).</summary>
     private long _augPassiveUntilMs;
 
@@ -113,7 +115,8 @@ internal sealed class IltProgression : IIltFeature
             _augStatus = "/aug is off for this world";
             return;
         }
-        // Coalesce: a click during an in-flight /aug runs again when that capture finishes (UB).
+        // Coalesce: a click during an in-flight /aug (login probe or a prior Refresh) runs again
+        // when that capture finishes — including via AfterExternalAugCapture for the probe.
         if (_ctx.Capture.IsPending("/aug"))
         {
             _augRefreshAgain = true;
@@ -121,15 +124,16 @@ internal sealed class IltProgression : IIltFeature
             return;
         }
         _augStatus = "loading...";
-        _augPassiveUntilMs = IltHubContext.NowMs + 20_000; // also accept lines if capture finishes early
+        _augPassiveUntilMs = IltHubContext.NowMs + 30_000; // also accept lines if capture finishes early
         _ctx.Capture.Enqueue(new IltChatRequest
         {
             Command = "/aug",
             IsResponseLine = t => t.StartsWith("---") || t.Contains("Augmentation Levels", StringComparison.OrdinalIgnoreCase) || IltParse.AugLine.IsMatch(t),
             // Idle must not start on the banner alone — chat-hold / pump lag used to finish with 0 level lines.
             ArmsIdle = t => IltParse.AugLine.IsMatch(t),
-            IdleEndMs = 2000,
-            FirstLineTimeoutMs = 15000,
+            IdleEndMs = 2500,
+            // Login + chat-hold backlog can push Creature: past the old 15s first-line window.
+            FirstLineTimeoutMs = 30_000,
             Eat = true,
             OnComplete = r =>
             {
@@ -148,13 +152,34 @@ internal sealed class IltProgression : IIltFeature
                     if (have == 0)
                         _augStatus = "timed out waiting for /aug level lines";
                 }
-                if (_augRefreshAgain)
-                {
-                    _augRefreshAgain = false;
-                    RequestAugs();
-                }
+                DrainAugRefreshAgain();
             },
         });
+    }
+
+    /// <summary>
+    /// Login probe finished its "/aug" capture (or another path applied lines). Drains a queued
+    /// Refresh current and, if the probe left Current empty, retries once.
+    /// </summary>
+    public void AfterExternalAugCapture()
+    {
+        if (DrainAugRefreshAgain()) return;
+        int have;
+        lock (_augLevels) have = _augLevels.Count;
+        if (have > 0 || _augProbeRetryDone || _ctx.Options.IsOff(IltFeature.Aug)) return;
+        if (_ctx.Capture.IsPending("/aug")) return;
+        _augProbeRetryDone = true;
+        RynthLog.Event(LogEvents.IltAugLoad, "aug probe left Current empty — retrying /aug once");
+        RequestAugs();
+    }
+
+    /// <summary>Runs a coalesced Refresh current if one was queued. Returns true when it did.</summary>
+    private bool DrainAugRefreshAgain()
+    {
+        if (!_augRefreshAgain) return false;
+        _augRefreshAgain = false;
+        RequestAugs();
+        return true;
     }
 
     /// <summary>Parses "/aug" output (also fed from the login probe and passive chat).</summary>
@@ -166,8 +191,26 @@ internal sealed class IltProgression : IIltFeature
         {
             if (TryApplyAugLine(l)) n++;
         }
-        _augStatus = n > 0 ? $"{n} aug types @ {DateTime.Now:t}" : "no aug lines in reply";
-        RynthLog.Trace(LogCat.IltProgression, $"ApplyAugLines done: {_augStatus} (raw lines={lines.Count})");
+        if (n > 0)
+        {
+            _augStatus = $"{n} aug types @ {DateTime.Now:t}";
+            _augPassiveUntilMs = IltHubContext.NowMs + 8_000;
+        }
+        else
+        {
+            bool sawBanner = false;
+            foreach (string l in lines)
+            {
+                if (l.Contains("Augmentation Levels", StringComparison.OrdinalIgnoreCase))
+                { sawBanner = true; break; }
+            }
+            _augStatus = sawBanner
+                ? "no level lines yet (banner only — waiting / retry)"
+                : "no aug lines in reply";
+            // Keep the passive reader open so late Creature: lines still fill Current.
+            if (sawBanner) _augPassiveUntilMs = IltHubContext.NowMs + 15_000;
+        }
+        RynthLog.Event(LogEvents.IltAugLoad, $"ApplyAugLines: {_augStatus} (raw={lines.Count})");
     }
 
     /// <summary>Applies one "/aug" Type: N line. Returns true when a known planner key was updated.</summary>
@@ -249,6 +292,7 @@ internal sealed class IltProgression : IIltFeature
         lock (_augLevels) _augLevels.Clear();
         _augAutoTried = false;
         _augRefreshAgain = false;
+        _augProbeRetryDone = false;
         _augPassiveUntilMs = 0;
         _augStatus = "not loaded";
     }

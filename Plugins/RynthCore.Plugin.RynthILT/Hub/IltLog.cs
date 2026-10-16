@@ -48,6 +48,8 @@ internal static class LogEvents
     public const string IltCommand = "IltHub.Command";
     public const string IltConfirmation = "IltHub.Confirmation";
     public const string IltLogout = "IltHub.Logout";
+    /// <summary>/aug ApplyAugLines outcome (Progress Refresh current / login probe).</summary>
+    public const string IltAugLoad = "IltHub.AugLoad";
 
     /// <summary>Events written as a normal log line; the rest only while their category is traced.</summary>
     internal static readonly Dictionary<string, (LogCat Cat, bool Info)> Catalog = new(StringComparer.Ordinal)
@@ -61,6 +63,7 @@ internal static class LogEvents
         [IltCommand] = (LogCat.IltHub, false),
         [IltConfirmation] = (LogCat.IltHub, false),
         [IltLogout] = (LogCat.IltHub, false),
+        [IltAugLoad] = (LogCat.IltProgression, true),
     };
 }
 

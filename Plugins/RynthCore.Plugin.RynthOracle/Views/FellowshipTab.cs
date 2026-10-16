@@ -53,8 +53,6 @@ internal sealed partial class OracleView
         foreach ((int id, string name, int _) in members)
             if (id == leaderId) leaderName = name;
 
-        // A server that allows more than retail's nine: no limit is shown (its server plugin knows it).
-        bool overRetail = count > MaxFellows;
         w.SeparatorText(f.FellowshipName.Length > 0 ? f.FellowshipName : "Fellowship");
         Field(w, "Leader", leaderName.Length > 0 ? leaderName : "-", 0f, 110f);
         Field(w, "Members", $"{count} / {max}", 300f, 400f);
