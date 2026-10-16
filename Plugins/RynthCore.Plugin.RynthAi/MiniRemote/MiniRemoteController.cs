@@ -278,9 +278,6 @@ internal sealed class MiniRemoteController
                     // The Mini Remote is the Hub's main window.
                     _ctx.Chat(MiniRemoteCommand != null ? MiniRemoteCommand(cmd) : "[Mini Remote] The Mini Remote is not available yet.");
                     return true;
-                case "open" or "tab" when args.Length > 1 && IsBreedingTabName(args[1]):
-                    OpenBreeding(cmd);
-                    return true;
                 case "open" when args.Length > 1 && MiniRemoteTabs.Parse(args[1]) is { } openTab:
                     OpenTab(openTab, args.Length > 2 ? args[2] : "toggle");
                     return true;
@@ -307,7 +304,7 @@ internal sealed class MiniRemoteController
 
     private void PrintHelp()
     {
-        _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)   /ra hub open pets|breeding|crafting [show|hide|toggle]");
+        _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)   /ra hub open pets|crafting [show|hide|toggle]");
         _ctx.Chat("[Mini Remote] /ra quests refresh (quiet /myquests)   /ra pets [show|hide]   Quest list, timers and rewards: RynthOracle (/ro).");
         _ctx.Chat("[Mini Remote] Gear, games, the Guardian, bounties, /ra hub attr ...: Infinite Leaftide, the RynthILT plugin.");
         _ctx.Chat("[Mini Remote] Character and charms: RynthOracle (/ro character). Banking: Global Inventory (/ginv bank). Force a server: /rc diagnostics.");

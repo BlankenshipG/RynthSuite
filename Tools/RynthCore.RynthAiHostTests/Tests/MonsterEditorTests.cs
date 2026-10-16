@@ -45,6 +45,7 @@ internal static class MonsterEditorTests
             GravityWell = true, Imperil = true, Yield = true, Vuln = true, UseArc = true, UseRing = true,
             UseStreak = true, UseBolt = false, UseBlast = true, UseWall = true, ExVuln = "Fire", OffhandId = 2,
             PetDamage = "Cold", CustomDebuffs = "Corrosion Vulnerability Other, Fire Vulnerability Other VII",
+            Kite = "PullAway",
         },
         new PluginRule { Name = "", Category = "Expression only", MatchExpression = "wobjectfindnearestbytemplatetype[1]" },
     };

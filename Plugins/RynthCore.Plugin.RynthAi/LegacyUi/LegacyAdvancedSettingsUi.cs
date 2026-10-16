@@ -580,6 +580,19 @@ internal sealed class LegacyAdvancedSettingsUi
                 DrawEnvironmentThrottleKnobs("missile");
 
                 ImGui.Spacing();
+                ImGui.Text("Pull Away (Kite)");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Pull Distance (m)", ref _settings.KitePullMeters, 3, 100);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("When a monster rule's Kite is Pull away (or Default follows the\n" +
+                                     "DEFAULT row set to Pull away), tag the mob then run until it has\n" +
+                                     "been dragged this many metres from where it stood, then kill it.\n" +
+                                     "Set per mob on the Monsters / Damage panels.");
+                ImGui.Checkbox("Tag Before Fleeing", ref _settings.KiteTagFirst);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Land a hit before running so aggro sticks. Off = flee as soon as locked.");
+
+                ImGui.Spacing();
                 ImGui.Text("Weapon Swaps");
                 ImGui.SetNextItemWidth(150);
                 ImGui.SliderInt("Wait After Target Switch (ms)", ref _settings.WeaponSwapSettleMs, 0, 3000);

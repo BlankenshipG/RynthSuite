@@ -497,6 +497,14 @@ public sealed class LegacyUiSettings
     /// <summary>How long (seconds) a target left for its environment hits is skipped.</summary>
     public int EnvironmentSkipSec = 30;
     /// <summary>
+    /// Pull-away kite (2026-10-16, Combat/KiteModes.cs): how far (metres) to drag a PullAway
+    /// monster from its lock-spot origin before stopping to kill it. Per-mob on/off is
+    /// MonsterRule.Kite (Default follows the DEFAULT row).
+    /// </summary>
+    public int KitePullMeters = 20;
+    /// <summary>Land a hit before fleeing so aggro sticks (Off = run immediately).</summary>
+    public bool KiteTagFirst = true;
+    /// <summary>
     /// Combat and buffing only ever wield weapons from the Items list. With this on (the
     /// default), a character whose Items list has no wand at all may still buff and cast with a
     /// caster from its pack (by object class, never by name). Any listed wand turns it off.
@@ -845,6 +853,9 @@ public sealed class MonsterRule
     /// AttackPowerModes.All. "Default" = the DEFAULT line's choice (on the DEFAULT line: the global
     /// Melee/Missile Power settings). Rules saved before 2026-10-12 load as Default.</summary>
     public string AttackPower { get; set; } = AttackPowerModes.Default;
+    /// <summary>Combat pull-away for this rule: one of KiteModes.All. "Default" = the DEFAULT
+    /// line's choice (on the DEFAULT line: Off). Rules saved before 2026-10-16 load as Default.</summary>
+    public string Kite { get; set; } = "Default";
 }
 
 public sealed class BuffRule
@@ -1093,6 +1104,9 @@ public sealed class SettingsBridgePayload
     public int? EnvironmentApproachMeters { get; set; }
     public int? EnvironmentMinDistance { get; set; }
     public int? EnvironmentSkipSec { get; set; }
+    // Pull-away kite (2026-10-16). Null = sender without these controls; leave plugin values alone.
+    public int? KitePullMeters { get; set; }
+    public bool? KiteTagFirst { get; set; }
     // Weapon swaps (only when the sender includes them).
     public int? WeaponSwapSettleMs { get; set; }
     public int? WeaponSwapMinHealthPct { get; set; }

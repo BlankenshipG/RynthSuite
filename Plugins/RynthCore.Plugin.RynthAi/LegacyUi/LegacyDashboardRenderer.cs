@@ -973,6 +973,9 @@ internal sealed partial class LegacyDashboardRenderer
             // would reset every rule to Default: keep each rule's own (same name and expression).
             if (json.IndexOf("\"AttackPower\"", StringComparison.OrdinalIgnoreCase) < 0)
                 CarryAttackPower(_settings.MonsterRules, incoming);
+            // Same for kite (2026-10-16): an older Monsters panel omits Kite and would wipe PullAway.
+            if (json.IndexOf("\"Kite\"", StringComparison.OrdinalIgnoreCase) < 0)
+                CarryKite(_settings.MonsterRules, incoming);
 
             _settings.MonsterRules = incoming;
             SaveMonstersFile();
@@ -990,6 +993,19 @@ internal sealed partial class LegacyDashboardRenderer
                 string.Equals(o.Name, r.Name, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(o.MatchExpression ?? "", r.MatchExpression ?? "", StringComparison.OrdinalIgnoreCase));
             if (old != null) r.AttackPower = old.AttackPower;
+        }
+    }
+
+    /// <summary>Copies Kite from <paramref name="current"/> onto the matching rules of
+    /// <paramref name="incoming"/> (same Name and MatchExpression, case-insensitive).</summary>
+    internal static void CarryKite(List<MonsterRule> current, List<MonsterRule> incoming)
+    {
+        foreach (var r in incoming)
+        {
+            var old = current.FirstOrDefault(o =>
+                string.Equals(o.Name, r.Name, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(o.MatchExpression ?? "", r.MatchExpression ?? "", StringComparison.OrdinalIgnoreCase));
+            if (old != null) r.Kite = old.Kite;
         }
     }
 
@@ -1082,13 +1098,12 @@ internal sealed partial class LegacyDashboardRenderer
                 EnvironmentApproachMeters  = s.EnvironmentApproachMeters,
                 EnvironmentMinDistance     = s.EnvironmentMinDistance,
                 EnvironmentSkipSec         = s.EnvironmentSkipSec,
+                KitePullMeters             = s.KitePullMeters,
+                KiteTagFirst               = s.KiteTagFirst,
                 WeaponSwapSettleMs         = s.WeaponSwapSettleMs,
                 WeaponSwapMinHealthPct     = s.WeaponSwapMinHealthPct,
                 WeaponSwapMinGainPct       = s.WeaponSwapMinGainPct,
                 // Spell Combat
-                WeaponSwapSettleMs         = s.WeaponSwapSettleMs,
-                WeaponSwapMinHealthPct     = s.WeaponSwapMinHealthPct,
-                WeaponSwapMinGainPct       = s.WeaponSwapMinGainPct,
                 SpellCastIntervalMs        = s.SpellCastIntervalMs,
                 AttackSpellIntervalMs      = s.AttackSpellIntervalMs,
                 CastDispelSelf             = s.CastDispelSelf,
@@ -1337,13 +1352,12 @@ internal sealed partial class LegacyDashboardRenderer
             if (p.EnvironmentApproachMeters is int envStep)   s.EnvironmentApproachMeters = envStep;
             if (p.EnvironmentMinDistance is int envMinDist)   s.EnvironmentMinDistance = envMinDist;
             if (p.EnvironmentSkipSec is int envSkip)          s.EnvironmentSkipSec = envSkip;
+            if (p.KitePullMeters is int kitePull)             s.KitePullMeters = Math.Clamp(kitePull, 3, 100);
+            if (p.KiteTagFirst is bool kiteTag)               s.KiteTagFirst = kiteTag;
             if (p.WeaponSwapSettleMs is int wsSettle)         s.WeaponSwapSettleMs = Math.Clamp(wsSettle, 0, 3000);
             if (p.WeaponSwapMinHealthPct is int wsHealth)     s.WeaponSwapMinHealthPct = Math.Clamp(wsHealth, 0, 100);
             if (p.WeaponSwapMinGainPct is int wsGain)         s.WeaponSwapMinGainPct = Math.Clamp(wsGain, 0, 200);
             // Spell Combat
-            if (p.WeaponSwapSettleMs is int wsSettle)         s.WeaponSwapSettleMs = Math.Clamp(wsSettle, 0, 3000);
-            if (p.WeaponSwapMinHealthPct is int wsHealth)     s.WeaponSwapMinHealthPct = Math.Clamp(wsHealth, 0, 100);
-            if (p.WeaponSwapMinGainPct is int wsGain)         s.WeaponSwapMinGainPct = Math.Clamp(wsGain, 0, 200);
             s.SpellCastIntervalMs        = p.SpellCastIntervalMs;
             if (p.AttackSpellIntervalMs is int attackDelay) s.AttackSpellIntervalMs = attackDelay;   // absent = unchanged
             s.CastDispelSelf             = p.CastDispelSelf;
@@ -1906,6 +1920,8 @@ internal sealed partial class LegacyDashboardRenderer
         dst.EnvironmentApproachMeters = tmp.EnvironmentApproachMeters;
         dst.EnvironmentMinDistance   = tmp.EnvironmentMinDistance;
         dst.EnvironmentSkipSec       = tmp.EnvironmentSkipSec;
+        dst.KitePullMeters           = Math.Clamp(tmp.KitePullMeters, 3, 100);
+        dst.KiteTagFirst             = tmp.KiteTagFirst;
         dst.WeaponSwapSettleMs       = Math.Clamp(tmp.WeaponSwapSettleMs, 0, 3000);
         dst.WeaponSwapMinHealthPct   = Math.Clamp(tmp.WeaponSwapMinHealthPct, 0, 100);
         dst.WeaponSwapMinGainPct     = Math.Clamp(tmp.WeaponSwapMinGainPct, 0, 200);

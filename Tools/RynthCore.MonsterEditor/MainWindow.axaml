@@ -255,6 +255,18 @@
                     </DataTemplate></DataGridTemplateColumn.CellEditingTemplate>
                 </DataGridTemplateColumn>
 
+                <!-- Kite / pull-away -->
+                <DataGridTemplateColumn Header="Kite" Width="90" MinWidth="70">
+                    <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                        <TextBlock Text="{Binding Kite}" Padding="3,1" VerticalAlignment="Center"
+                                   ToolTip.Tip="Default = DEFAULT row. Off = fight in place. PullAway = tag then run until pulled clear, then kill."/>
+                    </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                    <DataGridTemplateColumn.CellEditingTemplate><DataTemplate>
+                        <ComboBox ItemsSource="{Binding $parent[Window].((local:MainWindow)DataContext).KiteOptions}"
+                                  SelectedItem="{Binding Kite, Mode=TwoWay}"/>
+                    </DataTemplate></DataGridTemplateColumn.CellEditingTemplate>
+                </DataGridTemplateColumn>
+
                 <!-- Delete -->
                 <DataGridTemplateColumn Header="Del" Width="34" CanUserResize="False" CanUserSort="False">
                     <DataGridTemplateColumn.CellTemplate><DataTemplate>

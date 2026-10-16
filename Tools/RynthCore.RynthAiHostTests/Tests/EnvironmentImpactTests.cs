@@ -330,6 +330,17 @@ internal static class EnvironmentImpactTests
         Check.Eq(AttackPowerModes.Effective(new MonsterRule { Name = "Drudge", AttackPower = "High" }, def), "High", "its own choice wins");
         Check.Eq(AttackPowerModes.Effective(null, null), "Default", "no rules: the global settings");
         Check.Eq(new MonsterRule().AttackPower, "Default", "a new rule (and an old file) is Default");
+
+        // Pull-away kite (2026-10-16): Default → DEFAULT row → Off on that row.
+        Check.Eq(KiteModes.Normalize("pull away"), KiteModes.PullAway, "hand-typed PullAway");
+        Check.Eq(KiteModes.Normalize(null), KiteModes.Default, "missing kite: Default");
+        var kiteDef = new MonsterRule { Name = "Default", Kite = KiteModes.PullAway };
+        Check.Eq(KiteModes.Effective(new MonsterRule { Name = "Drudge" }, kiteDef), KiteModes.PullAway, "a Default rule follows the DEFAULT kite");
+        Check.Eq(KiteModes.Effective(new MonsterRule { Name = "Drudge", Kite = KiteModes.Off }, kiteDef), KiteModes.Off, "its own kite wins");
+        Check.Eq(KiteModes.Effective(kiteDef, kiteDef), KiteModes.PullAway, "DEFAULT row PullAway is PullAway");
+        Check.Eq(KiteModes.Effective(new MonsterRule { Name = "Default" }, new MonsterRule { Name = "Default" }), KiteModes.Off, "DEFAULT Default means Off");
+        Check.True(KiteModes.WantsPullAway(new MonsterRule { Name = "X" }, kiteDef), "WantsPullAway follows DEFAULT");
+        Check.Eq(new MonsterRule().Kite, "Default", "a new rule (and an old file) is Default kite");
     }
 
     private static void PowerCarriedOver()

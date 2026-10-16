@@ -2234,6 +2234,7 @@ public partial class CombatManager : IDisposable
             _host.Log($"[RynthAi] DropTarget 0x{activeTargetId:X8}: {reason} [{DescribeTargetPos(activeTargetId)}]");
         activeTargetId = 0;
         _lockedTargetId = 0;
+        EndKite("target dropped");
         EndEnvironmentApproach("target dropped");
         _envPendingTargetId = 0;
         // A turn held toward the dropped target must be let go, or the character keeps
@@ -2989,7 +2990,7 @@ public partial class CombatManager : IDisposable
                 ForgetScanned(activeTargetId);
                 DropTarget("hp=0");
             }
-            else if (target != null &&
+            else if (target != null && !KiteActive &&
                      _worldFilter.Distance(_host.GetPlayerId() == 0 ? 0 : (int)_host.GetPlayerId(), activeTargetId) > disengageLimit)
                 DropTarget("out of range");
             // If target == null here it's a transient world-filter miss — keep the lock,
@@ -3109,6 +3110,10 @@ public partial class CombatManager : IDisposable
         // step-back — instead of dropping to peace and restarting the approach.
         double currentDist = _worldFilter.Distance(
             _host.GetPlayerId() == 0 ? 0 : (int)_host.GetPlayerId(), activeTargetId);
+        // Pull-away kite runs before the disengage gate: fleeing intentionally stretches
+        // range, and the kite itself waits for catch-up rather than idling here.
+        if (RunKite(targetObj, currentDist))
+            return true;
         if (currentDist > disengageLimit)
             return true;
 
@@ -3946,6 +3951,7 @@ public partial class CombatManager : IDisposable
                 _wasMacroRunning = false;
                 ClearCombatTurnMotions();
                 ResetEnvironmentImpact("macro stopped");
+                ResetKite("macro stopped");
             }
             return;
         }
@@ -3957,6 +3963,8 @@ public partial class CombatManager : IDisposable
         // let go of an approach Think stopped driving.
         try { PollEnvironmentImpact(); }
         catch (Exception ex) { _host.Log($"[EnvImpact] poll crashed: {ex.Message}"); }
+        try { PollKite(); }
+        catch (Exception ex) { _host.Log($"[Kite] poll crashed: {ex.Message}"); }
 
         // A combat mode change ends the server's attack (HandleActionChangeCombatMode →
         // HandleActionCancelAttack), so out of Melee/Missile there is nothing bound to release.
@@ -4038,6 +4046,8 @@ public partial class CombatManager : IDisposable
     {
         if (_scannedTargets.Count == 0) return;
         if (TryLockForcedTarget()) return;   // Target lock (/ra targetlock): CombatManager.TargetLock.cs
+        // Pull-away in progress: keep the incumbent until the kite ends (do not switch mid-flee).
+        if (KiteActive && _lockedTargetId != 0) return;
         // Boost Loot Priority: the next target waits for the last kill's corpse. Without this the
         // next lock went out a few ms after each kill, 1-3 s before ACE creates the corpse, so the
         // arbiter always saw combat engaged and corpses were looted in batches (2026-10-14).

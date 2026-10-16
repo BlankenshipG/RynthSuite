@@ -899,6 +899,23 @@ internal sealed class PetsTab
     /// <summary>Shows the Breeding sub-tab on the next frame (any thread).</summary>
     public void SelectBreeding() => _selectBreeding = true;
 
+    /// <summary>Whether auto siphon-lens capture is on (Mini Remote Options / Pets roster).</summary>
+    public bool AutoCaptureEnabled
+    {
+        get => S.AutoCaptureEnabled;
+        set => S.AutoCaptureEnabled = value;
+    }
+
+    /// <summary>Selected siphon lens index (<see cref="PetCaptureRules.LensNames"/>).</summary>
+    public int CaptureLensIndex
+    {
+        get => S.CaptureLensIndex;
+        set => S.CaptureLensIndex = value;
+    }
+
+    /// <summary>Live auto-capture status line for the Mini Remote capture row.</summary>
+    public string CaptureStatus => _captureStatus;
+
     /// <summary>
     /// The Pets tab: the universal Roster, and Breeding (RynthILT's breeding tracker, section
     /// "pets-breeding", the same tracker as RynthOracle's Pet Breeding tab).

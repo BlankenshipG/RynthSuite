@@ -579,7 +579,7 @@ internal sealed class HudController
     /// Mini Remote drawer, or with <paramref name="window"/> the engine's Mini Remote window)
     /// and returns the content size it wants. Render thread.
     /// </summary>
-    public System.Numerics.Vector2 RenderEmbedded(bool window = false, bool tabs = true)
+    public System.Numerics.Vector2 RenderEmbedded(bool window = false, bool tabs = true, bool popped = false)
     {
         long now = NowMs;
         System.Threading.Interlocked.Exchange(ref _embeddedDrawnAt, now);
@@ -587,7 +587,7 @@ internal sealed class HudController
         int pushed = LegacyDashboardRenderer.PushDashboardStyle();
         try
         {
-            return _miniRemote.RenderEmbedded(window, tabs);
+            return _miniRemote.RenderEmbedded(window, tabs, popped);
         }
         finally
         {

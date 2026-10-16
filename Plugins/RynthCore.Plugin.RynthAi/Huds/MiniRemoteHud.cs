@@ -11,8 +11,9 @@
 // Quest Timers and Fellowship, Skills, Inventory, Item Count, Inventory HUDs: windows every server
 // has), then "Server: <name>", i.e. the installed server plugins' windows for the world you're on,
 // which RynthCore sends (ServerMenuModel), or a link to RynthCore's Options > Diagnostics (where a
-// server is forced) when none matches. The Options button opens RynthAi Settings; right-click it for
-// the Mini Remote's own section/layout settings.
+// server is forced) when none matches. Options: docked left-click opens RynthAi Settings
+// (right-click = Mini Remote section/layout popup); undocked left-click opens that expanded
+// Options popup. Float / Dock next to Options (and in the popup) call /rc miniremote undock|dock.
 // The V/H button stacks the sections (vertical) or lays them out in three columns (horizontal).
 //
 // Remote sections (each can be hidden from the Options menu):
@@ -74,6 +75,7 @@ internal sealed class MiniRemoteHud
     private bool _columnOpen; // horizontal layout: a column was already started this frame (next one goes SameLine)
     private bool _embedded;   // true only inside RenderEmbedded (an engine surface)
     private bool _inWindow;   // with _embedded: the engine's Mini Remote window, not the dashboard drawer
+    private bool _popped;     // engine Mini Remote is in its own floating window (:popout)
     // A tab switch asked for by a command or the engine (any thread), applied by the next tab bar;
     // null = none. Starts as the saved tab so the first tab bar restores it.
     private string? _pendingTab;
@@ -139,12 +141,13 @@ internal sealed class MiniRemoteHud
     /// themselves from the result) instead of a window of their own. Returns the content size it
     /// wants: the selected tab's width, and the height drawn.
     /// </summary>
-    public Vector2 RenderEmbedded(bool window = false, bool tabs = true)
+    public Vector2 RenderEmbedded(bool window = false, bool tabs = true, bool popped = false)
     {
         var s = _hud.State;
         _slotMenuIndex = -1;
         _embedded = true;
         _inWindow = window;
+        _popped = popped;
         float startY = ImGui.GetCursorPosY();
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
         try
@@ -166,6 +169,7 @@ internal sealed class MiniRemoteHud
             _slotMenuIndex = -1;
             _embedded = false;
             _inWindow = false;
+            _popped = false;
         }
     }
 
@@ -308,7 +312,7 @@ internal sealed class MiniRemoteHud
         float colW = ColumnWidth(s);
         if (!s.MiniRemoteHorizontal) return colW;
         int cols = 0;
-        if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet) cols++;
+        if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet || s.MiniShowCapture) cols++;
         if (s.MiniShowGems || ShowToggles(s)) cols++;
         if (s.MiniShowBank || s.MiniShowRebuff || s.MiniShowTranslate || s.MiniShowGuardian) cols++;
         cols = Math.Max(1, cols);
@@ -317,7 +321,7 @@ internal sealed class MiniRemoteHud
 
     // ── Layout ──────────────────────────────────────────────────────────────
 
-    /// <summary>[V/H] and [Options] buttons. Fixed widths so the auto-resizing window can't grow from them.</summary>
+    /// <summary>[V/H], [Options], and (engine window) Dock/Float buttons. Fixed widths so auto-resize can't grow from them.</summary>
     private void RenderHeaderRow(HudState s)
     {
         if (ImGui.Button((s.MiniRemoteHorizontal ? "H" : "V") + "##mrlayout", new Vector2(HeaderButtonWidth, 0)))
@@ -325,15 +329,34 @@ internal sealed class MiniRemoteHud
         if (ImGui.IsItemHovered())
             SafeImGui.SetTooltip(s.MiniRemoteHorizontal ? "Horizontal: sections in columns. Click to stack them." : "Vertical: sections stacked. Click to lay them out in columns.");
         ImGui.SameLine();
-        // Left-click: RynthAi Settings. Right-click: Mini Remote section/layout popup (RenderOptions).
+        // Undocked: left-click opens the expanded Mini Remote Options popup (sections / layout).
+        // Docked: left-click opens RynthAi Settings; right-click always opens the Options popup.
         if (ImGui.Button("Options##mropts", new Vector2(HeaderButtonWidth, 0)))
         {
-            if (_hud.Host.HasInvokeChatParser) _hud.RunEngineCommand(MovedTabs.Settings);
-            else _openOptions = true;   // no chat parser: fall back to the Mini Remote popup
+            if (_popped || !_hud.Host.HasInvokeChatParser)
+                _openOptions = true;
+            else
+                _hud.RunEngineCommand(MovedTabs.Settings);
         }
         if (ImGui.IsItemClicked(ImGuiMouseButton.Right)) _openOptions = true;
         if (ImGui.IsItemHovered())
-            SafeImGui.SetTooltip("Open RynthAi Settings (Advanced Settings).\nRight-click: Mini Remote sections, layout, slot size.");
+        {
+            SafeImGui.SetTooltip(_popped
+                ? "Mini Remote sections, layout, slot size (undocked).\nSettings is in this Options menu."
+                : "Open RynthAi Settings (Advanced Settings).\nRight-click: Mini Remote sections, layout, slot size.\nUse Float to undock for a larger Options window.");
+        }
+        // Engine Mini Remote window only: dock / undock without hunting the title ↗.
+        if (_inWindow && _hud.Host.HasInvokeChatParser)
+        {
+            ImGui.SameLine();
+            string dockLabel = _popped ? "Dock" : "Float";
+            if (ImGui.Button(dockLabel + "##mrdock", new Vector2(HeaderButtonWidth, 0)))
+                _hud.RunEngineCommand(_popped ? "/rc miniremote dock" : "/rc miniremote undock");
+            if (ImGui.IsItemHovered())
+                SafeImGui.SetTooltip(_popped
+                    ? "Dock Mini Remote back into the game window (/rc miniremote dock)."
+                    : "Undock Mini Remote into a floating window for expanded Options (/rc miniremote undock).");
+        }
     }
 
     private void RenderVertical(HudState s, MiniRemoteController? remote)
@@ -353,7 +376,7 @@ internal sealed class MiniRemoteHud
     {
         float colW = ColumnWidth(s);
         _columnOpen = false;
-        if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet)
+        if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet || s.MiniShowCapture)
         {
             BeginColumn("##mrcolstatus", colW);
             RenderStatusSections(s, remote);
@@ -409,6 +432,7 @@ internal sealed class MiniRemoteHud
         if (s.MiniShowStats) RenderStats(remote);
         if (s.MiniShowTarget) RenderTarget(combat);
         if (s.MiniShowPet) RenderPet(remote, combat);
+        if (s.MiniShowCapture) RenderCapture(remote);
         if (s.MiniShowStats) RenderStatButtons(remote);
     }
 
@@ -547,6 +571,42 @@ internal sealed class MiniRemoteHud
         ImGui.TextUnformatted(name);
         var col = status switch { "Ready" => ColReady, "Out" => ColOut, "Healing" => ColBusy, _ => ColEmpty };
         SafeImGui.TextColored(col, status);
+    }
+
+    /// <summary>
+    /// ILT siphon-lens auto-capture: same enable / lens as Pets > Monster capture, on the Remote
+    /// so Options > Pet capture can show it without opening the Pets tab.
+    /// </summary>
+    private static void RenderCapture(MiniRemoteController? remote)
+    {
+        if (!IltActive(remote))
+        {
+            ImGui.TextDisabled("Capture: ILT only");
+            return;
+        }
+        var pets = remote!.Pets;
+        bool captureOff = remote.Ilt.IsOff(RynthIltHub.FeatureMonsterCapture);
+        ImGui.BeginDisabled(captureOff);
+        bool en = pets.AutoCaptureEnabled;
+        if (ImGui.Checkbox("Auto-capture##mrcapture", ref en))
+            pets.AutoCaptureEnabled = en;
+        if (ImGui.IsItemHovered())
+        {
+            SafeImGui.SetTooltip(
+                "Uses the selected siphon lens on the nearest attackable creature within 5 m once it is\n" +
+                "at or below 20% health or under 20 HP (ACECustom MonsterCapture). Asheron's Lens skips\n" +
+                "the health gate. Same setting as Mini Remote > Pets > Monster capture.");
+        }
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(110);
+        int lens = Math.Clamp(pets.CaptureLensIndex, 0, PetCaptureRules.LensNames.Length - 1);
+        if (ImGui.Combo("##mrcapturelens", ref lens, PetCaptureRules.LensNames, PetCaptureRules.LensNames.Length))
+            pets.CaptureLensIndex = lens;
+        ImGui.EndDisabled();
+        if (captureOff)
+            SafeImGui.TextDisabled("Capture disabled on this server");
+        else
+            SafeImGui.TextDisabled(pets.CaptureStatus);
     }
 
     private static void RenderSummon(MiniRemoteController? remote, CombatHudSnapshot c)
@@ -800,6 +860,7 @@ internal sealed class MiniRemoteHud
         Flag("Session stats", ref s.MiniShowStats);
         Flag("Attack target", ref s.MiniShowTarget);
         Flag("Pet / summon", ref s.MiniShowPet);
+        Flag("Pet capture", ref s.MiniShowCapture);
         Flag("Item slots", ref s.MiniShowGems);
         // The drawer's dashboard has these switches already; the setting is for the windows.
         if (!InDrawer) Flag("Toggles", ref s.MiniShowToggles);
@@ -812,6 +873,21 @@ internal sealed class MiniRemoteHud
         RenderSlotSizeSlider(s);
         if (embedded && _inWindow)
         {
+            // Docked Options used to jump straight to Settings; undocked left-click opens this
+            // popup, so keep a Settings entry here.
+            if (_popped && _hud.Host.HasInvokeChatParser
+                && ImGui.MenuItem("RynthAi Settings...", MovedTabs.Settings))
+                _hud.RunEngineCommand(MovedTabs.Settings);
+            if (_hud.Host.HasInvokeChatParser)
+            {
+                if (ImGui.MenuItem(_popped ? "Dock Mini Remote" : "Undock Mini Remote",
+                        _popped ? "/rc miniremote dock" : "/rc miniremote undock"))
+                    _hud.RunEngineCommand(_popped ? "/rc miniremote dock" : "/rc miniremote undock");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(_popped
+                        ? "Dock back into the game window."
+                        : "Pop out so this Options menu has more room.");
+            }
             if (ImGui.MenuItem("Inventory HUDs setup...")) s.ShowSetup = true;
         }
         else if (embedded)

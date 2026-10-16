@@ -23,6 +23,7 @@ public class MonsterRule : INotifyPropertyChanged
     private int _offhandId;
     private int _preferredAmmoItemId;
     private string _petDamage = "PAuto";
+    private string _kite = "Default";
 
     public string Name        { get => _name;        set { _name        = value; OnPropertyChanged(); } }
     /// <summary>The plugin's rule group label. Kept and editable here (before 2026-10-05 an
@@ -58,6 +59,8 @@ public class MonsterRule : INotifyPropertyChanged
     /// <summary>Optional loose ammo stack id for missile combat while this rule matches (0 = auto).</summary>
     public int    PreferredAmmoItemId { get => _preferredAmmoItemId; set { _preferredAmmoItemId = value; OnPropertyChanged(); } }
     public string PetDamage   { get => _petDamage;   set { _petDamage   = value; OnPropertyChanged(); } }
+    /// <summary>Pull-away kite: Default (follow DEFAULT row), Off, or PullAway. RynthAi KiteModes.</summary>
+    public string Kite        { get => _kite;        set { _kite        = value ?? "Default"; OnPropertyChanged(); } }
 
     /// <summary>Every field in the file this class doesn't know (e.g. the plugin's CustomDebuffs,
     /// or one added later), written back unchanged.</summary>
@@ -94,6 +97,7 @@ public class MonsterRule : INotifyPropertyChanged
             OffhandId           = _offhandId,
             PreferredAmmoItemId = _preferredAmmoItemId,
             PetDamage           = _petDamage,
+            Kite                = _kite,
         };
     }
 
@@ -122,6 +126,7 @@ public class MonsterRule : INotifyPropertyChanged
         OffhandId           = src.OffhandId;
         PreferredAmmoItemId = src.PreferredAmmoItemId;
         PetDamage           = src.PetDamage;
+        Kite                = src.Kite;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
