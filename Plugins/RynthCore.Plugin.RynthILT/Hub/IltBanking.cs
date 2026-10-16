@@ -1,7 +1,8 @@
 // IltBanking.cs — ILT banking: /bank balances, deposits, withdrawals, confirmed transfers,
 // transaction log. Originally SilentKelpie's ILT Hub (RynthAi IltHub/); moved to RynthILT 2026-10-13.
-// Render is the Mini Remote's "Banking" tab. The balances and log are also exported to other
-// plugins through "RynthILT.Data" (IltBankExport; their verbs come back through RunVerb).
+// Shown by RynthInventory's Global Inventory "Banking" tab since 2026-10-13 (every character on
+// this server, IltBankExport; the verbs come back through RunVerb). Render is the old Mini
+// Remote "Banking" tab, no longer a tab.
 //
 // Server contract (ACECustom PlayerCommands bank handler, upstream 2026-10-11):
 //   /bank                  → "[BANK] Your balances are:" then "[BANK] Pyreals: N", "Luminance:",
@@ -68,7 +69,7 @@ internal sealed class IltBanking : IIltFeature
     private volatile string _latestResult = string.Empty;
 
     /// <summary>
-    /// Another plugin is showing the balances (a "RynthILT.Data" reader):
+    /// Another plugin is showing the balances (RynthInventory's Banking tab reads "RynthILT.Data"):
     /// the periodic quiet refresh runs as it does while the Mini Remote is open. Pump thread.
     /// </summary>
     public bool ReaderWatching;

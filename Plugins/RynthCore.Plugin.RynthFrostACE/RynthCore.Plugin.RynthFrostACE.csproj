@@ -4,7 +4,8 @@
        is shared (..\Shared\ServerPack\ServerPlugin.props); ServerData.cs holds what is known about the server. -->
   <PropertyGroup>
     <AssemblyName>RynthCore.Plugin.RynthFrostACE</AssemblyName>
-    <Version>0.1.0</Version>
+    <!-- Previous release: 0.1.2. -->
+    <Version>0.1.4</Version>
     <RynthPluginServerId>frostace</RynthPluginServerId>
     <RynthPluginServerName>FrostACE</RynthPluginServerName>
     <RynthPluginServerHosts>172.111.230.127</RynthPluginServerHosts>

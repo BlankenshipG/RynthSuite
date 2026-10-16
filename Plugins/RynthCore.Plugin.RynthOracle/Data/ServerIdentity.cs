@@ -10,9 +10,11 @@ internal static class ServerTags
     public const string Aelrynth = "Aelrynth";
     public const string Conquest = "Conquest";
     public const string Levistras = "Levistras";
+    /// <summary>Infinite Leaftide (ACECustom). Its server rules come from RynthILT ("RynthILT.Server").</summary>
+    public const string InfiniteLeaftide = "InfiniteLeaftide";
 
     /// <summary>Tags with a quest pack (Resources\quests.&lt;tag&gt;.csv) or features.</summary>
-    public static readonly string[] Known = { Aelrynth, Conquest, Levistras };
+    public static readonly string[] Known = { Aelrynth, Conquest, Levistras, InfiniteLeaftide };
 }
 
 /// <summary>
@@ -31,8 +33,9 @@ internal static class ServerTags
 ///      mod's player properties 9101-9103, which only Aelrynth sends.
 /// Aelrynth's live config still names the world "Aeshnidae" (its earlier name); both count.
 /// ConquestAC and Levistras are matched on their world names, as upstream does
-/// (Decal's CharacterFilter.Server). Infinite Leaftide has no RynthOracle pages: its screens are
-/// RynthILT's, so RynthCore's "ilt" server gives no tag here.
+/// (Decal's CharacterFilter.Server). Infinite Leaftide is matched on a world name containing
+/// "Leaftide", or on RynthILT's own verdict (its world list or the character's override) when
+/// RynthILT is loaded.
 /// </summary>
 internal sealed class ServerIdentity
 {
@@ -55,11 +58,12 @@ internal sealed class ServerIdentity
         Set("", "", "not logged in");
     }
 
+    /// <param name="rynthIltSaysIlt">RynthILT's profile reports an ILT world (IltServerLink); false without RynthILT.</param>
     /// <param name="engine">
     /// RynthCore's server list (plugin API v86, ServerStateClient); null on older engines. When there,
     /// it decides: it already applies this character's overrides and the Diagnostics page's pick.
     /// </param>
-    public void Refresh(RynthCoreHost host, uint playerId, EngineServerState? engine = null)
+    public void Refresh(RynthCoreHost host, uint playerId, bool rynthIltSaysIlt = false, EngineServerState? engine = null)
     {
         if (engine != null)
         {
@@ -97,6 +101,11 @@ internal sealed class ServerIdentity
                 tag = ServerTags.Aelrynth;
                 source = "the Aelrynth Bank properties (older engine)";
             }
+        }
+        if (tag.Length == 0 && rynthIltSaysIlt)
+        {
+            tag = ServerTags.InfiniteLeaftide;
+            source = "RynthILT: an Infinite Leaftide world";
         }
         Set(tag, world, source);
     }
@@ -139,6 +148,7 @@ internal sealed class ServerIdentity
     /// <summary>The tag for a RynthCore server id; "" for servers without RynthOracle features.</summary>
     public static string TagForEngineId(string? id) => (id ?? "").Trim().ToLowerInvariant() switch
     {
+        EngineServerState.IltId => ServerTags.InfiniteLeaftide,
         EngineServerState.AelrynthId => ServerTags.Aelrynth,
         "conquest" => ServerTags.Conquest,
         "levistras" => ServerTags.Levistras,
@@ -148,6 +158,7 @@ internal sealed class ServerIdentity
     /// <summary>The RynthCore server id for a tag; "" for none.</summary>
     public static string EngineIdForTag(string? tag) => tag switch
     {
+        ServerTags.InfiniteLeaftide => EngineServerState.IltId,
         ServerTags.Aelrynth => EngineServerState.AelrynthId,
         ServerTags.Conquest => "conquest",
         ServerTags.Levistras => "levistras",
@@ -165,6 +176,9 @@ internal sealed class ServerIdentity
             return ServerTags.Conquest;
         if (w.Equals(ServerTags.Levistras, StringComparison.OrdinalIgnoreCase))
             return ServerTags.Levistras;
+        // "InfiniteLeaftide", "Infinite Leaftide", staging copies: RynthILT's own world rule.
+        if (w.IndexOf("Leaftide", StringComparison.OrdinalIgnoreCase) >= 0)
+            return ServerTags.InfiniteLeaftide;
         return "";
     }
 

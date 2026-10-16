@@ -1033,6 +1033,9 @@ public partial class CombatManager : IDisposable
             // A ghost (the server doesn't have it for us): skipped until it shows it is real.
             if (Ghosts.IsGhost(wo.Id)) { _ghostsSkippedInScan++; continue; }
 
+            // Left for hitting the environment (New target): skipped for EnvironmentSkipSec.
+            if (IsEnvironmentSkipped(wo.Id)) continue;
+
             // Just killed (KillerNotification) but not yet a corpse — skip so we
             // don't re-lock and cast at it during its death animation.
             if (_recentlyKilled.ContainsKey(wo.Id)) continue;
@@ -1135,6 +1138,7 @@ public partial class CombatManager : IDisposable
         _hitAt.Remove(id);
         _blacklistManager.ForgetTarget(id);
         Ghosts.NoteDeleted(id);
+        OnEnvironmentObjectDeleted(objectId);
 
         if (id == activeTargetId || id == _lockedTargetId || id == _lastAttackedTargetId)
             _awaitingCastResolution = false;
@@ -1436,13 +1440,15 @@ public partial class CombatManager : IDisposable
             _damageStore!.RecordTaken(src, name, ElementFromWord(m.Groups["type"].Value), amount);
     }
 
-    /// <summary>A chat line for the damage meter and the stall watchdog.
+    /// <summary>A chat line for the damage meter, the stall watchdog and the environment throttle.
     /// <paramref name="chatType"/> is the line's eChatTypes (-1 = not known).</summary>
     public void HandleChatForDamage(string text, int chatType = -1)
     {
         if (string.IsNullOrEmpty(text)) return;
         // Combat lines come from the server; one in a player's chat type is someone's imitation.
-        if (RynthCore.Plugin.Shared.ChatSource.IsPlayerAuthored(chatType)) return;
+        if (ChatSource.IsPlayerAuthored(chatType)) return;
+        // An arrow into a wall: the environment-impact throttle's missile signal.
+        if (NoteMissileEnvironmentChat(text)) return;
         // A miss is a swing too (stall watchdog). "You evaded X!" is the monster's miss, not ours.
         if (text.IndexOf(" evaded your attack", StringComparison.OrdinalIgnoreCase) > 0)
             NoteSwingEvidence("miss");
@@ -1455,6 +1461,7 @@ public partial class CombatManager : IDisposable
         if (critLine) _lastCritChatAt = now;
 
         if (!CombatText.TryParseOutgoingHit(text, out string victim, out int amount)) return;
+        NoteEnvironmentEvidence();   // a cast that hit something didn't only hit the environment
         bool crit = critLine || (now - _lastCritChatAt).TotalMilliseconds <= CRIT_WINDOW_MS;
 
         // Which monster the line is about. One spell can hurt several (rings, walls, blasts,
@@ -1884,6 +1891,7 @@ public partial class CombatManager : IDisposable
         // Damage / health change on the cast we're judging → that cast HIT.
         if (targetId == _pendingJudgeTargetId)
             _damageSincePendingCast = true;
+        NoteEnvironmentEvidence();
         // Immediate positive feedback on the engaged target clears the streak.
         if (targetId == _lastAttackedTargetId)
             _consecutiveCastMisses = 0;
@@ -1904,6 +1912,7 @@ public partial class CombatManager : IDisposable
         int i = text.IndexOf(" evaded your attack", StringComparison.OrdinalIgnoreCase);
         if (i < 0) i = text.IndexOf(" resists your spell", StringComparison.OrdinalIgnoreCase);
         if (i <= 0) return;
+        NoteEnvironmentEvidence();   // the spell or swing reached a monster
         string who = text.Substring(0, i).Trim();
         if (who.StartsWith("The ", StringComparison.Ordinal)) who = who.Substring(4);
         if (who.Length == 0) return;
@@ -2225,6 +2234,9 @@ public partial class CombatManager : IDisposable
             _host.Log($"[RynthAi] DropTarget 0x{activeTargetId:X8}: {reason} [{DescribeTargetPos(activeTargetId)}]");
         activeTargetId = 0;
         _lockedTargetId = 0;
+        EndKite("target dropped");
+        EndEnvironmentApproach("target dropped");
+        _envPendingTargetId = 0;
         // A turn held toward the dropped target must be let go, or the character keeps
         // spinning until something else happens to release it.
         if (_facingTarget) ClearCombatTurnMotions();
@@ -2727,6 +2739,7 @@ public partial class CombatManager : IDisposable
             int id = _scannedTargets[i].Id;
             if (id == excludeId) continue;
             if (_recentlyKilled.ContainsKey(id)) continue;
+            if (IsEnvironmentSkipped(id)) continue;
             return true;
         }
         return false;
@@ -2977,7 +2990,7 @@ public partial class CombatManager : IDisposable
                 ForgetScanned(activeTargetId);
                 DropTarget("hp=0");
             }
-            else if (target != null &&
+            else if (target != null && !KiteActive &&
                      _worldFilter.Distance(_host.GetPlayerId() == 0 ? 0 : (int)_host.GetPlayerId(), activeTargetId) > disengageLimit)
                 DropTarget("out of range");
             // If target == null here it's a transient world-filter miss — keep the lock,
@@ -3097,7 +3110,16 @@ public partial class CombatManager : IDisposable
         // step-back — instead of dropping to peace and restarting the approach.
         double currentDist = _worldFilter.Distance(
             _host.GetPlayerId() == 0 ? 0 : (int)_host.GetPlayerId(), activeTargetId);
+        // Pull-away kite runs before the disengage gate: fleeing intentionally stretches
+        // range, and the kite itself waits for catch-up rather than idling here.
+        if (RunKite(targetObj, currentDist))
+            return true;
         if (currentDist > disengageLimit)
+            return true;
+
+        // Environment-impact throttle: too many missiles/spells into walls short of this target
+        // stop the attack and move closer or switch target (CombatManager.EnvironmentImpact.cs).
+        if (RunEnvironmentImpact(targetObj, currentDist))
             return true;
 
         // Melee/missile stall safety net (see CombatStallWatchdog). Holds the attack while
@@ -3928,12 +3950,21 @@ public partial class CombatManager : IDisposable
             {
                 _wasMacroRunning = false;
                 ClearCombatTurnMotions();
+                ResetEnvironmentImpact("macro stopped");
+                ResetKite("macro stopped");
             }
             return;
         }
         _wasMacroRunning = true;
 
         LogCombatStateIfChanged();
+
+        // Environment-impact throttle: follow our spell projectiles, judge finished casts, and
+        // let go of an approach Think stopped driving.
+        try { PollEnvironmentImpact(); }
+        catch (Exception ex) { _host.Log($"[EnvImpact] poll crashed: {ex.Message}"); }
+        try { PollKite(); }
+        catch (Exception ex) { _host.Log($"[Kite] poll crashed: {ex.Message}"); }
 
         // A combat mode change ends the server's attack (HandleActionChangeCombatMode →
         // HandleActionCancelAttack), so out of Melee/Missile there is nothing bound to release.
@@ -4015,6 +4046,8 @@ public partial class CombatManager : IDisposable
     {
         if (_scannedTargets.Count == 0) return;
         if (TryLockForcedTarget()) return;   // Target lock (/ra targetlock): CombatManager.TargetLock.cs
+        // Pull-away in progress: keep the incumbent until the kite ends (do not switch mid-flee).
+        if (KiteActive && _lockedTargetId != 0) return;
         // Boost Loot Priority: the next target waits for the last kill's corpse. Without this the
         // next lock went out a few ms after each kill, 1-3 s before ACE creates the corpse, so the
         // arbiter always saw combat engaged and corpses were looted in batches (2026-10-14).
@@ -5814,17 +5847,19 @@ public partial class CombatManager : IDisposable
                 return false;
             }
 
-            float power;
+            // Power: the monster rule's Attack Power (High / Reckless / Variable / Reckless +
+            // Variable), else the global Melee/Missile Power (AttackPowerPlanner.cs).
             int powerPct = isMissile ? _settings.MissileAttackPower : _settings.MeleeAttackPower;
-            if (powerPct < 0)
+            bool recklessTrained = _charSkills == null || _charSkills[AcSkillType.Recklessness].Training >= 2;
+            var powerTarget = _worldFilter[activeTargetId];
+            string powerMode = AttackPowerModes.Effective(GetRuleForTarget(powerTarget), DefaultMonsterRule());
+            float power = AttackPowerModes.Resolve(powerMode, powerPct, _settings.UseRecklessness, recklessTrained,
+                _settings.VariablePowerMin, _settings.VariablePowerMax, PowerRandom);
+            if (powerMode != AttackPowerModes.Default && _powerLoggedTargetId != activeTargetId)
             {
-                power = 1.0f;
-                if (_settings.UseRecklessness && (_charSkills == null || _charSkills[AcSkillType.Recklessness].Training >= 2))
-                    power = 0.8f;
-            }
-            else
-            {
-                power = powerPct / 100f;
+                _powerLoggedTargetId = activeTargetId;
+                _host.Log($"[AttackPower] 0x{targetId:X8} '{powerTarget?.Name}': {powerMode}" +
+                          (recklessTrained ? "" : " (Recklessness untrained: no reckless band)") + $", first attack at {power * 100:0}%");
             }
 
             int uiHeight = isMissile ? _settings.MissileAttackHeight : _settings.MeleeAttackHeight;
@@ -5885,9 +5920,16 @@ public partial class CombatManager : IDisposable
             if (matches) return r;
         }
 
-        return _settings.MonsterRules.FirstOrDefault(
-            m => m.Name.Equals("Default", StringComparison.OrdinalIgnoreCase));
+        return DefaultMonsterRule();
     }
+
+    /// <summary>The Monsters tab's DEFAULT line (the catch-all rule), or null.</summary>
+    private MonsterRule? DefaultMonsterRule() => _settings.MonsterRules.FirstOrDefault(
+        m => m.Name.Equals("Default", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Random source for Variable attack power, [0, 1); tests replace it.</summary>
+    internal Func<double> PowerRandom { get; set; } = Random.Shared.NextDouble;
+    private int _powerLoggedTargetId;
 
     private void AttackWithMagic(WorldObject target)
     {
@@ -6065,6 +6107,10 @@ public partial class CombatManager : IDisposable
                 _pendingOffensiveCastAt    = DateTime.Now;
                 _pendingOffensiveTargetId  = activeTargetId;
                 NoteOffensiveSeq();
+                // Environment-impact throttle: follow this cast's projectiles (rings and walls
+                // don't fly at the target, so they aren't judged).
+                if (!multiTarget)
+                    RegisterCastWatch(activeTargetId, SpellTableStub.GetById(offensiveSpellId)?.Name ?? $"spell {offensiveSpellId}");
 
                 // Tag this cast's weapon + element + tier so the pushed damage event
                 // can be attributed to it, count it for casts-to-kill learning, then

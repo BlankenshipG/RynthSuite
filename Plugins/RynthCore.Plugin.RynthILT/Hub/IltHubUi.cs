@@ -4,20 +4,21 @@
 // Infinite Leaftide items) that read the Hub's state.
 //
 // The ILT sections are tabs of RynthAi's Mini Remote (its MiniRemoteHud draws the tab bar and
-// calls RenderTab through RynthILT.Hub): Banking, Gear, Charms and Games. A tab is offered only
-// while the server reports its feature on. The Character tab left the Mini Remote on 2026-10-13:
+// calls RenderTab through RynthILT.Hub): Gear and Games. A tab is offered only while the server
+// reports its feature on. Character, Charms and Banking left the Mini Remote on 2026-10-13:
 //   - the session rates are RynthCore's Mini Remote "Session Stats" section (RenderRatesSection,
 //     surface "section:ilt-rates"), below RynthAi's one session;
-//   - the character overview and session are RynthOracle's Character tab ("/ro character");
+//   - the Leaftide feature list is RynthOracle's About tab ("Server features", from the profile);
+//   - the charms are RynthOracle's Character tab, the bank balances RynthInventory's Global
+//     Inventory "Banking" tab (both read "RynthILT.Data");
 //   - the "Treat this world as ILT" override and the ILT world names are RynthCore's
 //     Options > Diagnostics server selection only ("/ra hub force" and "/ra hub servers" remain).
-// The /qb list (RynthAi's Quests tab before it moved to RynthOracle) is RynthILT's own "Quests"
-// section on the rail (RenderQuestBonusSection, surface "section:ilt-questbonus").
-// RenderSection draws the ILT pieces inside RynthAi's own surfaces (the Remote tab, the Pets tab,
-// the Mini Remote menu). The Guardian is a RynthCore ILT panel (the bar's ILT button, next to
-// Bounties), drawn through RenderGuardianPanel. Render() keeps the floating extras: the Games HUD and the confirmation
-// modal. Augmentations / Enlightenment / XP planning live on the engine Skills panel. All AC
-// actions go through IltHubContext.Post / Confirm so nothing here touches the game directly.
+// RenderSection draws the ILT pieces inside RynthAi's own surfaces (the Remote tab, the Quests and
+// Pets tabs, the Mini Remote menu). The Guardian is a RynthCore ILT panel (the bar's ILT button,
+// next to Bounties), drawn through RenderGuardianPanel. Render() keeps the floating extras: the
+// Games HUD and the confirmation modal. Augmentations / Enlightenment / XP planning live on the
+// engine Skills panel. All AC actions go through IltHubContext.Post / Confirm so nothing here
+// touches the game directly.
 using System;
 using System.Numerics;
 using ImGuiNET;
@@ -66,10 +67,9 @@ internal sealed class IltHubUi
         }
         switch (section)
         {
-            case IltSection.Banking: _hub.Banking.Render(); break;
             case IltSection.Gear: _hub.Gear.Render(); break;
-            case IltSection.Charms: _hub.CharmsTab.Render(); break;
             case IltSection.Games: _hub.Games.Render(); break;
+            case IltSection.VaultedDungeons: _hub.VaultedDungeons.Render(); break;
             default:
                 // A saved tab id from before the move: say where the section lives now.
                 if (IltSections.MovedCommand(section) is string moved)
@@ -93,21 +93,6 @@ internal sealed class IltHubUi
         }
         _hub.Rates.Render(extrasOnly: true);
         ImGui.TextDisabled("XP planner, Augmentations and Enlightenment: Skills panel > Progression.");
-    }
-
-    /// <summary>
-    /// The quest bonus list (/qb) in RynthILT's own Mini Remote "Quests" section (surface
-    /// "section:ilt-questbonus"); it was a section of RynthAi's Quests tab, which moved to RynthOracle.
-    /// </summary>
-    public void RenderQuestBonusSection()
-    {
-        if (!_ctx.Options.IsIltLikeWorld)
-        {
-            RenderHeader();
-            RenderUnavailable();
-            return;
-        }
-        _hub.QuestBonus.RenderQb();
     }
 
     /// <summary>
@@ -167,8 +152,8 @@ internal sealed class IltHubUi
     /// <summary>A button that opens a moved section's new home (posted: the command runs on the pump).</summary>
     private void MovedLink(IltSection section, string command)
     {
-        const string home = "RynthOracle > Character";
-        SafeImGui.TextDisabled($"{IltSections.Label(section)} moved to {home}; the ILT session rates are in Session Stats.");
+        string home = command == IltSections.GlobalBankCommand ? "Global Inventory > Banking" : "RynthOracle > Character";
+        ImGui.TextDisabled($"{IltSections.Label(section)} moved to {home}.");
         if (ImGui.SmallButton($"Open {home}##moved{(int)section}"))
             _ctx.Post(() => _hub.OpenMoved(section, command));
         if (ImGui.IsItemHovered()) SafeImGui.SetTooltip(command);
@@ -216,7 +201,7 @@ internal sealed class IltHubUi
             ImGui.TextDisabled("Bank: not loaded yet");
             ImGui.SameLine();
             if (ImGui.SmallButton("Load##mrbank")) _ctx.Post(() => _hub.Banking.RequestRefresh(quiet: true));
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Reads your bank balances (/bank, reply hidden). The Banking tab has the details.");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Reads your bank balances (/bank, reply hidden). Global Inventory > Banking (/ginv bank) has the details.");
             BankLink();
             return;
         }
@@ -233,15 +218,14 @@ internal sealed class IltHubUi
         ImGui.EndTable();
     }
 
-    /// <summary>The Bank line's link to RynthILT's own Banking tab (Infinite Leaftide's bank stays RynthILT's).</summary>
+    /// <summary>The Bank line's link to RynthInventory's Global Inventory "Banking" tab (every character here).</summary>
     private void BankLink()
     {
-        if (!_hub.SectionAvailable(IltSection.Banking)) return;
         ImGui.SameLine();
-        if (ImGui.SmallButton("Bank##mrbanklink"))
-            _ctx.Ai.MiniRemoteTab(IltSections.TabId(IltSection.Banking), "show");
+        if (ImGui.SmallButton("Banks##mrbanklink"))
+            _ctx.Post(() => _hub.OpenMoved(IltSection.Banking, IltSections.GlobalBankCommand));
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("The Banking tab: deposits, withdrawals and transfers (/ra hub open banking).");
+            SafeImGui.SetTooltip("Global Inventory > Banking (/ginv bank): deposits, withdrawals, transfers and\nevery character's bank on this server.");
     }
 
     private static void Stat(string label, string value)
@@ -284,8 +268,8 @@ internal sealed class IltHubUi
 
     /// <summary>
     /// RynthILT's own Infinite Leaftide entries, for when RynthCore sends no server list (older
-    /// RynthCore, or its ImGui layer off): the tabs, where Character went, and the Guardian /
-    /// Bounties panels.
+    /// RynthCore, or its ImGui layer off): the tabs, where Character / Charms / Banking went, and
+    /// the Guardian / Bounties panels.
     /// </summary>
     private bool RenderLocalMenu()
     {
@@ -297,8 +281,10 @@ internal sealed class IltHubUi
             if (ImGui.MenuItem(IltSections.Label(section) + "##mrlocal", string.Empty, false, _hub.SectionAvailable(section)))
                 _ctx.Ai.MiniRemoteTab(IltSections.TabId(section), "show");
         }
-        if (ImGui.MenuItem("Character##mrlocal", IltSections.OracleCharacterCommand))
+        if (ImGui.MenuItem("Character and charms##mrlocal", IltSections.OracleCharacterCommand))
             _ctx.Post(() => _hub.OpenMoved(IltSection.Character, IltSections.OracleCharacterCommand));
+        if (ImGui.MenuItem("Banking##mrlocal", IltSections.GlobalBankCommand, false, _hub.SectionAvailable(IltSection.Banking)))
+            _ctx.Post(() => _hub.OpenMoved(IltSection.Banking, IltSections.GlobalBankCommand));
         if (ImGui.MenuItem("Guardian##mrlocal", "/rc guardian", false, _hub.SectionAvailable(IltSection.Guardian)))
             _ctx.Post(() => _hub.OpenEnginePanel("guardian", "Guardian", "show"));
         if (ImGui.MenuItem("Bounties##mrlocal", "/rc bounties"))

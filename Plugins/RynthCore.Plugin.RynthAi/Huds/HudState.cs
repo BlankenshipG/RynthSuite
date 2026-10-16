@@ -38,6 +38,11 @@ public sealed class HudState
     public bool MiniShowTarget = true;
     /// <summary>Pet row: the summon that is out (health, time left), else the next combat essence.</summary>
     public bool MiniShowPet = true;
+    /// <summary>
+    /// Pet capture row (ILT / ACECustom): auto-capture enable, lens pick, and status.
+    /// The same AutoCaptureEnabled setting as Mini Remote > Pets > Monster capture.
+    /// </summary>
+    public bool MiniShowCapture = true;
     public bool MiniShowGems = true;
     public bool MiniShowToggles = true;
     public bool MiniShowBank = true;

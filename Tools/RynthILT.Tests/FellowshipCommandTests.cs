@@ -1,20 +1,23 @@
 using System;
 using System.Linq;
+using RynthCore.Plugin.RynthAi.Huds;
 using RynthCore.Plugin.RynthILT.IltFellowship;
 using RynthCore.Plugin.Shared;
 using RynthCore.RynthAiTests.Harness;
 
 namespace RynthILT.Tests;
 
-// ILT's fellowship commands (IltFellowship/IltFellowshipCommands.cs, ACECustom /fship) and the
-// "servercommands" format they are kept in (Plugins/Shared/ServerCommandShare.cs), checked together.
+// ILT's fellowship commands (IltFellowship/IltFellowshipCommands.cs, ACECustom /fship), the
+// "servercommands" format both plugins compile (Plugins/Shared/ServerCommandShare.cs), and
+// RynthAi's store for it (Huds/ServerCommandModel.cs), checked together.
 internal static class FellowshipCommandTests
 {
     public static void Register(Runner r)
     {
-        r.Add("ilt fellowship: the /fship list round-trips through the servercommands format", RoundTrip);
+        r.Add("ilt fellowship: the /fship list round-trips to RynthAi", RoundTrip);
         r.Add("ilt fellowship: chat lines quote multi-word names and need a name for create", Compose);
         r.Add("ilt fellowship: bad commands and payloads are dropped", Rejects);
+        r.Add("ilt fellowship: RynthAi drops a list that is cleared or stops arriving", Store);
         r.Add("ilt fellowship: RynthCore's verdict decides, else the world name", Active);
     }
 
@@ -81,6 +84,28 @@ internal static class FellowshipCommandTests
         ServerCommand c = ServerCommandShare.Parse(tabbed)!.Commands[0];
         Check.Eq(c.Label, "A B", "tab in a field becomes a space");
         Check.Eq(c.Tooltip, "line one line two", "newline in a field becomes a space");
+    }
+
+    private static void Store()
+    {
+        ServerCommandModel.Clear();
+        long t = 1_000_000;
+        ServerCommandModel.Apply(IltFellowshipCommands.Payload(active: true), t);
+        Check.True(ServerCommandModel.For("fellowship", t + 1000) != null, "current");
+        Check.True(ServerCommandModel.For("FELLOWSHIP", t + 1000) != null, "section id ignores case");
+        Check.True(ServerCommandModel.For("char", t + 1000) == null, "other sections empty");
+        Check.True(ServerCommandModel.For("fellowship", t + ServerCommandModel.StaleMs + 1) == null, "stale after the window");
+
+        ServerCommandModel.Apply(IltFellowshipCommands.Payload(active: true), t + 10_000);
+        Check.True(ServerCommandModel.For("fellowship", t + ServerCommandModel.StaleMs + 1) != null, "a re-send keeps it");
+        ServerCommandModel.Apply(IltFellowshipCommands.Payload(active: false), t + 12_000);
+        Check.True(ServerCommandModel.For("fellowship", t + 12_000) == null, "the clear removes it");
+
+        ServerCommandModel.Apply(IltFellowshipCommands.Payload(active: true), t);
+        ServerCommandModel.Apply("garbage", t);
+        Check.True(ServerCommandModel.For("fellowship", t) != null, "garbage changes nothing");
+        ServerCommandModel.Clear();
+        Check.True(ServerCommandModel.For("fellowship", t) == null, "logout clears");
     }
 
     private static void Active()

@@ -252,6 +252,11 @@ public sealed class LegacyUiSettings
     public double CorpseApproachRangeMin = 2.0;
 
     public bool BoostNavPriority;
+    /// <summary>
+    /// Options > Navigation: show RynthILT's Mini Remote "Vaulted Dungeons" tab on ILT worlds.
+    /// Off by default; the feature still lives in RynthILT and only runs on ILT-like servers.
+    /// </summary>
+    public bool EnableVaultedDungeons;
     public bool BoostLootPriority;
     public bool OpenDoors;
     public float OpenDoorRange = 5.0f;
@@ -466,6 +471,41 @@ public sealed class LegacyUiSettings
     /// </summary>
     public bool UseNativeAttack = false;
     public bool UseRecklessness;
+    /// <summary>
+    /// The range a monster rule's "Variable" attack power picks from, in percent of the bar
+    /// (a new value every swing or shot). "Reckless + Variable" also stays inside the
+    /// Recklessness band (20-80%). See AttackPowerPlanner.
+    /// </summary>
+    public int VariablePowerMin = 50;
+    public int VariablePowerMax = 100;
+
+    // ── Environment hits (2026-10-12, Combat/EnvironmentImpact.cs) ─────────────
+    /// <summary>
+    /// What missile combat does once a target has taken EnvironmentImpactLimit "Your missile
+    /// attack hit the environment." within EnvironmentImpactWindowSec: an EnvironmentResponse
+    /// (0 Off, 1 Move closer, 2 New target, 3 Move closer then new target). Off by default.
+    /// </summary>
+    public int MissileEnvironmentResponse;
+    /// <summary>The same for war/void casts whose projectiles stop short of the target. Off by default.</summary>
+    public int MagicEnvironmentResponse;
+    /// <summary>Environment hits on one target, within the window, that trip the response.</summary>
+    public int EnvironmentImpactLimit = 2;
+    /// <summary>The window (seconds) the hits are counted in.</summary>
+    public int EnvironmentImpactWindowSec = 20;
+    /// <summary>How far (metres) each "move closer" goes toward the target.</summary>
+    public int EnvironmentApproachMeters = 6;
+    /// <summary>Never approaches nearer than this (metres); already this close, a new target is picked.</summary>
+    public int EnvironmentMinDistance = 3;
+    /// <summary>How long (seconds) a target left for its environment hits is skipped.</summary>
+    public int EnvironmentSkipSec = 30;
+    /// <summary>
+    /// Pull-away kite (2026-10-16, Combat/KiteModes.cs): how far (metres) to drag a PullAway
+    /// monster from its lock-spot origin before stopping to kill it. Per-mob on/off is
+    /// MonsterRule.Kite (Default follows the DEFAULT row).
+    /// </summary>
+    public int KitePullMeters = 20;
+    /// <summary>Land a hit before fleeing so aggro sticks (Off = run immediately).</summary>
+    public bool KiteTagFirst = true;
     /// <summary>
     /// Combat and buffing only ever wield weapons from the Items list. With this on (the
     /// default), a character whose Items list has no wand at all may still buff and cast with a
@@ -811,6 +851,13 @@ public sealed class MonsterRule
     /// <summary>Debuffs the player typed in (Damage panel), comma separated: a spell's base
     /// name ("Corrosion Vulnerability Other") casts its best known tier; a full name casts as is.</summary>
     public string CustomDebuffs { get; set; } = "";
+    /// <summary>Melee/missile attack power against the monsters this rule covers: one of
+    /// AttackPowerModes.All. "Default" = the DEFAULT line's choice (on the DEFAULT line: the global
+    /// Melee/Missile Power settings). Rules saved before 2026-10-12 load as Default.</summary>
+    public string AttackPower { get; set; } = AttackPowerModes.Default;
+    /// <summary>Combat pull-away for this rule: one of KiteModes.All. "Default" = the DEFAULT
+    /// line's choice (on the DEFAULT line: Off). Rules saved before 2026-10-16 load as Default.</summary>
+    public string Kite { get; set; } = "Default";
 }
 
 public sealed class BuffRule
@@ -1048,7 +1095,20 @@ public sealed class SettingsBridgePayload
     public bool UseNativeAttack { get; set; }
     public bool SummonPets { get; set; }
     public int PetMinMonsters { get; set; }
-
+    // Variable attack power and the environment-impact throttle (2026-10-12). Null = sent by an
+    // engine without these controls, which leaves the plugin's own values alone.
+    public int? VariablePowerMin { get; set; }
+    public int? VariablePowerMax { get; set; }
+    public int? MissileEnvironmentResponse { get; set; }
+    public int? MagicEnvironmentResponse { get; set; }
+    public int? EnvironmentImpactLimit { get; set; }
+    public int? EnvironmentImpactWindowSec { get; set; }
+    public int? EnvironmentApproachMeters { get; set; }
+    public int? EnvironmentMinDistance { get; set; }
+    public int? EnvironmentSkipSec { get; set; }
+    // Pull-away kite (2026-10-16). Null = sender without these controls; leave plugin values alone.
+    public int? KitePullMeters { get; set; }
+    public bool? KiteTagFirst { get; set; }
     // Weapon swaps (only when the sender includes them).
     public int? WeaponSwapSettleMs { get; set; }
     public int? WeaponSwapMinHealthPct { get; set; }
@@ -1088,6 +1148,8 @@ public sealed class SettingsBridgePayload
 
     // Navigation
     public bool BoostNavPriority { get; set; }
+    /// <summary>Options > Navigation > Vaulted Dungeons (Mini Remote ILT tab gate).</summary>
+    public bool EnableVaultedDungeons { get; set; }
     public float FollowNavMin { get; set; }
     public float NavRingThickness { get; set; }
     public float NavLineThickness { get; set; }
@@ -1098,6 +1160,10 @@ public sealed class SettingsBridgePayload
     public int NavLabelMode { get; set; } = -1;
     public bool? NavGuideLine { get; set; }
     public bool? NavResumeNearest { get; set; }
+    // NavOverlay.TrackBreadcrumbs / ShowRouteMarkers: the Nav panel's "Breadcrumbs" and "Route
+    // overlay" switches, also on Settings > Navigation. Null (an older engine) = unchanged.
+    public bool? TrackBreadcrumbs { get; set; }
+    public bool? ShowRouteOverlay { get; set; }
     public bool OpenDoors { get; set; }
     public float OpenDoorRange { get; set; }
     public bool? OpenDoorsOnPathOnly { get; set; }   // absent (an older profile or plugin) = unchanged

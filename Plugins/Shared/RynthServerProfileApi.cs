@@ -5,10 +5,10 @@
 //  for any plugin that wants the server's settings without drawing the card.
 //  RynthCore says which server is active and which plugin owns it (plugin API
 //  v86, GetServerStateJson: "active", "activePlugin"); the reader then asks that
-//  plugin for this interface (host GetPluginInterface). RynthILT answers it too,
-//  for "ilt" (RynthILT/ProfileInterface.cs).
-//  Compiled into the server plugins, RynthILT and their readers (linked source),
-//  so the layout can't drift.
+//  plugin for this interface (host GetPluginInterface). RynthILT answers its own
+//  "RynthILT.Server" instead (RynthIltServerApi.cs).
+//  Compiled into the server plugins and their readers (linked source), so the
+//  layout can't drift.
 //
 //  Rules (as the other shared interfaces):
 //  - Append-only: new functions go at the end, and Version goes up.
@@ -28,18 +28,6 @@
 //    "botting": "unknown|allowed|restricted|forbidden", "bottingNote": "",
 //    "accountLimit": "", "summary": "",
 //    "facts": [ "..." ], "commands": [ { "command": "/x", "what": "..." } ],
-//    "salvage": [ {                     // the server's own tinkering (the Mini Remote's Crafting tab)
-//      "bench": "melee",                // armor, melee, missile, caster, jewelry, items, trinkets
-//      "material": 52, "kind": "tink|imbue|once", "effect": "...",
-//      "slot": true,                    // counts toward the item's 10 tinks
-//      "nameMatch": "",                 // the bag's name must contain this
-//      // optional (absent = off / the default):
-//      "applied": 370,                  // item int that reads 2 once the row is on it
-//      "prepared": true,                // the bag is first prepared on the tier's Ammunition
-//      "order": 10,                     // apply order, lower first (else imbue, tink, once)
-//      "afterCap": true,                // last, only once the item's tink slots are full
-//      "stackGroup": "x", "stackCap": 10  // rows of one group share this cap per item
-//    } ],
 //    "discord": "", "website": "", "wiki": "", "source": ""
 //  }
 // ============================================================================

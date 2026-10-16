@@ -5,11 +5,12 @@
 // mana / retain. Every retail tinker (imbues too) uses one of the item's 10 tinker slots and the
 // success chance follows RecipeManager.GetTinkerChance (TinkerMath).
 //
-// Server: the connected server's own recipes come from the plugin that owns it (its
-// "RynthServer.Profile" JSON's "salvage" list, read by FromServerPlugin): a server plugin, or
-// RynthILT for Infinite Leaftide. Nothing server-specific lives here. Their chances are the
-// server's: the Crafting runner relies on the confirmation's percent.
-// The player adds their own rows per world (CraftingTabState.CustomByWorld).
+// Server: Infinite Leaftide / ACECustom extras, taken from UB-IT (LeaftideImbueHelper): jewelry
+// rating salvages (Copper, Silver, Green Jade, Tourmaline, Serpentine, Steel), the weapon crit
+// lines (Yellow Garnet, Turquoise, White Quartz, Abyssal-Touched gems, Tourmaline, Wool), Tiger
+// Eye on missile weapons and Leather as the post-cap tink. ILT's recipes live in its database,
+// so their chances are the server's: the Crafting runner relies on the confirmation's percent.
+// Other custom shards add their own rows per world (CraftingTabState.CustomByWorld).
 using System;
 using System.Collections.Generic;
 using RynthCore.Loot;
@@ -25,7 +26,7 @@ internal enum TinkerBench
     Caster,
     Jewelry,
     Items,
-    /// <summary>Trinkets (compass, goggles, scarab...): server salvage, often tier-prepared.</summary>
+    /// <summary>Infinite Leaftide trinkets (compass, goggles, scarab...): tier-prepared salvage.</summary>
     Trinkets,
 }
 
@@ -34,9 +35,14 @@ internal enum TinkerOrigin
 {
     /// <summary>Stock ACE (retail) tinkering.</summary>
     Retail,
+    /// <summary>Infinite Leaftide / ACECustom recipe.</summary>
+    Server,
     /// <summary>A row the player added for this server.</summary>
     Custom,
-    /// <summary>A row the server's own plugin defines (its profile's "salvage" list, ServerPackInfo.Salvage).</summary>
+    /// <summary>
+    /// A row the server's own plugin defines (its profile's "salvage" list, ServerPackInfo.Salvage).
+    /// Kept apart from <see cref="Server"/> so the Leaftide-only planner rules never apply to it.
+    /// </summary>
     Plugin,
 }
 
@@ -47,24 +53,20 @@ internal enum TinkerKind
     Tink,
     /// <summary>One imbue per item (ImbuedEffect): a second imbue of any kind is refused.</summary>
     Imbue,
-    /// <summary>One application (retain, heritage, a server's flag recipes...).</summary>
+    /// <summary>One application, tracked by its own flag (ILT jewelry ratings, retain...).</summary>
     Once,
 }
 
 /// <summary>One salvage a tab can apply.</summary>
 /// <param name="Id">MaterialType (131); <see cref="TinkerCatalog.RendId"/> = the weapon's damage-type rend.</param>
 /// <param name="UsesTinkSlot">Counts toward the 10-tink cap.</param>
-/// <param name="AppliedInt">An int property of the item: the material is on it when it reads 2 (0 = none).</param>
-/// <param name="NameMatch">The bag must have this in its name (server bags that share a material id).</param>
+/// <param name="AppliedInt">ILT flag int: the material is on the item when it reads 2 (0 = none).</param>
+/// <param name="NameMatch">The bag must have this in its name (ILT bags that share a material id).</param>
 /// <param name="Order">Apply order (lower first).</param>
-/// <param name="Prepared">The bag must first be prepared on tier Ammunition: its name then carries the tier.</param>
-/// <param name="AfterCap">Goes on last, and only once the item's tink slots are full.</param>
-/// <param name="StackGroup">Rows with the same group share <paramref name="StackCap"/> per item ("" = none).</param>
-/// <param name="StackCap">The group's combined cap per item.</param>
+/// <param name="Prepared">The bag must first be prepared on tier Ammunition (ILT trinkets): its name then carries the tier.</param>
 internal sealed record TinkerMaterial(
     int Id, string Name, TinkerOrigin Origin, TinkerKind Kind, string Effect, int Order,
-    bool UsesTinkSlot = true, int AppliedInt = 0, string NameMatch = "", int Skill = 0, bool Prepared = false,
-    bool AfterCap = false, string StackGroup = "", int StackCap = 0);
+    bool UsesTinkSlot = true, int AppliedInt = 0, string NameMatch = "", int Skill = 0, bool Prepared = false);
 
 internal static class TinkerCatalog
 {
@@ -91,8 +93,18 @@ internal static class TinkerCatalog
 
     public const int Diamond = 20, Ruby = 38, GromnieHide = 54, Pyreal = 62;
 
-    /// <summary>Prepared salvage tiers: the word in the Ammunition's and the prepared bag's name.</summary>
+    // ILT jewelry flag ints (applied = 2).
+    public const int IntJewelCopper = 370, IntJewelGreenJade = 371, IntJewelSerpentine = 372,
+        IntJewelSilver = 374, IntJewelTourmaline = 375, IntJewelSteel = 376;
+
+    // ILT trinket flag ints (applied = 2).
+    public const int IntTrinketDiamond = 384, IntTrinketRuby = 385, IntTrinketGromnie = 386, IntTrinketPyreal = 387;
+
+    /// <summary>Trinket salvage tiers: the word in the Ammunition's and the prepared bag's name.</summary>
     public static readonly string[] TrinketTiers = { "Minor", "Moderate", "Major" };
+
+    /// <summary>Steel and Serpentine stack on ILT jewelry, at most this many combined.</summary>
+    public const int JewelryStackCap = 10;
 
     /// <summary>The ordinary tinker slots on an item.</summary>
     public const int MaxTinks = 10;
@@ -180,14 +192,66 @@ internal static class TinkerCatalog
         [TinkerBench.Trinkets] = Array.Empty<TinkerMaterial>(),
     };
 
+    private static readonly Dictionary<TinkerBench, TinkerMaterial[]> Server = new()
+    {
+        [TinkerBench.Armor] = Array.Empty<TinkerMaterial>(),
+        [TinkerBench.Melee] = new TinkerMaterial[]
+        {
+            new(YellowGarnet, "Yellow Garnet", TinkerOrigin.Server, TinkerKind.Once, "Biting Strike (no tink slot)", 70, UsesTinkSlot: false),
+            new(Turquoise, "Turquoise", TinkerOrigin.Server, TinkerKind.Once, "Crushing Blow (no tink slot)", 80, UsesTinkSlot: false),
+            new(WhiteQuartz, "White Quartz", TinkerOrigin.Server, TinkerKind.Once, "Cleaving (no tink slot)", 90, UsesTinkSlot: false),
+            new(BlackGarnet, "Abyssal-Touched Gems", TinkerOrigin.Server, TinkerKind.Once, "Crit line (bag of Abyssal-Touched Gems)", 100, NameMatch: "Abyssal"),
+            new(Tourmaline, "Tourmaline", TinkerOrigin.Server, TinkerKind.Once, "Crit line (no tink slot)", 104, UsesTinkSlot: false),
+            new(Wool, "Wool", TinkerOrigin.Server, TinkerKind.Once, "Biting Strike (no tink slot)", 108, UsesTinkSlot: false),
+            new(Leather, "Leather", TinkerOrigin.Server, TinkerKind.Once, "100% tink once the 10 ordinary tinks are on", 995, UsesTinkSlot: false),
+        },
+        [TinkerBench.Missile] = new TinkerMaterial[]
+        {
+            new(YellowGarnet, "Yellow Garnet", TinkerOrigin.Server, TinkerKind.Once, "Biting Strike (no tink slot)", 70, UsesTinkSlot: false),
+            new(Turquoise, "Turquoise", TinkerOrigin.Server, TinkerKind.Once, "Crushing Blow (no tink slot)", 80, UsesTinkSlot: false),
+            new(BlackGarnet, "Abyssal-Touched Gems", TinkerOrigin.Server, TinkerKind.Once, "Crit line (bag of Abyssal-Touched Gems)", 100, NameMatch: "Abyssal"),
+            new(Tourmaline, "Tourmaline", TinkerOrigin.Server, TinkerKind.Once, "Crit line (no tink slot)", 104, UsesTinkSlot: false),
+            new(Wool, "Wool", TinkerOrigin.Server, TinkerKind.Once, "Biting Strike (no tink slot)", 108, UsesTinkSlot: false),
+            new(TigerEye, "Tiger Eye", TinkerOrigin.Server, TinkerKind.Tink, "+missile defense bonus", 230),
+            new(Leather, "Leather", TinkerOrigin.Server, TinkerKind.Once, "100% tink once the 10 ordinary tinks are on", 995, UsesTinkSlot: false),
+        },
+        [TinkerBench.Caster] = new TinkerMaterial[]
+        {
+            new(YellowGarnet, "Yellow Garnet", TinkerOrigin.Server, TinkerKind.Once, "Biting Strike (no tink slot)", 70, UsesTinkSlot: false),
+            new(Turquoise, "Turquoise", TinkerOrigin.Server, TinkerKind.Once, "Crushing Blow (no tink slot)", 80, UsesTinkSlot: false),
+            new(Leather, "Leather", TinkerOrigin.Server, TinkerKind.Once, "100% tink once the 10 ordinary tinks are on", 995, UsesTinkSlot: false),
+        },
+        [TinkerBench.Jewelry] = new TinkerMaterial[]
+        {
+            // ILT keeps these in their own ints (370-376) with their own cap, not the 10 tinker slots.
+            new(Silver, "Silver", TinkerOrigin.Server, TinkerKind.Once, "+1 critical damage rating", 10, UsesTinkSlot: false, AppliedInt: IntJewelSilver),
+            new(Copper, "Copper", TinkerOrigin.Server, TinkerKind.Once, "+1 damage rating", 20, UsesTinkSlot: false, AppliedInt: IntJewelCopper),
+            new(GreenJade, "Green Jade", TinkerOrigin.Server, TinkerKind.Once, "+1 damage resist rating", 30, UsesTinkSlot: false, AppliedInt: IntJewelGreenJade),
+            new(Tourmaline, "Tourmaline", TinkerOrigin.Server, TinkerKind.Once, "+1 critical damage resist rating", 40, UsesTinkSlot: false, AppliedInt: IntJewelTourmaline),
+            new(Serpentine, "Serpentine", TinkerOrigin.Server, TinkerKind.Tink, "+1 critical rating (stacks with Steel, 10 max)", 50, UsesTinkSlot: false),
+            new(Steel, "Steel", TinkerOrigin.Server, TinkerKind.Tink, "Steel stack tier (stacks with Serpentine, 10 max)", 60, UsesTinkSlot: false),
+        },
+        [TinkerBench.Items] = Array.Empty<TinkerMaterial>(),
+        // UB-IT LeaftideImbueHelper trinket imbues: Diamond, Ruby, Gromnie Hide, Pyreal, in that order.
+        [TinkerBench.Trinkets] = new TinkerMaterial[]
+        {
+            new(Diamond, "Diamond", TinkerOrigin.Server, TinkerKind.Once, "Trinket tier: Diamond", 10, UsesTinkSlot: false, AppliedInt: IntTrinketDiamond, Prepared: true),
+            new(Ruby, "Ruby", TinkerOrigin.Server, TinkerKind.Once, "Trinket tier: Ruby", 20, UsesTinkSlot: false, AppliedInt: IntTrinketRuby, Prepared: true),
+            new(GromnieHide, "Gromnie Hide", TinkerOrigin.Server, TinkerKind.Once, "Trinket tier: Gromnie Hide", 30, UsesTinkSlot: false, AppliedInt: IntTrinketGromnie, Prepared: true),
+            new(Pyreal, "Pyreal", TinkerOrigin.Server, TinkerKind.Once, "Trinket tier: Pyreal", 40, UsesTinkSlot: false, AppliedInt: IntTrinketPyreal, Prepared: true),
+        },
+    };
+
     /// <summary>The retail rows of a tab.</summary>
     public static IReadOnlyList<TinkerMaterial> RetailFor(TinkerBench bench) => Retail[bench];
 
+    /// <summary>The Infinite Leaftide / ACECustom rows of a tab.</summary>
+    public static IReadOnlyList<TinkerMaterial> ServerFor(TinkerBench bench) => Server[bench];
+
     /// <summary>
     /// A server plugin's salvage rows for one tab (its profile's "salvage" list). Rows for other
-    /// tabs, unknown tab names and unknown kinds are left out. A row's own "order" decides where it
-    /// runs; without one, imbues run before tinks and one-application rows after them, each in the
-    /// plugin's list order.
+    /// tabs, unknown tab names and unknown kinds are left out; imbues run before tinks, and
+    /// one-application rows after them, each in the plugin's own order.
     /// </summary>
     public static List<TinkerMaterial> FromServerPlugin(TinkerBench bench, IEnumerable<RynthCore.Plugin.Shared.ServerSalvageView>? salvage)
     {
@@ -212,23 +276,18 @@ internal static class TinkerCatalog
                 TinkerKind.Once => 600,
                 _ => 400,
             } + i++;
-            if (s.Order != 0) order = s.Order;
-            string group = s.StackCap > 0 ? (s.StackGroup ?? string.Empty).Trim() : string.Empty;
             rows.Add(new TinkerMaterial(s.Material, MaterialName(s.Material), TinkerOrigin.Plugin, kind.Value,
                 string.IsNullOrWhiteSpace(s.Effect) ? "server recipe" : s.Effect.Trim(), order,
-                UsesTinkSlot: s.UsesTinkSlot, AppliedInt: s.AppliedInt, NameMatch: s.NameMatch ?? string.Empty,
-                Prepared: s.Prepared, AfterCap: s.AfterCap, StackGroup: group, StackCap: group.Length > 0 ? s.StackCap : 0));
+                UsesTinkSlot: s.UsesTinkSlot, NameMatch: s.NameMatch ?? string.Empty));
         }
         return rows;
     }
 
-    /// <summary>
-    /// Settings key for a row: retail and server rows of one tab share ids (Wool, Steel...). Keys
-    /// with the old "s" prefix (RynthAi's own Leaftide rows before they moved to RynthILT) match no row.
-    /// </summary>
+    /// <summary>Settings key for a row: retail and server rows of one tab share ids (Wool, Steel...).</summary>
     public static string Key(TinkerMaterial m) => m.Origin switch
     {
         TinkerOrigin.Retail => "r" + m.Id,
+        TinkerOrigin.Server => "s" + m.Id,
         TinkerOrigin.Plugin => "p" + m.Id,
         _ => "c" + m.Id,
     };
@@ -247,8 +306,8 @@ internal static class TinkerCatalog
     };
 
     /// <summary>
-    /// Trinkets (compass, goggles, scarab, watch, puzzle box, tops) are jewelry the Jewelry tab
-    /// leaves alone: they take the Trinkets tab's recipes instead (UB-IT IsLeaftideTrinketJewelry).
+    /// ILT trinkets (compass, goggles, scarab, watch, puzzle box, tops) are jewelry the Jewelry
+    /// tab leaves alone: they take the trinket recipes instead (UB-IT IsLeaftideTrinketJewelry).
     /// </summary>
     public static bool IsTrinket(string name)
     {
@@ -301,7 +360,7 @@ internal static class TinkerCatalog
         };
     }
 
-    /// <summary>The rend gem a Foolproof bag's name advertises (server bags may not set Material), else 0.</summary>
+    /// <summary>The rend gem a Foolproof bag's name advertises (ILT bags may not set Material), else 0.</summary>
     public static int RendFromFoolproofName(string name)
     {
         if (string.IsNullOrEmpty(name) || name.IndexOf("Foolproof", StringComparison.OrdinalIgnoreCase) < 0) return 0;

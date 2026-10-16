@@ -29,6 +29,7 @@
     <Compile Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\Manifest\RynthPluginManifest.cs" Link="Sdk\RynthPluginManifest.cs" />
     <!-- The launcher's known-server picker, checked against the plugins it names. -->
     <Compile Include="..\..\..\RynthCore\src\RynthCore.App\LaunchServerProfile.cs" Link="Launcher\LaunchServerProfile.cs" />
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.App\KnownServerCatalog.cs" Link="Launcher\KnownServerCatalog.cs" />
     <!-- The RynthAi test tools' check/runner harness (no plugin code in it). -->
     <Compile Include="..\RynthCore.RynthAiTests\Harness\Check.cs" Link="Harness\Check.cs" />
     <Compile Include="..\RynthCore.RynthAiTests\Harness\Runner.cs" Link="Harness\Runner.cs" />

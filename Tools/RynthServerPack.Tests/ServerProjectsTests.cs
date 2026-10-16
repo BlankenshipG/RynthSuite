@@ -19,6 +19,7 @@ internal static class ServerProjectsTests
         r.Add("server projects: ids, plugin names and hosts are unique", Unique);
         r.Add("server projects: no server's host is claimed by another server's list", NoHostOverlap);
         r.Add("server projects: each new server plugin has ServerData.cs and imports the shared props", Layout);
+        r.Add("server projects: the launcher's known servers match the plugins RynthCore loads for them", LauncherCatalog);
     }
 
     private sealed record Project(string Dir, string PluginName, string Id, string Name, string[] Hosts, string[] Worlds, bool Shared);
@@ -27,7 +28,7 @@ internal static class ServerProjectsTests
     private static readonly string[] Expected =
     {
         "coldeve", "ilt", "frostace", "reefcull", "conquest", "dreamweave", "portalstorm", "sundering",
-        "achard", "leafdawn", "derptide", "frostcull", "thistlecrown", "eversong", "leafdawning", "aelrynth",
+        "achard", "leafdawn", "levistras", "derptide", "frostcull", "thistlecrown", "eversong", "leafdawning", "aelrynth",
     };
 
     private static string PluginsDir()
@@ -104,4 +105,42 @@ internal static class ServerProjectsTests
         }
     }
 
+    /// <summary>
+    /// A profile made from the launcher's picker connects to the catalog's host; RynthCore's load
+    /// gate then picks the plugin whose hosts claim it. So each entry must name a real server plugin
+    /// with the same id, that plugin (and no other) must claim the host, and the port and emulator
+    /// must agree with the plugin's ServerData.cs (the card shows those).
+    /// </summary>
+    private static void LauncherCatalog()
+    {
+        List<Project> projects = Load();
+        var catalog = RynthCore.App.KnownServerCatalog.All;
+        Check.Eq(catalog.Count, projects.Count, "one known server per server plugin");
+        foreach (RynthCore.App.KnownServer known in catalog)
+        {
+            Project? p = projects.FirstOrDefault(x => string.Equals(x.PluginName, known.PluginName, StringComparison.Ordinal));
+            Check.True(p != null, $"{known.Name}: plugin {known.PluginName} exists");
+            if (p == null) continue;
+            Check.Eq(p.Id, known.Id, known.PluginName + " server id");
+
+            foreach (Project candidate in projects)
+            {
+                var server = new RynthPluginServer { Id = candidate.Id, Hosts = candidate.Hosts.ToList() };
+                bool claims = server.MatchesHost(known.Host, out _);
+                if (candidate == p)
+                    Check.True(claims, $"{p.PluginName} claims the launcher's host {known.Host}");
+                else
+                    Check.False(claims, $"{candidate.PluginName} does not claim {known.Name}'s host {known.Host}");
+            }
+
+            if (p.Id == "ilt") continue;   // RynthILT has no ServerData.cs
+            string data = File.ReadAllText(Path.Combine(p.Dir, "ServerData.cs"));
+            var port = System.Text.RegularExpressions.Regex.Match(data, @"\bPort\s*=\s*(\d+)");
+            int dataPort = port.Success ? int.Parse(port.Groups[1].Value) : 9000;
+            Check.Eq(known.Port, dataPort, known.PluginName + " port matches ServerData.cs");
+            var emu = System.Text.RegularExpressions.Regex.Match(data, @"\bEmulator\s*=\s*""([^""]+)""");
+            string dataEmu = emu.Success ? emu.Groups[1].Value : "ACE";
+            Check.Eq(known.Emulator.ToString().ToUpperInvariant(), dataEmu.ToUpperInvariant(), known.PluginName + " emulator matches ServerData.cs");
+        }
+    }
 }

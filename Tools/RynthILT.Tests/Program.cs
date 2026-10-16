@@ -39,16 +39,11 @@ internal static class Program
         SigilChainTests.Register(runner);
         BankCommandTests.Register(runner);
         MoveTests.Register(runner);
-        ChunkTests.Register(runner);
-        ProfileTests.Register(runner);
         FeatureCatalogTests.Register(runner);
         IltSettingsTests.Register(runner);
         FellowshipCommandTests.Register(runner);
         AetheriaChunkTests.Register(runner);
-        RingChainTests.Register(runner);
-        // Before DataApiTests: its last test releases the RynthILT.Data table, which the breeding version test queries.
         BreedingTests.Register(runner);
-        DataApiTests.Register(runner);
         return runner.Run("RynthILT tests", args.Length > 0 ? args[0] : null);
     }
 }

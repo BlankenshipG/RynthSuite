@@ -20,6 +20,7 @@ internal static class Program
         CreatureWeaknessTests.Register(runner);
         MonsterDamageTierTests.Register(runner);
         LootBaselineTests.Register(runner);
+        PetCaptureRulesTests.Register(runner);
         return runner.Run("RynthAi tests", args.Length > 0 ? args[0] : null);
     }
 }

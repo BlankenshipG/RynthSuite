@@ -54,6 +54,17 @@ public class MissileCraftingManager
     private const int EQUIP_DELAY_MS = 500;
     private const int ERROR_BACKOFF_MS = 60000;
 
+    // An ammo wield the server ignores (ammo that doesn't fit the launcher really in hand) came
+    // round again every AMMO_CHECK_INTERVAL_MS, and each try stopped nav while it waited for the
+    // answer: Silentkelpie stood still ~3.5 s of every 5 on 2026-10-15. The same item sent more
+    // than MAX_EQUIP_REPEATS times inside EQUIP_REPEAT_WINDOW_MS backs off instead.
+    private const int EQUIP_REPEAT_WINDOW_MS = 30000;
+    private const int MAX_EQUIP_REPEATS = 2;
+    private const int EQUIP_IGNORED_BACKOFF_MS = 120000;
+    private int _lastEquipSentId;
+    private DateTime _lastEquipSentAt = DateTime.MinValue;
+    private int _equipRepeats;
+
     private int _headBundleId = 0;
     private int _shaftBundleId = 0;
     private AmmoRecipe? _currentRecipe = null;
@@ -145,13 +156,15 @@ public class MissileCraftingManager
         _lastAmmoCheck = DateTime.Now;
 
         var inv = GetInventory(forceRefresh: true);
-        if (!TryGetWieldedMissileCategory(inv, out WeaponCategory category))
+        if (!TryGetWieldedMissileCategory(inv, out WeaponCategory category, out WorldObject? launcher))
             return;
 
         _lastWeaponCategory = category;
         if (HasWieldedAmmo(inv, category))
             return;
 
+        _host.Log($"[RynthAi] MissileCraft: no {GetCategoryLabel(category)} wielded with launcher " +
+                  $"0x{launcher!.Id:X8} '{launcher.Name}' (slot {launcher.WieldedLocation}); evaluating");
         ChatLog($"No wielded {GetCategoryLabel(category)}s. Evaluating...");
         SetState(CraftState.Evaluating);
     }
@@ -350,6 +363,18 @@ public class MissileCraftingManager
 
             if (targetId != 0)
             {
+                if (!NoteEquipSent(targetId))
+                {
+                    string name = inv.FirstOrDefault(i => i.Id == targetId)?.Name ?? $"0x{targetId:X8}";
+                    string why = $"The server didn't wield {name} after {MAX_EQUIP_REPEATS} tries; " +
+                                 $"leaving the ammo alone for {EQUIP_IGNORED_BACKOFF_MS / 60000} minutes";
+                    _host.Log($"[RynthAi] MissileCraft: {why} (0x{targetId:X8})");
+                    Reset(why);
+                    _equipRepeats = 0;
+                    _lastAmmoCheck = DateTime.Now.AddMilliseconds(EQUIP_IGNORED_BACKOFF_MS - AMMO_CHECK_INTERVAL_MS);
+                    return;
+                }
+
                 _host.UseFor((uint)targetId, "Crafting", "missile crafting: wield the new ammo");
                 ChatLog($"Equipped ammo (id=0x{targetId:X8})");
                 Reset($"Done: {_currentRecipe?.OutputName ?? "ammo"}");
@@ -382,9 +407,9 @@ public class MissileCraftingManager
     private List<WorldObject> GetInventory(bool forceRefresh = false)
         => _objectCache?.GetDirectInventory(forceRefresh).ToList() ?? new();
 
-    private WeaponCategory ResolveWeaponCategory(IEnumerable<WorldObject> inventory)
+    private WeaponCategory ResolveWeaponCategory(List<WorldObject> inventory)
     {
-        if (TryGetWieldedMissileCategory(inventory, out WeaponCategory category))
+        if (TryGetWieldedMissileCategory(inventory, out WeaponCategory category, out _))
         {
             _lastWeaponCategory = category;
             return category;
@@ -393,24 +418,29 @@ public class MissileCraftingManager
         return _lastWeaponCategory;
     }
 
-    private bool TryGetWieldedMissileCategory(IEnumerable<WorldObject> inventory, out WeaponCategory category)
+    private bool TryGetWieldedMissileCategory(List<WorldObject> inventory, out WeaponCategory category,
+                                              out WorldObject? launcher)
     {
-        foreach (var item in inventory)
+        foreach (var item in WornCandidates(inventory))
         {
-            if (!IsPlayerWielded(item) || !LooksLikeMissileWeapon(item))
+            // AC files ammo as a missile weapon: wielded quarrels must not pass for the launcher
+            // (no "crossbow" in the name reads as a bow, and arrows went on at the crossbow).
+            if (WorldObjectCache.IsAmmo(item) || !IsPlayerWielded(item) || !LooksLikeMissileWeapon(item))
                 continue;
 
             category = GetWeaponCategory(item.Name);
+            launcher = item;
             return true;
         }
 
         category = WeaponCategory.Bow;
+        launcher = null;
         return false;
     }
 
-    private bool HasWieldedAmmo(IEnumerable<WorldObject> inventory, WeaponCategory category)
+    private bool HasWieldedAmmo(List<WorldObject> inventory, WeaponCategory category)
     {
-        foreach (var item in inventory)
+        foreach (var item in WornCandidates(inventory))
         {
             if (!IsPlayerWielded(item))
                 continue;
@@ -422,16 +452,62 @@ public class MissileCraftingManager
         return false;
     }
 
+    /// <summary>
+    /// The direct scan plus the cache-known items it left out. The scan merges worn gear only when
+    /// its slot reads above 0, and the slot reads 0 for gear wielded after login (a launcher combat
+    /// swapped in, and its ammo), so the launcher really in hand was missing from the scan alone.
+    /// </summary>
+    private IEnumerable<WorldObject> WornCandidates(List<WorldObject> inventory)
+    {
+        foreach (var item in inventory)
+            yield return item;
+
+        if (_objectCache == null)
+            yield break;
+
+        var listed = new HashSet<int>(inventory.Select(i => i.Id));
+        foreach (var item in _objectCache.GetInventory())
+            if (listed.Add(item.Id))
+                yield return item;
+    }
+
     private bool IsPlayerWielded(WorldObject item)
     {
-        if (item.WieldedLocation <= 0)
+        // Found inside a pack by the direct scan: AC's container lists never hold worn gear. A
+        // launcher put away after a swap keeps its old wielder and slot in the client's object
+        // description, so the slot alone said a stowed bow was in hand while a crossbow was, and
+        // arrows were wielded at it every 5 s (Silentkelpie, 2026-10-15).
+        if (item.DirectContainerId != 0)
             return false;
 
         uint playerId = _host.GetPlayerId();
         if (playerId == 0)
             return false;
 
-        return item.Wielder == 0 || item.Wielder == unchecked((int)playerId);
+        if (item.WieldedLocation > 0)
+            return item.Wielder == 0 || item.Wielder == unchecked((int)playerId);
+
+        // The slot reads 0 for gear wielded after login; the wielder still names the player.
+        return _host.HasGetObjectWielderInfo
+            && _host.TryGetObjectWielderInfo(unchecked((uint)item.Id), out uint wielder, out _)
+            && wielder == playerId;
+    }
+
+    /// <summary>
+    /// Counts an ammo wield about to go out; false once the same item was already sent
+    /// <see cref="MAX_EQUIP_REPEATS"/> times inside <see cref="EQUIP_REPEAT_WINDOW_MS"/>.
+    /// </summary>
+    private bool NoteEquipSent(int targetId)
+    {
+        DateTime now = DateTime.Now;
+        if (targetId == _lastEquipSentId && (now - _lastEquipSentAt).TotalMilliseconds < EQUIP_REPEAT_WINDOW_MS)
+            _equipRepeats++;
+        else
+            _equipRepeats = 1;
+
+        _lastEquipSentId = targetId;
+        _lastEquipSentAt = now;
+        return _equipRepeats <= MAX_EQUIP_REPEATS;
     }
 
     private static bool LooksLikeMissileWeapon(WorldObject item)

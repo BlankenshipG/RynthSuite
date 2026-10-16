@@ -35,6 +35,13 @@ internal sealed class InventoryContext
     public bool IconsAvailable;
     public DateTime UtcNow;
 
+    /// <summary>RynthILT's "RynthILT.Data" (the Banking tab's balances and bank commands).</summary>
+    public readonly RynthCore.Plugin.Shared.RynthIltDataClient IltData = new();
+    /// <summary>The bank RynthILT last reported (None without RynthILT); read while the window shows.</summary>
+    public RynthCore.Plugin.Shared.IltBankView Bank = RynthCore.Plugin.Shared.IltBankView.None;
+    /// <summary>Set by the plugin: queues a bank verb with RynthILT (IltBankView.*Verb); false when refused.</summary>
+    public Func<string, bool> BankCommand = _ => false;
+
     public Action RequestRescan = () => { };
     public Action RequestReload = () => { };
     /// <summary>Forgets a character (moves its file aside). Returns a message for the player.</summary>

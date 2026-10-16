@@ -10,8 +10,7 @@ namespace RynthCore.RynthAiHostTests.Tests;
 // Mini Remote sections (RynthCore 2026.10.5.46+): RynthCore sends its server verdicts (V lines) and
 // section rail (X lines) in the "servermenu" payload, and reads RynthAi's views from
 // RynthPluginGetSectionsJson. RynthAi lists its own views (Pets, Crafting, Spells, Fellowship) and
-// hosts RynthILT's ILT tabs (RynthILT.Hub: Gear, Charms, Banking, Games); Quests are RynthOracle's,
-// and RynthILT's Character tab moved out (RynthOracle's Character tab, Session Stats). The manifest is checked
+// hosts RynthILT's ILT tabs (RynthILT.Hub); Quests are RynthOracle's. The manifest is checked
 // against the engine's own parser and catalog (UI/Sections, linked), so the two sides can't drift.
 internal static class SectionsTests
 {
@@ -22,16 +21,19 @@ internal static class SectionsTests
         r.Add("sections: RynthAi's manifest passes the engine parser unchanged", ManifestRoundTrip);
         r.Add("sections: the engine catalog places RynthAi's views by server", CatalogPlacement);
         r.Add("sections: tab surfaces map back to their tabs; foreign ids are refused", SurfaceRoundTrip);
-        r.Add("sections: Character redirects to RynthOracle; Charms and Banking stay RynthILT's tabs", MovedTabRedirects);
+        r.Add("sections: Character / Charms / Banking redirect to RynthOracle and Global Inventory", MovedTabRedirects);
     }
 
     private static void MovedTabRedirects()
     {
-        foreach (string tab in new[] { "character", "Char", " rates " })
+        foreach (string tab in new[] { "character", "Char", " rates ", "charms", "CHARM" })
             Check.Eq(MovedTabs.CommandFor(tab), MovedTabs.OracleCharacter, tab + " -> RynthOracle's Character tab");
-        foreach (string tab in new[] { "charms", "banking", "gear", "games", "pets", "crafting", "", null })
+        foreach (string tab in new[] { "banking", "Bank" })
+            Check.Eq(MovedTabs.CommandFor(tab), MovedTabs.GlobalBank, tab + " -> Global Inventory > Banking");
+        foreach (string tab in new[] { "gear", "games", "pets", "crafting", "", null })
             Check.True(MovedTabs.CommandFor(tab) == null, (tab ?? "null") + " is still a Mini Remote tab (or none)");
         Check.Eq(MovedTabs.OracleCharacter, "/ro character", "the Oracle command");
+        Check.Eq(MovedTabs.GlobalBank, "/ginv bank", "the Global Inventory command");
         Check.Eq(MovedTabs.Diagnostics, "/rc diagnostics", "the engine's Diagnostics command");
     }
 
@@ -45,8 +47,8 @@ internal static class SectionsTests
 
     /// <summary>
     /// RynthILT's tabs as its GetTabs would give them (Gear not reported yet, Games hidden), plus the
-    /// Character tab an older RynthILT still reports: it moved out of the Mini Remote (2026-10-13)
-    /// and must not be placed any more.
+    /// Character / Charms / Banking tabs an older RynthILT still reports: those moved out of the Mini
+    /// Remote (2026-10-13) and must not be placed any more.
     /// </summary>
     private static readonly IltTabInfo[] IltTabs =
     {
@@ -124,12 +126,8 @@ internal static class SectionsTests
         SectionContribution gear = m.Contributions.Single(c => c.Surface == SectionsManifest.SurfaceOf("gear"));
         Check.False(gear.Enabled, "unavailable Gear is disabled");
         Check.True(gear.Note.Length > 0, "with a note");
-        Check.False(views.Any(v => v.Surface == SectionsManifest.SurfaceOf("character")), "character moved out: not placed even if RynthILT reports it");
-        foreach (string kept in new[] { "charms", "banking" })
-        {
-            SectionsManifest.View v = views.Single(x => x.Surface == SectionsManifest.SurfaceOf(kept));
-            Check.True(v.Section == "inventory" && v.Server == SectionsManifest.IltServer && v.Enabled, kept + ": an ILT view in Inventory");
-        }
+        foreach (string moved in new[] { "character", "charms", "banking" })
+            Check.False(views.Any(v => v.Surface == SectionsManifest.SurfaceOf(moved)), moved + " moved out: not placed even if RynthILT reports it");
         Check.True(json.Length < SectionManifestParser.MaxJsonLength / 16, "small");
 
         SectionsManifest.View session = views.Single(v => v.Surface == SectionsManifest.SessionSurface);
@@ -164,26 +162,24 @@ internal static class SectionsTests
         List<SectionView> on = SectionCatalog.Build(new[] { m }, _ => false, new[] { iltOn });
         SectionView charOn = on.Single(v => v.Id == "char");
         Check.True(charOn.Panes.Length == 1 && charOn.Panes[0].Contribution?.Surface == SectionsManifest.SessionSurface,
-            "Session Stats on ILT: session stats only (no ILT Character tab)");
+            "Session Stats on ILT: session stats only (no ILT Character / Charms)");
         SectionView inventoryOn = on.Single(v => v.Id == "inventory");
-        Check.True(inventoryOn.Panes.Any(p => p.Title == "Gear") && inventoryOn.Panes.Any(p => p.Title == "Charms")
-                   && inventoryOn.Panes.Any(p => p.Title == "Banking"),
-            "Inventory on ILT: RynthILT's Gear, Charms and Banking");
-        SectionView inventoryOff = off.Single(v => v.Id == "inventory");
-        Check.False(inventoryOff.Panes.Any(p => p.Title is "Gear" or "Charms" or "Banking"), "Inventory off ILT: none of RynthILT's tabs");
+        Check.True(inventoryOn.Panes.Any(p => p.Title == "Gear") && !inventoryOn.Panes.Any(p => p.Title == "Banking"),
+            "Inventory: Gear on ILT; Banking is Global Inventory's");
         Check.True(on.Single(v => v.Id == "spells").Panes.Any(p => p.Contribution?.Surface == SectionsManifest.SpellsSurface), "Spells");
         Check.True(on.Single(v => v.Id == "fellowship").Panes.Any(p => p.Contribution?.Surface == SectionsManifest.FellowshipSurface), "Fellowship");
     }
 
     private static void SurfaceRoundTrip()
     {
-        foreach (string id in new[] { "gear", "games", "charms", "banking" })
+        foreach (string id in new[] { "gear", "games" })
         {
             string surface = SectionsManifest.SurfaceOf(id);
             Check.True(SectionsManifest.TryIltTabOf(surface, out string back) && back == id, "round trip " + surface);
             Check.Eq(SectionManifestParser.Surface(surface), surface, "the engine accepts " + surface);
         }
-        Check.False(SectionsManifest.TryIltTabOf(SectionsManifest.SurfaceOf("character"), out _), "character isn't a section tab any more");
+        foreach (string moved in new[] { "character", "charms", "banking" })
+            Check.False(SectionsManifest.TryIltTabOf(SectionsManifest.SurfaceOf(moved), out _), moved + " isn't a section tab any more");
         Check.Eq(SectionManifestParser.Surface(SectionsManifest.SessionSurface), SectionsManifest.SessionSurface, "the engine accepts the session surface");
         Check.True(SectionsManifest.TryOwnTabOf(SectionsManifest.PetsSurface, out string pets) && pets == MiniRemoteTabs.Pets, "pets is RynthAi's");
         Check.True(SectionsManifest.TryOwnTabOf(SectionsManifest.CraftingSurface, out string craft) && craft == MiniRemoteTabs.Crafting, "crafting is RynthAi's");

@@ -34,16 +34,45 @@ internal static class ChatClassifier
 
     // ── Channel classification ─────────────────────────────────────────────
 
-    internal static string ChannelFor(int chatType) => (uint)chatType switch
+    /// <summary>
+    /// Channel tab for a line. Prefer the text's [General]/[Trade]/… tag when present —
+    /// ILT (and some ACE builds) deliver those as type 0x1C / 28 instead of 0x08/0x09, which
+    /// used to dump Trade/General into Other and leave the Channels tab empty.
+    /// </summary>
+    internal static string ChannelFor(string? text, int chatType)
+    {
+        if (IsChannelTagged(text)) return Channels;
+        return ChannelForType(chatType);
+    }
+
+    /// <summary>Legacy type-only map (tests / callers without the line text).</summary>
+    internal static string ChannelFor(int chatType) => ChannelForType(chatType);
+
+    internal static string ChannelForType(int chatType) => (uint)chatType switch
     {
         0x02 or 0x03 or 0x04 or 0x0A or 0x0B
             or 0x0C or 0x12 or 0x13                     => Chat,
-        0x08 or 0x09                                    => Channels,
+        0x08 or 0x09 or 0x1C                            => Channels,
         0x00 or 0x05 or 0x0D or 0x14 or 0x17 or 0x18
             or 0x19 or 0x1F                             => System,
         0x06 or 0x07 or 0x11 or 0x15 or 0x16           => Combat,
         _                                               => Other,
     };
+
+    /// <summary>True when the line opens with a retail/ILT channel tag ([Trade], [General], …).</summary>
+    internal static bool IsChannelTagged(string? text)
+    {
+        if (string.IsNullOrEmpty(text) || text[0] != '[') return false;
+        return text.StartsWith("[General]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Trade]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[LFG]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Roleplay]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Society]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Celestial Hand]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Eldrytch Web]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Radiant Blood]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Admin]", StringComparison.OrdinalIgnoreCase);
+    }
 
     internal static uint ColorFor(string channel) => channel switch
     {

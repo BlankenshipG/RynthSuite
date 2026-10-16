@@ -243,6 +243,7 @@ public static class VirindiTankProfileImporter
         dst.OffhandId = src.OffhandId;
         dst.PreferredAmmoItemId = src.PreferredAmmoItemId;
         dst.PetDamage = src.PetDamage;
+        dst.AttackPower = src.AttackPower;
     }
 
     private static MonsterRule CloneMonsterRule(MonsterRule row) =>
@@ -268,6 +269,7 @@ public static class VirindiTankProfileImporter
             OffhandId = row.OffhandId,
             PreferredAmmoItemId = row.PreferredAmmoItemId,
             PetDamage = row.PetDamage,
+            AttackPower = row.AttackPower,
         };
 
     private static void TryMergeMonsterFile(string jsonPath, LegacyUiSettings settings, Result result)

@@ -64,6 +64,8 @@ namespace RynthInventory.Tests
                 Run("scheduler: unchanged content is not rewritten", SchedulerUnchanged);
                 Run("window display lists parse in the engine", Pages);
                 Run("window events", Events);
+                Run("banking: roster, totals and amounts", BankRosterTests);
+                Run("banking: the tab draws and sends RynthILT's verbs", BankingTab);
                 Run("vault feed (/mule-data)", VaultTests);
             }
             finally
@@ -631,6 +633,103 @@ namespace RynthInventory.Tests
             Draw(w, view);
             Check(BodyText(w).Contains("Forgot Willow"), "says so");
             ParseAll(host, "after forget", out _);
+        }
+
+        // ── Banking (the Mini Remote's Banking tab moved here 2026-10-13) ───
+
+        /// <summary>RynthILT's bank JSON for the sample index: Buffy (here) and Ghost (another account, no inventory file).</summary>
+        private const string BankJson = "{\"available\":true,\"enabled\":1,\"world\":\"Aelrynth\",\"character\":\"Buffy\","
+            + "\"characters\":[{\"name\":\"Buffy\",\"current\":true,\"pyreals\":100,\"luminance\":2000,\"legendaryKeys\":1,\"mythicalKeys\":0,"
+            + "\"enlightenedCoins\":3,\"weaklyEnlightenedCoins\":0,\"prestigeCoins\":0,\"updated\":\"2026-10-03T11:00:00Z\"},"
+            + "{\"name\":\"Ghost\",\"current\":false,\"pyreals\":50,\"luminance\":0,\"legendaryKeys\":2,\"mythicalKeys\":1,"
+            + "\"enlightenedCoins\":0,\"weaklyEnlightenedCoins\":4,\"prestigeCoins\":5,\"updated\":\"2026-10-01T11:00:00Z\"}],"
+            + "\"deposits\":[\"Everything\",\"Pyreals\"],\"withdrawals\":[{\"label\":\"Pyreals\",\"notes\":false},{\"label\":\"Trade notes\",\"notes\":true}],"
+            + "\"transfers\":[{\"label\":\"Pyreals\",\"notes\":false}],\"notes\":[{\"label\":\"MMD\",\"value\":250000}],"
+            + "\"result\":\"Deposited everything.\",\"transactions\":[{\"when\":\"2026-10-03 11:30\",\"type\":\"Sent\",\"amount\":10,\"currency\":\"Pyreals\",\"player\":\"Willow\"}]}";
+
+        private static void BankRosterTests()
+        {
+            InventoryIndex index = SampleIndex(out _);
+            var bank = RynthCore.Plugin.Shared.IltBankView.Parse(BankJson);
+            List<BankRosterEntry> roster = BankRoster.Build(bank, index);
+            Eq(string.Join(",", roster.Select(e => e.Name)), "Buffy,Ghost,Willow", "you first, then by name; Conquest's characters left out");
+            Check(roster[0].Current && roster[0].Bank != null && roster[0].Account == "tom", "Buffy: RynthILT's balance and the inventory's account");
+            Check(roster[1].Bank != null && roster[1].Account == "", "Ghost: only RynthILT knows it (another account on this PC)");
+            Check(roster[2].Bank == null && roster[2].Account == "tom", "Willow: in the inventory, no bank read yet");
+            var total = BankRoster.Totals(roster);
+            Check(total.Pyreals == 150 && total.Luminance == 2000 && total.LegendaryKeys == 3 && total.PrestigeCoins == 5, "totals add every balance");
+
+            Eq(BankRoster.Build(RynthCore.Plugin.Shared.IltBankView.None, null).Count, 0, "nothing without RynthILT or the index");
+            var noWorld = RynthCore.Plugin.Shared.IltBankView.Parse("{\"available\":true,\"characters\":[]}");
+            Eq(string.Join(",", BankRoster.Build(noWorld, index).Select(e => e.Name)), "Buffy,Willow", "no world named: the server you're on");
+
+            Eq(BankRoster.ParseAmount("1,000"), 1000L, "commas allowed");
+            Eq(BankRoster.ParseAmount(" 25 "), 25L, "spaces trimmed");
+            foreach (string bad in new[] { "", "0", "-5", "1.5", "abc", "1e6" })
+                Eq(BankRoster.ParseAmount(bad), 0L, $"'{bad}' isn't an amount");
+        }
+
+        private static void BankingTab()
+        {
+            InventoryContext c = Context(false);
+            var sent = new List<string>();
+            c.BankCommand = v => { sent.Add(v); return true; };
+            var view = new InventoryView(c);
+            var host = new UiHost();
+            UiWindow w = host.Add(new UiWindow("RynthInventory/Main", "Global Inventory") { Visible = true });
+
+            // Without RynthILT the tab button stays hidden; /ginv bank still opens it and says why.
+            Draw(w, view);
+            Check(!BodyText(w).Contains("###tab.bank"), "no Banking button without RynthILT");
+            view.ShowBanking();
+            Draw(w, view);
+            Check(BodyText(w).Contains("Load RynthILT"), "asked for: says RynthILT is needed");
+            w.MarkSubmitted(true);
+
+            c.Bank = RynthCore.Plugin.Shared.IltBankView.Parse(BankJson);
+            view.Tab = InventoryView.TabSearch;
+            Draw(w, view);
+            Check(BodyText(w).Contains("###tab.bank"), "the Banking button shows on an ILT world");
+            Apply(host, Event(1, 1, w.Hash, w.KeyOf("tab.bank"), new byte[] { 1, 0 }));
+            Check(view.Tab == InventoryView.TabBanking, "a click opens it");
+            Draw(w, view);
+            ParseAll(host, "banking tab", out int ops);
+            string body = BodyText(w);
+            Check(ops > 5 && ops <= 1500, $"banking tab: {ops} ops");
+            Check(body.Contains("Buffy (you)") && body.Contains("Ghost") && body.Contains("Willow") && !body.Contains("Spike"),
+                  "every character on this server, none from another");
+            Check(body.Contains("not read yet"), "a character without a balance says so");
+            Check(body.Contains("150") && body.Contains("Deposited everything."), "the total and RynthILT's last reply");
+
+            Apply(host, Event(1, 2, w.Hash, w.KeyOf("b.dep.go"), new byte[] { 1, 0 }));
+            Eq(sent.LastOrDefault(), "deposit 0", "Deposit sends the chosen deposit");
+
+            Apply(host, Event(5, 3, w.Hash, w.KeyOf("b.wd.amt"), TextPayload("5")));
+            Draw(w, view);
+            Apply(host, Event(1, 4, w.Hash, w.KeyOf("b.wd.go"), new byte[] { 1, 0 }));
+            Eq(sent.LastOrDefault(), "withdraw 0 5 0", "Withdraw sends currency, amount and note");
+
+            // A transfer asks first; only "Yes, send" sends it.
+            Apply(host, Event(5, 5, w.Hash, w.KeyOf("b.tx.amt"), TextPayload("1,000")));
+            Apply(host, Event(5, 6, w.Hash, w.KeyOf("b.tx.to"), TextPayload("Willow")));
+            Draw(w, view);
+            int before = sent.Count;
+            Apply(host, Event(1, 7, w.Hash, w.KeyOf("b.tx.go"), new byte[] { 1, 0 }));
+            Check(sent.Count == before, "one click doesn't transfer");
+            Draw(w, view);
+            Check(BodyText(w).Contains("Send 1,000 Pyreals to Willow?"), "it asks, naming amount and recipient");
+            Apply(host, Event(1, 8, w.Hash, w.KeyOf("b.tx.yes"), new byte[] { 1, 0 }));
+            Eq(sent.LastOrDefault(), "transfer 0 1000 0 Willow", "confirmed: the transfer verb");
+
+            // A bad amount is refused here, nothing sent.
+            Apply(host, Event(5, 9, w.Hash, w.KeyOf("b.wd.amt"), TextPayload("lots")));
+            Draw(w, view);
+            before = sent.Count;
+            Apply(host, Event(1, 10, w.Hash, w.KeyOf("b.wd.go"), new byte[] { 1, 0 }));
+            Check(sent.Count == before, "a bad amount isn't sent");
+            Draw(w, view);
+            Check(BodyText(w).Contains("Type a whole number"), "and it says why");
+            ParseAll(host, "banking after actions", out _);
         }
 
         // ── Helpers ─────────────────────────────────────────────────────────

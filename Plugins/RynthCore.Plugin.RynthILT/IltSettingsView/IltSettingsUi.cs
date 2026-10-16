@@ -1,10 +1,11 @@
 // IltSettingsUi.cs - The "ILT settings" view: RynthILT's copy of the Infinite Leaftide settings.
 //
-// Drawn in its own window ("/ilt settings"). Shows RynthCore's verdict and reason, this character's
-// Auto / On / Off override, the ILT world names (edited through RynthCore), and every ILT feature
-// with the state RynthILT's Hub read from the server (IltSettingsModel has where each comes from).
-// Edits are RynthCore commands, queued for the plugin tick; the next server-list poll shows the
-// result. Render thread only.
+// Drawn in two places: RynthCore's Mini Remote, Char section, Infinite Leaftide area (the surface
+// "section:ilt-settings" through RynthPluginRenderEmbed), and its own window ("/ilt settings").
+// Shows RynthCore's verdict and reason, this character's Auto / On / Off override, the ILT world
+// names, and the ILT features RynthILT's Hub read from the server (IltSettingsModel has where each
+// comes from). Edits are RynthCore commands, queued for the plugin tick; the next push shows the result.
+// Render thread only.
 using System;
 using System.Collections.Generic;
 using System.Numerics;
@@ -69,8 +70,7 @@ internal sealed class IltSettingsUi
         IltEngineView? engine = _model.Engine;
         if (engine == null)
         {
-            ImGui.TextWrapped("Waiting for RynthCore's server list (it needs plugin API v86). Until then RynthILT's own "
-                              + "world list and this character's 'Treat this world as ILT' (/ra hub force on|off) decide.");
+            ImGui.TextWrapped("Waiting for RynthCore to send the server verdicts (it needs RynthCore 2026.10.5.47 or later).");
             return;
         }
 
@@ -97,14 +97,19 @@ internal sealed class IltSettingsUi
         }
 
         ImGui.Spacing();
-        ImGui.TextUnformatted("ILT world names");
+        ImGui.TextUnformatted(engine.NamesDefault ? "ILT world names (built in)" : "ILT world names (engine.json)");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Worlds whose name matches one of these count as Infinite Leaftide ('*' matches any text).\nThe launch host is checked too. Kept by RynthCore for every character.");
-        ImGui.SameLine();
-        if (ImGui.SmallButton("List in chat##iltnames"))
+        if (engine.Names.Length == 0) ImGui.TextDisabled("(none: the world name isn't checked)");
+        for (int i = 0; i < engine.Names.Length; i++)
         {
-            _runCommand(IltSettingsModel.NamesListCommand);
-            _status = "RynthCore lists the names in chat (" + IltSettingsModel.NamesListCommand + ").";
+            string name = engine.Names[i];
+            ImGui.PushID(i);
+            if (ImGui.SmallButton("x")) Send(IltSettingsModel.NamesCommand(false, name, out string err), err, "Removing '" + name + "'...");
+            if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("Remove '" + name + "'");
+            ImGui.PopID();
+            ImGui.SameLine();
+            SafeImGui.Text(name);
         }
         ImGui.SetNextItemWidth(220);
         bool enter = ImGui.InputTextWithHint("##iltnewname", "world name, * = any text", ref _newName, (uint)IltSettingsModel.MaxPattern,
@@ -115,18 +120,11 @@ internal sealed class IltSettingsUi
             string cmd = IltSettingsModel.NamesCommand(true, _newName, out string err);
             if (Send(cmd, err, "Adding '" + _newName.Trim() + "'...")) _newName = string.Empty;
         }
-        ImGui.SameLine();
-        if (ImGui.Button("Remove##iltname"))
-        {
-            string cmd = IltSettingsModel.NamesCommand(false, _newName, out string err);
-            if (Send(cmd, err, "Removing '" + _newName.Trim() + "'...")) _newName = string.Empty;
-        }
     }
 
     /// <summary>
-    /// The server's ILT features, one collapsible section per group (Character, Items, Pets,
-    /// Fellowship, Combat, Activities, then the charms and any other bit chat or a probe set), with
-    /// how many are on and each feature's state; the tooltip says where the Rynth tools handle it.
+    /// A summary of the server's ILT features (how many are on in each group) and a link to the full
+    /// list, which is RynthOracle's About tab ("Server features", read from RynthILT's profile).
     /// </summary>
     private void RenderFeatures()
     {
@@ -150,30 +148,33 @@ internal sealed class IltSettingsUi
             ImGui.TextDisabled("The server hasn't reported any ILT features yet.");
             return;
         }
-
-        var groups = new Dictionary<string, List<(string Label, string Tooltip, int State)>>(StringComparer.Ordinal);
+        // How many are on in each group (Character, Items, Pets, Fellowship, Combat, Activities,
+        // then the charms and any other bit chat or a probe set). The rows themselves are drawn by
+        // RynthOracle's About tab, the one place the Leaftide feature list lives (2026-10-13).
+        var counts = new Dictionary<string, (int On, int Off, int All)>(StringComparer.Ordinal);
         foreach (var kv in f.Features)
         {
-            var (label, group, tooltip) = IltFeatureCatalog.Describe(kv.Key);
-            if (!groups.TryGetValue(group, out var rows)) groups[group] = rows = new();
-            rows.Add((label, tooltip, kv.Value));
+            string group = IltFeatureCatalog.Describe(kv.Key).Group;
+            counts.TryGetValue(group, out var c);
+            counts[group] = (c.On + (kv.Value == 1 ? 1 : 0), c.Off + (kv.Value == 0 ? 1 : 0), c.All + 1);
         }
         foreach (string group in FeatureGroups())
         {
-            if (!groups.TryGetValue(group, out var rows)) continue;
-            int on = 0, off = 0;
-            foreach (var r in rows) { if (r.State == 1) on++; else if (r.State == 0) off++; }
-            if (!ImGui.CollapsingHeader($"{group}  ({on} of {rows.Count} on)##iltfg_{group}")) continue;
-            for (int i = 0; i < rows.Count; i++)
-            {
-                var r = rows[i];
-                SafeImGui.TextColored(r.State == 1 ? Teal : r.State == 0 ? Warn : Mute, IltSettingsModel.StateText(r.State));
-                ImGui.SameLine(80);
-                SafeImGui.Text(r.Label);
-                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip(r.Tooltip);
-            }
+            if (!counts.TryGetValue(group, out var c)) continue;
+            SafeImGui.Text(group);
+            ImGui.SameLine(140);
+            SafeImGui.TextColored(c.On > 0 ? Teal : c.Off > 0 ? Warn : Mute, $"{c.On} of {c.All} on");
         }
+        ImGui.Spacing();
+        if (ImGui.SmallButton("Open the full list (RynthOracle > About)##iltfeatlist"))
+            _runCommand(OracleAboutCommand);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Every Leaftide feature with its state on this server and where the Rynth tools handle it\n"
+                             + "(RynthOracle's About tab, Server features; " + OracleAboutCommand + ").");
     }
+
+    /// <summary>RynthOracle's About tab, whose "Server features" section lists every Leaftide feature.</summary>
+    private const string OracleAboutCommand = "/ro about";
 
     /// <summary>The feature sections in display order: the catalog's groups, then Charms and Other.</summary>
     private static IEnumerable<string> FeatureGroups()

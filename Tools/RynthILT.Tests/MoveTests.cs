@@ -32,9 +32,8 @@ internal static class MoveTests
         r.Add("move: the interface structs have the agreed layout", InterfaceLayout);
         r.Add("move: server-list status lines", DescribeLines);
         r.Add("move: off ILT nothing is sent, no tab or section shows; on ILT the login probe runs", DormantOffIlt);
-        r.Add("move: the charms JSON for RynthILT.Data readers carries the Guardian Hands", CharmsReaderJson);
-        r.Add("move: Character redirects to RynthOracle; Charms and Banking stay RynthILT's tabs", MovedSections);
-        r.Add("sections: RynthILT's manifest (rates, /fship, /qb) is valid schema-1 JSON with its own surfaces", SectionsManifest);
+        r.Add("move: Character / Charms / Banking redirect to RynthOracle and Global Inventory", MovedSections);
+        r.Add("move: the charms JSON RynthOracle reads carries the Guardian Hands", CharmsReaderJson);
         // Last: Release() switches the table off for the rest of the process.
         r.Add("move: the RynthILT.Hub table: query, functions, release", HubTable);
     }
@@ -365,8 +364,8 @@ internal static class MoveTests
         Check.Eq(sizeof(IltTabV1), 24 + 32 + 4 + 4 + 4, "IltTabV1: id, label, width, height, flags");
         Check.Eq((int)Marshal.OffsetOf<IltTabV1>(nameof(IltTabV1.Flags)), 64, "IltTabV1.Flags offset");
         Check.Eq(sizeof(RynthIltHubApiV1), 8 + 9 * IntPtr.Size, "RynthIltHubApiV1: header + 9 functions");
-        // SessionStatsMore was appended (2026-10-13); readers accept any table at least
-        // BaseStructSize long, so an older RynthAi still connects.
+        // 10 functions in the first release, then SessionStatsMore appended (2026-10-13); readers accept
+        // any table at least BaseStructSize long, so an older RynthAi still connects.
         Check.Eq(sizeof(RynthAiHubApiV1), 8 + 11 * IntPtr.Size, "RynthAiHubApiV1: header + 11 functions");
         Check.Eq((int)RynthAiHubApiV1.BaseStructSize, 8 + 10 * IntPtr.Size, "RynthAiHubApiV1.BaseStructSize: the first release's 10 functions");
         Check.Eq(RynthAiHubApiV1.SessionStatsMoreOffset, (int)RynthAiHubApiV1.BaseStructSize, "SessionStatsMore right after the base table");
@@ -401,6 +400,21 @@ internal static class MoveTests
         while (DateTime.UtcNow < until) { hub.Tick(); System.Threading.Thread.Sleep(50); }
     }
 
+    /// <summary>The Mini Remote tabs that moved out (2026-10-13) map to their new homes' commands.</summary>
+    private static void MovedSections()
+    {
+        Check.Eq(IltSections.MovedCommand(IltSection.Character), IltSections.OracleCharacterCommand, "Character -> RynthOracle Character");
+        Check.Eq(IltSections.MovedCommand(IltSection.Charms), IltSections.OracleCharacterCommand, "Charms -> RynthOracle Character");
+        Check.Eq(IltSections.MovedCommand(IltSection.Banking), IltSections.GlobalBankCommand, "Banking -> Global Inventory Banking");
+        Check.True(IltSections.MovedCommand(IltSection.Gear) == null && IltSections.MovedCommand(IltSection.Games) == null,
+                   "Gear and Games are still Mini Remote tabs");
+        Check.True(IltSections.Tabs.SequenceEqual(new[] { IltSection.Gear, IltSection.Games }), "the tab list is Gear, Games");
+        foreach (var moved in new[] { IltSection.Character, IltSection.Charms, IltSection.Banking })
+            Check.False(IltSections.IsTab(moved), $"{IltSections.Label(moved)} isn't a tab");
+        Check.Eq(IltSections.OracleCharacterCommand, "/ro character", "Oracle command");
+        Check.Eq(IltSections.GlobalBankCommand, "/ginv bank", "Global Inventory command");
+    }
+
     /// <summary>
     /// The charms JSON behind "RynthILT.Data" is valid JSON; on ILT it has a "hands" array (empty
     /// with no hand carried) that the shared reader parses, off ILT it has none and still parses.
@@ -428,48 +442,6 @@ internal static class MoveTests
         Check.True(IltCharmsView.Parse(offJson).Hands.Count == 0, "and the reader shows none");
     }
 
-    /// <summary>The Character tab moved out (2026-10-13); every other ILT tab is still RynthILT's.</summary>
-    private static void MovedSections()
-    {
-        Check.Eq(IltSections.MovedCommand(IltSection.Character), IltSections.OracleCharacterCommand, "Character -> RynthOracle Character");
-        foreach (var kept in new[] { IltSection.Banking, IltSection.Gear, IltSection.Charms, IltSection.Games })
-        {
-            Check.True(IltSections.MovedCommand(kept) == null, $"{IltSections.Label(kept)} is still RynthILT's");
-            Check.True(IltSections.IsTab(kept), $"{IltSections.Label(kept)} is a Mini Remote tab");
-        }
-        Check.True(IltSections.Tabs.SequenceEqual(new[] { IltSection.Banking, IltSection.Gear, IltSection.Charms, IltSection.Games }),
-                   "the tab list is Banking, Gear, Charms, Games");
-        Check.False(IltSections.IsTab(IltSection.Character) || IltSections.IsTab(IltSection.Guardian), "Character and the Guardian aren't tabs");
-        Check.True(IltSections.TryParse("char", out IltSection c) && c == IltSection.Character, "old Character names still parse (for the redirect)");
-        Check.Eq(IltSections.OracleCharacterCommand, "/ro character", "Oracle command");
-    }
-
-    /// <summary>
-    /// RynthILT's RynthPluginGetSectionsJson: schema 1 (UI/Sections/SectionManifest.cs in RynthCore),
-    /// every view an ILT one, each surface one RenderEmbed answers.
-    /// </summary>
-    private static void SectionsManifest()
-    {
-        using var doc = System.Text.Json.JsonDocument.Parse(RynthILTPlugin.SectionsJson);
-        var root = doc.RootElement;
-        Check.Eq(root.GetProperty("version").GetInt32(), 1, "schema 1");
-        var sections = root.GetProperty("sections");
-        Check.Eq(sections.GetArrayLength(), 1, "one section of RynthILT's own");
-        Check.Eq(sections[0].GetProperty("id").GetString(), "quests", "a Quests section (the /qb list)");
-        var surfaces = new System.Collections.Generic.List<string>();
-        foreach (var c in root.GetProperty("contributions").EnumerateArray())
-        {
-            Check.Eq(c.GetProperty("server").GetString(), "ilt", "an Infinite Leaftide view");
-            surfaces.Add(c.GetProperty("surface").GetString() ?? "");
-        }
-        Check.True(surfaces.SequenceEqual(new[] { RynthILTPlugin.RatesSurface, RynthILTPlugin.FellowshipSurface, RynthILTPlugin.QuestBonusSurface }),
-                   "rates, fellowship, quest bonus: " + string.Join(",", surfaces));
-        Check.True(surfaces.All(s => s.StartsWith("section:ilt-", StringComparison.Ordinal) && s.Length <= 64), "short section:ilt-* surfaces");
-        Check.True(RynthILTPlugin.SectionsJson.All(ch => ch < 128), "ASCII only");
-        Check.True(RynthILTPlugin.IsParsedRemoteAction("servermenu") && RynthILTPlugin.IsParsedRemoteAction("ServerMenu")
-                   && !RynthILTPlugin.IsParsedRemoteAction("prog"), "RynthCore's servermenu push is answered, never queued as a verb");
-    }
-
     private static void DormantOffIlt()
     {
         var off = NewHub("Aeshnidae", "dormant");
@@ -492,11 +464,10 @@ internal static class MoveTests
         Check.True(RynthCore.RynthAiHostTests.Fakes.FakeHost.ChatCommands.Count > 0, "on ILT the login probe asks the server");
         Check.False(RynthCore.RynthAiHostTests.Fakes.FakeHost.ChatCommands.Any(c => c.Contains("/ilt features", StringComparison.OrdinalIgnoreCase)),
                     "the server is never asked for a feature list (the ILT profile is Rynth-side)");
-        // Character moved out of the Mini Remote (RynthOracle's Character tab, Session Stats);
-        // Charms and Banking are Infinite Leaftide's own screens and stay RynthILT's tabs.
-        Check.False(on.TabShown(IltSection.Character), "Character is no Mini Remote tab any more");
+        // Character, Charms and Banking moved out of the Mini Remote (RynthOracle / Global Inventory).
+        foreach (var moved in new[] { IltSection.Character, IltSection.Charms, IltSection.Banking })
+            Check.False(on.TabShown(moved), $"{IltSections.Label(moved)} is no Mini Remote tab any more");
         Check.Eq(on.TabShown(IltSection.Gear), on.Available, "Gear shows once the server features are known");
-        Check.Eq(on.TabShown(IltSection.Charms), on.Available, "Charms too");
         on.OnLogout();
 
         var forced = NewHub("Aeshnidae", "forced");

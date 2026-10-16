@@ -969,10 +969,44 @@ internal sealed partial class LegacyDashboardRenderer
                 incoming.Insert(0, existingDefault ?? new MonsterRule { Name = "Default" });
             }
 
+            // An engine without the Power column (before 2026-10-12) sends no AttackPower, which
+            // would reset every rule to Default: keep each rule's own (same name and expression).
+            if (json.IndexOf("\"AttackPower\"", StringComparison.OrdinalIgnoreCase) < 0)
+                CarryAttackPower(_settings.MonsterRules, incoming);
+            // Same for kite (2026-10-16): an older Monsters panel omits Kite and would wipe PullAway.
+            if (json.IndexOf("\"Kite\"", StringComparison.OrdinalIgnoreCase) < 0)
+                CarryKite(_settings.MonsterRules, incoming);
+
             _settings.MonsterRules = incoming;
             SaveMonstersFile();
         }
         catch { }
+    }
+
+    /// <summary>Copies AttackPower from <paramref name="current"/> onto the matching rules of
+    /// <paramref name="incoming"/> (same Name and MatchExpression, case-insensitive).</summary>
+    internal static void CarryAttackPower(List<MonsterRule> current, List<MonsterRule> incoming)
+    {
+        foreach (var r in incoming)
+        {
+            var old = current.FirstOrDefault(o =>
+                string.Equals(o.Name, r.Name, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(o.MatchExpression ?? "", r.MatchExpression ?? "", StringComparison.OrdinalIgnoreCase));
+            if (old != null) r.AttackPower = old.AttackPower;
+        }
+    }
+
+    /// <summary>Copies Kite from <paramref name="current"/> onto the matching rules of
+    /// <paramref name="incoming"/> (same Name and MatchExpression, case-insensitive).</summary>
+    internal static void CarryKite(List<MonsterRule> current, List<MonsterRule> incoming)
+    {
+        foreach (var r in incoming)
+        {
+            var old = current.FirstOrDefault(o =>
+                string.Equals(o.Name, r.Name, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(o.MatchExpression ?? "", r.MatchExpression ?? "", StringComparison.OrdinalIgnoreCase));
+            if (old != null) r.Kite = old.Kite;
+        }
     }
 
     // ── Settings bridge (engine-side Avalonia SettingsPanel) ─────────────────
@@ -1055,10 +1089,21 @@ internal sealed partial class LegacyDashboardRenderer
                 UseNativeAttack            = s.UseNativeAttack,
                 SummonPets                 = s.SummonPets,
                 PetMinMonsters             = s.PetMinMonsters,
-                // Spell Combat
+                VariablePowerMin           = s.VariablePowerMin,
+                VariablePowerMax           = s.VariablePowerMax,
+                MissileEnvironmentResponse = s.MissileEnvironmentResponse,
+                MagicEnvironmentResponse   = s.MagicEnvironmentResponse,
+                EnvironmentImpactLimit     = s.EnvironmentImpactLimit,
+                EnvironmentImpactWindowSec = s.EnvironmentImpactWindowSec,
+                EnvironmentApproachMeters  = s.EnvironmentApproachMeters,
+                EnvironmentMinDistance     = s.EnvironmentMinDistance,
+                EnvironmentSkipSec         = s.EnvironmentSkipSec,
+                KitePullMeters             = s.KitePullMeters,
+                KiteTagFirst               = s.KiteTagFirst,
                 WeaponSwapSettleMs         = s.WeaponSwapSettleMs,
                 WeaponSwapMinHealthPct     = s.WeaponSwapMinHealthPct,
                 WeaponSwapMinGainPct       = s.WeaponSwapMinGainPct,
+                // Spell Combat
                 SpellCastIntervalMs        = s.SpellCastIntervalMs,
                 AttackSpellIntervalMs      = s.AttackSpellIntervalMs,
                 CastDispelSelf             = s.CastDispelSelf,
@@ -1086,6 +1131,7 @@ internal sealed partial class LegacyDashboardRenderer
                 CorpseApproachRangeMin     = s.CorpseApproachRangeMin,
                 // Navigation
                 BoostNavPriority           = s.BoostNavPriority,
+                EnableVaultedDungeons      = s.EnableVaultedDungeons,
                 FollowNavMin               = s.FollowNavMin,
                 NavRingThickness           = s.NavRingThickness,
                 NavLineThickness           = s.NavLineThickness,
@@ -1095,6 +1141,8 @@ internal sealed partial class LegacyDashboardRenderer
                 NavLabelMode               = NavLabelModes.Clamp(s.NavLabelMode),
                 NavGuideLine               = s.NavGuideLine,
                 NavResumeNearest           = s.NavResumeNearest,
+                TrackBreadcrumbs           = s.NavOverlay.TrackBreadcrumbs,
+                ShowRouteOverlay           = s.NavOverlay.ShowRouteMarkers,
                 OpenDoors                  = s.OpenDoors,
                 OpenDoorRange              = s.OpenDoorRange,
                 OpenDoorsOnPathOnly        = s.OpenDoorsOnPathOnly,
@@ -1295,10 +1343,22 @@ internal sealed partial class LegacyDashboardRenderer
             s.UseNativeAttack            = p.UseNativeAttack;
             s.SummonPets                 = p.SummonPets;
             s.PetMinMonsters             = p.PetMinMonsters;
-            // Spell Combat
+            // Absent (an engine without these controls) = unchanged.
+            if (p.VariablePowerMin is int vpMin)              s.VariablePowerMin = vpMin;
+            if (p.VariablePowerMax is int vpMax)              s.VariablePowerMax = vpMax;
+            if (p.MissileEnvironmentResponse is int envMis)   s.MissileEnvironmentResponse = envMis;
+            if (p.MagicEnvironmentResponse is int envMag)     s.MagicEnvironmentResponse = envMag;
+            if (p.EnvironmentImpactLimit is int envLimit)     s.EnvironmentImpactLimit = envLimit;
+            if (p.EnvironmentImpactWindowSec is int envWin)   s.EnvironmentImpactWindowSec = envWin;
+            if (p.EnvironmentApproachMeters is int envStep)   s.EnvironmentApproachMeters = envStep;
+            if (p.EnvironmentMinDistance is int envMinDist)   s.EnvironmentMinDistance = envMinDist;
+            if (p.EnvironmentSkipSec is int envSkip)          s.EnvironmentSkipSec = envSkip;
+            if (p.KitePullMeters is int kitePull)             s.KitePullMeters = Math.Clamp(kitePull, 3, 100);
+            if (p.KiteTagFirst is bool kiteTag)               s.KiteTagFirst = kiteTag;
             if (p.WeaponSwapSettleMs is int wsSettle)         s.WeaponSwapSettleMs = Math.Clamp(wsSettle, 0, 3000);
             if (p.WeaponSwapMinHealthPct is int wsHealth)     s.WeaponSwapMinHealthPct = Math.Clamp(wsHealth, 0, 100);
             if (p.WeaponSwapMinGainPct is int wsGain)         s.WeaponSwapMinGainPct = Math.Clamp(wsGain, 0, 200);
+            // Spell Combat
             s.SpellCastIntervalMs        = p.SpellCastIntervalMs;
             if (p.AttackSpellIntervalMs is int attackDelay) s.AttackSpellIntervalMs = attackDelay;   // absent = unchanged
             s.CastDispelSelf             = p.CastDispelSelf;
@@ -1326,6 +1386,7 @@ internal sealed partial class LegacyDashboardRenderer
             s.CorpseApproachRangeMin     = p.CorpseApproachRangeMin;
             // Navigation
             s.BoostNavPriority           = p.BoostNavPriority;
+            s.EnableVaultedDungeons      = p.EnableVaultedDungeons;
             s.FollowNavMin               = p.FollowNavMin;
             s.NavRingThickness           = p.NavRingThickness;
             s.NavLineThickness           = p.NavLineThickness;
@@ -1335,6 +1396,8 @@ internal sealed partial class LegacyDashboardRenderer
             if (p.NavLabelMode >= 0) s.NavLabelMode = NavLabelModes.Clamp(p.NavLabelMode);
             if (p.NavGuideLine is bool guideLine) s.NavGuideLine = guideLine;
             if (p.NavResumeNearest is bool resumeNearest) s.NavResumeNearest = resumeNearest;   // absent = unchanged
+            if (p.TrackBreadcrumbs is bool crumbs) s.NavOverlay.TrackBreadcrumbs = crumbs;        // absent = unchanged
+            if (p.ShowRouteOverlay is bool routeOverlay) s.NavOverlay.ShowRouteMarkers = routeOverlay;
             s.OpenDoors                  = p.OpenDoors;
             s.OpenDoorRange              = p.OpenDoorRange;
             if (p.OpenDoorsOnPathOnly is bool doorsOnPath) s.OpenDoorsOnPathOnly = doorsOnPath;   // absent = unchanged
@@ -1822,6 +1885,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.CorpseApproachRangeMax   = NormalizeCorpseRangeYards(tmp.CorpseApproachRangeMax, 10.0);
         dst.CorpseApproachRangeMin   = NormalizeCorpseRangeYards(tmp.CorpseApproachRangeMin, 2.0);
         dst.BoostNavPriority         = tmp.BoostNavPriority;
+        dst.EnableVaultedDungeons    = tmp.EnableVaultedDungeons;
         dst.BoostLootPriority        = tmp.BoostLootPriority;
         dst.OpenDoors                = tmp.OpenDoors;
         dst.OpenDoorRange            = tmp.OpenDoorRange;
@@ -1850,6 +1914,17 @@ internal sealed partial class LegacyDashboardRenderer
         dst.MeleeAttackPower         = tmp.MeleeAttackPower;
         dst.MissileAttackPower       = tmp.MissileAttackPower;
         dst.UseRecklessness          = tmp.UseRecklessness;
+        dst.VariablePowerMin         = tmp.VariablePowerMin;
+        dst.VariablePowerMax         = tmp.VariablePowerMax;
+        dst.MissileEnvironmentResponse = tmp.MissileEnvironmentResponse;
+        dst.MagicEnvironmentResponse = tmp.MagicEnvironmentResponse;
+        dst.EnvironmentImpactLimit   = tmp.EnvironmentImpactLimit;
+        dst.EnvironmentImpactWindowSec = tmp.EnvironmentImpactWindowSec;
+        dst.EnvironmentApproachMeters = tmp.EnvironmentApproachMeters;
+        dst.EnvironmentMinDistance   = tmp.EnvironmentMinDistance;
+        dst.EnvironmentSkipSec       = tmp.EnvironmentSkipSec;
+        dst.KitePullMeters           = Math.Clamp(tmp.KitePullMeters, 3, 100);
+        dst.KiteTagFirst             = tmp.KiteTagFirst;
         dst.WeaponSwapSettleMs       = Math.Clamp(tmp.WeaponSwapSettleMs, 0, 3000);
         dst.WeaponSwapMinHealthPct   = Math.Clamp(tmp.WeaponSwapMinHealthPct, 0, 100);
         dst.WeaponSwapMinGainPct     = Math.Clamp(tmp.WeaponSwapMinGainPct, 0, 200);

@@ -8,13 +8,14 @@
       Bounty/          the Bounties window's tracker (ported from SilentKelpie's rynth/RynthSuite PR #11).
       Hub/             the ILT Hub (SilentKelpie's): the Mini Remote's ILT tabs (Character, Banking, Gear,
                        Charms, Games), the Guardian, the progression planners and the attribute raiser,
-                       server feature detection, the Rings inscription chain (Gear tab). Moved out of
-                       RynthAi 2026-10-13: RynthAi's Mini Remote hosts the tabs through RynthILT.Hub, and
-                       RynthILT borrows from RynthAi through RynthAi.Hub (Plugins/Shared/RynthIltHubApi.cs,
-                       RynthAiHubApi.cs).
+                       server feature detection. Moved out of RynthAi 2026-10-13: RynthAi's Mini Remote
+                       hosts the tabs through RynthILT.Hub, and RynthILT borrows from RynthAi through
+                       RynthAi.Hub (Plugins/Shared/RynthIltHubApi.cs, RynthAiHubApi.cs).
       IltSettingsView/ a copy of the ILT settings (RynthCore's verdict, this character's override, the
-                       ILT world names, the Hub's feature read) in its own window ("/ilt settings").
-      IltFellowship/   ILT's /fship commands as buttons ("/ilt fellow").
+                       ILT world names, the Hub's feature read), in RynthCore's Mini Remote and its
+                       own window ("/ilt settings").
+      IltFellowship/   ILT's /fship commands as buttons (RynthCore's Fellowship section, "/ilt fellow",
+                       and RynthAi's Fellowship view).
   -->
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -33,17 +34,16 @@
     <Platforms>x86</Platforms>
     <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
          highest API use NOT behind a Has*/version check. Nothing above the v66 baseline: every
-         newer call (plugin interfaces v68, live object ids v69, vendor trade v67, confirmation
-         answers v85, the server list v86, ...) is behind its Has* check, as it was in RynthAi. -->
+         newer call (plugin interfaces v68, live object ids v69, vendor trade v67, the chat parser,
+         world names and the plugin-command broker) is behind its Has* check, as it was in RynthAi. -->
     <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
-    <!-- RynthILT is ILT's server plugin: RynthCore loads it only for clients connecting to ILT, or late
-         when the world announces an ILT name (SilentKelpie's server plugins). Same lists as RynthCore's
-         IltDetect defaults. -->
+    <RynthPluginDescription>Infinite Leaftide (ACECustom) features: the ILT Hub (the Mini Remote's ILT tabs: banking, gear, charms, games), the Guardian, bounties, progression, the attribute raiser, the ILT settings and the /fship fellowship commands.</RynthPluginDescription>
+    <!-- RynthILT is ILT's server plugin: RynthCore loads it only for clients connecting to ILT (or when no
+         installed server plugin claims the host). Same lists as RynthCore's IltDetect defaults. -->
     <RynthPluginServerId>ilt</RynthPluginServerId>
     <RynthPluginServerName>Infinite Leaftide</RynthPluginServerName>
     <RynthPluginServerHosts>infiniteleaftide.online</RynthPluginServerHosts>
     <RynthPluginServerWorldNames>InfiniteLeaftide|*Leaftide*</RynthPluginServerWorldNames>
-    <RynthPluginDescription>Infinite Leaftide (ACECustom) features: the ILT Hub (the Mini Remote's ILT tabs: banking, gear, charms, games), the Guardian, bounties, progression, the attribute raiser, the ring inscription chain, the ILT settings and the /fship fellowship commands.</RynthPluginDescription>
   </PropertyGroup>
 
   <ItemGroup>
@@ -55,9 +55,9 @@
   <ItemGroup>
     <!-- The two interfaces between RynthILT and RynthAi (linked into both plugins). -->
     <Compile Include="..\Shared\RynthIltHubApi.cs" Link="Shared\RynthIltHubApi.cs" />
-    <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />
-    <!-- "RynthILT.Data": the charms list and bank balances for other plugins (DataInterface.cs). -->
+    <Compile Include="..\Shared\RynthIltServerApi.cs" Link="Shared\RynthIltServerApi.cs" />
     <Compile Include="..\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
+    <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />
     <!-- RynthCore's server list (API v86): the ILT verdict the Hub follows (IltSettingsView/). -->
     <Compile Include="..\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
     <!-- "RynthServer.Profile": ILT's settings and tinkering salvage (Hub/IltSalvage.cs) for other
@@ -67,7 +67,7 @@
     <Compile Include="..\Shared\ServerPack\ServerPackProfile.cs" Link="ServerPack\ServerPackProfile.cs" />
     <!-- ImGui.NET bound to the engine's cimgui (the tabs draw inside RynthAi's Mini Remote). -->
     <Compile Include="..\Shared\ImGuiNativeBinding.cs" Link="Shared\ImGuiNativeBinding.cs" />
-    <!-- ImGui text calls for non-literal text ('%' escaped; RynthAi links the same file). -->
+    <!-- ImGui text calls are printf formats: dynamic text (names, chat, server lines) goes through SafeImGui. -->
     <Compile Include="..\Shared\SafeImGui.cs" Link="Shared\SafeImGui.cs" />
     <!-- Install-folder resolver (the ILT Hub files left in the RynthAi folder). -->
     <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
@@ -78,7 +78,7 @@
     <Compile Include="..\Shared\DataWriteGuard.cs" Link="Shared\DataWriteGuard.cs" />
     <!-- AcObjectClass (the item classes the gear tools check). -->
     <Compile Include="..\..\Shared\RynthCore.LootSdk\AcGameEnums.cs" Link="Shared\AcGameEnums.cs" />
-    <!-- ILT's /fship commands (IltFellowship/): the shared command list format and its button panel. -->
+    <!-- ILT's /fship commands: sent to RynthAi's Fellowship view, and drawn in RynthCore's Fellowship section. -->
     <Compile Include="..\Shared\ServerCommandShare.cs" Link="Shared\ServerCommandShare.cs" />
     <Compile Include="..\Shared\ServerCommandPanel.cs" Link="Shared\ServerCommandPanel.cs" />
   </ItemGroup>

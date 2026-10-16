@@ -29,6 +29,9 @@ public partial class MainWindow : Window
         { "None", "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
     public string[] PetOptions { get; } =
         { "PAuto", "Slash", "Pierce", "Bludgeon", "Fire", "Cold", "Lightning", "Acid", "Nether" };
+    /// <summary>RynthAi KiteModes: Default follows the DEFAULT row; PullAway tags then runs clear.</summary>
+    public string[] KiteOptions { get; } =
+        { "Default", "Off", "PullAway" };
 
     private string _charFolder   = string.Empty;
     private string _monstersPath = string.Empty;

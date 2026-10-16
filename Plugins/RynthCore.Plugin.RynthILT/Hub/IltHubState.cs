@@ -204,7 +204,7 @@ public sealed class IltGearState
     public bool ChunkInCombat;
     public int ChunkIntervalMs = 2000;
     /// <summary>
-    /// Only chunk aetheria whose max level is below this (Coalesced always chunks). Infinite Leaftide
+    /// Only chunk aetheria whose max level is below this (Coalesced Aetheria too). Infinite Leaftide
     /// aetheria goes up to level <see cref="IltInventory.AetheriaMaxLevel"/>, so the cap runs to one past it.
     /// </summary>
     public int ChunkAetheriaUnderLevel = 4;

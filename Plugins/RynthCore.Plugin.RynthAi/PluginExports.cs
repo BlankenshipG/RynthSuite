@@ -140,7 +140,10 @@ public static unsafe class PluginExports
         {
             if (surface == null) return 0;
             ReadOnlySpan<byte> name = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(surface);
-            if (name.EndsWith(":popout"u8)) name = name[..^":popout"u8.Length];
+            // Engine tags popped-out embeds with ":popout" so the Mini Remote can show Dock
+            // and open expanded Options in the floating window.
+            bool popped = name.EndsWith(":popout"u8);
+            if (popped) name = name[..^":popout"u8.Length];
             var plugin = Runtime.Plugin;
             if (plugin == null) return 0;
             System.Numerics.Vector2 want;
@@ -161,7 +164,7 @@ public static unsafe class PluginExports
                 bool remote = name.SequenceEqual("miniremote-remote"u8);
                 bool window = remote || name.SequenceEqual("miniremote-window"u8);
                 if (!window && !name.SequenceEqual("miniremote"u8)) return 0;
-                if (!plugin.RenderEmbeddedMiniRemote(window, out want, tabs: !remote)) return 0;
+                if (!plugin.RenderEmbeddedMiniRemote(window, out want, tabs: !remote, popped: popped)) return 0;
             }
             if (wantWidth != null) *wantWidth = want.X;
             if (wantHeight != null) *wantHeight = want.Y;

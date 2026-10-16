@@ -11,12 +11,10 @@ public static unsafe class PluginExports
 {
     internal static readonly RynthPluginRuntime<RynthILTPlugin> Runtime = new();
 
-    // Typed interfaces (host GetPluginInterface, API v68): "RynthILT.Hub" v1, the ILT tabs and
-    // sections RynthAi's Mini Remote hosts (Plugins/Shared/RynthIltHubApi.cs, HubInterface.cs), and
-    // "RynthServer.Profile" v1, ILT's settings and tinkering salvage for any reader, as every server
-    // plugin serves its own (Plugins/Shared/RynthServerProfileApi.cs, ProfileInterface.cs), and
-    // "RynthILT.Data" v1, the charms list and bank balances with their actions
-    // (Plugins/Shared/RynthIltDataApi.cs, DataInterface.cs).
+    // Typed interfaces for other plugins (host GetPluginInterface, API v68): "RynthILT.Hub" v1, the ILT
+    // tabs and sections RynthAi's Mini Remote hosts (Plugins/Shared/RynthIltHubApi.cs, HubInterface.cs),
+    // and "RynthILT.Server" v1, the Leaftide feature list and fellowship rules as JSON
+    // (Plugins/Shared/RynthIltServerApi.cs, ServerInterface.cs).
     // Fixed signature: void* (const char* iface, uint version).
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginQueryInterface", CallConvs = new[] { typeof(CallConvCdecl) })]
     private static IntPtr QueryInterface(IntPtr ifaceAnsi, uint version)
@@ -24,10 +22,10 @@ public static unsafe class PluginExports
         try
         {
             string iface = ifaceAnsi == IntPtr.Zero ? "" : Marshal.PtrToStringAnsi(ifaceAnsi) ?? "";
-            IntPtr table = HubInterface.Query(iface, version);
-            if (table != IntPtr.Zero) return table;
-            table = ProfileInterface.Query(iface, version);
-            return table != IntPtr.Zero ? table : DataInterface.Query(iface, version);
+            IntPtr hub = HubInterface.Query(iface, version);
+            if (hub != IntPtr.Zero) return hub;
+            IntPtr server = ServerInterface.Query(iface, version);
+            return server != IntPtr.Zero ? server : DataInterface.Query(iface, version);
         }
         catch
         {
@@ -44,7 +42,7 @@ public static unsafe class PluginExports
         // An exception escaping an UnmanagedCallersOnly export fail-fasts the client under NativeAOT.
         try { Runtime.Shutdown(); } catch { }
         try { HubInterface.Release(); } catch { }
-        try { ProfileInterface.Release(); } catch { }
+        try { ServerInterface.Release(); } catch { }
         try { DataInterface.Release(); } catch { }
         foreach (IntPtr p in new[] { Interlocked.Exchange(ref _bountiesPtr, IntPtr.Zero), Interlocked.Exchange(ref _progressionPtr, IntPtr.Zero),
                      Interlocked.Exchange(ref _statusPtr, IntPtr.Zero), Interlocked.Exchange(ref _sectionsPtr, IntPtr.Zero) })
@@ -87,12 +85,11 @@ public static unsafe class PluginExports
     /// <summary>
     /// Engine panels drawn by RynthILT (render thread): "guardian" is the engine's Guardian ILT
     /// panel (RynthCore's GuardianFace); "section:ilt-rates" (the ILT session extras, Session Stats),
-    /// "section:ilt-fellowship" (the /fship commands), "section:ilt-questbonus" (the /qb list,
-    /// RynthILT's Quests section) and "section:ilt-settings" (the ILT settings, for an engine that
-    /// still asks) are RynthCore's Mini Remote sections. ":popout" is added when one is popped out
-    /// into a window of its own, and RynthILT draws in the engine's current context either way. The
-    /// Guardian panel is user-sized (want echoes the size given); a section reports the height it
-    /// used. 1 = drawn, 0 = not ready / unknown surface.
+    /// "section:ilt-settings" (the ILT settings, for an engine that still asks) and
+    /// "section:ilt-fellowship" (the /fship commands) are RynthCore's Mini Remote sections.
+    /// ":popout" is added when one is popped out into a window of its own, and RynthILT draws in
+    /// the engine's current context either way. The Guardian panel is user-sized (want echoes the
+    /// size given); a section reports the height it used. 1 = drawn, 0 = not ready / unknown surface.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderEmbed", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static int RenderEmbed(byte* surface, float width, float height, float* wantWidth, float* wantHeight)
@@ -114,7 +111,6 @@ public static unsafe class PluginExports
             string? view = name.SequenceEqual("section:ilt-settings"u8) ? RynthILTPlugin.SettingsSurface
                          : name.SequenceEqual("section:ilt-fellowship"u8) ? RynthILTPlugin.FellowshipSurface
                          : name.SequenceEqual("section:ilt-rates"u8) ? RynthILTPlugin.RatesSurface
-                         : name.SequenceEqual("section:ilt-questbonus"u8) ? RynthILTPlugin.QuestBonusSurface
                          : null;
             if (view == null || !plugin.RenderEmbedded(view, out float wantH)) return 0;
             if (wantWidth != null) *wantWidth = width;
@@ -207,9 +203,11 @@ public static unsafe class PluginExports
     }
 
     /// <summary>
-    /// (action, value) from the engine's plugin-command broker (Host.SendPluginCommand): "prog" with
-    /// the Progression tab's arguments (RynthAi forwards an older engine's "prog" here), or an ILT
-    /// verb. Copied and run on RynthILT's next tick.
+    /// (action, value) from the engine's plugin-command broker (Host.SendPluginCommand). Copied
+    /// before returning (the caller frees them). "servermenu" is RynthCore's (2026.10.5.47+) world
+    /// verdict, override and ILT world names for the ILT settings view: parsed and published here
+    /// (any thread). Anything else is "prog" with the Progression tab's arguments (RynthAi forwards
+    /// an older engine's "prog" here) or an ILT verb, queued and run on RynthILT's next tick.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginApplyRemoteCommand", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void ApplyRemoteCommand(IntPtr actionAnsi, IntPtr valueAnsi)
@@ -218,15 +216,15 @@ public static unsafe class PluginExports
         {
             string action = actionAnsi != IntPtr.Zero ? (Marshal.PtrToStringAnsi(actionAnsi) ?? string.Empty) : string.Empty;
             if (action.Length == 0 || action.Length > 32) return;
+            string value = valueAnsi != IntPtr.Zero ? (Marshal.PtrToStringAnsi(valueAnsi) ?? string.Empty) : string.Empty;
             var plugin = Runtime.Plugin;
             if (plugin == null) return;
             if (RynthILTPlugin.IsParsedRemoteAction(action))
             {
-                // RynthCore's "servermenu" push (a few KB): answered here, never queued as an ILT verb.
-                plugin.ApplyRemoteCommand(action, valueAnsi != IntPtr.Zero ? (Marshal.PtrToStringAnsi(valueAnsi) ?? string.Empty) : string.Empty);
+                // A few hundred bytes; IltSettingsModel drops anything past its MaxPayload.
+                plugin.ApplyRemoteCommand(action, value);
                 return;
             }
-            string value = valueAnsi != IntPtr.Zero ? (Marshal.PtrToStringAnsi(valueAnsi) ?? string.Empty) : string.Empty;
             if (action.Length + value.Length > 512) return;
             plugin.EnqueueRemoteCommand(action, value);
         }
@@ -264,8 +262,7 @@ public static unsafe class PluginExports
 
     /// <summary>
     /// RynthCore 2026.10.5.46+ (optional): what RynthILT adds to the Mini Remote's sections (UTF-8
-    /// JSON, schema 1; RynthILTPlugin.BuildSectionsJson). Null before login. An unchanged manifest
-    /// keeps the same buffer.
+    /// JSON, schema 1). Null before login. An unchanged manifest keeps the same buffer.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetSectionsJson", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static IntPtr GetSectionsJson()

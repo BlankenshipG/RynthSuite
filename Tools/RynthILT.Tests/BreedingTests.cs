@@ -12,7 +12,7 @@ namespace RynthILT.Tests;
 // The pet breeding tracker (IltBreedingRules / IltBreedingEssence / IltBreedingSupplies / IltPetBreeding):
 // the server's rules and where each value came from, the parsers for ACECustom's appraisal block,
 // chat and "@breed-debug" (formats copied from PetDevice_Breeding.cs / PetDevice_Maturity.cs), each
-// breeding gate, the pair planner's odds, the supply refusals, and the "RynthILT.Data" v2 reader JSON.
+// breeding gate, the pair planner's odds, the supply refusals, and the JSON RynthOracle reads.
 internal static class BreedingTests
 {
     public static void Register(Runner r)
@@ -26,7 +26,7 @@ internal static class BreedingTests
         r.Add("breeding: each gate (charges, rest, growth, neutered, shiny, bond, tier, ID)", Gates);
         r.Add("breeding: pair planner blocks wrong sexes and ranges the inherited mutations", Planner);
         r.Add("breeding: supplies are refused where the server would refuse them", Supplies);
-        r.Add("breeding: reader JSON round-trips through the shared reader view", ReaderJson);
+        r.Add("breeding: reader JSON round-trips through RynthOracle's view", ReaderJson);
         r.Add("breeding: saved state survives the hub.json source-generated serializer", StateJson);
         r.Add("breeding: RynthILT.Data v2 keeps v1 readers working", DataApiVersion);
     }

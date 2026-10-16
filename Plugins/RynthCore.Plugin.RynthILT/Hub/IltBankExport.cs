@@ -1,5 +1,6 @@
-// IltBankExport.cs - The bank JSON of "RynthILT.Data" (Plugins/Shared/RynthIltDataApi.cs): the
-// Banking tab's balances, form choices and log for another plugin's view (every character here).
+// IltBankExport.cs - The bank JSON of "RynthILT.Data" (Plugins/Shared/RynthIltDataApi.cs):
+// RynthInventory's Global Inventory "Banking" tab, which replaced the Mini Remote's Banking tab
+// on 2026-10-13.
 //
 // Every character RynthILT has run on this server keeps its balances in its own hub.json
 // (<RynthILT folder>\<world>\<character>\hub.json, IltHubStore); the export lists them all, the

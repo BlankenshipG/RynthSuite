@@ -19,11 +19,26 @@ internal sealed class OracleContext
     public readonly VoidTracker Void = new();
     public readonly FellowshipTracker Fellowship = new();
     public readonly ServerIdentity Server = new();
+    /// <summary>RynthILT's server profile (Leaftide features, fellowship rules); None without RynthILT.</summary>
+    public readonly IltServerLink Ilt = new();
+    /// <summary>RynthILT's "RynthILT.Data" (the Character tab's charms list and Toggle buttons).</summary>
+    public readonly RynthCore.Plugin.Shared.RynthIltDataClient IltData = new();
+    /// <summary>The charms RynthILT last reported (None without RynthILT); read while the Character tab shows.</summary>
+    public RynthCore.Plugin.Shared.IltCharmsView Charms = RynthCore.Plugin.Shared.IltCharmsView.None;
     /// <summary>RynthAi's session (the one session every tracker shows); read while the Character tab shows.</summary>
     public readonly RynthCore.Plugin.Shared.RynthAiSessionClient AiSession = new();
     /// <summary>The last session RynthAi reported; SessionKnown false without RynthAi.</summary>
     public RynthCore.Plugin.Shared.SessionStatsV1 Session;
     public bool SessionKnown;
+    /// <summary>The last charm Toggle's outcome, shown under the charms list.</summary>
+    public string CharmMessage = "";
+    /// <summary>RynthILT's pet breeding tracker (None without it); read while the Pet Breeding tab shows.</summary>
+    public RynthCore.Plugin.Shared.IltBreedingView Breeding = RynthCore.Plugin.Shared.IltBreedingView.None;
+    /// <summary>The last breeding button's outcome, shown under the tab's buttons.</summary>
+    public string BreedingMessage = "";
+
+    /// <summary>Set by the plugin: sends a verb to RynthILT's breeding tracker (RynthIltDataApi PetBreedingCommand).</summary>
+    public Func<string, bool> BreedingCommand = _ => false;
     /// <summary>RynthCore's server list (API v86) and the active server owner's settings; State null on older engines.</summary>
     public readonly RynthCore.Plugin.Shared.ServerStateClient ServerState = new();
     /// <summary>ConquestAC-only data (tag Conquest); fed only while on ConquestAC.</summary>
@@ -47,6 +62,9 @@ internal sealed class OracleContext
 
     /// <summary>Set by the plugin: sends a chat command to the server as if typed (the views' buttons).</summary>
     public Func<string, bool> Send = _ => false;
+
+    /// <summary>Set by the plugin: asks RynthILT to use a carried charm or Guardian Hand (its toggle id).</summary>
+    public Func<uint, bool> ToggleCharm = _ => false;
 
     /// <summary>Set by the plugin: runs a chat command through RynthCore's plugin dispatch (another plugin's window).</summary>
     public Func<string, bool> RunCommand = _ => false;

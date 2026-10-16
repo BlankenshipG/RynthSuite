@@ -1,13 +1,12 @@
 // ============================================================================
 //  RynthSuite - Plugins/Shared/RynthIltDataApi.cs
-//  The "RynthILT.Data" interface: the Infinite Leaftide data RynthILT's Mini Remote Charms
-//  and Banking tabs show, for other plugins to draw (SilentKelpie's RynthOracle Character
-//  tab and RynthInventory Global Inventory "Banking" tab read it; neither is in this tree yet):
-//    - the registry charms and Guardian Hands (GetCharmsJson, ToggleCharm);
-//    - the bank balances of every character RynthILT has seen on this server, and
-//      deposits, withdrawals, transfers and balance reads (GetBankJson, BankCommand);
-//    - version 2: the pet breeding tracker (GetPetBreedingJson, PetBreedingCommand).
-//  Separate from "RynthServer.Profile" (the server's settings) and "RynthILT.Hub" (RynthAi's
+//  The "RynthILT.Data" interface: the Infinite Leaftide data other plugins draw now that
+//  the Mini Remote's Charms and Banking tabs are gone (2026-10-13):
+//    - RynthOracle's Character tab lists the registry charms (GetCharmsJson, ToggleCharm);
+//    - RynthInventory's Global Inventory "Banking" tab lists the bank balances of every
+//      character RynthILT has seen on this server, and sends deposits, withdrawals,
+//      transfers and balance reads (GetBankJson, BankCommand).
+//  Separate from "RynthILT.Server" (the feature profile) and "RynthILT.Hub" (RynthAi's
 //  exact-version table) so neither has to change for this.
 //  Compiled into RynthILT and its readers (linked source), so the layout can't drift.
 //
@@ -47,11 +46,10 @@
 //    transfer <currencyIndex> <amount> <noteIndex> <recipient name...>
 //  The reader confirms a transfer with the player before sending it (RynthILT doesn't ask again).
 //
-//  Version 2 (RynthILT 0.3.1) appends GetPetBreedingJson and PetBreedingCommand: the data of the
-//  pet breeding tracker RynthILT draws in the Mini Remote's Pets > Breeding sub-tab (no plugin in
-//  this tree reads it yet). Readers still query version 1 and accept a version-1 table, so charms
-//  and the bank keep working with an older RynthILT; they use the breeding functions only when
-//  the table says Version >= 2 and is that big (HasPetBreeding).
+//  Version 2 (RynthILT 0.2.7) appends GetPetBreedingJson and PetBreedingCommand (RynthOracle's
+//  Pet Breeding tab). Readers still query version 1 and accept a version-1 table, so charms and
+//  the bank keep working with an older RynthILT; they use the breeding functions only when the
+//  table says Version >= 2 and is that big (HasPetBreeding).
 //
 //  GetPetBreedingJson payload (IltPetBreeding.BuildJson; read leniently):
 //  { "available": true, "world": "...", "enabled": "on"|"off"|"unknown", "maturity": "...", "bond": "...",
@@ -128,7 +126,7 @@ public unsafe struct RynthIltDataApiV1
 }
 
 /// <summary>
-/// A reader of "RynthILT.Data". Looks the table up through the host,
+/// A reader of "RynthILT.Data" (RynthOracle, RynthInventory). Looks the table up through the host,
 /// re-queried while RynthILT is missing or after it unloads (Version 0), and copies a JSON out on
 /// request. Pump thread only.
 /// </summary>

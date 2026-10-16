@@ -11,11 +11,10 @@
 //      confirmation, "cannot be used on", or a WeenieError (YoureTooBusy retries).
 // Without the v81 engine (or with dialog answering off) AC shows its own dialog and the player
 // clicks it; the runner waits longer for that.
-// Prepared rows (a server's trinket salvage): with no bag prepared at the chosen tier, a raw bag
-// is first used on that tier's Ammunition (UB-IT's "prep salvage") and the step runs once the
-// prepared bag shows up.
-// Items a run finished are left out of later scans this session, so server rows that don't show
-// on the item aren't applied twice and "auto next batch" moves on to the next items.
+// Trinkets: with no bag prepared at the chosen tier, a raw bag is first used on that tier's
+// Ammunition (UB-IT's "prep salvage") and the step runs once the prepared bag shows up.
+// Items a run finished are left out of later scans this session, so ILT rows that don't show on
+// the item aren't applied twice and "auto next batch" moves on to the next items.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -56,7 +55,7 @@ internal sealed class TinkerRunner
     private const int MaxRetries = 3;
     /// <summary>Appraisal requests one scan may send (the Items tab sees the whole pack).</summary>
     private const int MaxAppraisalsPerScan = 25;
-    /// <summary>UB-IT polls up to ~30 s for the prepared bag.</summary>
+    /// <summary>UB-IT polls up to ~30 s for the prepared trinket bag.</summary>
     private const long PrepTimeoutMs = 30_000;
     /// <summary>Auto next batch: re-scan while items are still being appraised, this often and this many times.</summary>
     private const long AutoRescanDelayMs = 3_000;
@@ -89,7 +88,7 @@ internal sealed class TinkerRunner
     private bool _manual;
     private long _stepAt, _nextAt;
     private Dictionary<int, TinkerRow> _byId = new();
-    /// <summary>The wait is for a bag being prepared, not a tinker.</summary>
+    /// <summary>The wait is for a trinket bag being prepared, not a tinker.</summary>
     private bool _prep;
     private int _prepsThisItem;
     /// <summary>Bags this batch used up (auto next batch stops after a batch that used none).</summary>
@@ -117,6 +116,8 @@ internal sealed class TinkerRunner
     /// <summary>A job is on (set by Start, cleared by Stop: the queue empties before the batch-done step runs).</summary>
     public bool Running => _active;
     private volatile bool _active;
+    /// <summary>True while another crafting job (the Rings chain) owns the pack.</summary>
+    public Func<bool> Blocked { get; set; } = () => false;
     public TinkerBench Bench => _bench;
     public string Status => _status;
     /// <summary>The last scan's rows (for <see cref="ScannedBench"/>).</summary>
@@ -238,6 +239,7 @@ internal sealed class TinkerRunner
     public void Start(TinkerBench bench)
     {
         if (Running) return;
+        if (Blocked()) { _status = "the Rings chain is running"; return; }
         if (_scannedBench != (int)bench || _scan.Length == 0) { _status = "scan first"; return; }
         _bench = bench;
         _queue.Clear();
@@ -434,7 +436,7 @@ internal sealed class TinkerRunner
         _status = $"{facts.Name}: applying {_bagName}{pctText}{ask}";
     }
 
-    /// <summary>The full bags that can serve a step (prepared rows: prepared at the chosen tier).</summary>
+    /// <summary>The full bags that can serve a step (trinket steps: prepared at the chosen tier).</summary>
     private List<WorldObject> BagsFor(TinkerStep step)
         => Inv.Items()
             .Where(b => b.ObjectClass == AcObjectClass.Salvage
@@ -442,7 +444,7 @@ internal sealed class TinkerRunner
             .ToList();
 
     /// <summary>
-    /// No prepared bag: use a raw one on the tier's Ammunition (UB-IT's prep). The wait
+    /// No prepared trinket bag: use a raw one on the tier's Ammunition (UB-IT's prep). The wait
     /// ends when a prepared bag shows up; the next tick then applies it.
     /// </summary>
     private void Prepare(long nowMs, TinkerStep step, string key, string matName)
@@ -464,7 +466,7 @@ internal sealed class TinkerRunner
         _step = step;
         _prep = true;
         if (!Host.UseOnFor(unchecked((uint)raw.Id), unchecked((uint)ammo.Id), "Crafting",
-                $"{TinkerCatalog.Label(_bench)}: prepare {matName} on {ammo.Name}", UseKind.Asked))
+                $"Trinkets: prepare {matName} on {ammo.Name}", UseKind.Asked))
         {
             if (!_manual) Host.ArmConfirmation(RynthCoreHost.ConfirmationKind.CraftInteraction, 0, 0);
             Retry(nowMs, "the prepare request didn't go out");

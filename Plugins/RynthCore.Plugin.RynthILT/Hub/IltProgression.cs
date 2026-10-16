@@ -222,7 +222,7 @@ internal sealed class IltProgression : IIltFeature
         Attributes.OnChat(text);
         // Passive /aug reader: updates Current even when the capture idle finished on the banner alone
         // (chat-hold backlog) or the player typed /aug by hand. Window opens on the header.
-        string t = text;
+        string t = text ?? string.Empty;
         if (t.Contains("Augmentation Levels", StringComparison.OrdinalIgnoreCase))
             _augPassiveUntilMs = IltHubContext.NowMs + 8_000;
         else if (IltHubContext.NowMs <= _augPassiveUntilMs && TryApplyAugLine(t))
