@@ -47,8 +47,8 @@ namespace RynthCore.Plugin.RynthILT;
 public sealed class RynthILTPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthILT");
-    // Previous release: 0.2.8.
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.9");
+    // Previous release: 0.2.9.
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.10");
 
     /// <summary>
     /// The settings view's surface. No longer in the sections manifest (the force-server override

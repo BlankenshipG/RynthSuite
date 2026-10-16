@@ -119,6 +119,12 @@ public sealed class PetTabState
     public bool KeepCosmeticOut;
     /// <summary>Seconds to wait before re-summoning the cosmetic pet after it despawns.</summary>
     public int CosmeticRespawnSeconds = 15;
+
+    // Auto siphon-lens capture (ACECustom MonsterCapture; Mini Remote > Pets).
+    /// <summary>When on, use the selected siphon lens on a nearby creature once it is weak enough.</summary>
+    public bool AutoCaptureEnabled;
+    /// <summary>Index into <see cref="PetCaptureRules.Lenses"/> (Flawed to Asheron).</summary>
+    public int CaptureLensIndex;
 }
 
 /// <summary>A user's choice of summon type for one essence (matched by name, case-insensitive).</summary>
@@ -250,6 +256,7 @@ internal sealed class MiniRemoteStore
         s.Pet.RosterKind = Math.Clamp(s.Pet.RosterKind, 0, 2);
         s.Pet.RosterSort = Math.Clamp(s.Pet.RosterSort, 0, 6);
         s.Pet.CosmeticRespawnSeconds = Math.Clamp(s.Pet.CosmeticRespawnSeconds, 5, 600);
+        s.Pet.CaptureLensIndex = Math.Clamp(s.Pet.CaptureLensIndex, 0, PetCaptureRules.Lenses.Length - 1);
         s.Quests ??= new QuestsTabState();
         s.Quests.QuestFilter ??= string.Empty;
         s.Quests.QuestFavorites ??= new();

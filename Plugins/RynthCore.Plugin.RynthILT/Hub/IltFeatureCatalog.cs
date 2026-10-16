@@ -111,7 +111,7 @@ internal static class IltFeatureCatalog
         new("pets", "Pet log", GroupPets, "Mini Remote > Pets tab", "Captured pets, registered with Professor Ruggan (/pets).", IltFeature.Pets, IltKnown.Checked),
         new("shinies", "Shiny log", GroupPets, "Mini Remote > Pets tab", "Rare shiny creature variants you captured (/shinies).", IltFeature.Shinies, IltKnown.Checked),
         new("monster_capture", "Monster capture", GroupPets, "Mini Remote > Pets tab",
-            "Siphon lenses capture a creature's look into a pet essence (lens drops from kills are a separate server switch).", "monster_capture"),
+            "Siphon lenses capture a creature\'s look into a pet essence (<=20% health or under 20 HP; Asheron\'s Lens skips the gate). Auto-capture is the checkbox on the Pets roster.", "monster_capture"),
         new("pet_breeding", "Pet breeding", GroupPets, "Mini Remote > Pets > Breeding",
             "Breed two combat pet devices at the Seedy Motel for inherited and mutated offspring (/dance).", "pet_breeding"),
         new("pet_maturity", "Pet maturity", GroupPets, "Mini Remote > Pets > Breeding",

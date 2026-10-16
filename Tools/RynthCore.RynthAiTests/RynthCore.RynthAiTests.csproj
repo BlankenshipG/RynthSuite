@@ -30,6 +30,7 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\CreatureData\PlayerWeenies.cs" Link="Linked\PlayerWeenies.cs" />
     <!-- Loot: the measured loot-timer baseline and its [LootSettings] log line. -->
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\LootBaseline.cs" Link="Linked\LootBaseline.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\MiniRemote\PetCaptureRules.cs" Link="Linked\PetCaptureRules.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -60,6 +60,8 @@ public static class RynthIltHub
     public const string FeatureQuests = "quests";
     public const string FeaturePetRefill = "pet_refill";
     public const string FeatureUniversalMastery = "universal_mastery";
+    /// <summary>ACECustom siphon lenses (monster capture into a pet essence).</summary>
+    public const string FeatureMonsterCapture = "monster_capture";
     public const string FeatureRequireComps = "require_spell_comps";
     /// <summary>Pet breeding (the Pets tab's Breeding sub-tab is hidden while the server reports it off).</summary>
     public const string FeaturePetBreeding = "pet_breeding";
