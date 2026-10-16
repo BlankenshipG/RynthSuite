@@ -435,7 +435,11 @@ internal sealed class IltHubController
         if (r.Lines.Count == 0) return;
         switch (key)
         {
-            case IltFeature.Aug: Progression.ApplyAugLines(r.Lines); break;
+            case IltFeature.Aug:
+                Progression.ApplyAugLines(r.Lines);
+                // Probe's OnComplete is not RequestAugs' — drain a queued Refresh current / empty retry.
+                Progression.AfterExternalAugCapture();
+                break;
             case IltFeature.Pets: PetLogs.ApplyRoster(false, r.Lines); break;
             case IltFeature.Shinies: PetLogs.ApplyRoster(true, r.Lines); break;
             case IltFeature.Qb: QuestBonus.ApplyQbProbe(r.Lines); break;

@@ -17,8 +17,9 @@ internal static class IltParse
     /// <summary>
     /// "/aug" level line: "Creature:1,234", "Duration: 1,234", or "Specialize: 2".
     /// Trailing notes ("Triune Weave: 5 (adds ...)") are allowed; the planner only keeps known keys.
+    /// Number group matches T11's looser form (commas / spaces / dots) so Creature:4,000 always arms idle.
     /// </summary>
-    public static readonly Regex AugLine = new(@"^(\w+)\s*:\s*([\d,]+)", Opt);
+    public static readonly Regex AugLine = new(@"^(\w+)\s*:\s*(\d[\d,.\s']*)", Opt);
 
     /// <summary>"/pets" / "/shinies" roster entry: "12. Shiny Drudge Ravener".</summary>
     public static readonly Regex RosterLine = new(@"^\s*(\d+)\.\s+(.+)$", Opt);
