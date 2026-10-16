@@ -39,12 +39,19 @@ internal static partial class Program
                  {
                      ("skills", LootRuleText.Skills), ("wield requirements", LootRuleText.WieldRequirements),
                      ("materials", LootRuleText.Materials), ("damage types", LootRuleText.DamageTypes),
+                     ("creature types", LootRuleText.CreatureTypes),
                  })
         {
             Eq(table.Select(t => t.Id).Distinct().Count(), table.Length, $"{label}: ids unique");
             Check(table.All(t => t.Name.Length > 0 && t.Name.All(ch => ch >= 32 && ch < 128)), $"{label}: names ASCII");
             Eq(table.Select(t => t.Name).Distinct().Count(), table.Length, $"{label}: names unique");
         }
+        Check(ReferenceEquals(LootRuleText.ValueTableFor(166), LootRuleText.CreatureTypes), "166 Slayer Type -> creature types");
+        Eq(LootRuleText.LongKeys.First(k => k.Id == 166).Name, "Slayer Type", "166 player-facing name");
+        Eq(LootRuleText.ValueName(166, "1"), "Olthoi", "ValueName 166/1 Olthoi");
+        Check(LootRuleText.CreatureTypes.Select(t => t.Name)
+                .SequenceEqual(LootRuleText.CreatureTypes.Select(t => t.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase)),
+            "creature types listed alphabetically");
 
         // Retail / ACE numbering (the old table had Light Weapons at 47, which is Missile Weapons).
         string Skill(int id) => LootRuleText.Skills.First(s => s.Id == id).Name;

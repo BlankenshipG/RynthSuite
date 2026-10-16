@@ -59,6 +59,9 @@ public sealed class RynthILTPlugin : RynthPluginBase
     /// <summary>The ILT session extras' surface in RynthCore's Mini Remote "Session Stats" section.</summary>
     internal const string RatesSurface = "section:ilt-rates";
 
+    /// <summary>The /qb list surface (RynthOracle Quests / ILT quest-bonus embed).</summary>
+    internal const string QuestBonusSurface = "section:ilt-questbonus";
+
     /// <summary>The fellowship commands' surface in RynthCore's Fellowship section.</summary>
     internal const string FellowshipSurface = "section:ilt-fellowship";
 
@@ -381,6 +384,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
             SettingsSurface => _settingsUi.RenderBody,
             FellowshipSurface => _fellowshipUi.RenderBody,
             RatesSurface => RenderRatesSurface,
+            QuestBonusSurface => RenderQuestBonusSurface,
             _ => null,
         };
         if (body == null) return false;
@@ -409,6 +413,14 @@ public sealed class RynthILTPlugin : RynthPluginBase
         IltHubController? hub = _hub;
         if (hub == null) { ImGui.TextDisabled("ILT session rates start once RynthILT's Hub is ready."); return; }
         hub.RenderRatesSection();
+    }
+
+    /// <summary>The /qb list (render thread), or a line saying the Hub is not ready yet.</summary>
+    private void RenderQuestBonusSurface()
+    {
+        IltHubController? hub = _hub;
+        if (hub == null) { ImGui.TextDisabled("ILT quest bonus starts once RynthILT's Hub is ready."); return; }
+        hub.RenderQuestBonusSection();
     }
 
     /// <summary>
@@ -625,6 +637,14 @@ public sealed class RynthILTPlugin : RynthPluginBase
             case "hub":
             case "rates":
                 break;
+            case "vaulted":
+            case "vaulteddungeons":
+            {
+                // "/ilt vaulted [on|off|toggle|status]": the Vaulted Dungeons keeper.
+                if (_hub == null) { ChatLine("[RynthILT] ILT features not ready (log in first)."); return; }
+                _hub.VaultedDungeons.HandleCommand(args);
+                return;
+            }
             case "settings":
             case "options":
             {
@@ -645,6 +665,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
             case "help":
                 ChatLine("[RynthILT] /ilt hub ... (the Mini Remote's ILT tabs; same as /ra hub ...), /ilt guardian ..., /ilt servers [list|<names>|default],");
                 ChatLine("[RynthILT] /ilt bounty [list|refresh] - the tracked ACECustom bounties (the Bounties window: the ILT button on the RynthCore bar, or /rc bounties),");
+                ChatLine("[RynthILT] /ilt vaulted [on|off|toggle|status] - Vaulted Dungeons (Mini Remote tab; enable in Options > Navigation),");
                 ChatLine("[RynthILT] /ilt settings [show|hide|toggle] - the ILT settings: the world verdict, the ILT world names and a feature summary (force a server: RynthCore Options > Diagnostics; all features: RynthOracle > About),");
                 ChatLine("[RynthILT] /ilt fellow [show|hide|toggle] - ILT's /fship commands as buttons (also in the Mini Remote's Fellowship section and RynthOracle's Fellowship tab),");
                 ChatLine("[RynthILT] /ilt trace <category|all|list> [on|off], /ilt debug [on|off].");

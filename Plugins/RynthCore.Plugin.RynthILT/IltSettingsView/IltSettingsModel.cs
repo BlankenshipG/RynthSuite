@@ -55,6 +55,15 @@ internal sealed class IltSettingsModel
         if (view != null) Volatile.Write(ref _engine, view);
     }
 
+    /// <summary>
+    /// Older "servermenu" text push (RynthPluginApplyRemoteCommand). No-op here: the verdict now
+    /// comes from <see cref="ApplyServerState"/> / IltEngineVerdict. Kept so ApplyRemoteCommand compiles.
+    /// </summary>
+    public void ApplyEngine(string? payload) { _ = payload; }
+
+    /// <summary>Older "iltfeatures" text push. No-op; features come from the Hub's PublishFeatures.</summary>
+    public void ApplyFeatures(string? payload) { _ = payload; }
+
     /// <summary>The Hub's own feature read (plugin tick); null clears it. Any thread.</summary>
     public void PublishFeatures(IltFeatureView? view) => Volatile.Write(ref _features, view);
 

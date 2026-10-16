@@ -75,7 +75,7 @@ internal sealed class ChatBuffer
         if (string.IsNullOrEmpty(text)) return;
         string channel = ChatClassifier.IsItemInfo(text) ? ChatClassifier.Items
             : ChatClassifier.IsRynthOutput(text) ? ChatClassifier.Rynth
-            : ChatClassifier.ChannelFor(chatType);
+            : ChatClassifier.ChannelFor(text, chatType);
         string? sender = ChatClassifier.SenderFor(text, chatType);
         string ts = DateTime.Now.ToString("HH:mm:ss");
 

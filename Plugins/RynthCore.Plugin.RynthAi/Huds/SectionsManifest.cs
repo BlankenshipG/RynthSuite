@@ -9,13 +9,11 @@
 //                 same numbers, and RynthCore drops its own overview for it), Pets, Crafting,
 //                 Spells and Fellowship (the views of those core sections)
 //   Infinite      RynthILT's tabs, hosted here as they are in RynthAi's own Mini Remote (RynthILT.Hub,
-//   Leaftide      MiniRemote/IltClient.cs): Gear, Charms and Banking in Inventory, and a Games
-//                 section of RynthAi's own
-// Quests are RynthOracle's (since 2026-10-13), and RynthILT draws its ILT session extras, /fship
-// and /qb views itself (its own manifest), so neither is listed here. RynthILT's Character tab
-// moved out on 2026-10-13 (MovedTabs.cs): RynthOracle's Character tab and the ILT session rates in
-// Session Stats. Charms and Banking stay RynthILT's tabs (Infinite Leaftide's own screens), so the
-// engine's "/rc miniremote tab charms|banking" finds them here as "section:charms|banking".
+//   Leaftide      MiniRemote/IltClient.cs): Gear in Inventory, and a Games section of RynthAi's own
+// Quests are RynthOracle's (since 2026-10-13), and RynthILT draws its ILT session extras and /fship
+// views itself (its own manifest), so neither is listed here. RynthILT's Character, Charms and
+// Banking tabs moved out on 2026-10-13 (MovedTabs.cs): RynthOracle's Character tab and
+// RynthInventory's Global Inventory "Banking" tab.
 // Each view is a surface "section:<name>" RynthCore draws through RynthPluginRenderEmbed. An ILT
 // view whose feature the server hasn't reported is listed but not enabled, with a note.
 //
@@ -68,9 +66,9 @@ internal static class SectionsManifest
         new(StringComparer.OrdinalIgnoreCase)
         {
             ["gear"] = ("inventory", "Gear", 210, "ILT gear tools (RynthILT)."),
-            ["charms"] = ("inventory", "Charms", 220, "ILT charms and Guardian Hands: acquired, status, tier, toggles (RynthILT)."),
-            ["banking"] = ("inventory", "Banking", 230, "Your ILT bank: balances, deposits, withdrawals and transfers (RynthILT)."),
             ["games"] = ("games", "Games", 100, "ILT games (RynthILT)."),
+            ["vaulted"] = ("nav", "Vaulted Dungeons", 220,
+                "Keep the character in one Vaulted Dungeon (RynthILT; Options > Navigation)."),
         };
 
     /// <summary>The surface name of a tab's view ("section:gear").</summary>

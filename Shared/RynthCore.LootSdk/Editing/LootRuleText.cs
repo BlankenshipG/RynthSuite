@@ -49,6 +49,9 @@ public static class LootRuleText
             (48, "WeaponSkill"), (54, "WeaponEncumbrance"),   // 54 was labelled MaxDamage until 2026-10-07; max damage is 44
             (87, "MaxStructure"), (88, "Structure"), (105, "ItemWorkmanship"), (107, "ItemMaxMana"),
             (131, "MaterialType"), (158, "WieldRequirements"), (159, "WieldSkilltype"), (160, "WieldDifficulty"),
+            // ACECustom / ACE appraisal: slayer weapons (166) and combat-essence pet stats (9053 / 9056).
+            // "Slayer Type" is the player-facing name; the ACE property is still SlayerCreatureType.
+            (166, "Slayer Type"), (9053, "Pet Bond Level"), (9056, "Pet Potency Stored"),
             (218, "EquippedSlots"), (353, "ImbuedEffect"), (370, "DamageRating"), (371, "DamageResistRating"),
             (372, "CritRating"), (373, "CritResistRating"), (374, "CritDamageRating"),
             (375, "CritDamageResistRating"), (376, "HealBoostRating"), (377, "NetherResistRating"), (379, "VitalityRating"),
@@ -81,7 +84,8 @@ public static class LootRuleText
     public static readonly (int Id, string Name)[] DoubleKeys =
     {
         (5, "ManaRate"), (22, "DamageVariance"), (29, "WeaponDefense"), (62, "WeaponOffense"),
-        (63, "DamageMod"), (144, "ManaConversionMod"), (149, "WeaponMissileDefense"),
+        (63, "DamageMod"), (138, "Slayer Damage Bonus"), // often unset on ACE appraisal; prefer LongDesc / int 166
+        (144, "ManaConversionMod"), (149, "WeaponMissileDefense"),
         (150, "WeaponMagicDefense"), (152, "ElementalDamageVsMonsters"), (167, "CooldownDuration"),
         (0x0A000009, "SalvageWorkmanship"), (0x0A00000B, "Variance"),
         (0x0A00000C, "AttackBonus"), (0x0A00000E, "DamageBonus"),
@@ -159,6 +163,42 @@ public static class LootRuleText
     };
 
     /// <summary>
+    /// Slayer Type (166 / ACE SlayerCreatureType): ACE CreatureType enum names
+    /// (same set as RynthAi CreatureTypeNames). Index 0 is Invalid and omitted.
+    /// Listed A–Z so players can find a type quickly; ids stay ACE order for .utl.
+    /// Unknown ids still show as "value N".
+    /// </summary>
+    public static readonly (int Id, string Name)[] CreatureTypes = BuildCreatureTypes();
+
+    private static (int Id, string Name)[] BuildCreatureTypes()
+    {
+        // Keep in sync with Plugins/RynthCore.Plugin.RynthAi/CreatureData/CreatureTypeNames.cs.
+        string[] names =
+        {
+            "Invalid", "Olthoi", "Banderling", "Drudge", "Mosswart", "Lugian", "Tumerok", "Mite", "Tusker",
+            "Phyntos Wasp", "Rat", "Auroch", "Cow", "Golem", "Undead", "Gromnie", "Reedshark", "Armoredillo",
+            "Fae", "Virindi", "Wisp", "Knathtead", "Shadow", "Mattekar", "Mumiyah", "Rabbit", "Sclavus",
+            "Shallows Shark", "Monouga", "Zefir", "Skeleton", "Human", "Shreth", "Chittick", "Moarsman",
+            "Olthoi Larvae", "Slithis", "Deru", "Fire Elemental", "Snowman", "Unknown", "Bunny",
+            "Lightning Elemental", "Rockslide", "Grievver", "Niffis", "Ursuin", "Crystal", "Hollow Minion",
+            "Scarecrow", "Idol", "Empyrean", "Hopeslayer", "Doll", "Marionette", "Carenzi", "Siraluun",
+            "Aun Tumerok", "Hea Tumerok", "Simulacrum", "Acid Elemental", "Frost Elemental", "Elemental",
+            "Statue", "Wall", "Altered Human", "Device", "Harbinger", "Dark Sarcophagus", "Chicken",
+            "Gotrok Lugian", "Margul", "Bleached Rabbit", "Nasty Rabbit", "Grimacing Rabbit", "Burun",
+            "Target", "Ghost", "Fiun", "Eater", "Penguin", "Ruschk", "Thrungus", "Viamontian Knight",
+            "Remoran", "Swarm", "Moar", "Enchanted Arms", "Sleech", "Mukkir", "Merwart", "Food",
+            "Paradox Olthoi", "Harvest", "Energy", "Apparition", "Aerbax", "Touched", "Blighted Moarsman",
+            "Gear Knight", "Gurog", "Anekshay",
+        };
+        var list = new List<(int, string)>(names.Length - 1);
+        for (int i = 1; i < names.Length; i++)
+            list.Add((i, names[i]));
+        // Alphabetical for the picker (same idea as Skills); id is what the .utl stores.
+        list.Sort((a, b) => string.Compare(a.Item2, b.Item2, StringComparison.OrdinalIgnoreCase));
+        return list.ToArray();
+    }
+
+    /// <summary>
     /// The names for a long key's value, or null when the key's value is a plain
     /// number. Unknown values are still valid: show them as "value N".
     /// </summary>
@@ -169,6 +209,7 @@ public static class LootRuleText
         131 => Materials,
         158 => WieldRequirements,
         159 => Skills,
+        166 => CreatureTypes,
         T11.T11Keys.WeaponGrade => T11.T11Catalog.Grades,
         T11.T11Keys.GearGrade => T11.T11Catalog.Grades,
         _ => null,
@@ -178,7 +219,7 @@ public static class LootRuleText
     public static bool ValueTableIsFlags(int longKey) => longKey is 45 or 0x0D000021;
 
     /// <summary>The long keys that have a value table, for the vocabulary.</summary>
-    public static readonly int[] KeysWithValueTables = { 45, 48, 131, 158, 159, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
+    public static readonly int[] KeysWithValueTables = { 45, 48, 131, 158, 159, 166, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
 
     /// <summary>
     /// True for the conditions whose value is picked by name when the key has a

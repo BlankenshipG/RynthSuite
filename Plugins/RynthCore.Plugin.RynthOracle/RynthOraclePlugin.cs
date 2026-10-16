@@ -18,12 +18,12 @@ namespace RynthCore.Plugin.RynthOracle;
 /// </summary>
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
-    // Previous release: 0.2.0.
-    public const string Version = "0.2.1";
+    // Previous release: 0.2.5.
+    public const string Version = "0.2.8";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
-    // The Character tab's session (RynthAi): read only while that tab is on screen.
+    // The Character tab's charms (RynthILT) and session (RynthAi): read only while that tab is on screen.
     private const long CharacterExtrasReadMs = 2000;
     private const long BookWorldWaitMs = 15_000;  // how long the quest book waits for the world name
 
@@ -40,9 +40,12 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private long _loginMs;
     private long _nextCharacterReadMs;
     private long _nextCharacterExtrasMs;
+    private string _charmsJson = "";
+    private long _nextBreedingMs;
+    private string _breedingJson = "";
     private bool _voidAutoDecided;
     private bool _dailyCheckStarted;
-    private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1;
+    private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1, _seenIltRevision = -1;
     // RynthCore's server list (ServerStateClient.Revision) last applied to the server identity.
     private int _seenServerStateRevision = -1;
     private bool _noUiLogged;
@@ -59,6 +62,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.RequestQuests = RequestQuests;
         _c.Send = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
         _c.RunCommand = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
+        _c.ToggleCharm = ToggleCharm;
+        _c.BreedingCommand = BreedingCommand;
         _ui.Log = msg => Host.Log(msg);
 
         _mainView = new OracleView(_c);
@@ -112,10 +117,12 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Flags.Clear();
         _c.Void.Clear();
         _c.Server.Reset();
+        _c.Ilt.Clear();
+        _c.Ilt.Poll(Host, Environment.TickCount64);
         _c.ServerState.Clear();
         _c.ServerState.Poll(Host, Environment.TickCount64, force: true);
         _seenServerStateRevision = _c.ServerState.Revision;
-        _c.Server.Refresh(Host, Host.GetPlayerId(), _c.ServerState.State);
+        _c.Server.Refresh(Host, Host.GetPlayerId(), _c.Ilt.Profile.Ilt, _c.ServerState.State);
         _catalogTag = null;
         ApplyServer();
         _conquestLoginRead = false;
@@ -153,23 +160,40 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Conquest.Clear();
         _c.Boards.Clear();
         _c.Server.Reset();
+        _c.Ilt.Clear();
         _c.ServerState.Clear();
         _c.TitlesKnown = false;
         _c.EarnedTitles.Clear();
         ClearCharacterExtras();
     }
 
-    /// <summary>Forgets the Character tab's session (login, logout): the next character's comes fresh.</summary>
+    /// <summary>Forgets the Character tab's charms and session (login, logout): the next character's come fresh.</summary>
     private void ClearCharacterExtras()
     {
+        _c.Charms = Shared.IltCharmsView.None;
+        _charmsJson = "";
+        _c.CharmMessage = "";
+        _c.Breeding = Shared.IltBreedingView.None;
+        _breedingJson = "";
+        _c.BreedingMessage = "";
         _c.Session = default;
         _c.SessionKnown = false;
         _c.AiSession.Reset();
     }
 
+    /// <summary>The Character tab's Toggle: RynthILT checks the id is one of the player's charms and uses it.</summary>
+    private bool ToggleCharm(uint id)
+    {
+        bool ok = _c.InWorld && _c.IltData.ToggleCharm(Host, Environment.TickCount64, id);
+        _c.CharmMessage = ok ? "Toggled; the status updates in a moment." : "RynthILT didn't take that (not carried any more, or RynthILT isn't loaded).";
+        _nextCharacterExtrasMs = Environment.TickCount64 + 1000;   // re-read soon so the new state shows
+        if (_main != null) _main.NeedsPass = true;
+        return ok;
+    }
+
     /// <summary>
-    /// While the Character tab is on screen: RynthAi's session, every <see cref="CharacterExtrasReadMs"/>.
-    /// Nothing is read with the window closed or on another tab.
+    /// While the Character tab is on screen: RynthILT's charms JSON and RynthAi's session, every
+    /// <see cref="CharacterExtrasReadMs"/>. Nothing is read with the window closed or on another tab.
     /// </summary>
     private void ReadCharacterExtras(long now)
     {
@@ -177,11 +201,45 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         if (now < _nextCharacterExtrasMs) return;
         _nextCharacterExtrasMs = now + CharacterExtrasReadMs;
 
+        string json = _c.IltData.ReadCharms(Host, now);
+        if (!string.Equals(json, _charmsJson, StringComparison.Ordinal))
+        {
+            _charmsJson = json;
+            _c.Charms = Shared.IltCharmsView.Parse(json);
+            _main.NeedsPass = true;
+        }
         bool known = _c.AiSession.TryGet(Host, now, out Shared.SessionStatsV1 s);
         if (known != _c.SessionKnown || known && (s.Xp != _c.Session.Xp || s.Lum != _c.Session.Lum || s.Kills != _c.Session.Kills))
             _main.NeedsPass = true;
         _c.SessionKnown = known;
         _c.Session = known ? s : default;
+    }
+
+    /// <summary>The Pet Breeding tab's buttons: a verb for RynthILT's tracker, then a quick re-read.</summary>
+    private bool BreedingCommand(string verb)
+    {
+        long now = Environment.TickCount64;
+        bool ok = _c.InWorld && _c.IltData.PetBreedingCommand(Host, now, verb);
+        _c.BreedingMessage = ok ? "Sent to RynthILT; the tab updates in a moment." : "RynthILT didn't take that (not loaded, or older than 0.2.7).";
+        _nextBreedingMs = now + 800;
+        if (_main != null) _main.NeedsPass = true;
+        return ok;
+    }
+
+    /// <summary>
+    /// While the Pet Breeding tab is on screen: RynthILT's breeding JSON every <see cref="CharacterExtrasReadMs"/>
+    /// (reading it keeps RynthILT's tracker scanning). Nothing is read with the window closed or on another tab.
+    /// </summary>
+    private void ReadBreeding(long now)
+    {
+        if (_main == null || _mainView == null || !_main.Visible || _mainView.Tab != OracleView.TabBreeding) return;
+        if (now < _nextBreedingMs) return;
+        _nextBreedingMs = now + CharacterExtrasReadMs;
+        string json = _c.IltData.ReadPetBreeding(Host, now);
+        if (string.Equals(json, _breedingJson, StringComparison.Ordinal)) return;
+        _breedingJson = json;
+        _c.Breeding = Shared.IltBreedingView.Parse(json);
+        _main.NeedsPass = true;
     }
 
     /// <summary>Shows the main window on a tab (another plugin's link, or a /ro tab command).</summary>
@@ -190,6 +248,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         if (_mainView != null) _mainView.Tab = tab;
         if (_main != null) { _main.Visible = true; _main.NeedsPass = true; }
         if (tab == OracleView.TabCharacter) _nextCharacterExtrasMs = 0;   // read at once
+        if (tab == OracleView.TabBreeding) _nextBreedingMs = 0;
     }
 
     /// <summary>
@@ -310,10 +369,19 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 break;
             case "character":
             case "char":
-                // The Character tab: the character overview and RynthAi's session (the generic part of
-                // the Mini Remote's old Character tab; Infinite Leaftide's charms stay RynthILT's).
+            case "charms":
+            case "charm":
+                // The Character tab: where the Mini Remote's Character and Charms tabs moved (2026-10-13).
                 // RynthAi, RynthILT and RynthCore's menus link here; it shows, never toggles off.
                 ShowTab(OracleView.TabCharacter);
+                break;
+            case "breeding":
+            case "breed":
+            case "pets":
+                // The Pet Breeding tab (Infinite Leaftide): RynthAi's Character menu and its Pets > Breeding tab link here.
+                if (!_c.Server.Is(ServerTags.InfiniteLeaftide))
+                    _c.Print("Pet breeding is an Infinite Leaftide feature; this server isn't recognised as Infinite Leaftide.");
+                ShowTab(OracleView.TabBreeding);
                 break;
             case "status":
                 string pack = _c.Catalog.PackServer.Length > 0 ? $" + {_c.Catalog.ServerCount} {_c.Catalog.PackServer}" : "";
@@ -322,18 +390,20 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                          + $"{_c.Flags.Flags.Count} quest flags read, {_c.Catalog.RetailCount} retail quests{pack}, {_c.Void.Dots.Count} Void spells tracked{titles}.");
                 break;
             case "about":
-                // The About tab (settings, the server RynthCore says this is).
+            case "features":
+                // The About tab (its "Server features" list is RynthILT's; RynthILT's settings link here).
                 _c.Print("Based on Oracle of Dereth by Advis Eveldan - thank you! github.com/advis61/OracleOfDereth (MIT)");
                 ShowTab(OracleView.TabAbout);
                 break;
             default:
-                _c.Print("Commands: /ro (window), /ro character (Character tab: status, session), /ro void (Void window), "
-                         + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), /ro quests (read quest flags), /ro status, "
-                         + "/ro about (About tab: settings, server)");
+                _c.Print("Commands: /ro (window), /ro character (Character tab: status, session, charms), /ro void (Void window), "
+                         + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), /ro breeding (Pet Breeding tab, Infinite Leaftide), "
+                         + "/ro quests (read quest flags), /ro status, "
+                         + "/ro about (About tab: settings, server features)");
                 break;
         }
-        if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char"
-                or "about" && !Host.HasUi && !_noUiLogged)
+        if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char" or "charms" or "charm"
+                or "breeding" or "breed" or "pets" or "about" or "features" && !Host.HasUi && !_noUiLogged)
         {
             _noUiLogged = true;
             _c.Print("This RynthCore engine can't show plugin windows (it needs script windows, API v71, with ImGui on). /ro status still works.");
@@ -418,14 +488,23 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
         if (!_c.InWorld) return;
 
+        // RynthILT's profile (every 2 s): the Fellowship tab's size and Leaftide fellowship features.
+        _c.Ilt.Poll(Host, now);
+        if (_c.Ilt.Revision != _seenIltRevision)
+        {
+            _seenIltRevision = _c.Ilt.Revision;
+            if (_main != null) _main.NeedsPass = true;
+        }
+
         ReadCharacterExtras(now);
+        ReadBreeding(now);
 
         // RynthCore's server list (every 2 s): a new pick or override applies now, not at the next character read.
         _c.ServerState.Poll(Host, now);
         if (_c.ServerState.Revision != _seenServerStateRevision)
         {
             _seenServerStateRevision = _c.ServerState.Revision;
-            _c.Server.Refresh(Host, _c.Character.PlayerId != 0 ? _c.Character.PlayerId : Host.GetPlayerId(), _c.ServerState.State);
+            _c.Server.Refresh(Host, _c.Character.PlayerId != 0 ? _c.Character.PlayerId : Host.GetPlayerId(), _c.Ilt.Profile.Ilt, _c.ServerState.State);
             ApplyServer();
             if (_main != null) _main.NeedsPass = true;
         }
@@ -451,7 +530,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             _nextCharacterReadMs = now + CharacterReadMs;
             _c.Character.Read(Host);
             _c.Void.RemoveExpired(now);
-            _c.Server.Refresh(Host, _c.Character.PlayerId, _c.ServerState.State);
+            _c.Server.Refresh(Host, _c.Character.PlayerId, _c.Ilt.Profile.Ilt, _c.ServerState.State);
             ApplyServer();
             LoadQuestBook(now);
             ReadTitles();

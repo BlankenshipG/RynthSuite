@@ -81,10 +81,20 @@ internal sealed class LongValuePicker : ContentControl
         _box.Width = 80;
         _box.Margin = new Thickness(4, 0, 0, 0);
         ToolTip.SetTip(_box, "Any number, named or not");
-        _combo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, MinWidth = 160 };
+        _combo = new ComboBox
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinWidth = 160,
+            IsTextSearchEnabled = true,   // type while open to jump (Olthoi, Virindi, …)
+            MaxDropDownHeight = 360,
+        };
         _combo.DisplayMemberBinding = new Avalonia.Data.Binding(nameof(Opt.Display));
         if (LootRuleText.ValueTableIsFlags(key))
             ToolTip.SetTip(_combo, "Flags: other combinations are typed as a number in the box");
+        else if (key == 166)
+            ToolTip.SetTip(_combo, "Slayer creature type — pick by name (list is A–Z). Any slayer: use >= 1");
+        else
+            ToolTip.SetTip(_combo, "Pick by name, or type a number in the box");
         _combo.SelectionChanged += (_, _) =>
         {
             if (_syncing || _combo.SelectedItem is not Opt { Id: int id }) return;

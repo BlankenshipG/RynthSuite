@@ -64,6 +64,8 @@ internal sealed class IltHubController
     public IltCharms CharmsTab { get; }
     /// <summary>Temple guardians: riddle translator, hand-in, attribute turn-in tracker.</summary>
     public IltGuardian Guardian { get; }
+    /// <summary>Vaulted Dungeons keeper (Mini Remote tab; Options > Navigation gate in RynthAi).</summary>
+    public IltVaultedDungeons VaultedDungeons { get; }
 
     /// <param name="writesBlocked">True while this character's copy from RynthAi is unfinished (IltHubStore.WritesBlocked).</param>
     /// <param name="legacyFolder">The character's RynthAi folder while that copy is unfinished (read-only fallback).</param>
@@ -92,7 +94,8 @@ internal sealed class IltHubController
         Charms = new IltCharmTracker(_ctx);
         CharmsTab = new IltCharms(_ctx, Charms);
         Guardian = new IltGuardian(_ctx, QuestBonus);
-        _features.AddRange(new IIltFeature[] { Banking, PetLogs, Breeding, Rates, QuestBonus, Progression, Gear, CharmsTab, Games, Guardian });
+        VaultedDungeons = new IltVaultedDungeons(_ctx);
+        _features.AddRange(new IIltFeature[] { Banking, PetLogs, Breeding, Rates, QuestBonus, Progression, Gear, CharmsTab, Games, VaultedDungeons, Guardian });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
         Rates.MovingMoney = () => Banking.MovingMoney;
@@ -346,6 +349,7 @@ internal sealed class IltHubController
         IltProgression => LogCat.IltProgression,
         IltGear or IltCharms => LogCat.IltGear,
         IltGames => LogCat.IltGames,
+        IltVaultedDungeons => LogCat.IltHub,
         _ => LogCat.IltHub,
     };
 
@@ -456,7 +460,7 @@ internal sealed class IltHubController
                 {
                     // Quests and Pets are RynthAi's tabs: not ours to open.
                     if (args.Length >= 2 && IltSections.IsUniversalTabName(args[1])) return false;
-                    _ctx.Chat("[Mini Remote] Usage: /ra hub open pets|banking|gear|charms|games|guardian|bounties [show|hide|toggle]  (character: /ro character, quests: /ro)");
+                    _ctx.Chat("[Mini Remote] Usage: /ra hub open pets|banking|gear|charms|games|vaulted|guardian|bounties [show|hide|toggle]  (character: /ro character, quests: /ro)");
                     break;
                 }
                 OpenSection(section, args.Length > 2 ? args[2] : "toggle");
@@ -494,7 +498,8 @@ internal sealed class IltHubController
                 break;
             default:
                 _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|features|force on|off|servers [list]|clap|confirm|cancel");
-                _ctx.Chat("[Mini Remote] /ra hub open pets|banking|gear|charms|games [show|hide|toggle]  (Mini Remote tabs; character: /ro character, quests: /ro)");
+                _ctx.Chat("[Mini Remote] /ra hub open pets|banking|gear|charms|games|vaulted [show|hide|toggle]  (Mini Remote tabs; character: /ro character, quests: /ro)");
+                _ctx.Chat("[Mini Remote] /ilt vaulted [on|off|toggle|status]  (Vaulted Dungeons; Options > Navigation > Vaulted Dungeons)");
                 _ctx.Chat("[Mini Remote] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
                 _ctx.Chat("[Mini Remote] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
                 _ctx.Chat("[Mini Remote] /ra quests refresh (quiet /myquests)   /ra pets [show|hide]   /ilt qb (the quest bonus list)");

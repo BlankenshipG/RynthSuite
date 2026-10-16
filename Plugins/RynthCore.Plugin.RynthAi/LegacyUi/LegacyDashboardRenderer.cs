@@ -1086,6 +1086,7 @@ internal sealed partial class LegacyDashboardRenderer
                 CorpseApproachRangeMin     = s.CorpseApproachRangeMin,
                 // Navigation
                 BoostNavPriority           = s.BoostNavPriority,
+                EnableVaultedDungeons      = s.EnableVaultedDungeons,
                 FollowNavMin               = s.FollowNavMin,
                 NavRingThickness           = s.NavRingThickness,
                 NavLineThickness           = s.NavLineThickness,
@@ -1327,6 +1328,7 @@ internal sealed partial class LegacyDashboardRenderer
             s.CorpseApproachRangeMin     = p.CorpseApproachRangeMin;
             // Navigation
             s.BoostNavPriority           = p.BoostNavPriority;
+            s.EnableVaultedDungeons      = p.EnableVaultedDungeons;
             s.FollowNavMin               = p.FollowNavMin;
             s.NavRingThickness           = p.NavRingThickness;
             s.NavLineThickness           = p.NavLineThickness;
@@ -1824,6 +1826,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.CorpseApproachRangeMax   = NormalizeCorpseRangeYards(tmp.CorpseApproachRangeMax, 10.0);
         dst.CorpseApproachRangeMin   = NormalizeCorpseRangeYards(tmp.CorpseApproachRangeMin, 2.0);
         dst.BoostNavPriority         = tmp.BoostNavPriority;
+        dst.EnableVaultedDungeons    = tmp.EnableVaultedDungeons;
         dst.BoostLootPriority        = tmp.BoostLootPriority;
         dst.OpenDoors                = tmp.OpenDoors;
         dst.OpenDoorRange            = tmp.OpenDoorRange;

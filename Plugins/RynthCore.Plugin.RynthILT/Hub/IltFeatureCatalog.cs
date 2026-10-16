@@ -15,16 +15,21 @@
 //     "checking" until the reply arrives, then on or off.
 //   * No server bit at all (the Temple guardians, Paragon gear): content, on with the ILT world.
 // Off an ILT world nothing is claimed: every state is unknown.
-// The list feeds the ILT settings window ("/ilt settings", IltSettingsView/) and "/ra hub features".
+// The list feeds RynthOracle's About tab ("Server features", via the profile JSON), "/ra hub features",
+// and the "RynthILT.Server" profile JSON other plugins read (Plugins/Shared/RynthIltServerApi.cs:
+// RynthOracle's Fellowship tab takes the fellowship rules from it, and its Quests tab the /qb list).
 // Server facts copied from ACECustom: Fellowship.MaxFellows = 29 (Source/ACE.Server/Entity/
 // Fellowship.cs), Zone Share (ZoneShareManager) and the fellowship luminance share.
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthILT.Hub;
 
 /// <summary>One Leaftide feature: id, display text, where it lives, and the server bit that says whether it's on.</summary>
-/// <param name="Key">Stable id.</param>
+/// <param name="Key">Stable id (the profile JSON's "key").</param>
 /// <param name="Label">Display name.</param>
 /// <param name="Group">Character, Items, Fellowship or Activities (the list's sections).</param>
 /// <param name="Where">Where the Rynth tools handle it.</param>
@@ -45,6 +50,16 @@ internal enum IltKnown
     ProfileOff,
 }
 
+/// <summary>The quest bonus list as the profile JSON carries it ("questBonus"), for RynthOracle's Quests tab.</summary>
+/// <param name="Disabled">The server has /qb turned off.</param>
+/// <param name="Generation">Bumped per parsed "/qb list"; 0 = not loaded this session.</param>
+/// <param name="Count">The server's quest bonus count; -1 = unknown.</param>
+/// <param name="Status">One line on the last request ("loading...", "12 completed, 3 incomplete", ...).</param>
+/// <param name="Completed">Completed bonus flags, sorted.</param>
+/// <param name="Incomplete">Incomplete bonus flags, sorted.</param>
+internal sealed record IltQuestBonusInfo(bool Disabled, int Generation, long Count, string Status,
+                                         IReadOnlyList<string> Completed, IReadOnlyList<string> Incomplete);
+
 internal static class IltFeatureCatalog
 {
     public const string GroupCharacter = "Character";
@@ -60,16 +75,13 @@ internal static class IltFeatureCatalog
     /// <summary>ACECustom's fellowship member limit (Fellowship.MaxFellows); retail is 9.</summary>
     public const int IltFellowshipMax = 29;
 
-    /// <summary>A retail fellowship's member limit.</summary>
-    public const int RetailFellowshipMax = 9;
-
     /// <summary>Every Leaftide feature RynthILT supports, in display order.</summary>
     public static readonly IltFeatureInfo[] All =
     {
         // Character progression and money.
-        new("bank", "Banking", GroupCharacter, "Mini Remote > Banking tab; Remote tab bank line",
+        new("bank", "Banking", GroupCharacter, "Global Inventory > Banking (/ginv bank); Remote tab bank line",
             "Bank pyreals, luminance, keys and coins; deposit, withdraw and transfer (/bank).", IltFeature.Bank, IltKnown.Checked),
-        new("bank_notes", "Trade note banking", GroupCharacter, "Mini Remote > Banking tab (trade notes)",
+        new("bank_notes", "Trade note banking", GroupCharacter, "Global Inventory > Banking (/ginv bank, notes)",
             "Deposit trade notes as pyreals, withdraw any note from I to MMD, transfer note value (/bank d n).", "bank_notes"),
         new("guardian", "Guardian (infinite base attributes)", GroupCharacter, "Guardian panel (/rc guardian)",
             "Temple of Enlightenment guardians raise base attributes past the retail cap.", null),
@@ -102,7 +114,7 @@ internal static class IltFeatureCatalog
             "t11_craft_gate"),
         new("split_arrows", "Split arrows", GroupItems, "Mini Remote > Gear > Split arrows",
             "Missile weapons carry split arrows, added with White Quartz salvage.", "split_arrows"),
-        new("charms", "Charms", GroupItems, "Mini Remote > Charms tab",
+        new("charms", "Charms", GroupItems, "RynthOracle > Character (/ro character)",
             "Registry charms and the Guardian Hand, with their toggles; each charm is listed in the Charms section.", "charms"),
         new("clap", "Chunk clap (auto craft)", GroupItems, "Mini Remote > Gear tab",
             "Turns aetheria, chunks and trinkets into banked enlightened coins (/clap all).", IltFeature.Clap, IltKnown.Checked),
@@ -111,10 +123,10 @@ internal static class IltFeatureCatalog
         new("pets", "Pet log", GroupPets, "Mini Remote > Pets tab", "Captured pets, registered with Professor Ruggan (/pets).", IltFeature.Pets, IltKnown.Checked),
         new("shinies", "Shiny log", GroupPets, "Mini Remote > Pets tab", "Rare shiny creature variants you captured (/shinies).", IltFeature.Shinies, IltKnown.Checked),
         new("monster_capture", "Monster capture", GroupPets, "Mini Remote > Pets tab",
-            "Siphon lenses capture a creature\'s look into a pet essence (<=20% health or under 20 HP; Asheron\'s Lens skips the gate). Auto-capture is the checkbox on the Pets roster.", "monster_capture"),
-        new("pet_breeding", "Pet breeding", GroupPets, "Mini Remote > Pets > Breeding",
+            "Siphon lenses capture a creature's look into a pet essence (≤20% health or under 20 HP; Asheron's Lens skips the gate). Auto-capture is the checkbox on the Pets roster.", "monster_capture"),
+        new("pet_breeding", "Pet breeding", GroupPets, "Mini Remote > Pets > Breeding; RynthOracle > Pet Breeding",
             "Breed two combat pet devices at the Seedy Motel for inherited and mutated offspring (/dance).", "pet_breeding"),
-        new("pet_maturity", "Pet maturity", GroupPets, "Mini Remote > Pets > Breeding",
+        new("pet_maturity", "Pet maturity", GroupPets, "Mini Remote > Pets > Breeding; RynthOracle > Pet Breeding",
             "Bred pets start small and weak and grow up with kills.", "pet_maturity"),
         new("pet_bond", "Pet bond", GroupPets, "Mini Remote > Pets tab",
             "Pets gain bond XP from kills, which scales their stats (/top bonds). On in ILT (breeding needs bond 100).", IltFeature.PetBond),
@@ -130,9 +142,9 @@ internal static class IltFeatureCatalog
             "Ask for a name for your pet; staff approve it (/pet-name).", "pet_naming"),
 
         // Fellowship.
-        new("fellowship_large", "Large fellowships (up to 29)", GroupFellowship, "The game's fellowship panel",
+        new("fellowship_large", "Large fellowships (up to 29)", GroupFellowship, "RynthOracle > Fellowship",
             "Fellowships hold up to 29 members instead of retail's 9.", "fellowship_size"),
-        new("fship", "Fellowship commands", GroupFellowship, "ILT fellowship window (/ilt fellow)",
+        new("fship", "Fellowship commands", GroupFellowship, "RynthOracle > Fellowship (ILT /fship)",
             "Create, invite, invite your landblock, list nearby, leave and disband from chat (/fship).", "fship"),
         new("zone_share", "Zone Share", GroupFellowship, "Mini Remote > Session Stats (luminance, pass-up)",
             "XP and luminance shared with everyone in a Zone Share area, capped at a fellowship's size.", "zone_share"),
@@ -158,11 +170,15 @@ internal static class IltFeatureCatalog
             "Curbs extreme evasion at very high defense skill. Off by default in ACECustom.", "defense_scaling", IltKnown.ProfileOff),
 
         // Activities.
-        new("quests", "Quest tracker", GroupActivities, "Mini Remote > Quests tab",
+        new("quests", "Quest tracker", GroupActivities, "RynthOracle > Quests tab",
             "Your quest timers from the server (/myquests).", IltFeature.Quests, IltKnown.Checked),
-        new("quest_bonus", "Quest bonus", GroupActivities, "Mini Remote > Quests tab (quest bonus)",
+        new("quest_bonus", "Quest bonus", GroupActivities, "RynthOracle > Quests tab",
             "Each quest completed adds to your XP bonus; the list (/qb).", IltFeature.Qb, IltKnown.Checked),
         new("bounties", "Bounties", GroupActivities, "Bounties window (/rc bounties)", "ACECustom bounties and your progress.", "bounties"),
+        new("vaulted_dungeons", "Vaulted Dungeons", GroupActivities,
+            "Mini Remote > Vaulted Dungeons (/ilt vaulted; Options > Navigation)",
+            "Keeps you in one Vaulted Dungeon via a tied portal recall gem; optional kill-client on no luminance kill.",
+            null),   // content: on with the ILT world; the Options checkbox only shows the Mini Remote tab
         new("rifts", "Greater Rifts", GroupActivities, "Chat: /rift", "Private, timed dungeon runs that scale by tier (/rift).", "rifts"),
         new("room_assign", "Room Assign dungeons", GroupActivities, "Portals and recalls",
             "One-player rooms with their own spawns.", "room_assign"),
@@ -226,7 +242,7 @@ internal static class IltFeatureCatalog
             foreach (IltCharmDef def in IltInventory.Charms)
                 if (IltFeature.Charm(def.Name).Equals(key, StringComparison.OrdinalIgnoreCase))
                     return (def.Name, GroupCharms, (def.Effect.Length > 0 ? def.Effect + "\n" : string.Empty)
-                                                   + "Where: Mini Remote > Charms tab\n" + charmNote);
+                                                   + "Where: RynthOracle > Character (/ro character)\n" + charmNote);
             return (key.Substring(CharmKeyPrefix.Length), GroupCharms, charmNote);
         }
         return (key, GroupOther, "A server switch RynthILT reads from chat.");
@@ -255,7 +271,69 @@ internal static class IltFeatureCatalog
     };
 
     /// <summary>The fellowship member limit: ACECustom's 29 on an ILT world, retail's 9 elsewhere.</summary>
-    public static int FellowshipMax(bool iltWorld) => iltWorld ? IltFellowshipMax : RetailFellowshipMax;
+    public static int FellowshipMax(bool iltWorld) => iltWorld ? IltFellowshipMax : RynthIltServer.RetailFellowshipMax;
+
+    /// <summary>
+    /// The "RynthILT.Server" profile JSON (schema in Plugins/Shared/RynthIltServerApi.cs). Pure:
+    /// everything comes in as arguments, so the tests build it without a client. Plain ASCII.
+    /// </summary>
+    public static string BuildProfileJson(bool iltWorld, string world, bool forced, string source, DateTime checkedUtc,
+                                          Func<string, IltTri> bit, IltQuestBonusInfo? questBonus = null)
+    {
+        var sb = new StringBuilder(4096);
+        sb.Append("{\"ilt\":").Append(iltWorld ? "true" : "false");
+        sb.Append(",\"world\":\"").Append(Escape(world)).Append('"');
+        sb.Append(",\"forced\":").Append(forced ? "true" : "false");
+        sb.Append(",\"source\":\"").Append(Escape(source)).Append('"');
+        sb.Append(",\"checked\":\"")
+          .Append(checkedUtc == DateTime.MinValue ? "" : checkedUtc.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture))
+          .Append('"');
+
+        sb.Append(",\"features\":[");
+        for (int i = 0; i < All.Length; i++)
+        {
+            IltFeatureInfo f = All[i];
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"key\":\"").Append(Escape(f.Key))
+              .Append("\",\"label\":\"").Append(Escape(f.Label))
+              .Append("\",\"group\":\"").Append(Escape(f.Group))
+              .Append("\",\"state\":").Append(((int)StateOf(f, iltWorld, bit)).ToString(CultureInfo.InvariantCulture))
+              .Append(",\"where\":\"").Append(Escape(f.Where)).Append("\"}");
+        }
+        sb.Append(']');
+
+        int State(string key) => (int)StateOf(Find(key)!, iltWorld, bit);
+        sb.Append(",\"fellowship\":{\"maxMembers\":").Append(FellowshipMax(iltWorld).ToString(CultureInfo.InvariantCulture))
+          .Append(",\"zoneShare\":").Append(State("zone_share").ToString(CultureInfo.InvariantCulture))
+          .Append(",\"blackjack\":").Append(State("fellowship_blackjack").ToString(CultureInfo.InvariantCulture))
+          .Append(",\"luminanceShare\":").Append(State("fellowship_luminance").ToString(CultureInfo.InvariantCulture))
+          .Append('}');
+
+        // The /qb list (ILT worlds only): RynthOracle's Quests tab draws it.
+        if (questBonus != null && iltWorld)
+        {
+            sb.Append(",\"questBonus\":{\"disabled\":").Append(questBonus.Disabled ? "true" : "false")
+              .Append(",\"generation\":").Append(questBonus.Generation.ToString(CultureInfo.InvariantCulture))
+              .Append(",\"count\":").Append(questBonus.Count.ToString(CultureInfo.InvariantCulture))
+              .Append(",\"status\":\"").Append(Escape(questBonus.Status)).Append('"');
+            AppendList(sb, "completed", questBonus.Completed);
+            AppendList(sb, "incomplete", questBonus.Incomplete);
+            sb.Append('}');
+        }
+        sb.Append('}');
+        return sb.ToString();
+
+        static void AppendList(StringBuilder b, string name, IReadOnlyList<string> items)
+        {
+            b.Append(",\"").Append(name).Append("\":[");
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (i > 0) b.Append(',');
+                b.Append('"').Append(Escape(items[i])).Append('"');
+            }
+            b.Append(']');
+        }
+    }
 
     /// <summary>The chat listing for "/ra hub features": one line per feature, ASCII only.</summary>
     public static List<string> BuildChatLines(bool iltWorld, Func<string, IltTri> bit)
@@ -269,5 +347,20 @@ internal static class IltFeatureCatalog
             lines.Add($"{g}: {string.Join(", ", parts)}");
         }
         return lines;
+    }
+
+    /// <summary>JSON string body: quotes, backslashes and control characters escaped, anything non-ASCII as \uXXXX.</summary>
+    private static string Escape(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return string.Empty;
+        var sb = new StringBuilder(s.Length + 8);
+        foreach (char c in s)
+        {
+            if (c == '"') sb.Append("\\\"");
+            else if (c == '\\') sb.Append("\\\\");
+            else if (c < 0x20 || c > 0x7E) sb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+            else sb.Append(c);
+        }
+        return sb.ToString();
     }
 }
