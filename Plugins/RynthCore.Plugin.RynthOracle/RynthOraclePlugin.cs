@@ -20,7 +20,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.2.5.
     // Previous release: 0.3.4.
-    public const string Version = "0.4.0";
+    public const string Version = "0.5.0";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -400,6 +400,15 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 // The Legendary tab: John's 30 Legendary Key quests, have / missing and repeat timers.
                 ShowTab(OracleView.TabLegendary);
                 break;
+            case "dynamic":
+            case "dyn":
+            case "dyno":
+            case "stamps":
+                // The Dynamic Stamps tab (Infinite Leaftide): NPC hand-in stamps, have / missing.
+                if (!_c.Server.Is(ServerTags.InfiniteLeaftide))
+                    _c.Print("Dynamic stamps are an Infinite Leaftide quest line; this server isn't recognised as Infinite Leaftide.");
+                ShowTab(OracleView.TabDynamic);
+                break;
             case "breeding":
             case "breed":
             case "pets":
@@ -425,13 +434,15 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                          + "/ro skills|attrs|progress (raise/train and ILT planners), /ro void (Void window), "
                          + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), /ro breeding (Pet Breeding tab, Infinite Leaftide), "
                          + "/ro legendary (Legendary tab: John's 30 key quests, missing and repeat timers), "
+                         + "/ro dynamic (Dynamic Stamps tab, Infinite Leaftide: NPC stamps you have and are missing), "
                          + "/ro quests (read quest flags), /ro status, "
                          + "/ro about (About tab: settings, server features)");
                 break;
         }
         if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char" or "charms" or "charm"
                 or "skills" or "skill" or "attrs" or "attributes" or "vitals" or "progress" or "progression"
-                or "breeding" or "breed" or "pets" or "legendary" or "legend" or "john" or "about" or "features" && !Host.HasUi && !_noUiLogged)
+                or "breeding" or "breed" or "pets" or "legendary" or "legend" or "john"
+                or "dynamic" or "dyn" or "dyno" or "stamps" or "about" or "features" && !Host.HasUi && !_noUiLogged)
         {
             _noUiLogged = true;
             _c.Print("This RynthCore engine can't show plugin windows (it needs script windows, API v71, with ImGui on). /ro status still works.");

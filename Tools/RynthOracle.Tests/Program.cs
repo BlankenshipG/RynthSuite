@@ -112,6 +112,66 @@ namespace RynthOracle.Tests
             Check(lv.VisibleTabs().Contains(OracleView.TabLegendary), "Legendary tab on every server");
         }
 
+        /// <summary>The Dynamic Stamps tab's list (dynstamps.csv), its have / missing rules, and that the
+        /// tab is Infinite Leaftide only.</summary>
+        private static void DynamicStamps()
+        {
+            var all = DynamicStampList.All;
+            Check(all.Count == 243, $"dynamic stamps: {all.Count} (243 expected from the ExtraDyn sheet)");
+            Check(DynamicStampList.Areas.Count == 17 && DynamicStampList.Areas[0] == "Facility Hub" && DynamicStampList.Areas[^1] == "Candeth Keep",
+                  "dynamic areas: " + string.Join(",", DynamicStampList.Areas));
+            Check(all.All(s => s.Stamp.StartsWith("dynamic_") && s.Stamp == s.Stamp.ToLowerInvariant()), "every stamp is a lower-case dynamic_ flag");
+            Check(all.Select(s => s.Stamp).Distinct().Count() == all.Count, "no stamp listed twice");
+            Check(all.All(s => s.Label.Length > 0), "every row names an NPC or a place");
+
+            DynamicStamp felscuda = all.First(s => s.Npc == "Felscuda");
+            Check(felscuda.Stamp == "dynamic_1_&9jiytb!" && felscuda.Place == "Folthid Cellar" && felscuda.Reward == "Healing Rabbit Pie"
+                  && felscuda.Note == "8.8S, 53.1E", $"Felscuda row: {felscuda.Place} / {felscuda.Reward} / {felscuda.Note}");
+
+            // /myquests keys flags as \S+ lower case, so the stamps' ! & # ^ $ survive.
+            var f = new QuestFlagStore();
+            long t = 900_000, at = DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeSeconds();
+            f.OnChatLine($"Dynamic_1_&9jiyTB! - 1 solves ({at})\"Dynamic\" 1 0", t);
+            f.OnChatLine($"Dynamic_1_ANND! - 1 solves ({at})\"Dynamic\" 1 0", t + 1);        // the sheet lost the closing !
+            f.OnChatLine($"Dynamic_1_ZZZnewNPC! - 1 solves ({at})\"Dynamic\" 1 0", t + 2);   // not on the sheet
+            f.OnChatLine($"rtwcompleted_1013 - 1 solves ({at})\"RTW\" -1 72000", t + 3);
+            f.Tick(t + 5_000);
+            Check(felscuda.Have(f), "Felscuda's stamp read from /myquests");
+            DynamicStamp annd = all.First(s => s.Stamp == "dynamic_1_annd");
+            Check(annd.Have(f) && annd.MatchedFlag(f) == "dynamic_1_annd!", "a stamp the sheet lost its ! on still matches");
+            Check(!all.First(s => s.Npc == "Raxanza Folthid").Have(f), "an NPC not done is missing");
+            List<string> extra = DynamicStampList.Unlisted(f);
+            Check(extra.Count == 1 && extra[0] == "dynamic_1_zzznewnpc!", "unlisted: only the stamp the sheet doesn't have: " + string.Join(",", extra));
+            DynamicStamp shortStamp = all.First(s => s.Stamp == "dynamic_1_s");
+            var sf = new QuestFlagStore();
+            sf.OnChatLine($"Dynamic_1_SomethingElse! - 1 solves ({at})\"Dynamic\" 1 0", t);
+            sf.Tick(t + 5_000);
+            Check(!shortStamp.Have(sf), "a cut-short stem under 14 characters isn't matched by prefix");
+
+            var dc = new OracleContext { InWorld = true };
+            var dv = new OracleView(dc);
+            dc.Server.Force("", "Coldeve");
+            Check(!dv.VisibleTabs().Contains(OracleView.TabDynamic), "no Dynamic Stamps tab off Infinite Leaftide");
+            dc.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
+            Check(dv.VisibleTabs().Contains(OracleView.TabDynamic), "Dynamic Stamps tab on Infinite Leaftide");
+
+            // Every area open (all 243 rows): still under the engine's ops limit, nothing cut.
+            var host = new UiHost();
+            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
+            dc.Settings.TabName = OracleView.TabDynamic;
+            main.Begin(); dv.Draw(main); main.End();
+            uint seq = 500;
+            for (int a = 0; a < DynamicStampList.Areas.Count; a++)
+                Apply(host, Event(6, seq++, main.Hash, main.KeyOf("dy.area." + a), new byte[] { 1 }));
+            main.Begin(); dv.Draw(main); main.End();
+            ParseAll(host, "Dynamic Stamps, every area open", out int ops);
+            string body = Encoding.UTF8.GetString(main.Body);
+            Check(ops > 243 && ops < 1400, $"Dynamic Stamps with every area open: {ops} ops");
+            Check(body.Contains("Felscuda") && body.Contains("Candeth Keep") && !body.Contains("list cut short"),
+                  "every area's rows are drawn, none cut");
+            Console.WriteLine($"  InfiniteLeaftide/Dynamic Stamps (all {all.Count} open): {ops} ops, {main.Body.Length} bytes");
+        }
+
         private static void Lists()
         {
             Check(AugmentationList.All.Count == 88, $"augmentations: {AugmentationList.All.Count} rows (88 expected)");
@@ -124,6 +184,7 @@ namespace RynthOracle.Tests
             mf.Tick(5000);
             Check(MarkerList.All[0].IsFound(mf) && MarkerList.All[1].IsFound(mf) && !MarkerList.All[2].IsFound(mf), "marker bits 1 and 128 found, the rest not");
             Legendary();
+            DynamicStamps();
             Check(SpellTable.Count > 6000, $"spell table: {SpellTable.Count} spells");
             Check(SpellTable.Name(5393) == "Corrosion VII", "spell 5393 is Corrosion VII: " + SpellTable.Name(5393));
             Check(SpellTable.TryGet(5395, out SpellInfo s) && s.IsDebuff && s.Duration == 31, "Corruption I is a 31 s debuff");
