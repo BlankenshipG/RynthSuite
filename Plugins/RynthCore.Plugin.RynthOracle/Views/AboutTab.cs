@@ -72,6 +72,8 @@ internal sealed partial class OracleView
         w.BulletText("/ro timers  open or close the Quest Timers window");
         w.BulletText("/ro fellowship  the Fellowship tab");
         w.BulletText("/ro legendary  John's Legendary Key quests: have, missing, repeat timers");
+        if (_c.Server.Is(Data.ServerTags.InfiniteLeaftide))
+            w.BulletText("/ro dynamic  Infinite Leaftide Dynamic Stamps: NPC stamps you have and are missing");
         w.BulletText("/ro about  this tab (settings, server features)");
         w.BulletText("/ro void  open or close the Void window");
         w.BulletText("/ro quests  read your quest flags now");

@@ -13,7 +13,8 @@ internal sealed partial class OracleView
         TabSkills = "Skills", TabAttributes = "Attributes", TabProgress = "Progress",
         TabAugs = "Augs", TabSociety = "Society",
         TabMarkers = "Markers", TabLegendary = "Legendary", TabTitles = "Titles", TabVoid = "Void", TabFellowship = "Fellowship",
-        TabBoards = "Leaderboards", TabConquest = "Conquest", TabBreeding = "Pet Breeding", TabAbout = "About";
+        TabBoards = "Leaderboards", TabConquest = "Conquest", TabBreeding = "Pet Breeding", TabDynamic = "Dynamic Stamps",
+        TabAbout = "About";
 
     /// <summary>A tab: shown where any of its server tags matches the server; no tags = everywhere (retail).</summary>
     private sealed record TabDef(string Name, string[] Servers, Action<UiWindow> Draw, bool LiveTimers);
@@ -51,6 +52,8 @@ internal sealed partial class OracleView
             new(TabBoards, new[] { Data.ServerTags.Conquest, Data.ServerTags.Aelrynth }, DrawBoards, false),
             new(TabConquest, new[] { Data.ServerTags.Conquest }, DrawConquest, true),
             new(TabBreeding, new[] { Data.ServerTags.InfiniteLeaftide }, DrawBreeding, false),
+            // Dynamic Stamps: an Infinite Leaftide quest line (NPC hand-ins, one-time Dynamic_ flags).
+            new(TabDynamic, new[] { Data.ServerTags.InfiniteLeaftide }, DrawDynamicStamps, false),
             new(TabAbout, any, DrawAbout, false),
         };
     }
