@@ -73,15 +73,15 @@ internal sealed partial class OracleView
                 w.SeparatorText(a.Name);
                 continue;
             }
-            if (a.IsUnknown) w.TextColored(UiColors.Grey, "?");
-            else DoneMark(w, a.IsComplete(prop, flags));
+            DoneMark(w, a.IsComplete(prop, flags));
             w.SameLine(50f);
-            w.Text(a.IsUnknown ? "" : a.Text(prop, flags));
+            w.Text(a.Text(prop, flags));
             w.SameLine(100f);
             Augmentation row = a;
             w.Selectable(Cut(a.Name, 26), "a.r." + a.Category + a.Id + a.Flag + a.Name, false,
-                () => PrintEntry(row.Name, row.Flag, row.Effect, row.Hint, row.Url), 190f);
-            if (a.IsUnknown) w.Tooltip("Asheron's Lesser Benediction is an item; RynthOracle can't count it.");
+                () => PrintEntry(row.Name, row.Flag.Length > 0 ? row.Flag : (row.Id == -3 ? Augmentation.LesserBenedictionFlag : ""), row.Effect, row.Hint, row.Url), 190f);
+            if (a.Id == -3)
+                w.Tooltip("Detected from the lesserbenedictionaug quest flag (after Donatello Linante / Blackmoor's Page). Refresh Quests if this looks stale.");
             w.SameLine(300f);
             w.Text(Cut(a.Effect, 34));
             string cost = a.CostText(prop, flags);

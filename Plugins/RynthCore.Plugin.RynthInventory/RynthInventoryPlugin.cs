@@ -26,8 +26,8 @@ namespace RynthCore.Plugin.RynthInventory;
 /// </summary>
 public sealed class RynthInventoryPlugin : RynthPluginBase
 {
-    // Previous release: 0.1.1. Keep in step with PluginExports.GetVersion.
-    public const string Version = "0.1.3";
+    // Previous release: 0.1.3. Keep in step with PluginExports.GetVersion.
+    public const string Version = "0.1.4";
 
     // RynthILT's bank JSON: every BankTabReadMs on the Banking tab, every BankIdleReadMs with the
     // window on another tab (so the Banking button appears on ILT worlds), never with it closed.
@@ -98,9 +98,12 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _vault = new VaultFeed(text => Host.InvokeChatParser(text));
 
         _view = new InventoryView(_c);
+        // No bar button of its own: open from Inventory's GInv / Count row, Character menu, or /ginv.
+        // Still ShowInBar so it stays in the Scripts menu.
         _window = _ui.Add(new UiWindow("RynthInventory/Main", "Global Inventory")
         {
             DefaultWidth = 640f, DefaultHeight = 600f, MinWidth = 420f, MinHeight = 300f,
+            BarButton = false,
         });
 
         Host.Log($"[RynthInventory] {Version} initialized. /ginv opens the window. Files: {_c.Store.Root}");

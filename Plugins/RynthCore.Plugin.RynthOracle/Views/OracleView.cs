@@ -9,7 +9,9 @@ namespace RynthCore.Plugin.RynthOracle.Views;
 /// </summary>
 internal sealed partial class OracleView
 {
-    public const string TabQuests = "Quests", TabCharacter = "Character", TabAugs = "Augs", TabSociety = "Society",
+    public const string TabQuests = "Quests", TabCharacter = "Character",
+        TabSkills = "Skills", TabAttributes = "Attributes", TabProgress = "Progress",
+        TabAugs = "Augs", TabSociety = "Society",
         TabMarkers = "Markers", TabTitles = "Titles", TabVoid = "Void", TabFellowship = "Fellowship",
         TabBoards = "Leaderboards", TabConquest = "Conquest", TabBreeding = "Pet Breeding", TabAbout = "About";
 
@@ -18,6 +20,8 @@ internal sealed partial class OracleView
 
     private readonly OracleContext _c;
     private readonly TabDef[] _tabs;
+    /// <summary>Last SkillsFace embed tab signalled to the engine (-2 = never).</summary>
+    private int _lastSkillsEmbed = -2;
 
     /// <summary>Asks the plugin to show or hide the Void window (the Void tab's button).</summary>
     public Action<bool>? SetVoidWindow;
@@ -31,6 +35,10 @@ internal sealed partial class OracleView
         {
             new(TabQuests, any, DrawQuests, true),
             new(TabCharacter, any, DrawCharacter, true),
+            // Skills / Attributes / Progress: engine SkillsFace body embedded by ScriptWindowFace.
+            new(TabSkills, any, DrawSkillsEmbed, true),
+            new(TabAttributes, any, DrawAttributesEmbed, true),
+            new(TabProgress, any, DrawProgressEmbed, true),
             new(TabAugs, any, DrawAugs, true),
             new(TabSociety, any, DrawSociety, true),
             new(TabMarkers, any, DrawMarkers, false),
@@ -98,9 +106,31 @@ internal sealed partial class OracleView
         }
         w.Separator();
 
+        // Keep the engine SkillsFace embed in sync with the selected Oracle tab.
+        int embed = tab switch
+        {
+            TabSkills => 0,
+            TabAttributes => 1,
+            TabProgress => 2,
+            _ => -1,
+        };
+        if (embed != _lastSkillsEmbed)
+        {
+            _lastSkillsEmbed = embed;
+            _c.SkillsEmbedChanged(embed);
+        }
+
         if (!_c.InWorld && tab != TabAbout)
         {
             w.TextDisabled("Log in to a character to see this page.");
+            return;
+        }
+
+        // Skills-family tabs: leave the body empty so ScriptWindowFace can paint SkillsFace
+        // into the remaining content region after the script tab strip.
+        if (embed >= 0)
+        {
+            (current?.Draw ?? DrawSkillsEmbed)(w);
             return;
         }
 

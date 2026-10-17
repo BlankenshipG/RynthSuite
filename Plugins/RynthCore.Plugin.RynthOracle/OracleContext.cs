@@ -69,6 +69,12 @@ internal sealed class OracleContext
     /// <summary>Set by the plugin: runs a chat command through RynthCore's plugin dispatch (another plugin's window).</summary>
     public Func<string, bool> RunCommand = _ => false;
 
+    /// <summary>
+    /// Set by the plugin: tells the engine which SkillsFace body to embed in Oracle
+    /// (0 Skills, 1 Attributes, 2 Progress, -1 off). Bridge is /rc oracle-skills.
+    /// </summary>
+    public Action<int> SkillsEmbedChanged = _ => { };
+
     /// <summary>Set by the plugin: shows or hides the Quest Timers window.</summary>
     public Action<bool> SetQuestTimersWindow = _ => { };
     /// <summary>Set by the plugin: whether the Quest Timers window is showing.</summary>

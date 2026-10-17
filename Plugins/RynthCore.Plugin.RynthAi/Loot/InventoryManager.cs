@@ -12,9 +12,10 @@ namespace RynthCore.Plugin.RynthAi.Loot;
 /// AutoCram moves non-equipped loose items out of the player's main pack into
 /// sub-packs so the main pack stays empty for new loot pickups.
 ///
-/// AutoStack merges two partial stacks of the same item (arrows, components,
-/// salvage, pyreals, etc.) by dropping the smaller one onto the larger one's
-/// slot — the server auto-merges stackable same-type items at the same slot.
+/// AutoStack merges two partial stacks of the same weenie (arrows, components,
+/// pyreals, etc.) by dropping the smaller one onto the larger one's slot — the
+/// server merges only same-WCID stackables. Groups by WCID (not display name) and
+/// skips pairs that would overflow MaxStackSize.
 /// </summary>
 public sealed class InventoryManager
 {
@@ -259,10 +260,12 @@ public sealed class InventoryManager
             if (inPlayerScope) playerItems.Add(item);
         }
 
-        // Group by name, keep only stackable items with >1 in the same group.
+        // Group by weenie class id (WCID), not display name. Same-name stacks that are
+        // different weenies (e.g. Coalesced Mana 42517 vs 42518) cannot merge — the server
+        // answers "not compatible for stacking" and AutoStack used to retry forever.
         var groupList = playerItems
             .Where(x => GetMaxStackSize(x) > 1)
-            .GroupBy(x => x.Name)
+            .GroupBy(StackGroupKey)
             .Where(g => g.Count() > 1)
             .ToList();
 
@@ -300,6 +303,9 @@ public sealed class InventoryManager
             {
                 for (int si = parts.Count - 1; si > ti; si--)
                 {
+                    // Server rejects merges that would overflow MaxStackSize.
+                    if (parts[ti].Count + parts[si].Count > max)
+                        continue;
                     string key = parts[ti].Item.Id + "_" + parts[si].Item.Id;
                     // Confirm-via-snapshot: a prior merge of this pair either consumed
                     // the source (id vanished from inv) or grew the target. Either =>
@@ -400,7 +406,20 @@ public sealed class InventoryManager
             foreach (var k in dead) map.Remove(k);
     }
 
-    // ── Stack-size lookup ─────────────────────────────────────────────────
+    // ── Stack-size / group-key lookup ─────────────────────────────────────
+
+    /// <summary>
+    /// AutoStack group key: WCID when known (Decal Type / TryGetObjectWcid), else name.
+    /// Name-only is a cold-start fallback; once WCID is known, incompatible same-name
+    /// weenies stay in separate groups.
+    /// </summary>
+    private static string StackGroupKey(WorldObject item)
+    {
+        int wcid = item.Values(unchecked((int)WorldObjectCache.DecalTypeKey), 0);
+        if (wcid > 0) return "w:" + wcid.ToString();
+        string n = item.Name ?? "";
+        return "n:" + n;
+    }
 
     private static int GetMaxStackSize(WorldObject item)
     {

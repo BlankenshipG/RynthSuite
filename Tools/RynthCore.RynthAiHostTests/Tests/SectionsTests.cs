@@ -34,6 +34,7 @@ internal static class SectionsTests
             Check.True(MovedTabs.CommandFor(tab) == null, (tab ?? "null") + " is still a Mini Remote tab (or none)");
         Check.Eq(MovedTabs.OracleCharacter, "/ro character", "the Oracle command");
         Check.Eq(MovedTabs.GlobalBank, "/ginv bank", "the Global Inventory command");
+        Check.Eq(MovedTabs.GlobalInventory, "/ginv", "the Global Inventory window command");
         Check.Eq(MovedTabs.Diagnostics, "/rc diagnostics", "the engine's Diagnostics command");
     }
 
