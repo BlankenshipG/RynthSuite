@@ -51,6 +51,9 @@ internal sealed partial class OracleView
             w.TextDisabled("Quest flags not read yet. Press Refresh, or type /myquests.");
         else
             w.Text($"{flags.Flags.Count} quest flags on this character, read at {flags.LastReadUtc.ToLocalTime():HH:mm}.");
+        int throttleLeft = flags.ThrottleSecondsLeft(_c.NowMs);
+        if (throttleLeft > 0 && !flags.Loading)
+            w.TextDisabled($"The server answers one /myquests a minute: Refresh works again in {throttleLeft}s.");
 
         w.Button("Refresh", "q.refresh", _c.RequestQuests);
         w.Tooltip("Sends /myquests to the server and reads the reply.");

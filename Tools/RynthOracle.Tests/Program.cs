@@ -119,6 +119,37 @@ namespace RynthOracle.Tests
             s2.NoteTypedCommand(); // the player typing it
             s2.Tick(51_200);
             Check(!s2.AwaitingOurs, "a typed /myquests shows its reply");
+
+            // A second reply that lost most of its lines on the way (the engine's chat queue dropped
+            // the head of the burst) updates the flags instead of blanking them.
+            var s3 = new QuestFlagStore();
+            long t3 = 200_000;
+            for (int i = 0; i < 100; i++)
+                s3.OnChatLine($"flag{i:D3} - 1 solves (1719432000)\"Q{i}\" -1 0", t3 + i);
+            s3.Tick(t3 + 5_000);
+            Check(s3.Flags.Count == 100, "first full reply: 100 flags");
+            long t4 = t3 + 120_000;
+            for (int i = 90; i < 100; i++)
+                s3.OnChatLine($"flag{i:D3} - 2 solves (1719500000)\"Q{i}\" -1 0", t4 + i);
+            s3.Tick(t4 + 5_000);
+            Check(s3.Flags.Count == 100 && s3.LastPartialReply is { Got: 10, Had: 100 },
+                  "a cut-short reply (10 of 100) is merged, not a replacement");
+            Check(s3.TryGet("flag095", out QuestFlag f95) && f95.Solves == 2 && s3.TryGet("flag001", out _),
+                  "merged reply updates the lines it had and keeps the rest");
+            long t5 = t4 + 120_000;
+            for (int i = 0; i < 95; i++)
+                s3.OnChatLine($"flag{i:D3} - 3 solves (1719600000)\"Q{i}\" -1 0", t5 + i);
+            s3.Tick(t5 + 5_000);
+            Check(s3.Flags.Count == 95 && !s3.TryGet("flag099", out _), "a near-full reply still replaces (a dropped flag goes away)");
+
+            // ACECustom's once-a-minute limit: the throttle line ends "Reading..." and keeps the flags.
+            int had = s3.Flags.Count;
+            long t6 = t5 + 30_000;
+            Check(s3.Request(_ => true, t6) && s3.AwaitingOurs, "refresh sent");
+            Check(s3.OnChatLine("[MyQuests] This command may only be run once every 60 seconds.", t6 + 200) == MyQuestsLine.Throttled
+                  && !s3.AwaitingOurs && s3.Flags.Count == had, "throttle reply: not loading, flags kept");
+            Check(s3.ThrottleSecondsLeft(t6 + 1_000) > 50 && !s3.Request(_ => true, t6 + 10_000), "no resend while the server's minute runs");
+            Check(s3.ThrottleSecondsLeft(t6 + 61_000) == 0 && s3.Request(_ => true, t6 + 61_000), "refresh allowed again after the minute");
         }
 
         private static void Catalog()

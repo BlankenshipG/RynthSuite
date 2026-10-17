@@ -20,7 +20,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.2.5.
     // Previous release: 0.2.8.
-    public const string Version = "0.3.2";
+    public const string Version = "0.3.3";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -414,8 +414,14 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private void RequestQuests()
     {
         if (!_c.InWorld) return;
-        if (!_c.Flags.Request(cmd => Host.InvokeChatParser(cmd), Environment.TickCount64))
-            Host.Log("[RynthOracle] /myquests was sent moments ago; waiting for that reply.");
+        long now = Environment.TickCount64;
+        if (!_c.Flags.Request(cmd => Host.InvokeChatParser(cmd), now))
+        {
+            int wait = _c.Flags.ThrottleSecondsLeft(now);
+            Host.Log(wait > 0
+                ? $"[RynthOracle] The server answers one /myquests a minute; try again in {wait}s (the flags shown are kept)."
+                : "[RynthOracle] /myquests was sent moments ago; waiting for that reply.");
+        }
         if (_main != null) _main.NeedsPass = true;
     }
 
@@ -454,6 +460,11 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private void TickData(long now)
     {
         _c.Flags.Tick(now);
+        if (_c.Flags.LastPartialReply is { } partial)
+        {
+            _c.Flags.LastPartialReply = null;
+            Host.Log($"[RynthOracle] /myquests reply looked cut short ({partial.Got} lines, {partial.Had} flags held): merged it instead of replacing the list.");
+        }
         if (_c.Flags.Revision != _seenFlagRevision)
         {
             _seenFlagRevision = _c.Flags.Revision;
