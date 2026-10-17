@@ -47,8 +47,8 @@ namespace RynthCore.Plugin.RynthILT;
 public sealed class RynthILTPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthILT");
-    // Previous release: 0.2.14 (ProductVersion 2026.10.16.6).
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.15");
+    // Previous release: 0.2.15 (ProductVersion 2026.10.16.22).
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.2.16");
 
     /// <summary>
     /// The settings view's surface. No longer in the sections manifest (the force-server override
@@ -156,6 +156,9 @@ public sealed class RynthILTPlugin : RynthPluginBase
         _nextNameTryMs = 0;
         _nextHubTryMs = 0;
         _ai?.Reset();
+        // RynthCore's verdict first, so the Hub (and RynthAi's Mini Remote through RynthILT.Hub)
+        // starts on the engine's ILT flag and this character's override, not RynthILT's own list.
+        PollServerState(force: true);
         TryStartBounties();
         TryStartHub();
     }
@@ -172,6 +175,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         while (_typedBounty.TryDequeue(out _)) { }
         while (_engineCommands.TryDequeue(out _)) { }
         _settingsModel.Clear();
+        _serverStateJson = string.Empty;   // the next character's verdict is read fresh
     }
 
     // Plugin unload (hot reload, update, client closing): keep the list and the Hub state for the
@@ -191,6 +195,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         try { RynthLog.Pump(); } catch { }
         if (!_loginComplete) return;
         _ai?.Tick();
+        PollServerState(force: false);
         if (_bounties == null) TryStartBounties();
         if (_hub == null) TryStartHub();
         DrainTypedBounty();
@@ -206,6 +211,31 @@ public sealed class RynthILTPlugin : RynthPluginBase
         catch (Exception ex) { Host.Log($"[RynthILT] Fellowship commands to RynthAi failed: {ex.Message}"); }
         try { PublishHubFeatures(); }
         catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "PublishHubFeatures"); }
+    }
+
+    private const long ServerStatePollMs = 2000;
+    private long _serverStateNextAt;
+    private string _serverStateJson = string.Empty;
+
+    /// <summary>
+    /// Plugin tick, every 2 s (and at login): RynthCore's server list (plugin API v86,
+    /// GetServerStateJson) into the settings model, whose "ilt" entry the Hub's world check follows
+    /// (IltEngineVerdict). Parsed only when the text changed. An older engine leaves it empty, and
+    /// RynthILT's own list decides. Without this the engine's verdict and the character's
+    /// "/rc server ilt on|off|auto" override never reached the Hub or the Mini Remote.
+    /// </summary>
+    private void PollServerState(bool force)
+    {
+        long now = Environment.TickCount64;
+        if (!force && now < _serverStateNextAt) return;
+        _serverStateNextAt = now + ServerStatePollMs;
+        try
+        {
+            if (!Host.HasGetServerStateJson || !Host.TryGetServerStateJson(out string json) || json == _serverStateJson) return;
+            _serverStateJson = json;
+            _settingsModel.ApplyServerState(EngineServerState.Parse(json));
+        }
+        catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "PollServerState"); }
     }
 
     /// <summary>Plugin tick: runs the settings and fellowship views' chat commands through the engine.</summary>
