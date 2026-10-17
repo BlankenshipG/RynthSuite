@@ -917,6 +917,25 @@ internal sealed class PetsTab
     public string CaptureStatus => _captureStatus;
 
     /// <summary>
+    /// Mini Remote Pet toggle on: enable combat auto-summon and summon the Pets tab's active
+    /// combat essence now (first ticked priority, or the highlighted row). Pump thread.
+    /// </summary>
+    public void ActivateHudPet(LegacyUiSettings settings)
+    {
+        settings.SummonPets = true;
+        _ctx.SaveCombatSettings?.Invoke();
+        if (FindOwnPet() != null) return;   // already out — leave it
+        SummonPet(0, PetKind.Combat);
+    }
+
+    /// <summary>Mini Remote Pet toggle off: stop combat auto-summon. Pump thread.</summary>
+    public void DeactivateHudPet(LegacyUiSettings settings)
+    {
+        settings.SummonPets = false;
+        _ctx.SaveCombatSettings?.Invoke();
+    }
+
+    /// <summary>
     /// The Pets tab: the universal Roster, and Breeding (RynthILT's breeding tracker, section
     /// "pets-breeding", the same tracker as RynthOracle's Pet Breeding tab).
     /// </summary>
