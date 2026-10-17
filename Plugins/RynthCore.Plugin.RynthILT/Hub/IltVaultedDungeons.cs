@@ -110,7 +110,7 @@ internal sealed class IltVaultedDungeons : IIltFeature
             string path = SettingsPath;
             if (!File.Exists(path)) return;
             string text = File.ReadAllText(path);
-            var cfg = JsonSerializer.Deserialize<Cfg>(text, JsonOpts);
+            var cfg = JsonSerializer.Deserialize(text, IltVaultedDungeonsJsonContext.Default.Cfg);
             if (cfg == null) return;
             _cfg = Sanitize(cfg);
             _lastGoodJson = text;
@@ -136,7 +136,7 @@ internal sealed class IltVaultedDungeons : IIltFeature
                 {
                     string existing = File.ReadAllText(path);
                     if (_lastGoodJson == null)
-                        JsonSerializer.Deserialize<Cfg>(existing, JsonOpts); // throws if bad
+                        JsonSerializer.Deserialize(existing, IltVaultedDungeonsJsonContext.Default.Cfg); // throws if bad
                 }
                 catch
                 {
@@ -149,7 +149,7 @@ internal sealed class IltVaultedDungeons : IIltFeature
                     catch { /* best effort */ }
                 }
             }
-            string json = JsonSerializer.Serialize(_cfg, JsonOpts);
+            string json = JsonSerializer.Serialize(_cfg, IltVaultedDungeonsJsonContext.Default.Cfg);
             File.WriteAllText(path, json);
             _lastGoodJson = json;
         }
@@ -159,12 +159,6 @@ internal sealed class IltVaultedDungeons : IIltFeature
         }
     }
 
-    private static readonly JsonSerializerOptions JsonOpts = new()
-    {
-        WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
 
     private static Cfg Sanitize(Cfg c)
     {
@@ -676,7 +670,8 @@ internal sealed class IltVaultedDungeons : IIltFeature
 
     // ── Config / snapshot types ─────────────────────────────────────────────
 
-    private sealed class Cfg
+    // internal (not private) so the source-generated IltVaultedDungeonsJsonContext can reach it.
+    internal sealed class Cfg
     {
         public bool Active { get; set; }
         /// <summary>0 = none, 1..N = Dungeons index.</summary>
@@ -706,3 +701,15 @@ internal sealed class IltVaultedDungeons : IIltFeature
             "paused", null, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 }
+
+// Source-generated JSON only: the NativeAOT build (what the installer ships) has reflection-based
+// serialization turned off, so JsonSerializer.Deserialize<Cfg>(text, options) failed there and the
+// Vaulted Dungeons settings never loaded or saved. Same file format as before (camelCase,
+// indented, nulls left out).
+[JsonSerializable(typeof(IltVaultedDungeons.Cfg))]
+[JsonSourceGenerationOptions(
+    WriteIndented = true,
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    PropertyNameCaseInsensitive = true,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+internal partial class IltVaultedDungeonsJsonContext : JsonSerializerContext { }
