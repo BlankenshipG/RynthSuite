@@ -1904,6 +1904,27 @@ public partial class CombatManager : IDisposable
     private int _handlerRingEvadeId;
     private bool _handlerRingJumpStarted;
 
+    // Run-away escape (2026-10-17): one back-jump covered a few metres (backwards is AC's slowest
+    // motion, and the 150 ms turn settle let it jump the wrong way): Silentkelpie died 1.5 m from
+    // the Handler 3.2 s after the channel line. Now: face away and run forward (the fastest
+    // motion), re-aiming away from the Handler, until outside the ring plus a margin.
+    /// <summary>Yards past the ring radius to run before stopping.</summary>
+    private const double HandlerRingSafeMarginYards = 4.0;
+    /// <summary>Longest the run lasts (the ring has gone off by then).</summary>
+    private const double HandlerRingRunMaxMs = 5_000;
+    /// <summary>Attacks are held at least this long after the channel line (the ring's cast time).</summary>
+    private const double HandlerRingHoldMinMs = 3_500;
+    private const double HandlerRingTurnRefreshMs = 250;
+    private const double HandlerRingRunRefreshMs = 1_000;
+    /// <summary>Pump-thread orphan watch: Think stopped driving the run this long ago -> autorun off.</summary>
+    private const double HandlerRingOrphanMs = 1_500;
+    private const string RingEscapeSource = "Combat/RingEscape";
+    private bool _ringRunActive;
+    private bool _ringRunning;          // autorun is on (else holding at a safe distance)
+    private double _ringSafeYards;
+    private double _ringDanger;
+    private DateTime _ringRunAt = DateTime.MinValue, _ringTurnAt = DateTime.MinValue, _ringTickAt = DateTime.MinValue;
+
     /// <summary>
     /// Plugin wires this to <c>Jumper.Start("xs", faceHeading, ms)</c> — face the Handler
     /// then run-back jump (x+s) so the body moves away. Returns false if the jumper refused.
@@ -1913,9 +1934,9 @@ public partial class CombatManager : IDisposable
     /// <summary>True while the wired jumper is mid-turn / charge / settle.</summary>
     public Func<bool>? JumpBusy { get; set; }
 
-    /// <summary>True while a Handler-ring evade is holding combat (jump or settle).</summary>
+    /// <summary>True while a Handler-ring evade is holding combat (run, wait, or jump/settle).</summary>
     public bool RingEvadeActive =>
-        _handlerRingEvadeUntil != DateTime.MinValue && DateTime.Now < _handlerRingEvadeUntil;
+        _ringRunActive || (_handlerRingEvadeUntil != DateTime.MinValue && DateTime.Now < _handlerRingEvadeUntil);
 
     /// <summary>
     /// Chat line from RynthAiPlugin.OnChatWindowText. Starts a back-jump evade when the
@@ -1966,27 +1987,47 @@ public partial class CombatManager : IDisposable
             return;
         }
 
-        // Face the Handler, then Jumper "xs" (back + run) moves the body away from it.
-        // Facing away + back-jump would leap into the ring.
-        float faceHandler = 0f;
-        if (TryGetHeadingTo(handlerId, out double toHandler, out _))
-            faceHandler = (float)(toHandler % 360.0);
-        else if (_host.TryGetPlayerHeading(out float curr))
-            faceHandler = curr;
+        bool haveHeading = TryGetHeadingTo(handlerId, out double toHandler, out _);
 
         _handlerRingEvadeAt = now;
         _handlerRingEvadeId = handlerId;
         _handlerRingJumpStarted = false;
-        // Hold combat long enough for turn + charge + land + one re-engage tick.
-        _handlerRingEvadeUntil = now.AddMilliseconds(HandlerRingJumpHoldMs + 2_200);
 
-        // Stop the bound melee/missile attack so the jump isn't eaten by the swing servo.
+        // Stop the bound melee/missile attack (and any kite run) so the escape isn't eaten by
+        // the swing servo or steered by the pull-away.
         try
         {
             if (_host.HasCancelAttack) _host.CancelAttack();
             ReleaseHeldTurn();
+            EndKite("Handler lethal ring");
         }
         catch { }
+
+        // Run away: face directly away from the Handler and autorun (forward is the fastest motion).
+        if (haveHeading && _host.HasTurnToHeading && _host.HasSetAutoRun)
+        {
+            float away = (float)((toHandler + 180.0) % 360.0);
+            _host.TurnToHeadingBy(RingEscapeSource, away);
+            bool running = _host.SetAutoRunBy(RingEscapeSource, true);
+            _ringRunActive = true;
+            _ringRunning = running;
+            _ringDanger = danger;
+            _ringSafeYards = danger + HandlerRingSafeMarginYards;
+            _ringRunAt = running ? now : DateTime.MinValue;
+            _ringTurnAt = _ringTickAt = now;
+            _handlerRingEvadeUntil = DateTime.MinValue;
+            _host.Log($"[CombatEvade] Empyrean Handler lethal ring — running away from '{name}' at {dist:0.0} m " +
+                      $"(ring {danger:0.#} m, stop at {_ringSafeYards:0.#} m), heading {away:0}°" +
+                      (running ? "." : " (autorun refused; holding and re-trying)."));
+            return;
+        }
+
+        // No heading snap / autorun on this engine: the older back-jump. Face the Handler, then
+        // Jumper "xs" (back + run) moves the body away from it.
+        float faceHandler = haveHeading ? (float)(toHandler % 360.0)
+            : _host.TryGetPlayerHeading(out float curr) ? curr : 0f;
+        // Hold combat long enough for turn + charge + land + one re-engage tick.
+        _handlerRingEvadeUntil = now.AddMilliseconds(HandlerRingJumpHoldMs + 2_200);
 
         bool started = RequestBackJump?.Invoke(faceHandler, HandlerRingJumpHoldMs) == true;
         if (started)
@@ -2009,6 +2050,7 @@ public partial class CombatManager : IDisposable
     /// </summary>
     private bool TickRingEvade()
     {
+        if (_ringRunActive) return TickRingRun();
         if (_handlerRingEvadeUntil == DateTime.MinValue) return false;
         DateTime now = DateTime.Now;
         bool jumperBusy = JumpBusy?.Invoke() == true;
@@ -2035,6 +2077,104 @@ public partial class CombatManager : IDisposable
         _handlerRingJumpStarted = false;
         _host.Log("[CombatEvade] Handler ring evade done — re-engaging.");
         return false;
+    }
+
+    /// <summary>
+    /// The run-away escape, from Think: run (re-aiming away from the Handler) until outside the
+    /// ring plus a margin or the run times out, then hold attacks until the ring has gone off
+    /// (running again if the Handler closes back inside the ring). Keeps the target, so combat
+    /// re-engages after.
+    /// </summary>
+    private bool TickRingRun()
+    {
+        DateTime now = DateTime.Now;
+        _ringTickAt = now;
+        double elapsed = (now - _handlerRingEvadeAt).TotalMilliseconds;
+        int me = _host.GetPlayerId() == 0 ? 0 : (int)_host.GetPlayerId();
+        double d = me != 0 && _handlerRingEvadeId != 0 ? _worldFilter.Distance(me, _handlerRingEvadeId) : -1;
+        bool gone = d < 0;
+
+        if (_ringRunning)
+        {
+            string? stopWhy = gone ? "the Handler is gone"
+                : d >= _ringSafeYards ? "outside the ring"
+                : elapsed >= HandlerRingRunMaxMs ? "run timed out"
+                : null;
+            if (stopWhy != null)
+            {
+                _host.SetAutoRunBy(RingEscapeSource, false);
+                _ringRunning = false;
+                _ringRunAt = DateTime.MinValue;
+                _host.Log($"[CombatEvade] Handler ring run stopped after {elapsed:0} ms: {stopWhy}" +
+                          (gone ? "." : $" ({d:0.0} m from the Handler)."));
+            }
+        }
+        else if (!gone && d < _ringDanger && elapsed < HandlerRingHoldMinMs)
+        {
+            // Holding, but the Handler came back inside the ring before it went off: run again.
+            _ringRunning = true;
+            _ringTurnAt = _ringRunAt = DateTime.MinValue;
+            _host.Log($"[CombatEvade] Handler back inside the ring ({d:0.0} m) — running again.");
+        }
+
+        if (_ringRunning)
+        {
+            if ((now - _ringTurnAt).TotalMilliseconds >= HandlerRingTurnRefreshMs
+                && TryGetHeadingTo(_handlerRingEvadeId, out double toward, out _))
+            {
+                _host.TurnToHeadingBy(RingEscapeSource, (float)((toward + 180.0) % 360.0));
+                _ringTurnAt = now;
+            }
+            if ((now - _ringRunAt).TotalMilliseconds >= HandlerRingRunRefreshMs
+                && _host.SetAutoRunBy(RingEscapeSource, true))
+                _ringRunAt = now;
+            LastCombatSkipReason = "handler-ring-run";
+            _tickWait = CombatLatencyTracker.Wait.Other;
+            _stallWatch.Hold(now);
+            return true;
+        }
+
+        if (!gone && elapsed < HandlerRingHoldMinMs)
+        {
+            LastCombatSkipReason = "handler-ring-wait";
+            _tickWait = CombatLatencyTracker.Wait.Other;
+            _stallWatch.Hold(now);
+            return true;
+        }
+
+        EndRingRun();
+        _host.Log($"[CombatEvade] Handler ring evade done after {elapsed:0} ms" +
+                  (gone ? "." : $" ({d:0.0} m away) — re-engaging."));
+        return false;
+    }
+
+    /// <summary>Clears the run-away escape (autorun off if it was on).</summary>
+    private void EndRingRun()
+    {
+        if (_ringRunning) _host.SetAutoRunBy(RingEscapeSource, false);
+        _ringRunActive = _ringRunning = false;
+        _ringRunAt = _ringTurnAt = DateTime.MinValue;
+        _handlerRingEvadeUntil = DateTime.MinValue;
+        _handlerRingEvadeId = 0;
+    }
+
+    /// <summary>Stops a Handler-ring escape now (macro stop, death). Safe to call when none is running.</summary>
+    public void StopRingEscape(string why)
+    {
+        if (!_ringRunActive) return;
+        EndRingRun();
+        _host.Log($"[CombatEvade] Handler ring escape stopped: {why}.");
+    }
+
+    /// <summary>Pump-thread orphan watch: Think drives the run; when it stops (death, another
+    /// activity, combat or the macro off) autorun must not be left on.</summary>
+    internal void PollRingEscape()
+    {
+        if (!_ringRunActive) return;
+        if ((DateTime.Now - _ringTickAt).TotalMilliseconds > HandlerRingOrphanMs
+            || !_settings.EnableCombat
+            || !_settings.IsMacroRunning)
+            StopRingEscape("combat stopped driving it");
     }
 
     /// <summary>Nearest Empyrean Handler (active target preferred when it is one).</summary>
@@ -4154,6 +4294,7 @@ public partial class CombatManager : IDisposable
                 ClearCombatTurnMotions();
                 ResetEnvironmentImpact("macro stopped");
                 ResetKite("macro stopped");
+                StopRingEscape("macro stopped");
             }
             return;
         }

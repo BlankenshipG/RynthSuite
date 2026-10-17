@@ -94,6 +94,7 @@ IltClientLookupTests.Register(runner);
         UseAtLoginTests.Register(runner);
         LearnSpellsTests.Register(runner);
         AttackLatencyTests.Register(runner);
+        RingEscapeTests.Register(runner);
         TargetingTests.Register(runner);
         LootAddItemTests.Register(runner);
         GiveTests.Register(runner);

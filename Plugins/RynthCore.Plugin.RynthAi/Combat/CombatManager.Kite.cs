@@ -234,6 +234,8 @@ public partial class CombatManager
     /// </summary>
     internal void PollKite()
     {
+        // The Handler-ring run-away has the same orphan rule (autorun must not outlive Think).
+        PollRingEscape();
         if (_kitePhase == KitePhase.None) return;
         DateTime now = KiteClock();
         if ((now - _kiteTickAt).TotalMilliseconds > KiteOrphanMs
