@@ -3626,6 +3626,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 }
                 break;
             case "settings":     HandleSettingsCommand(parts); break;
+            // /ra equipfor <monster>: VTank's /vt equipitemsfor (MagToolsCommands.Extra.cs)
+            case "equipfor":     HandleEquipForCommand(parts); break;
             case "autotrade":    HandleAutoTradeRaCommand(parts); break;
             case "trade":        HandleTradeCommand(parts); break;
             case "busyinfo":     HandleBusyInfoCommand(); break;

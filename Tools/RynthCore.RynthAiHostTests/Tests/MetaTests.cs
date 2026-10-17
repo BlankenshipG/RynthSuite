@@ -45,6 +45,7 @@ internal static class MetaTests
         r.Add("meta: expression condition fails closed on errors", ExpressionCondition);
         r.Add("meta: need-to-buff with no buff manager, unknown condition types", NeedToBuffAndUnknown);
         r.Add("meta action: chat commands, /ra, /vt and /mt", ChatCommands);
+        r.Add("meta action: the /vt verbs and options the metas use that were missing (2026-10-17)", VtPortedVerbs);
         r.Add("meta action: SetMetaState, CallMetaState and ReturnFromCall", CallReturn);
         r.Add("meta action: All runs every child in order", AllAction);
         r.Add("meta action: embedded nav route", EmbeddedNav);
@@ -913,6 +914,90 @@ internal static class MetaTests
         RunAction(reversed, A.ChatCommand, "/vt reverseroute");
         Check.Near(reversed.S.CurrentRoute.Points[0].EW, 3, 1e-9, "route reversed");
         Check.Eq(reversed.S.ActiveNavIndex, 2, "index mirrored");
+    }
+
+    // /vt verbs and options found in ub-IT and the metas on disk (universalremote.met, SASocietyTasks.met,
+    // FoundryIzexi.met, DerethExploration (1).met) that RynthAi didn't handle.
+    private static void VtPortedVerbs()
+    {
+        FakeHost.Reset();
+        FakeHost.TapJumpCalls = true;   // the engine's tap jump, for /vt tapjump
+        var rig = new Rig(FakeHost.Create(), Player);
+
+        // /vt e toggles the macro. Straight to the /vt handler: a meta doesn't run with the macro off.
+        rig.S.IsMacroRunning = false;
+        Check.True(rig.M.TryHandleVtCommand("/vt e") && rig.Ra.Contains("/ra start"), "/vt e with the macro off starts it");
+        rig.S.IsMacroRunning = true;
+        Check.True(rig.M.TryHandleVtCommand("/vt e") && rig.Ra.Contains("/ra stop"), "/vt e with the macro on stops it");
+
+        // /vt jump heading shift holdms -> /ra jump[s] heading hold; /vt tapjump -> the engine's tap jump.
+        RunAction(rig, A.ChatCommand, "/vt jump 90 true 750");
+        Check.True(rig.Ra.Contains("/ra jumps 90 750"), "/vt jump 90 true 750 -> /ra jumps 90 750");
+        RunAction(rig, A.ChatCommand, "/vt jump 180 false 300");
+        Check.True(rig.Ra.Contains("/ra jump 180 300"), "shift false -> /ra jump");
+        int taps = FakeHost.TapJumps;
+        RunAction(rig, A.ChatCommand, "/vt tapjump");
+        Check.Eq(FakeHost.TapJumps, taps + 1, "/vt tapjump");
+
+        // Settings profiles go to /ra settings; other /vt settings verbs are still swallowed.
+        RunAction(rig, A.ChatCommand, "/vt settings savechar Banes");
+        Check.True(rig.Ra.Contains("/ra settings savechar Banes"), "/vt settings savechar");
+        RunAction(rig, A.ChatCommand, "/vt settings loadchar Base Profile");
+        Check.True(rig.Ra.Contains("/ra settings loadchar Base Profile"), "/vt settings loadchar keeps spaces");
+
+        // looting load = loot load; equipitemsfor -> /ra equipfor.
+        RunAction(rig, A.ChatCommand, "/vt looting load NoSuchProfile.utl");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("Loot profile not found: NoSuchProfile.utl")), "/vt looting load is handled as loot load");
+        RunAction(rig, A.ChatCommand, "/vt equipitemsfor Pyre Skeleton");
+        Check.True(rig.Ra.Contains("/ra equipfor Pyre Skeleton"), "/vt equipitemsfor -> /ra equipfor");
+
+        // Distances: VTank landblock units (x240) -> yards; a value over 1 is already yards.
+        RunAction(rig, A.ChatCommand, "/vt opt set attackdistance .01666");
+        Check.Eq(rig.S.MonsterRange, 4, "attackdistance .01666 -> 4 yd (was dropped: an int setter refused the decimal)");
+        RunAction(rig, A.ChatCommand, "/vt opt set attackrange 0.04166");
+        Check.Eq(rig.S.MonsterRange, 10, "attackrange 0.04166 -> 10 yd");
+        RunAction(rig, A.ChatCommand, "/vt opt set approachdistance 0.0175");
+        Check.Eq(rig.S.ApproachRange, 4, "approachdistance 0.0175 -> 4 yd");
+        RunAction(rig, A.ChatCommand, "/vt opt set dooropenrange 0.005");
+        Check.Near(rig.S.OpenDoorRange, 1.2, 1e-3, "dooropenrange 0.005 -> 1.2 yd (was 0.005 yd)");
+        RunAction(rig, A.ChatCommand, "/vt opt set ringdistance 0.025");
+        Check.Eq(rig.S.RingRange, 6, "ringdistance 0.025 -> 6 yd");
+        RunAction(rig, A.ChatCommand, "/vt opt set corpseapproachrange-max 0.05");
+        Check.Near(rig.S.CorpseApproachRangeMax, 12, 1e-3, "corpseapproachrange-max 0.05 -> 12 yd");
+        RunAction(rig, A.ChatCommand, "/vt opt set minimumringtargets 3");
+        Check.Eq(rig.S.MinRingTargets, 3, "minimumringtargets");
+        RunAction(rig, A.ChatCommand, "/vt opt set attackdistance 25");
+        Check.Eq(rig.S.MonsterRange, 25, "a value over 1 is yards already");
+
+        // An option written as a verb (DerethExploration: /vt navclosestoprange 0.005).
+        RunAction(rig, A.ChatCommand, "/vt navclosestoprange 0.005");
+        Check.Near(rig.S.FollowNavMin, 1.2, 1e-3, "/vt navclosestoprange 0.005 -> nav point reach 1.2 yd");
+        RunAction(rig, A.ChatCommand, "/vt opt set navclosetoprange .00625");
+        Check.Near(rig.S.FollowNavMin, 1.5, 1e-3, "the misspelt navclosetoprange too");
+
+        // Options whose value means something else in RynthAi.
+        RunAction(rig, A.ChatCommand, "/vt opt set defaultmeleeattackheight 3");
+        Check.Eq(rig.S.MeleeAttackHeight, 2, "VTank height 3 (high) -> RynthAi 2");
+        RunAction(rig, A.ChatCommand, "/vt opt set defaultmeleeattackheight 2");
+        Check.Eq(rig.S.MeleeAttackHeight, 1, "VTank height 2 (medium) -> RynthAi 1");
+        rig.S.LootOwnership = 0;
+        RunAction(rig, A.ChatCommand, "/vt opt set lootfellowcorpses true");
+        Check.Eq(rig.S.LootOwnership, 1, "lootfellowcorpses -> fellowship kills");
+        RunAction(rig, A.ChatCommand, "/vt opt set lootallcorpses true");
+        Check.Eq(rig.S.LootOwnership, 2, "lootallcorpses -> all corpses");
+        RunAction(rig, A.ChatCommand, "/vt opt set lootallcorpses false");
+        Check.Eq(rig.S.LootOwnership, 0, "lootallcorpses false -> my kills");
+        RunAction(rig, A.ChatCommand, "/vt opt set usearcs 3");
+        Check.True(rig.S.UseArcs, "usearcs 3 -> on");
+        RunAction(rig, A.ChatCommand, "/vt opt set usearcs 0");
+        Check.False(rig.S.UseArcs, "usearcs 0 -> off");
+        RunAction(rig, A.ChatCommand, "/vt opt set minimumhealkitsuccesschance 55");
+        Check.Eq(rig.S.KitMinSuccessPct, 55, "minimumhealkitsuccesschance 55 %");
+        RunAction(rig, A.ChatCommand, "/vt opt set minimumhealkitsuccesschance 0.8");
+        Check.Eq(rig.S.KitMinSuccessPct, 80, "a fraction is scaled to a percent");
+        RunAction(rig, A.ChatCommand, "/vt opt set defaultmeleeattackheight 3");
+        RunAction(rig, A.ChatCommand, "/vt opt get defaultmeleeattackheight");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("defaultmeleeattackheight = 3")), "read back in VTank's own 1-3");
     }
 
     private static void CallReturn()
