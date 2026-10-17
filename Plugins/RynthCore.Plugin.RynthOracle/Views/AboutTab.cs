@@ -71,6 +71,7 @@ internal sealed partial class OracleView
         w.BulletText("/ro progress  ILT progression planners");
         w.BulletText("/ro timers  open or close the Quest Timers window");
         w.BulletText("/ro fellowship  the Fellowship tab");
+        w.BulletText("/ro legendary  John's Legendary Key quests: have, missing, repeat timers");
         w.BulletText("/ro about  this tab (settings, server features)");
         w.BulletText("/ro void  open or close the Void window");
         w.BulletText("/ro quests  read your quest flags now");

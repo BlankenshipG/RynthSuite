@@ -12,7 +12,7 @@ internal sealed partial class OracleView
     public const string TabQuests = "Quests", TabCharacter = "Character",
         TabSkills = "Skills", TabAttributes = "Attributes", TabProgress = "Progress",
         TabAugs = "Augs", TabSociety = "Society",
-        TabMarkers = "Markers", TabTitles = "Titles", TabVoid = "Void", TabFellowship = "Fellowship",
+        TabMarkers = "Markers", TabLegendary = "Legendary", TabTitles = "Titles", TabVoid = "Void", TabFellowship = "Fellowship",
         TabBoards = "Leaderboards", TabConquest = "Conquest", TabBreeding = "Pet Breeding", TabAbout = "About";
 
     /// <summary>A tab: shown where any of its server tags matches the server; no tags = everywhere (retail).</summary>
@@ -42,6 +42,8 @@ internal sealed partial class OracleView
             new(TabAugs, any, DrawAugs, true),
             new(TabSociety, any, DrawSociety, true),
             new(TabMarkers, any, DrawMarkers, false),
+            // Legendary Key quests (John in Arwic): have / missing and repeat timers, so live.
+            new(TabLegendary, any, DrawLegendary, true),
             new(TabTitles, any, DrawTitles, false),
             new(TabVoid, any, DrawVoid, true),
             new(TabFellowship, any, DrawFellowship, false),

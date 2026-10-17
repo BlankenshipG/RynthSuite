@@ -44,6 +44,8 @@
     <EmbeddedResource Include="Resources\society.csv" LogicalName="RynthOracle.society.csv" />
     <EmbeddedResource Include="Resources\titles.csv" LogicalName="RynthOracle.titles.csv" />
     <EmbeddedResource Include="Resources\markers.csv" LogicalName="RynthOracle.markers.csv" />
+    <!-- Legendary Key quests for the Legendary tab (list and notes: the "Arwic John Route" sheet). -->
+    <EmbeddedResource Include="Resources\legendary.csv" LogicalName="RynthOracle.legendary.csv" />
     <EmbeddedResource Include="Resources\customquests.csv" LogicalName="RynthOracle.customquests.csv" />
     <!-- Spell names and durations: RynthAi's spell table, shared rather than copied. -->
     <EmbeddedResource Include="..\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthOracle.SpellData.txt" Link="Shared\SpellData.txt" />
