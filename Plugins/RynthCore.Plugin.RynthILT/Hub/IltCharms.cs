@@ -1,6 +1,6 @@
-// IltCharms.cs — Every ACECustom registry charm and the Guardian Hand, with their toggles. Shown by
-// RynthOracle's Character tab since 2026-10-13 (BuildReaderJson / ToggleFromReader through
-// "RynthILT.Data"); Render is the old Mini Remote "Charms" tab's table, no longer a tab.
+// IltCharms.cs — The Mini Remote's "Charms" ILT tab: every ACECustom registry charm and the
+// Guardian Hand, with their toggles. Other plugins read the same list and toggle through
+// "RynthILT.Data" (BuildReaderJson / ToggleFromReader).
 // Originally SilentKelpie's ILT Hub (RynthAi IltHub/); moved to RynthILT 2026-10-13.
 //
 // Per charm (IltCharmTracker): acquired ("carried" now, "stored" = carried before and remembered
@@ -72,7 +72,7 @@ internal sealed class IltCharms : IIltFeature
     }
 
     /// <summary>
-    /// A Toggle from another plugin (RynthOracle's Character tab, "RynthILT.Data" ToggleCharm). Only
+    /// A Toggle from another plugin ("RynthILT.Data" ToggleCharm). Only
     /// a registry charm or Guardian Hand the player carries is used, so a reader can't make the
     /// client use anything else. Pump thread. True when it was used.
     /// </summary>
@@ -91,7 +91,7 @@ internal sealed class IltCharms : IIltFeature
     }
 
     /// <summary>
-    /// The "RynthILT.Data" charms JSON (RynthOracle's Character tab): the registry charms
+    /// The "RynthILT.Data" charms JSON: the registry charms
     /// (IltCharmTracker.BuildJson) plus a "hands" array, every Guardian Hand carried now with its
     /// object id (the Toggle's id), status and the server's switch. Pump thread.
     /// </summary>

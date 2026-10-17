@@ -35,12 +35,6 @@ internal sealed class IltHubController
     private bool _availabilityAnnounced; // "open the Mini Remote" hint printed this session
     private volatile int _forceRequest = -1; // SetForceIlt from another thread, applied on the next tick
 
-    /// <summary>How often the "RynthILT.Server" profile snapshot is rebuilt (pump thread).</summary>
-    private const long ProfileRebuildMs = 1000;
-    private long _profileBuiltAt;
-    private volatile string _profileJson = string.Empty;
-    private volatile IltTri[] _featureStates = Array.Empty<IltTri>();
-
     // "RynthILT.Data" (Plugins/Shared/RynthIltDataApi.cs): the charms and bank snapshots, rebuilt on
     // the pump every DataRebuildMs only while a reader has asked within DataWatchMs.
     private const long DataRebuildMs = 2000;
@@ -53,25 +47,30 @@ internal sealed class IltHubController
     private volatile string _bankJson = string.Empty;
     private List<IltBankExport.Row> _siblings = new();
 
+    // "RynthILT.Server" profile JSON (Oracle Fellowship / Quests qb / feature list). Rebuilt ~1 s.
+    private const long ProfileRebuildMs = 1000;
+    private long _profileBuiltAt;
+    private volatile string _profileJson = string.Empty;
+
     public IltBanking Banking { get; }
     public IltSessionRates Rates { get; }
     /// <summary>The quest bonus list (/qb): the Quests tab's section and the Temple tracker's stamps.</summary>
     public IltQuestBonus QuestBonus { get; }
     /// <summary>The /pets and /shinies logs (the Pets tab's section).</summary>
     public IltPetLogs PetLogs { get; }
-    /// <summary>The pet breeding tracker (the Pets tab's Breeding section and RynthOracle's Pet Breeding tab).</summary>
+    /// <summary>The pet breeding tracker (the Pets tab's Breeding sub-tab, and the "RynthILT.Data" breeding JSON).</summary>
     public IltPetBreeding Breeding { get; }
     public IltProgression Progression { get; }
     public IltGear Gear { get; }
     public IltGames Games { get; }
-    /// <summary>Vaulted Dungeons keeper (Mini Remote tab; Options > Navigation gate in RynthAi).</summary>
-    public IltVaultedDungeons VaultedDungeons { get; }
     /// <summary>Registry charm acquired / active / server state (the Charms tab and RynthILTGetCharmsJson).</summary>
     public IltCharmTracker Charms { get; }
     /// <summary>The Mini Remote's Charms tab (registry charms with toggles, the Guardian Hand).</summary>
     public IltCharms CharmsTab { get; }
     /// <summary>Temple guardians: riddle translator, hand-in, attribute turn-in tracker.</summary>
     public IltGuardian Guardian { get; }
+    /// <summary>Vaulted Dungeons keeper (Mini Remote tab; Options > Navigation gate in RynthAi).</summary>
+    public IltVaultedDungeons VaultedDungeons { get; }
 
     /// <param name="writesBlocked">True while this character's copy from RynthAi is unfinished (IltHubStore.WritesBlocked).</param>
     /// <param name="legacyFolder">The character's RynthAi folder while that copy is unfinished (read-only fallback).</param>
@@ -97,10 +96,10 @@ internal sealed class IltHubController
         Progression = new IltProgression(_ctx);
         Gear = new IltGear(_ctx);
         Games = new IltGames(_ctx);
-        VaultedDungeons = new IltVaultedDungeons(_ctx);
         Charms = new IltCharmTracker(_ctx);
         CharmsTab = new IltCharms(_ctx, Charms);
         Guardian = new IltGuardian(_ctx, QuestBonus);
+        VaultedDungeons = new IltVaultedDungeons(_ctx);
         _features.AddRange(new IIltFeature[] { Banking, PetLogs, Breeding, Rates, QuestBonus, Progression, Gear, CharmsTab, Games, VaultedDungeons, Guardian });
 
         Banking.BalanceChanged += Rates.OnBankBalanceChanged;
@@ -112,43 +111,34 @@ internal sealed class IltHubController
     }
 
     /// <summary>
-    /// The latest "RynthILT.Server" profile JSON: the Leaftide feature list with the server's state
-    /// for each, and the fellowship rules (Plugins/Shared/RynthIltServerApi.cs). Rebuilt on the pump
-    /// about once a second, so any thread may read it.
+    /// The latest "RynthILT.Server" profile JSON: Leaftide features, fellowship rules, and the /qb
+    /// list (Plugins/Shared/RynthIltServerApi.cs). Rebuilt on the pump about once a second so any
+    /// thread (ServerInterface) may read it.
     /// </summary>
     public string ProfileJson => _profileJson;
 
-    /// <summary>
-    /// Each IltFeatureCatalog.All entry's state, in the same order, from the same rebuild as
-    /// <see cref="ProfileJson"/>. The render thread draws the feature list from this copy rather than
-    /// the option bits the pump is writing. Any thread.
-    /// </summary>
-    public IltTri[] FeatureStates => _featureStates;
-
-    /// <summary>Rebuilds the profile JSON and the feature-state copy from the current server options. Pump thread.</summary>
+    /// <summary>Rebuilds <see cref="ProfileJson"/> from the current server options. Pump thread.</summary>
     private void RebuildProfile()
     {
         IltServerOptions o = _ctx.Options;
         bool ilt = o.IsIltLikeWorld;
-        var states = new IltTri[IltFeatureCatalog.All.Length];
-        for (int i = 0; i < states.Length; i++) states[i] = IltFeatureCatalog.StateOf(IltFeatureCatalog.All[i], ilt, o.Get);
-        _featureStates = states;
-        _profileJson = IltFeatureCatalog.BuildProfileJson(ilt, o.WorldName, _ctx.State.ForceLeaftideFeatures,
-                                                          o.Source ?? string.Empty, o.LastRefreshUtc, o.Get,
-                                                          QuestBonus.Snapshot());
+        _profileJson = IltFeatureCatalog.BuildProfileJson(
+            ilt, o.WorldName, _ctx.State.ForceLeaftideFeatures,
+            o.Source ?? string.Empty, o.LastRefreshUtc, o.Get,
+            QuestBonus.Snapshot());
     }
 
     /// <summary>
     /// The charms JSON ("RynthILT.Data" GetCharmsJson). Reading it marks the charms as watched, so
-    /// the pump keeps the snapshot fresh while a reader (RynthOracle's Character tab) is showing it;
-    /// "" until the first rebuild after that. Any thread.
+    /// the pump keeps the snapshot fresh while a reader is showing it; "" until the first rebuild
+    /// after that. Any thread.
     /// </summary>
     public string CharmsJson
     {
         get { System.Threading.Interlocked.Exchange(ref _charmsReadAt, IltHubContext.NowMs); return _charmsJson; }
     }
 
-    /// <summary>The bank JSON ("RynthILT.Data" GetBankJson; RynthInventory's Banking tab), as <see cref="CharmsJson"/>.</summary>
+    /// <summary>The bank JSON ("RynthILT.Data" GetBankJson), as <see cref="CharmsJson"/>.</summary>
     public string BankJson
     {
         get { System.Threading.Interlocked.Exchange(ref _bankReadAt, IltHubContext.NowMs); return _bankJson; }
@@ -165,7 +155,7 @@ internal sealed class IltHubController
         });
 
     /// <summary>
-    /// The pet breeding JSON ("RynthILT.Data" GetPetBreedingJson; RynthOracle's Pet Breeding tab).
+    /// The pet breeding JSON ("RynthILT.Data" GetPetBreedingJson).
     /// Reading it keeps the tracker scanning; "" off an ILT world or before its first scan. Any thread.
     /// </summary>
     public string PetBreedingJson => _ctx.Options.IsIltLikeWorld ? Breeding.ReaderJson : string.Empty;
@@ -234,21 +224,21 @@ internal sealed class IltHubController
 
     /// <summary>
     /// The Mini Remote offers the Infinite Leaftide tabs: an ILT-like world (or the Force-ILT
-    /// override from RynthCore Options > Diagnostics). Gear and Games then follow <see cref="SectionAvailable"/>.
+    /// override from RynthCore Options > Diagnostics). The tabs then follow <see cref="SectionAvailable"/>.
     /// </summary>
     public bool OffersTabs => _ctx.Options.IsIltLikeWorld;
 
     /// <summary>Whether the Mini Remote's tab bar shows <paramref name="section"/>.</summary>
     public bool TabShown(IltSection section) => OffersTabs && IltSections.IsTab(section) && SectionAvailable(section);
 
+    /// <summary>Render thread: one Mini Remote ILT tab's body (RynthAi's MiniRemoteHud draws the tab bar).</summary>
+    public void RenderTab(IltSection section) => _ui.RenderTab(section);
+
     /// <summary>
     /// Render thread: the ILT session extras (coins, pyreals, item conversions) in RynthCore's Mini
     /// Remote "Session Stats" section, below RynthAi's session stats (surface "section:ilt-rates").
     /// </summary>
     public void RenderRatesSection() => _ui.RenderRatesSection();
-
-    /// <summary>Render thread: one Mini Remote ILT tab's body (RynthAi's MiniRemoteHud draws the tab bar).</summary>
-    public void RenderTab(IltSection section) => _ui.RenderTab(section);
 
     /// <summary>Render thread: the /qb list in RynthILT's own Quests section (surface "section:ilt-questbonus").</summary>
     public void RenderQuestBonusSection() => _ui.RenderQuestBonusSection();
@@ -316,16 +306,17 @@ internal sealed class IltHubController
         _ctx.Options.Tick();
         PollQuestOutcome();
 
-        // The profile other plugins read (RynthILT.Server): world, feature states, fellowship rules.
-        if (now - _profileBuiltAt >= ProfileRebuildMs)
-        {
-            _profileBuiltAt = now;
-            RebuildProfile();
-        }
-
         // The charms / bank snapshots other plugins read (RynthILT.Data), only while watched.
         try { RebuildReaderData(now); }
         catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "RebuildReaderData"); }
+
+        // Profile other plugins read (RynthILT.Server): world, feature states, fellowship, /qb.
+        if (now - _profileBuiltAt >= ProfileRebuildMs)
+        {
+            _profileBuiltAt = now;
+            try { RebuildProfile(); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.IltHub, ex, "RebuildProfile"); }
+        }
 
         // "Mini Remote on screen" gates bank auto-refresh and the gear / split-arrow scans.
         _ctx.State.WindowVisible = _ctx.Ai.MiniRemoteVisible;
@@ -505,7 +496,7 @@ internal sealed class IltHubController
                 {
                     // Quests and Pets are RynthAi's tabs: not ours to open.
                     if (args.Length >= 2 && IltSections.IsUniversalTabName(args[1])) return false;
-                    _ctx.Chat("[Mini Remote] Usage: /ra hub open quests|pets|gear|games|vaulted|guardian|bounties [show|hide|toggle]  (character and charms: /ro character, banking: /ginv bank)");
+                    _ctx.Chat("[Mini Remote] Usage: /ra hub open pets|banking|gear|charms|games|vaulted|guardian|bounties [show|hide|toggle]  (character: /ro character, quests: /ro)");
                     break;
                 }
                 OpenSection(section, args.Length > 2 ? args[2] : "toggle");
@@ -521,7 +512,7 @@ internal sealed class IltHubController
                 break;
             case "refresh": _ctx.Options.Refresh(manual: true); break;
             case "bank": Banking.RequestRefresh(quiet: false); break;
-            // "/ilt qb": RynthOracle's "Load /qb list" button (the list reaches it through the profile JSON).
+            // "/ilt qb": reads the /qb list again (the Quests tab's quest bonus section).
             case "qb": _ctx.Chat("[RynthILT] " + QuestBonus.RefreshQb()); break;
             case "status": PrintStatus(); break;
             case "features": PrintFeatures(); break;
@@ -543,13 +534,13 @@ internal sealed class IltHubController
                 break;
             default:
                 _ctx.Chat("[Mini Remote] /ra hub [show|hide|toggle] (Mini Remote)|refresh|bank|status|features|force on|off|servers [list]|clap|confirm|cancel");
-                _ctx.Chat("[Mini Remote] /ra hub open quests|pets|gear|games|vaulted [show|hide|toggle]  (Mini Remote tabs; character and charms: /ro character, banking: /ginv bank)");
+                _ctx.Chat("[Mini Remote] /ra hub open pets|banking|gear|charms|games|vaulted [show|hide|toggle]  (Mini Remote tabs; character: /ro character, quests: /ro)");
+                _ctx.Chat("[Mini Remote] /ilt vaulted [on|off|toggle|status]  (Vaulted Dungeons; Options > Navigation > Vaulted Dungeons)");
                 _ctx.Chat("[Mini Remote] /ra hub profile list|save <name> [shared]|load <name>   /ra hub suit list|test|load [name]");
                 _ctx.Chat("[Mini Remote] /ra hub attr run|stop|costs|status|auto on|off|every <min>|raise <stat> <n>  (Skills panel > Progression)");
                 _ctx.Chat("[Mini Remote] /ra quests refresh (quiet /myquests)   /ra pets [show|hide]   /ilt qb (the quest bonus list)");
                 _ctx.Chat("[Mini Remote] /ra guardian [window|translate <text>|handin|stop|chat on|off|auto on|off|buy on|off|refresh|status]  (window: ILT button > Guardian)");
                 _ctx.Chat("[Mini Remote] /ra bounty [show|hide|toggle]  (RynthCore's ILT button > Bounties, /rc bounties)");
-                _ctx.Chat("[Mini Remote] /ilt vaulted [on|off|toggle|status]  (Vaulted Dungeons; Options > Navigation > Vaulted Dungeons)");
                 _ctx.Chat("[Mini Remote] The ILT verbs also work as /ilt hub ..., /ilt guardian ... (RynthILT).");
                 break;
         }
@@ -621,7 +612,7 @@ internal sealed class IltHubController
     {
         if (IltSections.MovedCommand(section) is string moved)
         {
-            // Character / Charms / Banking left the Mini Remote: open their new home instead.
+            // Character left the Mini Remote: open its new home instead.
             if (!mode.Equals("hide", StringComparison.OrdinalIgnoreCase)) OpenMoved(section, moved);
             return;
         }
@@ -638,15 +629,15 @@ internal sealed class IltHubController
 
     /// <summary>
     /// Opens the new home of a section that moved out of the Mini Remote (RynthOracle's Character
-    /// tab, RynthInventory's Banking tab) by running its chat command, or says where it is when
-    /// the command can't run (an older RynthCore, or that plugin not loaded). Pump thread.
+    /// tab) by running its chat command, or says where it is when the command can't run (an older
+    /// RynthCore, or RynthOracle not loaded). Pump thread.
     /// </summary>
     public void OpenMoved(IltSection section, string command)
     {
         if (_ctx.Host.HasInvokeChatParser && _ctx.Host.InvokeChatParser(command))
             return;
-        string home = command == IltSections.GlobalBankCommand ? "RynthInventory's Global Inventory > Banking" : "RynthOracle's Character tab";
-        _ctx.Chat($"[Mini Remote] {IltSections.Label(section)} moved to {home} ({command}).");
+        _ctx.Chat($"[Mini Remote] {IltSections.Label(section)} moved to RynthOracle's Character tab ({command}); "
+                  + "the ILT session rates are in the Mini Remote's Session Stats.");
     }
 
     /// <summary>

@@ -1,8 +1,7 @@
 // IltBanking.cs — ILT banking: /bank balances, deposits, withdrawals, confirmed transfers,
 // transaction log. Originally SilentKelpie's ILT Hub (RynthAi IltHub/); moved to RynthILT 2026-10-13.
-// Shown by RynthInventory's Global Inventory "Banking" tab since 2026-10-13 (every character on
-// this server, IltBankExport; the verbs come back through RunVerb). Render is the old Mini
-// Remote "Banking" tab, no longer a tab.
+// Render is the Mini Remote's "Banking" tab. The balances and log are also exported to other
+// plugins through "RynthILT.Data" (IltBankExport; their verbs come back through RunVerb).
 //
 // Server contract (ACECustom PlayerCommands bank handler, upstream 2026-10-11):
 //   /bank                  → "[BANK] Your balances are:" then "[BANK] Pyreals: N", "Luminance:",
@@ -16,8 +15,9 @@
 //   are bound (deposit and withdraw only); pyreal peas and luminance tokens deposit only.
 // Deposit, withdraw and transfer share the server's bank_command_limit throttle; a balance
 // refresh doesn't, so it has its own (client-side) spacing.
-// Balance lines are parsed whenever they appear (player-typed /bank too) but only EATEN
-// when the Hub asked. Transfers always need a confirmation (UB had none).
+// Balance lines are parsed whenever they appear. They are EATEN for quiet Hub refreshes
+// (login probe, auto-refresh, Banking tab Refresh) and shown only when the player asked
+// (typed /bank, or RequestRefresh(quiet: false)). Transfers always need a confirmation.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -58,6 +58,12 @@ internal sealed class IltBanking : IIltFeature
     private long _moveUntil;
     /// <summary>How long after a deposit / withdrawal reply the moved amounts are not income (covers the balance re-read).</summary>
     private const long MoveWindowMs = 12_000;
+    /// <summary>
+    /// Until this tick, [BANK] balance lines may show in chat (player typed /bank or asked for a
+    /// loud refresh). Quiet Hub / login probes leave this at 0 so the lines stay hidden.
+    /// </summary>
+    private long _showBankReplyUntil;
+    private const long ShowBankReplyWindowMs = 15_000;
 
     // Render-thread form state.
     private string _amountText = string.Empty;
@@ -69,7 +75,7 @@ internal sealed class IltBanking : IIltFeature
     private volatile string _latestResult = string.Empty;
 
     /// <summary>
-    /// Another plugin is showing the balances (RynthInventory's Banking tab reads "RynthILT.Data"):
+    /// Another plugin is showing the balances (a "RynthILT.Data" reader):
     /// the periodic quiet refresh runs as it does while the Mini Remote is open. Pump thread.
     /// </summary>
     public bool ReaderWatching;
@@ -117,6 +123,16 @@ internal sealed class IltBanking : IIltFeature
 
     // ── Commands ────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Player typed /bank (or /b with no verb) in the chat bar: the next balance dump may show.
+    /// Pump thread.
+    /// </summary>
+    public void NoteTypedBalanceCommand()
+    {
+        _showBankReplyUntil = IltHubContext.NowMs + ShowBankReplyWindowMs;
+        RynthLog.Trace(LogCat.IltBanking, "NoteTypedBalanceCommand: next [BANK] dump may show in chat");
+    }
+
     /// <summary>Queues a /bank balance refresh (eaten when <paramref name="quiet"/>).</summary>
     public void RequestRefresh(bool quiet)
     {
@@ -125,6 +141,8 @@ internal sealed class IltBanking : IIltFeature
         long now = IltHubContext.NowMs;
         if (now - _lastBalanceAt < BalanceSpacingMs) return;
         _lastBalanceAt = now;
+        if (!quiet)
+            _showBankReplyUntil = now + ShowBankReplyWindowMs;
         _ctx.Capture.Enqueue(new IltChatRequest
         {
             Command = "/bank",
@@ -295,7 +313,11 @@ internal sealed class IltBanking : IIltFeature
         if (text.StartsWith("[BANK]", StringComparison.OrdinalIgnoreCase))
         {
             ParseBalanceLine(text);
-            return false; // eating is decided by the capture queue
+            // Capture.Eat already hides quiet refreshes; this is the backstop when that miss
+            // (Silentstorm 2026-10-16: Mini Remote open + 120s auto-refresh leaked every dump).
+            // Show only while the player asked (typed /bank or loud RequestRefresh).
+            bool show = IltHubContext.NowMs < _showBankReplyUntil;
+            return !show;
         }
         // A deposit or withdrawal reply (ours or a typed /b): the next balance and pack changes are moves.
         if (text.StartsWith("Deposited ", StringComparison.Ordinal) || text.StartsWith("Withdrew ", StringComparison.Ordinal))
@@ -439,8 +461,10 @@ internal sealed class IltBanking : IIltFeature
 
         int refresh = Bank.AutoRefreshSeconds;
         ImGui.SetNextItemWidth(120);
-        if (ImGui.InputInt("Auto-refresh seconds (0 = off)", ref refresh, 30))
+        if (ImGui.InputInt("Auto-refresh seconds (0 = login/manual only)", ref refresh, 30))
             Bank.AutoRefreshSeconds = refresh <= 0 ? 0 : Math.Max(30, refresh);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("While Mini Remote / Banking is open, re-read /bank this often. 0 = only at login and when you press Refresh (recommended; avoids chat spam).");
 
         ImGui.Separator();
         RenderDepositWithdraw();

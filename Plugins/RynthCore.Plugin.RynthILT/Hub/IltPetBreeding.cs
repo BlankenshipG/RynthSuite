@@ -1,5 +1,8 @@
-// IltPetBreeding.cs - The pet breeding tracker: RynthAi's Mini Remote Pets > Breeding tab (RynthILT.Hub
-// section "pets-breeding") and RynthOracle's Pet Breeding tab ("RynthILT.Data" GetPetBreedingJson).
+// IltPetBreeding.cs - The pet breeding tracker: the Breeding sub-tab of RynthAi's Mini Remote Pets tab,
+// drawn here (RynthILT.Hub section "pets-breeding"; RynthAi only hosts it), and the same data as JSON
+// for other plugins ("RynthILT.Data" v2 GetPetBreedingJson / PetBreedingCommand).
+// Originally SilentKelpie's (2026-10-15, his RynthILT 0.2.7); ported into RynthILT 0.3.1 without his
+// RynthOracle Pet Breeding tab: breeding is Leaftide's, so only this plugin draws it.
 //
 // What it does, on Infinite Leaftide only:
 //   * reads every carried combat essence (appraisal qualities + the LongDesc breeding block) and
@@ -42,7 +45,7 @@ internal sealed record BreedingSnapshot(
 internal sealed class IltPetBreeding : IIltFeature
 {
     /// <summary>Feature bits this tracker reports (IltFeatureCatalog's pet_breeding / pet_maturity rows).</summary>
-    public const string BitBreeding = "pet_breeding";
+    public const string BitBreeding = RynthIltHub.FeaturePetBreeding;
     public const string BitMaturity = "pet_maturity";
 
     /// <summary>ACE commands: the diagnostics reply, and the courtship dance.</summary>
@@ -104,7 +107,7 @@ internal sealed class IltPetBreeding : IIltFeature
     /// <summary>Someone is looking: keep the essences fresh for a while (any thread).</summary>
     public void MarkWatched() => System.Threading.Interlocked.Exchange(ref _watchedAt, IltHubContext.NowMs);
 
-    /// <summary>The reader JSON (RynthOracle's Pet Breeding tab); reading it marks the tracker watched. Any thread.</summary>
+    /// <summary>The reader JSON ("RynthILT.Data" GetPetBreedingJson); reading it marks the tracker watched. Any thread.</summary>
     public string ReaderJson
     {
         get { MarkWatched(); return _readerJson; }
@@ -378,7 +381,7 @@ internal sealed class IltPetBreeding : IIltFeature
     }
 
     /// <summary>
-    /// A reader's verb line (RynthOracle; RynthIltDataApi "PetBreedingCommand"): refresh, debug, dance,
+    /// A reader's verb line ("RynthILT.Data" PetBreedingCommand): refresh, debug, dance,
     /// or "apply &lt;supplyKey&gt; &lt;essenceId&gt;" (the reader confirmed it with the player). Pump thread.
     /// </summary>
     public void RunVerb(string line)
@@ -401,7 +404,7 @@ internal sealed class IltPetBreeding : IIltFeature
 
     // ── Reader JSON ─────────────────────────────────────────────────────────
 
-    /// <summary>The JSON RynthOracle draws (Plugins/Shared/RynthIltDataApi.cs header has the shape).</summary>
+    /// <summary>The reader JSON (Plugins/Shared/RynthIltDataApi.cs header has the shape).</summary>
     internal static string BuildJson(BreedingSnapshot s, IltBreedingRules r, string world)
     {
         var sb = new StringBuilder(4096);
@@ -590,9 +593,6 @@ internal sealed class IltPetBreeding : IIltFeature
                 " the stud spends a charge, the dam rests, incense is used up and the baby goes to the dam's owner.",
                 Dance, "Dance");
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("@dance (the same as typing *dance*). Both owners must dance within the window.");
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Open in RynthOracle##broracle"))
-            _ctx.Post(() => { if (_ctx.Host.HasInvokeChatParser) _ctx.Host.InvokeChatParser("/ro breeding"); });
 
         if (s.Message.Length > 0) SafeImGui.TextDisabled(s.Message);
         if (s.FreeSlots == 0) SafeImGui.TextColored(IltStyle.ColAmber, "Your main pack is full: as the dam's owner you couldn't receive the baby.");

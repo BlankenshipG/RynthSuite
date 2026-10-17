@@ -95,6 +95,9 @@ internal sealed class IltHubUi
         ImGui.TextDisabled("XP planner, Augmentations and Enlightenment: Skills panel > Progression.");
     }
 
+    /// <summary>The /qb list in RynthILT's Quests section (surface "section:ilt-questbonus").</summary>
+    public void RenderQuestBonusSection() => _hub.QuestBonus.RenderSection();
+
     /// <summary>
     /// One of the ILT pieces RynthAi draws in its own surfaces (RynthIltHub.Section*). False when
     /// there is nothing to draw (unknown id, or not an ILT world).
@@ -152,7 +155,7 @@ internal sealed class IltHubUi
     /// <summary>A button that opens a moved section's new home (posted: the command runs on the pump).</summary>
     private void MovedLink(IltSection section, string command)
     {
-        string home = command == IltSections.GlobalBankCommand ? "Global Inventory > Banking" : "RynthOracle > Character";
+        string home = command == IltSections.GlobalBankCommand ? "Global Inventory" : "RynthOracle > Character";
         ImGui.TextDisabled($"{IltSections.Label(section)} moved to {home}.");
         if (ImGui.SmallButton($"Open {home}##moved{(int)section}"))
             _ctx.Post(() => _hub.OpenMoved(section, command));
@@ -201,7 +204,7 @@ internal sealed class IltHubUi
             ImGui.TextDisabled("Bank: not loaded yet");
             ImGui.SameLine();
             if (ImGui.SmallButton("Load##mrbank")) _ctx.Post(() => _hub.Banking.RequestRefresh(quiet: true));
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Reads your bank balances (/bank, reply hidden). Global Inventory > Banking (/ginv bank) has the details.");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Reads your bank balances (/bank, reply hidden). Global Inventory (/ginv bank) has every character's saved packs and storage.");
             BankLink();
             return;
         }
@@ -218,14 +221,14 @@ internal sealed class IltHubUi
         ImGui.EndTable();
     }
 
-    /// <summary>The Bank line's link to RynthInventory's Global Inventory "Banking" tab (every character here).</summary>
+    /// <summary>The Bank line's link to RynthInventory's Global Inventory (every character here).</summary>
     private void BankLink()
     {
         ImGui.SameLine();
         if (ImGui.SmallButton("Banks##mrbanklink"))
             _ctx.Post(() => _hub.OpenMoved(IltSection.Banking, IltSections.GlobalBankCommand));
         if (ImGui.IsItemHovered())
-            SafeImGui.SetTooltip("Global Inventory > Banking (/ginv bank): deposits, withdrawals, transfers and\nevery character's bank on this server.");
+            SafeImGui.SetTooltip("Global Inventory (/ginv bank): every character's saved packs and storage\n(banks when Include Storage is on).");
     }
 
     private static void Stat(string label, string value)

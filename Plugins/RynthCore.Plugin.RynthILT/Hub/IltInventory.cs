@@ -78,6 +78,10 @@ internal sealed class IltInventory
     public const uint QuadTotalXp = 1;
     public const uint QuadAvailableXp = 2;
     public const uint QuadItemTotalXp = 4;
+    /// <summary>ACE PropertyInt64.AvailableLuminance — lum on the character (not the bank).</summary>
+    public const uint QuadAvailableLuminance = 6;
+    /// <summary>ACE PropertyInt64.MaximumLuminance.</summary>
+    public const uint QuadMaximumLuminance = 7;
     /// <summary>ACECustom PropertyInt64.BankedLuminance (sent with each XP batch).</summary>
     public const uint QuadBankedLuminance = 9005;
     public const uint BoolNeverChunk = 9030;
