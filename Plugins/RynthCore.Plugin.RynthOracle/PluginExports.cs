@@ -38,7 +38,7 @@ public static unsafe class PluginExports
     public static IntPtr GetVersion()
     {
         // Keep in step with RynthOraclePlugin.Version (a u8 literal can't be built from a const string).
-        try { return LiteralPointer("0.3.2"u8); }
+        try { return LiteralPointer("0.3.3"u8); }
         catch { return IntPtr.Zero; }
     }
 

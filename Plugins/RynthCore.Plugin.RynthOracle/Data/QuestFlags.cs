@@ -33,7 +33,7 @@ internal sealed class QuestFlag
 }
 
 /// <summary>What one chat line is, as far as /myquests goes.</summary>
-internal enum MyQuestsLine { None, Quest, Empty, Disabled }
+internal enum MyQuestsLine { None, Quest, Empty, Disabled, Throttled }
 
 /// <summary>
 /// The character's quest flags, read from the server's /myquests reply (ACE: one Broadcast line
@@ -55,10 +55,21 @@ internal sealed class QuestFlagStore
 
     public const string EmptyText = "Quest list is empty.";
     public const string DisabledText = "The command \"myquests\" is not currently enabled on this server.";
+    /// <summary>ACECustom's per-session throttle reply ("... may only be run once every 60 seconds.").</summary>
+    public const string ThrottledText = "[MyQuests] This command may only be run once every";
 
     private const int QuietMs = 1500;          // a reply is complete once no line came for this long
     private const int RequestTimeoutMs = 10_000;
     private const int MinRequestGapMs = 5_000;
+    /// <summary>ACECustom answers one /myquests a minute per session (whoever sent the last one).</summary>
+    private const int ServerThrottleMs = 60_000;
+    /// <summary>
+    /// A reply this much smaller than the flags already held is taken as cut short (chat lines
+    /// dropped before they reached the plugin), so it updates the flags instead of replacing them.
+    /// </summary>
+    private const double PartialReplyRatio = 0.8;
+    /// <summary>Below this many flags held, a smaller reply always replaces (nothing much to lose).</summary>
+    private const int PartialReplyMinHeld = 20;
 
     public Dictionary<string, QuestFlag> Flags { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, QuestFlag>? _pending;
@@ -66,6 +77,15 @@ internal sealed class QuestFlagStore
 
     public DateTime LastReadUtc { get; private set; } = DateTime.MinValue;
     public bool ServerDisabled { get; private set; }
+    /// <summary>The server refused the last /myquests (its once-a-minute limit) until this tick.</summary>
+    public long ThrottledUntilMs { get; private set; } = long.MinValue / 2;
+    /// <summary>This server has shown its throttle line this session, so every reply starts its minute.</summary>
+    private bool _serverThrottles;
+    /// <summary>
+    /// Set when the last reply looked cut short and was merged into the held flags (lines in the
+    /// reply, flags held before it). The plugin logs it once and clears it.
+    /// </summary>
+    public (int Got, int Had)? LastPartialReply { get; set; }
     /// <summary>Bumps whenever the flags change (views rebuild their caches on it).</summary>
     public int Revision { get; private set; }
 
@@ -77,10 +97,16 @@ internal sealed class QuestFlagStore
 
     public bool Loading => _pending != null || AwaitingOurs;
 
+    /// <summary>Seconds left on the server's /myquests limit (0 when a request would be answered).</summary>
+    public int ThrottleSecondsLeft(long nowMs) =>
+        nowMs < ThrottledUntilMs ? (int)((ThrottledUntilMs - nowMs + 999) / 1000) : 0;
+
     /// <summary>Sends /myquests unless one went out moments ago. Returns false if nothing was sent.</summary>
     public bool Request(Func<string, bool> invokeChat, long nowMs)
     {
         if (nowMs - _requestedMs < MinRequestGapMs) return false;
+        // The server would only answer with its throttle line; don't spend the request.
+        if (nowMs < ThrottledUntilMs) return false;
         _requestedMs = nowMs;
         Interlocked.Increment(ref _selfSends);
         if (!invokeChat("/myquests"))
@@ -120,6 +146,16 @@ internal sealed class QuestFlagStore
             Revision++;
             return MyQuestsLine.Disabled;
         }
+        if (line.Contains(ThrottledText, StringComparison.Ordinal))
+        {
+            // No reply is coming: stop "Reading..." and keep the flags already held. The minute
+            // really started at the last answered request; a full minute from now is the safe side.
+            _serverThrottles = true;
+            ThrottledUntilMs = nowMs + ServerThrottleMs;
+            AwaitingOurs = false;
+            Revision++;
+            return MyQuestsLine.Throttled;
+        }
         if (line.IndexOf(" solves (", StringComparison.Ordinal) < 0) return MyQuestsLine.None;
 
         QuestFlag? flag = Parse(line);
@@ -139,9 +175,27 @@ internal sealed class QuestFlagStore
 
         if (_pending != null && nowMs - _lastLineMs >= QuietMs)
         {
-            Flags = _pending;
+            Dictionary<string, QuestFlag> reply = _pending;
             _pending = null;
+            int had = Flags.Count;
+            // A full reply replaces the list (a flag the server dropped goes away). One much
+            // smaller than what is held lost lines on the way (the engine's chat queue drops the
+            // oldest of a long burst): update what came and keep the rest, rather than blanking.
+            if (had >= PartialReplyMinHeld && reply.Count > 0 && reply.Count < had * PartialReplyRatio)
+            {
+                var merged = new Dictionary<string, QuestFlag>(Flags, StringComparer.OrdinalIgnoreCase);
+                foreach (KeyValuePair<string, QuestFlag> kv in reply) merged[kv.Key] = kv.Value;
+                Flags = merged;
+                LastPartialReply = (reply.Count, had);
+            }
+            else
+            {
+                Flags = reply;
+            }
             LastReadUtc = DateTime.UtcNow;
+            // On a throttling server any reply (ours, the player's, RynthAi's poll) starts its minute.
+            if (_serverThrottles)
+                ThrottledUntilMs = nowMs + ServerThrottleMs - QuietMs;
             AwaitingOurs = false;
             Revision++;
         }
@@ -158,6 +212,9 @@ internal sealed class QuestFlagStore
         AwaitingOurs = false;
         LastReadUtc = DateTime.MinValue;
         ServerDisabled = false;
+        ThrottledUntilMs = long.MinValue / 2;
+        _serverThrottles = false;
+        LastPartialReply = null;
         Revision++;
     }
 
