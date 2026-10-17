@@ -52,6 +52,7 @@
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\society.csv" LogicalName="RynthOracle.society.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\titles.csv" LogicalName="RynthOracle.titles.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\markers.csv" LogicalName="RynthOracle.markers.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\legendary.csv" LogicalName="RynthOracle.legendary.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\customquests.csv" LogicalName="RynthOracle.customquests.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthOracle.SpellData.txt" />
   </ItemGroup>

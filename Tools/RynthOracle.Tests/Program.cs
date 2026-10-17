@@ -64,6 +64,54 @@ namespace RynthOracle.Tests
             else { _fail++; Console.WriteLine("FAIL: " + what); }
         }
 
+        /// <summary>The Legendary tab's list (legendary.csv) and its have / missing / timer rules.</summary>
+        private static void Legendary()
+        {
+            Check(LegendaryList.All.Count == 40, $"legendary quests: {LegendaryList.All.Count} (40 expected)");
+            Check(LegendaryList.Groups.SequenceEqual(new[] { "Graveyard", "Rynthid", "Hoshino", "Frozen Valley", "Neftet", "Random Locations" }),
+                  "legendary groups: " + string.Join(",", LegendaryList.Groups));
+            Check(LegendaryList.All.All(q => q.Flags.Length > 0 && q.Luminance > 0), "every legendary quest has a flag and luminance");
+            var catalog = new QuestCatalog();
+            catalog.Load("", _ => { });
+            var unknown = LegendaryList.All.SelectMany(q => q.Flags).Where(f => !catalog.TryGet(f, out _)).ToList();
+            Check(unknown.Count == 0, "every legendary flag is a known quest flag: " + string.Join(",", unknown));
+            LegendaryQuest rtw = LegendaryList.All.First(q => q.CommonName == "RTW");
+            Check(rtw.Flags[0] == "rtwcompleted_1013" && rtw.Label == "Defeating the Curator of Torment (RTW)", "RTW row: " + rtw.Label);
+
+            var lf = new QuestFlagStore();
+            long t = 900_000;
+            long done = DateTimeOffset.UtcNow.AddHours(-2).ToUnixTimeSeconds();
+            long old = DateTimeOffset.UtcNow.AddDays(-3).ToUnixTimeSeconds();
+            // RTW done 2 h ago on a 20 h timer; End of Days done 3 days ago (ready); Lugian Assault never.
+            lf.OnChatLine($"rtwcompleted_1013 - 4 solves ({done})\"RTW\" -1 72000", t);
+            lf.OnChatLine($"eodcompleted_1013 - 1 solves ({old})\"EoD\" -1 72000", t + 1);
+            lf.OnChatLine($"legendaryquestcounter_0913 - 12 solves ({old})\"John\" -1 0", t + 2);
+            lf.Tick(t + 5_000);
+            DateTime now = DateTime.UtcNow;
+            TimeSpan? rtwLeft = rtw.TimeLeft(lf, now);
+            Check(rtw.Have(lf) && rtwLeft is { } l && l.TotalHours > 17.9 && l.TotalHours < 18.1, $"RTW: done, ~18 h left ({rtwLeft})");
+            LegendaryQuest eod = LegendaryList.All.First(q => q.CommonName == "EoD");
+            Check(eod.Have(lf) && eod.Status(lf, now) == "ready", "EoD: done, timer up -> ready: " + eod.Status(lf, now));
+            LegendaryQuest la = LegendaryList.All.First(q => q.CommonName == "LA");
+            Check(!la.Have(lf) && la.TimeLeft(lf, now) == null && la.Status(lf, now) == "missing", "Lugian Assault: missing");
+            Check(LegendaryList.JohnCount(lf) == 12, "John's counter read: " + LegendaryList.JohnCount(lf));
+            Check(LegendaryList.JohnCount(new QuestFlagStore()) == null, "no counter on a fresh character");
+
+            // A quest with a second timer flag: the longest wait of the two counts.
+            LegendaryQuest erq = LegendaryList.All.First(q => q.Name == "Empyrean Rescue Quest");
+            var ef = new QuestFlagStore();
+            ef.OnChatLine($"empyreanrescuecompleted_1010 - 1 solves ({old})\"ERQ\" -1 0", t);
+            ef.OnChatLine($"erqlegkeypickuptimer - 1 solves ({done})\"key\" -1 36000", t + 1);
+            ef.Tick(t + 5_000);
+            TimeSpan? erqLeft = erq.TimeLeft(ef, now);
+            Check(erqLeft is { } e && e.TotalHours > 7.9 && e.TotalHours < 8.1, $"ERQ: key pickup timer decides (~8 h): {erqLeft}");
+
+            var lc = new OracleContext { InWorld = true };
+            var lv = new OracleView(lc);
+            lc.Server.Force("", "Coldeve");
+            Check(lv.VisibleTabs().Contains(OracleView.TabLegendary), "Legendary tab on every server");
+        }
+
         private static void Lists()
         {
             Check(AugmentationList.All.Count == 88, $"augmentations: {AugmentationList.All.Count} rows (88 expected)");
@@ -75,6 +123,7 @@ namespace RynthOracle.Tests
             mf.OnChatLine("explorationmarkersfoundingroupa - 129 solves (1719432000)\"Markers\" 1023 0", 0);
             mf.Tick(5000);
             Check(MarkerList.All[0].IsFound(mf) && MarkerList.All[1].IsFound(mf) && !MarkerList.All[2].IsFound(mf), "marker bits 1 and 128 found, the rest not");
+            Legendary();
             Check(SpellTable.Count > 6000, $"spell table: {SpellTable.Count} spells");
             Check(SpellTable.Name(5393) == "Corrosion VII", "spell 5393 is Corrosion VII: " + SpellTable.Name(5393));
             Check(SpellTable.TryGet(5395, out SpellInfo s) && s.IsDebuff && s.Duration == 31, "Corruption I is a 31 s debuff");

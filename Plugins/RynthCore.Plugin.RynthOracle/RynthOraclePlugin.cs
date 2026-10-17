@@ -19,8 +19,8 @@ namespace RynthCore.Plugin.RynthOracle;
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.2.5.
-    // Previous release: 0.3.3.
-    public const string Version = "0.3.4";
+    // Previous release: 0.3.4.
+    public const string Version = "0.4.0";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -394,6 +394,12 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 // ILT progression planners (was Skills → Progression).
                 ShowTab(OracleView.TabProgress);
                 break;
+            case "legendary":
+            case "legend":
+            case "john":
+                // The Legendary tab: John's 30 Legendary Key quests, have / missing and repeat timers.
+                ShowTab(OracleView.TabLegendary);
+                break;
             case "breeding":
             case "breed":
             case "pets":
@@ -418,13 +424,14 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 _c.Print("Commands: /ro (window), /ro character (Character tab: status, session, charms), "
                          + "/ro skills|attrs|progress (raise/train and ILT planners), /ro void (Void window), "
                          + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), /ro breeding (Pet Breeding tab, Infinite Leaftide), "
+                         + "/ro legendary (Legendary tab: John's 30 key quests, missing and repeat timers), "
                          + "/ro quests (read quest flags), /ro status, "
                          + "/ro about (About tab: settings, server features)");
                 break;
         }
         if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char" or "charms" or "charm"
                 or "skills" or "skill" or "attrs" or "attributes" or "vitals" or "progress" or "progression"
-                or "breeding" or "breed" or "pets" or "about" or "features" && !Host.HasUi && !_noUiLogged)
+                or "breeding" or "breed" or "pets" or "legendary" or "legend" or "john" or "about" or "features" && !Host.HasUi && !_noUiLogged)
         {
             _noUiLogged = true;
             _c.Print("This RynthCore engine can't show plugin windows (it needs script windows, API v71, with ImGui on). /ro status still works.");
