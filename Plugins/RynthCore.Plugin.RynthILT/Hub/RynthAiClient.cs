@@ -74,7 +74,6 @@ internal sealed unsafe class RynthAiClient
             if (_host.HasGetPluginInterface)
             {
                 var t = (RynthAiHubApiV1*)_host.GetPluginInterface(RynthAiHub.PluginName, RynthAiHubApiV1.InterfaceName, RynthAiHubApiV1.InterfaceVersion);
-                // The base size, not sizeof: functions appended later mustn't turn away an older RynthAi.
                 if (t != null && t->Version >= 1 && t->StructSize >= RynthAiHubApiV1.BaseStructSize) _t = t;
             }
             System.Threading.Volatile.Write(ref _renderTable, (IntPtr)_t);

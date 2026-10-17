@@ -79,9 +79,9 @@ internal static class IltFeatureCatalog
     public static readonly IltFeatureInfo[] All =
     {
         // Character progression and money.
-        new("bank", "Banking", GroupCharacter, "Global Inventory > Banking (/ginv bank); Remote tab bank line",
+        new("bank", "Banking", GroupCharacter, "Global Inventory (/ginv bank); Remote tab bank line",
             "Bank pyreals, luminance, keys and coins; deposit, withdraw and transfer (/bank).", IltFeature.Bank, IltKnown.Checked),
-        new("bank_notes", "Trade note banking", GroupCharacter, "Global Inventory > Banking (/ginv bank, notes)",
+        new("bank_notes", "Trade note banking", GroupCharacter, "Global Inventory (/ginv bank); trade notes",
             "Deposit trade notes as pyreals, withdraw any note from I to MMD, transfer note value (/bank d n).", "bank_notes"),
         new("guardian", "Guardian (infinite base attributes)", GroupCharacter, "Guardian panel (/rc guardian)",
             "Temple of Enlightenment guardians raise base attributes past the retail cap.", null),

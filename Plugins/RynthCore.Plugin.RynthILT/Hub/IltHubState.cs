@@ -85,8 +85,12 @@ public sealed class IltBankState
     public int WithdrawIndex;
     public int WithdrawNoteIndex = 9;
 
-    /// <summary>Re-issue /bank every N seconds while the Hub is open (0 = manual only).</summary>
-    public int AutoRefreshSeconds = 120;
+    /// <summary>
+    /// Re-issue /bank every N seconds while the Hub (or a Banking reader) is open.
+    /// Default 0 (2026-10-16): login probe + manual Refresh only — a 120s timer with Mini Remote
+    /// open was spamming [BANK] lines into chat when quiet-eat missed.
+    /// </summary>
+    public int AutoRefreshSeconds = 0;
 }
 
 /// <summary>One "Transferred …" / "Received …" bank line seen in chat.</summary>

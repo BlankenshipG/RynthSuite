@@ -13,8 +13,8 @@
 //                override lives only in RynthCore Options > Diagnostics) and RynthOracle's
 //                Character tab ("/ro character");
 //   Charms    -> RynthOracle's Character tab, a list fed by "RynthILT.Data" ("/ro character");
-//   Banking   -> RynthInventory's Global Inventory "Banking" tab, every character on this server
-//                ("/ginv bank").
+//   Banking   -> RynthInventory's Global Inventory ("/ginv bank"), every character's packs
+//                and storage on this server.
 // Their names still parse, so old links and commands land on the new home (MovedCommand).
 using System;
 using System.Numerics;
@@ -26,7 +26,7 @@ internal enum IltSection
 {
     /// <summary>Moved out (2026-10-13): RynthOracle's Character tab.</summary>
     Character,
-    /// <summary>Moved out (2026-10-13): RynthInventory's Global Inventory "Banking" tab.</summary>
+    /// <summary>Moved out (2026-10-13): RynthInventory's Global Inventory.</summary>
     Banking,
     Gear,
     Games,
@@ -55,7 +55,7 @@ internal static class IltSections
     /// <summary>RynthOracle's Character tab: the character, its session and the charms list.</summary>
     public const string OracleCharacterCommand = "/ro character";
 
-    /// <summary>RynthInventory's Global Inventory "Banking" tab: every character's bank on this server.</summary>
+    /// <summary>RynthInventory's Global Inventory (alias used by the old Banking tab).</summary>
     public const string GlobalBankCommand = "/ginv bank";
 
     public static string Label(IltSection s) => s switch

@@ -73,6 +73,9 @@ internal sealed class IltProgression : IIltFeature
     // Cached player facts for the render thread (refreshed in Tick).
     private volatile int _enl, _level, _freeSlots;
     private long _unassignedXp;
+    /// <summary>PropertyInt64 AvailableLuminance on the character (not banked /bank lum).</summary>
+    private long _characterLum;
+    private long _bankedLum;
     private volatile bool _peace, _hasVitae;
     private readonly long[] _enlHave = new long[4]; // tokens, medallions, sigils, crests
     // 301-325 sigil chain stock (pack items by name; EnlightenedCoins = bank + pack). Pump thread only.
@@ -265,7 +268,7 @@ internal sealed class IltProgression : IIltFeature
         Attributes.OnChat(text);
         // Passive /aug reader: updates Current even when the capture idle finished on the banner alone
         // (chat-hold backlog) or the player typed /aug by hand. Window opens on the header.
-        string t = text ?? string.Empty;
+        string t = text;
         if (t.Contains("Augmentation Levels", StringComparison.OrdinalIgnoreCase))
             _augPassiveUntilMs = IltHubContext.NowMs + 8_000;
         else if (IltHubContext.NowMs <= _augPassiveUntilMs && TryApplyAugLine(t))
@@ -305,6 +308,9 @@ internal sealed class IltProgression : IIltFeature
         _enl = inv.PlayerInt(IltInventory.IntEnlightenment);
         _level = inv.PlayerInt(IltInventory.IntLevel);
         _unassignedXp = inv.PlayerQuad(IltInventory.QuadAvailableXp);
+        // Aug / Enl planners use character AvailableLuminance, not /bank's banked line.
+        _characterLum = inv.PlayerQuad(IltInventory.QuadAvailableLuminance);
+        _bankedLum = _ctx.State.Bank.Luminance;
         _peace = inv.InPeaceMode;
         _freeSlots = inv.FreeMainPackSlots();
         _enlHave[0] = inv.CountByWcid(IltInventory.WcidEnlToken);
@@ -359,7 +365,8 @@ internal sealed class IltProgression : IIltFeature
                 : string.Empty;
             list.Add($"Need {cost.Count} {cost.Item} (have {HaveFor(cost.Wcid)}{craft}).");
         }
-        if (cost.Lum > 0 && _ctx.State.Bank.Luminance < cost.Lum) list.Add($"Need {IltParse.Compact((double)cost.Lum)} banked luminance.");
+        if (cost.Lum > 0 && _characterLum < cost.Lum)
+            list.Add($"Need {IltParse.Compact((double)cost.Lum)} character luminance (have {IltParse.Compact(_characterLum)}).");
         return list;
     }
 
@@ -506,7 +513,12 @@ internal sealed class IltProgression : IIltFeature
         Str(sb, "short", coinsShort > 0
             ? $"Coins short: {IltParse.N0(coinsShort)}" + (lumPerCoin > 0 ? $" (~{IltParse.Compact((double)coinsShort * lumPerCoin)} luminance to buy)" : "")
             : string.Empty);
-        Str(sb, "banked", $"Banked luminance: {IltParse.Compact(_ctx.State.Bank.Luminance)}");
+        // "banked" key kept for older SkillsFace builds; text is character AvailableLuminance.
+        decimal haveLum = _characterLum;
+        decimal stillNeed = Math.Max(0, totalLum - haveLum);
+        Str(sb, "banked", $"Character luminance: {IltParse.Compact(_characterLum)}"
+                          + (stillNeed > 0 ? $"   still need ~{IltParse.Compact((double)stillNeed)} for this plan" : "   covers this plan")
+                          + (_bankedLum > 0 ? $"   (banked {IltParse.Compact(_bankedLum)}, not used here)" : ""));
         Str(sb, "copyDiscord", AugDiscordText(plan));
         Str(sb, "copyIngame", AugIngameText(plan));
         AppendAugCostJson(sb);
@@ -637,7 +649,7 @@ internal sealed class IltProgression : IIltFeature
         bool firstLine = true;
         foreach (var kv in totals) { StrItem(sb, $"{IltParse.N0(kv.Value)} {kv.Key}", ref firstLine); }
         if (lumTotal > 0)
-            StrItem(sb, $"{IltParse.Compact((double)lumTotal)} luminance (banked {IltParse.Compact(_ctx.State.Bank.Luminance)})", ref firstLine);
+            StrItem(sb, $"{IltParse.Compact((double)lumTotal)} luminance (character {IltParse.Compact(_characterLum)})", ref firstLine);
         sb.Append(']');
 
         int coinsPerToken = C.EnlightenedCoinsPerToken;
@@ -677,9 +689,9 @@ internal sealed class IltProgression : IIltFeature
     /// </summary>
     private void AppendEnlCalculatorJson(StringBuilder sb, int enl, int target, Dictionary<string, long> totals, decimal lumTotal)
     {
-        // Simulated stock: tokens, medallions, crests on hand, sigils via the chain, banked luminance.
+        // Simulated stock: tokens, medallions, crests on hand, sigils via the chain, character lum.
         long tok = _enlHave[0], med = _enlHave[1], crest = _enlHave[3];
-        decimal lum = (decimal)_ctx.State.Bank.Luminance;
+        decimal lum = (decimal)_characterLum;
         var chain = _chain.Clone();
         long sigilCraftable = IltSigilChain.Fulfillable(chain);
 
@@ -712,7 +724,7 @@ internal sealed class IltProgression : IIltFeature
         // Material summary: Still need = demand minus what is on hand.
         long sigilsNeed = totals.TryGetValue("Enlightenment Sigils", out long sn) ? sn : 0;
         var shortfall = IltSigilChain.Shortfall(sigilsNeed, _chain);
-        decimal bankLum = (decimal)_ctx.State.Bank.Luminance;
+        decimal haveLum = (decimal)_characterLum;
         sb.Append(",\"materials\":[");
         bool firstMat = true;
         void Mat(string label, string need, string have, bool ok)
@@ -727,8 +739,9 @@ internal sealed class IltProgression : IIltFeature
         }
         if (lumTotal > 0)
         {
-            decimal lumStill = Math.Max(0, lumTotal - bankLum);
-            Mat("Luminance", lumStill > 0 ? IltParse.Compact((double)lumStill) : "0", IltParse.Compact((double)bankLum), lumStill == 0);
+            decimal lumStill = Math.Max(0, lumTotal - haveLum);
+            Mat("Luminance (character)", lumStill > 0 ? IltParse.Compact((double)lumStill) : "0",
+                IltParse.Compact((double)haveLum), lumStill == 0);
         }
         void Item(string key, string label, long have, bool extraOk = false)
         {

@@ -34,8 +34,16 @@ internal sealed record ServerCommand(string Command, string What);
 /// <param name="Kind">"tink" (repeatable), "imbue" (one per item) or "once" (one application).</param>
 /// <param name="UsesTinkSlot">Counts toward the item's 10 tinks.</param>
 /// <param name="NameMatch">The bag's name must contain this (bags that share a material id); "" = any.</param>
+/// <param name="AppliedInt">An int property of the item that reads 2 once this salvage is on it (0 = none).</param>
+/// <param name="Prepared">The bag must first be prepared on the chosen tier's Ammunition (its name then carries the tier).</param>
+/// <param name="Order">Apply order on the tab (lower first); 0 = by kind (imbues, then tinks, then one-application rows).</param>
+/// <param name="AfterCap">Applied last, and only once the item's tink slots are full.</param>
+/// <param name="StackGroup">Rows with the same group share one cap per item (<paramref name="StackCap"/>); "" = none.</param>
+/// <param name="StackCap">The group's combined cap per item (with <paramref name="StackGroup"/>).</param>
 internal sealed record ServerSalvage(string Bench, int Material, string Effect, string Kind = "tink",
-                                     bool UsesTinkSlot = true, string NameMatch = "");
+                                     bool UsesTinkSlot = true, string NameMatch = "", int AppliedInt = 0,
+                                     bool Prepared = false, int Order = 0, bool AfterCap = false,
+                                     string StackGroup = "", int StackCap = 0);
 
 internal sealed class ServerPackInfo
 {

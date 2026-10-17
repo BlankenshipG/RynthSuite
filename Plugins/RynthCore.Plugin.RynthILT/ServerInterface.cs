@@ -1,6 +1,10 @@
 // ServerInterface.cs - RynthILT's side of the "RynthILT.Server" interface (Plugins/Shared/RynthIltServerApi.cs):
-// the profile JSON other plugins read (RynthOracle's Fellowship tab): the Leaftide feature list with
-// the server's state for each, and the server's fellowship rules.
+// the profile JSON other plugins read (RynthOracle's Fellowship / Quests qb list / feature list):
+// the Leaftide feature list with the server's state for each, and the server's fellowship rules.
+//
+// Restored 2026-10-16: this export was dropped when "RynthServer.Profile" (salvage / identity) was
+// added, so Oracle still detected ILT via RynthCore but never received feature / qb / fellowship
+// data from RynthILT. Hub + Data stay separate; this table is the feature-profile channel.
 //
 // The table is allocated once per loaded copy of RynthILT and never freed (a plugin DLL is never
 // unloaded); after Release() it reports Version 0 and GetProfileJson answers 0. Before login there

@@ -1,4 +1,4 @@
-﻿// RynthILTPlugin.cs - Infinite Leaftide (ACECustom) features, kept out of RynthAi and the engine core.
+// RynthILTPlugin.cs - Infinite Leaftide (ACECustom) features, kept out of RynthAi and the engine core.
 //
 // Two features, both shown only on ILT:
 //   * Bounties (Bounty/BountyTracker.cs): the engine's Bounties window (the bar's ILT button,
@@ -58,6 +58,9 @@ public sealed class RynthILTPlugin : RynthPluginBase
 
     /// <summary>The ILT session extras' surface in RynthCore's Mini Remote "Session Stats" section.</summary>
     internal const string RatesSurface = "section:ilt-rates";
+
+    /// <summary>The /qb list surface (RynthOracle Quests / ILT quest-bonus embed).</summary>
+    internal const string QuestBonusSurface = "section:ilt-questbonus";
 
     /// <summary>The fellowship commands' surface in RynthCore's Fellowship section.</summary>
     internal const string FellowshipSurface = "section:ilt-fellowship";
@@ -153,7 +156,6 @@ public sealed class RynthILTPlugin : RynthPluginBase
         _nextNameTryMs = 0;
         _nextHubTryMs = 0;
         _ai?.Reset();
-        PollServerState(force: true);
         TryStartBounties();
         TryStartHub();
     }
@@ -189,7 +191,6 @@ public sealed class RynthILTPlugin : RynthPluginBase
         try { RynthLog.Pump(); } catch { }
         if (!_loginComplete) return;
         _ai?.Tick();
-        PollServerState(force: false);
         if (_bounties == null) TryStartBounties();
         if (_hub == null) TryStartHub();
         DrainTypedBounty();
@@ -278,7 +279,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         DataWriteGuard.DrainChat(line => Host.WriteToChat(line, 2));
     }
 
-    // â”€â”€ ILT fellowship commands (IltFellowship/) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── ILT fellowship commands (IltFellowship/) ────────────────────────────
 
     private const long FellowshipShareCheckMs = 2000;
     private const long FellowshipShareResendMs = 10_000;
@@ -338,7 +339,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         return IltFellowshipCommands.IsActive(engine, world);
     }
 
-    // â”€â”€ ILT settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── ILT settings ─────────────────────────────────────────────────────────
 
     /// <summary>
     /// The broker actions parsed on arrival rather than queued for the tick: RynthCore's
@@ -383,6 +384,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
             SettingsSurface => _settingsUi.RenderBody,
             FellowshipSurface => _fellowshipUi.RenderBody,
             RatesSurface => RenderRatesSurface,
+            QuestBonusSurface => RenderQuestBonusSurface,
             _ => null,
         };
         if (body == null) return false;
@@ -411,6 +413,14 @@ public sealed class RynthILTPlugin : RynthPluginBase
         IltHubController? hub = _hub;
         if (hub == null) { ImGui.TextDisabled("ILT session rates start once RynthILT's Hub is ready."); return; }
         hub.RenderRatesSection();
+    }
+
+    /// <summary>The /qb list (render thread), or a line saying the Hub is not ready yet.</summary>
+    private void RenderQuestBonusSurface()
+    {
+        IltHubController? hub = _hub;
+        if (hub == null) { ImGui.TextDisabled("ILT quest bonus starts once RynthILT's Hub is ready."); return; }
+        hub.RenderQuestBonusSection();
     }
 
     /// <summary>
@@ -463,11 +473,34 @@ public sealed class RynthILTPlugin : RynthPluginBase
             _typedBounty.Enqueue(trimmed);
             return;
         }
+        // Player-typed /bank (or bare /b): allow the [BANK] dump in chat; Hub quiet refreshes stay hidden.
+        if (IsTypedBankBalanceCommand(trimmed))
+        {
+            try { _hub?.Banking.NoteTypedBalanceCommand(); }
+            catch (Exception ex) { RynthLog.Exception(LogCat.IltBanking, ex, "NoteTypedBalanceCommand"); }
+            return;
+        }
         if (!trimmed.Equals("/ilt", StringComparison.OrdinalIgnoreCase)
             && !trimmed.StartsWith("/ilt ", StringComparison.OrdinalIgnoreCase))
             return;
         eat = 1;
         _commands.Enqueue(trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>True for a chat-bar /bank or bare /b that asks the server for balances (not /b d, /b w, …).</summary>
+    private static bool IsTypedBankBalanceCommand(string trimmed)
+    {
+        if (trimmed.Equals("/bank", StringComparison.OrdinalIgnoreCase)) return true;
+        if (trimmed.Equals("/b", StringComparison.OrdinalIgnoreCase)) return true;
+        // "/bank " with only spaces, or "/bank balances" style — still a balance read.
+        if (trimmed.StartsWith("/bank ", StringComparison.OrdinalIgnoreCase))
+        {
+            string rest = trimmed.Substring(6).Trim();
+            return rest.Length == 0
+                || rest.Equals("balances", StringComparison.OrdinalIgnoreCase)
+                || rest.Equals("balance", StringComparison.OrdinalIgnoreCase);
+        }
+        return false;
     }
 
     // The server's killer notification: this character landed the killing blow.
@@ -479,7 +512,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
             _bounties?.NoteTypedCommand(typed);
     }
 
-    // â”€â”€ Rendering (render thread) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Rendering (render thread) ────────────────────────────────────────────
 
     /// <summary>
     /// The Hub's floating extras (Games HUD, confirmations) and the standalone ILT settings and
@@ -551,7 +584,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         }
     }
 
-    // â”€â”€ Commands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Commands ─────────────────────────────────────────────────────────────
 
     /// <summary>
     /// RynthILT.Hub Command: an ILT "/ra" verb RynthAi forwards ("hub bank", "guardian handin",
@@ -738,7 +771,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
         if (Host.HasWriteToChat) Host.WriteToChat(text, 1);
     }
 
-    // â”€â”€ The ILT Hub â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── The ILT Hub ──────────────────────────────────────────────────────────
 
     /// <summary>
     /// Starts the Hub once the character's name is known (its files are per character). The first
@@ -834,7 +867,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
     internal static string CharacterFolder(string world, string charName)
         => Path.Combine(SettingsRoot, SafeName(world.Length > 0 ? world : "UnknownWorld"), SafeName(charName));
 
-    // â”€â”€ Bounties â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Bounties ─────────────────────────────────────────────────────────────
 
     /// <summary>Starts the tracker once the character's name is known (its save file is per character).</summary>
     private void TryStartBounties()
