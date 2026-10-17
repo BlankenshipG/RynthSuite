@@ -377,19 +377,32 @@ internal sealed partial class LegacyDashboardRenderer
             CopySettings(new LegacyUiSettings(), _settings);
             _lastSavedJson = string.Empty;
         }
+        else if (TryReadProfile(_settingsFilePath, out LegacyUiSettings? loaded, out string loadedJson, out string readError))
+        {
+            CopySettings(loaded!, _settings);
+            _lastSavedJson = loadedJson;
+        }
+        else if (TryReadProfile(_settingsFilePath + BackupSuffix, out LegacyUiSettings? fromBak, out string bakJson, out _))
+        {
+            // The profile didn't read (cut off by a client that died mid-save, say): the copy
+            // kept by the last good save is used, and saved back as the profile on the next change.
+            CopySettings(fromBak!, _settings);
+            _lastSavedJson = bakJson;
+            KeepUnreadableProfile(_settingsFilePath);
+            _host.Log($"[RynthAi] Settings: {_settingsFilePath} didn't read ({readError}); loaded the backup instead.");
+            _host.WriteToChat($"[RynthAi] Your settings file didn't read ({readError}); restored the backup copy.", 1);
+        }
         else
         {
-            try
-            {
-                string json = File.ReadAllText(_settingsFilePath);
-                var loaded = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.LegacyUiSettings);
-                if (loaded != null)
-                {
-                    CopySettings(loaded, _settings);
-                    _lastSavedJson = json;
-                }
-            }
-            catch { }
+            // Neither reads. Before, the defaults kept here were autosaved over the profile at once,
+            // so one bad read reset the character for good. Now the file is set aside and nothing is
+            // written until a setting is actually changed.
+            CopySettings(new LegacyUiSettings(), _settings);
+            KeepUnreadableProfile(_settingsFilePath);
+            try { _lastSavedJson = JsonSerializer.Serialize(_settings, RynthAiJsonContext.Default.LegacyUiSettings); }
+            catch { _lastSavedJson = string.Empty; }
+            _host.Log($"[RynthAi] Settings: {_settingsFilePath} didn't read ({readError}) and there's no good backup; using defaults without saving over it.");
+            _host.WriteToChat($"[RynthAi] Your settings file didn't read ({readError}). A copy was kept next to it (.unreadable); defaults are in use until you change something.", 1);
         }
         _packSetup = freshProfile ? PackSetup.FillNew
                    : _settings.ProfileItemsChecked ? PackSetup.None : PackSetup.CheckExisting;
@@ -491,8 +504,50 @@ internal sealed partial class LegacyDashboardRenderer
         DataWriteGuard.TrySave("the settings profile", path, () =>
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, json);
+            // Written beside it and swapped in, the previous file kept as .bak: File.WriteAllText
+            // emptied the profile first, so a client closed or killed mid-save (relaunching for a
+            // DXVK change, the launcher's stuck-client kill) left a cut-off file that then loaded
+            // as defaults.
+            string tmp = path + "." + Environment.ProcessId + ".tmp";
+            File.WriteAllText(tmp, json);
+            if (File.Exists(path)) File.Replace(tmp, path, path + BackupSuffix, ignoreMetadataErrors: true);
+            else File.Move(tmp, path);
         }, out reason, callerShows);
+
+    /// <summary>The last good profile kept by each save (profile path + this).</summary>
+    private const string BackupSuffix = ".bak";
+
+    /// <summary>Reads and parses a settings profile; false (with the reason) when it's missing or doesn't parse.</summary>
+    private static bool TryReadProfile(string path, out LegacyUiSettings? settings, out string json, out string error)
+    {
+        settings = null; json = string.Empty; error = "";
+        try
+        {
+            if (!File.Exists(path)) { error = "missing"; return false; }
+            json = File.ReadAllText(path);
+            if (string.IsNullOrWhiteSpace(json)) { error = "the file is empty"; return false; }
+            settings = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.LegacyUiSettings);
+            if (settings == null) { error = "the file holds no settings"; return false; }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.GetType().Name + ": " + ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>Copies a profile that didn't read to "&lt;name&gt;.unreadable-&lt;time&gt;" so its contents can be recovered.</summary>
+    private void KeepUnreadableProfile(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return;
+            string copy = path + ".unreadable-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            File.Copy(path, copy, overwrite: false);
+        }
+        catch (Exception ex) { _host.Log($"[RynthAi] Settings: keeping a copy of {path} failed: {ex.Message}"); }
+    }
 
     private static bool WriteSettingsFile(string path, string json) => WriteSettingsFile(path, json, out _);
 
