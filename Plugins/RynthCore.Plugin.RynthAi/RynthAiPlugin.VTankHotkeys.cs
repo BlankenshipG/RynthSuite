@@ -16,6 +16,7 @@ namespace RynthCore.Plugin.RynthAi;
 //   /ra testitem                 TestItem          the selected item against the loot profile
 //   /ra propertydump [0xId]      PropertyDump      every property of the selection (/ra dumpprops)
 //   /ra recharge                 Recharge          one vitals pass with the Top Off lines
+//   /ra heal | stam | mana       One-touch heal   the best kit / spell / potion for that vital now (RynthCore's One-touch hotkeys)
 //   /ra navprio|lootprio|navlootprio [on|off]      Boost Nav / Boost Loot Priority (no argument: toggle)
 //   /ra lootthis                 LootThisCont      loot the open corpse or chest now
 //
@@ -57,6 +58,14 @@ public sealed partial class RynthAiPlugin
             case "testitem":      HandleLootCheckSelectedCommand(new[] { "/ra", "lootcheck" }); return true;
             case "propertydump":  HandleDumpPropsCommand(parts); return true;
             case "recharge":      HandleRechargeCommand(); return true;
+            case "heal":
+            case "healme":
+            case "onetouchheal":  HandleOneTouchCommand(OneTouchVital.Health); return true;
+            case "stam":
+            case "stamina":
+            case "restam":        HandleOneTouchCommand(OneTouchVital.Stamina); return true;
+            case "mana":
+            case "remana":        HandleOneTouchCommand(OneTouchVital.Mana); return true;
             case "navprio":       HandlePriorityCommand(parts, nav: true, loot: false); return true;
             case "lootprio":      HandlePriorityCommand(parts, nav: false, loot: true); return true;
             case "navlootprio":   HandlePriorityCommand(parts, nav: true, loot: true); return true;
@@ -76,6 +85,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra testitem - check the selected item against the loot profile");
         ChatLine("[RynthAi] /ra propertydump [0xId] - every property of the selected object");
         ChatLine("[RynthAi] /ra recharge - one heal / stamina / mana top-off with the Top Off lines, macro on or off");
+        ChatLine("[RynthAi] /ra heal | stam | mana - one touch: the best kit, spell or potion for that vital now, whatever the lines say");
         ChatLine("[RynthAi] /ra navprio | lootprio | navlootprio [on|off] - Boost Nav / Boost Loot Priority (toggle)");
         ChatLine("[RynthAi] /ra lootthis - loot the open corpse or chest now (never house storage or your own packs)");
     }
@@ -202,6 +212,14 @@ public sealed partial class RynthAiPlugin
     {
         if (_buffManager == null) { ChatLine("[RynthAi] Buff manager not ready (log in first)."); return; }
         _buffManager.RequestRecharge();   // runs on the pump's next heartbeat, says what it did
+    }
+
+    // ── One-touch heal / stamina / mana ───────────────────────────────────────
+
+    private void HandleOneTouchCommand(OneTouchVital vital)
+    {
+        if (_buffManager == null) { ChatLine("[RynthAi] Buff manager not ready (log in first)."); return; }
+        _buffManager.RequestOneTouch(vital);   // runs on the pump's next heartbeat, says what it did
     }
 
     // ── LootThisCont ──────────────────────────────────────────────────────────

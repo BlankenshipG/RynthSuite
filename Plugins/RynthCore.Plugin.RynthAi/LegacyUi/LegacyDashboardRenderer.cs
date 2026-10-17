@@ -292,6 +292,20 @@ internal sealed partial class LegacyDashboardRenderer
             id => cache[id], wo => WorldObjectCache.IsWieldedByPlayer(_host, wo));
     }
 
+    /// <summary>The Items panel's group for a listed weapon, the same split the weapon planner and
+    /// the Prefer setting use: Melee, Missile, War Magic, Void Magic (a Nether caster), Shield, Ammo;
+    /// "" for an item the client doesn't know (not carried).</summary>
+    private string WeaponKindLabel(ItemRule r)
+    {
+        if (WeaponList.IsShieldRule(r)) return "Shield";
+        var wo = _weaponCache?[r.Id];
+        if (wo == null) return "";
+        if (CombatManager.IsAmmoItem(wo)) return "Ammo";
+        if (WeaponList.IsWand(wo))
+            return WeaponElements.Normalize(r.Element).Equals("Nether", StringComparison.OrdinalIgnoreCase) ? "Void Magic" : "War Magic";
+        return wo.ObjectClass == AcObjectClass.MissileWeapon ? "Missile" : "Melee";
+    }
+
     /// <summary>A picker's name for a listed weapon: <see cref="WeaponDisplayName"/> plus " (missing)" when it isn't carried.</summary>
     private string WeaponPickerName(ItemRule r, HashSet<int> missing) =>
         WeaponDisplayName(r, withElement: true) + (missing.Contains(r.Id) ? WeaponList.MissingSuffix : "");
@@ -1561,7 +1575,7 @@ internal sealed partial class LegacyDashboardRenderer
             var payload = new ItemsBridgePayload
             {
                 // Copies: the full name, and "Unknown" for an element not known yet (ApplyItemsJson maps them back by id).
-                Weapons           = WeaponList.ForDisplay(_settings.ItemRules ?? new List<ItemRule>(), r => WeaponDisplayName(r, withElement: false)),
+                Weapons           = WeaponList.ForDisplay(_settings.ItemRules ?? new List<ItemRule>(), r => WeaponDisplayName(r, withElement: false), WeaponKindLabel),
                 Consumables       = _settings.ConsumableRules ?? new List<ConsumableRule>(),
                 EnableManaTapping = _settings.EnableManaTapping,
                 ManaTapMinMana    = _settings.ManaTapMinMana,

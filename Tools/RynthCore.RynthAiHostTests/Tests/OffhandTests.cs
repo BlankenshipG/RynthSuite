@@ -37,6 +37,8 @@ internal static class OffhandTests
         r.Add("swap speed: a weapon in hand -> one use of the wand (the client swaps); the pack move only as the fallback", CasterDirectSwap);
         r.Add("swap speed: the gate lets the next step go once the server is done, else after 3 s", SwapGateSettles);
         r.Add("offhand: dual wield with the Dual Wield skill", DualWield);
+        r.Add("offhand: the weapon in hand is the main hand's when the wielded slot reads 0 (the weenie's wielder record)", InHandFromWielderInfo);
+        r.Add("weapons: a weapon refused 'skill too low' is left out of the choice (the off hand stays)", SkillTooLowLeftOut);
         r.Add("offhand: no Dual Wield skill -> the shield", NoSkillShield);
         r.Add("offhand: None -> hands off (a worn shield is never taken off)", NoneHandsOff);
         r.Add("offhand: an unlisted shield is never wielded", UnlistedNeverUsed);
@@ -118,10 +120,12 @@ internal static class OffhandTests
         private readonly MethodInfo _equip = typeof(CombatManager).GetMethod("EquipWeaponAndSetStance", BindingFlags.Instance | BindingFlags.NonPublic)!;
         private readonly FieldInfo _lastEquip = typeof(CombatManager).GetField("_lastEquipTime", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
-        public Rig(bool dualWieldSkill = false, bool shieldOn = false, bool wieldCalls = true)
+        public Rig(bool dualWieldSkill = false, bool shieldOn = false, bool wieldCalls = true, bool wielderInfo = false, bool weenieErrors = false)
         {
             FakeHost.Reset();
             FakeHost.WeaponCalls = true;
+            FakeHost.SalvageCalls = wielderInfo;      // GetObjectWielderInfo (answering FakeHost.Wielded)
+            FakeHost.WeenieErrorCalls = weenieErrors;
             FakeHost.WieldCalls = wieldCalls;
             FakeHost.CombatModeValue = CombatMode.Melee;
             Item(Sword, "Long Sword", 0x1, MeleeSlot, combatUse: 1);
@@ -138,7 +142,7 @@ internal static class OffhandTests
             if (shieldOn) Wield(Shield, ShieldSlot);
             FakeHost.Wcids[Monster] = Wcid;
             FakeHost.Skills[(Player, 49)] = dualWieldSkill ? (220, 2) : (10, 1);
-            var host = FakeHost.Create();
+            var host = FakeHost.Create(wielderInfo ? Player : 0);
             var cache = FakeHost.MakeCache(host, Player, new[] { Sword, Dagger, Great, Shield, Round, Bow, Arrows, Wand });
             C = new CombatManager(host, S, cache);
             C.SetPlayerId(Player);
@@ -425,6 +429,41 @@ internal static class OffhandTests
         rig2.Rule(OffhandRules.RuleWeapon);
         rig2.Tick();
         Check.Eq(rig2.ShieldWields(Dagger), 1, "Monsters rule 'Offhand weapon': the dagger");
+    }
+
+    // 2026-10-16: Drakkon dual wielding two Hand Wraps; CurrentWieldedLocation read 0, so both
+    // counted as in hand and the later listed one (the off hand's) was taken for the main weapon.
+    private static void InHandFromWielderInfo()
+    {
+        var rig = new Rig(dualWieldSkill: true, wielderInfo: true);
+        rig.List(Sword, Dagger);
+        Rig.Unwield(Sword);                                   // the slot reads 0 for both
+        FakeHost.Wielded[Sword] = (uint)MeleeSlot;
+        FakeHost.Wielded[Dagger] = (uint)ShieldSlot;
+        rig.C.InHandOverride = null;
+        Check.Eq(unchecked((uint)rig.C.InHandWeaponId(fresh: true)), Sword, "the main hand: the sword, not the off-hand dagger");
+        Check.Eq(unchecked((uint)rig.C.OffhandInSlot(fresh: true)), Dagger, "the off hand: the dagger");
+    }
+
+    // 2026-10-16: a Nodachi the character lacked the skill for was chosen whenever a monster was
+    // weak to Slash: refused three times, then again two minutes later, the off hand dequipped each time.
+    private static void SkillTooLowLeftOut()
+    {
+        var rig = new Rig(dualWieldSkill: true, weenieErrors: true);
+        rig.List(Sword, Great);
+        rig.Store.SetManualWeapon(Wcid, Great);
+        rig.Tick();
+        Check.True(FakeHost.Uses.Contains(Great), "the greatsword's wield goes out");
+        FakeHost.WeenieError(CombatManager.SkillTooLowErr, 0x00A0, Great);
+        rig.Unpace();
+        rig.Tick();
+        Check.True(rig.C.SkillTooLowFor(unchecked((int)Great)), "refused 'skill too low': left out");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("skill is too low to wield it")), "logged");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("skill is too low")), "the player is told");
+        int uses = FakeHost.Uses.Count(u => u == Great);
+        for (int i = 0; i < 5; i++) { rig.Unpace(); rig.Tick(); }
+        Check.Eq(FakeHost.Uses.Count(u => u == Great), uses, "never sent again");
+        Check.False(rig.C.ListedCandidates().Any(c => c.Id == unchecked((int)Great)), "not a candidate");
     }
 
     private static void NoSkillShield()

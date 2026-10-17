@@ -134,13 +134,14 @@ internal static class WeaponList
     /// "Unknown" for an element not known yet. The panel sends the copies back on an edit;
     /// <see cref="MergeEdited"/> maps them onto the saved entries by id.
     /// </summary>
-    public static List<ItemRule> ForDisplay(IEnumerable<ItemRule> rules, Func<ItemRule, string> fullName)
+    public static List<ItemRule> ForDisplay(IEnumerable<ItemRule> rules, Func<ItemRule, string> fullName, Func<ItemRule, string>? kind = null)
     {
         var list = new List<ItemRule>();
         foreach (var r in rules)
             list.Add(new ItemRule
             {
                 Id = r.Id, Name = fullName(r), Action = r.Action, KeepBuffed = r.KeepBuffed,
+                Kind = kind?.Invoke(r) ?? "",
                 // A shield shows "Shield" in the element column (it has no element).
                 Element = IsShieldRule(r) ? ShieldAction : r.Element.Length > 0 ? r.Element : UnknownLabel,
                 ElementSource = r.ElementSource,

@@ -19,6 +19,48 @@ internal sealed record WeaponCandidate(int Id, string Name, int Kind, string Ele
 /// debuff with, and why.</summary>
 internal readonly record struct WeaponPlan(int WeaponId, string Element, string Source);
 
+/// <summary>The kind of damage a character prefers to fight with (a Monsters rule's PreferredDamage).</summary>
+internal enum DamageStyle { Auto, Melee, Missile, War, Void }
+
+internal static class DamageStyles
+{
+    /// <summary>The names the Damage panel offers, in <see cref="DamageStyle"/> order.</summary>
+    public static readonly string[] Names = { "Auto", "Melee", "Missile", "War Magic", "Void Magic" };
+
+    /// <summary>Tolerant of case, spaces and the short forms ("war", "void"); anything unknown is Auto.</summary>
+    public static DamageStyle Parse(string? text)
+    {
+        string t = (text ?? "").Replace(" ", "").Replace("_", "").Replace("-", "");
+        if (t.Equals("Melee", StringComparison.OrdinalIgnoreCase)) return DamageStyle.Melee;
+        if (t.Equals("Missile", StringComparison.OrdinalIgnoreCase)) return DamageStyle.Missile;
+        if (t.Equals("War", StringComparison.OrdinalIgnoreCase) || t.Equals("WarMagic", StringComparison.OrdinalIgnoreCase)) return DamageStyle.War;
+        if (t.Equals("Void", StringComparison.OrdinalIgnoreCase) || t.Equals("VoidMagic", StringComparison.OrdinalIgnoreCase)) return DamageStyle.Void;
+        return DamageStyle.Auto;
+    }
+
+    public static string Name(DamageStyle s) => Names[(int)s];
+
+    private static bool IsNether(string e) => e.Equals("Nether", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A weapon belongs to a style by its kind; a caster by its element (Nether = Void, anything else, or none, = War).</summary>
+    public static bool Matches(WeaponCandidate c, DamageStyle s) => s switch
+    {
+        DamageStyle.Melee   => c.Kind == CombatMode.Melee,
+        DamageStyle.Missile => c.Kind == CombatMode.Missile,
+        DamageStyle.War     => c.Kind == CombatMode.Magic && !IsNether(c.Element),
+        DamageStyle.Void    => c.Kind == CombatMode.Magic && IsNether(c.Element),
+        _                   => true,
+    };
+
+    /// <summary>The cast test with the style's school applied: War never casts Nether, Void casts nothing else.</summary>
+    public static Func<string, bool> Restrict(Func<string, bool> canCast, DamageStyle s) => s switch
+    {
+        DamageStyle.War  => e => !IsNether(e) && canCast(e),
+        DamageStyle.Void => e => IsNether(e) && canCast(e),
+        _                => canCast,
+    };
+}
+
 /// <summary>
 /// The element-and-weapon rule, pure (no host). The weakness decides the weapon, never the
 /// other way round, except for a slayer (owner's rule, 2026-10-05: a monster is always
@@ -54,6 +96,12 @@ internal readonly record struct WeaponPlan(int WeaponId, string Element, string 
 ///      use its element; nothing known at all: Slash (or the first element the character can cast).
 /// "Main kind" = the kind of the first usable weapon in the list, so a bow character with a
 /// buff wand listed isn't switched to magic, and a melee character isn't swapped to a wand.
+/// A preferred damage type (a Monsters rule's PreferredDamage: Melee, Missile, War Magic,
+/// Void Magic) replaces that: the pool is the listed weapons of that style, for a character
+/// who uses two kinds and wants to choose. With none listed (or none the character can use,
+/// e.g. Void without Void Magic) it falls back to Auto, the main kind, rather than not fighting.
+/// The monster's own Damage tab weapon (step 1) still wins; the DEFAULT row's weapon only when
+/// it is of the preferred style; War Magic never casts Nether and Void Magic nothing else.
 /// </summary>
 internal static class WeaponPlanner
 {
@@ -79,8 +127,29 @@ internal static class WeaponPlanner
         int learnedBestId = 0,
         int creatureType = 0,
         bool fixedIsDefault = false,
-        double minSwapGain = 0)
+        double minSwapGain = 0,
+        string? preferredDamage = null)
     {
+        var plan = ChooseCore(listed, ruleElement, weak, canCast, fixedWeaponId, fixedSource, learnedBestId, creatureType,
+            fixedIsDefault, minSwapGain, DamageStyles.Parse(preferredDamage), out var applied);
+        return applied == DamageStyle.Auto ? plan : plan with { Source = plan.Source + ", prefers " + DamageStyles.Name(applied) };
+    }
+
+    private static WeaponPlan ChooseCore(
+        IReadOnlyList<WeaponCandidate> listed,
+        string? ruleElement,
+        CreatureWeakness.Ranking? weak,
+        Func<string, bool> canCast,
+        int fixedWeaponId,
+        string fixedSource,
+        int learnedBestId,
+        int creatureType,
+        bool fixedIsDefault,
+        double minSwapGain,
+        DamageStyle style,
+        out DamageStyle applied)
+    {
+        applied = DamageStyle.Auto;
         string rule = WeaponElements.Normalize(ruleElement);
         bool ruleSet = rule.Length > 0;
         WeaponCandidate? fixedPick = fixedWeaponId != 0 ? Find(listed, fixedWeaponId) : null;
@@ -100,9 +169,24 @@ internal static class WeaponPlanner
             return new WeaponPlan(0, elem, "none");
         }
 
-        int mainKind = listed[0].Kind;
         var pool = new List<WeaponCandidate>();
-        foreach (var c in listed) if (c.Kind == mainKind) pool.Add(c);
+        if (style != DamageStyle.Auto)
+        {
+            // The preferred style, when the character has a weapon of it it can use: Void needs the
+            // Nether school, War any school but Nether. Otherwise Auto, below.
+            var cast = DamageStyles.Restrict(canCast, style);
+            bool schoolOpen = false;
+            foreach (string e in FallbackOrder) if (cast(e)) { schoolOpen = true; break; }
+            if (style is DamageStyle.Melee or DamageStyle.Missile || schoolOpen)
+                foreach (var c in listed) if (DamageStyles.Matches(c, style)) pool.Add(c);
+            if (pool.Count > 0) { applied = style; canCast = cast; }
+        }
+        if (pool.Count == 0)
+        {
+            int mainKind = listed[0].Kind;
+            foreach (var c in listed) if (c.Kind == mainKind) pool.Add(c);
+        }
+        bool styled = applied != DamageStyle.Auto;
 
         // 2. A slayer of this monster's creature type.
         if (creatureType > 0)
@@ -119,13 +203,13 @@ internal static class WeaponPlanner
         }
 
         // 3. The Damage tab DEFAULT row's weapon (listed only): no slayer of this monster is listed.
-        if (fixedPick != null)
+        if (fixedPick != null && (!styled || pool.Contains(fixedPick)))
             return FixedPlan(fixedPick, fixedSource, rule, weak, canCast);
 
         // 4. An explicit damage type: the listed weapon of that element (main kind first).
         if (ruleSet)
         {
-            var w = BestOf(pool, rule, null) ?? BestOf(listed, rule, null);
+            var w = BestOf(pool, rule, null) ?? (styled ? null : BestOf(listed, rule, null));
             if (w != null) return new WeaponPlan(w.Id, rule, "Monsters rule " + rule);
             var keep = InHand(pool) ?? pool[0];
             // A wand casts its own element: the rule's element only when the weapon has none.

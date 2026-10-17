@@ -1248,6 +1248,7 @@ public partial class BuffManager : IDisposable
         // A recall the HP failsafe asked for goes out after the macro stop (BuffManager.HpFailsafe.cs).
         TickFailsafeRecall();
         TickRechargeRequest();   // /ra recharge: one vitals pass, macro on or off (BuffManager.Recharge.cs)
+        TickOneTouchRequest();   // /ra heal, /ra stam, /ra mana: one-touch recharge, macro on or off (BuffManager.OneTouch.cs)
 
         if (!_settings.IsMacroRunning) return;
 
@@ -1887,31 +1888,16 @@ public partial class BuffManager : IDisposable
                 _isHealingSelf = true;
                 return true;
             }
-            _vitalWhy = "";
-            bool healed = AttemptHealthKitUse();
-            string kitWhy = _vitalWhy;
-            if (!healed) { _vitalWhy = ""; healed = AttemptVitalCast("Heal Self"); }
-            string spellWhy = _vitalWhy;
-            if (!healed) { _vitalWhy = ""; healed = AttemptPotion("HealthPotion"); }
-            // Last resort: the kit Kit Min Success skipped. A low chance beats no heal at all
-            // (Drakkon, 2026-10-06: 29% kit skipped, no spell, no potion, dead 6 s later).
-            if (!healed && kitWhy.EndsWith("under Kit Min Success %", StringComparison.Ordinal))
-            {
-                string potionWhy = _vitalWhy;
-                _vitalWhy = "";
-                healed = AttemptHealthKitUse(ignoreMinSuccess: true);
-                if (healed) _host.Log("[RynthAi] Vitals: no spell or potion could heal; using the kit despite Kit Min Success %.");
-                else _vitalWhy = potionWhy;
-            }
+            bool healed = AttemptHealChain(itemsBeforeSpell: false, allowSpell: true, out string kitWhy, out string spellWhy, out string potionWhy);
             if (healed)
             {
                 _isHealingSelf = true;
                 return true;
             }
             _healUnavailableUntil = DateTime.Now.AddMilliseconds(HealUnavailableMs);
-            Hold("nothing could heal", $"kit: {Why(kitWhy)}; Heal Self: {Why(spellWhy)}; potion: {Why(_vitalWhy)}");
+            Hold("nothing could heal", $"kit: {Why(kitWhy)}; Heal Self: {Why(spellWhy)}; potion: {Why(potionWhy)}");
             LogNoHeal($"health {curHealthPct}% < {(inCombat ? "Heal At" : "Top Off HP")} {hpThreshold}% but nothing healed: " +
-                      $"kit: {Why(kitWhy)}; Heal Self: {Why(spellWhy)}; potion: {Why(_vitalWhy)}");
+                      $"kit: {Why(kitWhy)}; Heal Self: {Why(spellWhy)}; potion: {Why(potionWhy)}");
         }
         else if (!inCombat && curHealthPct < _settings.HealAt)
         {
@@ -1930,17 +1916,9 @@ public partial class BuffManager : IDisposable
         if (manaLow)
         {
             _vitalWhy = "";
-            if ((curStamPct > StaminaToManaFloorPct() && AttemptVitalCast("Stamina to Mana Self")) || AttemptPotion("ManaPotion"))
+            if (AttemptManaRefill(curStamPct, out bool refilledStamina))
             {
-                _isRechargingMana = true;
-                return true;
-            }
-            // Stamina too low for Stamina to Mana (StaminaToManaFloorPct: Re-stam At, at least 15): a
-            // stamina kit, Revitalize or a potion first.
-            if (curStamPct <= StaminaToManaFloorPct() && TopStaminaToManaId() != 0
-                && (AttemptStaminaKitUse() || AttemptVitalCast("Revitalize Self") || AttemptPotion("StaminaPotion", "Stamina")))
-            {
-                _isRechargingStamina = true;
+                if (refilledStamina) _isRechargingStamina = true; else _isRechargingMana = true;
                 return true;
             }
             // Mana can't pay for any Stamina to Mana and nothing else refilled it: a caster's
@@ -1968,25 +1946,88 @@ public partial class BuffManager : IDisposable
         // for the wand and back (slow, and the 10-06 stalls began at those switches), so a stamina
         // potion listed in Consumables goes before it. A potion drunk under 2.5 s ago: no Revitalize
         // on top of it. In Magic stance (a caster) Revitalize stays first.
-        bool potionFirst = CurrentCombatMode != CombatMode.Magic;
-        if (curStamPct < stamThreshold)
+        if (curStamPct < stamThreshold && AttemptStaminaChain())
         {
-            bool potionJustDrunk = potionFirst && _settings.UsePotions
-                && (DateTime.Now - _lastPotionAt).TotalMilliseconds < 2500
-                && HasListedPotion("StaminaPotion", "Stamina");
-            if (!potionJustDrunk
-                && (AttemptStaminaKitUse()
-                    || (potionFirst && AttemptPotion(true, "StaminaPotion", "Stamina"))
-                    || AttemptVitalCast("Revitalize Self")
-                    || AttemptPotion("StaminaPotion", "Stamina")))
-            {
-                _isRechargingStamina = true;
-                if (_restamRun) _restamRunCasts++;
-                return true;
-            }
+            _isRechargingStamina = true;
+            if (_restamRun) _restamRunCasts++;
+            return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The heal chain of the vitals step (CheckVitals, and the one-touch heal): a kit, Heal Self and a
+    /// potion, or with <paramref name="itemsBeforeSpell"/> the kit and potion before the spell (no wand swap
+    /// first, as the emergency step does), then the kit Kit Min Success skipped as the last resort.
+    /// <paramref name="allowSpell"/> false: no cast (one is pending and a Heal Self would replace it).
+    /// True also while a stance step (peace for the kit, the wand swap) is in flight; the why strings
+    /// say what each option did when nothing healed.
+    /// </summary>
+    private bool AttemptHealChain(bool itemsBeforeSpell, bool allowSpell, out string kitWhy, out string spellWhy, out string potionWhy)
+    {
+        spellWhy = "";
+        string potWhy = "";
+        _vitalWhy = "";
+        bool healed = AttemptHealthKitUse();
+        kitWhy = _vitalWhy;
+        if (itemsBeforeSpell && !healed) { _vitalWhy = ""; healed = AttemptPotion("HealthPotion"); potWhy = _vitalWhy; }
+        if (!healed)
+        {
+            _vitalWhy = "";
+            healed = allowSpell ? AttemptVitalCast("Heal Self") : VitalNo("a cast is pending");
+            spellWhy = _vitalWhy;
+        }
+        if (!itemsBeforeSpell && !healed) { _vitalWhy = ""; healed = AttemptPotion("HealthPotion"); potWhy = _vitalWhy; }
+        // Last resort: the kit Kit Min Success skipped. A low chance beats no heal at all
+        // (Drakkon, 2026-10-06: 29% kit skipped, no spell, no potion, dead 6 s later).
+        if (!healed && kitWhy.EndsWith("under Kit Min Success %", StringComparison.Ordinal))
+        {
+            _vitalWhy = "";
+            healed = AttemptHealthKitUse(ignoreMinSuccess: true);
+            if (healed) _host.Log("[RynthAi] Vitals: no spell or potion could heal; using the kit despite Kit Min Success %.");
+        }
+        if (!healed) _vitalWhy = potWhy;
+        potionWhy = potWhy;
+        return healed;
+    }
+
+    /// <summary>
+    /// The mana step: Stamina to Mana Self or a mana potion; with stamina at or under the Stamina to Mana
+    /// floor, stamina is refilled first (kit, Revitalize, potion) so Stamina to Mana can run next.
+    /// <paramref name="refilledStamina"/>: it was stamina that was started, not mana.
+    /// </summary>
+    private bool AttemptManaRefill(int curStamPct, out bool refilledStamina)
+    {
+        refilledStamina = false;
+        if ((curStamPct > StaminaToManaFloorPct() && AttemptVitalCast("Stamina to Mana Self")) || AttemptPotion("ManaPotion"))
+            return true;
+        // Stamina too low for Stamina to Mana (StaminaToManaFloorPct: Re-stam At, at least 15): a
+        // stamina kit, Revitalize or a potion first.
+        if (curStamPct <= StaminaToManaFloorPct() && TopStaminaToManaId() != 0
+            && (AttemptStaminaKitUse() || AttemptVitalCast("Revitalize Self") || AttemptPotion("StaminaPotion", "Stamina")))
+        {
+            refilledStamina = true;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The stamina step: a kit, a listed potion first out of Magic stance, Revitalize, then any potion
+    /// (the reasons are in the comment above CheckVitals' stamina line).
+    /// </summary>
+    private bool AttemptStaminaChain()
+    {
+        bool potionFirst = CurrentCombatMode != CombatMode.Magic;
+        bool potionJustDrunk = potionFirst && _settings.UsePotions
+            && (DateTime.Now - _lastPotionAt).TotalMilliseconds < 2500
+            && HasListedPotion("StaminaPotion", "Stamina");
+        return !potionJustDrunk
+            && (AttemptStaminaKitUse()
+                || (potionFirst && AttemptPotion(true, "StaminaPotion", "Stamina"))
+                || AttemptVitalCast("Revitalize Self")
+                || AttemptPotion("StaminaPotion", "Stamina"));
     }
 
     // Re-stam To (2026-10-06): a recharge started under Re-stam At carries on until stamina
@@ -2165,7 +2206,7 @@ public partial class BuffManager : IDisposable
             return VitalNo(recoveryWhy);
         if (CurrentCombatMode != CombatMode.Magic && DateTime.Now < _vitalSwapBlockedUntil)
             return VitalNo("wand swap blocked, retrying shortly");
-        bool urgentHeal = label == LabelHealing && HealIsUrgent(_vitals.HealthPct, _vitals.StaminaPct);
+        bool urgentHeal = label == LabelHealing && (_oneTouchHealthScope || HealIsUrgent(_vitals.HealthPct, _vitals.StaminaPct));
         if (!EnsureMagicMode(urgentHeal: urgentHeal))
         {
             if (!_magicModeBlocked) { _healWaitKind = "wand swap / Magic stance"; return true; }   // a swap step is in flight: yield the tick
@@ -4468,7 +4509,8 @@ public partial class BuffManager : IDisposable
         int hp = _vitals.HealthPct;
         int emergencyAt = _settings.EmergencyHealAt;
         if (emergencyAt > 0 && hp <= emergencyAt) return HealNeed.Emergency;
-        return HealthUnderAnyLine(hp, _vitals.StaminaPct) ? HealNeed.Heal : HealNeed.None;
+        // A one-touch heal the player asked for counts as a heal whatever the lines say (BuffManager.OneTouch.cs).
+        return HealthUnderAnyLine(hp, _vitals.StaminaPct) || _oneTouchHealthScope ? HealNeed.Heal : HealNeed.None;
     }
 
     /// <summary>Times the vitals/buff step waited for the server's answer (tests, status).</summary>

@@ -23,9 +23,10 @@ internal static class StuckCastTests
     {
         r.Add("stuck cast: after a 'too busy' UseDone nothing starts until the server answers; no timer re-send while our cast is open", NoResendAfterTooBusy);
         r.Add("stuck cast: with no cast of ours open, one probe after 1.5 s, then doubling; a UseDone(0) clears", ProbeWhenNothingOpen);
-        r.Add("stuck cast: a held cast is turned to its target at cycle + 1 s, broken by a jump at cycle + 2 s; a normal 4 s cast trips neither", TurnThenJump);
+        r.Add("stuck cast: a held cast is turned to its target at cycle + 1 s, broken by a jump TurnGraceMs after the turn; a normal 4 s cast trips neither", TurnThenJump);
+        r.Add("stuck cast: already facing the target (no turn), the jump is at cycle + 2 s", JumpWithoutTurn);
         r.Add("stuck cast: no starts in the air; after landing, no UseDone in 3 s -> Peace mode, 3 s more -> going on", AfterTheJump);
-        r.Add("stuck cast: a 'too busy' answer while our cast is open past 3 s breaks it at once; before 3 s it does not", RefusalWhileOpen);
+        r.Add("stuck cast: a 'too busy' answer while our cast is open past its cycle + 1 s (and 3 s) breaks it at once; before, it does not", RefusalWhileOpen);
         r.Add("stuck cast: StuckCastMs 0 turns nothing and breaks nothing; no TapJump -> Peace mode", BreakerOffAndNoJump);
         r.Add("move settle: no start in the tick of a movement change; 150 ms and a clear motion queue (or 600 ms) let it go", MoveSettle);
         r.Add("stuck cast: the HP failsafe's forced break jumps once and holds starts until landed", ForcedBreak);
@@ -46,8 +47,8 @@ internal static class StuckCastTests
         FakeHost.Names[Player] = "Mira";
         FakeHost.PlayerPose = Me0;
         FakeHost.Positions[Player] = Me0;
-        FakeHost.HeadingDeg = 0;                                       // facing north
-        FakeHost.Positions[Monster] = (Me0.Cell, Me0.X + 10f, Me0.Y, Me0.Z);   // due east: 90 deg off
+        FakeHost.HeadingDeg = 90;                                      // facing east: no held-cast turn (TurnThenJump faces north)
+        FakeHost.Positions[Monster] = (Me0.Cell, Me0.X + 10f, Me0.Y, Me0.Z);   // due east
         var host = FakeHost.Create(Player);
         _t = 90_000_000;
         ActionPacer.Reset();
@@ -197,7 +198,8 @@ internal static class StuckCastTests
             Check.Eq(FakeHost.Turns + FakeHost.TapJumps + FakeHost.CombatModeRequests.Count, 0, "a normal 4 s cast: no turn, no jump, no mode change");
             Check.Eq(ActionPacer.NormalCycleMs(DrainHealthOtherI), 4000L, "the cycle learned from it");
 
-            // The next one is held open: turn at 4 + 1 s, jump at 4 + 2 s.
+            // The next one is held open, facing north (90 deg off): turn at 4 + 1 s, jump TurnGraceMs later.
+            FakeHost.HeadingDeg = 0;
             Cast(host);
             long sent = _t;
             while (_t - sent < 4900) { _t += 100; May(host); }
@@ -206,11 +208,12 @@ internal static class StuckCastTests
             Check.Eq(FakeHost.Turns, 1, "turned at cycle + 1 s");
             Check.Near(FakeHost.HeadingDeg, 90.0, 0.5, "to face the target (east)");
             Check.True(FakeHost.Logs.Any(l => l.Contains("held cast:") && l.Contains("turning 90 deg to face 0x80116781")), "logged");
-            while (_t - sent < 5900) { _t += 100; Check.False(May(host), "held"); }
-            Check.Eq(FakeHost.TapJumps, 0, "no jump before cycle + 2 s");
+            // 2026-10-16: the jump came 1 s after a 91 deg turn, 0.2 s before the cast's answer.
+            while (_t - sent < 5000 + ActionPacer.TurnGraceMs - 100) { _t += 100; Check.False(May(host), "held"); }
+            Check.Eq(FakeHost.TapJumps, 0, "no jump while the turn has its time (cycle + 2 s is past)");
             _t += 100; May(host);
-            Check.Eq(FakeHost.TapJumps, 1, "the breaker jump at cycle + 2 s");
-            Check.True(FakeHost.Logs.Any(l => l.Contains("[Pace] stuck cast broken by jump after 6000 ms")), "logged with the time");
+            Check.Eq(FakeHost.TapJumps, 1, "the breaker jump TurnGraceMs after the turn");
+            Check.True(FakeHost.Logs.Any(l => l.Contains($"[Pace] stuck cast broken by jump after {5000 + ActionPacer.TurnGraceMs} ms")), "logged with the time");
             Run(host, 2000);
             Check.Eq(FakeHost.TapJumps, 1, "one jump");
             Check.Eq(FakeHost.Turns, 1, "one turn");
@@ -218,6 +221,22 @@ internal static class StuckCastTests
             // The fizzle (0x402): free again once landed.
             FakeHost.UseDone(0x402);
             Check.True(May(host), "free after the cast's UseDone");
+        }
+        finally { Done(); }
+    }
+
+    private static void JumpWithoutTurn()
+    {
+        var host = Setup();
+        try
+        {
+            // Facing the monster (Setup): no turn goes out.
+            Check.True(May(host), "free");
+            Cast(host);
+            long sent = _t;
+            while (FakeHost.TapJumps == 0 && _t - sent < 10_000) { _t += 100; May(host); }
+            Check.Eq(FakeHost.Turns, 0, "no turn");
+            Check.Eq(_t - sent, ActionPacer.DefaultCycleMs + ActionPacer.JumpAfterMs, "the jump at cycle + 2 s");
         }
         finally { Done(); }
     }
@@ -279,7 +298,9 @@ internal static class StuckCastTests
             _t += 100; May(host);
             Check.Eq(FakeHost.TapJumps, 0, "a 0x1D at 2 s: no jump");
             _t += 900; May(host);
-            Check.Eq(FakeHost.TapJumps, 1, "past RefusalBreakMinMs with a 0x1D in: jump at once (before cycle + 2 s)");
+            Check.Eq(FakeHost.TapJumps, 0, "3 s with a 0x1D in, not yet RefusalPastCycleMs past its cycle: no jump (it may have landed, its UseDone due)");
+            _t += ActionPacer.RefusalPastCycleMs; May(host);
+            Check.Eq(FakeHost.TapJumps, 1, "past cycle + 1 s with a 0x1D in: jump at once (before cycle + 2 s)");
             Check.True(FakeHost.Logs.Any(l => l.Contains("was refused 'too busy' while it was open")), "the reason is logged");
         }
         finally { Done(); }

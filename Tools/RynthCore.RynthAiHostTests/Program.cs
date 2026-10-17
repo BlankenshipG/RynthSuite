@@ -131,6 +131,7 @@ IltClientLookupTests.Register(runner);
         LootPacingTests.Register(runner);
         CorpseCloseTests.Register(runner);
         VTankHotkeyTests.Register(runner);
+        OneTouchHealTests.Register(runner);
         SaveFailureTests.Register(runner);
         EnvironmentImpactTests.Register(runner);
         PetDamageTintTests.Register(runner);

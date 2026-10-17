@@ -33,6 +33,8 @@ internal static class ManaStoneChoiceTests
         r.Add("mana tapping: one item at a time - the stone first, then one item, drained before the next", OneTapItemAtATime);
         r.Add("mana tapping: no drain until the pickup is confirmed in the pack", NoDrainBeforeArrival);
         r.Add("mana tapping: a drain that never completes keeps the item's place, tries the next stone, then gives up", FailedDrainKeepsPlace);
+        r.Add("mana tapping: only a stone in the client's pack is used or counted (not one on a corpse, not a stale id)", StoneMustBeInPack);
+        r.Add("mana tapping: a stone that failed two drains stays parked though it reads empty", FailedStoneStaysParked);
     }
 
     private const uint ChargeA = 0x80400031, ChargeB = 0x80400032, ChargeC = 0x80400033;
@@ -227,10 +229,11 @@ internal static class ManaStoneChoiceTests
         /// <param name="identify">The engine can identify objects (RequestId).</param>
         public Rig(bool tapping, (uint Id, int? Mana)[] stones, bool ringToDrain = false,
                    string stoneName = "Moderate Mana Stone", int maceMana = 0, bool identify = true,
-                   bool ringArrived = true)
+                   bool ringArrived = true, bool contents = false)
         {
             FakeHost.Reset();
             FakeHost.UseOnCalls = true;
+            FakeHost.ContentsCalls = contents;   // the client's pack walk (GetContainerContents)
             FakeHost.WeaponCalls = identify;   // RequestId, HasAppraisalData
             FakeHost.Names[Player] = "Stone Tester";
             _stoneName = stoneName;
@@ -373,6 +376,38 @@ internal static class ManaStoneChoiceTests
         rig.Run(60_000);
         Check.Eq(rig.OnRing.Count, 3, "a given-up item is never drained again");
         Check.True(FakeHost.Chat.Any(c => c.Contains("would not drain")), "the player is told");
+    }
+
+    // 2026-10-16: Drakkon drained with a Major Mana Stone still on the corpse and with a stone id
+    // the client no longer knew. The cache files objects without a world position as inventory,
+    // so both counted as empty stones in the pack: no drain completed and the looter went on
+    // taking items to tap.
+    private static void StoneMustBeInPack()
+    {
+        using var rig = new Rig(tapping: true, new (uint, int?)[] { (StoneA, 0) }, ringToDrain: true, maceMana: 5000, contents: true);
+        FakeHost.Containers.Remove(StoneA);   // gone from the client's pack; the cache still has it
+        rig.Run(3000);
+        Check.Eq(rig.OnRing.Count, 0, "no drain with a stone that is not in the pack");
+        Check.Eq(rig.M.CountEmptyStones(), 0, "it is not counted as an empty stone");
+        rig.AddStone(StoneB, 0);
+        System.Threading.Thread.Sleep(1100);   // the cache walks the pack again after 1 s of real time
+        rig.Run(2000);
+        Check.Eq(rig.OnRing.Count, 1, "a stone that is in the pack drains the ring");
+        Check.Eq(rig.OnRing[0], StoneB, "stone B");
+    }
+
+    // 2026-10-16: the 30-minute park after a stone's second failed drain was undone on the next
+    // think tick because the stone reads empty: one stone failed 36 drains in a row.
+    private static void FailedStoneStaysParked()
+    {
+        using var rig = new Rig(tapping: true, new (uint, int?)[] { (StoneA, 0) }, ringToDrain: true, maceMana: 5000, contents: true);
+        rig.Run(1000);
+        Check.Eq(rig.OnRing.Count, 1, "first try");
+        rig.Run(9000 + 21_000);
+        Check.Eq(rig.OnRing.Count, 2, "second try, the same (only) stone");
+        rig.Run(9000 + 60_000);
+        Check.Eq(rig.OnRing.Count, 2, "failed twice: the stone stays parked though it reads empty");
+        Check.Eq(rig.M.CountEmptyStones(), 0, "and no item is looted for it");
     }
 
     private static void KnownChargedRefills()

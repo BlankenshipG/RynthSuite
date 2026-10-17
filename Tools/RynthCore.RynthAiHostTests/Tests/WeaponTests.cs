@@ -36,6 +36,10 @@ internal static class WeaponTests
         r.Add("element choice: a matching rending wins for its element", ChoiceRending);
         r.Add("element choice: a wand always casts its own element (rule, Damage tab, no match)", ChoiceWandCastsOwn);
         r.Add("element choice: elements the character can't cast are skipped", ChoiceCastable);
+        r.Add("preferred damage: Melee/Missile/War/Void picks the pool; Auto keeps the first listed kind", PreferredPicksPool);
+        r.Add("preferred damage: War never casts Nether, Void nothing else; an unusable preference falls back to Auto", PreferredSchools);
+        r.Add("preferred damage: other-kind slayers, the Default row's weapon and the rule's element obey it; the monster's own pick doesn't", PreferredVsOtherSteps);
+        r.Add("preferred damage: names parse tolerantly; a new rule is Auto", PreferredParse);
         r.Add("slayer: beats the weakness and the Monsters rule's damage type", SlayerBeatsWeaknessAndRule);
         r.Add("slayer: only this monster's own Damage tab weapon beats it, not the DEFAULT row's", SlayerVsDamageTab);
         r.Add("slayer (owner's rule 2026-10-05): a Slash slayer beats a Pierce weapon the monster is weaker to", SlayerBeatsLowerResist);
@@ -230,6 +234,116 @@ internal static class WeaponTests
         => new() { Source = "test", Order = order.OrderByDescending(o => o.M).ToList() };
 
     private static bool All(string e) => true;
+
+    private static WeaponCandidate Weapon(int id, int kind, string elem = "", bool inHand = false)
+        => new(id, "Weapon " + id, kind, elem, "", inHand);
+
+    private static void PreferredPicksPool()
+    {
+        // A sword listed first, a bow, a fire wand and a nether wand: Auto fights with the first kind (melee).
+        var list = new List<WeaponCandidate>
+        {
+            Weapon(1, CombatMode.Melee, "Slash"), Weapon(2, CombatMode.Missile, "Pierce"),
+            Weapon(3, CombatMode.Magic, "Fire"), Weapon(4, CombatMode.Magic, "Nether"),
+        };
+        var weak = Rank(("Fire", 1.5), ("Nether", 1.4), ("Slash", 1.0), ("Pierce", 1.0));
+        Check.Eq(WeaponPlanner.Choose(list, "", weak, All).WeaponId, 1, "Auto: the first listed kind (melee), the Slash sword");
+        Check.Eq(WeaponPlanner.Choose(list, "", weak, All, preferredDamage: "Auto").WeaponId, 1, "Auto spelled out");
+
+        var melee = WeaponPlanner.Choose(list, "", weak, All, preferredDamage: "Melee");
+        Check.Eq(melee.WeaponId, 1, "Melee: the sword");
+        Check.True(melee.Source.EndsWith("prefers Melee"), "Melee: the source says why (" + melee.Source + ")");
+        var missile = WeaponPlanner.Choose(list, "", weak, All, preferredDamage: "Missile");
+        Check.Eq(missile.WeaponId, 2, "Missile: the bow, though the monster is weaker to Fire and Nether");
+        var war = WeaponPlanner.Choose(list, "", weak, All, preferredDamage: "War Magic");
+        Check.Eq(war.WeaponId, 3, "War Magic: the fire wand");
+        Check.Eq(war.Element, "Fire", "casting Fire");
+        var voidP = WeaponPlanner.Choose(list, "", weak, All, preferredDamage: "Void Magic");
+        Check.Eq(voidP.WeaponId, 4, "Void Magic: the nether wand");
+        Check.Eq(voidP.Element, "Nether", "casting Nether");
+
+        // Weakness unknown: the weapon in hand within the pool, else the first of the pool.
+        var hand = new List<WeaponCandidate>
+        {
+            Weapon(1, CombatMode.Melee, "Slash", inHand: true), Weapon(2, CombatMode.Magic, "Fire"), Weapon(3, CombatMode.Magic, "Cold"),
+        };
+        Check.Eq(WeaponPlanner.Choose(hand, "", null, All, preferredDamage: "War Magic").WeaponId, 2, "unknown weakness: the first War wand, not the sword in hand");
+    }
+
+    private static void PreferredSchools()
+    {
+        // A wand with no element: War casts the weakest non-Nether element, Void casts Nether.
+        var plain = new List<WeaponCandidate> { Weapon(1, CombatMode.Magic, "", inHand: true) };
+        var weak = Rank(("Nether", 1.6), ("Fire", 1.4), ("Cold", 1.0));
+        Check.Eq(WeaponPlanner.Choose(plain, "", weak, All).Element, "Nether", "Auto: the weakest castable, Nether");
+        Check.Eq(WeaponPlanner.Choose(plain, "", weak, All, preferredDamage: "War Magic").Element, "Fire", "War Magic: Nether is out, Fire");
+        var voidPlain = WeaponPlanner.Choose(plain, "", weak, All, preferredDamage: "Void Magic");
+        Check.Eq(voidPlain.WeaponId, 1, "an element-less wand is a War wand: no Void pool, so Auto keeps the same wand");
+        Check.False(voidPlain.Source.Contains("prefers"), "and the source doesn't claim the preference");
+
+        // An unusable preference falls back to Auto and doesn't claim the preference.
+        var mixed = new List<WeaponCandidate> { Weapon(1, CombatMode.Melee, "Slash"), Weapon(2, CombatMode.Magic, "Fire") };
+        var noVoid = WeaponPlanner.Choose(mixed, "", null, All, preferredDamage: "Void Magic");
+        Check.Eq(noVoid.WeaponId, 1, "no nether wand listed: Auto, the first kind");
+        Check.False(noVoid.Source.Contains("prefers"), "and the source doesn't claim the preference");
+        var noVoidSkill = WeaponPlanner.Choose(
+            new List<WeaponCandidate> { Weapon(1, CombatMode.Melee, "Slash"), Weapon(2, CombatMode.Magic, "Nether") }, "", null,
+            e => e != "Nether", preferredDamage: "Void Magic");
+        Check.Eq(noVoidSkill.WeaponId, 1, "a nether wand but no Void Magic: Auto");
+        var noWarSkill = WeaponPlanner.Choose(mixed, "", null, e => false, preferredDamage: "War Magic");
+        Check.Eq(noWarSkill.WeaponId, 1, "a fire wand but nothing castable: Auto");
+        var noMissile = WeaponPlanner.Choose(mixed, "", null, All, preferredDamage: "Missile");
+        Check.Eq(noMissile.WeaponId, 1, "no launcher listed: Auto");
+        Check.Eq(WeaponPlanner.Choose(new List<WeaponCandidate>(), "", null, All, preferredDamage: "Melee").WeaponId, 0, "nothing listed: nothing");
+    }
+
+    private static void PreferredVsOtherSteps()
+    {
+        var list = new List<WeaponCandidate>
+        {
+            Weapon(1, CombatMode.Melee, "Slash"), Weapon(2, CombatMode.Magic, "Fire"), Weapon(3, CombatMode.Magic, "Nether"),
+        };
+
+        // A slayer of another kind is not a candidate (like a melee slayer for a mage).
+        var slayer = new List<WeaponCandidate>
+        {
+            new(1, "Sword", CombatMode.Melee, "Slash", "", false, SlayerType: 5, SlayerBonus: 2),
+            Weapon(2, CombatMode.Magic, "Fire"),
+        };
+        Check.Eq(WeaponPlanner.Choose(slayer, "", null, All, creatureType: 5).WeaponId, 1, "Auto: the melee slayer");
+        Check.Eq(WeaponPlanner.Choose(slayer, "", null, All, creatureType: 5, preferredDamage: "War Magic").WeaponId, 2, "War Magic: the slayer isn't used");
+
+        // The Default row's weapon (fixedIsDefault) only when it is of the preferred kind.
+        Check.Eq(WeaponPlanner.Choose(list, "", null, All, fixedWeaponId: 1, fixedIsDefault: true, preferredDamage: "War Magic").WeaponId, 2,
+            "Default row's sword, War Magic preferred: a wand");
+        Check.Eq(WeaponPlanner.Choose(list, "", null, All, fixedWeaponId: 2, fixedIsDefault: true, preferredDamage: "War Magic").WeaponId, 2,
+            "Default row's fire wand, War Magic preferred: kept");
+        Check.Eq(WeaponPlanner.Choose(list, "", null, All, fixedWeaponId: 1, fixedIsDefault: true).WeaponId, 1, "Auto: the Default row's sword");
+
+        // The monster's own Damage tab weapon is the player's explicit pick: it wins.
+        Check.Eq(WeaponPlanner.Choose(list, "", null, All, fixedWeaponId: 1, fixedIsDefault: false, preferredDamage: "War Magic").WeaponId, 1,
+            "this monster's own sword pick, War Magic preferred: the sword");
+
+        // The rule's element picks within the preferred kind; none of it there: stay in the kind.
+        var cast = WeaponPlanner.Choose(list, "Nether", null, All, preferredDamage: "Void Magic");
+        Check.Eq(cast.WeaponId, 3, "rule Nether + Void Magic: the nether wand");
+        var other = WeaponPlanner.Choose(list, "Slash", null, All, preferredDamage: "War Magic");
+        Check.Eq(other.WeaponId, 2, "rule Slash + War Magic: no Slash wand, so the war wand, not the sword");
+    }
+
+    private static void PreferredParse()
+    {
+        Check.Eq(DamageStyles.Parse("war magic"), DamageStyle.War, "lower case with a space");
+        Check.Eq(DamageStyles.Parse("WarMagic"), DamageStyle.War, "joined");
+        Check.Eq(DamageStyles.Parse("Void"), DamageStyle.Void, "short form");
+        Check.Eq(DamageStyles.Parse("Void Magic"), DamageStyle.Void, "panel name");
+        Check.Eq(DamageStyles.Parse("Melee"), DamageStyle.Melee, "melee");
+        Check.Eq(DamageStyles.Parse("Missile"), DamageStyle.Missile, "missile");
+        Check.Eq(DamageStyles.Parse(null), DamageStyle.Auto, "null");
+        Check.Eq(DamageStyles.Parse("Fire"), DamageStyle.Auto, "unknown");
+        foreach (string n in DamageStyles.Names) Check.Eq(DamageStyles.Name(DamageStyles.Parse(n)), n, "round trip " + n);
+        Check.Eq(new MonsterRule().PreferredDamage, "Auto", "a new rule is Auto");
+    }
 
     private static void ChoiceRule()
     {

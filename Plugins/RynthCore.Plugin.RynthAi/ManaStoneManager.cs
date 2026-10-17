@@ -319,6 +319,7 @@ internal sealed class ManaStoneManager
                 if (text.Contains("The Mana Stone drains"))
                 {
                     MarkStoneCharged(_activeStoneId);
+                    _stoneTapFailures.Remove(_activeStoneId);
                     _host.Log($"[RynthAi] ManaStone: drained 0x{(uint)_activeItemId:X8} into stone 0x{(uint)_activeStoneId:X8}.");
                 }
                 if (_activeItemId != 0) ForgetTapItem(_activeItemId); // drained and destroyed
@@ -625,15 +626,12 @@ internal sealed class ManaStoneManager
         foreach (var item in _objectCache.AllKnownObjects())
         {
             if (!IsManaStone(item) || IsManaCharge(item)) continue;   // keep in sync with FindEmptyStone
-            if (!IsOwnedByPlayer(item, playerId)) continue;
+            if (!IsOwnedByPlayer(item, playerId) || !InPack(item.Id)) continue;
             if (_stoneKnownCharged.Contains(item.Id)) continue;
 
             int? read = ReadStoneMana(item.Id);
             bool knownEmpty = IsKnownEmpty(item.Id, read);   // keep in sync with FindEmptyStone
-            if (knownEmpty || read == 0)
-                _stoneTapCooldownUntil.Remove(item.Id);
-
-            if (_stoneTapCooldownUntil.TryGetValue(item.Id, out long until) && now < until) continue;
+            if (StoneParkedForTap(item.Id, knownEmpty, read, now)) continue;
             if (!knownEmpty && read > 0) continue;
             count++;
         }
@@ -835,6 +833,42 @@ internal sealed class ManaStoneManager
         return true;
     }
 
+    // The client's own pack walk (GetDirectInventory: GetContainerContents, plus worn gear),
+    // rebuilt at most every ThinkIntervalMs. A stone, and an item to drain, must be in it: the
+    // cache files every object without a world position as inventory (corpse contents too) and
+    // keeps ids the client has since dropped, and both passed IsOwnedByPlayer. Drakkon drained
+    // (2026-10-16) with a Major Mana Stone still on the corpse and with a stone the client no
+    // longer knew ('?'): 12 drains, none completed, and the looter kept taking items for them.
+    private readonly HashSet<int> _packIds = new();
+    private long _packIdsAt = -ThinkIntervalMs;
+
+    private bool InPack(int id)
+    {
+        if (!_host.HasGetContainerContents) return true;   // no walk: IsOwnedByPlayer decides alone
+        long now = NowMs;
+        if (now - _packIdsAt >= ThinkIntervalMs)
+        {
+            _packIdsAt = now;
+            _packIds.Clear();
+            foreach (var wo in _objectCache.GetDirectInventory(forceRefresh: false)) _packIds.Add(wo.Id);
+        }
+        return _packIds.Contains(id);
+    }
+
+    /// <summary>
+    /// True while a stone sits out its tap cooldown after a drain that never completed. A stone
+    /// that reads empty used to come straight back (the read "self-healed" the cooldown), so the
+    /// 30-minute park after its second failure lasted one think tick: stone 0x801ACCDC failed 36
+    /// drains in a row (2026-10-16). The short park after one failure still clears on an empty read.
+    /// </summary>
+    private bool StoneParkedForTap(int stoneId, bool knownEmpty, int? read, long now)
+    {
+        bool longPark = _stoneTapFailures.TryGetValue(stoneId, out int fails) && fails >= 2;
+        if ((knownEmpty || read == 0) && !longPark)
+            _stoneTapCooldownUntil.Remove(stoneId);
+        return _stoneTapCooldownUntil.TryGetValue(stoneId, out long until) && now < until;
+    }
+
     /// <summary>Find a stone with no charge (CurrentMana == 0) — only those can drain an item.</summary>
     private int FindEmptyStone()
     {
@@ -848,7 +882,7 @@ internal sealed class ManaStoneManager
             // (ACE ManaStoneDestroyChance 1.0). One whose charge wasn't read yet was taken for the
             // empty stone, and "draining" loot with it poured the whole charge into the loot item.
             if (!IsManaStone(item) || IsManaCharge(item)) continue;
-            if (!IsOwnedByPlayer(item, playerId)) continue;
+            if (!IsOwnedByPlayer(item, playerId) || !InPack(item.Id)) continue;
 
             // Stones AC has explicitly told us are charged ("already full of
             // mana") are never empty until they're consumed/destroyed.
@@ -858,17 +892,8 @@ internal sealed class ManaStoneManager
             // It gave its mana to worn gear: empty, whatever the (older) read says.
             bool knownEmpty = IsKnownEmpty(item.Id, read);
 
-            // If we can read CurrentMana and it's truly 0, the stone IS empty —
-            // clear any stale blacklist entry. This makes the cooldown self-heal
-            // once the cache catches up to the actual state.
-            if (knownEmpty || read == 0)
-                _stoneTapCooldownUntil.Remove(item.Id);
-
-            // Skip stones that recently failed a tap so we don't loop on the
-            // same broken pair. The auto-clear above lets a stone return as
-            // soon as its real state is known.
-            if (_stoneTapCooldownUntil.TryGetValue(item.Id, out long until) && now < until)
-                continue;
+            // Skip stones that recently failed a tap so we don't loop on the same broken pair.
+            if (StoneParkedForTap(item.Id, knownEmpty, read, now)) continue;
 
             // Treat the stone as empty if CurrentMana is 0 OR unreadable.
             // Unreadable happens for stones whose CBaseQualities InqInt isn't
@@ -899,7 +924,7 @@ internal sealed class ManaStoneManager
         foreach (var item in _objectCache.AllKnownObjects())
         {
             if (!IsRefillStone(item)) continue;
-            if (!IsOwnedByPlayer(item, playerId)) continue;
+            if (!IsOwnedByPlayer(item, playerId) || !InPack(item.Id)) continue;
 
             // Skip stones that timed out on use-on-player recently.
             if (_stoneUseOnPlayerCooldownUntil.TryGetValue(item.Id, out long until) && now < until)
@@ -961,7 +986,7 @@ internal sealed class ManaStoneManager
             if (item == null) continue;
             if (IsManaStone(item)) continue;
             if (!TapItemArrived(id, now)) continue;   // its pickup is still on the way
-            if (!IsOwnedByPlayer(item, playerId)) continue;
+            if (!IsOwnedByPlayer(item, playerId) || !InPack(item.Id)) continue;
 
             // Wands, staves and orbs drain like any other item (ACE's ManaStone only refuses
             // retained items). Only items looted for Mana Tap are candidates, and the wielded /

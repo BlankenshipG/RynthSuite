@@ -1250,8 +1250,8 @@ internal static class CombatHookTests
             RunPacer(own.Host, 3500);
             Check.Eq(FakeHost.TapJumps, 0, "control: no jump before the refusal");
             RefuseAnother(own.Host);
-            RunPacer(own.Host, 200);
-            Check.Eq(FakeHost.TapJumps, 1, "control: a 0x1D past 3 s jumps RynthAi's own cast at once");
+            RunPacer(own.Host, 600);
+            Check.Eq(FakeHost.TapJumps, 1, "control: a 0x1D past its cycle + 1 s (4 s) jumps RynthAi's own cast at once");
         }
         finally { PaceOff(); }
 

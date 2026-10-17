@@ -822,6 +822,11 @@ public sealed class MonsterRule
     public string MatchExpression { get; set; } = "";
     public int Priority { get; set; } = 1;
     public string DamageType { get; set; } = "Auto";
+    /// <summary>The kind of damage to fight with when the character uses more than one: Auto, Melee,
+    /// Missile, "War Magic" or "Void Magic" (see DamageStyles). On a monster's own rule, Auto follows
+    /// the Default row's; on the Default row, Auto is the kind of the first usable weapon in the
+    /// Items list. Off in files from before 2026-10-16.</summary>
+    public string PreferredDamage { get; set; } = "Auto";
     public int WeaponId { get; set; }
     public bool Fester { get; set; }
     public bool Broadside { get; set; }
@@ -882,6 +887,9 @@ public sealed class ItemRule
     /// "icon" (UiEffects), "rending" (an imbue), "name", "set" (picked in the Items panel), or ""
     /// (not known, or an entry from before sources were kept).</summary>
     public string ElementSource { get; set; } = "";
+    /// <summary>Display only (filled by WeaponList.ForDisplay for the Items panel, never read back):
+    /// Melee, Missile, "War Magic", "Void Magic", Shield, Ammo, or "" when the item isn't known.</summary>
+    public string Kind { get; set; } = "";
     public bool KeepBuffed { get; set; } = true;
 
     /// <summary>True when this row is a shield (off hand), not a main-hand weapon.</summary>

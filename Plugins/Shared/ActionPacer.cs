@@ -604,8 +604,19 @@ internal static class ActionPacer
     /// <summary>Past its normal cycle: turn to face the target after this, jump after this.</summary>
     public const long TurnAfterMs = 1000;
     public const long JumpAfterMs = 2000;
-    /// <summary>A 0x1D to another send breaks our open cast only once it is this old (a recoil refusal is normal).</summary>
+    /// <summary>
+    /// After a held-cast turn goes out, no jump for this long: the turn (up to ~180 deg) and the cast
+    /// it lets finish. Drakkon (2026-10-16) was turned 91 deg at 5.2 s and jumped 1 s later, while
+    /// hunting; the cast's UseDone came 0.2 s after the jump.
+    /// </summary>
+    public const long TurnGraceMs = 2500;
+    /// <summary>
+    /// A 0x1D to another send breaks our open cast only once it is this old, and RefusalPastCycleMs
+    /// past its normal cycle (a recoil refusal is normal: a follow-up heal sent as the first one
+    /// landed was refused, and the landed heal was jumped at 3.0 s, its UseDone due at 3.5 s).
+    /// </summary>
     public const long RefusalBreakMinMs = 3000;
+    public const long RefusalPastCycleMs = 1000;
     /// <summary>After the jump: landed once the height is back (and this long passed), or at the max.</summary>
     public const long JumpLandMinMs = 400;
     public const long JumpLandMaxMs = 1500;
@@ -644,6 +655,7 @@ internal static class ActionPacer
     private static BreakStage _stage;
     private static long _stageAt;
     private static PacedAction? _stageFor;
+    private static long _turnedAt;               // when the held-cast turn for _stageFor went out (0 = none)
     private static long _jumpAt;                 // 0 = not in the air after a breaker jump
     private static float _jumpZ;
     private static int _lastSeenSeq = int.MinValue;
@@ -678,6 +690,7 @@ internal static class ActionPacer
         _stage = BreakStage.None;
         _stageAt = 0;
         _stageFor = null;
+        _turnedAt = 0;
         _busyLogged.Clear();
     }
 
@@ -844,18 +857,22 @@ internal static class ActionPacer
         long cycle = NormalCycleMs(stuck.Id);
         long jumpAt = Math.Min(cycle + JumpAfterMs, StuckCastMs);
         long turnAt = Math.Min(cycle + TurnAfterMs, jumpAt);
-        long refusalBreakAt = RefusalBreakMinMs;
+        long refusalBreakAt = Math.Max(RefusalBreakMinMs, cycle + RefusalPastCycleMs);
         if (stuck.Script) { jumpAt = Math.Max(jumpAt, ScriptCastMinBreakMs); refusalBreakAt = Math.Max(refusalBreakAt, ScriptCastMinBreakMs); }
-        BreakStage stage; long stageAt; int refusals;
-        lock (Gate) { stage = _stage; stageAt = _stageAt; refusals = _busyRefusals; }
+        BreakStage stage; long stageAt; int refusals; long turnedAt;
+        lock (Gate) { stage = _stage; stageAt = _stageAt; refusals = _busyRefusals; turnedAt = ReferenceEquals(_stageFor, stuck) ? _turnedAt : 0; }
 
-        if (stage == BreakStage.None && age >= turnAt && age < jumpAt)
+        bool refusalBreak = refusals > 0 && age >= refusalBreakAt;
+        if (stage == BreakStage.None && age >= turnAt && age < jumpAt && !refusalBreak)
         {
             SetStage(BreakStage.Turned, now, stuck);
-            TurnToFace(host, stuck, age);
+            if (TurnToFace(host, stuck, age)) lock (Gate) _turnedAt = now;
             return;
         }
-        if (stage <= BreakStage.Turned && (age >= jumpAt || (refusals > 0 && age >= refusalBreakAt)))
+        // The turn gets its time before the timer's jump (StuckCastMs still caps it).
+        if (turnedAt != 0)
+            jumpAt = Math.Max(jumpAt, Math.Min(turnedAt - stuck.SentMs + TurnGraceMs, StuckCastMs));
+        if (stage <= BreakStage.Turned && (age >= jumpAt || refusalBreak))
         {
             string why = age >= jumpAt ? $"{age} ms with no answer ({cycle} ms is normal for it)" : $"a send was refused 'too busy' while it was open {age} ms";
             Jump(host, stuck, age, why, forced: false);
@@ -876,7 +893,7 @@ internal static class ActionPacer
 
     private static void SetStage(BreakStage stage, long now, PacedAction? forAction)
     {
-        lock (Gate) { _stage = stage; _stageAt = now; _stageFor = forAction; }
+        lock (Gate) { if (!ReferenceEquals(_stageFor, forAction)) _turnedAt = 0; _stage = stage; _stageAt = now; _stageFor = forAction; }
     }
 
     /// <summary>In the air after a breaker jump: hold until landed (height back, or JumpLandMaxMs).</summary>
@@ -971,17 +988,19 @@ internal static class ActionPacer
     /// Turn to face a held cast's target (once per cast), when RynthAi is not moving the character:
     /// ACE's fast-tick cast waits for the facing to come within spellcast_max_angle.
     /// </summary>
-    private static void TurnToFace(RynthCoreHost host, PacedAction stuck, long age)
+    /// <returns>True when the turn went out.</returns>
+    private static bool TurnToFace(RynthCoreHost host, PacedAction stuck, long age)
     {
         uint target = stuck.Target;
         uint player = 0;
         try { if (host.HasGetPlayerId) player = host.GetPlayerId(); } catch { }
-        if (target == 0 || target == player || !host.HasTurnToHeading || MoveAudit.OwnMovementActive) return;
-        if (!TryHeadingTo(host, target, out double want, out double off)) return;
-        if (off < 10.0) return;   // already facing it: the turn is not what holds it
-        try { host.TurnToHeading((float)want); } catch { return; }
+        if (target == 0 || target == player || !host.HasTurnToHeading || MoveAudit.OwnMovementActive) return false;
+        if (!TryHeadingTo(host, target, out double want, out double off)) return false;
+        if (off < 10.0) return false;   // already facing it: the turn is not what holds it
+        try { host.TurnToHeading((float)want); } catch { return false; }
         lock (Gate) _heldTurns++;
-        Log(host, $"[Pace] held cast: {Describe(stuck.Kind, stuck.Label)} unanswered {age} ms; turning {off:0} deg to face 0x{target:X8} (heading {want:0})");
+        Log(host, $"[Pace] held cast: {Describe(stuck.Kind, stuck.Label)} unanswered {age} ms; turning {off:0} deg to face 0x{target:X8} (heading {want:0}); no jump for {TurnGraceMs / 1000.0:0.#} s");
+        return true;
     }
 
     /// <summary>The heading to <paramref name="target"/> (AC degrees: 0 north, 90 east) and how far off the player faces.</summary>

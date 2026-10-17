@@ -4552,6 +4552,7 @@ public partial class CombatManager : IDisposable
         {
             uint pick = _damageStore.GetManualWeapon(wcid);
             if (pick == 0) { pick = _damageStore.GetDefaultWeapon(); fixedSource = "Damage tab default"; fixedIsDefault = true; }
+            if (pick != 0 && SkillTooLowFor((int)pick)) pick = 0;   // logged when it was refused
             if (pick != 0 && !listed.Any(c => c.Id == (int)pick)) { NoteUnlisted((int)pick, fixedSource); pick = 0; }
             fixedId = (int)pick;
             uint best = _damageStore.GetBestWeapon(wcid);
@@ -4576,7 +4577,15 @@ public partial class CombatManager : IDisposable
         double minGain = _settings.WeaponSwapMinGainPct > 0 && SwapHoldsAllowed(InHandWeaponId())
             ? _settings.WeaponSwapMinGainPct / 100.0 : 0;
         return WeaponPlanner.Choose(listed, ruleElement, weak, e => CanCastElement(e, rule),
-            fixedId, fixedSource, learnedId, ctype, fixedIsDefault, minGain);
+            fixedId, fixedSource, learnedId, ctype, fixedIsDefault, minGain, PreferredDamageFor(rule));
+    }
+
+    /// <summary>The preferred damage type for a fight: the rule's own, else (Auto) the Default row's.</summary>
+    internal string PreferredDamageFor(MonsterRule? rule)
+    {
+        if (rule != null && DamageStyles.Parse(rule.PreferredDamage) != DamageStyle.Auto) return rule.PreferredDamage;
+        var def = _settings.MonsterRules.Find(r => r.Name.Equals("Default", StringComparison.OrdinalIgnoreCase));
+        return def?.PreferredDamage ?? "";
     }
 
     // PropertyInt 166 SlayerCreatureType, PropertyFloat 138 SlayerDamageBonus (ACE.Entity).
@@ -4692,6 +4701,7 @@ public partial class CombatManager : IDisposable
                 continue;
             }
             if (!admitCasters && !IsUsableCombatWeapon(r.Id)) { (leftOut ??= new List<int>()).Add(r.Id); continue; }
+            if (r.Id != inHand && SkillTooLowFor(r.Id)) continue;
             if (list.Any(c => c.Id == r.Id)) continue;
             if (wo.ObjectClass == AcObjectClass.MissileWeapon && IsAmmoItem(wo)) continue;   // listed arrows are the ammo choice, never a weapon to wield
             if (IsShieldItem(wo)) continue;                                                  // listed shields are the off hand's (CombatManager.Offhand.cs)
@@ -4723,7 +4733,10 @@ public partial class CombatManager : IDisposable
             {
                 if (WorldObjectCache.IsAmmo(wo)) continue;
                 // The off hand (a dual-wielded weapon in the Shield slot) is not the weapon in hand.
-                if ((wo.Values(LongValueKey.CurrentWieldedLocation, 0) & OffhandRules.ShieldSlot) != 0) continue;
+                // CurrentWieldedLocation can read 0: the weenie's own wielder record says where it is.
+                // Drakkon dual wielding two Hand Wraps (2026-10-16) had the off-hand pair read as the
+                // weapon in hand, and the swaps went from it ("Frost Hand Wraps -> Nodachi").
+                if ((WieldedSlotOf(wo) & OffhandRules.ShieldSlot) != 0) continue;
                 bool weapon = wo.ObjectClass == AcObjectClass.MeleeWeapon
                            || wo.ObjectClass == AcObjectClass.MissileWeapon
                            || IsWandObject(wo);
@@ -4735,6 +4748,21 @@ public partial class CombatManager : IDisposable
         catch { }
         _inHandId = found;
         return found;
+    }
+
+    /// <summary>Where the player wields <paramref name="wo"/>: CurrentWieldedLocation, else the weenie's wielder record (0 = not known).</summary>
+    private int WieldedSlotOf(WorldObject wo)
+    {
+        int slot = wo.Values(LongValueKey.CurrentWieldedLocation, 0);
+        if (slot != 0 || !_host.HasGetObjectWielderInfo) return slot;
+        try
+        {
+            uint pid = _host.GetPlayerId();
+            if (pid != 0 && _host.TryGetObjectWielderInfo(unchecked((uint)wo.Id), out uint wielder, out uint loc) && wielder == pid)
+                return unchecked((int)loc);
+        }
+        catch { }
+        return 0;
     }
 
     /// <summary>The combat mode a weapon puts the character in (0 = unknown).</summary>
@@ -4795,6 +4823,40 @@ public partial class CombatManager : IDisposable
 
     // Server replies seen when the last combat wield was sent (UseDone / WeenieError sequence).
     private int _swapUseDoneSeq, _swapWeenieSeq;
+
+    // ACE's WeenieError SkillTooLow: the character can't wield the weapon (its wield requirement).
+    internal const uint SkillTooLowErr = 0x0468;
+    /// <summary>A weapon refused with SkillTooLow is left out of the choice this long (a buff or a
+    /// skill raise may let it in later).</summary>
+    internal const double SkillTooLowSkipMin = 30;
+    private readonly Dictionary<int, DateTime> _skillTooLowUntil = new();
+
+    /// <summary>
+    /// True while <paramref name="id"/> sits out a SkillTooLow refusal. Drakkon (2026-10-16) was
+    /// sent to a Nodachi he lacked the skill for whenever a monster was weak to Slash: the off hand
+    /// went into the pack for it, three wields were refused, and it began again two minutes later.
+    /// </summary>
+    internal bool SkillTooLowFor(int id)
+    {
+        if (!_skillTooLowUntil.TryGetValue(id, out DateTime until)) return false;
+        if (DateTime.Now < until) return true;
+        _skillTooLowUntil.Remove(id);
+        return false;
+    }
+
+    private void NoteSkillTooLow(int id)
+    {
+        if (id == 0) return;
+        bool first = !_skillTooLowUntil.ContainsKey(id);
+        _skillTooLowUntil[id] = DateTime.Now.AddMinutes(SkillTooLowSkipMin);
+        _planCache = null;
+        if (first)
+        {
+            string msg = $"0x{(uint)id:X8} '{WeaponName(id)}': the server says your skill is too low to wield it - left out of the weapon choice for {SkillTooLowSkipMin:0} min";
+            _host.Log($"[EquipDiag] {msg}");
+            _host.WriteToChat($"[RynthAi] {msg}.", 1);
+        }
+    }
 
     /// <summary>
     /// Asks the swap tracker about <paramref name="chosenId"/> with <paramref name="inHandId"/>
@@ -4936,10 +4998,11 @@ public partial class CombatManager : IDisposable
     {
         int pending = tracker.PendingId;
         if (pending == 0) return;
-        switch (ServerAnswerSinceSend())
+        switch (ServerAnswerSinceSend(out uint err))
         {
             case WieldAnswer.Refused:
                 tracker.Refused(now, WeaponName);
+                if (err == SkillTooLowErr && ReferenceEquals(tracker, SwapTracker)) NoteSkillTooLow(pending);
                 break;
             case WieldAnswer.Busy:
                 if (tracker.Busy(now, WeaponName))
@@ -4958,20 +5021,21 @@ public partial class CombatManager : IDisposable
     /// keeps only the last record, so the 0x1D is usually read as "error 0" (flight recorder
     /// 2026-10-15 00:44:23-31: three of these, read as no answer, cost all 3 tries).
     /// </summary>
-    private WieldAnswer ServerAnswerSinceSend()
+    private WieldAnswer ServerAnswerSinceSend(out uint err)
     {
+        err = 0;
         if (_host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out int wSeq, out uint wErr, out uint wEvt, out _)
             && wSeq != _swapWeenieSeq)
         {
             _swapWeenieSeq = wSeq;
             if (wErr == ActionPacer.TooBusyErr || (wEvt == InventorySaveFailedEvent && wErr == 0)) return WieldAnswer.Busy;
-            if (wErr != 0) return WieldAnswer.Refused;
+            if (wErr != 0) { err = wErr; return WieldAnswer.Refused; }
         }
         if (_host.HasGetLastUseDone && _host.TryGetLastUseDone(out int uSeq, out uint uErr) && uSeq != _swapUseDoneSeq)
         {
             _swapUseDoneSeq = uSeq;
             if (uErr == ActionPacer.TooBusyErr) return WieldAnswer.Busy;
-            if (uErr != 0) return WieldAnswer.Refused;
+            if (uErr != 0) { err = uErr; return WieldAnswer.Refused; }
         }
         return WieldAnswer.None;
     }
@@ -5090,7 +5154,7 @@ public partial class CombatManager : IDisposable
         // Dual wield: the chosen weapon already swings in the off hand, beside another listed
         // one-handed weapon in the main hand. Fight with both rather than moving it across.
         if (inHand != 0 && inHand != targetWeaponId
-            && (weaponObj.Values(LongValueKey.CurrentWieldedLocation, 0) & OffhandRules.ShieldSlot) != 0
+            && (WieldedSlotOf(weaponObj) & OffhandRules.ShieldSlot) != 0   // the slot can read 0: WieldedSlotOf asks the weenie
             && _worldFilter[inHand] is WorldObject mainObj && MainKindOf(mainObj) == MainHandKind.OneHandedMelee
             && _settings.ItemRules.Any(r => r.Id == inHand))
         {
