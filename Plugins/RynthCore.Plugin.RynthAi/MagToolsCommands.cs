@@ -92,14 +92,14 @@ public sealed partial class RynthAiPlugin
                 if (Host.HasInvokeChatParser) Host.InvokeChatParser("/rc quit");
                 return true;
 
-            // ── Send a chat line / slash command (VTank /mt send) ────────────
+            // ── Keys in the game window (Mag-Tools /mt send); a "/" line is still sent as a command ──
             case "send":
-                if (parts.Length >= 3 && Host.HasInvokeChatParser)
-                    Host.InvokeChatParser(string.Join(" ", parts, 2, parts.Length - 2));
-                return true;
+                return HandleMtSend(parts, fullCommand);
 
             default:
-                return false;
+                // jump, trade, vendor, autopack, dumpspells, click, get xy, movement, client, config,
+                // strafe, test (MagToolsCommands.Extra.cs).
+                return TryHandleMtExtra(cmd, parts, fullCommand);
         }
     }
 

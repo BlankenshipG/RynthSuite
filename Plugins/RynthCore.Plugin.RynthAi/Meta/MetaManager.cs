@@ -1171,6 +1171,39 @@ internal sealed class MetaManager
             return true;
         }
 
+        // /vt e — VTank's macro toggle (ub-IT sends it to switch VTank on or off).
+        if (sub == "e")
+        {
+            _raCommandHandler?.Invoke(_settings.IsMacroRunning ? "/ra stop" : "/ra start");
+            return true;
+        }
+
+        // /vt jump [heading] [shift true|false] [holdms] — VTank's jump (universalremote.met, ub-IT):
+        // RynthAi's jumper through /ra jump[s] [heading] [holdtime].
+        if (sub == "jump")
+        {
+            string heading = parts.Length >= 3 ? parts[2] : "";
+            bool shift = parts.Length >= 4 && (parts[3].Equals("true", StringComparison.OrdinalIgnoreCase) || parts[3] == "1");
+            string hold = parts.Length >= 5 ? parts[4] : "";
+            _raCommandHandler?.Invoke(("/ra jump" + (shift ? "s" : "") + " " + heading + " " + hold).Trim());
+            return true;
+        }
+
+        // /vt tapjump — a quick jump with no charge.
+        if (sub == "tapjump")
+        {
+            if (!(_host.HasTapJump && _host.TapJump()))
+                _host.WriteToChat("[RynthAi] /vt tapjump: the engine's jump isn't available.", 1);
+            return true;
+        }
+
+        // /vt equipitemsfor <monster> — wield what that monster's rule names (weapon, off hand).
+        if (sub == "equipitemsfor" && parts.Length >= 3)
+        {
+            _raCommandHandler?.Invoke("/ra equipfor " + string.Join(" ", parts, 2, parts.Length - 2));
+            return true;
+        }
+
         // /vt meta load <name> — the same load as /ra meta load (LegacyDashboardRenderer.LoadMetaByName):
         // a meta in MetaFiles, or, when there is none by that name, a new blank one (2026-10-13).
         if (sub == "meta" && parts.Length >= 4 &&
@@ -1193,8 +1226,8 @@ internal sealed class MetaManager
             return true;
         }
 
-        // /vt loot load <name> — load a loot profile
-        if ((sub == "loot" || sub == "lootprofile") && parts.Length >= 4 &&
+        // /vt loot load <name> — load a loot profile ("looting load" too: FoundryIzexi.met, Meta_Society.met)
+        if ((sub == "loot" || sub == "lootprofile" || sub == "looting") && parts.Length >= 4 &&
             parts[2].Equals("load", StringComparison.OrdinalIgnoreCase))
         {
             string name = string.Join(" ", parts, 3, parts.Length - 3).Trim().Trim('"');
@@ -1231,8 +1264,20 @@ internal sealed class MetaManager
             return true;
         }
 
-        // /vt settings load / loadchar — ignore silently
-        if (sub == "settings") return true;
+        // /vt settings loadchar|savechar <name> — RynthAi's settings profiles (/ra settings ...);
+        // universalremote.met switches profiles this way. Any other /vt settings verb is ignored.
+        if (sub == "settings")
+        {
+            if (parts.Length >= 4 && (parts[2].Equals("loadchar", StringComparison.OrdinalIgnoreCase)
+                                      || parts[2].Equals("savechar", StringComparison.OrdinalIgnoreCase)))
+                _raCommandHandler?.Invoke($"/ra settings {parts[2].ToLowerInvariant()} {string.Join(" ", parts, 3, parts.Length - 3)}");
+            return true;
+        }
+
+        // /vt <option> <value> — an option written as a verb (DerethExploration: "/vt navclosestoprange
+        // 0.005"): the same as /vt opt set, for the VTank options RynthAi maps.
+        if (parts.Length == 3 && (VtOptionMap.ContainsKey(sub) || IsSpecialVtOption(sub)))
+            return TrySetVtOption(sub, parts[2]);
 
         // /vt <verb> aliases → existing /ra handlers (Phase 1.3 VTank-meta migration).
         // Re-dispatch through the /ra path (_raCommandHandler → HandleRaCommand).
@@ -1351,11 +1396,103 @@ internal sealed class MetaManager
         // converts it into FollowNavMin, the nav point reach (see ExpressionEngine).
         ["navclosestoprange"]         = "NavCloseStopRange",
         ["follownavmin"]              = "FollowNavMin",             // RynthAi's own name, yards
+        // 2026-10-17: options the metas in MetaFiles / MetaProfiles set that had no mapping.
+        ["navclosetoprange"]          = "NavCloseStopRange",        // the same option, misspelt in some metas
+        ["attackrange"]               = "MonsterRange",
+        ["ringdistance"]              = "RingRange",
+        ["minimumringtargets"]        = "MinRingTargets",
+        ["corpseapproachrange"]       = "CorpseApproachRangeMax",
+        ["corpseapproachrange-max"]   = "CorpseApproachRangeMax",
+        ["corpseapproachrange-min"]   = "CorpseApproachRangeMin",
+    };
+
+    /// <summary>VTank options given in landblock units (x240 = yards) whose RynthAi setting is yards.
+    /// NavCloseStopRange converts itself (the settings map takes landblock units).</summary>
+    private static readonly HashSet<string> VtDistanceOptions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "attackdistance", "attackrange", "approachdistance", "dooropenrange", "opendoorrange", "ringdistance",
+        "corpseapproachrange", "corpseapproachrange-max", "corpseapproachrange-min",
+    };
+
+    /// <summary>RynthAi distance settings kept in whole yards (their setter refuses a decimal).</summary>
+    private static readonly HashSet<string> IntYardSettings = new(StringComparer.Ordinal)
+    {
+        "MonsterRange", "ApproachRange", "RingRange",
+    };
+
+    /// <summary>
+    /// A VTank distance as RynthAi yards: a value up to 1 is landblock units (x240; VTank's own
+    /// unit), a larger one is taken as yards already (typed by hand). Invariant culture.
+    /// </summary>
+    internal static string VtDistanceToYards(string value, bool wholeYards)
+    {
+        if (!double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double v))
+            return value;   // not a number (an unexpanded expression): left for the setter to refuse
+        double yards = v > 0 && v <= 1.0 ? v * 240.0 : v;
+        return wholeYards
+            ? Math.Max(0, (int)Math.Round(yards)).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : yards.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>VTank options handled by <see cref="TrySetSpecialVtOption"/> (no 1:1 RynthAi setting).</summary>
+    private static bool IsSpecialVtOption(string vtName) => vtName.ToLowerInvariant() is
+        "defaultmeleeattackheight" or "lootfellowcorpses" or "lootallcorpses" or "usearcs" or "minimumhealkitsuccesschance";
+
+    /// <summary>
+    /// The VTank options whose value means something else in RynthAi:
+    /// DefaultMeleeAttackHeight 1-3 (low/medium/high) is RynthAi's 0-2; LootFellowCorpses /
+    /// LootAllCorpses pick the loot-ownership mode (my kills / fellowship / all); UseArcs is a VTank
+    /// mode number (2, 3 in the metas) for RynthAi's on/off; MinimumHealKitSuccessChance is a
+    /// percent (a fraction up to 1 is scaled). False when <paramref name="vtName"/> isn't one of them.
+    /// </summary>
+    private bool TrySetSpecialVtOption(string vtName, string value)
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        bool num = double.TryParse(value, System.Globalization.NumberStyles.Float, inv, out double n);
+        switch (vtName.ToLowerInvariant())
+        {
+            case "defaultmeleeattackheight":
+                if (!num) return true;
+                _settings.MeleeAttackHeight = Math.Clamp((int)Math.Round(n) - 1, 0, 2);
+                return true;
+            case "lootfellowcorpses":
+                if (!num) return true;
+                if (n != 0 && _settings.LootOwnership < 1) _settings.LootOwnership = 1;
+                else if (n == 0 && _settings.LootOwnership == 1) _settings.LootOwnership = 0;
+                return true;
+            case "lootallcorpses":
+                if (!num) return true;
+                if (n != 0) _settings.LootOwnership = 2;
+                else if (_settings.LootOwnership == 2) _settings.LootOwnership = 0;
+                return true;
+            case "usearcs":
+                if (!num) return true;
+                _settings.UseArcs = n != 0;
+                return true;
+            case "minimumhealkitsuccesschance":
+                if (!num) return true;
+                _settings.KitMinSuccessPct = Math.Clamp((int)Math.Round(n > 0 && n <= 1 ? n * 100 : n), 0, 100);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>The special options as VTank reads them back (height 1-3, ownership as two flags).</summary>
+    private string? GetSpecialVtOption(string vtName) => vtName.ToLowerInvariant() switch
+    {
+        "defaultmeleeattackheight" => (_settings.MeleeAttackHeight + 1).ToString(System.Globalization.CultureInfo.InvariantCulture),
+        "lootfellowcorpses" => _settings.LootOwnership >= 1 ? "true" : "false",
+        "lootallcorpses" => _settings.LootOwnership == 2 ? "true" : "false",
+        "usearcs" => _settings.UseArcs ? "true" : "false",
+        "minimumhealkitsuccesschance" => _settings.KitMinSuccessPct.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        _ => null,
     };
 
     /// <summary>A VTank option's current value (mapped setting, else a stored generic option).</summary>
     private string? GetVtOption(string vtName)
     {
+        if (GetSpecialVtOption(vtName) is string special) return special;
         var map = Expressions.BuildSettingsMapPublic();
         if (VtOptionMap.TryGetValue(vtName, out string? raName))
         {
@@ -1371,6 +1508,15 @@ internal sealed class MetaManager
     {
         // Translate VTank bool strings to numeric
         string value = NormalizeVtValue(vtValue);
+
+        // Options whose value means something else in RynthAi (a scale, an offset, a mode).
+        if (TrySetSpecialVtOption(vtName, value)) return true;
+
+        // VTank distances are in landblock units (1 = 240 yd: AttackDistance .01666 is 4 yd); RynthAi's
+        // are yards. Converted here, rounded where RynthAi keeps whole yards (an int setting refused
+        // "0.01666" outright, so every meta's attack / approach distance was dropped).
+        if (VtDistanceOptions.Contains(vtName) && VtOptionMap.TryGetValue(vtName, out string? distName))
+            value = VtDistanceToYards(value, IntYardSettings.Contains(distName));
 
         var map = Expressions.BuildSettingsMapPublic();
         if (VtOptionMap.TryGetValue(vtName, out string? raName))
