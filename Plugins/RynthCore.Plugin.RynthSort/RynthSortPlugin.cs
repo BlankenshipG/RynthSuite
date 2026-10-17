@@ -30,7 +30,7 @@ namespace RynthCore.Plugin.RynthSort;
 /// </summary>
 public sealed class RynthSortPlugin : RynthPluginBase
 {
-    public const string Version = "0.3.1";
+    public const string Version = "0.3.2";
     private const long IdentityRetryMs = 1000;
     private const long SaveDelayMs = 750;
     private const long PassIntervalMs = 500;
@@ -77,9 +77,11 @@ public sealed class RynthSortPlugin : RynthPluginBase
             Warnings = () => _warnings,
             Character = () => _identityKnown ? _character : string.Empty,
         };
+        // No bar button of its own: open from Inventory's Sort button, Scripts menu, or /rsort.
         _window = _ui.Add(new UiWindow("RynthSort/Main", "RynthSort")
         {
             DefaultWidth = 360f, DefaultHeight = 420f, MinWidth = 300f, MinHeight = 200f,
+            BarButton = false,
         });
         Host.Log($"[RynthSort] {Version} initialized. /rsort shows or hides the window; /rsort on|off|now|tidy|clean|unpack. Files: {_store.Root}");
         return 0;

@@ -225,14 +225,6 @@ internal sealed class LegacyAdvancedSettingsUi
         catch { return false; }
     }
 
-    /// <summary>One cell of the Protections and Banes grid: ticked = cast it.</summary>
-    private void BuffToggle((string Buff, string Label) toggle)
-    {
-        bool on = !_settings.IsBuffDisabled(toggle.Buff);
-        if (ImGui.Checkbox($"{toggle.Label}##buff_{toggle.Buff}", ref on))
-            _settings.SetBuffEnabled(toggle.Buff, on);
-    }
-
     /// <summary>
     /// One loot timer: the input, then "baseline" when it matches LootBaseline, or "baseline N" when
     /// it doesn't (hover for what the timer does).
@@ -962,30 +954,8 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.SameLine();
                 if (ImGui.Button("Cancel##cancelBuff") && _cancelBuff != null) _cancelBuff();
 
-                ImGui.Spacing();
-                ImGui.Separator();
-                ImGui.Text("Protections and Banes");
-                if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip(
-                        "Untick a protection or bane to stop the bot casting it.\n" +
-                        "Unticked buffs are skipped and never hold the bot in Buffing.\n" +
-                        "All on by default.");
-                if (ImGui.BeginTable("##protsBanes", 2, ImGuiTableFlags.SizingStretchSame))
-                {
-                    ImGui.TableSetupColumn("Protections");
-                    ImGui.TableSetupColumn("Banes");
-                    ImGui.TableHeadersRow();
-                    int rows = Math.Max(BuffManager.ToggleProtections.Length, BuffManager.ToggleBanes.Length);
-                    for (int i = 0; i < rows; i++)
-                    {
-                        ImGui.TableNextRow();
-                        ImGui.TableSetColumnIndex(0);
-                        if (i < BuffManager.ToggleProtections.Length) BuffToggle(BuffManager.ToggleProtections[i]);
-                        ImGui.TableSetColumnIndex(1);
-                        if (i < BuffManager.ToggleBanes.Length) BuffToggle(BuffManager.ToggleBanes[i]);
-                    }
-                    ImGui.EndTable();
-                }
+                // Protections and Banes grid removed: spell buff profiles (Spells window) own
+                // which prots/banes to cast. DisabledBuffs still loads for old profiles.
 
                 ImGui.Spacing();
                 ImGui.Separator();

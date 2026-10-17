@@ -19,8 +19,8 @@ namespace RynthCore.Plugin.RynthOracle;
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.2.5.
-    // Previous release: 0.2.8.
-    public const string Version = "0.3.3";
+    // Previous release: 0.3.3.
+    public const string Version = "0.3.4";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -63,6 +63,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.RequestQuests = RequestQuests;
         _c.Send = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
         _c.RunCommand = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
+        // SkillsFace embed: engine /rc oracle-skills bridge (works logged out too for tab prep).
+        _c.SkillsEmbedChanged = tab =>
+            Host.InvokeChatParser(tab < 0 ? "/rc oracle-skills off" : $"/rc oracle-skills {tab}");
         _c.ToggleCharm = ToggleCharm;
         _c.BreedingCommand = BreedingCommand;
         _ui.Log = msg => Host.Log(msg);
@@ -376,6 +379,21 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 // RynthAi, RynthILT and RynthCore's menus link here; it shows, never toggles off.
                 ShowTab(OracleView.TabCharacter);
                 break;
+            case "skills":
+            case "skill":
+                // Engine SkillsFace body (raise/train) embedded under Oracle.
+                ShowTab(OracleView.TabSkills);
+                break;
+            case "attrs":
+            case "attributes":
+            case "vitals":
+                ShowTab(OracleView.TabAttributes);
+                break;
+            case "progress":
+            case "progression":
+                // ILT progression planners (was Skills → Progression).
+                ShowTab(OracleView.TabProgress);
+                break;
             case "breeding":
             case "breed":
             case "pets":
@@ -397,13 +415,15 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 ShowTab(OracleView.TabAbout);
                 break;
             default:
-                _c.Print("Commands: /ro (window), /ro character (Character tab: status, session, charms), /ro void (Void window), "
+                _c.Print("Commands: /ro (window), /ro character (Character tab: status, session, charms), "
+                         + "/ro skills|attrs|progress (raise/train and ILT planners), /ro void (Void window), "
                          + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), /ro breeding (Pet Breeding tab, Infinite Leaftide), "
                          + "/ro quests (read quest flags), /ro status, "
                          + "/ro about (About tab: settings, server features)");
                 break;
         }
         if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char" or "charms" or "charm"
+                or "skills" or "skill" or "attrs" or "attributes" or "vitals" or "progress" or "progression"
                 or "breeding" or "breed" or "pets" or "about" or "features" && !Host.HasUi && !_noUiLogged)
         {
             _noUiLogged = true;

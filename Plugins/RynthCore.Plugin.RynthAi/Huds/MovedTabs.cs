@@ -3,8 +3,8 @@
 // RynthILT's Character, Charms and Banking tabs left the Mini Remote:
 //   Character, Charms -> RynthOracle's Character tab ("/ro character"): the character, its
 //                        session and the ILT charms list (fed by "RynthILT.Data");
-//   Banking           -> RynthInventory's Global Inventory "Banking" tab ("/ginv bank"): every
-//                        character's bank on this server.
+//   Banking           -> RynthInventory's Global Inventory ("/ginv bank"): every character's
+//                        saved packs and storage (including banks when Include Storage is on).
 // RynthCore's Mini Remote "Char" section is "Session Stats" now (RynthAi's session stats), and a
 // server is forced only in RynthCore Options > Diagnostics ("/rc diagnostics").
 // Old saved tab ids, links and "/ra hub open|tab <name>" land on the new home through CommandFor.
@@ -22,8 +22,11 @@ internal static class MovedTabs
     /// <summary>RynthOracle's Pet Breeding tab (Infinite Leaftide; the same tracker as the Pets tab's Breeding sub-tab).</summary>
     public const string OracleBreeding = "/ro breeding";
 
-    /// <summary>RynthInventory's Global Inventory "Banking" tab.</summary>
+    /// <summary>RynthInventory's Global Inventory (alias used by the old Banking tab).</summary>
     public const string GlobalBank = "/ginv bank";
+
+    /// <summary>RynthInventory's Global Inventory window.</summary>
+    public const string GlobalInventory = "/ginv";
 
     /// <summary>RynthCore Options > Diagnostics (the server picker; RynthCore 2026.10.5.54+).</summary>
     public const string Diagnostics = "/rc diagnostics";
@@ -47,7 +50,7 @@ internal static class MovedTabs
     {
         OracleCharacter => "RynthOracle's Character tab",
         OracleBreeding => "RynthOracle's Pet Breeding tab",
-        GlobalBank => "Global Inventory > Banking",
+        GlobalBank or GlobalInventory => "Global Inventory",
         _ => command,
     };
 }

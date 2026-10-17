@@ -13,7 +13,7 @@
 // Quests are RynthOracle's (since 2026-10-13), and RynthILT draws its ILT session extras and /fship
 // views itself (its own manifest), so neither is listed here. RynthILT's Character, Charms and
 // Banking tabs moved out on 2026-10-13 (MovedTabs.cs): RynthOracle's Character tab and
-// RynthInventory's Global Inventory "Banking" tab.
+// RynthInventory's Global Inventory (/ginv bank).
 // Each view is a surface "section:<name>" RynthCore draws through RynthPluginRenderEmbed. An ILT
 // view whose feature the server hasn't reported is listed but not enabled, with a note.
 //

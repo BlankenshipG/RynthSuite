@@ -965,11 +965,16 @@ internal sealed class MiniRemoteHud
             // The character, its session and charms are RynthOracle's Character tab (2026-10-13).
             if (ImGui.MenuItem("Character##mrcharacter", MovedTabs.OracleCharacter)) _hud.RunEngineCommand(MovedTabs.OracleCharacter);
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Character tab: the character, this session and the ILT charms list.");
-            // Every character's bank on this server: RynthInventory's Global Inventory (ILT's /bank).
+            // Every character's saved packs / storage: RynthInventory's Global Inventory.
+            // On ILT the old "Banking" label still opens the same window (/ginv bank).
+            if (ImGui.MenuItem("Global Inventory##mrginv", MovedTabs.GlobalInventory))
+                _hud.RunEngineCommand(MovedTabs.GlobalInventory);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Global Inventory (/ginv): every character's saved packs and storage.");
             if (IltActive(_hud.Remote()))
             {
                 if (ImGui.MenuItem("Banking##mrbanking", MovedTabs.GlobalBank)) _hud.RunEngineCommand(MovedTabs.GlobalBank);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Global Inventory > Banking: every character's bank on this server, deposits, withdrawals and transfers.");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Global Inventory (/ginv bank): every character's saved packs and storage (banks when Include Storage is on).");
                 // ILT pet breeding: RynthOracle's tab, fed by RynthILT (the Pets tab's Breeding sub-tab is the same tracker).
                 if (ImGui.MenuItem("Pet Breeding##mrbreeding", MovedTabs.OracleBreeding)) _hud.RunEngineCommand(MovedTabs.OracleBreeding);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Pet Breeding tab: essences ready to breed, rest and charge timers, growth, boosters, supplies and this server's breeding rules.");
@@ -980,11 +985,20 @@ internal sealed class MiniRemoteHud
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Quest Timers window: your tracked quests and the time left on each.");
             if (ImGui.MenuItem("Fellowship##mrfellow", "/ro fellowship")) _hud.RunEngineCommand("/ro fellowship");
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Fellowship tab: members, levels, XP sharing, and ILT's /fship buttons on Infinite Leaftide.");
-            if (ImGui.MenuItem("Skills##mrskills", "/rc skills")) _hud.RunEngineCommand("/rc skills toggle");
+            // Skills live under RynthOracle (Skills / Attributes / Progress tabs).
+            if (ImGui.MenuItem("Skills##mrskills", "/ro skills")) _hud.RunEngineCommand("/ro skills");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Skills tab: raise and train skills.");
+            if (ImGui.MenuItem("Attributes##mrattrs", "/ro attrs")) _hud.RunEngineCommand("/ro attrs");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Attributes tab: attributes and vitals.");
+            if (ImGui.MenuItem("Progress##mrprogress", "/ro progress")) _hud.RunEngineCommand("/ro progress");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Progress tab: ILT progression planners.");
             if (ImGui.MenuItem("Inventory##mrinv", "/rc inventory")) _hud.RunEngineCommand("/rc inventory");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("This character's packs (Inventory panel). Count / GInv buttons there open Item Count and Global Inventory.");
             if (ImGui.MenuItem("Item Count##mritemcount", "/rc itemcount")) _hud.RunEngineCommand("/rc itemcount");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Item Count panel (/rc itemcount): how many of each named item you carry. Distinct from the floating pack item count HUD.");
         }
         if (ImGui.MenuItem("Inventory HUDs setup...##mrsetup")) s.ShowSetup = true;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Show / hide the floating pack item count HUD and the Mini Remote (/ra huds).");
     }
 
     /// <summary>
@@ -1018,7 +1032,7 @@ internal sealed class MiniRemoteHud
                 // (with the retired Quests tab, now RynthOracle's).
                 if (tab != null && (MiniRemoteTabs.Parse(tab) != null || tab.Equals("quests", StringComparison.OrdinalIgnoreCase))) continue;
                 // Character / Charms / Banking (an older RynthCore still lists them) moved out: they are
-                // under Character above (RynthOracle's Character tab, Global Inventory > Banking).
+                // under Character above (RynthOracle's Character tab, Global Inventory).
                 if (tab != null && MovedTabs.CommandFor(tab) != null) continue;
                 bool enabled = tab == null || TabAvailable(remote, tab);
                 if (ImGui.MenuItem(item.Label + "##mrsrv_" + g.Id, item.Command, false, enabled))

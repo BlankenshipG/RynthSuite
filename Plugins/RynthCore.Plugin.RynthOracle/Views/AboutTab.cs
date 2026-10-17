@@ -66,6 +66,11 @@ internal sealed partial class OracleView
         w.SeparatorText("Commands");
         w.BulletText("/ro  open or close this window");
         w.BulletText("/ro character  the Character tab (status, session, charms)");
+        w.BulletText("/ro skills  raise and train skills");
+        w.BulletText("/ro attrs  attributes and vitals");
+        w.BulletText("/ro progress  ILT progression planners");
+        w.BulletText("/ro timers  open or close the Quest Timers window");
+        w.BulletText("/ro fellowship  the Fellowship tab");
         w.BulletText("/ro about  this tab (settings, server features)");
         w.BulletText("/ro void  open or close the Void window");
         w.BulletText("/ro quests  read your quest flags now");
