@@ -96,6 +96,8 @@ public sealed partial class RynthAiPlugin
             {
                 Log("[RynthAi] Died — holding all actions until respawned and out of portal space.");
                 _combatManager?.ReleaseHeldTurn();
+                // A Handler-ring run-away holds autorun: never carry it through the death portal.
+                _combatManager?.StopRingEscape("died");
                 _navigationEngine?.Stop();
                 RynthCore.Plugin.Shared.ActionPacer.Forget("death");   // the server dropped whatever was open
                 _buffManager?.CancelPendingRecall("death");                // no /lifestone or macro restart after the respawn
