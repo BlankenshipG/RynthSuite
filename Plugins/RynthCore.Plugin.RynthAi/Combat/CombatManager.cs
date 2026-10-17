@@ -1885,14 +1885,24 @@ public partial class CombatManager : IDisposable
     /// <summary>Test seam: one judged magic cast with no damage.</summary>
     internal void MagicMissForTest(int tid) => NoteMagicMissForResync(tid);
 
-    // ── Empyrean Handler lethal-ring evade (chat-triggered back-jump) ─────────
+    // ── Empyrean Handler / Chaser lethal-ring evade (chat-triggered run-away) ──
     // ACECustom Handler emote: "The handler briefly channels infused Empyrean hatred
     // to release a lethal ring." The ring can't be melee-evaded — if the character is
     // inside its cast radius they die. On that line, when still in range of a Handler,
     // cancel the current swing/cast and back-jump away, then resume combat (target kept).
     private const string HandlerRingChannelHint = "channels infused Empyrean hatred to release a lethal ring";
     private const string HandlerRingChannelStart = "The handler briefly channels";
-    private const string HandlerNameHint = "Empyrean Handler";
+    // 2026-10-17: Empyrean Chasers cast the same lethal ring. Their emote isn't in any log yet, so
+    // the line is matched loosely: "The handler ..." / "The chaser ..." naming a lethal ring, or
+    // (any non-speech line) the ring phrase itself. The emote heard is logged once per session.
+    private const string RingReleaseHint = "release a lethal ring";
+    /// <summary>The ring casters: the monster name and the word their emote starts with ("The handler").</summary>
+    private static readonly (string Name, string Subject)[] RingCasters =
+    {
+        ("Empyrean Handler", "handler"),
+        ("Empyrean Chaser", "chaser"),
+    };
+    private bool _ringLineLogged;
     /// <summary>Yards: Handler lethal ring is treated as at least this wide (RingRange when larger).</summary>
     internal const double HandlerRingDangerYards = 12.0;
     /// <summary>Back-jump charge (ms) — run-back + jump must clear ~ring radius.</summary>
@@ -1948,10 +1958,20 @@ public partial class CombatManager : IDisposable
         // Handler channel is an Emote (0x0C). ChatSource.IsPlayerAuthored treats Emote as
         // player speech, which would skip every real Handler line — anchor on the unique
         // phrase starting the line instead (player copies are "Name says, \"...\").
-        bool anchored =
-            RynthCore.Plugin.Shared.ChatSource.StartsWithMarker(text, HandlerRingChannelStart, StringComparison.OrdinalIgnoreCase)
-            || (RynthCore.Plugin.Shared.ChatSource.StartsWithMarker(text, "The handler", StringComparison.OrdinalIgnoreCase)
-                && text.IndexOf(HandlerRingChannelHint, StringComparison.OrdinalIgnoreCase) >= 0);
+        bool mentionsRing = text.IndexOf(HandlerRingChannelHint, StringComparison.OrdinalIgnoreCase) >= 0
+                            || text.IndexOf(RingReleaseHint, StringComparison.OrdinalIgnoreCase) >= 0;
+        if (!mentionsRing) return;
+
+        // Which caster the emote names ("The handler ..." / "The chaser ..."), or null.
+        string? subject = null;
+        foreach ((string _, string word) in RingCasters)
+            if (RynthCore.Plugin.Shared.ChatSource.StartsWithMarker(text, "The " + word, StringComparison.OrdinalIgnoreCase))
+            {
+                subject = word;
+                break;
+            }
+        bool anchored = subject != null
+            || RynthCore.Plugin.Shared.ChatSource.StartsWithMarker(text, HandlerRingChannelStart, StringComparison.OrdinalIgnoreCase);
         if (!anchored)
         {
             // Mid-line only when the type is clearly not player speech (some clients strip "The ").
@@ -1963,10 +1983,17 @@ public partial class CombatManager : IDisposable
                 or RynthCore.Plugin.Shared.ChatSource.Allegiance
                 or RynthCore.Plugin.Shared.ChatSource.Fellowship)
                 return;
-            if (text.IndexOf(HandlerRingChannelHint, StringComparison.OrdinalIgnoreCase) < 0) return;
             if (text.IndexOf(" says,", StringComparison.OrdinalIgnoreCase) >= 0
                 || text.IndexOf(" tells you,", StringComparison.OrdinalIgnoreCase) >= 0)
                 return;
+        }
+
+        // The wording that triggered, once per session (the Chaser's emote wasn't known when this
+        // was written; the log shows it the first time one is heard).
+        if (!_ringLineLogged)
+        {
+            _ringLineLogged = true;
+            _host.Log($"[CombatEvade] lethal-ring line heard (type 0x{chatType:X2}): \"{text.Trim()}\"");
         }
 
         DateTime now = DateTime.Now;
@@ -1974,16 +2001,16 @@ public partial class CombatManager : IDisposable
             && (now - _handlerRingEvadeAt).TotalMilliseconds < HandlerRingEvadeCooldownMs)
             return;
 
-        if (!TryFindHandlerForRingEvade(out int handlerId, out double dist, out string name))
+        if (!TryFindHandlerForRingEvade(subject, out int handlerId, out double dist, out string name))
         {
-            _host.Log("[CombatEvade] Handler lethal-ring channel heard, but no Empyrean Handler is nearby — no jump.");
+            _host.Log("[CombatEvade] Lethal-ring channel heard, but no Empyrean Handler or Chaser is nearby — no evade.");
             return;
         }
 
         double danger = Math.Max(HandlerRingDangerYards, Math.Max(1, _settings.RingRange));
         if (dist > danger)
         {
-            _host.Log($"[CombatEvade] Handler lethal-ring channel; '{name}' at {dist:0.0} m (outside {danger:0.#} m) — staying put.");
+            _host.Log($"[CombatEvade] Lethal-ring channel; '{name}' at {dist:0.0} m (outside {danger:0.#} m) — staying put.");
             return;
         }
 
@@ -2016,7 +2043,7 @@ public partial class CombatManager : IDisposable
             _ringRunAt = running ? now : DateTime.MinValue;
             _ringTurnAt = _ringTickAt = now;
             _handlerRingEvadeUntil = DateTime.MinValue;
-            _host.Log($"[CombatEvade] Empyrean Handler lethal ring — running away from '{name}' at {dist:0.0} m " +
+            _host.Log($"[CombatEvade] Lethal ring — running away from '{name}' at {dist:0.0} m " +
                       $"(ring {danger:0.#} m, stop at {_ringSafeYards:0.#} m), heading {away:0}°" +
                       (running ? "." : " (autorun refused; holding and re-trying)."));
             return;
@@ -2033,14 +2060,14 @@ public partial class CombatManager : IDisposable
         if (started)
         {
             _handlerRingJumpStarted = true;
-            _host.Log($"[CombatEvade] Empyrean Handler lethal ring — back-jump away from '{name}' " +
+            _host.Log($"[CombatEvade] Lethal ring — back-jump away from '{name}' " +
                       $"at {dist:0.0} m (danger {danger:0.#} m), face {faceHandler:0}° then xs.");
         }
         else
         {
             _handlerRingEvadeUntil = DateTime.MinValue;
             _handlerRingEvadeId = 0;
-            _host.Log("[CombatEvade] Empyrean Handler lethal ring heard in range, but the back-jump did not start.");
+            _host.Log("[CombatEvade] Lethal ring heard in range, but the back-jump did not start.");
         }
     }
 
@@ -2061,7 +2088,7 @@ public partial class CombatManager : IDisposable
             _handlerRingEvadeUntil = DateTime.MinValue;
             _handlerRingEvadeId = 0;
             _handlerRingJumpStarted = false;
-            _host.Log("[CombatEvade] Handler ring evade done — re-engaging.");
+            _host.Log("[CombatEvade] Ring evade done — re-engaging.");
             return false;
         }
 
@@ -2075,7 +2102,7 @@ public partial class CombatManager : IDisposable
         _handlerRingEvadeUntil = DateTime.MinValue;
         _handlerRingEvadeId = 0;
         _handlerRingJumpStarted = false;
-        _host.Log("[CombatEvade] Handler ring evade done — re-engaging.");
+        _host.Log("[CombatEvade] Ring evade done — re-engaging.");
         return false;
     }
 
@@ -2096,7 +2123,7 @@ public partial class CombatManager : IDisposable
 
         if (_ringRunning)
         {
-            string? stopWhy = gone ? "the Handler is gone"
+            string? stopWhy = gone ? "the caster is gone"
                 : d >= _ringSafeYards ? "outside the ring"
                 : elapsed >= HandlerRingRunMaxMs ? "run timed out"
                 : null;
@@ -2105,8 +2132,8 @@ public partial class CombatManager : IDisposable
                 _host.SetAutoRunBy(RingEscapeSource, false);
                 _ringRunning = false;
                 _ringRunAt = DateTime.MinValue;
-                _host.Log($"[CombatEvade] Handler ring run stopped after {elapsed:0} ms: {stopWhy}" +
-                          (gone ? "." : $" ({d:0.0} m from the Handler)."));
+                _host.Log($"[CombatEvade] Ring run stopped after {elapsed:0} ms: {stopWhy}" +
+                          (gone ? "." : $" ({d:0.0} m from the caster)."));
             }
         }
         else if (!gone && d < _ringDanger && elapsed < HandlerRingHoldMinMs)
@@ -2114,7 +2141,7 @@ public partial class CombatManager : IDisposable
             // Holding, but the Handler came back inside the ring before it went off: run again.
             _ringRunning = true;
             _ringTurnAt = _ringRunAt = DateTime.MinValue;
-            _host.Log($"[CombatEvade] Handler back inside the ring ({d:0.0} m) — running again.");
+            _host.Log($"[CombatEvade] Caster back inside the ring ({d:0.0} m) — running again.");
         }
 
         if (_ringRunning)
@@ -2143,7 +2170,7 @@ public partial class CombatManager : IDisposable
         }
 
         EndRingRun();
-        _host.Log($"[CombatEvade] Handler ring evade done after {elapsed:0} ms" +
+        _host.Log($"[CombatEvade] Ring evade done after {elapsed:0} ms" +
                   (gone ? "." : $" ({d:0.0} m away) — re-engaging."));
         return false;
     }
@@ -2163,7 +2190,7 @@ public partial class CombatManager : IDisposable
     {
         if (!_ringRunActive) return;
         EndRingRun();
-        _host.Log($"[CombatEvade] Handler ring escape stopped: {why}.");
+        _host.Log($"[CombatEvade] Ring escape stopped: {why}.");
     }
 
     /// <summary>Pump-thread orphan watch: Think drives the run; when it stops (death, another
@@ -2177,24 +2204,38 @@ public partial class CombatManager : IDisposable
             StopRingEscape("combat stopped driving it");
     }
 
-    /// <summary>Nearest Empyrean Handler (active target preferred when it is one).</summary>
-    private bool TryFindHandlerForRingEvade(out int handlerId, out double dist, out string name)
+    /// <summary>
+    /// The nearest ring caster (Empyrean Handler or Chaser). When the emote named one ("The chaser
+    /// ..."), the nearest of that kind is taken if there is one in range of the scan; otherwise the
+    /// nearest of either kind.
+    /// </summary>
+    private bool TryFindHandlerForRingEvade(string? subject, out int handlerId, out double dist, out string name)
     {
         handlerId = 0; dist = double.MaxValue; name = "";
         int me = _host.GetPlayerId() == 0 ? 0 : (int)_host.GetPlayerId();
         if (me == 0) return false;
 
-        int bestId = 0;
-        double bestDist = double.MaxValue;
-        string bestName = "";
+        string? preferred = null;
+        if (subject != null)
+            foreach ((string n, string word) in RingCasters)
+                if (word == subject) preferred = n;
+
+        int bestId = 0, prefId = 0;
+        double bestDist = double.MaxValue, prefDist = double.MaxValue;
+        string bestName = "", prefName = "";
 
         void Consider(int id, string? nm)
         {
             if (id == 0 || string.IsNullOrEmpty(nm)) return;
-            if (nm.IndexOf(HandlerNameHint, StringComparison.OrdinalIgnoreCase) < 0) return;
+            bool caster = false;
+            foreach ((string n, string _) in RingCasters)
+                if (nm.IndexOf(n, StringComparison.OrdinalIgnoreCase) >= 0) { caster = true; break; }
+            if (!caster) return;
             double d = _worldFilter.Distance(me, id);
-            if (d < 0 || d >= bestDist) return;
-            bestDist = d; bestId = id; bestName = nm;
+            if (d < 0) return;
+            if (d < bestDist) { bestDist = d; bestId = id; bestName = nm; }
+            if (preferred != null && nm.IndexOf(preferred, StringComparison.OrdinalIgnoreCase) >= 0 && d < prefDist)
+            { prefDist = d; prefId = id; prefName = nm; }
         }
 
         if (activeTargetId != 0)
@@ -2217,6 +2258,7 @@ public partial class CombatManager : IDisposable
             catch { }
         }
 
+        if (prefId != 0) { handlerId = prefId; dist = prefDist; name = prefName; return true; }
         if (bestId == 0) return false;
         handlerId = bestId; dist = bestDist; name = bestName;
         return true;

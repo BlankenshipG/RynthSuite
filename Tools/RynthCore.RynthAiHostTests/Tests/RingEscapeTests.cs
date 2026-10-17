@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.LegacyUi;
@@ -28,18 +29,29 @@ internal static class RingEscapeTests
         r.Add("handler ring: outside the ring at the channel nothing happens", OutsideStaysPut);
         r.Add("handler ring: death / macro stop ends the run (autorun off, never carried through the portal)", StopEndsRun);
         r.Add("handler ring: a player quoting the line in chat doesn't trigger it", PlayerQuoteIgnored);
+        r.Add("chaser ring: an Empyrean Chaser's lethal ring runs away from the Chaser too", ChaserRunsAway);
+        r.Add("chaser ring: 'The chaser ...' flees the Chaser even with a Handler nearer", ChaserNamedWins);
+        r.Add("ring: a line naming no caster flees the nearest Handler or Chaser; the line is logged once", NearestCasterWithoutSubject);
     }
 
-    private static CombatManager Rig(float handlerNorthMeters, out LegacyUiSettings s)
+    private const uint Chaser = 0x80000E32;
+
+    private static CombatManager Rig(float handlerNorthMeters, out LegacyUiSettings s, float? chaserSouthMeters = null)
     {
         FakeHost.Reset();
         Place(Player, "Silentkelpie", 96, 96, creature: false);
         FakeHost.PlayerPose = (Lb | 0x1C, 96f, 96f, 0f);
         Place(Handler, "Empyrean Handler", 96, 96 + handlerNorthMeters);
+        var ids = new List<uint> { Handler };
+        if (chaserSouthMeters is float cs)
+        {
+            Place(Chaser, "Empyrean Chaser", 96, 96 - cs);
+            ids.Add(Chaser);
+        }
         s = new LegacyUiSettings { MonsterRange = 60, EnableCombat = true, IsMacroRunning = true };
         // The escape measures from the player: the fake answers GetPlayerId only when created with it.
         var host = FakeHost.Create(Player);
-        var cache = FakeHost.MakeCache(host, Player, new[] { Handler });
+        var cache = FakeHost.MakeCache(host, Player, ids.ToArray());
         var c = new CombatManager(host, s, cache);
         c.SetPlayerId(Player);
         c.SetDamageStores(null, new RynthCore.Plugin.RynthAi.CreatureData.MonsterDamageStore());
@@ -75,7 +87,7 @@ internal static class RingEscapeTests
         Check.True(c.Think(), "Think still held right after reaching safety (the ring hasn't gone off)");
         Check.False(FakeHost.AutoRun, "the run stops outside the ring");
         Check.Eq(c.LastCombatSkipReason, "handler-ring-wait", "now waiting for the ring");
-        Check.True(FakeHost.Logs.Any(l => l.Contains("ring run stopped") && l.Contains("outside the ring")), "logged why it stopped");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Ring run stopped") && l.Contains("outside the ring")), "logged why it stopped");
         Check.True(c.RingEvadeActive, "still holding attacks");
     }
 
@@ -111,9 +123,9 @@ internal static class RingEscapeTests
         c.StopRingEscape("died");
         Check.False(FakeHost.AutoRun, "autorun off");
         Check.False(c.RingEvadeActive, "evade cleared");
-        Check.True(FakeHost.Logs.Any(l => l.Contains("ring escape stopped: died")), "logged");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Ring escape stopped: died")), "logged");
         c.StopRingEscape("again");
-        Check.Eq(FakeHost.Logs.Count(l => l.Contains("ring escape stopped")), 1, "a second stop is a no-op");
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("Ring escape stopped")), 1, "a second stop is a no-op");
     }
 
     private static void PlayerQuoteIgnored()
@@ -122,6 +134,41 @@ internal static class RingEscapeTests
         c.HandleChatForRingEvade("Bob says, \"The handler briefly channels infused Empyrean hatred to release a lethal ring.\"", 0x02);
         Check.False(FakeHost.AutoRun, "a player's quote doesn't start the run");
         Check.False(c.RingEvadeActive, "combat isn't held");
+    }
+
+    private const string ChaserChannel = "The chaser briefly channels infused Empyrean hatred to release a lethal ring.";
+
+    private static void ChaserRunsAway()
+    {
+        // Handler far away (40 m north), a Chaser 2 m south: the Chaser's ring is the danger.
+        var c = Rig(40f, out _, chaserSouthMeters: 2f);
+        c.HandleChatForRingEvade(ChaserChannel, Emote);
+        Check.True(FakeHost.AutoRun, "running from the Chaser");
+        // The Chaser is due south (180°): away is north (0°).
+        Check.True(Math.Abs(((FakeHost.HeadingDeg % 360) + 360) % 360) < 1.0 || Math.Abs(FakeHost.HeadingDeg - 360) < 1.0,
+            $"faces away from the Chaser (0°, got {FakeHost.HeadingDeg:0})");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("running away from 'Empyrean Chaser'")), "logged against the Chaser");
+    }
+
+    private static void ChaserNamedWins()
+    {
+        // Handler 1.5 m north, Chaser 3 m south; the emote names the Chaser.
+        var c = Rig(1.5f, out _, chaserSouthMeters: 3f);
+        c.HandleChatForRingEvade(ChaserChannel, Emote);
+        Check.True(FakeHost.Logs.Any(l => l.Contains("running away from 'Empyrean Chaser'")), "the named caster is the one fled");
+        Check.True(Math.Abs(FakeHost.HeadingDeg) < 1.0 || Math.Abs(FakeHost.HeadingDeg - 360) < 1.0, $"away from the Chaser (0°, got {FakeHost.HeadingDeg:0})");
+    }
+
+    private static void NearestCasterWithoutSubject()
+    {
+        // A line without "The handler/chaser" (a client that strips it): the nearest caster, the Chaser at 2 m.
+        var c = Rig(9f, out _, chaserSouthMeters: 2f);
+        c.HandleChatForRingEvade("briefly channels infused Empyrean hatred to release a lethal ring.", Emote);
+        Check.True(FakeHost.Logs.Any(l => l.Contains("running away from 'Empyrean Chaser'")), "the nearest caster (the Chaser)");
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("lethal-ring line heard")), 1, "the line that triggered is logged");
+        c.StopRingEscape("test");
+        c.HandleChatForRingEvade("briefly channels infused Empyrean hatred to release a lethal ring.", Emote);
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("lethal-ring line heard")), 1, "logged once per session");
     }
 
     private static void MovePlayer(float x, float y)
