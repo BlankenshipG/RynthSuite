@@ -9,6 +9,8 @@
 //     nearest vendor (VendorBuy). Runs as a small pump-thread state machine with timeouts; the
 //     client busy state is respected between steps.
 //   * Attribute tracker: IltTempleAttributes.
+//   * Reader: the same state as JSON with verbs back ("RynthILT.Data" version 3), for RynthOracle's
+//     Quests tab. The automation (auto hand-in, buy if missing) stays here either way.
 //
 // Threading: OnChat / Tick / commands run on the pump thread; Render only reads volatile fields
 // and posts actions through IltHubContext.Post.
@@ -424,6 +426,90 @@ internal sealed class IltGuardian : IIltFeature
                 _ctx.Chat("[ILT Guardian] /ra guardian [window [show|hide]|translate <text>|handin|stop|chat on|off|auto on|off|buy on|off|refresh|status]");
                 break;
         }
+    }
+
+    // ── Reader ("RynthILT.Data" GetGuardianJson / GuardianCommand; RynthOracle's Quests tab) ──
+
+    /// <summary>
+    /// The reader JSON (Plugins/Shared/RynthIltDataApi.cs header has the shape): the switches, the
+    /// last answer and hand-in status, and the attribute turn-in rows. Built on demand: everything it
+    /// reads is volatile or an immutable snapshot. Any thread.
+    /// </summary>
+    public string ReaderJson(string world)
+    {
+        TimeSpan age = LastAnswerAge;
+        return BuildJson(world, S.AutoDetectFromChat, S.AutoHandIn, S.BuyMissingFromVendor, S.CooldownHoursAssumed,
+            _lastAnswer, _lastNpc, age == TimeSpan.MaxValue ? -1 : (long)age.TotalSeconds,
+            IltGuardianPhrasebook.MessageOf(_lastLine), HandInRunning, _handInStatus, Attributes.SyncedUtc, Attributes.Snapshot);
+    }
+
+    /// <summary>The reader JSON from its parts. Pure: the tests drive it.</summary>
+    internal static string BuildJson(string world, bool chat, bool auto, bool buy, int cooldownHours,
+        string answer, string npc, long answerAgeSec, string heard, bool running, string status,
+        DateTime syncedUtc, System.Collections.Generic.IReadOnlyList<IltTempleAttrStatus> rows)
+    {
+        var sb = new System.Text.StringBuilder(1024);
+        sb.Append("{\"available\":true");
+        Str(sb, "world", world);
+        sb.Append(",\"chat\":").Append(chat ? "true" : "false");
+        sb.Append(",\"auto\":").Append(auto ? "true" : "false");
+        sb.Append(",\"buy\":").Append(buy ? "true" : "false");
+        sb.Append(",\"cooldownHours\":").Append(cooldownHours);
+        Str(sb, "answer", answer);
+        Str(sb, "npc", npc);
+        sb.Append(",\"answerAgeSec\":").Append(answerAgeSec);
+        Str(sb, "heard", heard);
+        sb.Append(",\"running\":").Append(running ? "true" : "false");
+        Str(sb, "status", status);
+        Str(sb, "synced", syncedUtc == DateTime.MinValue ? "" : syncedUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture));
+        sb.Append(",\"rows\":[");
+        for (int i = 0; i < rows.Count; i++)
+        {
+            IltTempleAttrStatus r = rows[i];
+            if (i > 0) sb.Append(',');
+            sb.Append('{');
+            Str(sb, "attribute", r.Attribute, first: true);
+            Str(sb, "npc", r.Npc);
+            sb.Append(",\"count\":").Append(r.Count);
+            Str(sb, "status", r.Status);
+            Str(sb, "eta", r.Eta);
+            sb.Append(",\"ready\":").Append(r.Ready ? "true" : "false");
+            sb.Append(",\"exact\":").Append(r.FromMyQuests ? "true" : "false");
+            sb.Append('}');
+        }
+        sb.Append("]}");
+        return sb.ToString();
+    }
+
+    private static void Str(System.Text.StringBuilder sb, string name, string? value, bool first = false)
+    {
+        if (!first) sb.Append(',');
+        sb.Append('"').Append(name).Append("\":\"").Append(IltStyle.JsonEscape(value ?? string.Empty)).Append('"');
+    }
+
+    /// <summary>
+    /// A reader's verb line (header of Plugins/Shared/RynthIltDataApi.cs): handin | stop | refresh |
+    /// chat on|off | auto on|off | buy on|off. The reader shows the new state, so the switches don't
+    /// echo in chat; hand-in and refresh report as the Guardian window's buttons do. Pump thread.
+    /// </summary>
+    public void RunVerb(string line)
+    {
+        string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return;
+        string arg = parts.Length > 1 ? parts[1] : "";
+        switch (parts[0].ToLowerInvariant())
+        {
+            case "handin": StartHandIn(_lastAnswer, _lastNpc, asked: true); break;
+            case "stop": StopHandIn(); break;
+            case "refresh": _ctx.Chat("[ILT Guardian] " + Attributes.Refresh()); break;
+            case "chat": S.AutoDetectFromChat = Toggle(arg, S.AutoDetectFromChat); break;
+            case "auto": S.AutoHandIn = Toggle(arg, S.AutoHandIn); break;
+            case "buy": S.BuyMissingFromVendor = Toggle(arg, S.BuyMissingFromVendor); break;
+            default:
+                RynthLog.Trace(LogCat.IltHub, $"[IltGuardian] reader verb ignored: {line}");
+                return;
+        }
+        RynthLog.Write(LogCat.IltHub, $"[IltGuardian] reader verb: {line}");
     }
 
     private static bool Toggle(string mode, bool current) => mode.Trim().ToLowerInvariant() switch

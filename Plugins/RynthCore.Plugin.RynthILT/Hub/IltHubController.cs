@@ -168,6 +168,20 @@ internal sealed class IltHubController
             Breeding.RunVerb(line);
         });
 
+    /// <summary>
+    /// The Temple guardian JSON ("RynthILT.Data" GetGuardianJson): switches, last answer, hand-in
+    /// status and attribute turn-ins. "" off an ILT world. Any thread.
+    /// </summary>
+    public string GuardianJson => _ctx.Options.IsIltLikeWorld ? Guardian.ReaderJson(_ctx.Options.WorldName) : string.Empty;
+
+    /// <summary>A reader's guardian verb line, posted to the pump (IltGuardian.RunVerb). Any thread.</summary>
+    public void RequestGuardianVerb(string line)
+        => _ctx.Post(() =>
+        {
+            if (!_ctx.Options.IsIltLikeWorld) return;
+            Guardian.RunVerb(line);
+        });
+
     /// <summary>A reader's bank verb line, posted to the pump (IltBanking.RunVerb). Any thread.</summary>
     public void RequestBankVerb(string line)
         => _ctx.Post(() =>

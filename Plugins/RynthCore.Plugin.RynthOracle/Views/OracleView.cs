@@ -13,9 +13,12 @@ internal sealed partial class OracleView
     public const string TabQuests = "Quests", TabCharacter = "Character",
         TabSkills = "Skills", TabAttributes = "Attributes", TabProgress = "Progress",
         TabAugs = "Augs", TabSociety = "Society",
-        TabMarkers = "Markers", TabLegendary = "Legendary", TabTitles = "Titles", TabVoid = "Void", TabFellowship = "Fellowship",
-        TabBoards = "Leaderboards", TabConquest = "Conquest", TabBreeding = "Pet Breeding", TabDynamic = "Dynamic Stamps",
+        TabTitles = "Titles", TabVoid = "Void", TabFellowship = "Fellowship",
+        TabBoards = "Leaderboards", TabConquest = "Conquest", TabBreeding = "Pet Breeding",
         TabAbout = "About";
+    // The Markers, Legendary and Dynamic Stamps tabs (and RynthILT's Temple guardians) are rows of
+    // the Quests tab since 2026-10-18 (QuestsTab.cs, ShowTrackers); a saved tab name of theirs falls
+    // back to Quests.
 
     /// <summary>A tab: shown where any of its server tags matches the server; no tags = everywhere (retail).</summary>
     private sealed record TabDef(string Name, string[] Servers, Action<UiWindow> Draw, bool LiveTimers);
@@ -43,9 +46,6 @@ internal sealed partial class OracleView
             new(TabProgress, any, DrawProgressEmbed, true),
             new(TabAugs, any, DrawAugs, true),
             new(TabSociety, any, DrawSociety, true),
-            new(TabMarkers, any, DrawMarkers, false),
-            // Legendary Key quests (John in Arwic): have / missing and repeat timers, so live.
-            new(TabLegendary, any, DrawLegendary, true),
             new(TabTitles, any, DrawTitles, false),
             new(TabVoid, any, DrawVoid, true),
             new(TabFellowship, any, DrawFellowship, false),
@@ -53,8 +53,6 @@ internal sealed partial class OracleView
             new(TabBoards, new[] { Data.ServerTags.Conquest, Data.ServerTags.Aelrynth }, DrawBoards, false),
             new(TabConquest, new[] { Data.ServerTags.Conquest }, DrawConquest, true),
             new(TabBreeding, new[] { Data.ServerTags.InfiniteLeaftide }, DrawBreeding, false),
-            // Dynamic Stamps: an Infinite Leaftide quest line (NPC hand-ins, one-time Dynamic_ flags).
-            new(TabDynamic, new[] { Data.ServerTags.InfiniteLeaftide }, DrawDynamicStamps, false),
             new(TabAbout, any, DrawAbout, false),
         };
     }
@@ -171,7 +169,7 @@ internal sealed partial class OracleView
     }
 
     /// <summary>
-    /// The quest trackers' refresh row (Dynamic Stamps, Legendary, Markers, Society, Augs, Conquest):
+    /// The quest trackers' refresh row (Society, Augs, Conquest):
     /// a small Refresh (the same /myquests read as the Quests tab's) and how fresh the flags are,
     /// or why they can't be read. <paramref name="what"/> names what the flags show ("stamps").
     /// </summary>

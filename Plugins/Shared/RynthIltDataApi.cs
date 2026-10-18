@@ -67,6 +67,19 @@
 //               "sex": "...", "partners": 1 } }
 //  PetBreedingCommand verbs (ASCII): refresh | debug | dance | apply <supplyKey> <essenceId>
 //  The reader confirms "apply" and "dance" with the player first (RynthILT doesn't ask again).
+//
+//  Version 3 (RynthILT 0.2.20) appends GetGuardianJson and GuardianCommand (the Temple guardians
+//  on RynthOracle's Quests tab). Readers use them only when Version >= 3 and the table is that big
+//  (HasGuardian); a version-2 table still answers charms, the bank and breeding (V2Size).
+//
+//  GetGuardianJson payload (IltGuardian.BuildJson; read leniently):
+//  { "available": true, "world": "...", "chat": true, "auto": false, "buy": true, "cooldownHours": 20,
+//    "answer": "Pyreal", "npc": "Guardian of ...", "answerAgeSec": 42 (-1 none yet), "heard": "...",
+//    "running": false, "status": "idle", "synced": "2026-10-18T19:05:00Z" ("" /qb not read),
+//    "rows": [ { "attribute": "Strength", "npc": "...", "count": 3, "status": "Ready", "eta": "",
+//                "ready": true, "exact": true } ] }       exact = from /myquests (else /qb estimates)
+//  GuardianCommand verbs (ASCII): handin | stop | refresh | chat on|off | auto on|off | buy on|off
+//  Auto hand-in and buying a missing Temple item run inside RynthILT whatever the reader shows.
 // ============================================================================
 
 using System;
@@ -83,7 +96,7 @@ namespace RynthCore.Plugin.Shared;
 public unsafe struct RynthIltDataApiV1
 {
     public const string InterfaceName = "RynthILT.Data";
-    public const uint InterfaceVersion = 2;
+    public const uint InterfaceVersion = 3;
 
     /// <summary>The size of a version-1 table (everything before GetPetBreedingJson) on this platform.</summary>
     public static uint V1Size
@@ -92,6 +105,16 @@ public unsafe struct RynthIltDataApiV1
         {
             RynthIltDataApiV1 t = default;
             return (uint)((byte*)&t.GetPetBreedingJson - (byte*)&t);
+        }
+    }
+
+    /// <summary>The size of a version-2 table (everything before GetGuardianJson) on this platform.</summary>
+    public static uint V2Size
+    {
+        get
+        {
+            RynthIltDataApiV1 t = default;
+            return (uint)((byte*)&t.GetGuardianJson - (byte*)&t);
         }
     }
 
@@ -123,6 +146,14 @@ public unsafe struct RynthIltDataApiV1
 
     /// <summary>PetBreedingCommand(utf8 verb line): queues a breeding verb (header above). 1 = queued, 0 = refused.</summary>
     public delegate* unmanaged[Cdecl]<byte*, int> PetBreedingCommand;
+
+    // ── Version 3 ───────────────────────────────────────────────────────────
+
+    /// <summary>GetGuardianJson(buffer, capacity): the Temple guardian JSON, same contract as GetCharmsJson.</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, int> GetGuardianJson;
+
+    /// <summary>GuardianCommand(utf8 verb line): queues a guardian verb (header above). 1 = queued, 0 = refused.</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int> GuardianCommand;
 }
 
 /// <summary>
@@ -181,7 +212,33 @@ public sealed unsafe class RynthIltDataClient
     }
 
     private static bool HasPetBreeding(RynthIltDataApiV1* t)
-        => t != null && t->Version >= 2 && t->StructSize >= (uint)sizeof(RynthIltDataApiV1);
+        => t != null && t->Version >= 2 && t->StructSize >= RynthIltDataApiV1.V2Size;
+
+    /// <summary>The Temple guardian JSON now ("" without a RynthILT that has it, version 3).</summary>
+    public string ReadGuardian(RynthCoreHost host, long now)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        return !HasGuardian(t) || t->GetGuardianJson == null ? "" : Read(t->GetGuardianJson);
+    }
+
+    /// <summary>The loaded RynthILT has the guardian functions (table version 3 or later).</summary>
+    public bool GuardianSupported => HasGuardian(_table);
+
+    /// <summary>Queues a guardian verb line (see the header). False without RynthILT or when it refused.</summary>
+    public bool GuardianCommand(RynthCoreHost host, long now, string verbLine)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        if (!HasGuardian(t) || t->GuardianCommand == null || string.IsNullOrWhiteSpace(verbLine)) return false;
+        byte[] bytes = Encoding.UTF8.GetBytes(verbLine + "\0");
+        try
+        {
+            fixed (byte* p = bytes) return t->GuardianCommand(p) == 1;
+        }
+        catch { return false; }
+    }
+
+    private static bool HasGuardian(RynthIltDataApiV1* t)
+        => t != null && t->Version >= 3 && t->StructSize >= (uint)sizeof(RynthIltDataApiV1);
 
     /// <summary>Asks RynthILT to use a carried charm. False without RynthILT or when it refused.</summary>
     public bool ToggleCharm(RynthCoreHost host, long now, uint objectId)
@@ -544,6 +601,88 @@ public sealed class IltBreedingView
     public static string DanceVerb() => "dance";
     public static string ApplyVerb(string supplyKey, int essenceId)
         => string.Join(' ', "apply", (supplyKey ?? "").Trim(), essenceId.ToString(CultureInfo.InvariantCulture));
+}
+
+/// <summary>One Temple attribute turn-in from the guardian JSON.</summary>
+public sealed record IltGuardianRow(string Attribute, string Npc, int Count, string Status, string Eta, bool Ready, bool Exact);
+
+/// <summary>The Temple guardian JSON parsed. <see cref="None"/> without RynthILT; every field read leniently.</summary>
+public sealed class IltGuardianView
+{
+    public static readonly IltGuardianView None = new();
+
+    /// <summary>RynthILT answered.</summary>
+    public bool Loaded { get; private init; }
+    public bool Available { get; private init; }
+    public string World { get; private init; } = "";
+    /// <summary>Translate the guardians' tells as they arrive.</summary>
+    public bool Chat { get; private init; }
+    /// <summary>Give the answer item to the guardian automatically after a chat answer.</summary>
+    public bool Auto { get; private init; }
+    /// <summary>Buy a missing Temple item from the nearest vendor first.</summary>
+    public bool Buy { get; private init; }
+    public int CooldownHours { get; private init; }
+    public string Answer { get; private init; } = "";
+    public string Npc { get; private init; } = "";
+    /// <summary>Seconds since the last answer (-1 none yet).</summary>
+    public long AnswerAgeSec { get; private init; } = -1;
+    public string Heard { get; private init; } = "";
+    /// <summary>A hand-in is running.</summary>
+    public bool Running { get; private init; }
+    public string Status { get; private init; } = "";
+    /// <summary>When /qb was last read (MinValue never).</summary>
+    public DateTime SyncedUtc { get; private init; } = DateTime.MinValue;
+    public IReadOnlyList<IltGuardianRow> Rows { get; private init; } = Array.Empty<IltGuardianRow>();
+
+    public static IltGuardianView Parse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return None;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return None;
+            var rows = new List<IltGuardianRow>();
+            foreach (JsonElement r in IltJson.Array(root, "rows"))
+            {
+                string attr = IltJson.Str(r, "attribute");
+                if (attr.Length == 0) continue;
+                rows.Add(new IltGuardianRow(attr, IltJson.Str(r, "npc"), (int)IltJson.Long(r, "count"), IltJson.Str(r, "status"),
+                    IltJson.Str(r, "eta"), IltJson.Bool(r, "ready"), IltJson.Bool(r, "exact")));
+            }
+            DateTime synced = DateTime.MinValue;
+            string when = IltJson.Str(root, "synced");
+            if (when.Length > 0
+                && DateTime.TryParse(when, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out DateTime t))
+                synced = t;
+            return new IltGuardianView
+            {
+                Loaded = true,
+                Available = IltJson.Bool(root, "available"),
+                World = IltJson.Str(root, "world"),
+                Chat = IltJson.Bool(root, "chat"),
+                Auto = IltJson.Bool(root, "auto"),
+                Buy = IltJson.Bool(root, "buy"),
+                CooldownHours = (int)IltJson.Long(root, "cooldownHours"),
+                Answer = IltJson.Str(root, "answer"),
+                Npc = IltJson.Str(root, "npc"),
+                AnswerAgeSec = IltJson.Long(root, "answerAgeSec", -1),
+                Heard = IltJson.Str(root, "heard"),
+                Running = IltJson.Bool(root, "running"),
+                Status = IltJson.Str(root, "status"),
+                SyncedUtc = synced,
+                Rows = rows,
+            };
+        }
+        catch (JsonException) { return None; }
+    }
+
+    /// <summary>The guardian verb lines (header of this file); pure so the tests check them.</summary>
+    public static string HandInVerb() => "handin";
+    public static string StopVerb() => "stop";
+    public static string RefreshVerb() => "refresh";
+    /// <summary>"chat on", "auto off", "buy on": <paramref name="name"/> is chat, auto or buy.</summary>
+    public static string SwitchVerb(string name, bool on) => (name ?? "").Trim().ToLowerInvariant() + (on ? " on" : " off");
 }
 
 /// <summary>Lenient JSON field reads shared by the views above.</summary>
