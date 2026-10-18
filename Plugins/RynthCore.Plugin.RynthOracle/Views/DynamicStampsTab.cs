@@ -47,7 +47,65 @@ internal sealed partial class OracleView
         w.Button("Chat", "dy.nav.chat", () => PrintStamp(s, _dynNavDone));
         w.SameLine();
         w.Button("Close", "dy.nav.close", () => { _dynNav = null; _dynNavStatus = ""; });
+
+        // The hand-in: a Parchment from your packs to the stamp's NPC (RynthAi's /ub give).
+        if (s.Npc.Length > 0)
+        {
+            string? parchment = CarriedParchment();
+            if (parchment != null)
+            {
+                w.Button("Give " + Cut(parchment, 24), "dy.nav.give", () => GiveParchment(s, parchment));
+                w.Tooltip($"Hands one {parchment} to {s.Npc}. Stand near them (or Go first): AC walks you the last bit.");
+            }
+            else
+                w.TextDisabled("No Parchment in your packs to give " + Cut(s.Npc, 30) + ".");
+        }
         if (_dynNavStatus.Length > 0) w.TextDisabled(_dynNavStatus);
+    }
+
+    // Packs scanned for a Parchment at most this often (the box draws every frame).
+    private const long ParchmentScanMs = 1500;
+    private long _parchmentScanAt;
+    private string? _parchmentName;
+
+    /// <summary>
+    /// The name of a Parchment you carry (the main pack and its side packs), or null. Any item
+    /// whose name has "Parchment" in it; read again every <see cref="ParchmentScanMs"/>.
+    /// </summary>
+    private string? CarriedParchment()
+    {
+        if (_c.NowMs - _parchmentScanAt < ParchmentScanMs && _parchmentScanAt != 0) return _parchmentName;
+        _parchmentScanAt = _c.NowMs == 0 ? 1 : _c.NowMs;
+        _parchmentName = null;
+        RynthCore.PluginSdk.RynthCoreHost host = _c.Host;
+        uint me = _c.Character.PlayerId;
+        if (!_c.InWorld || me == 0 || !host.HasGetContainerContents) return null;
+        var buf = new uint[512];
+        var packs = new List<uint> { me };
+        for (int p = 0; p < packs.Count && p < 16; p++)
+        {
+            int n = Math.Min(host.GetContainerContents(packs[p], buf), buf.Length);
+            for (int i = 0; i < n; i++)
+            {
+                uint id = buf[i];
+                if (!host.TryGetObjectName(id, out string name)) continue;
+                if (name.IndexOf("Parchment", StringComparison.OrdinalIgnoreCase) >= 0) { _parchmentName = name; return name; }
+                // A side pack in the main pack: look inside it too (only one level deep, as AC packs go).
+                if (p == 0) packs.Add(id);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>"/ub give 1 &lt;parchment&gt; to &lt;npc&gt;": RynthAi finds the NPC by name and hands it over.</summary>
+    private void GiveParchment(DynamicStamp s, string parchment)
+    {
+        if (!_c.InWorld) { _dynNavStatus = "Log in first."; return; }
+        bool sent = _c.RunCommand($"/ub give 1 {parchment} to {s.Npc}");
+        _parchmentScanAt = 0;   // read the packs again after the give
+        _dynNavStatus = sent
+            ? $"Giving {parchment} to {s.Npc} (RynthAi does the give; it says so in chat if {s.Npc} isn't in sight)."
+            : "Could not send the give.";
     }
 
     /// <summary>Clicking a row: select it and ask RynthNav for the route (shown in chat and its overlay).</summary>
