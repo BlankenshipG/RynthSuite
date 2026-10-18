@@ -26,6 +26,12 @@ internal static class NavTargets
         public string Display => Label.Length > 0 ? Label + " - " + Coords : Coords;
     }
 
+    /// <summary>
+    /// A named place with no coordinates (an exploration marker's location): its name is the whole
+    /// RynthNav target, and RynthNav finds it on its Atlas.
+    /// </summary>
+    public static Stop Place(string name) => new("", name.Trim());
+
     /// <summary>The first coordinates in <paramref name="text"/>, written "8.8S, 53.1E", or null.</summary>
     public static string? FirstCoords(string? text)
     {

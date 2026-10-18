@@ -19,6 +19,7 @@ internal static class DataApiTests
         r.Add("data: the bank JSON reads back whole: characters (current first), choices, notes, log", BankRoundTrip);
         r.Add("data: the bank verb lines carry their fields in RunVerb's order", BankVerbs);
         r.Add("data: bad bank JSON reads as nothing", BankBadJson);
+        r.Add("data: the Temple guardian JSON reads back whole (switches, answer, hand-in, rows)", GuardianRoundTrip);
         // Last: Release() switches the table off for the rest of the process.
         r.Add("data: the RynthILT.Data table: query, functions, release", DataTable);
     }
@@ -82,17 +83,53 @@ internal static class DataApiTests
         Check.True(empty.Loaded && !empty.Available && empty.Enabled == -1 && empty.Characters.Count == 0, "missing fields read as nothing known");
     }
 
+    /// <summary>
+    /// Version 3: the guardian JSON RynthILT builds (IltGuardian.BuildJson) read back by the reader
+    /// RynthOracle's Quests tab uses, quotes and all.
+    /// </summary>
+    private static void GuardianRoundTrip()
+    {
+        var rows = new[]
+        {
+            new IltTempleAttrStatus("Strength", "Fiun \"Big\" Strongarm", 3, "Ready", "", true, true),
+            new IltTempleAttrStatus("Focus", "Fiun Thinker", 1, "Cooldown", "in 5h 2m", false, false),
+        };
+        string json = IltGuardian.BuildJson("InfiniteLeaftide", chat: true, auto: false, buy: true, cooldownHours: 20,
+            answer: "Pyreal", npc: "Guardian of Attribute Enlightenment", answerAgeSec: 42, heard: "What is \"coin\"?",
+            running: true, status: "handing Pyreal to Guardian...", syncedUtc: new DateTime(2026, 10, 18, 19, 5, 0, DateTimeKind.Utc), rows);
+        Check.True(json.All(c => c >= 0x20 && c <= 0x7E), "plain printable ASCII");
+
+        IltGuardianView v = IltGuardianView.Parse(json);
+        Check.True(v.Loaded && v.Available && v.World == "InfiniteLeaftide", "loaded, the world");
+        Check.True(v.Chat && !v.Auto && v.Buy && v.CooldownHours == 20, "the switches");
+        Check.True(v.Answer == "Pyreal" && v.Npc == "Guardian of Attribute Enlightenment" && v.AnswerAgeSec == 42 && v.Heard == "What is \"coin\"?",
+                   "the last answer");
+        Check.True(v.Running && v.Status.StartsWith("handing Pyreal"), "the hand-in");
+        Check.Eq(v.SyncedUtc, new DateTime(2026, 10, 18, 19, 5, 0, DateTimeKind.Utc), "the /qb read time");
+        Check.Eq(v.Rows.Count, 2, "both rows");
+        Check.True(v.Rows[0].Npc == "Fiun \"Big\" Strongarm" && v.Rows[0].Count == 3 && v.Rows[0].Ready && v.Rows[0].Exact, "an exact, ready row");
+        Check.True(v.Rows[1].Eta == "in 5h 2m" && !v.Rows[1].Ready && !v.Rows[1].Exact, "an estimated row on cooldown");
+
+        IltGuardianView none = IltGuardianView.Parse(IltGuardian.BuildJson("x", false, false, false, 1, "", "", -1, "", false, "idle",
+            DateTime.MinValue, Array.Empty<IltTempleAttrStatus>()));
+        Check.True(none.Answer.Length == 0 && none.AnswerAgeSec == -1 && none.SyncedUtc == DateTime.MinValue && none.Rows.Count == 0,
+                   "no answer, no /qb read, no rows");
+    }
+
     private static unsafe void DataTable()
     {
         Check.Eq(DataInterface.Query("RynthILT.Hub", 1), IntPtr.Zero, "another interface's name: not ours");
-        Check.Eq(DataInterface.Query(RynthIltDataApiV1.InterfaceName, 3), IntPtr.Zero, "a newer version than we have: none");
+        Check.Eq(DataInterface.Query(RynthIltDataApiV1.InterfaceName, 4), IntPtr.Zero, "a newer version than we have: none");
         var t = (RynthIltDataApiV1*)DataInterface.Query(RynthIltDataApiV1.InterfaceName, 1);
         Check.True(t != null, "v1 is served");
-        Check.Eq(t->Version, 2u, "Version 2 (v1 readers take it: it starts with the v1 table)");
+        Check.Eq(t->Version, 3u, "Version 3 (v1 and v2 readers take it: it starts with their tables)");
         Check.Eq(t->StructSize, (uint)sizeof(RynthIltDataApiV1), "StructSize");
-        Check.Eq(sizeof(RynthIltDataApiV1), 8 + 6 * IntPtr.Size, "header + 6 functions (v1's 4, then the breeding pair)");
+        Check.Eq(sizeof(RynthIltDataApiV1), 8 + 8 * IntPtr.Size, "header + 8 functions (v1's 4, the breeding pair, the guardian pair)");
+        Check.Eq(RynthIltDataApiV1.V1Size, (uint)(8 + 4 * IntPtr.Size), "a v1 table ends before the breeding pair");
+        Check.Eq(RynthIltDataApiV1.V2Size, (uint)(8 + 6 * IntPtr.Size), "a v2 table ends before the guardian pair (readers still see breeding on it)");
         Check.True(t->GetCharmsJson != null && t->GetBankJson != null && t->ToggleCharm != null && t->BankCommand != null
-                   && t->GetPetBreedingJson != null && t->PetBreedingCommand != null, "every function is filled in");
+                   && t->GetPetBreedingJson != null && t->PetBreedingCommand != null
+                   && t->GetGuardianJson != null && t->GuardianCommand != null, "every function is filled in");
         Check.Eq((IntPtr)t, DataInterface.Query(RynthIltDataApiV1.InterfaceName, 1), "the same table each time");
 
         // No plugin instance here (not logged in): nothing to report, every action refused.
@@ -104,6 +141,8 @@ internal static class DataApiTests
         Check.Eq(t->BankCommand(verb), 0, "no bank command before login");
         Check.Eq(t->GetPetBreedingJson(buf, 64), 0, "no breeding JSON before login");
         Check.Eq(t->PetBreedingCommand(verb), 0, "no breeding command before login");
+        Check.Eq(t->GetGuardianJson(buf, 64), 0, "no guardian JSON before login");
+        Check.Eq(t->GuardianCommand(verb), 0, "no guardian command before login");
 
         DataInterface.Release();
         Check.Eq(t->Version, 0u, "Release zeroes Version (readers re-query)");

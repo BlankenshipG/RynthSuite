@@ -1,7 +1,8 @@
 // DataInterface.cs - RynthILT's side of the "RynthILT.Data" interface (Plugins/Shared/RynthIltDataApi.cs):
 // the charms list and the bank balances (every character RynthILT has seen on this server) the
 // Mini Remote's Charms and Banking tabs show, for other plugins to draw, with the charm Toggle and
-// the bank verbs they send back; since version 2 also the pet breeding tracker's JSON and verbs.
+// the bank verbs they send back; since version 2 also the pet breeding tracker's JSON and verbs;
+// since version 3 the Temple guardians' JSON and verbs (RynthOracle's Quests tab).
 //
 // The table is allocated once per loaded copy of RynthILT and never freed (a plugin DLL is never
 // unloaded); after Release() it reports Version 0 and every function answers 0. Before login there
@@ -37,6 +38,8 @@ internal static unsafe class DataInterface
             t->BankCommand = &BankCommand;
             t->GetPetBreedingJson = &GetPetBreedingJson;
             t->PetBreedingCommand = &PetBreedingCommand;
+            t->GetGuardianJson = &GetGuardianJson;
+            t->GuardianCommand = &GuardianCommand;
             t->Version = RynthIltDataApiV1.InterfaceVersion;
             _table = t;
         }
@@ -123,6 +126,32 @@ internal static unsafe class DataInterface
             string? line = ReadVerb(utf8);
             if (line == null) return 0;
             hub.RequestBreedingVerb(line);
+            return 1;
+        }
+        catch { return 0; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetGuardianJson(byte* buffer, int capacity)
+    {
+        try
+        {
+            string? json = Hub?.GuardianJson;
+            return string.IsNullOrEmpty(json) ? 0 : ProfileInterface.Write(json, buffer, capacity);
+        }
+        catch { return 0; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GuardianCommand(byte* utf8)
+    {
+        try
+        {
+            IltHubController? hub = Hub;
+            if (hub == null) return 0;
+            string? line = ReadVerb(utf8);
+            if (line == null) return 0;
+            hub.RequestGuardianVerb(line);
             return 1;
         }
         catch { return 0; }

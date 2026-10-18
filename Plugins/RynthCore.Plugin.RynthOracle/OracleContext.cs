@@ -39,6 +39,14 @@ internal sealed class OracleContext
 
     /// <summary>Set by the plugin: sends a verb to RynthILT's breeding tracker (RynthIltDataApi PetBreedingCommand).</summary>
     public Func<string, bool> BreedingCommand = _ => false;
+    /// <summary>RynthILT's Temple guardians (None without RynthILT 0.2.20+); read while the Quests tab shows on Infinite Leaftide.</summary>
+    public RynthCore.Plugin.Shared.IltGuardianView Guardian = RynthCore.Plugin.Shared.IltGuardianView.None;
+    /// <summary>Goes up each time <see cref="Guardian"/> changes, so the Quests list rebuilds its guardian rows.</summary>
+    public int GuardianRevision;
+    /// <summary>The last guardian button's outcome, shown under the guardian controls.</summary>
+    public string GuardianMessage = "";
+    /// <summary>Set by the plugin: sends a verb to RynthILT's guardians (RynthIltDataApi GuardianCommand).</summary>
+    public Func<string, bool> GuardianCommand = _ => false;
     /// <summary>RynthCore's server list (API v86) and the active server owner's settings; State null on older engines.</summary>
     public readonly RynthCore.Plugin.Shared.ServerStateClient ServerState = new();
     /// <summary>ConquestAC-only data (tag Conquest); fed only while on ConquestAC.</summary>

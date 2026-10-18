@@ -53,6 +53,7 @@ namespace RynthOracle.Tests
             Pages();
             CharacterExtras();
             Breeding();
+            Trackers();
             Events();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;
@@ -106,10 +107,13 @@ namespace RynthOracle.Tests
             TimeSpan? erqLeft = erq.TimeLeft(ef, now);
             Check(erqLeft is { } e && e.TotalHours > 7.9 && e.TotalHours < 8.1, $"ERQ: key pickup timer decides (~8 h): {erqLeft}");
 
+            // Since 2026-10-18 Legendary quests and markers are rows of the Quests tab, on every server.
             var lc = new OracleContext { InWorld = true };
             var lv = new OracleView(lc);
             lc.Server.Force("", "Coldeve");
-            Check(lv.VisibleTabs().Contains(OracleView.TabLegendary), "Legendary tab on every server");
+            Check(lv.AvailableKinds().Contains(QuestKind.Legendary) && lv.AvailableKinds().Contains(QuestKind.Marker),
+                  "Legendary and marker rows on every server");
+            Check(!lv.VisibleTabs().Contains("Legendary") && !lv.VisibleTabs().Contains("Markers"), "no separate Legendary / Markers tabs");
         }
 
         /// <summary>The Dynamic Stamps tab's list (dynstamps.csv), its have / missing rules, and that the
@@ -175,28 +179,29 @@ namespace RynthOracle.Tests
                   "a place's parts: " + string.Join(" | ", mhoire.NavCandidates()));
             Check(all.Count(s => s.NavCandidates().Count > 0) >= 200, "most stamps have somewhere to go: " + all.Count(s => s.NavCandidates().Count > 0));
 
+            // Since 2026-10-18 the stamps are rows of the Quests tab, on Infinite Leaftide only (the guardians too).
             var dc = new OracleContext { InWorld = true };
             var dv = new OracleView(dc);
             dc.Server.Force("", "Coldeve");
-            Check(!dv.VisibleTabs().Contains(OracleView.TabDynamic), "no Dynamic Stamps tab off Infinite Leaftide");
+            Check(!dv.AvailableKinds().Contains(QuestKind.Dynamic) && !dv.AvailableKinds().Contains(QuestKind.Guardian),
+                  "no stamp or guardian rows off Infinite Leaftide");
+            Check(!dv.VisibleTabs().Contains("Dynamic Stamps"), "no separate Dynamic Stamps tab");
             dc.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
-            Check(dv.VisibleTabs().Contains(OracleView.TabDynamic), "Dynamic Stamps tab on Infinite Leaftide");
+            Check(dv.AvailableKinds().Contains(QuestKind.Dynamic) && dv.AvailableKinds().Contains(QuestKind.Guardian),
+                  "stamp and guardian rows on Infinite Leaftide");
 
-            // Every area open (all 243 rows): still under the engine's ops limit, nothing cut.
+            // Show: Dynamic Stamps: all 243 listed and paged, so the page stays under the engine's ops limit.
             var host = new UiHost();
             UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
-            dc.Settings.TabName = OracleView.TabDynamic;
+            dv.ShowTrackers(QuestKind.Dynamic);
             main.Begin(); dv.Draw(main); main.End();
-            uint seq = 500;
-            for (int a = 0; a < DynamicStampList.Areas.Count; a++)
-                Apply(host, Event(6, seq++, main.Hash, main.KeyOf("dy.area." + a), new byte[] { 1 }));
-            main.Begin(); dv.Draw(main); main.End();
-            ParseAll(host, "Dynamic Stamps, every area open", out int ops);
+            ParseAll(host, "Quests: Dynamic Stamps", out int ops);
             string body = Encoding.UTF8.GetString(main.Body);
-            Check(ops > 243 && ops < 1400, $"Dynamic Stamps with every area open: {ops} ops");
-            Check(body.Contains("Felscuda") && body.Contains("Candeth Keep") && !body.Contains("list cut short"),
-                  "every area's rows are drawn, none cut");
-            Console.WriteLine($"  InfiniteLeaftide/Dynamic Stamps (all {all.Count} open): {ops} ops, {main.Body.Length} bytes");
+            Check(ops > 40 && ops < 1400, $"Quests showing Dynamic Stamps: {ops} ops");
+            Check(body.Contains($"{all.Count} shown") && body.Contains("listed Dynamic stamps") && body.Contains("DYN")
+                  && body.Contains("Page 1 of 7") && !body.Contains("list cut short"),
+                  "every stamp listed, 40 a page, with the stamps' status above");
+            Console.WriteLine($"  InfiniteLeaftide/Quests showing Dynamic Stamps ({all.Count} rows, paged): {ops} ops, {main.Body.Length} bytes");
         }
 
         private static void Lists()
@@ -949,6 +954,118 @@ namespace RynthOracle.Tests
             c.Breeding = IltBreedingView.Parse("{\"available\":true,\"enabled\":\"off\",\"essences\":[]}");
             main.Begin(); view.Draw(main); main.End();
             Check(Encoding.UTF8.GetString(main.Body).Contains("Pet breeding is off on this server."), "breeding off is shown");
+        }
+
+        /// <summary>RynthILT's Temple guardian JSON ("RynthILT.Data" version 3) as the Quests tab reads it.</summary>
+        private const string GuardianJson = "{\"available\":true,\"world\":\"InfiniteLeaftide\",\"chat\":true,\"auto\":false,\"buy\":true,"
+            + "\"cooldownHours\":20,\"answer\":\"Pyreal\",\"npc\":\"Guardian of Attribute Enlightenment\",\"answerAgeSec\":30,"
+            + "\"heard\":\"What is the coin of the realm?\",\"running\":false,\"status\":\"idle\",\"synced\":\"2026-10-18T19:05:00Z\","
+            + "\"rows\":[{\"attribute\":\"Strength\",\"npc\":\"Fiun Strongarm\",\"count\":3,\"status\":\"Ready\",\"eta\":\"\",\"ready\":true,\"exact\":true},"
+            + "{\"attribute\":\"Focus\",\"npc\":\"Fiun Thinker\",\"count\":1,\"status\":\"Cooldown\",\"eta\":\"in 5h 2m\",\"ready\":false,\"exact\":false}]}";
+
+        /// <summary>
+        /// The Quests tab's merged trackers (2026-10-18): Legendary quests, markers, and on Infinite
+        /// Leaftide Dynamic Stamps and the Temple guardians, as rows of the one list; Trackers only;
+        /// opening a tracker (RynthNav Go to); the guardian controls; the ops budget.
+        /// </summary>
+        private static void Trackers()
+        {
+            // The guardian JSON and its verbs.
+            var g = RynthCore.Plugin.Shared.IltGuardianView.Parse(GuardianJson);
+            Check(g.Loaded && g.Chat && !g.Auto && g.Buy && g.Answer == "Pyreal" && g.AnswerAgeSec == 30 && g.SyncedUtc.Year == 2026,
+                  "guardian JSON header");
+            Check(g.Rows.Count == 2 && g.Rows[0].Ready && g.Rows[0].Exact && g.Rows[1].Eta == "in 5h 2m" && !g.Rows[1].Exact, "guardian rows");
+            Check(!RynthCore.Plugin.Shared.IltGuardianView.Parse("nope").Loaded && !RynthCore.Plugin.Shared.IltGuardianView.Parse("").Loaded,
+                  "bad guardian JSON is not loaded");
+            Check(RynthCore.Plugin.Shared.IltGuardianView.SwitchVerb(" Auto ", true) == "auto on"
+                  && RynthCore.Plugin.Shared.IltGuardianView.SwitchVerb("buy", false) == "buy off"
+                  && RynthCore.Plugin.Shared.IltGuardianView.HandInVerb() == "handin", "guardian verbs");
+
+            // Any server: Trackers only lists the Legendary quests and markers with their status, no ILT kinds.
+            OracleContext c = Context();
+            c.Server.Force("", "Coldeve");
+            var view = new OracleView(c);
+            var host = new UiHost();
+            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
+            view.ShowTrackers(null);
+            main.Begin(); view.Draw(main); main.End();
+            string body = Encoding.UTF8.GetString(main.Body);
+            int trackerRows = LegendaryList.All.Count + MarkerList.All.Count;
+            Check(body.Contains($"{trackerRows} shown") && body.Contains("LEG") && body.Contains("toward John") && body.Contains("markers found"),
+                  "Trackers only: every Legendary quest and marker, with their status above");
+            Check(!body.Contains("###q.r.dy:") && !body.Contains("###q.r.gd:") && !body.Contains("###q.r.30minattributes")
+                  && !body.Contains("###gd.auto"),
+                  "no stamps, guardians or quests off Infinite Leaftide in Trackers only");
+            main.MarkSubmitted(true);
+
+            // Everything: quests and trackers in one list (the quests first in the default order).
+            view.ShowTrackers(QuestKind.Quest);
+            c.Settings.TabName = OracleView.TabQuests;
+            main.Begin(); view.Draw(main); main.End();
+            body = Encoding.UTF8.GetString(main.Body);
+            Check(body.Contains("Attribute and Skill Redistribution") && !body.Contains("###q.r.lg:") && !body.Contains("###q.r.mk:"),
+                  "Show: Quests lists only quests");
+            main.MarkSubmitted(true);
+
+            // A Legendary quest with coordinates in its notes opens with RynthNav's Go to.
+            LegendaryQuest? withCoords = LegendaryList.All.FirstOrDefault(q => NavTargets.Stops(q.Note).Count > 0);
+            view.ShowTrackers(QuestKind.Legendary);
+            main.Begin(); view.Draw(main); main.End();
+            LegendaryQuest pick = withCoords ?? LegendaryList.All[0];
+            Apply(host, Event(1, 700, main.Hash, main.KeyOf("q.r.lg:" + pick.Name), new byte[] { 1, 0, 0 }));
+            main.Begin(); view.Draw(main); main.End();
+            body = Encoding.UTF8.GetString(main.Body);
+            Check(body.Contains("###lg.sel.print") && body.Contains("###lg.sel.close"), "a clicked Legendary quest opens below the list");
+            if (withCoords != null) Check(body.Contains("###q.nav.go") && body.Contains("###q.nav.route"), "its coordinates offer RynthNav Go / Route / Arrow");
+            main.MarkSubmitted(true);
+
+            // A marker always has somewhere to go: its directions' coordinates or its location's name.
+            view.ShowTrackers(QuestKind.Marker);
+            main.Begin(); view.Draw(main); main.End();
+            Marker m0 = MarkerList.All[0];
+            Apply(host, Event(1, 701, main.Hash, main.KeyOf("q.r.mk:" + m0.Number), new byte[] { 1, 0, 0 }));
+            main.Begin(); view.Draw(main); main.End();
+            body = Encoding.UTF8.GetString(main.Body);
+            Check(body.Contains("Marker " + m0.Number) && body.Contains("###q.nav.go") && body.Contains("###m.sel.close"),
+                  "a clicked marker opens with Go to");
+            main.MarkSubmitted(true);
+
+            // Infinite Leaftide without RynthILT's guardian data: the guardians say so.
+            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
+            view.ShowTrackers(QuestKind.Guardian);
+            main.Begin(); view.Draw(main); main.End();
+            Check(Encoding.UTF8.GetString(main.Body).Contains("RynthILT isn't loaded"), "guardians without RynthILT: says to load it");
+            main.MarkSubmitted(true);
+
+            // With it: the switches, the answer with Hand in, and a row per attribute; each control sends its verb.
+            var sent = new List<string>();
+            c.GuardianCommand = verb => { sent.Add(verb); return true; };
+            c.Guardian = g;
+            c.GuardianRevision++;
+            main.Begin(); view.Draw(main); main.End();
+            body = Encoding.UTF8.GetString(main.Body);
+            Check(body.Contains("Temple guardians") && body.Contains("1 of 2 attribute turn-ins ready") && body.Contains("Pyreal")
+                  && body.Contains("###gd.handin") && body.Contains("GRD") && body.Contains("Strength (Fiun Strongarm)") && body.Contains("in 5h 2m"),
+                  "guardian controls, answer and rows");
+            Apply(host, Event(1, 702, main.Hash, main.KeyOf("gd.handin"), new byte[] { 1, 0, 0 }));
+            Apply(host, Event(2, 703, main.Hash, main.KeyOf("gd.auto"), new byte[] { 1 }));
+            Apply(host, Event(2, 704, main.Hash, main.KeyOf("gd.buy"), new byte[] { 0 }));
+            Apply(host, Event(1, 705, main.Hash, main.KeyOf("gd.refresh"), new byte[] { 1, 0, 0 }));
+            Check(string.Join("|", sent) == "handin|auto on|buy off|refresh", "guardian controls send their verbs: " + string.Join("|", sent));
+            main.MarkSubmitted(true);
+
+            // Every kind at once on Infinite Leaftide (trackers' status, a guardian opened): under the ops limit.
+            // The guardian is opened while Show lists guardians (they sort last), then Show goes back to everything.
+            Apply(host, Event(1, 706, main.Hash, main.KeyOf("q.r.gd:Strength"), new byte[] { 1, 0, 0 }));
+            view.ShowTrackers(null);
+            main.Begin(); view.Draw(main); main.End();
+            ParseAll(host, "ILT Quests, every tracker", out int ops);
+            body = Encoding.UTF8.GetString(main.Body);
+            int iltRows = trackerRows + DynamicStampList.All.Count + 2;
+            Check(body.Contains($"{iltRows} shown") && body.Contains("Temple guardian: Strength") && body.Contains("###gd.sel.close"),
+                  "every ILT tracker listed, a guardian opened below");
+            Check(ops > 40 && ops < 1400, $"ILT Quests with every tracker and a guardian opened: {ops} ops");
+            Console.WriteLine($"  InfiniteLeaftide/Quests, trackers only ({iltRows} rows, guardian opened): {ops} ops, {main.Body.Length} bytes");
         }
 
         private static void Events()

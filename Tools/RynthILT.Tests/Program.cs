@@ -44,6 +44,8 @@ internal static class Program
         FellowshipCommandTests.Register(runner);
         AetheriaChunkTests.Register(runner);
         BreedingTests.Register(runner);
+        // Last: its table test calls DataInterface.Release(), which switches the table off for the rest of the run.
+        DataApiTests.Register(runner);
         return runner.Run("RynthILT tests", args.Length > 0 ? args[0] : null);
     }
 }
