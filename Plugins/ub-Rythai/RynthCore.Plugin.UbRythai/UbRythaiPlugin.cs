@@ -57,6 +57,7 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
     private DateTime _lastGuardianEmitUtc = DateTime.MinValue;
     private bool _initialized;
     private bool _loginComplete;
+    private UbRythaiPeriodicEntries? _periodicEntries;
     private bool _windowVisible;
     private static bool _imguiResolverConfigured;
 
@@ -69,6 +70,9 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
         // File logger defaults to local install "Logs" folder and rolls by size.
         _fileLogger = new UbRythaiFileLogger(AppContext.BaseDirectory);
         _automation = new UbRythaiChatCommandAutomation(Host, () => _settings, LogAt, TryDispatchChatCommand);
+        _periodicEntries = new UbRythaiPeriodicEntries(() => _settings, TryDispatchChatCommand,
+            line => Host.WriteToChat("[ub-Rythai] " + line, 1),
+            () => { if (!string.IsNullOrEmpty(_characterName)) UbRythaiSettingsStore.Save(_characterName, _settings); });
         _initialized = true;
         _loginComplete = false;
         _windowVisible = false;
@@ -87,6 +91,7 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
         _loginComplete = false;
         _windowVisible = false;
         _automation = null;
+        _periodicEntries = null;
         _fileLogger = null;
         _characterName = string.Empty;
         _playerWasAlive = true;
@@ -110,6 +115,7 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
         _serverState.Clear();
         PollServerState(force: true);
         _automation?.OnLoginComplete();
+        _periodicEntries?.Reset();
         RunLoginMacroCommands();
         _xpMeter.SeedFromPlayer(Host, pid);
         LogAt(UbRythaiLogLevel.Info, $"login complete for character '{_characterName}'.");
@@ -130,6 +136,7 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
             return;
 
         _automation?.OnTick();
+        if (Host.HasInvokeChatParser) _periodicEntries?.OnTick(DateTime.UtcNow);
         ApplyClientFpsPolicy();
         CheckLogOutOnDeath();
         TickBanking();
@@ -167,7 +174,7 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
         string[] parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 2 || parts[1].Equals("help", StringComparison.OrdinalIgnoreCase))
         {
-            Host.WriteToChat("[ub-Rythai] /ub help | /ub build | /ub leaftide ... | /ub bank ... | /ub loginq run | /ub periodic status | /ub p2 status | /ub log status | /ub autotradeaccept ... | /ub autopercent ... | /ub guard ... | /ub xpmeter ... | /ub portal ... | /ub guardian ...", 1);
+            Host.WriteToChat("[ub-Rythai] /ub help | /ub build | /ub leaftide ... | /ub bank ... | /ub loginq run | /ub periodic add|remove|toggle|list|clear|status | /ub p2 status | /ub log status | /ub autotradeaccept ... | /ub autopercent ... | /ub guard ... | /ub xpmeter ... | /ub portal ... | /ub guardian ...", 1);
             return;
         }
 
@@ -211,9 +218,16 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
 
         if (parts[1].Equals("periodic", StringComparison.OrdinalIgnoreCase))
         {
+            // ub-IT's list verbs (add <minutes> <command> | remove N | toggle N | list | clear).
+            if (parts.Length >= 3 && _periodicEntries != null)
+            {
+                string verbArgs = parts.Length > 3 ? string.Join(" ", parts, 3, parts.Length - 3) : "";
+                if (_periodicEntries.HandleCommand(parts[2], verbArgs))
+                    return;
+            }
             if (parts.Length < 3 || !parts[2].Equals("status", StringComparison.OrdinalIgnoreCase))
             {
-                Host.WriteToChat("[ub-Rythai] Usage: /ub periodic status", 1);
+                Host.WriteToChat("[ub-Rythai] Usage: /ub periodic add <minutes> <command> | remove <N> | toggle <N> | list | clear | status", 1);
                 return;
             }
 
@@ -299,7 +313,11 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
             return;
         }
 
-        if (parts[1].Equals("portal", StringComparison.OrdinalIgnoreCase))
+        // Portal gems are "/ub portal use <gem>" and "/ub portal list"; "/ub portal <name>"
+        // (ub-IT: use the nearest portal by name) is RynthAi's, so leave that one to it.
+        if (parts[1].Equals("portal", StringComparison.OrdinalIgnoreCase)
+            && (parts.Length < 3 || parts[2].Equals("use", StringComparison.OrdinalIgnoreCase)
+                || parts[2].Equals("list", StringComparison.OrdinalIgnoreCase)))
         {
             HandlePortalGemCommand(parts, trimmed);
             return;
@@ -324,7 +342,9 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
             return;
         }
 
-        Host.WriteToChat("[ub-Rythai] Unknown command. Use /ub help.", 1);
+        // Every plugin sees each /ub line and RynthAi answers the rest of ub-IT's verbs (and says
+        // when none does), so an unknown verb is only logged here, not printed a second time.
+        LogAt(UbRythaiLogLevel.Debug, $"ub-rythai: /ub {parts[1]} is not a ub-Rythai command (RynthAi handles the rest).");
     }
 
     public override void OnChatWindowText(string? text, int chatType, ref int eat)
@@ -650,6 +670,7 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
         dst.PeriodicIntervalSeconds = src.PeriodicIntervalSeconds;
         dst.PeriodicCommandsGapMs = src.PeriodicCommandsGapMs;
         dst.PeriodicCommandsText = src.PeriodicCommandsText ?? "";
+        dst.PeriodicEntriesText = src.PeriodicEntriesText ?? "";
         dst.OpenMainPackOnLogin = src.OpenMainPackOnLogin;
         dst.RunChatResizeOnLogin = src.RunChatResizeOnLogin;
         dst.ChatResizeCommand = src.ChatResizeCommand ?? "/ub chat max";

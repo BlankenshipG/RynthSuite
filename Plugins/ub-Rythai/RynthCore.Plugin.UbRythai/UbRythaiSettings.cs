@@ -23,6 +23,9 @@ public sealed class UbRythaiSettings
     public int PeriodicCommandsGapMs = 400;
     public string PeriodicCommandsText = "";
 
+    /// <summary>ub-IT's "/ub periodic add" list: "minutes|on|command" per line (UbRythaiPeriodicEntries).</summary>
+    public string PeriodicEntriesText = "";
+
     // P1: macro parity items that map cleanly onto chat-command dispatch.
     public bool OpenMainPackOnLogin;
     public bool RunChatResizeOnLogin;

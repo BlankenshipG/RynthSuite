@@ -41,6 +41,7 @@ internal static class ExpressionTests
         r.Add("expr: control flow (iif, if, ifthen, exec) is lazy", ControlFlow);
         r.Add("expr: delayexec fires on the pump when due, in order", DelayExec);
         r.Add("expr: stopwatches", Stopwatches);
+        r.Add("expr: ub-IT's remaining functions answer (no-equivalent ones with ub-IT's empty values)", UbCompatFunctions);
         r.Add("expr: object type, options and unknown functions", TypesOptionsUnknown);
         r.Add("expr: RynthAi settings and meta state from expressions", SettingsAndState);
         r.Add("expr: character properties, skills, vitals through the host", CharacterFunctions);
@@ -516,10 +517,14 @@ internal static class ExpressionTests
         var e = Engine();
         long now = 5_000;
         e.TickMs = () => now;
+        // ub-IT: delayexec returns its id (1, 2, ...), which clearexec takes.
         Is(e, "delayexec[1000, `setvar[x, first]`]", "1");
-        Is(e, "delayexec[1000, `setvar[x, second]`]", "1");
-        Is(e, "delayexec[-50, `setvar[neg, 1]`]", "1");
-        Is(e, "delayexec[soon, `setvar[bad, 1]`]", "1");
+        Is(e, "delayexec[1000, `setvar[x, second]`]", "2");
+        Is(e, "delayexec[-50, `setvar[neg, 1]`]", "3");
+        Is(e, "delayexec[soon, `setvar[bad, 1]`]", "4");
+        Is(e, "delayexec[1000, `setvar[cancelled, 1]`]", "5");
+        Is(e, "clearexec[5]", "1");
+        Is(e, "clearexec[5]", "0");               // already gone
         e.PumpDelayedExecs();
         Is(e, "getvar[neg]", "1");                // negative delay: next pump
         Is(e, "getvar[bad]", "1");                // unreadable delay: next pump
@@ -530,14 +535,74 @@ internal static class ExpressionTests
         now += 1;
         e.PumpDelayedExecs();
         Is(e, "getvar[x]", "second");             // both fired, in the order scheduled
+        Is(e, "testvar[cancelled]", "0");         // the cleared one never ran
 
         // A delayexec scheduled by a firing one waits for a later pump.
         // (\` is an escaped backtick inside a backtick string.)
-        Is(e, "delayexec[0, `delayexec[0, \\`setvar[chain, 1]\\`]`]", "1");
+        Is(e, "delayexec[0, `delayexec[0, \\`setvar[chain, 1]\\`]`]", "6");
         e.PumpDelayedExecs();
         Is(e, "testvar[chain]", "0");
         e.PumpDelayedExecs();
         Is(e, "getvar[chain]", "1");
+    }
+
+    private static void UbCompatFunctions()
+    {
+        FakeHost.Reset();
+        var settings = new LegacyUiSettings();
+        var e = Engine(FakeHost.Create(), settings);
+
+        // enlightenmentmaterials: levels 6-150 cost (level - 5) tokens; 1-5 and 151+ none.
+        Is(e, "enlightenmentmaterials[0, 10]", "15");      // 1+2+3+4+5
+        Is(e, "enlightenmentmaterials[149, 151]", "145");  // only 150 costs tokens
+        Is(e, "enlightenmentmaterials[160, 165]", "0");
+        Is(e, "enlightenmentmaterials[10, 5]", "0");
+
+        // Macro state, casting, quests.
+        settings.IsMacroRunning = true;
+        Is(e, "vtmacroenabled[]", "1");
+        settings.IsMacroRunning = false;
+        Is(e, "vtmacroenabled[]", "0");
+        Is(e, "iscasting[]", "0");
+        Is(e, "canrefreshquests[]", "1");                   // no tracker: nothing throttles it
+        Is(e, "isrefreshingquestbonuses[]", "0");
+        Is(e, "getcooldownexpiration[515]", "0");
+
+        // Corpses opened by this character come from the plugin's hook.
+        e.CorpseOpenedByMe = id => id == 0x50000123;
+        Is(e, "hascorpsebeenopenedbyme[0x50000123]", "1");
+        Is(e, "hascorpsebeenopenedbyme[0x50000124]", "0");
+        Is(e, "getcorpsesunopenedbyme[]", "[]");            // no cache, no corpses
+
+        // Unknown or unreadable objects: ub-IT's -1 / 0.
+        Is(e, "wobjectgethealthvalue[0]", "-1");
+        Is(e, "actiontrymove[0, 0]", "0");
+        Is(e, "actiontrysplit[0, 5]", "0");
+        Is(e, "actiontrydrop[0x50000123]", "0");
+
+        // spelldata of an unknown spell is an empty dictionary.
+        Is(e, "dictsize[spelldata[999999]]", "0");
+
+        // XP meter: starts at zero.
+        Is(e, "xpreset[]", "1");
+        Is(e, "xptotal[]", "0");
+        Is(e, "lumtotal[]", "0");
+        Is(e, "xpavg[]", "0");
+        Check.True(e.Evaluate("xpmeter[]").Contains("XP/hr"), "xpmeter[] is the meter text");
+
+        // No RynthAi equivalent: they answer so the expression keeps going.
+        Is(e, "statushud[kills, 5]", "1");
+        Is(e, "statushudcolored[kills, 5, red]", "1");
+        Is(e, "netclients[]", "[]");
+        Is(e, "getcharacterindex[Bob]", "-1");
+        Is(e, "setnextlogin[Bob]", "0");
+        Is(e, "clearnextlogin[]", "1");
+        Is(e, "uiviewexists[myview]", "0");
+        Is(e, "uiviewvisible[myview]", "0");
+        Is(e, "statushud[a, 1] && 7", "1");                 // used inside a larger expression
+
+        // A real typo is still an unknown function.
+        Is(e, "nosuchfunctionatall[]", "");
     }
 
     private static void Stopwatches()

@@ -66,6 +66,20 @@ public static unsafe class PluginExports
         try { if (utf8 != IntPtr.Zero) Runtime.Plugin?.EnqueueCommand(Marshal.PtrToStringUTF8(utf8)); } catch { }
     }
 
+    // Commands from other plugins (host SendPluginCommand): action "rsort", value an /rsort
+    // command without the "/rsort" ("now", "status"); RynthAi sends ub-IT's /ub packsort this way.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginApplyRemoteCommand", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void ApplyRemoteCommand(IntPtr actionAnsi, IntPtr valueAnsi)
+    {
+        try
+        {
+            string action = actionAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(actionAnsi) ?? "" : "";
+            string value = valueAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(valueAnsi) ?? "" : "";
+            if (action.Equals("rsort", StringComparison.OrdinalIgnoreCase)) Runtime.Plugin?.EnqueueCommand(value);
+        }
+        catch { }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnVendorClose", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnVendorClose(uint vendorId) => Runtime.OnVendorClose(vendorId);
 }

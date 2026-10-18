@@ -27,6 +27,7 @@ internal static class GiveTests
         r.Add("give: /ub give with a count hands over that many", UbGiveCount);
         r.Add("give: /mt give hands over only the first match", MtGivesFirst);
         r.Add("give: /ub givep matches part of the name", UbGivePartial);
+        r.Add("give: a meta's /ub give hands over every match too (it used to take /mt give's one)", MetaUbGivesAll);
         r.Add("give: the next give waits until the server took the last (it answers extra gives 'too busy')", WaitsForServer);
     }
 
@@ -110,6 +111,14 @@ internal static class GiveTests
         w.Run("/mt give Mana Mote to Town Crier");
         Check.Eq(FakeHost.Gives.Count, 1, "/mt give: one item");
         Check.False(w.GivenItems.Contains(WornMote), "and never the worn one");
+    }
+
+    private static void MetaUbGivesAll()
+    {
+        var w = new World();
+        w.Call("HandleMetaChatCommand", "/ub give Mana Mote to Town Crier");
+        for (int i = 0; i < 20; i++) w.Call("DrainGiveQueue");
+        Check.Eq(FakeHost.Gives.Count, 3, "all three carried Mana Motes, as typed");
     }
 
     private static void UbGivePartial()

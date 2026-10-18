@@ -731,7 +731,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         _metaManager = new MetaManager(_dashboard.Settings, Host, _vitals);
         _metaManager.SetPlayerId(_playerId);
-        _metaManager.SetMtCommandHandler(HandleMtCommand);
+        _metaManager.SetMtCommandHandler(HandleMetaChatCommand);
         _metaManager.SetRaCommandHandler(HandleRaCommand);
         if (_objectCache != null) _metaManager.SetObjectCache(_objectCache);
         _metaManager.SetFellowshipTracker(_fellowshipTracker);
@@ -739,6 +739,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (_buffManager != null) _metaManager.SetBuffManager(_buffManager);
         _metaManager.SetCreatureStore(_creatureStore);
         _metaManager.SetKillClock(_killClock);
+        _metaManager.SetCorpseOpenedCheck(id => _completedCorpses.ContainsKey(id));
         if (_dashboard != null)
             _dashboard.MetaSnapshotProvider = () => _metaManager?.GetStateSnapshot();
 

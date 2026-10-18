@@ -179,6 +179,15 @@ internal sealed class MetaManager
         _expressions?.SetKillClock(clock);
     }
 
+    // Corpses this character opened (the plugin's loot bookkeeping), for ub-IT's
+    // hascorpsebeenopenedbyme[] / getcorpsesunopenedbyme[].
+    private Func<int, bool>? _corpseOpenedByMe;
+    public void SetCorpseOpenedCheck(Func<int, bool>? check)
+    {
+        _corpseOpenedByMe = check;
+        if (_expressions != null) _expressions.CorpseOpenedByMe = check;
+    }
+
     public void SetPlayerId(uint id)
     {
         _playerId = id;
@@ -231,6 +240,7 @@ internal sealed class MetaManager
         engine.SetSettings(_settings);
         engine.SetCreatureStore(_creatureStore);
         engine.SetKillClock(_killClock);
+        engine.CorpseOpenedByMe = _corpseOpenedByMe;
         return engine;
     }
 
