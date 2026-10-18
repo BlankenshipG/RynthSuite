@@ -47,11 +47,24 @@ public static class LootRuleText
         {
             (5, "EncumbVal"), (9, "Locations"), (19, "Value"), (25, "Level"), (28, "ArmorLevel"), (44, "Damage (max)"), (45, "DamageType"),
             (48, "WeaponSkill"), (54, "WeaponEncumbrance"),   // 54 was labelled MaxDamage until 2026-10-07; max damage is 44
-            (87, "MaxStructure"), (88, "Structure"), (105, "ItemWorkmanship"), (107, "ItemMaxMana"),
+            // 87 / 88 were labelled MaxStructure / Structure until 2026-10-18; uses are 91 / 92
+            // (what the Pets tab reads for an essence's uses), and 107 is the current mana.
+            (86, "MinLevelRestrict"), (87, "MaxLevelRestrict"), (88, "LockpickSkillBonus"),
+            (91, "UsesTotal (MaxStructure)"), (92, "UsesRemaining (Structure)"),
+            (105, "ItemWorkmanship"), (106, "ItemSpellcraft"), (107, "ItemCurMana"), (108, "ItemMaxMana"),
+            (109, "ItemDifficulty (Arcane Lore)"),
             (131, "MaterialType"), (158, "WieldRequirements"), (159, "WieldSkilltype"), (160, "WieldDifficulty"),
-            // ACECustom / ACE appraisal: slayer weapons (166) and combat-essence pet stats (9053 / 9056).
+            // ACECustom / ACE appraisal: slayer weapons (166) and combat-essence pet stats (9053-9075).
             // "Slayer Type" is the player-facing name; the ACE property is still SlayerCreatureType.
-            (166, "Slayer Type"), (9053, "Pet Bond Level"), (9056, "Pet Potency Stored"),
+            (166, "Slayer Type"), (9053, "Pet Bond Level"), (9054, "Pet Captured Damage Type"), (9056, "Pet Potency Stored"),
+            (9057, "Pet Breeding Charges"), (9070, "Pet Damage Mutations"), (9071, "Pet Damage Resist Mutations"),
+            (9072, "Pet Crit Mutations"), (9073, "Pet Vitality Mutations"), (9074, "Pet Potency Mutations"),
+            (9075, "Pet Mutation Count"),
+            (307, "Pet DamageRating"), (308, "Pet DamageResistRating"), (313, "Pet CritRating"),
+            (314, "Pet CritDamageRating"), (315, "Pet CritResistRating"), (316, "Pet CritDamageResistRating"),
+            (362, "SummoningMastery"), (364, "UseLevelRequirement"), (366, "UseRequiresSkill"),
+            (368, "UseRequiresSkillSpec"), (369, "UseRequiresLevel"),
+            (179, "Imbued (Decal)"), (265, "EquipmentSetId (armor set)"),
             (218, "EquippedSlots"), (353, "ImbuedEffect"), (370, "DamageRating"), (371, "DamageResistRating"),
             (372, "CritRating"), (373, "CritResistRating"), (374, "CritDamageRating"),
             (375, "CritDamageResistRating"), (376, "HealBoostRating"), (377, "NetherResistRating"), (379, "VitalityRating"),
@@ -202,24 +215,45 @@ public static class LootRuleText
     /// The names for a long key's value, or null when the key's value is a plain
     /// number. Unknown values are still valid: show them as "value N".
     /// </summary>
+    /// <summary>
+    /// ImbuedEffect (353): ACE's ImbuedEffectType flags. A combination (two imbues) shows as
+    /// "value N".
+    /// </summary>
+    public static readonly (int Id, string Name)[] ImbuedEffects =
+    {
+        (1, "Critical Strike"), (2, "Crippling Blow"), (4, "Armor Rending"), (8, "Slash Rending"),
+        (16, "Pierce Rending"), (32, "Bludgeon Rending"), (64, "Acid Rending"), (128, "Cold Rending"),
+        (256, "Electric Rending"), (512, "Fire Rending"), (1024, "Melee Defense"), (2048, "Missile Defense"),
+        (4096, "Magic Defense"), (8192, "Spellbook"), (16384, "Nether Rending"),
+    };
+
+    /// <summary>SummoningMastery (362): the pet school an essence needs (ACE SummoningMastery).</summary>
+    public static readonly (int Id, string Name)[] SummoningMasteries =
+    {
+        (1, "Primalist"), (2, "Necromancer"), (3, "Naturalist"),
+    };
+
     public static (int Id, string Name)[]? ValueTableFor(int longKey) => longKey switch
     {
-        45 or 0x0D000021 => DamageTypes,
+        45 or 0x0D000021 or 9054 => DamageTypes,
         48 or 0x0D000020 => Skills,
         131 => Materials,
         158 => WieldRequirements,
-        159 => Skills,
+        159 or 366 or 368 => Skills,
         166 => CreatureTypes,
+        353 => ImbuedEffects,
+        362 => SummoningMasteries,
         T11.T11Keys.WeaponGrade => T11.T11Catalog.Grades,
         T11.T11Keys.GearGrade => T11.T11Catalog.Grades,
         _ => null,
     };
 
     /// <summary>True when the long key's value is a set of flags (a named value is one flag or a common pair).</summary>
-    public static bool ValueTableIsFlags(int longKey) => longKey is 45 or 0x0D000021;
+    public static bool ValueTableIsFlags(int longKey) => longKey is 45 or 0x0D000021 or 9054 or 353;
 
     /// <summary>The long keys that have a value table, for the vocabulary.</summary>
-    public static readonly int[] KeysWithValueTables = { 45, 48, 131, 158, 159, 166, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
+    public static readonly int[] KeysWithValueTables =
+        { 45, 48, 131, 158, 159, 166, 353, 362, 366, 368, 9054, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
 
     /// <summary>
     /// True for the conditions whose value is picked by name when the key has a
