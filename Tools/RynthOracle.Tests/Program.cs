@@ -148,6 +148,20 @@ namespace RynthOracle.Tests
             sf.Tick(t + 5_000);
             Check(!shortStamp.Have(sf), "a cut-short stem under 14 characters isn't matched by prefix");
 
+            // RynthNav targets, best first (RynthNav takes the first on its map).
+            Check(string.Join(" | ", felscuda.NavCandidates()) == "8.8S, 53.1E | Folthid Cellar | Felscuda | Facility Hub",
+                  "Felscuda nav: " + string.Join(" | ", felscuda.NavCandidates()));
+            var gerent = new DynamicStamp { Area = "Graveyard", Place = "Gerent's Compound at 87.2S, 17.5W", Npc = "Gerent" };
+            Check(string.Join(" | ", gerent.NavCandidates()) == "87.2S, 17.5W | Gerent's Compound | Gerent | Graveyard",
+                  "coordinates inside the place, 'at' dropped: " + string.Join(" | ", gerent.NavCandidates()));
+            var lost = new DynamicStamp { Area = "Odd Stamps", Place = "Lost Wish Cottages (Arwic) 42.6n 62.4e", Npc = "Bob" };
+            Check(string.Join(" | ", lost.NavCandidates()) == "42.6N, 62.4E | Lost Wish Cottages (Arwic) | Lost Wish Cottages | Arwic",
+                  "lower-case n/e, a bracketed town, no grouping area, a 3-letter NPC left out: " + string.Join(" | ", lost.NavCandidates()));
+            var mhoire = new DynamicStamp { Area = "Looking Around", Place = "Mhoire Castle - Great Hall" };
+            Check(string.Join(" | ", mhoire.NavCandidates()) == "Mhoire Castle - Great Hall | Mhoire Castle | Great Hall",
+                  "a place's parts: " + string.Join(" | ", mhoire.NavCandidates()));
+            Check(all.Count(s => s.NavCandidates().Count > 0) >= 200, "most stamps have somewhere to go: " + all.Count(s => s.NavCandidates().Count > 0));
+
             var dc = new OracleContext { InWorld = true };
             var dv = new OracleView(dc);
             dc.Server.Force("", "Coldeve");

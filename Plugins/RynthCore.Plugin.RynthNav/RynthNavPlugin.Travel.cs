@@ -669,6 +669,25 @@ public sealed partial class RynthNavPlugin
         return true;
     }
 
+    /// <summary>
+    /// "a || b || c": the first candidate that is coordinates, or that names a place on the map
+    /// as a whole word or more (Atlas.MatchScore 60+: "Mite Maze" yes, "Bur" inside "Burun" no),
+    /// so a loose candidate never sends the character to an unrelated place. False (and why)
+    /// when none does.
+    /// </summary>
+    private bool PickAlternative(string text, out string picked, out string why)
+    {
+        why = "";
+        bool hasPos = PlayerMapPos(out double pns, out double pew);
+        picked = _atlas.FirstOnMap(text, hasPos, pns, pew) ?? "";
+        if (picked.Length > 0) return true;
+        // Coordinates are always taken, so here every candidate was a name.
+        why = _atlas.Locations.Count == 0
+            ? "the Atlas isn't loaded (" + _atlasStatus + ")"
+            : "none of these is a place on the map: " + text.Replace("||", ",");
+        return false;
+    }
+
     /// <summary>The Atlas place the last ResolveTarget picked (null for bare coordinates). Tick thread.</summary>
     private AtlasLocation? _resolvedPlace;
 
@@ -995,6 +1014,12 @@ public sealed partial class RynthNavPlugin
         int sp = raw.IndexOf(' ');
         string cmd = (sp < 0 ? raw : raw.Substring(0, sp)).ToLowerInvariant();
         string rest = sp < 0 ? string.Empty : raw.Substring(sp + 1).Trim();
+        // "go a || b || c" (Oracle's Dynamic Stamps, any caller): the first candidate on the map.
+        if (cmd is "go" or "goto" or "route" or "arrow" && rest.Contains("||", StringComparison.Ordinal))
+        {
+            if (!PickAlternative(rest, out string picked, out string why)) { Note(why); return; }
+            rest = picked;
+        }
         switch (cmd)
         {
             case "":

@@ -144,6 +144,22 @@ internal sealed class Atlas
     // ── Search ───────────────────────────────────────────────────────────────
 
     /// <summary>How well <paramref name="name"/> matches <paramref name="q"/> (lower case): 0 = not at all.</summary>
+    /// <summary>
+    /// "a || b || c": the first candidate that is coordinates, or that names a place on the map as a
+    /// whole word or more (<see cref="MatchScore"/> 60+: "Mite Maze" yes, "Bur" inside "Burun" no),
+    /// so a loose candidate never picks an unrelated place. Null when none does.
+    /// </summary>
+    public string? FirstOnMap(string alternatives, bool hasPos, double ns, double ew)
+    {
+        foreach (string raw in alternatives.Split("||", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (NavCoords.TrySplitCoordsAndName(raw, out _, out _, out _)) return raw;
+            AtlasLocation? best = FindBest(raw, hasPos, ns, ew);
+            if (best != null && MatchScore(best.Name, raw) >= 60) return raw;
+        }
+        return null;
+    }
+
     public static int MatchScore(string name, string q)
     {
         if (q.Length == 0) return 1;
