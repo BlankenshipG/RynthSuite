@@ -19,8 +19,9 @@
 //               bonus, any spell, max damage, spell ids) are all off by default.
 //   Peace mode only unless ChunkInCombat. With ChunkInCombat on, a busy client in combat mode no
 //   longer blocks the hammer (a swinging bot is always busy); peace mode still waits for idle.
-//   Waits for the result line (10 s max). Each item's skip reason is logged when it changes and
-//   tallied in the status line.
+//   Waits for the result line (10 s max); a target that leaves the pack first counts as chunked
+//   (ILT does not always send a known line). Each item's skip reason is logged when it changes
+//   and tallied in the status line.
 //   The tool is the "Lugian Aetheria Hammer" only. The Lugian Hammer weapons (Flaming, Acid, ...)
 //   are loot and chunk nothing on ILT: the server answers "done" with no result line. Matching
 //   them by name ending used the Flaming Lugian Hammer on Silentkelpie's 9 Coalesced Aetheria,
@@ -351,9 +352,20 @@ internal sealed class IltChunkClap : IIltFeature
 
         if (_waitingOn != 0)
         {
-            if (now - _waitStartedAt < ChunkResultWaitMs) return;
-            _skip.Add(_waitingOn); // no result line — don't hammer the same item forever
-            RynthLog.Write(LogCat.IltGear, $"chunk: no result line for 0x{(uint)_waitingOn:X8} in {ChunkResultWaitMs / 1000} s, skipped until a manual pass");
+            int id = _waitingOn;
+            switch (WaitOutcome(now - _waitStartedAt, _ctx.Inventory.Items().Any(wo => wo.Id == id)))
+            {
+                case ChunkWait.Waiting:
+                    return;
+                case ChunkWait.Gone:
+                    _chunked++;
+                    RynthLog.Write(LogCat.IltGear, $"chunk: 0x{(uint)id:X8} left the pack with no result line; counted as chunked");
+                    break;
+                case ChunkWait.TimedOut:
+                    _skip.Add(id); // still carried and no result line: don't hammer the same item forever
+                    RynthLog.Write(LogCat.IltGear, $"chunk: no result line for 0x{(uint)id:X8} in {ChunkResultWaitMs / 1000} s, skipped until a manual pass");
+                    break;
+            }
             _waitingOn = 0;
         }
         if (now - _lastChunkAt < Math.Max(500, G.ChunkIntervalMs)) return;
@@ -498,6 +510,21 @@ internal sealed class IltChunkClap : IIltFeature
     }
 
     internal enum ChunkResult { None, Busy, Done, Refused }
+
+    /// <summary>Where a chunk in flight stands when no chat line has ended the wait.</summary>
+    internal enum ChunkWait { Waiting, Gone, TimedOut }
+
+    /// <summary>
+    /// The wait for a chunk with no result line yet. The hammer destroys the target, so a target
+    /// that has left the pack was chunked: ILT does not always send a line the classifier knows
+    /// (Silentkelpie 2026-10-18: a Red Aetheria Chunk arrived and UseDone had no error, yet the
+    /// item was still filed as skipped after 10 s). Still carried after the wait = timed out.
+    /// Pure: the tests drive it.
+    /// </summary>
+    internal static ChunkWait WaitOutcome(long elapsedMs, bool targetStillCarried)
+        => !targetStillCarried ? ChunkWait.Gone
+         : elapsedMs >= ChunkResultWaitMs ? ChunkWait.TimedOut
+         : ChunkWait.Waiting;
 
     /// <summary>
     /// What a chat line says about the chunk in flight. ILT names the item and the tool ("You

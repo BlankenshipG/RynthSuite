@@ -24,6 +24,7 @@ internal static class AetheriaChunkTests
         r.Add("corrupted: ub-IT hard rules (workmanship, cleave 1, or 2 on two-handed non-thrust)", CorruptedHardRules);
         r.Add("corrupted: ub-IT keep rules, all off by default", CorruptedKeepRules);
         r.Add("chunk: busy blocks peace mode, not combat with chunk-in-combat on (ub-IT v2.0.1059)", BusyGate);
+        r.Add("chunk: a target that leaves the pack counts as chunked; still carried after 10 s times out", WaitOutcome);
         r.Add("clap: the server's WCIDs, each colour paired with its trinket, Coalesced only unrevealed level 1-3", ClapPairs);
     }
 
@@ -121,6 +122,18 @@ internal static class AetheriaChunkTests
 
         Check.Eq(IltChunkClap.ParseSpellIds("1, 2;3 x -4 0").Count, 3, "positive ids only, any separator");
         Check.Eq(IltChunkClap.ParseSpellIds(null).Count, 0, "no list");
+    }
+
+    /// <summary>
+    /// Silentkelpie 2026-10-18: a Coalesced piece was chunked (Red Aetheria Chunk arrived) with no
+    /// result line, and it was filed as skipped after 10 s instead of counted.
+    /// </summary>
+    private static void WaitOutcome()
+    {
+        Check.Eq(IltChunkClap.WaitOutcome(500, targetStillCarried: true), IltChunkClap.ChunkWait.Waiting, "still carried, within the wait");
+        Check.Eq(IltChunkClap.WaitOutcome(1_100, targetStillCarried: false), IltChunkClap.ChunkWait.Gone, "gone from the pack: chunked");
+        Check.Eq(IltChunkClap.WaitOutcome(12_000, targetStillCarried: false), IltChunkClap.ChunkWait.Gone, "gone beats the timeout");
+        Check.Eq(IltChunkClap.WaitOutcome(10_000, targetStillCarried: true), IltChunkClap.ChunkWait.TimedOut, "still carried at 10 s: timed out");
     }
 
     private static void BusyGate()
