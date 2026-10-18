@@ -58,6 +58,27 @@ internal sealed class IltInventory
     public const uint IntNumTimesTinkered = 171;
     public const uint IntImbuedEffect = 179;
     public const uint IntCleaving = 292;
+    // Corrupted-weapon chunk rules (ub-IT Leaftide.IsValidCorruptedWep / CorruptedChunkGuard).
+    /// <summary>ACE PropertyInt.Damage — a weapon's max damage.</summary>
+    public const uint IntDamage = 44;
+    /// <summary>ACE PropertyInt.AttackType — 2 = thrust; 160 / 166 / 486 are the multi-strike masks.</summary>
+    public const uint IntAttackType = 47;
+    /// <summary>ACE PropertyInt.ItemWorkmanship — loot-gen Craft (salvage-bag workmanship is not on weapons).</summary>
+    public const uint IntItemWorkmanship = 105;
+    /// <summary>ACE PropertyInt.WieldSkillType — 41 (Two Handed Combat) for two-handed weapons.</summary>
+    public const uint IntWieldSkillType = 159;
+    /// <summary>ACE PropertyInt.SlayerCreatureType.</summary>
+    public const uint IntSlayerCreatureType = 166;
+    /// <summary>ACE PropertyInt.ElementalDamageBonus.</summary>
+    public const uint IntElementalDamageBonus = 204;
+    /// <summary>ACE PropertyInt.WeaponType — 11 = TwoHanded.</summary>
+    public const uint IntWeaponType = 353;
+    /// <summary>ACE PropertyFloat.CriticalMultiplier — Biting Strike.</summary>
+    public const uint FloatCriticalMultiplier = 136;
+    /// <summary>ACE PropertyFloat.CriticalFrequency — Crushing Blow.</summary>
+    public const uint FloatCriticalFrequency = 147;
+    /// <summary>ACE PropertyFloat.IgnoreArmor — Armor Cleaving.</summary>
+    public const uint FloatIgnoreArmor = 155;
     public const uint IntItemMaxLevel = 319;
     /// <summary>Highest aetheria level on Infinite Leaftide (ACECustom AetheriaChance rolls up to 10; retail stops at 5).</summary>
     public const int AetheriaMaxLevel = 10;
@@ -189,6 +210,22 @@ internal sealed class IltInventory
 
     public long Quad(WorldObject wo, uint stype)
         => _host.HasGetObjectQuadProperty && _host.TryGetObjectQuadProperty(unchecked((uint)wo.Id), stype, out long v) ? v : 0;
+
+    /// <summary>A float (PropertyFloat) value; 0 when the host cannot read it or the item has none.</summary>
+    public double Double(WorldObject wo, uint stype)
+        => _host.HasGetObjectDoubleProperty && _host.TryGetObjectDoubleProperty(unchecked((uint)wo.Id), stype, out double v) ? v : 0;
+
+    /// <summary>The spell ids on an item (empty when none or the host cannot read them).</summary>
+    public IReadOnlyList<int> SpellIds(WorldObject wo)
+    {
+        if (!_host.HasGetObjectSpellIds) return Array.Empty<int>();
+        var buf = new uint[64];
+        int n = _host.GetObjectSpellIds(unchecked((uint)wo.Id), buf, buf.Length);
+        if (n <= 0) return Array.Empty<int>();
+        var ids = new int[Math.Min(n, buf.Length)];
+        for (int i = 0; i < ids.Length; i++) ids[i] = unchecked((int)buf[i]);
+        return ids;
+    }
 
     public string Str(WorldObject wo, uint stype)
         => _host.HasGetObjectStringProperty && _host.TryGetObjectStringProperty(unchecked((uint)wo.Id), stype, out string v) ? v ?? string.Empty : string.Empty;

@@ -1,16 +1,25 @@
 // IltChunkClap.cs — Lugian-hammer chunking and /clap automation (Gear tab).
 // Originally SilentKelpie's ILT Hub (RynthAi IltHub/); moved to RynthILT 2026-10-13.
 //
-// Chunk: uses the Lugian Aetheria Hammer on eligible items, one at a time:
+// Chunk: uses the Lugian Aetheria Hammer on eligible items, one at a time. The rules follow ub-IT
+// (Leaftide AetheriaChunkGuard / IsValidCorruptedWep / CorruptedChunkGuard):
 //   Aetheria  — "Aetheria"/"Coalesced Aetheria" gems, not equipped, appraised, not flagged
-//               never-chunk (bool 9030), never levelled (ItemTotalXp quad 4 == 0), no kept
-//               C / CD / CDR rating (gear ints 372 / 374 / 375; on by default), and max level
-//               (int 319, up to 10 on ILT) under the configured cap. Coalesced Aetheria has its
-//               level from loot too, so the cap applies to it (it used to skip the cap and could
-//               chunk a level 10 piece).
-//   Corrupted — "Corrupted" melee/missile weapons with no tinks (171), no imbue (179),
-//               not equipped, not never-chunk, cleave (292) <= 1.
-//   Peace mode only unless ChunkInCombat; waits for the result line (10 s max).
+//               never-chunk (bool 9030), not tinkered (171) or imbued (179), never levelled
+//               (ItemTotalXp quad 4 == 0), no kept C / CD / CDR rating (gear ints 372 / 374 / 375;
+//               on by default), and max level (int 319, up to 10 on ILT) under the configured cap.
+//               A levelled Coalesced piece gets the cap too; an unlevelled one (319 = 0 after
+//               appraisal, normal for Coalesced) is chunkable, as in ub-IT. RynthILT used to keep
+//               every unlevelled Coalesced piece forever.
+//   Corrupted — "Corrupted" melee/missile weapons, not equipped, not never-chunk, no tinks (171),
+//               no imbue (179), loot-gen workmanship (105) > 0, and cleave (292) <= 1, or <= 2 on a
+//               two-handed weapon that is not a thrust weapon (RynthILT used to cap every weapon
+//               at 1, so no two-handed corrupted weapon was ever chunked). Optional keep rules
+//               (Crushing Blow, Biting Strike, Armor Cleaving, slayer, multi-strike, elemental
+//               bonus, any spell, max damage, spell ids) are all off by default.
+//   Peace mode only unless ChunkInCombat. With ChunkInCombat on, a busy client in combat mode no
+//   longer blocks the hammer (a swinging bot is always busy); peace mode still waits for idle.
+//   Waits for the result line (10 s max). Each item's skip reason is logged when it changes and
+//   tallied in the status line.
 //   The tool is the "Lugian Aetheria Hammer" only. The Lugian Hammer weapons (Flaming, Acid, ...)
 //   are loot and chunk nothing on ILT: the server answers "done" with no result line. Matching
 //   them by name ending used the Flaming Lugian Hammer on Silentkelpie's 9 Coalesced Aetheria,
@@ -58,6 +67,10 @@ internal sealed class IltChunkClap : IIltFeature
     private bool _manualPass;
     private volatile string _chunkStatus = "idle";
     private int _chunked;
+    // Last skip reason per item, so each reason is logged once instead of every pass.
+    private readonly Dictionary<int, string> _lastSkip = new();
+    // Skip reasons of the current pass (reason -> items), shown in the status line.
+    private readonly Dictionary<string, int> _passSkips = new();
 
     // Clap state
     private long _nextClapAt;
@@ -79,33 +92,80 @@ internal sealed class IltChunkClap : IIltFeature
     private WorldObject? FindHammer()
         => _ctx.Inventory.Items().FirstOrDefault(wo => IsChunkHammer(wo.Name) && !_ctx.Inventory.IsEquipped(wo));
 
-    /// <summary>True/false when decidable; null when appraisal is still needed.</summary>
-    private bool? IsChunkableAetheria(WorldObject wo)
+    /// <summary>Item kinds the hammer works on (the name and class gate, before any appraisal).</summary>
+    internal enum ChunkKind { None, Aetheria, Corrupted }
+
+    /// <summary>
+    /// Which chunk rules an item falls under, by class and name only. Aetheria chunks and powder
+    /// are clap material, not hammer targets. Pure: the tests drive it.
+    /// </summary>
+    internal static ChunkKind KindOf(AcObjectClass cls, string name)
     {
-        if (wo.ObjectClass != AcObjectClass.Gem) return false;
-        bool coalesced = wo.Name.Equals("Coalesced Aetheria", StringComparison.OrdinalIgnoreCase);
-        if (!coalesced && (!wo.Name.Contains("Aetheria", StringComparison.OrdinalIgnoreCase) || wo.Name.Contains("Chunk", StringComparison.OrdinalIgnoreCase)))
-            return false;
+        if (cls == AcObjectClass.Gem)
+        {
+            if (name.Equals("Coalesced Aetheria", StringComparison.OrdinalIgnoreCase)) return ChunkKind.Aetheria;
+            if (name.Contains("Aetheria", StringComparison.OrdinalIgnoreCase)
+                && !name.Contains("Chunk", StringComparison.OrdinalIgnoreCase)
+                && !name.Contains("Powder", StringComparison.OrdinalIgnoreCase))
+                return ChunkKind.Aetheria;
+            return ChunkKind.None;
+        }
+        if (cls is AcObjectClass.MeleeWeapon or AcObjectClass.MissileWeapon
+            && name.Contains("Corrupted", StringComparison.OrdinalIgnoreCase))
+            return ChunkKind.Corrupted;
+        return ChunkKind.None;
+    }
+
+    /// <summary>An aetheria piece's chunk facts, read after appraisal.</summary>
+    internal readonly record struct AetheriaFacts(
+        bool Coalesced, int MaxLevel, bool NeverChunk, long ItemXp, int Tinkers, int Imbue,
+        int Crit, int CritDamage, int CritDamageResist);
+
+    /// <summary>
+    /// Why an aetheria piece is kept, or null when it may be chunked (ub-IT AetheriaChunkGuard plus
+    /// RynthILT's C / CD / CDR keep switches). Pure: the tests drive it.
+    /// </summary>
+    internal static string? AetheriaSkip(IltGearState g, in AetheriaFacts f)
+    {
+        if (f.NeverChunk) return "never-chunk flag";
+        if (f.Tinkers != 0 || f.Imbue != 0) return "tinkered or imbued";
+        if (f.ItemXp != 0) return "has item XP";
+        if (KeptForRatings(g, f.Crit, f.CritDamage, f.CritDamageResist)) return "kept for its C / CD / CDR rating";
+        if (!UnderChunkCap(f.MaxLevel, g.ChunkAetheriaUnderLevel, f.Coalesced))
+            return f.MaxLevel > 0 ? "level at or above the cap" : "no level read";
+        return null;
+    }
+
+    /// <summary>Why an aetheria item is kept (null = chunk it); "appraising" while its data is missing.</summary>
+    private string? AetheriaSkip(WorldObject wo)
+    {
         var inv = _ctx.Inventory;
-        if (inv.IsEquipped(wo)) return false;
-        if (!inv.HasAppraisal(wo)) { inv.RequestAppraisal(wo); return null; }
-        if (inv.Bool(wo, IltInventory.BoolNeverChunk)) return false;
-        if (inv.Quad(wo, IltInventory.QuadItemTotalXp) != 0) return false;
-        if (KeptForRatings(G, inv.Int(wo, IltInventory.IntGearCrit), inv.Int(wo, IltInventory.IntGearCritDamage),
-                           inv.Int(wo, IltInventory.IntGearCritDamageResist)))
-            return false;
-        return UnderChunkCap(inv.Int(wo, IltInventory.IntItemMaxLevel), G.ChunkAetheriaUnderLevel);
+        if (inv.IsEquipped(wo)) return "equipped";
+        if (!inv.HasAppraisal(wo)) { inv.RequestAppraisal(wo); return Appraising; }
+        var f = new AetheriaFacts(
+            Coalesced: wo.Name.Equals("Coalesced Aetheria", StringComparison.OrdinalIgnoreCase),
+            MaxLevel: inv.Int(wo, IltInventory.IntItemMaxLevel),
+            NeverChunk: inv.Bool(wo, IltInventory.BoolNeverChunk),
+            ItemXp: inv.Quad(wo, IltInventory.QuadItemTotalXp),
+            Tinkers: inv.Int(wo, IltInventory.IntNumTimesTinkered),
+            Imbue: inv.Int(wo, IltInventory.IntImbuedEffect),
+            Crit: inv.Int(wo, IltInventory.IntGearCrit),
+            CritDamage: inv.Int(wo, IltInventory.IntGearCritDamage),
+            CritDamageResist: inv.Int(wo, IltInventory.IntGearCritDamageResist));
+        return AetheriaSkip(G, f);
     }
 
     /// <summary>The chunk cap in range: 1 (chunk nothing by level) to one past the ILT maximum (every level).</summary>
     internal static int ClampUnderLevel(int under) => Math.Clamp(under, 1, IltInventory.AetheriaMaxLevel + 1);
 
     /// <summary>
-    /// True when an aetheria's max level (int 319) is under the cap. Coalesced Aetheria has its level
-    /// from loot (ACECustom rolls 1-10; level 6+ can carry a rating), so it gets the same cap.
-    /// 0 = no level read: never chunked. Pure: the tests drive it.
+    /// True when an aetheria's max level (int 319) is under the cap. A levelled Coalesced piece
+    /// (ACECustom rolls 1-10; level 6+ can carry a rating) gets the same cap. Level 0 after
+    /// appraisal: an unlevelled Coalesced piece is chunkable (ub-IT: "ItemMaxLevel 0 after assess
+    /// is normal"); any other aetheria with no level is never chunked. Pure: the tests drive it.
     /// </summary>
-    internal static bool UnderChunkCap(int maxLevel, int under) => maxLevel > 0 && maxLevel < ClampUnderLevel(under);
+    internal static bool UnderChunkCap(int maxLevel, int under, bool coalesced = false)
+        => maxLevel > 0 ? maxLevel < ClampUnderLevel(under) : coalesced && maxLevel == 0;
 
     /// <summary>
     /// True when an aetheria's C / CD / CDR rating is one the settings keep (any rating above 0 with
@@ -116,28 +176,152 @@ internal sealed class IltChunkClap : IIltFeature
            || (g.KeepAetheriaWithCritDamage && critDamage > 0)
            || (g.KeepAetheriaWithCritDamageResist && critDamageResist > 0);
 
-    private bool? IsChunkableCorrupted(WorldObject wo)
+    private const string Appraising = "appraising";
+    private const int SkillTwoHandedCombat = 41;
+    private const int WeaponTypeTwoHanded = 11;
+    private const int AttackTypeThrust = 2;
+
+    /// <summary>A corrupted weapon's chunk facts, read after appraisal.</summary>
+    internal sealed record CorruptedFacts
     {
-        if (wo.ObjectClass is not (AcObjectClass.MeleeWeapon or AcObjectClass.MissileWeapon)) return false;
-        if (!wo.Name.Contains("Corrupted", StringComparison.OrdinalIgnoreCase)) return false;
-        var inv = _ctx.Inventory;
-        if (inv.IsEquipped(wo)) return false;
-        if (!inv.HasAppraisal(wo)) { inv.RequestAppraisal(wo); return null; }
-        if (inv.Bool(wo, IltInventory.BoolNeverChunk)) return false;
-        if (inv.Int(wo, IltInventory.IntNumTimesTinkered) != 0 || inv.Int(wo, IltInventory.IntImbuedEffect) != 0) return false;
-        return inv.Int(wo, IltInventory.IntCleaving) <= 1;
+        public bool NeverChunk { get; init; }
+        public int Tinkers { get; init; }
+        public int Imbue { get; init; }
+        public int Workmanship { get; init; }
+        public int AttackType { get; init; }
+        public int Cleaving { get; init; }
+        public int WieldSkill { get; init; }
+        public int WeaponType { get; init; }
+        public double CritFrequency { get; init; }
+        public double CritMultiplier { get; init; }
+        public double IgnoreArmor { get; init; }
+        public int Slayer { get; init; }
+        public int ElementalBonus { get; init; }
+        public int MaxDamage { get; init; }
+        public IReadOnlyList<int> Spells { get; init; } = Array.Empty<int>();
     }
 
-    private WorldObject? NextChunkTarget()
+    /// <summary>
+    /// The most cleave a chunkable corrupted weapon may have (ub-IT IsValidCorruptedWep): 2 on a
+    /// two-handed weapon that is not a thrust weapon, 1 on everything else. Pure: the tests drive it.
+    /// </summary>
+    internal static int MaxChunkCleave(int wieldSkill, int weaponType, int attackType)
+        => (wieldSkill == SkillTwoHandedCombat || weaponType == WeaponTypeTwoHanded) && attackType != AttackTypeThrust ? 2 : 1;
+
+    /// <summary>
+    /// Why a corrupted weapon is kept, or null when it may be chunked: ub-IT's hard rules, then its
+    /// IdleActs keep rules from the settings. Pure: the tests drive it.
+    /// </summary>
+    internal static string? CorruptedSkip(IltGearState g, CorruptedFacts f)
     {
-        foreach (var wo in _ctx.Inventory.Items())
+        // Hard rules (always on).
+        if (f.NeverChunk) return "never-chunk flag";
+        if (f.Tinkers != 0 || f.Imbue != 0) return "tinkered or imbued";
+        if (f.Workmanship <= 0) return "no workmanship";
+        if (f.Cleaving > MaxChunkCleave(f.WieldSkill, f.WeaponType, f.AttackType)) return "cleave over the limit";
+
+        // Keep rules (each off by default).
+        if (g.KeepCorruptedCrushingBlow && f.CritFrequency > 0) return "kept: Crushing Blow";
+        if (g.KeepCorruptedBitingStrike && f.CritMultiplier > 0) return "kept: Biting Strike";
+        if (g.KeepCorruptedArmorCleaving && f.IgnoreArmor > 0) return "kept: Armor Cleaving";
+        if (g.KeepCorruptedAnySlayer && f.Slayer > 0) return "kept: slayer";
+        if (g.KeepCorruptedMultiStrike && f.AttackType is 160 or 166 or 486) return "kept: multi-strike";
+        if (g.KeepCorruptedElementalBonus && f.ElementalBonus > 0) return "kept: elemental bonus";
+        if (g.KeepCorruptedMaxDamageAtLeast > 0 && f.MaxDamage >= g.KeepCorruptedMaxDamageAtLeast) return "kept: max damage";
+        if (f.Spells.Count > 0)
         {
-            if (_skip.Contains(wo.Id)) continue;
-            if ((G.AutoChunkAetheria || _manualPass) && IsChunkableAetheria(wo) == true) return wo;
-            if ((G.AutoChunkCorrupted || _manualPass) && IsChunkableCorrupted(wo) == true) return wo;
+            if (g.KeepCorruptedAnySpell) return "kept: has a spell";
+            var deny = ParseSpellIds(g.KeepCorruptedSpellIds);
+            if (deny.Count > 0 && f.Spells.Any(deny.Contains)) return "kept: listed spell";
         }
         return null;
     }
+
+    /// <summary>Positive spell ids from a comma / semicolon / whitespace separated list. Pure: the tests drive it.</summary>
+    internal static HashSet<int> ParseSpellIds(string? csv)
+    {
+        var ids = new HashSet<int>();
+        if (string.IsNullOrWhiteSpace(csv)) return ids;
+        foreach (var part in csv.Split(new[] { ',', ';', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            if (int.TryParse(part, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int id) && id > 0)
+                ids.Add(id);
+        return ids;
+    }
+
+    /// <summary>Why a corrupted weapon is kept (null = chunk it); "appraising" while its data is missing.</summary>
+    private string? CorruptedSkip(WorldObject wo)
+    {
+        var inv = _ctx.Inventory;
+        if (inv.IsEquipped(wo)) return "equipped";
+        if (!inv.HasAppraisal(wo)) { inv.RequestAppraisal(wo); return Appraising; }
+        var f = new CorruptedFacts
+        {
+            NeverChunk = inv.Bool(wo, IltInventory.BoolNeverChunk),
+            Tinkers = inv.Int(wo, IltInventory.IntNumTimesTinkered),
+            Imbue = inv.Int(wo, IltInventory.IntImbuedEffect),
+            Workmanship = inv.Int(wo, IltInventory.IntItemWorkmanship),
+            AttackType = inv.Int(wo, IltInventory.IntAttackType),
+            Cleaving = inv.Int(wo, IltInventory.IntCleaving),
+            WieldSkill = inv.Int(wo, IltInventory.IntWieldSkillType),
+            WeaponType = inv.Int(wo, IltInventory.IntWeaponType),
+            CritFrequency = inv.Double(wo, IltInventory.FloatCriticalFrequency),
+            CritMultiplier = inv.Double(wo, IltInventory.FloatCriticalMultiplier),
+            IgnoreArmor = inv.Double(wo, IltInventory.FloatIgnoreArmor),
+            Slayer = inv.Int(wo, IltInventory.IntSlayerCreatureType),
+            ElementalBonus = inv.Int(wo, IltInventory.IntElementalDamageBonus),
+            MaxDamage = inv.Int(wo, IltInventory.IntDamage),
+            // Spells are only read when a spell rule is on (the read copies the item's spell list).
+            Spells = G.KeepCorruptedAnySpell || !string.IsNullOrWhiteSpace(G.KeepCorruptedSpellIds)
+                ? inv.SpellIds(wo) : Array.Empty<int>(),
+        };
+        return CorruptedSkip(G, f);
+    }
+
+    /// <summary>
+    /// Chunk is allowed while the client is busy only in combat mode with ChunkInCombat on (ub-IT
+    /// AutoChunkCombatBusyPolicy v2.0.1059: a swinging bot is always busy). Peace mode still waits
+    /// for idle so the hammer never interrupts another use. Pure: the tests drive it.
+    /// </summary>
+    internal static bool AllowsChunkWhileBusy(bool isBusy, bool isPeace, bool chunkInCombat)
+        => !isBusy || (!isPeace && chunkInCombat);
+
+    private WorldObject? NextChunkTarget()
+    {
+        _passSkips.Clear();
+        foreach (var wo in _ctx.Inventory.Items())
+        {
+            if (_skip.Contains(wo.Id)) continue;
+            string? reason;
+            switch (KindOf(wo.ObjectClass, wo.Name))
+            {
+                case ChunkKind.Aetheria when G.AutoChunkAetheria || _manualPass:
+                    reason = AetheriaSkip(wo);
+                    break;
+                case ChunkKind.Corrupted when G.AutoChunkCorrupted || _manualPass:
+                    reason = CorruptedSkip(wo);
+                    break;
+                default:
+                    continue;
+            }
+            if (reason == null) { _lastSkip.Remove(wo.Id); return wo; }
+            NoteSkip(wo, reason);
+        }
+        return null;
+    }
+
+    /// <summary>Tallies a skip for the status line and logs it once per item and reason.</summary>
+    private void NoteSkip(WorldObject wo, string reason)
+    {
+        _passSkips[reason] = _passSkips.TryGetValue(reason, out int n) ? n + 1 : 1;
+        if (reason == Appraising) return;
+        if (_lastSkip.TryGetValue(wo.Id, out string? last) && last == reason) return;
+        _lastSkip[wo.Id] = reason;
+        RynthLog.Write(LogCat.IltGear, $"chunk: keep 0x{(uint)wo.Id:X8} '{wo.Name}': {reason}");
+    }
+
+    /// <summary>"3 kept for its C / CD / CDR rating, 1 appraising" — the current pass's skips.</summary>
+    private string PassSkipSummary()
+        => string.Join(", ", _passSkips.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Value} {kv.Key}"));
 
     /// <summary>Runs one chunk pass now (both item kinds) regardless of the auto toggles.</summary>
     public void ChunkNow()
@@ -163,15 +347,18 @@ internal sealed class IltChunkClap : IIltFeature
         if (now - _lastChunkAt < Math.Max(500, G.ChunkIntervalMs)) return;
         _lastChunkAt = now;
 
-        if (!G.ChunkInCombat && !_ctx.Inventory.InPeaceMode) { _chunkStatus = "waiting for peace mode"; return; }
-        if (_ctx.Inventory.IsBusy) return;
+        bool peace = _ctx.Inventory.InPeaceMode;
+        if (!G.ChunkInCombat && !peace) { _chunkStatus = "waiting for peace mode"; return; }
+        if (!AllowsChunkWhileBusy(_ctx.Inventory.IsBusy, peace, G.ChunkInCombat)) { _chunkStatus = "waiting for idle"; return; }
 
         var hammer = FindHammer();
         if (hammer == null) { _chunkStatus = $"no {HammerName} carried"; _manualPass = false; return; }
         var target = NextChunkTarget();
         if (target == null)
         {
+            string kept = PassSkipSummary();
             _chunkStatus = (_chunked > 0 ? $"nothing left to chunk ({_chunked} this session)" : "nothing eligible")
+                         + (kept.Length > 0 ? $"; not chunked: {kept}" : "")
                          + (_skip.Count > 0 ? $"; {_skip.Count} skipped with no answer (Chunk now retries them)" : "");
             _manualPass = false;
             return;
@@ -343,6 +530,7 @@ internal sealed class IltChunkClap : IIltFeature
     {
         _waitingOn = 0;
         _skip.Clear();
+        _lastSkip.Clear();
         _manualPass = false;
         _clapWasEnabled = false;
     }
@@ -361,7 +549,7 @@ internal sealed class IltChunkClap : IIltFeature
         ImGui.SetNextItemWidth(100);
         if (ImGui.InputInt("Chunk aetheria with max level below", ref under)) G.ChunkAetheriaUnderLevel = ClampUnderLevel(under);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip($"Infinite Leaftide aetheria goes up to level {IltInventory.AetheriaMaxLevel}; {IltInventory.AetheriaMaxLevel + 1} chunks every level.\nApplies to Coalesced Aetheria too: it has its level before it is revealed.");
+            ImGui.SetTooltip($"Infinite Leaftide aetheria goes up to level {IltInventory.AetheriaMaxLevel}; {IltInventory.AetheriaMaxLevel + 1} chunks every level.\nA levelled Coalesced Aetheria gets the cap too; an unlevelled one (level 0 after appraisal) is chunked, as in ub-IT.");
         bool kc = G.KeepAetheriaWithCrit, kcd = G.KeepAetheriaWithCritDamage, kcdr = G.KeepAetheriaWithCritDamageResist;
         ImGui.TextUnformatted("Never chunk aetheria with:");
         ImGui.SameLine();
@@ -373,6 +561,32 @@ internal sealed class IltChunkClap : IIltFeature
         ImGui.SameLine();
         if (ImGui.Checkbox("CDR##keepcdr", ref kcdr)) G.KeepAetheriaWithCritDamageResist = kcdr;
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("A Crit Damage Resist rating (GearCritDamageResist).");
+        if (ImGui.TreeNode("Corrupted weapon keep rules##corrkeep"))
+        {
+            // ub-IT IdleActs > Corr Chunk: each matching rule keeps the weapon.
+            bool cb = G.KeepCorruptedCrushingBlow, bs = G.KeepCorruptedBitingStrike, acl = G.KeepCorruptedArmorCleaving;
+            bool sl = G.KeepCorruptedAnySlayer, ms = G.KeepCorruptedMultiStrike, el = G.KeepCorruptedElementalBonus, sp = G.KeepCorruptedAnySpell;
+            if (ImGui.Checkbox("Crushing Blow##ck", ref cb)) G.KeepCorruptedCrushingBlow = cb;
+            ImGui.SameLine();
+            if (ImGui.Checkbox("Biting Strike##ck", ref bs)) G.KeepCorruptedBitingStrike = bs;
+            ImGui.SameLine();
+            if (ImGui.Checkbox("Armor Cleaving##ck", ref acl)) G.KeepCorruptedArmorCleaving = acl;
+            if (ImGui.Checkbox("Any slayer##ck", ref sl)) G.KeepCorruptedAnySlayer = sl;
+            ImGui.SameLine();
+            if (ImGui.Checkbox("Multi-strike##ck", ref ms)) G.KeepCorruptedMultiStrike = ms;
+            ImGui.SameLine();
+            if (ImGui.Checkbox("Elemental bonus##ck", ref el)) G.KeepCorruptedElementalBonus = el;
+            if (ImGui.Checkbox("Any spell##ck", ref sp)) G.KeepCorruptedAnySpell = sp;
+            int maxDmg = G.KeepCorruptedMaxDamageAtLeast;
+            ImGui.SetNextItemWidth(100);
+            if (ImGui.InputInt("Keep max damage at least (0 = off)##ck", ref maxDmg)) G.KeepCorruptedMaxDamageAtLeast = Math.Max(0, maxDmg);
+            string ids = G.KeepCorruptedSpellIds ?? "";
+            ImGui.SetNextItemWidth(220);
+            if (ImGui.InputText("Keep spell ids##ck", ref ids, 512)) G.KeepCorruptedSpellIds = ids;
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Comma or space separated spell ids: a corrupted weapon carrying any of them is kept.");
+            SafeImGui.TextDisabled("Always kept: tinkered, imbued, no workmanship, cleave over 1 (2 on two-handed, non-thrust).");
+            ImGui.TreePop();
+        }
         if (ImGui.Button("Chunk eligible items now...")) _ctx.Confirm("Chunk items",
             "Run one chunk pass now on every eligible aetheria and corrupted weapon?\nChunked items are destroyed.",
             ChunkNow, "Chunk");
