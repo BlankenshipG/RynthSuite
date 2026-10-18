@@ -18,6 +18,13 @@ internal sealed partial class ExpressionEngine
     /// hascorpsebeenopenedbyme[] and getcorpsesunopenedbyme[]. Null: none known.</summary>
     internal Func<int, bool>? CorpseOpenedByMe { get; set; }
 
+    /// <summary>The meta manager's '/vt opt set' (VTank names, distances in landblock units, the
+    /// special options), for vtsetsetting[]; null: the plain settings map (an engine without one).</summary>
+    internal Func<string, string, bool>? VtOptionSetter { get; set; }
+
+    /// <summary>The meta manager's '/vt opt get' (values read back in VTank's units), for vtgetsetting[].</summary>
+    internal Func<string, string?>? VtOptionGetter { get; set; }
+
     // getcooldownexpiration: shared cooldowns are enchantments whose spell id has this bit.
     private const uint CooldownSpellFlag = 0x8000;
 

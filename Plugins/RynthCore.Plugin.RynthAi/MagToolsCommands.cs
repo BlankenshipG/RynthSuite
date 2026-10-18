@@ -302,11 +302,45 @@ public sealed partial class RynthAiPlugin
 
     private bool HandleMtFace(string[] parts)
     {
-        // /mt face <degrees>
-        if (parts.Length < 3 || !float.TryParse(parts[2], out float degrees)) return false;
-        if (!Host.HasTurnToHeading) { ChatLine("[RynthAi] TurnToHeading not available."); return true; }
+        // /mt face <degrees> (Mag-Tools) and /ub face <degrees> (ub-IT, translated here). The heading
+        // may have decimals (getheadingto[] gives them), read the same on every PC; or a coordinate
+        // ("42.1N, 33.6E") to face that spot.
+        if (parts.Length < 3) return false;
+        string arg = string.Join(" ", parts, 2, parts.Length - 2).Trim();
+        double heading;
+        if (double.TryParse(arg, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double deg))
+            heading = deg;
+        else if (!TryHeadingToCoords(arg, out heading))
+            return false;
 
-        Host.TurnToHeadingBy("Command", degrees);
+        // The jumper holds navigation while it turns (nav would turn the character back) and turns
+        // again until it faces the heading, as ub-IT does; without it, one plain turn.
+        if (_jumper != null) _jumper.Face(heading);
+        else if (Host.HasTurnToHeading) Host.TurnToHeadingBy("Command", (float)(((heading % 360) + 360) % 360));
+        else ChatLine("[RynthAi] TurnToHeading not available.");
+        return true;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex FaceCoordsRx = new(
+        @"^\s*(?<ns>\d+(?:\.\d+)?)\s*(?<nsc>[NnSs])[\s,]*(?<ew>\d+(?:\.\d+)?)\s*(?<ewc>[EeWw])\s*$",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The heading from the character to a "42.1N, 33.6E" coordinate (AC's: 0 north, 90 east, the
+    /// same as getheadingto[]). False when the text isn't a coordinate or our position is unknown.
+    /// </summary>
+    private bool TryHeadingToCoords(string text, out double heading)
+    {
+        heading = 0;
+        var m = FaceCoordsRx.Match(text);
+        if (!m.Success || !NavCoordinateHelper.TryGetNavCoords(Host, out double myNs, out double myEw)) return false;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        double ns = double.Parse(m.Groups["ns"].Value, inv) * (char.ToUpperInvariant(m.Groups["nsc"].Value[0]) == 'S' ? -1 : 1);
+        double ew = double.Parse(m.Groups["ew"].Value, inv) * (char.ToUpperInvariant(m.Groups["ewc"].Value[0]) == 'W' ? -1 : 1);
+        double dNs = ns - myNs, dEw = ew - myEw;
+        if (Math.Abs(dNs) < 1e-6 && Math.Abs(dEw) < 1e-6) return false;
+        heading = Math.Atan2(dEw, dNs) * (180.0 / Math.PI);
+        if (heading < 0) heading += 360.0;
         return true;
     }
 

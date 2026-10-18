@@ -559,8 +559,12 @@ internal sealed partial class ExpressionEngine
             // UB vtgetmeta[]: the loaded meta's name (file name without extension).
             "vtgetmeta" or "ragetmeta" => string.IsNullOrEmpty(_settings?.CurrentMetaPath)
                 ? "" : Path.GetFileNameWithoutExtension(_settings!.CurrentMetaPath),
-            "rasetsetting" or "vtsetsetting"     => EvalVtSetSetting(Text(0), A(1)),
-            "ragetsetting" or "vtgetsetting" or "vtankgetsetting" => EvalVtGetSetting(Text(0)),
+            // vt*: VTank option names and units (landblock distances), the same as '/vt opt set|get';
+            // ra*: RynthAi's own setting names, as they are.
+            "vtsetsetting"                       => VtOptionSetter != null && Text(0).Length > 0 ? (VtOptionSetter(Text(0), A(1)) ? "1" : "0") : EvalVtSetSetting(Text(0), A(1)),
+            "vtgetsetting" or "vtankgetsetting"  => VtOptionGetter != null && Text(0).Length > 0 ? VtOptionGetter(Text(0)) ?? "" : EvalVtGetSetting(Text(0)),
+            "rasetsetting"                       => EvalVtSetSetting(Text(0), A(1)),
+            "ragetsetting"                       => EvalVtGetSetting(Text(0)),
 
             // ── Dynamic evaluation ────────────────────────────────────────────
             "exec"      => Evaluate(A(0)),
@@ -3679,6 +3683,7 @@ internal sealed partial class ExpressionEngine
             ["CorpseApproachRangeMin"] = (() => D(s.CorpseApproachRangeMin), v => { if (double.TryParse(v, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out double d)) s.CorpseApproachRangeMin = d; }),
             ["ManaStoneKeepCount"]     = (() => I(s.ManaStoneKeepCount),     v => { if (int.TryParse(v, out int i)) s.ManaStoneKeepCount = i; }),
             ["RebuffSecondsRemaining"] = (() => I(s.RebuffSecondsRemaining), v => { if (int.TryParse(v, out int i)) s.RebuffSecondsRemaining = i; }),
+            ["BlacklistTimeoutSec"]    = (() => I(s.BlacklistTimeoutSec),    v => { if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) && d >= 0) s.BlacklistTimeoutSec = (int)Math.Round(d); }),
             ["RebuffTopOffSecondsRemaining"] = (() => I(s.RebuffTopOffSecondsRemaining), v => { if (int.TryParse(v, out int i)) s.RebuffTopOffSecondsRemaining = i; }),
             ["CastBuffsOverItemBuffs"]       = (() => B(s.CastBuffsOverItemBuffs),       v => s.CastBuffsOverItemBuffs       = ToDouble(v) != 0),
             ["FastBuffChain"]                = (() => B(s.FastBuffChain),                v => s.FastBuffChain                = ToDouble(v) != 0),

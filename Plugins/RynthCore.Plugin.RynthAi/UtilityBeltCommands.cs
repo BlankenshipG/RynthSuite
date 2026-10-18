@@ -90,6 +90,10 @@ public sealed partial class RynthAiPlugin
         if (IsUbRythaiCommand(cmd, SplitUbLine(fullCommand).Args))
             return true;
 
+        // "/ub vtsetmetastate[State]" and the like: an expression, not a verb.
+        if (TryHandleUbExpression(fullCommand))
+            return true;
+
         // /ub jump[swzxc] [heading] [holdtime] — see Jumper.cs
         if (cmd.StartsWith("jump", StringComparison.Ordinal))
         {
