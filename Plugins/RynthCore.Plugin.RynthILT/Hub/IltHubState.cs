@@ -218,6 +218,11 @@ public sealed class IltGearState
     public bool KeepAetheriaWithCritDamage = true;
     /// <summary>Never chunk aetheria carrying a Crit Damage Resist rating (CDR, GearCritDamageResist 375).</summary>
     public bool KeepAetheriaWithCritDamageResist = true;
+    /// <summary>
+    /// Rating level for the C / CD / CDR keep switches: a rating at or above this keeps the piece,
+    /// a lower one does not protect it (it chunks if the other rules allow). 1 = any rating keeps.
+    /// </summary>
+    public int KeepAetheriaRatingAtLeast = 1;
 
     // Corrupted-weapon keep rules (ub-IT IdleActs > Corr Chunk). All off by default, as in ub-IT:
     // the hard rules (unmodified, workmanship, cleaving, never-chunk) always apply on top.

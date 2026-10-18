@@ -6,7 +6,8 @@
 //   Aetheria  — "Aetheria"/"Coalesced Aetheria" gems, not equipped, appraised, not flagged
 //               never-chunk (bool 9030), not tinkered (171) or imbued (179), never levelled
 //               (ItemTotalXp quad 4 == 0), no kept C / CD / CDR rating (gear ints 372 / 374 / 375;
-//               on by default), and max level (int 319, up to 10 on ILT) under the configured cap.
+//               on by default; only a rating at or above the "rating level" keeps, a lower one
+//               chunks), and max level (int 319, up to 10 on ILT) under the configured cap.
 //               A levelled Coalesced piece gets the cap too; an unlevelled one (319 = 0 after
 //               appraisal, normal for Coalesced) is chunkable, as in ub-IT. RynthILT used to keep
 //               every unlevelled Coalesced piece forever.
@@ -167,14 +168,25 @@ internal sealed class IltChunkClap : IIltFeature
     internal static bool UnderChunkCap(int maxLevel, int under, bool coalesced = false)
         => maxLevel > 0 ? maxLevel < ClampUnderLevel(under) : coalesced && maxLevel == 0;
 
+    /// <summary>Highest rating level the keep threshold accepts.</summary>
+    internal const int MaxRatingLevel = 50;
+
+    /// <summary>The rating keep threshold in range: 1 (any rating keeps) to <see cref="MaxRatingLevel"/>.</summary>
+    internal static int ClampRatingLevel(int level) => Math.Clamp(level, 1, MaxRatingLevel);
+
     /// <summary>
-    /// True when an aetheria's C / CD / CDR rating is one the settings keep (any rating above 0 with
-    /// its keep switch on). Pure: the tests drive it.
+    /// True when an aetheria's C / CD / CDR rating is one the settings keep: its keep switch is on and
+    /// the rating is at or above the rating level (<see cref="IltGearState.KeepAetheriaRatingAtLeast"/>).
+    /// A rating below that level does not protect the piece, so e.g. a C 1 Coalesced Aetheria chunks
+    /// with the level at 2 while a C 2 one is kept. Pure: the tests drive it.
     /// </summary>
     internal static bool KeptForRatings(IltGearState g, int crit, int critDamage, int critDamageResist)
-        => (g.KeepAetheriaWithCrit && crit > 0)
-           || (g.KeepAetheriaWithCritDamage && critDamage > 0)
-           || (g.KeepAetheriaWithCritDamageResist && critDamageResist > 0);
+    {
+        int min = ClampRatingLevel(g.KeepAetheriaRatingAtLeast);
+        return (g.KeepAetheriaWithCrit && crit >= min)
+               || (g.KeepAetheriaWithCritDamage && critDamage >= min)
+               || (g.KeepAetheriaWithCritDamageResist && critDamageResist >= min);
+    }
 
     private const string Appraising = "appraising";
     private const int SkillTwoHandedCombat = 41;
@@ -561,6 +573,13 @@ internal sealed class IltChunkClap : IIltFeature
         ImGui.SameLine();
         if (ImGui.Checkbox("CDR##keepcdr", ref kcdr)) G.KeepAetheriaWithCritDamageResist = kcdr;
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("A Crit Damage Resist rating (GearCritDamageResist).");
+        int ratingAt = G.KeepAetheriaRatingAtLeast;
+        ImGui.SetNextItemWidth(100);
+        if (ImGui.InputInt("Keep when the rating is at least##keeprating", ref ratingAt)) G.KeepAetheriaRatingAtLeast = ClampRatingLevel(ratingAt);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Rating level for the C / CD / CDR switches above (Coalesced Aetheria and revealed aetheria).\n"
+                           + "At or above this level: kept. Below it: the rating does not protect the piece, so it chunks\n"
+                           + "if the level cap and the other rules allow. 1 = any rating keeps.");
         if (ImGui.TreeNode("Corrupted weapon keep rules##corrkeep"))
         {
             // ub-IT IdleActs > Corr Chunk: each matching rule keeps the weapon.
