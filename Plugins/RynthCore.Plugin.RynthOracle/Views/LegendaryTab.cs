@@ -17,8 +17,7 @@ internal sealed partial class OracleView
     {
         QuestFlagStore flags = _c.Flags;
         DateTime now = _c.UtcNow;
-        if (flags.LastReadUtc == DateTime.MinValue)
-            w.TextDisabled("Quest flags not read yet (Quests tab, Refresh).");
+        QuestFlagsBar(w, "lg", "legendary quests");
 
         int have = 0, ready = 0;
         long lumMissing = 0;

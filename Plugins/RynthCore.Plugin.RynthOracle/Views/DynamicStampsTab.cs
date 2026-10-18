@@ -63,6 +63,22 @@ internal sealed partial class OracleView
         if (_dynNavStatus.Length > 0) w.TextDisabled(_dynNavStatus);
     }
 
+    // A /myquests read this long after a Parchment hand-in (the walk there and the NPC's answer), so
+    // the new stamp shows as had; 0 = none due.
+    private const long HandInRefreshMs = 8000;
+    private long _dynRefreshAt;
+
+    /// <summary>The read after a hand-in, when it is due: now, or when the server's once-a-minute wait ends.</summary>
+    private void RefreshAfterHandIn(QuestFlagStore flags)
+    {
+        if (_dynRefreshAt == 0 || _c.NowMs < _dynRefreshAt) return;
+        if (flags.Loading) return;
+        int wait = flags.ThrottleSecondsLeft(_c.NowMs);
+        if (wait > 0) { _dynRefreshAt = _c.NowMs + wait * 1000L; return; }
+        _dynRefreshAt = 0;
+        _c.RequestQuests();
+    }
+
     // Packs scanned for a Parchment at most this often (the box draws every frame).
     private const long ParchmentScanMs = 1500;
     private long _parchmentScanAt;
@@ -103,6 +119,8 @@ internal sealed partial class OracleView
         if (!_c.InWorld) { _dynNavStatus = "Log in first."; return; }
         bool sent = _c.RunCommand($"/ub give 1 {parchment} to {s.Npc}");
         _parchmentScanAt = 0;   // read the packs again after the give
+        // The stamp is a quest flag: read /myquests again once the NPC has had time to answer.
+        if (sent) _dynRefreshAt = _c.NowMs + HandInRefreshMs;
         _dynNavStatus = sent
             ? $"Giving {parchment} to {s.Npc} (RynthAi does the give; it says so in chat if {s.Npc} isn't in sight)."
             : "Could not send the give.";
@@ -145,8 +163,8 @@ internal sealed partial class OracleView
     private void DrawDynamicStamps(UiWindow w)
     {
         QuestFlagStore flags = _c.Flags;
-        if (flags.LastReadUtc == DateTime.MinValue)
-            w.TextDisabled("Quest flags not read yet (Quests tab, Refresh).");
+        QuestFlagsBar(w, "dy", "stamps");
+        RefreshAfterHandIn(flags);
 
         List<DynamicStamp> all = DynamicStampList.All;
         int have = 0;

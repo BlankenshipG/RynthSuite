@@ -16,8 +16,7 @@ internal sealed partial class OracleView
         QuestFlagStore flags = _c.Flags;
         Func<uint, int> prop = _c.Props;
         DateTime now = _c.UtcNow;
-        if (flags.LastReadUtc == DateTime.MinValue)
-            w.TextDisabled("Quest flags not read yet (Quests tab, Refresh): gem timers and seer auras show as not done.");
+        QuestFlagsBar(w, "au", "gem timers and seer auras");
 
         if (w.CollapsingHeader("Augmentation gem quests", "a.gems", defaultOpen: true))
         {
