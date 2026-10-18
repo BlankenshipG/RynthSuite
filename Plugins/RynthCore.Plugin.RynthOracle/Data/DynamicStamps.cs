@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace RynthCore.Plugin.RynthOracle.Data;
 
@@ -48,6 +49,50 @@ internal sealed class DynamicStamp
     }
 
     public bool Have(QuestFlagStore flags) => MatchedFlag(flags) != null;
+
+    // Coordinates as the sheet writes them: "8.8S, 53.1E", "75.9S 57.3E", "42.6n 62.4e".
+    private static readonly System.Text.RegularExpressions.Regex CoordsRx = new(
+        @"(?<ns>\d+(?:\.\d+)?)\s*(?<nsc>[NnSs])[\s,]*(?<ew>\d+(?:\.\d+)?)\s*(?<ewc>[EeWw])",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    // Sheet areas that are groupings, not places on the map.
+    private static readonly HashSet<string> NotPlaces = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Looking Around", "Odd Stamps", "Odd Stamps 2",
+    };
+
+    /// <summary>
+    /// Where RynthNav should go for this stamp, best first (RynthNav takes the first that is on its
+    /// map): the coordinates in the note or the place, the place and its parts ("Mhoire Castle -
+    /// Great Hall" also tries "Mhoire Castle"), the NPC, then the area. Empty when there is nothing.
+    /// </summary>
+    public List<string> NavCandidates()
+    {
+        var list = new List<string>();
+        void Add(string s)
+        {
+            s = s.Trim().Trim('.', ',', ';', ':').Trim();
+            if (s.Length >= 4 && !char.IsDigit(s[0]) && !list.Contains(s, StringComparer.OrdinalIgnoreCase)) list.Add(s);
+        }
+
+        foreach (string text in new[] { Note, Place })
+        {
+            var m = CoordsRx.Match(text);
+            if (!m.Success) continue;
+            string c = $"{m.Groups["ns"].Value}{char.ToUpperInvariant(m.Groups["nsc"].Value[0])}, {m.Groups["ew"].Value}{char.ToUpperInvariant(m.Groups["ewc"].Value[0])}";
+            if (!list.Contains(c)) list.Add(c);
+        }
+
+        string place = CoordsRx.Replace(Place, " ");
+        place = System.Text.RegularExpressions.Regex.Replace(place, @"\b(at|in the|nearby)\b", " ", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        place = System.Text.RegularExpressions.Regex.Replace(place, @"\s+", " ").Trim();
+        Add(place);
+        foreach (string part in place.Split(new[] { " - ", " / ", "(", ")" }, StringSplitOptions.RemoveEmptyEntries))
+            Add(part);
+        Add(Npc);
+        if (!NotPlaces.Contains(Area)) Add(Area);
+        return list;
+    }
 
     /// <summary>A truncated stamp shorter than this is matched exactly only (too many flags share a short stem).</summary>
     public const int MinPrefixLength = 14;

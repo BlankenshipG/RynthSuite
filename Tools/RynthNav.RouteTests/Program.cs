@@ -400,6 +400,13 @@ internal static partial class Program
         Check(atlas.Search("glimmering cave", null, 50).Count == 1, "case-insensitive");
         Check(atlas.Search("cave glimmering", null, 50).Count == 1, "every word, any order");
 
+        // "a || b || c" (Oracle's Dynamic Stamps): the first candidate on the map, whole words only.
+        Check(atlas.FirstOnMap("8.8S, 53.1E || Holtburg", false, 0, 0) == "8.8S, 53.1E", "coordinates first");
+        Check(atlas.FirstOnMap("Nowhere Keep || Holtburg || Glimmering Cave", false, 0, 0) == "Holtburg", "the first place on the map");
+        Check(atlas.FirstOnMap("Cave Hermit || Holtburg", false, 0, 0) == "Holtburg", "a place with no map position is skipped");
+        Check(atlas.FirstOnMap("olt || Holtburg", false, 0, 0) == "Holtburg", "inside a word ('olt' in Holtburg) doesn't count");
+        Check(atlas.FirstOnMap("zzz || qqq", false, 0, 0) == null, "none on the map");
+
         var p2 = atlas.ById(2)!;
         Check(p2.HasDest && p2.DestOnMap, "portal destination");
         Near(p2.DestNs, 42.08, 1e-9, "portal destination NS");

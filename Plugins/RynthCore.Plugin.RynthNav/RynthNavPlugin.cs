@@ -25,7 +25,7 @@ namespace RynthCore.Plugin.RynthNav;
 public sealed partial class RynthNavPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthNav");
-    internal const string PluginVersion = "0.6.6";
+    internal const string PluginVersion = "0.6.8";
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi(PluginVersion);
 
     /// <summary>Lets PluginExports log through this plugin's host (the base Log is protected).</summary>

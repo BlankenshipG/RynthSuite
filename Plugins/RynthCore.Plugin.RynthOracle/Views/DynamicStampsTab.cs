@@ -17,6 +17,62 @@ internal sealed partial class OracleView
     private string _dynSearch = "";
     private int _dynArea;   // 0 = all areas, else DynamicStampList.Areas[n - 1]
 
+    // The stamp clicked last: the box at the top offers RynthNav's auto nav to it.
+    private DynamicStamp? _dynNav;
+    private bool _dynNavDone;
+    private string _dynNavStatus = "";
+
+    /// <summary>
+    /// The destination box (the click's pop-up): the stamp, where RynthNav will take you, and Go (plan
+    /// and walk the route: portals, recalls and dungeon entrances included), Arrow, Chat and Close.
+    /// </summary>
+    private void DrawDynamicNavBox(UiWindow w)
+    {
+        DynamicStamp? s = _dynNav;
+        if (s == null) return;
+        List<string> targets = s.NavCandidates();
+        w.SeparatorText("Navigate to " + Cut(s.Label, 40));
+        w.TextDisabled(targets.Count == 0
+            ? "No place, coordinates or area to go to for this stamp."
+            : "Where: " + Cut(string.Join("  or  ", targets), 90));
+        if (targets.Count > 0)
+        {
+            w.Button("Go (auto nav)", "dy.nav.go", () => SendNav("go", s));
+            w.Tooltip("RynthNav plans the route (walking, portals, recalls, the dungeon's entrance) and walks it.");
+            w.SameLine();
+            w.Button("Arrow", "dy.nav.arrow", () => SendNav("arrow", s));
+            w.Tooltip("Only point RynthNav's arrow at it.");
+            w.SameLine();
+        }
+        w.Button("Chat", "dy.nav.chat", () => PrintStamp(s, _dynNavDone));
+        w.SameLine();
+        w.Button("Close", "dy.nav.close", () => { _dynNav = null; _dynNavStatus = ""; });
+        if (_dynNavStatus.Length > 0) w.TextDisabled(_dynNavStatus);
+    }
+
+    /// <summary>Clicking a row: select it and ask RynthNav for the route (shown in chat and its overlay).</summary>
+    private void SelectDynamicStamp(DynamicStamp s, bool done)
+    {
+        _dynNav = s;
+        _dynNavDone = done;
+        _dynNavStatus = "";
+        if (s.NavCandidates().Count > 0) SendNav("route", s);
+    }
+
+    /// <summary>"/rnav &lt;verb&gt; a || b || c" to RynthNav (it takes the first candidate on its map).</summary>
+    private void SendNav(string verb, DynamicStamp s)
+    {
+        List<string> targets = s.NavCandidates();
+        if (targets.Count == 0) return;
+        if (!_c.InWorld) { _dynNavStatus = "Log in first."; return; }
+        RynthCore.PluginSdk.RynthCoreHost host = _c.Host;
+        bool sent = host.HasSendPluginCommand && host.SendPluginCommand("RynthNav", "rnav", verb + " " + string.Join(" || ", targets));
+        _dynNavStatus = !sent ? "RynthNav isn't loaded (it plans and walks the route)."
+            : verb == "go" ? "RynthNav is planning the route and walking it (its chat lines say how)."
+            : verb == "arrow" ? "RynthNav's arrow points at it."
+            : "RynthNav's route is in chat. Go walks it.";
+    }
+
     private void DrawDynamicStamps(UiWindow w)
     {
         QuestFlagStore flags = _c.Flags;
@@ -30,7 +86,7 @@ internal sealed partial class OracleView
 
         w.ProgressBar(all.Count == 0 ? 0f : (float)have / all.Count, -1f, 0f, $"{have} / {all.Count} listed Dynamic stamps");
         w.Tooltip("Dynamic stamps are one-time quest flags (Dynamic_1_...) from handing items to NPCs on Infinite Leaftide.\n"
-                  + "List: the players' ExtraDyn sheet (leaftidewiki Dynamic Stamps). Click a row to print it in chat.");
+                  + "List: the players' ExtraDyn sheet (leaftidewiki Dynamic Stamps). Click a row for RynthNav's route to it.");
         w.Text($"{all.Count - have} missing"
                + (unlisted.Count > 0 ? $", plus {unlisted.Count} Dynamic stamp(s) on this character that the list doesn't have." : "."));
 
@@ -46,6 +102,7 @@ internal sealed partial class OracleView
 
         string search = _dynSearch.Trim();
         bool filtering = search.Length > 0 || _dynMissingOnly || _dynHaveOnly || _dynArea > 0;
+        DrawDynamicNavBox(w);
 
         w.BeginChild("dy.list", 0f, 0f, border: true);
         for (int a = 0; a < DynamicStampList.Areas.Count; a++)
@@ -80,7 +137,7 @@ internal sealed partial class OracleView
                 string line = Cut(s.Label, 30)
                               + (s.Place.Length > 0 && s.Place != s.Label ? "  -  " + Cut(s.Place, 26) : "")
                               + (s.Reward.Length > 0 ? "  -  " + Cut(s.Reward, 36) : "");
-                w.Selectable(line, "dy.s." + s.Stamp, false, () => PrintStamp(row, done));
+                w.Selectable(line, "dy.s." + s.Stamp, ReferenceEquals(row, _dynNav), () => SelectDynamicStamp(row, done));
                 if (s.Note.Length > 0) w.Tooltip(s.Note);
             }
         }
