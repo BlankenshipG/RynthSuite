@@ -30,7 +30,7 @@ namespace RynthCore.Plugin.RynthSort;
 /// </summary>
 public sealed class RynthSortPlugin : RynthPluginBase
 {
-    public const string Version = "0.3.2";
+    public const string Version = "0.3.3";
     private const long IdentityRetryMs = 1000;
     private const long SaveDelayMs = 750;
     private const long PassIntervalMs = 500;

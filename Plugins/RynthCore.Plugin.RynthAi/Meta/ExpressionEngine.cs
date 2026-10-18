@@ -33,7 +33,7 @@ namespace RynthCore.Plugin.RynthAi.Meta;
 /// Lists are text ("[a,b]"); the list functions that change a list write it back to the
 /// variable it came from. Dictionaries and stopwatches are handles ("D:0", "SW:0").
 /// </summary>
-internal sealed class ExpressionEngine
+internal sealed partial class ExpressionEngine
 {
     private readonly RynthCoreHost _host;
     private WorldObjectCache? _worldObjectCache;
@@ -71,7 +71,7 @@ internal sealed class ExpressionEngine
         if (_pvars != null) foreach (string v in _pvars.Values) Scan(v);
         if (_gvars != null) foreach (string v in _gvars.Values) Scan(v);
         foreach (string v in _options.Values) Scan(v);
-        foreach (var (_, expr) in _delayedExecs) Scan(expr);
+        foreach (var (_, _, expr) in _delayedExecs) Scan(expr);
         while (todo.Count > 0)
             foreach (var (k, v) in _dicts[todo.Dequeue()]) { Scan(k); Scan(v); }
 
@@ -133,7 +133,8 @@ internal sealed class ExpressionEngine
     // hot-reload to fire into a freed engine). Instance-scoped so a hot-reload
     // discards pending execs. Single-threaded access (Evaluate and the pump
     // both run on the plugin-tick thread) → no lock needed.
-    private readonly List<(long DueMs, string Expr)> _delayedExecs = new();
+    private readonly List<(long Id, long DueMs, string Expr)> _delayedExecs = new();
+    private long _nextDelayedExecId;
 
     private uint _playerId;
     private LegacyUiSettings? _settings;
@@ -187,6 +188,7 @@ internal sealed class ExpressionEngine
             FlushVars(force: true);   // persist the old char's pending pvars first
             _pvars = null;
             _pvarPathCached = null;
+            ResetXpMeter();
         }
         _playerId = id;
     }
@@ -583,7 +585,8 @@ internal sealed class ExpressionEngine
             // "Strings support slices like arrays. ie test[1:]": a word that isn't a function,
             // followed by [start:stop].
             _ when TopLevelColon(argsStr) >= 0 => SliceBy(expr.Substring(0, lb).Trim(), argsStr),
-            _ => EvalUnknownFunction(funcName)
+            // ub-IT's remaining functions (ExpressionEngine.UbCompat.cs), then a real unknown.
+            _ => TryEvalUbCompat(funcName, rawArgs, A, out string ubValue) ? ubValue : EvalUnknownFunction(funcName)
         };
     }
 
@@ -3733,8 +3736,10 @@ internal sealed class ExpressionEngine
                 CultureInfo.InvariantCulture, out double delayMs))
             delayMs = 0;
         long ms = (long)Math.Max(0, delayMs);
-        _delayedExecs.Add((TickMs() + ms, exprArg));
-        return "1";
+        // ub-IT returns the job's id (for clearexec); ids start at 1 so the result stays true.
+        long id = ++_nextDelayedExecId;
+        _delayedExecs.Add((id, TickMs() + ms, exprArg));
+        return id.ToString(CultureInfo.InvariantCulture);
     }
 
     /// <summary>

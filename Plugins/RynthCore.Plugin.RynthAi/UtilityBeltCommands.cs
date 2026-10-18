@@ -86,6 +86,10 @@ public sealed partial class RynthAiPlugin
 
         string cmd = parts[1].ToLower();
 
+        // ub-Rythai's verbs: that plugin answers; handled here only in the sense of "not unknown".
+        if (IsUbRythaiCommand(cmd, SplitUbLine(fullCommand).Args))
+            return true;
+
         // /ub jump[swzxc] [heading] [holdtime] — see Jumper.cs
         if (cmd.StartsWith("jump", StringComparison.Ordinal))
         {
@@ -167,6 +171,11 @@ public sealed partial class RynthAiPlugin
 
         // Commands added in the 2026-09-28 parity pass (UtilityBeltExtraCommands.cs).
         if (TryHandleUbExtra(cmd, fullCommand))
+            return true;
+
+        // The rest of ub-IT's verbs: aliases, features, and accepted no-ops (UtilityBeltCompatCommands.cs).
+        // Before the /mt translation, so "/ub fellow dismiss" doesn't land on /mt fellow's usage line.
+        if (TryHandleUbCompat(cmd, fullCommand))
             return true;
 
         // /ub closestportal: use the nearest portal (UtilityBelt's command).

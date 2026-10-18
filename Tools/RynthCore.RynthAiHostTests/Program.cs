@@ -98,6 +98,7 @@ IltClientLookupTests.Register(runner);
         TargetingTests.Register(runner);
         LootAddItemTests.Register(runner);
         GiveTests.Register(runner);
+        UbCompatTests.Register(runner);
         DungeonMapBakeTests.Register(runner);
         MonsterEditorTests.Register(runner);
         InstallPathsTests.Register(runner);
