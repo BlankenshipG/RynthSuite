@@ -15,6 +15,7 @@ internal static class AetheriaChunkTests
     {
         r.Add("aetheria: the chunk cap runs to one past ILT's level 10", Cap);
         r.Add("aetheria: C / CD / CDR ratings are kept by default, each with its own switch", Ratings);
+        r.Add("aetheria: rating level - at or above keeps, below chunks (Coalesced too)", RatingLevel);
         r.Add("chunk: only the Lugian Aetheria Hammer is the tool, never a Lugian Hammer weapon", HammerOnly);
         r.Add("chunk: ILT's result lines (item and tool named) end the wait; combat lines don't", ResultLines);
         r.Add("aetheria: the level cap applies to levelled Coalesced Aetheria; unlevelled Coalesced chunks (ub-IT)", CoalescedCap);
@@ -214,5 +215,36 @@ internal static class AetheriaChunkTests
         g.KeepAetheriaWithCritDamage = false;
         g.KeepAetheriaWithCritDamageResist = false;
         Check.False(IltChunkClap.KeptForRatings(g, 3, 3, 3), "every switch off: ratings don't protect");
+    }
+
+    /// <summary>
+    /// The rating level: a C / CD / CDR rating at or above it keeps the piece, a lower one chunks
+    /// (if the level cap allows). The default of 1 keeps any rating, as before.
+    /// </summary>
+    private static void RatingLevel()
+    {
+        var g = new IltGearState();
+        Check.Eq(g.KeepAetheriaRatingAtLeast, 1, "default: any rating keeps");
+        Check.True(IltChunkClap.KeptForRatings(g, 1, 0, 0), "C 1 kept at the default");
+
+        g.KeepAetheriaRatingAtLeast = 2;
+        Check.False(IltChunkClap.KeptForRatings(g, 1, 0, 0), "C 1 below level 2: chunks");
+        Check.True(IltChunkClap.KeptForRatings(g, 2, 0, 0), "C 2 at level 2: kept");
+        Check.True(IltChunkClap.KeptForRatings(g, 3, 0, 0), "C 3 above level 2: kept");
+        Check.True(IltChunkClap.KeptForRatings(g, 1, 0, 2), "CDR 2 keeps a C 1 + CDR 2 piece");
+        Check.False(IltChunkClap.KeptForRatings(g, 1, 1, 1), "every rating below the level: chunks");
+
+        g.KeepAetheriaWithCrit = false;
+        Check.False(IltChunkClap.KeptForRatings(g, 5, 0, 0), "a switch that is off ignores the level");
+
+        Check.Eq(IltChunkClap.ClampRatingLevel(0), 1, "below 1 clamps to 1");
+        Check.Eq(IltChunkClap.ClampRatingLevel(99), IltChunkClap.MaxRatingLevel, "clamped to the maximum");
+
+        var coalescedC1 = PlainCoalesced with { Crit = 1 };
+        var level2 = new IltGearState { KeepAetheriaRatingAtLeast = 2 };
+        Check.Eq(IltChunkClap.AetheriaSkip(level2, coalescedC1), null, "an unlevelled C 1 Coalesced piece chunks at rating level 2");
+        Check.Eq(IltChunkClap.AetheriaSkip(level2, PlainCoalesced with { Crit = 2 }), "kept for its C / CD / CDR rating", "a C 2 one is kept");
+        Check.Eq(IltChunkClap.AetheriaSkip(level2, coalescedC1 with { MaxLevel = 6 }), "level at or above the cap",
+            "a low rating does not override the level cap");
     }
 }
