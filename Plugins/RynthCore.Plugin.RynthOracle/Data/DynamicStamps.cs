@@ -50,11 +50,6 @@ internal sealed class DynamicStamp
 
     public bool Have(QuestFlagStore flags) => MatchedFlag(flags) != null;
 
-    // Coordinates as the sheet writes them: "8.8S, 53.1E", "75.9S 57.3E", "42.6n 62.4e".
-    private static readonly System.Text.RegularExpressions.Regex CoordsRx = new(
-        @"(?<ns>\d+(?:\.\d+)?)\s*(?<nsc>[NnSs])[\s,]*(?<ew>\d+(?:\.\d+)?)\s*(?<ewc>[EeWw])",
-        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
-
     // Sheet areas that are groupings, not places on the map.
     private static readonly HashSet<string> NotPlaces = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -76,14 +71,9 @@ internal sealed class DynamicStamp
         }
 
         foreach (string text in new[] { Note, Place })
-        {
-            var m = CoordsRx.Match(text);
-            if (!m.Success) continue;
-            string c = $"{m.Groups["ns"].Value}{char.ToUpperInvariant(m.Groups["nsc"].Value[0])}, {m.Groups["ew"].Value}{char.ToUpperInvariant(m.Groups["ewc"].Value[0])}";
-            if (!list.Contains(c)) list.Add(c);
-        }
+            if (NavTargets.FirstCoords(text) is string c && !list.Contains(c)) list.Add(c);
 
-        string place = CoordsRx.Replace(Place, " ");
+        string place = NavTargets.WithoutCoords(Place);
         place = System.Text.RegularExpressions.Regex.Replace(place, @"\b(at|in the|nearby)\b", " ", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         place = System.Text.RegularExpressions.Regex.Replace(place, @"\s+", " ").Trim();
         Add(place);
