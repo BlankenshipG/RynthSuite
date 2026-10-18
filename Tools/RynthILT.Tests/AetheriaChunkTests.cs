@@ -6,7 +6,9 @@ namespace RynthILT.Tests;
 // The Lugian-hammer aetheria rules (Hub/IltChunkClap.cs): Infinite Leaftide aetheria goes up to
 // level 10, and aetheria carrying a C, CD or CDR rating is kept unless its keep switch is off.
 // Only the Lugian Aetheria Hammer chunks, and ILT's result lines name the item and the tool.
-// The cap covers Coalesced Aetheria too, and /clap needs a colour with its own trinket.
+// The cap covers levelled Coalesced Aetheria; an unlevelled one chunks, as in ub-IT. Corrupted
+// weapons follow ub-IT's hard rules and its optional keep rules, and /clap needs a colour with its
+// own trinket.
 internal static class AetheriaChunkTests
 {
     public static void Register(Runner r)
@@ -15,7 +17,12 @@ internal static class AetheriaChunkTests
         r.Add("aetheria: C / CD / CDR ratings are kept by default, each with its own switch", Ratings);
         r.Add("chunk: only the Lugian Aetheria Hammer is the tool, never a Lugian Hammer weapon", HammerOnly);
         r.Add("chunk: ILT's result lines (item and tool named) end the wait; combat lines don't", ResultLines);
-        r.Add("aetheria: the level cap applies to Coalesced Aetheria too; no level read = never chunked", CoalescedCap);
+        r.Add("aetheria: the level cap applies to levelled Coalesced Aetheria; unlevelled Coalesced chunks (ub-IT)", CoalescedCap);
+        r.Add("aetheria: never-chunk, tinker / imbue, item XP, ratings and the cap each keep a piece", AetheriaRules);
+        r.Add("chunk: kind by class and name; chunks and powder are clap material", Kinds);
+        r.Add("corrupted: ub-IT hard rules (workmanship, cleave 1, or 2 on two-handed non-thrust)", CorruptedHardRules);
+        r.Add("corrupted: ub-IT keep rules, all off by default", CorruptedKeepRules);
+        r.Add("chunk: busy blocks peace mode, not combat with chunk-in-combat on (ub-IT v2.0.1059)", BusyGate);
         r.Add("clap: the server's WCIDs, each colour paired with its trinket, Coalesced only unrevealed level 1-3", ClapPairs);
     }
 
@@ -29,7 +36,98 @@ internal static class AetheriaChunkTests
         Check.False(IltChunkClap.UnderChunkCap(9, 9), "level 9 is not below 9");
         Check.False(IltChunkClap.UnderChunkCap(10, 9), "a level 10 Coalesced piece is kept");
         Check.True(IltChunkClap.UnderChunkCap(10, 11), "11 chunks every level");
-        Check.False(IltChunkClap.UnderChunkCap(0, 11), "no level read: never chunked");
+        Check.False(IltChunkClap.UnderChunkCap(0, 11), "revealed aetheria with no level read: never chunked");
+        Check.False(IltChunkClap.UnderChunkCap(9, 9, coalesced: true), "a levelled Coalesced piece keeps the cap");
+        Check.True(IltChunkClap.UnderChunkCap(0, 4, coalesced: true), "an unlevelled Coalesced piece chunks (it used to be kept forever)");
+        Check.True(IltChunkClap.UnderChunkCap(0, 1, coalesced: true), "even with the lowest cap");
+    }
+
+    private static readonly IltChunkClap.AetheriaFacts PlainCoalesced = new(
+        Coalesced: true, MaxLevel: 0, NeverChunk: false, ItemXp: 0, Tinkers: 0, Imbue: 0, Crit: 0, CritDamage: 0, CritDamageResist: 0);
+
+    private static void AetheriaRules()
+    {
+        var g = new IltGearState();
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced), null, "a plain unlevelled Coalesced piece chunks");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { MaxLevel = 3 }), null, "level 3 under the default cap of 4");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { MaxLevel = 4 }), "level at or above the cap", "level 4 at the default cap");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { NeverChunk = true }), "never-chunk flag", "bool 9030");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { Tinkers = 1 }), "tinkered or imbued", "tinkered");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { Imbue = 4 }), "tinkered or imbued", "imbued");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { ItemXp = 100 }), "has item XP", "levelled by use");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { Crit = 2 }), "kept for its C / CD / CDR rating", "a C 2 piece is kept by default");
+        g.KeepAetheriaWithCrit = false;
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { Crit = 2 }), null, "C switch off: a C 2 piece chunks");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { Coalesced = false }), "no level read", "revealed aetheria needs a level");
+    }
+
+    private static void Kinds()
+    {
+        var gem = RynthCore.Loot.AcObjectClass.Gem;
+        Check.Eq(IltChunkClap.KindOf(gem, "Coalesced Aetheria"), IltChunkClap.ChunkKind.Aetheria, "Coalesced");
+        Check.Eq(IltChunkClap.KindOf(gem, "Blue Aetheria"), IltChunkClap.ChunkKind.Aetheria, "revealed sigil");
+        Check.Eq(IltChunkClap.KindOf(gem, "Red Aetheria Chunk"), IltChunkClap.ChunkKind.None, "chunk");
+        Check.Eq(IltChunkClap.KindOf(gem, "Aetheria Powder"), IltChunkClap.ChunkKind.None, "powder");
+        Check.Eq(IltChunkClap.KindOf(RynthCore.Loot.AcObjectClass.MeleeWeapon, "Corrupted Greatsword"), IltChunkClap.ChunkKind.Corrupted, "melee");
+        Check.Eq(IltChunkClap.KindOf(RynthCore.Loot.AcObjectClass.MissileWeapon, "Corrupted Bow"), IltChunkClap.ChunkKind.Corrupted, "missile");
+        Check.Eq(IltChunkClap.KindOf(RynthCore.Loot.AcObjectClass.WandStaffOrb, "Corrupted Orb"), IltChunkClap.ChunkKind.None, "casters are not chunked (ub-IT)");
+        Check.Eq(IltChunkClap.KindOf(RynthCore.Loot.AcObjectClass.MeleeWeapon, "Greatsword"), IltChunkClap.ChunkKind.None, "not corrupted");
+    }
+
+    private static readonly IltChunkClap.CorruptedFacts PlainSword = new() { Workmanship = 6, AttackType = 4, WieldSkill = 45 };
+
+    private static void CorruptedHardRules()
+    {
+        var g = new IltGearState();
+        Check.Eq(IltChunkClap.CorruptedSkip(g, PlainSword), null, "a plain corrupted sword chunks");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, PlainSword with { Workmanship = 0 }), "no workmanship", "workmanship 0");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, PlainSword with { Tinkers = 1 }), "tinkered or imbued", "tinkered");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, PlainSword with { Imbue = 1 }), "tinkered or imbued", "imbued");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, PlainSword with { NeverChunk = true }), "never-chunk flag", "bool 9030");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, PlainSword with { Cleaving = 1 }), null, "one-handed cleave 1");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, PlainSword with { Cleaving = 2 }), "cleave over the limit", "one-handed cleave 2");
+
+        var twoHanded = PlainSword with { WieldSkill = 41, Cleaving = 2 };
+        Check.Eq(IltChunkClap.CorruptedSkip(g, twoHanded), null, "two-handed cleave 2 chunks (it never did before)");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, twoHanded with { Cleaving = 3 }), "cleave over the limit", "two-handed cleave 3");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, twoHanded with { AttackType = 2 }), "cleave over the limit", "a two-handed thrust weapon keeps the 1 limit");
+        Check.Eq(IltChunkClap.MaxChunkCleave(0, 11, 4), 2, "WeaponType TwoHanded counts too");
+        Check.Eq(IltChunkClap.MaxChunkCleave(45, 0, 4), 1, "one-handed");
+    }
+
+    private static void CorruptedKeepRules()
+    {
+        var g = new IltGearState();
+        var loaded = PlainSword with
+        {
+            CritFrequency = 0.1, CritMultiplier = 1.5, IgnoreArmor = 0.2, Slayer = 5, AttackType = 160,
+            ElementalBonus = 10, MaxDamage = 400, Spells = new[] { 2072 },
+        };
+        Check.Eq(IltChunkClap.CorruptedSkip(g, loaded), null, "every keep rule is off by default");
+
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedCrushingBlow = true }, loaded), "kept: Crushing Blow", "Crushing Blow");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedBitingStrike = true }, loaded), "kept: Biting Strike", "Biting Strike");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedArmorCleaving = true }, loaded), "kept: Armor Cleaving", "Armor Cleaving");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedAnySlayer = true }, loaded), "kept: slayer", "slayer");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedMultiStrike = true }, loaded), "kept: multi-strike", "multi-strike 160");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedMultiStrike = true }, PlainSword), null, "a single slash is not multi-strike");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedElementalBonus = true }, loaded), "kept: elemental bonus", "elemental");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedMaxDamageAtLeast = 400 }, loaded), "kept: max damage", "max damage at the limit");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedMaxDamageAtLeast = 401 }, loaded), null, "max damage under the limit");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedAnySpell = true }, loaded), "kept: has a spell", "any spell");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedSpellIds = "100, 2072" }, loaded), "kept: listed spell", "listed spell id");
+        Check.Eq(IltChunkClap.CorruptedSkip(new IltGearState { KeepCorruptedSpellIds = "100 200" }, loaded), null, "other spell ids");
+
+        Check.Eq(IltChunkClap.ParseSpellIds("1, 2;3 x -4 0").Count, 3, "positive ids only, any separator");
+        Check.Eq(IltChunkClap.ParseSpellIds(null).Count, 0, "no list");
+    }
+
+    private static void BusyGate()
+    {
+        Check.True(IltChunkClap.AllowsChunkWhileBusy(isBusy: false, isPeace: true, chunkInCombat: false), "idle in peace");
+        Check.False(IltChunkClap.AllowsChunkWhileBusy(isBusy: true, isPeace: true, chunkInCombat: true), "busy in peace waits");
+        Check.True(IltChunkClap.AllowsChunkWhileBusy(isBusy: true, isPeace: false, chunkInCombat: true), "busy swinging with chunk-in-combat");
+        Check.False(IltChunkClap.AllowsChunkWhileBusy(isBusy: true, isPeace: false, chunkInCombat: false), "busy in combat without it");
     }
 
     /// <summary>
