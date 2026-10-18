@@ -241,6 +241,9 @@ internal sealed class MetaManager
         engine.SetCreatureStore(_creatureStore);
         engine.SetKillClock(_killClock);
         engine.CorpseOpenedByMe = _corpseOpenedByMe;
+        // vtsetsetting[] / vtgetsetting[] take VTank names and units, as '/vt opt set|get' does.
+        engine.VtOptionSetter = TrySetVtOption;
+        engine.VtOptionGetter = GetVtOption;
         return engine;
     }
 
@@ -1304,7 +1307,20 @@ internal sealed class MetaManager
                             System.Globalization.CultureInfo.InvariantCulture, out double bar))
         {
             int pct = Math.Clamp((int)Math.Round(bar * 100), 0, 100);
+            _lastAttackBarPct = pct;
             _raCommandHandler?.Invoke("/ra power " + pct.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            return true;
+        }
+
+        // /vt deletemonster (S_Colo, leaving the arena): no RynthAi equivalent is known. Accepted so
+        // it doesn't go on to AC's chat parser as an unknown command; logged once.
+        if (sub == "deletemonster")
+        {
+            if (!_deleteMonsterLogged)
+            {
+                _deleteMonsterLogged = true;
+                RynthLog.Write(LogCat.Meta, "[Meta] /vt deletemonster accepted and ignored (no RynthAi equivalent).");
+            }
             return true;
         }
 
@@ -1414,6 +1430,10 @@ internal sealed class MetaManager
         ["corpseapproachrange"]       = "CorpseApproachRangeMax",
         ["corpseapproachrange-max"]   = "CorpseApproachRangeMax",
         ["corpseapproachrange-min"]   = "CorpseApproachRangeMin",
+        // 2026-10-18: the sample metas (S_*, Colo) set these and nothing read them.
+        ["rebufftimeremainingseconds"] = "RebuffSecondsRemaining",  // VTank's spelling (the one above is a typo)
+        ["petcustomrange"]            = "CustomPetRange",           // landblock units -> whole yards
+        ["blacklistmonstertimeoutseconds"] = "BlacklistTimeoutSec",
     };
 
     /// <summary>VTank options given in landblock units (x240 = yards) whose RynthAi setting is yards.
@@ -1421,14 +1441,22 @@ internal sealed class MetaManager
     private static readonly HashSet<string> VtDistanceOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "attackdistance", "attackrange", "approachdistance", "dooropenrange", "opendoorrange", "ringdistance",
-        "corpseapproachrange", "corpseapproachrange-max", "corpseapproachrange-min",
+        "corpseapproachrange", "corpseapproachrange-max", "corpseapproachrange-min", "petcustomrange",
     };
 
     /// <summary>RynthAi distance settings kept in whole yards (their setter refuses a decimal).</summary>
     private static readonly HashSet<string> IntYardSettings = new(StringComparer.Ordinal)
     {
-        "MonsterRange", "ApproachRange", "RingRange",
+        "MonsterRange", "ApproachRange", "RingRange", "CustomPetRange",
     };
+
+    /// <summary>A RynthAi yards value as VTank's landblock units (yards / 240), for reading a distance back.</summary>
+    internal static string YardsToVtDistance(string yards)
+    {
+        if (!double.TryParse(yards, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double v))
+            return yards;
+        return (v / 240.0).ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+    }
 
     /// <summary>
     /// A VTank distance as RynthAi yards: a value up to 1 is landblock units (x240; VTank's own
@@ -1446,7 +1474,12 @@ internal sealed class MetaManager
 
     /// <summary>VTank options handled by <see cref="TrySetSpecialVtOption"/> (no 1:1 RynthAi setting).</summary>
     private static bool IsSpecialVtOption(string vtName) => vtName.ToLowerInvariant() is
-        "defaultmeleeattackheight" or "lootfellowcorpses" or "lootallcorpses" or "usearcs" or "minimumhealkitsuccesschance";
+        "defaultmeleeattackheight" or "lootfellowcorpses" or "lootallcorpses" or "usearcs" or "minimumhealkitsuccesschance"
+        or "autoattackpower";
+
+    // The last /vt setattackbar power (percent), for AutoAttackPower false after it was on (-1 = none yet).
+    private int _lastAttackBarPct = -1;
+    private bool _deleteMonsterLogged;
 
     /// <summary>
     /// The VTank options whose value means something else in RynthAi:
@@ -1483,6 +1516,22 @@ internal sealed class MetaManager
                 if (!num) return true;
                 _settings.KitMinSuccessPct = Math.Clamp((int)Math.Round(n > 0 && n <= 1 ? n * 100 : n), 0, 100);
                 return true;
+            case "autoattackpower":
+                // On: RynthAi picks the power itself (-1, its "auto"). Off: the attack bar's value,
+                // the last /vt setattackbar (a power already set by hand stays as it is).
+                if (!num) return true;
+                if (n != 0)
+                {
+                    _settings.MeleeAttackPower = _settings.MissileAttackPower = -1;
+                }
+                else if (_settings.MeleeAttackPower < 0 || _settings.MissileAttackPower < 0)
+                {
+                    if (_lastAttackBarPct >= 0)
+                        _settings.MeleeAttackPower = _settings.MissileAttackPower = _lastAttackBarPct;
+                    else
+                        RynthLog.Write(LogCat.Meta, "[Meta] AutoAttackPower off with no /vt setattackbar value yet: attack power stays automatic.");
+                }
+                return true;
             default:
                 return false;
         }
@@ -1496,6 +1545,7 @@ internal sealed class MetaManager
         "lootallcorpses" => _settings.LootOwnership == 2 ? "true" : "false",
         "usearcs" => _settings.UseArcs ? "true" : "false",
         "minimumhealkitsuccesschance" => _settings.KitMinSuccessPct.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        "autoattackpower" => _settings.MeleeAttackPower < 0 ? "true" : "false",
         _ => null,
     };
 
@@ -1506,7 +1556,9 @@ internal sealed class MetaManager
         var map = Expressions.BuildSettingsMapPublic();
         if (VtOptionMap.TryGetValue(vtName, out string? raName))
         {
-            if (map.TryGetValue(raName, out var entry)) return entry.Get();
+            // Distances read back in VTank's landblock units, as they were set (6 yd reads 0.025).
+            if (map.TryGetValue(raName, out var entry))
+                return VtDistanceOptions.Contains(vtName) ? YardsToVtDistance(entry.Get()) : entry.Get();
         }
         // A RynthAi setting named directly (EnableCombat, OpenDoors, NavCloseStopRange...).
         if (map.TryGetValue(vtName, out var direct)) return direct.Get();

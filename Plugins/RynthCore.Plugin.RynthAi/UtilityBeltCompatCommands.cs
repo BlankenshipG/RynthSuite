@@ -98,6 +98,7 @@ public sealed partial class RynthAiPlugin
             case "stfl":  return HandleMtStrafe(new[] { "/mt", "strafe", "left", args });
             case "stfr":  return HandleMtStrafe(new[] { "/mt", "strafe", "right", args });
             case "debug": HandleRaCommand(("/ra debug " + args).TrimEnd()); return true;
+            case "close": UbClose(sub); return true;
 
             case "bgframelimit":
             case "globalframelimit":
@@ -172,6 +173,42 @@ public sealed partial class RynthAiPlugin
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// /ub close corpse|chest (ub-IT): closes the open container when it is that kind (a bare
+    /// "/ub close" closes whatever is open). Metas send it after looting a quest corpse.
+    /// </summary>
+    private void UbClose(string kind)
+    {
+        uint open = Host.HasGetGroundContainerId ? Host.GetGroundContainerId() : 0;
+        if (open == 0) { ChatLine("[RynthAi] No container is currently open."); return; }
+        WorldObject? wo = _objectCache?[unchecked((int)open)];
+        bool fits = kind switch
+        {
+            "corpse" => wo == null || wo.ObjectClass == AcObjectClass.Corpse,
+            "chest" => wo == null || wo.ObjectClass == AcObjectClass.Container,
+            _ => true,
+        };
+        if (!fits) return;   // as ub-IT: the open container isn't that kind, nothing to do
+        bool closed = Host.HasCloseContainer ? Host.CloseContainer(open) : Host.UseFor(open, "Command", "/ub close", UseKind.Asked);
+        Log($"[RynthAi] /ub close {kind}: 0x{open:X8} {(closed ? "closed" : "close refused")}.");
+    }
+
+    /// <summary>
+    /// "/ub &lt;expression&gt;": a /ub line whose verb is an expression call (S_BulbOfMornings broadcasts
+    /// "/ub bc /ub vtsetmetastate[State]" so every client switches state). ub-IT has no such
+    /// command; RynthAi evaluates the expression, which is what the meta means. True when it was one.
+    /// </summary>
+    internal bool TryHandleUbExpression(string fullCommand)
+    {
+        string rest = fullCommand.Length > 3 ? fullCommand.Substring(3).Trim() : "";
+        int bracket = rest.IndexOf('[');
+        int space = rest.IndexOf(' ');
+        if (bracket <= 0 || (space >= 0 && space < bracket) || !rest.EndsWith("]", StringComparison.Ordinal)) return false;
+        string result = EvalExpr(rest);
+        Log($"[RynthAi] /ub {rest} evaluated as an expression -> '{result}'.");
+        return true;
     }
 
     /// <summary>Says once per session that a /ub verb is accepted and ignored; every use is logged.</summary>
