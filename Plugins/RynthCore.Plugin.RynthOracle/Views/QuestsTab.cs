@@ -174,7 +174,62 @@ internal sealed partial class OracleView
         if (_questSel == q.Flag) { _questSel = ""; return; }   // a second click closes it
         _questSel = q.Flag;
         _rewardMsg = "";
+        _questStopIdx = 0;
+        _questNavStatus = "";
         LoadRewardEdit(q.Flag);
+    }
+
+    // ── Go to: the coordinates in the opened quest's text, through RynthNav ──
+
+    private string _questStopsFor = "";
+    private List<NavTargets.Stop> _questStops = new();
+    private int _questStopIdx;
+    private string _questNavStatus = "";
+
+    /// <summary>The opened quest's stops (coordinates with the step they belong to), worked out once per quest.</summary>
+    private List<NavTargets.Stop> QuestStops(Quest q)
+    {
+        if (_questStopsFor != q.Flag)
+        {
+            _questStopsFor = q.Flag;
+            _questStops = NavTargets.Stops(q.Info + " - " + q.Hint);
+        }
+        return _questStops;
+    }
+
+    /// <summary>
+    /// The opened quest's coordinates: one is shown with Go / Route / Arrow; several get a picker
+    /// first (picking one plans its route, as clicking a Dynamic Stamp does). Nothing without any.
+    /// </summary>
+    private void DrawQuestGoTo(UiWindow w, Quest q)
+    {
+        List<NavTargets.Stop> stops = QuestStops(q);
+        if (stops.Count == 0) return;
+        _questStopIdx = Math.Clamp(_questStopIdx, 0, stops.Count - 1);
+        w.SeparatorText(stops.Count == 1 ? "Go to" : $"Go to ({stops.Count} places in this quest)");
+        if (stops.Count == 1)
+            w.Text(Cut(stops[0].Display, 80));
+        else
+        {
+            var items = new List<string>(stops.Count);
+            for (int i = 0; i < stops.Count; i++) items.Add($"{i + 1}. {Cut(stops[i].Display, 70)}");
+            w.Combo("##q.nav.pick", "q.nav.pick", _questStopIdx, items, i =>
+            {
+                _questStopIdx = Math.Clamp(i, 0, stops.Count - 1);
+                _questNavStatus = SendRynthNav("route", new[] { stops[_questStopIdx].Target });
+            });
+            w.Tooltip("The places this quest's walkthrough gives coordinates for, in its order. Picking one plans RynthNav's route to it.");
+        }
+        NavTargets.Stop stop = stops[_questStopIdx];
+        w.Button("Go (auto nav)", "q.nav.go", () => _questNavStatus = SendRynthNav("go", new[] { stop.Target }));
+        w.Tooltip("RynthNav plans the route (walking, portals, recalls, a dungeon's entrance) and walks it.");
+        w.SameLine();
+        w.Button("Route", "q.nav.route", () => _questNavStatus = SendRynthNav("route", new[] { stop.Target }));
+        w.Tooltip("Only plan it: RynthNav prints the steps in chat.");
+        w.SameLine();
+        w.Button("Arrow", "q.nav.arrow", () => _questNavStatus = SendRynthNav("arrow", new[] { stop.Target }));
+        w.Tooltip("Only point RynthNav's arrow at it.");
+        if (_questNavStatus.Length > 0) w.TextDisabled(_questNavStatus);
     }
 
     /// <summary>Fills the editor from what is recorded (blank fields for zero).</summary>
@@ -206,6 +261,7 @@ internal sealed partial class OracleView
         }
         string details = q.Details();
         if (details.Length > 0) w.TextWrapped(Cut(details, 600));
+        DrawQuestGoTo(w, q);
 
         bool loaded = _c.Book.Loaded;
         bool tracked = _c.Book.IsTracked(q.Flag);

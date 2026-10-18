@@ -122,10 +122,21 @@ internal sealed partial class OracleView
     {
         List<string> targets = s.NavCandidates();
         if (targets.Count == 0) return;
-        if (!_c.InWorld) { _dynNavStatus = "Log in first."; return; }
+        _dynNavStatus = SendRynthNav(verb, targets);
+    }
+
+    /// <summary>
+    /// "/rnav &lt;verb&gt; a || b || c" to RynthNav (go walks the route, route plans it in chat, arrow
+    /// points at it; RynthNav takes the first candidate on its map). What to tell the player.
+    /// Shared by the Dynamic Stamps and Quests tabs.
+    /// </summary>
+    private string SendRynthNav(string verb, IReadOnlyList<string> targets)
+    {
+        if (targets.Count == 0) return "";
+        if (!_c.InWorld) return "Log in first.";
         RynthCore.PluginSdk.RynthCoreHost host = _c.Host;
         bool sent = host.HasSendPluginCommand && host.SendPluginCommand("RynthNav", "rnav", verb + " " + string.Join(" || ", targets));
-        _dynNavStatus = !sent ? "RynthNav isn't loaded (it plans and walks the route)."
+        return !sent ? "RynthNav isn't loaded (it plans and walks the route)."
             : verb == "go" ? "RynthNav is planning the route and walking it (its chat lines say how)."
             : verb == "arrow" ? "RynthNav's arrow points at it."
             : "RynthNav's route is in chat. Go walks it.";

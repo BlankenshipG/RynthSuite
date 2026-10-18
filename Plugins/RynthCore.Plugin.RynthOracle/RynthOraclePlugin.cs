@@ -20,7 +20,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.2.5.
     // Previous release: 0.3.4.
-    public const string Version = "0.5.2";
+    public const string Version = "0.5.3";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
