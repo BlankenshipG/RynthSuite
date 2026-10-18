@@ -214,6 +214,6 @@ internal sealed partial class OracleView
             w.Text(status);
         }
         if (!any) w.TextDisabled("No custom quests listed for this server.");
-        if (_c.Flags.LastReadUtc == DateTime.MinValue) w.TextDisabled("Read your quest flags (Quests tab) for their status.");
+        else QuestFlagsBar(w, "cq.cust", "custom quests' status");
     }
 }

@@ -15,8 +15,7 @@ internal sealed partial class OracleView
     private void DrawMarkers(UiWindow w)
     {
         QuestFlagStore flags = _c.Flags;
-        if (flags.LastReadUtc == DateTime.MinValue)
-            w.TextDisabled("Quest flags not read yet (Quests tab, Refresh).");
+        QuestFlagsBar(w, "mk", "markers");
 
         int found = 0;
         Marker? next = null;

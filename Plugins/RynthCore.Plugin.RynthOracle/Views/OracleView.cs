@@ -1,4 +1,5 @@
 using System;
+using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 
 namespace RynthCore.Plugin.RynthOracle.Views;
@@ -167,6 +168,28 @@ internal sealed partial class OracleView
         _c.Print(flag.Length > 0 ? $"{name} ({flag}){(status.Length > 0 ? " - " + status : "")}" : name);
         if (details.Length > 0) _c.Print(details);
         if (url.Length > 0) _c.Print(url);
+    }
+
+    /// <summary>
+    /// The quest trackers' refresh row (Dynamic Stamps, Legendary, Markers, Society, Augs, Conquest):
+    /// a small Refresh (the same /myquests read as the Quests tab's) and how fresh the flags are,
+    /// or why they can't be read. <paramref name="what"/> names what the flags show ("stamps").
+    /// </summary>
+    private void QuestFlagsBar(UiWindow w, string id, string what)
+    {
+        QuestFlagStore flags = _c.Flags;
+        w.SmallButton("Refresh", id + ".refresh", _c.RequestQuests);
+        w.Tooltip("Reads your quest flags again (/myquests), as the Quests tab's Refresh does.");
+        w.SameLine();
+        int wait = flags.ThrottleSecondsLeft(_c.NowMs);
+        if (flags.ServerDisabled)
+            w.TextColored(UiColors.Red, "This server has /myquests turned off, so " + what + " can't be read.");
+        else if (flags.Loading)
+            w.TextColored(UiColors.Yellow, "Reading your quest flags...");
+        else if (flags.LastReadUtc == DateTime.MinValue)
+            w.TextDisabled("Quest flags not read yet: Refresh to see your " + what + ".");
+        else
+            w.TextDisabled($"Flags read at {flags.LastReadUtc.ToLocalTime():HH:mm}" + (wait > 0 ? $" (Refresh again in {wait}s)" : ""));
     }
 
     /// <summary>Previous / page n of m / next, with the page kept in range.</summary>
