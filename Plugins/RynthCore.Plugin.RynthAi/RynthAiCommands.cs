@@ -1553,8 +1553,9 @@ public sealed partial class RynthAiPlugin
     }
 
     /// <summary>
-    /// What a loot rule can be built from: the item's name, class, stack, key properties and
-    /// T11 reading, from the object cache. <paramref name="like"/> adds its spells;
+    /// What a loot rule can be built from: the item's name, class, stack, every property the
+    /// attribute checklist offers (LootItemAttributes) and T11 reading, from the object cache.
+    /// <paramref name="like"/> adds its spells (the popup always asks: its checklist lists them);
     /// <paramref name="t11"/> asks for an ID when a T11 item's text hasn't arrived.
     /// </summary>
     private RynthCore.Loot.Editing.LootItemFacts? BuildLootItemFacts(uint itemId, bool like, bool t11)
@@ -1568,6 +1569,8 @@ public sealed partial class RynthAiPlugin
             ObjectClass = (int)wo.ObjectClass,
             StackSize = Math.Max(1, wo.Values(LongValueKey.StackCount, 1)),
             MaxStackSize = Math.Max(1, wo.Values(LongValueKey.MaxStackSize, 1)),
+            // The Pets tab's test (WCID block, summoning-gem icon, Summoning use requirement): the essence group.
+            IsPetEssence = _miniRemote?.Pets.IsPetDevice(wo) == true,
         };
         foreach (int key in RynthCore.Loot.Editing.LootItemRules.IntKeys)
         {

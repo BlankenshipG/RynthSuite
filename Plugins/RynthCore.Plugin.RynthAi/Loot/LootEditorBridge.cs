@@ -184,7 +184,9 @@ internal sealed class LootEditorBridge
         d.ItemId = id;
         var match = (LootItemMatch)Math.Clamp(req.Match, 0, 2);
         d.IncludeT11 = req.IncludeT11;
-        LootItemFacts? facts = Items.Facts(id, match == LootItemMatch.Like, req.IncludeT11);
+        d.AttributesSupported = true;
+        // The checklist shows every attribute whatever the match, so the item is always read in full.
+        LootItemFacts? facts = Items.Facts(id, true, req.IncludeT11 || req.Choices != null);
         if (facts == null) return Refuse(d, $"RynthAi doesn't know item 0x{id:X8} yet. Select it again in a moment.");
         d.IsT11 = facts.T11?.IsT11 == true;
         d.ItemName = facts.Name;
@@ -211,9 +213,11 @@ internal sealed class LootEditorBridge
             KeepCount = req.KeepCount < 0 ? null : req.KeepCount,
             RuleName = req.RuleName,
             IncludeT11 = req.IncludeT11,
+            Choices = req.Choices,
         };
         LootItemRuleDraft? draft = LootItemRules.Build(facts, options, out string error);
         if (draft == null) return Refuse(d, error);
+        foreach (LootItemAttribute row in draft.Attributes) d.Attributes.Add(row.ToWire());
         d.Match = (int)draft.Match;
         d.Action = (int)draft.Action;
         d.KeepCount = draft.KeepCount;

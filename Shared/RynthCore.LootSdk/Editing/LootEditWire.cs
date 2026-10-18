@@ -138,8 +138,51 @@ public sealed class LootEditItemRequest
     /// 2026-10-07; an older engine never sends it, so it reads false.
     /// </summary>
     public bool IncludeT11 { get; set; }
+    /// <summary>
+    /// The attribute checklist's choices (added 2026-10-18), one per row the player changed; rows
+    /// without a choice keep their default (ticked for "items like this", T11 rows with
+    /// IncludeT11). Null from an older engine: every row at its default, as before.
+    /// </summary>
+    public List<LootEditItemChoice>? Choices { get; set; }
     /// <summary>Echoed in the draft so the popup knows the answer is to its latest ask.</summary>
     public int Seq { get; set; }
+}
+
+/// <summary>One checklist row as the player set it (LootEditItemAttribute.Id).</summary>
+public sealed class LootEditItemChoice
+{
+    public string Id { get; set; } = string.Empty;
+    public bool On { get; set; }
+    /// <summary>A LootItemAttributeOp code; -1 = the row's default.</summary>
+    public int Op { get; set; } = -1;
+    /// <summary>The edited value; empty = the item's own.</summary>
+    public string Value { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// One row of the popup's attribute checklist (added 2026-10-18): something the item has that a
+/// rule can require, its value, and how it is required now.
+/// </summary>
+public sealed class LootEditItemAttribute
+{
+    /// <summary>Stable within the item ("L:131", "D:152", "spell:Major Strength", "t11:tier").</summary>
+    public string Id { get; set; } = string.Empty;
+    /// <summary>Item, Weapon / Armor, Ratings, Spells, Pet essence, T11, Requirements.</summary>
+    public string Group { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    /// <summary>The item's own value, for display ("Gold", "7", "1.12", "Major").</summary>
+    public string ItemValue { get; set; } = string.Empty;
+    /// <summary>The value the rule uses now (the item's, or the player's edit).</summary>
+    public string Value { get; set; } = string.Empty;
+    /// <summary>The row's comparison now (LootItemAttributeOp).</summary>
+    public int Op { get; set; }
+    /// <summary>The comparisons the row offers, the default first.</summary>
+    public List<int> Ops { get; set; } = new();
+    /// <summary>The value can be typed (a number); named values and spells can't.</summary>
+    public bool Editable { get; set; }
+    /// <summary>The rule requires this row now.</summary>
+    public bool On { get; set; }
+    public string Tip { get; set; } = string.Empty;
 }
 
 /// <summary>The rule an item makes, as the popup shows it, and what happened when it was added.</summary>
@@ -182,6 +225,13 @@ public sealed class LootEditItemDraft
     /// </summary>
     public string BuiltInReason { get; set; } = string.Empty;
     public List<string> Notes { get; set; } = new();
+    /// <summary>
+    /// True from a RynthAi with the attribute checklist (added 2026-10-18): the popup shows
+    /// <see cref="Attributes"/> instead of its single "Include T11 attributes" box.
+    /// </summary>
+    public bool AttributesSupported { get; set; }
+    /// <summary>The item's checklist rows, grouped in display order (added 2026-10-18).</summary>
+    public List<LootEditItemAttribute> Attributes { get; set; } = new();
     /// <summary>item_add went through; Message says what was added where.</summary>
     public bool Added { get; set; }
     public string Message { get; set; } = string.Empty;
