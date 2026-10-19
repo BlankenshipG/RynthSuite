@@ -30,6 +30,8 @@ internal sealed class IltGuardian : IIltFeature
     private const long DebounceMs = 2500;
     private const long HandInTimeoutMs = 45_000;
     private const long VendorOpenTimeoutMs = 10_000;
+    /// <summary>Uses of the vendor before "the vendor didn't open" (a use right after login, or one AC dropped, gets no answer).</summary>
+    private const int MaxVendorAttempts = 3;
     private const long BuyTimeoutMs = 10_000;
     private const long ItemArriveTimeoutMs = 8_000;
     private const long BusyRetryMs = 400;
@@ -68,6 +70,7 @@ internal sealed class IltGuardian : IIltFeature
     private uint _vendorId;
     private uint _buyRequest;
     private int _giveAttempts;
+    private int _vendorAttempts;
 
     // Render-thread UI state.
     private string _input = string.Empty;
@@ -168,6 +171,11 @@ internal sealed class IltGuardian : IIltFeature
         _vendorId = 0;
         _buyRequest = 0;
         _giveAttempts = 0;
+        _vendorAttempts = 0;
+        // A step deadline left by the last hand-in (it failed waiting for the vendor) would fail
+        // this one on its first tick: Kelpie's riddles after the first all "timed out" 2 ms after
+        // they started (2026-10-19).
+        _stepDeadline = 0;
         _step = Step.FindItem;
         RynthLog.Write(LogCat.IltHub, $"[IltGuardian] hand-in start: '{_item}' -> {_npc} ({(asked ? "asked" : "auto")})");
         return SetStatus($"handing {_item} to {_npc}...");
@@ -178,6 +186,7 @@ internal sealed class IltGuardian : IIltFeature
     {
         if (_step == Step.Idle) return;
         _step = Step.Idle;
+        _stepDeadline = 0;
         SetStatus(why);
         RynthLog.Write(LogCat.IltHub, $"[IltGuardian] hand-in {why}");
     }
@@ -191,6 +200,7 @@ internal sealed class IltGuardian : IIltFeature
     private void Fail(string why)
     {
         _step = Step.Idle;
+        _stepDeadline = 0;
         SetStatus("failed: " + why);
         _ctx.Chat($"[ILT Guardian] Hand-in failed: {why}");
         RynthLog.Write(LogCat.IltHub, $"[IltGuardian] hand-in failed: {why}");
@@ -206,7 +216,19 @@ internal sealed class IltGuardian : IIltFeature
     {
         if (_step == Step.Idle || nowMs < _nextStepAt) return;
         if (nowMs - _startedAt > HandInTimeoutMs) { Fail("timed out"); return; }
-        if (_stepDeadline != 0 && nowMs > _stepDeadline) { Fail(TimeoutText(_step)); return; }
+        if (_stepDeadline != 0 && nowMs > _stepDeadline)
+        {
+            // The vendor didn't open: use it again (AC drops a use sent right after login, or one it
+            // was too busy for) before giving up.
+            if (_step == Step.WaitVendor && _vendorAttempts < MaxVendorAttempts)
+            {
+                RynthLog.Write(LogCat.IltHub, $"[IltGuardian] the vendor didn't open in {VendorOpenTimeoutMs / 1000} s: using it again ({_vendorAttempts + 1} of {MaxVendorAttempts})");
+                Next(Step.OpenVendor, nowMs);
+                return;
+            }
+            Fail(TimeoutText(_step));
+            return;
+        }
 
         var host = _ctx.Host;
         switch (_step)
@@ -223,10 +245,19 @@ internal sealed class IltGuardian : IIltFeature
                 if (host.TryGetVendorInfo(out var open)) { _vendorId = open.VendorId; Next(Step.Buy, nowMs); break; }
                 var vendor = Nearest(IsVendor);
                 if (vendor == null) { LogVendorSearch(); Fail($"no {_item} carried and no vendor within {SearchRangeMeters:0} m"); break; }
-                RynthLog.Write(LogCat.IltHub, $"[IltGuardian] vendor for '{_item}': {vendor.Name} 0x{(uint)vendor.Id:X8}");
+                var cache = _ctx.Inventory.Cache;
+                double dist = cache != null ? cache.Distance(unchecked((int)_ctx.Inventory.PlayerId), vendor.Id) : -1;
+                RynthLog.Write(LogCat.IltHub, $"[IltGuardian] vendor for '{_item}': {vendor.Name} 0x{(uint)vendor.Id:X8} at {dist:0.0} m (use {_vendorAttempts + 1} of {MaxVendorAttempts})");
                 SetStatus($"opening {vendor.Name} to buy {_item}...");
-                host.UseFor(unchecked((uint)vendor.Id), "IltGuardian", $"buy {_item} for the Temple guardian",
-                            _asked ? UseKind.Asked : UseKind.Auto);
+                // The client can refuse to send a use (busy): try again shortly, not as if it went out.
+                if (_ctx.Inventory.IsBusy || !host.UseFor(unchecked((uint)vendor.Id), "IltGuardian", $"buy {_item} for the Temple guardian",
+                                                          _asked ? UseKind.Asked : UseKind.Auto))
+                {
+                    SetStatus("waiting for the client (busy) to open the vendor...");
+                    _nextStepAt = nowMs + BusyRetryMs;
+                    break;
+                }
+                _vendorAttempts++;
                 Next(Step.WaitVendor, nowMs, VendorOpenTimeoutMs);
                 break;
             }
