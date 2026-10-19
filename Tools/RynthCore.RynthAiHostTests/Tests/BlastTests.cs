@@ -31,6 +31,7 @@ internal static class BlastTests
         r.Add("blast: each element's blast, and Nether Blast for void", BlastElements);
         r.Add("blast: wins over Bolt, loses to Arc and Streak", BlastPrecedence);
         r.Add("blast: no blast known (retail has no blast I/II) -> the same element's Bolt", BlastFallsBackToBolt);
+        r.Add("attack spells: out of components -> a lower level, then another known shape or a volley; unknown never cast", NoComponentsAndUnknownFallBack);
         r.Add("known spells: a name with several ids resolves to the id the character knows", DuplicateNameIds);
         r.Add("monster rules: UseBlast saves and loads; old files load with it off", RuleJson);
         r.Add("blast override: Blast Range off keeps today's shape; on, the base is the other shape; defaults 0 / 3", BlastOverrideSettings);
@@ -48,6 +49,14 @@ internal static class BlastTests
     {
         public readonly LegacyUiSettings S = new();
         public readonly CombatManager C;
+        /// <summary>The rig's spell manager (to mark spells the server refused for components).</summary>
+        public readonly SpellManager Sm;
+
+        /// <summary>Every id of <paramref name="name"/> refused by the server for components.</summary>
+        public void NoComponents(string name)
+        {
+            foreach (var row in SpellTable.Named(name)) Sm.MarkNoComponents(row.Id);
+        }
 
         /// <summary>A caster whose combat tier is <paramref name="tier"/> and who knows exactly <paramref name="known"/> (every id of each name).</summary>
         public CastRig(int tier, params string[] known)
@@ -72,6 +81,7 @@ internal static class BlastTests
             sm.InitializeNatively();
             sm.RefreshKnownSpells();
             C.SetSpellManager(sm);
+            Sm = sm;
         }
 
         public (string Spell, string Shape) Cast(string element, MonsterRule rule)
@@ -209,8 +219,40 @@ internal static class BlastTests
         Check.Eq(new CastRig(6, "Acid Stream VI").Cast("Lightning", Blast()), ("(none)", "?"),
             "the fallback is the same element's Bolt only: nothing known, nothing cast");
         Check.Eq(new CastRig(6, "Frost Arc VI").Cast("Cold", new MonsterRule { UseArc = true }), ("Frost Arc VI", "Arc"), "Arc unchanged");
-        Check.Eq(new CastRig(6, "Frost Bolt VI").Cast("Cold", new MonsterRule { UseArc = true, UseBolt = false }), ("(none)", "?"),
-            "Arc with no arc known still casts nothing (no cross-shape fallthrough for the other shapes)");
+        // 2026-10-18: no level of the configured shape castable -> another known shape of the element.
+        Check.Eq(new CastRig(6, "Frost Bolt VI").Cast("Cold", new MonsterRule { UseArc = true, UseBolt = false }), ("Frost Bolt VI", "Bolt"),
+            "Arc with no arc known: the element's known Bolt stands in (no attack at all was the old way)");
+    }
+
+    /// <summary>
+    /// Sk, 2026-10-18: Lightning Arc V refused for components 101 times and never a lower level. A
+    /// level the server refused for components is passed over (the next lower known level of the
+    /// shape goes); with no level of the shape left, another known shape of the element stands
+    /// in (Bolt first), then a war volley. Unknown spells are never picked.
+    /// </summary>
+    private static void NoComponentsAndUnknownFallBack()
+    {
+        var lower = new CastRig(6, "Lightning Arc V", "Lightning Arc IV");
+        MonsterRule arc = new() { UseArc = true, UseBolt = false };
+        Check.Eq(lower.Cast("Lightning", arc), ("Lightning Arc V", "Arc"), "the rig: the highest known Arc");
+        lower.NoComponents("Lightning Arc V");
+        Check.Eq(lower.Cast("Lightning", arc), ("Lightning Arc IV", "Arc"), "Arc V out of components: Arc IV, the same shape one level down");
+
+        var other = new CastRig(6, "Frost Arc VI", "Frost Bolt V");
+        other.NoComponents("Frost Arc VI");
+        Check.Eq(other.Cast("Cold", new MonsterRule { UseArc = true, UseBolt = false }), ("Frost Bolt V", "Bolt"),
+            "every known Arc out of components: the known Bolt");
+
+        var volley = new CastRig(6, "Acid Volley V");
+        Check.Eq(volley.Cast("Acid", new MonsterRule { UseArc = true, UseBolt = false }), ("Acid Volley V", "Blast"),
+            "no Arc, Bolt, Streak or Blast known: the element's volley");
+
+        var none = new CastRig(6, "Frost Bolt VI");
+        none.NoComponents("Frost Bolt VI");
+        Check.Eq(none.Cast("Cold", new MonsterRule { UseArc = true, UseBolt = false }), ("(none)", "?"),
+            "nothing known with components: nothing cast (no unknown spell, no other element)");
+        Check.Eq(new CastRig(6, "Acid Stream VI").Cast("Lightning", Blast()), ("(none)", "?"),
+            "another element's spell is never a stand-in");
     }
 
     private static void DuplicateNameIds()

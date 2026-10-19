@@ -4277,6 +4277,10 @@ public partial class BuffManager : IDisposable
                 bool noCompsVital = _pendingSpellId == _pendingVitalSpellId && noComps;
                 // Every spell refused for components is remembered (combat skips it too).
                 if (noComps) _spellManager.MarkNoComponents(_pendingSpellId);
+                if (noComps && pendingSpell != null)
+                    Huds.CastWarningHud.Post(pendingSpell.Name, noCompsVital
+                        ? $"RynthAi casts a lower level of it instead, or a kit or potion ({SpellManager.NoComponentsSec / 60:0} min)."
+                        : $"RynthAi skips it for {BuffFailCooldownSec / 60:0} min.");
                 if (pendingSpell != null && noCompsVital)
                 {
                     // A vital spell: pass over this level only; the next lower one goes next.

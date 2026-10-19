@@ -1722,6 +1722,8 @@ public partial class CombatManager : IDisposable
                           $"{(noComps ? $"Passed over for {SpellManager.NoComponentsSec / 60:0} min" : "Marked unresolvable")} → tiering down to an alternative.");
                 if (noComps && _noCompsAnnounced.Add(_pendingOffensiveSpellId))
                     _host.WriteToChat($"[RynthAi] No components for {name}: attacking with a lower level or another spell for {SpellManager.NoComponentsSec / 60:0} min.", 2);
+                if (noComps)
+                    Huds.CastWarningHud.Post(name, $"RynthAi attacks with a lower level or another spell it can pay for ({SpellManager.NoComponentsSec / 60:0} min).");
                 _pendingOffensiveSpellId = 0;
                 _predictKillSwapArmed = false; // the cast never went out — don't swap off a live mob
                 }
@@ -7293,13 +7295,13 @@ public partial class CombatManager : IDisposable
             if (ringId != 0) { isRing = true; castShape = ShapeRing; return ringId; }
         }
 
-        // Strict TYPE adherence: cast ONLY the shape configured in the
-        // Monsters tab (Arc/Bolt/Streak/Blast) — plus the ring override handled
-        // above. No cross-shape fallthrough; that was casting Streak when
-        // Arc was configured but its tiers weren't resolvable.
-        // One exception: Blast falls back to Bolt of the same element when the
-        // character knows no blast at all — retail has no blast I or II, so a low
-        // character set to Blast would otherwise never attack.
+        // The shape configured in the Monsters tab (Arc/Bolt/Streak/Blast) comes first, at the
+        // highest level the character knows and has components for, plus the ring override above.
+        // Only when no level of it can be cast (unknown, or refused for components) does another
+        // shape of the same element stand in (FallbackToCastableShape, 2026-10-18). The old
+        // cross-shape fallthrough cast Streak for Arc because Arc's tiers didn't RESOLVE (the
+        // resolver trusted a lying IsSpellKnown); resolution is now known-spells only.
+        // Blast still tries Bolt first: retail has no blast I or II.
         int id = FindBestOffensiveSpellId(baseName, skill, t7);
         castShape = id != 0 ? shapeIdx : -1;
         // A blocked Arc whose other shape isn't known casts the same element's Bolt (never the arc).
@@ -7320,7 +7322,71 @@ public partial class CombatManager : IDisposable
                     _host.Log($"[CombatCast] no {baseName} known (blasts start at III): casting {boltBase} instead");
             }
         }
+        // Nothing of the configured shape the character can cast (no level known, or every known
+        // level refused for components): another shape of the same element it knows and can pay
+        // for, rather than no attack at all (2026-10-18).
+        // A blocked arc never stands in for itself: that is the arc into the obstacle.
+        if (id == 0) id = FallbackToCastableShape(element, shapeIdx, useVoid, skill, baseName, arcGaveWay, ref castShape);
         return id;
+    }
+
+    // War volleys (several bolts at once; levels I-VI, not every element has the low ones): not a
+    // configurable shape, only a fallback after the other shapes.
+    private static readonly Dictionary<string, string> WarVolleyBase = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "Fire", "Flame Volley" }, { "Cold", "Frost Volley" }, { "Lightning", "Lightning Volley" },
+        { "Acid", "Acid Volley" }, { "Blade", "Blade Volley" }, { "Pierce", "Force Volley" },
+        { "Bludgeon", "Bludgeoning Volley" }, { "Slash", "Blade Volley" },
+    };
+
+    /// <summary>The order the fallback tries the other shapes in: single-target first. Rings are the
+    /// "pack in range" override (ChooseCastShape), never a stand-in.</summary>
+    private static readonly int[] FallbackShapeOrder = { ShapeBolt, ShapeArc, ShapeStreak, ShapeBlast };
+
+    private readonly Dictionary<string, DateTime> _shapeFallbackSaidAt = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The best castable spell of another shape of <paramref name="element"/> (FallbackShapeOrder, then
+    /// a war volley): known, and not refused for components lately (TrySpellByName). 0 = none.
+    /// <paramref name="castShape"/> gets the shape cast (a volley counts as a blast).
+    /// </summary>
+    private int FallbackToCastableShape(string element, int wantedShape, bool useVoid, AcSkillType skill, string wantedBase, bool arcBlocked, ref int castShape)
+    {
+        foreach (int shape in FallbackShapeOrder)
+        {
+            if (shape == wantedShape) continue;
+            if (shape == ShapeArc && arcBlocked) continue;   // the arc gave way to the obstacle
+            if (!TryGetShapeBase(element, shape, useVoid, out string b, out string? t7, out bool forcedWar)) continue;
+            if (string.Equals(b, wantedBase, StringComparison.OrdinalIgnoreCase)) continue;
+            int id = FindBestOffensiveSpellId(b, forcedWar ? AcSkillType.WarMagic : skill, t7);
+            if (id == 0) continue;
+            castShape = shape;
+            NoteShapeFallback(element, wantedBase, id);
+            return id;
+        }
+        if (!useVoid && WarVolleyBase.TryGetValue(element, out string? volley))
+        {
+            int id = FindBestOffensiveSpellId(volley, skill);
+            if (id != 0)
+            {
+                castShape = ShapeBlast;
+                NoteShapeFallback(element, wantedBase, id);
+                return id;
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>Says (chat + log) once per element and shape per NoSpellChatIntervalMs which spell stands in.</summary>
+    private void NoteShapeFallback(string element, string wantedBase, int id)
+    {
+        string key = element + "|" + wantedBase;
+        DateTime now = DateTime.Now;
+        if (_shapeFallbackSaidAt.TryGetValue(key, out DateTime last) && (now - last).TotalMilliseconds < NoSpellChatIntervalMs) return;
+        _shapeFallbackSaidAt[key] = now;
+        string name = SpellTableStub.GetById(id)?.Name ?? id.ToString();
+        _host.Log($"[CombatCast] no castable {wantedBase} (no level known, or out of components): casting {name} instead");
+        _host.WriteToChat($"[RynthAi] No {wantedBase} you can cast (not known, or out of components): attacking with {name}.", 2);
     }
 
     private readonly HashSet<string> _blastFallbackLogged = new(StringComparer.OrdinalIgnoreCase);
