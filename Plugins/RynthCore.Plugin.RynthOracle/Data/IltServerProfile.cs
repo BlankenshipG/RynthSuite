@@ -14,9 +14,17 @@ internal sealed record IltFeature(string Key, string Label, string Group, int St
 /// <summary>
 /// The ACECustom quest bonus list ("/qb list") as RynthILT last read it (the profile's "questBonus"
 /// object). <see cref="Generation"/> 0 = not loaded this session; <see cref="Count"/> -1 = unknown.
+/// <see cref="CompletedCount"/> / <see cref="IncompleteCount"/> are the list sizes RynthILT reports
+/// (-1 = an older RynthILT that sent the lists inline); from RynthILT 0.2.22 the lists themselves
+/// arrive separately (<see cref="IltServerLink.QuestBonus"/>).
 /// </summary>
 internal sealed record IltQuestBonusList(bool Disabled, int Generation, long Count, string Status,
-                                         IReadOnlyList<string> Completed, IReadOnlyList<string> Incomplete);
+                                         IReadOnlyList<string> Completed, IReadOnlyList<string> Incomplete,
+                                         int CompletedCount = -1, int IncompleteCount = -1)
+{
+    /// <summary>The profile names flags whose lists it didn't carry: they come from GetQuestBonusJson.</summary>
+    public bool ListsElsewhere => Completed.Count == 0 && Incomplete.Count == 0 && CompletedCount + IncompleteCount > 0;
+}
 
 /// <summary>
 /// What RynthILT reports about the Infinite Leaftide server (the "RynthILT.Server" profile JSON,
@@ -127,7 +135,25 @@ internal sealed class IltServerProfile
         if (!root.TryGetProperty("questBonus", out JsonElement q) || q.ValueKind != JsonValueKind.Object) return null;
         long count = q.TryGetProperty("count", out JsonElement c) && c.ValueKind == JsonValueKind.Number && c.TryGetInt64(out long n) ? n : -1;
         return new IltQuestBonusList(Bool(q, "disabled"), Int(q, "generation", 0), count, Str(q, "status"),
-                                     Strings(q, "completed"), Strings(q, "incomplete"));
+                                     Strings(q, "completed"), Strings(q, "incomplete"),
+                                     Int(q, "completedCount", -1), Int(q, "incompleteCount", -1));
+    }
+
+    /// <summary>
+    /// The GetQuestBonusJson payload ({"generation":n,"completed":[...],"incomplete":[...]}), or null
+    /// when it doesn't parse.
+    /// </summary>
+    internal static (int Generation, string[] Completed, string[] Incomplete)? ParseQuestBonusLists(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            return (Int(root, "generation", 0), Strings(root, "completed"), Strings(root, "incomplete"));
+        }
+        catch (JsonException) { return null; }
     }
 
     private static string[] Strings(JsonElement o, string name)
@@ -166,22 +192,43 @@ internal sealed unsafe class IltServerLink
 {
     private const long PollMs = 2000;
     private const long RequeryMs = 10_000;
-    // Room for the /qb list (hundreds of flags) on top of the features.
+    // The profile: features and fellowship rules, plus the /qb lists from an older RynthILT.
     private const int MaxBuffer = 512 * 1024;
+    // The /qb lists (GetQuestBonusJson): 25,000 flags are about 1 MB; room for well past that.
+    private const int MaxQuestBonusBuffer = 8 * 1024 * 1024;
 
     private RynthIltServerApiV1* _table;
     private long _nextPollAt, _nextQueryAt;
     private byte[] _buffer = new byte[8192];
     private string _lastJson = "";
+    // The /qb lists read through GetQuestBonusJson, and the profile generation they belong to.
+    private string[] _qbCompleted = Array.Empty<string>(), _qbIncomplete = Array.Empty<string>();
+    private int _qbListGeneration = -1;
 
     public IltServerProfile Profile { get; private set; } = IltServerProfile.None;
     public int Revision { get; private set; }
+
+    /// <summary>
+    /// The /qb summary with its flag lists filled in: inline from an older RynthILT, otherwise the
+    /// ones read through GetQuestBonusJson for this generation (empty until that read lands).
+    /// </summary>
+    public IltQuestBonusList? QuestBonus
+    {
+        get
+        {
+            IltQuestBonusList? qb = Profile.QuestBonus;
+            if (qb == null || !qb.ListsElsewhere || qb.Generation != _qbListGeneration) return qb;
+            return qb with { Completed = _qbCompleted, Incomplete = _qbIncomplete };
+        }
+    }
 
     /// <summary>Forget the profile (logout); the next poll reads it again.</summary>
     public void Clear()
     {
         _nextPollAt = 0;
         SetJson("");
+        _qbCompleted = _qbIncomplete = Array.Empty<string>();
+        _qbListGeneration = -1;
     }
 
     /// <summary>Pump thread. Cheap when not due.</summary>
@@ -190,7 +237,13 @@ internal sealed unsafe class IltServerLink
         if (now < _nextPollAt) return;
         _nextPollAt = now + PollMs;
         RynthIltServerApiV1* t = Table(host, now);
-        SetJson(t == null ? "" : Read(t));
+        SetJson(t == null ? "" : Read(t, t->GetProfileJson, MaxBuffer));
+
+        // The /qb lists move only when RynthILT parses a new "/qb list" (generation), so the
+        // ~1 MB read happens once per list rather than every poll.
+        if (Profile.QuestBonus is { ListsElsewhere: true } qb && qb.Generation != _qbListGeneration
+            && RynthIltServerApiV1.HasQuestBonus(t))
+            SetQuestBonusJson(Read(t, t->GetQuestBonusJson, MaxQuestBonusBuffer));
     }
 
     /// <summary>The table, re-queried when it is missing or RynthILT has shut down (Version 0).</summary>
@@ -200,22 +253,24 @@ internal sealed unsafe class IltServerLink
         _table = null;
         if (now < _nextQueryAt || !host.HasGetPluginInterface) return null;
         _nextQueryAt = now + RequeryMs;
-        var p = (RynthIltServerApiV1*)host.GetPluginInterface(RynthIltServer.PluginName, RynthIltServerApiV1.InterfaceName, RynthIltServerApiV1.InterfaceVersion);
-        if (p != null && p->Version >= 1 && p->StructSize >= (uint)sizeof(RynthIltServerApiV1) && p->GetProfileJson != null)
+        // Base version and a version-1-sized table, so an older RynthILT still answers.
+        var p = (RynthIltServerApiV1*)host.GetPluginInterface(RynthIltServer.PluginName, RynthIltServerApiV1.InterfaceName, RynthIltServerApiV1.BaseVersion);
+        if (p != null && p->Version >= 1 && p->StructSize >= RynthIltServerApiV1.V1Size && p->GetProfileJson != null)
             _table = p;
         return _table;
     }
 
-    /// <summary>Copies the JSON out, growing the buffer once when RynthILT says it didn't fit.</summary>
-    private string Read(RynthIltServerApiV1* t)
+    /// <summary>Copies one JSON export out, growing the buffer once when RynthILT says it didn't fit.</summary>
+    private string Read(RynthIltServerApiV1* t, delegate* unmanaged[Cdecl]<byte*, int, int> get, int maxBuffer)
     {
+        if (t == null || get == null) return "";
         for (int attempt = 0; attempt < 2; attempt++)
         {
             int len;
-            fixed (byte* b = _buffer) len = t->GetProfileJson(b, _buffer.Length);
+            fixed (byte* b = _buffer) len = get(b, _buffer.Length);
             if (len <= 0) return "";
             if (len < _buffer.Length) return Encoding.UTF8.GetString(_buffer, 0, len);
-            if (len + 1 > MaxBuffer) return "";
+            if (len + 1 > maxBuffer) return "";
             _buffer = new byte[len + 1024];
         }
         return "";
@@ -227,6 +282,16 @@ internal sealed unsafe class IltServerLink
         if (json == _lastJson) return;
         _lastJson = json;
         Profile = IltServerProfile.Parse(json);
+        Revision++;
+    }
+
+    /// <summary>Takes a GetQuestBonusJson payload (internal: the tests feed one without RynthILT).</summary>
+    internal void SetQuestBonusJson(string json)
+    {
+        if (IltServerProfile.ParseQuestBonusLists(json) is not { } lists) return;
+        _qbCompleted = lists.Completed;
+        _qbIncomplete = lists.Incomplete;
+        _qbListGeneration = lists.Generation;
         Revision++;
     }
 }

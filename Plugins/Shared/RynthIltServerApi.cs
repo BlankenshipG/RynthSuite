@@ -26,8 +26,19 @@
 //    "features": [ { "key": "bank", "label": "Banking", "group": "Character",
 //                    "state": 1, "where": "Mini Remote > Banking tab" }, ... ],
 //                                         // state: 1 on, 0 off, -1 not known yet
-//    "fellowship": { "maxMembers": 29, "zoneShare": 1, "blackjack": 0, "luminanceShare": 1 }
+//    "fellowship": { "maxMembers": 29, "zoneShare": 1, "blackjack": 0, "luminanceShare": 1 },
+//    "questBonus": { "disabled": false, "generation": 3, "count": 15234, "status": "...",
+//                    "completedCount": 15000, "incompleteCount": 234 }
+//                                         // ILT worlds only. Version 1 tables also carried the
+//                                         // "completed" / "incomplete" arrays here; from Version 2
+//                                         // they come from GetQuestBonusJson instead, so a 25,000-
+//                                         // flag list never bloats the profile every reader polls.
 //  }
+//
+//  GetQuestBonusJson payload (Version 2):
+//  { "generation": 3, "completed": [ "flag", ... ], "incomplete": [ "flag", ... ] }
+//  Rebuilt only when a "/qb list" is parsed, so a reader re-reads it when the profile's
+//  questBonus.generation moves.
 // ============================================================================
 
 using System.Runtime.InteropServices;
@@ -55,7 +66,29 @@ public static class RynthIltServer
 public unsafe struct RynthIltServerApiV1
 {
     public const string InterfaceName = "RynthILT.Server";
-    public const uint InterfaceVersion = 1;
+    public const uint InterfaceVersion = 2;
+    /// <summary>
+    /// The version a reader asks for. Every RynthILT answers it, and the table's
+    /// <see cref="Version"/> then says which functions are filled (2 = GetQuestBonusJson).
+    /// </summary>
+    public const uint BaseVersion = 1;
+
+    /// <summary>
+    /// The size of a version-1 table (everything before GetQuestBonusJson) on this platform: the
+    /// smallest table a reader accepts, so a new reader still reads an older RynthILT's profile.
+    /// </summary>
+    public static uint V1Size
+    {
+        get
+        {
+            RynthIltServerApiV1 t = default;
+            return (uint)((byte*)&t.GetQuestBonusJson - (byte*)&t);
+        }
+    }
+
+    /// <summary>True when <paramref name="t"/> is a live version-2 table with GetQuestBonusJson filled.</summary>
+    public static bool HasQuestBonus(RynthIltServerApiV1* t)
+        => t != null && t->Version >= 2 && t->StructSize >= (uint)sizeof(RynthIltServerApiV1) && t->GetQuestBonusJson != null;
 
     public uint Version;      // InterfaceVersion of the table RynthILT filled; 0 once it has shut down
     public uint StructSize;   // sizeof(RynthIltServerApiV1) as RynthILT built it
@@ -68,4 +101,11 @@ public unsafe struct RynthIltServerApiV1
     /// rebuilds about once a second).
     /// </summary>
     public delegate* unmanaged[Cdecl]<byte*, int, int> GetProfileJson;
+
+    /// <summary>
+    /// Version 2. GetQuestBonusJson(buffer, capacity): the full "/qb list" JSON, with the same
+    /// size contract as <see cref="GetProfileJson"/>. A 25,000-flag list is about 1 MB, so a
+    /// reader grows its buffer to the returned length. Any thread.
+    /// </summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, int> GetQuestBonusJson;
 }

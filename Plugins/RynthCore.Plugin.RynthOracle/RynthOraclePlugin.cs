@@ -19,7 +19,7 @@ namespace RynthCore.Plugin.RynthOracle;
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.5.4.
-    public const string Version = "0.6.0";
+    public const string Version = "0.6.1";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -562,6 +562,11 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         {
             _c.Flags.LastPartialReply = null;
             Host.Log($"[RynthOracle] /myquests reply looked cut short ({partial.Got} lines, {partial.Had} flags held): merged it instead of replacing the list.");
+        }
+        if (_c.Flags.LastLongReply is { } longReply)
+        {
+            _c.Flags.LastLongReply = null;
+            Host.Log($"[RynthOracle] /myquests long reply: {longReply.Lines} flag line(s) over {longReply.Ms} ms; {_c.Flags.Flags.Count} flags held.");
         }
         if (_c.Flags.Revision != _seenFlagRevision)
         {
