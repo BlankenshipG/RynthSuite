@@ -147,6 +147,8 @@ internal static unsafe class FakeHost
     public static int RefusedIdRequests;
     /// <summary>False = UseObject returns 0 (the engine did not send it); the use is still recorded in <see cref="Uses"/>.</summary>
     public static bool UseObjectAccepts = true;
+    /// <summary>False = UseObjectOn returns 0 (the engine refused it, e.g. after a portal); still recorded in <see cref="UsesOn"/>.</summary>
+    public static bool UseObjectOnAccepts = true;
     /// <summary>Opt-in (set before Create): UseObject, RequestId, HasAppraisalData and
     /// GetCurrentCombatMode (answering <see cref="CombatModeValue"/>). Tests written without
     /// them keep seeing those calls as absent.</summary>
@@ -284,7 +286,7 @@ internal static unsafe class FakeHost
         Logs.Clear(); Chat.Clear(); ChatCommands.Clear(); AfterCastSpell = null;
         AutoRunCalls.Clear(); AutoRun = false; Jumps = 0; TapJumpCalls = false; TapJumps = 0; TapJumpRefuse = false; Turns = 0; Casts.Clear(); CastRefused = false; CastsRefused = 0; StopCalls = false; Stops = 0; SetMotionCalls = false; MotionCalls.Clear(); AttackSendCalls = false; AttackCalls.Clear(); Sent.Clear(); GiveCalls = false; Gives.Clear(); GiveLands = true; GiveHandler = null;
         Uses.Clear(); IdRequests.Clear(); TargetCalls = false; HealthQueries.Clear(); IdTimes.Clear(); Moves.Clear(); Appraised.Clear(); WeaponCalls = false; ContentsCalls = false; CombatModeValue = 1;
-        RequestIdAccepts = true; RefusedIdRequests = 0; UseObjectAccepts = true;
+        RequestIdAccepts = true; RefusedIdRequests = 0; UseObjectAccepts = true; UseObjectOnAccepts = true;
         VTankFlags = -1; VTankSeq = 0; LogCostMicros = 0;
         ServerGates = false; UseDoneSeq = 0; CastBusy = 0; LastUseDoneError = 0; LastUseDoneCalls = false;
         WeenieErrorCalls = false; WeenieErrSeq = 0; WeenieErrCode = WeenieErrEvent = WeenieErrObject = 0;
@@ -849,7 +851,7 @@ internal static unsafe class FakeHost
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    private static int UseObjectOn(uint source, uint target) { UsesOn.Add((source, target)); OnUseObjectOn?.Invoke(source, target); return 1; }
+    private static int UseObjectOn(uint source, uint target) { UsesOn.Add((source, target)); OnUseObjectOn?.Invoke(source, target); return UseObjectOnAccepts ? 1 : 0; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int WieldItem(uint id, uint mask) { Wields.Add((id, mask)); return 1; }

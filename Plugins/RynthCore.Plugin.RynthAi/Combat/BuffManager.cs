@@ -2147,6 +2147,31 @@ public partial class BuffManager : IDisposable
 
     private bool VitalNo(string why) { _vitalWhy = why; return false; }
 
+    // The last time a refused vital use was logged (one line per RefusedUseLogMs, not per tick).
+    private DateTime _lastRefusedUseLog = DateTime.MinValue;
+    private const double RefusedUseLogMs = 5000;
+    /// <summary>Vital item uses the engine refused to send (tests, status).</summary>
+    internal int VitalUsesRefused { get; private set; }
+
+    /// <summary>
+    /// The engine didn't send a kit or potion use: it refuses new game actions while it holds
+    /// them, for 5 s after a portal, a teleport or a respawn (WorldTransitionState), and when its
+    /// action queue is full. Nothing is marked as used, so the vitals keep trying on the next ticks
+    /// (and the other heals keep their turn) instead of waiting up to 8 s for a kit result that
+    /// can't come: Silentkelpie respawned into a fight, his kit 3.5 s after the portal was refused,
+    /// and he died 3.4 s later with every heal still waiting for it (2026-10-19 18:21).
+    /// </summary>
+    private bool VitalUseRefused(string what)
+    {
+        VitalUsesRefused++;
+        if ((DateTime.Now - _lastRefusedUseLog).TotalMilliseconds >= RefusedUseLogMs)
+        {
+            _lastRefusedUseLog = DateTime.Now;
+            _host.Log($"[RynthAi] Vitals: the engine didn't send {what} (it holds game actions for 5 s after a portal, teleport or respawn): trying again next tick.");
+        }
+        return VitalNo($"the engine didn't send {what}");
+    }
+
     // The pending cast is a vital one when _pendingSpellId equals this (set by AttemptVitalCast).
     private int _pendingVitalSpellId;
     private DateTime _lastManaFloorLogAt = DateTime.MinValue;
@@ -2325,7 +2350,8 @@ public partial class BuffManager : IDisposable
             if (IsKitName(potion.Name)) continue;
             if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
             _host.Log($"[RynthAi] Vitals: drinking {rule.Name} ({rule.Type})" + (potion.Id != rule.Id ? " from a new stack." : "."));
-            _host.UseFor(unchecked((uint)potion.Id), "Buff", $"vitals: drink {rule.Name} ({rule.Type}) from the Items list");
+            if (!_host.UseFor(unchecked((uint)potion.Id), "Buff", $"vitals: drink {rule.Name} ({rule.Type}) from the Items list"))
+                return VitalUseRefused(rule.Name);
             _lastPotionAt = DateTime.Now;
             _lastCastAttempt = DateTime.Now;
             if (IsHealthPotionType(types)) NoteHealSent(rule.Name);
@@ -2341,7 +2367,8 @@ public partial class BuffManager : IDisposable
             if (IsKitName(wo.Name)) continue;
             if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
             _host.Log($"[RynthAi] Vitals: using {wo.Name} from the pack ({kind}).");
-            _host.UseFor(unchecked((uint)wo.Id), "Buff", $"vitals: {kind} potion from the pack");
+            if (!_host.UseFor(unchecked((uint)wo.Id), "Buff", $"vitals: {kind} potion from the pack"))
+                return VitalUseRefused(wo.Name ?? kind + " potion");
             _lastPotionAt = DateTime.Now;
             _lastCastAttempt = DateTime.Now;
             if (IsHealthPotionType(types)) NoteHealSent(wo.Name ?? "health potion");
@@ -2494,7 +2521,8 @@ public partial class BuffManager : IDisposable
         if (playerId == 0) return false;
         if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
         if (fromPack) _host.Log($"[RynthAi] Vitals: using {kit.Name} from the pack.");
-        _host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: healing kit on yourself");
+        if (!_host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: healing kit on yourself"))
+            return VitalUseRefused(kit.Name ?? "the healing kit");
         _lastCastAttempt = DateTime.Now;
         MarkKitUsed();
         NoteHealSent(kit.Name ?? "healing kit");
@@ -2525,7 +2553,8 @@ public partial class BuffManager : IDisposable
         if (playerId == 0) return false;
         if (HeldCastBlocksItemUse(out _)) return false;
         _host.Log($"[RynthAi] Vitals: using {kit.Name} from the pack.");
-        _host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: stamina kit on yourself");
+        if (!_host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: stamina kit on yourself"))
+            return VitalUseRefused(kit.Name ?? "the stamina kit");
         _lastCastAttempt = DateTime.Now;
         MarkKitUsed(stamina: true);
         return true;

@@ -30,6 +30,7 @@ internal static class OneTouchHealTests
         r.Add("one-touch: a vital that is full says so and sends nothing", FullSaysSo);
         r.Add("one-touch: heal ignores the lines and casts Heal Self in Magic stance, macro off", HealCastsInMagic);
         r.Add("one-touch: heal with a weapon out takes the kit, then the potion, before the spell (no wand swap)", HealItemsBeforeSpellInMelee);
+        r.Add("vitals: a kit the engine refuses (after a portal) isn't waited on: the potion goes, the kit again once it's taken", RefusedKitNotWaitedOn);
         r.Add("one-touch: heal in Magic stance keeps the vitals step's order: Heal Self before the potion", HealSpellBeforePotionInMagic);
         r.Add("one-touch: heal falls to Stamina to Health only when that feature is on and stamina is over its floor", HealStaminaToHealthLast);
         r.Add("one-touch: with nothing to heal with it says why for the kit, the spell and the potion", HealNothingSaysWhy);
@@ -155,6 +156,30 @@ internal static class OneTouchHealTests
         for (int i = 0; i < 40 && r.B.OneTouchPending(OneTouchVital.Health) && FakeHost.Casts.Count == 0; i++) { r.B.OnHeartbeat(); Thread.Sleep(10); }
         // Either the cast went out or a stance step is in flight (still pending); never a "nothing could heal".
         Check.False(Said("nothing could heal"), "a spell is possible: " + AllChat);
+    }
+
+    // 2026-10-19 18:21 (Silentkelpie): respawned into a fight, the kit 3.5 s after the portal was
+    // refused by the engine (it holds game actions for 5 s after a portal), RynthAi took it as sent,
+    // and every heal waited for its result until he died 3.4 s later.
+    private static void RefusedKitNotWaitedOn()
+    {
+        var r = Make(CombatMode.Melee, hp: 60, kit: true, healPotion: true);
+        FakeHost.UseObjectOnAccepts = false;   // the engine is holding game actions
+        r.B.RequestOneTouch(OneTouchVital.Health);
+        Pump(r.B, OneTouchVital.Health);
+        Check.True(FakeHost.UsesOn.Any(u => u.Source == Kit), "the kit was tried");
+        Check.False(r.B.KitPending(), "a refused kit is not in flight: nothing waits for its result");
+        Check.Eq(r.B.VitalUsesRefused, 1, "the refusal is counted");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("the engine didn't send") && l.Contains("Peerless Healing Kit")), "and logged");
+        Check.True(FakeHost.Uses.Contains(HealPotion), "the next heal (the potion) goes instead of waiting");
+
+        // The engine takes uses again: the next request sends the kit, and that one is waited on.
+        FakeHost.UseObjectOnAccepts = true;
+        int before = FakeHost.UsesOn.Count(u => u.Source == Kit);
+        r.B.RequestOneTouch(OneTouchVital.Health);
+        Pump(r.B, OneTouchVital.Health);
+        Check.Eq(FakeHost.UsesOn.Count(u => u.Source == Kit), before + 1, "the kit goes once the engine takes it");
+        Check.True(r.B.KitPending(), "a sent kit is waited on, as before");
     }
 
     private static void HealSpellBeforePotionInMagic()
