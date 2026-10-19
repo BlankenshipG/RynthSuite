@@ -3,6 +3,7 @@ using RynthCore.Loot;
 using System.Text.Json;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginSdk;
 using RynthCore.RynthAiHostTests.Fakes;
 using RynthCore.RynthAiTests.Harness;
@@ -30,6 +31,10 @@ internal static class VitalsTests
         r.Add("vitals: low health wins the arbiter even on a busy tick; backs off when nothing can heal", HealthWinsArbiter);
         r.Add("vitals: 'You're too busy!' paces vital casts, and a long streak stops the character once", TooBusyVitals);
         r.Add("vitals: no components for the top level - the next lower level is cast, not the same one again", NoComponentsFallsBack);
+        // Sk, 2026-10-18: Heal Self V refused for components every 0.4 s; Heal Self I parked for a Flame Arc II refusal.
+        r.Add("vitals: a heal above the allowed tier that the server refused for components is not cast again", AboveTierNoComponents);
+        r.Add("vitals: a refusal answering a later cast (an attack) leaves the pending heal's level alone", RefusalBelongsToLastCast);
+        r.Add("spells: the no-components list expires and is lifted when more scarabs or tapers arrive", NoComponentsMemory);
         // Drakkon's death, 2026-10-05 13:43:20 (ops\overnight\2026-10-05-death-fixes.md).
         r.Add("vitals: a hot reload's login refresh trusts its first read; a real login waits for two equal reads", HotReloadRefresh);
         r.Add("vitals: RynthAi tells the engine a reload is unsafe while engaged, under a heal line or casting", ReloadBlockerReport);
@@ -209,6 +214,95 @@ internal static class VitalsTests
         b.SetCharacterSkills(skills);
         Check.True(b.CheckVitals(), "health 30% under Heal At 60%: the vitals step acts");
         Check.True(FakeHost.Casts.Any(c => c.SpellId == heal6), "Heal Self VI is cast: " + string.Join(",", FakeHost.Casts.Select(c => c.SpellId)));
+    }
+
+    /// <summary>
+    /// Sk, 2026-10-18: with no Heal Self at the tiers Life Magic allowed, the above-tier fallback
+    /// picked Heal Self V even after the server refused it for components, every 0.4 s. A level on
+    /// the no-components list is no better than none: nothing is cast (a potion would get its turn).
+    /// </summary>
+    private static void AboveTierNoComponents()
+    {
+        FakeHost.Reset();
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        int heal6 = SpellTable.Rows.First(r => r.Name == "Heal Self VI").Id;
+        FakeHost.Spellbook.Add((uint)heal6);
+        FakeHost.Skills[(Player, STypeLife)] = (120, 2);
+        var host = FakeHost.Create();
+        var s = new LegacyUiSettings { HealAt = 60, TopOffHP = 60, RestamAt = 0, TopOffStam = 0, GetManaAt = 0, TopOffMana = 0, UsePotions = false };
+        var skills = new CharacterSkills(host);
+        skills.SetPlayerId(Player);
+        var sm = new SpellManager(host, s);
+        sm.InitializeNatively();
+        sm.SetCharacterSkills(skills);
+        var vitals = new PlayerVitalsCache { MaxHealth = 100, CurrentHealth = 30, MaxStamina = 100, CurrentStamina = 100, MaxMana = 100, CurrentMana = 100 };
+        var b = new BuffManager(host, s, sm, vitals);
+        b.SetCharacterSkills(skills);
+
+        Check.True(b.CheckVitals() && FakeHost.Casts.Any(c => c.SpellId == heal6), "the rig: Heal Self VI goes out above the allowed tier");
+        b.OnChatWindowText("You don't have all the components for this spell.", 26);
+        Check.True(sm.LacksComponents(heal6), "the refusal puts Heal Self VI on the no-components list");
+        int casts = FakeHost.Casts.Count;
+        for (int i = 0; i < 10; i++) { b.CheckVitals(); System.Threading.Thread.Sleep(10); }
+        Check.Eq(FakeHost.Casts.Count, casts, "Heal Self VI is not cast again while it lacks components");
+    }
+
+    /// <summary>
+    /// Sk, 2026-10-18: AC's refusal names no spell. A Flame Arc II refusal that arrived while Heal
+    /// Self I was pending parked Heal Self I, the one heal Sk could cast. The refusal answers the
+    /// last cast sent: with another spell sent after the heal, the heal's level is left alone.
+    /// </summary>
+    private static void RefusalBelongsToLastCast()
+    {
+        FakeHost.Reset();
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        foreach (var row in SpellTable.Rows) FakeHost.Spellbook.Add((uint)row.Id);
+        FakeHost.Skills[(Player, STypeLife)] = (400, 2);
+        var host = FakeHost.Create();
+        var s = new LegacyUiSettings { IsMacroRunning = true, HealAt = 0, TopOffHP = 0, EmergencyHealAt = 0, StaminaToHealthAt = 0,
+                                       GetManaAt = 50, TopOffMana = 50, RestamAt = 0, TopOffStam = 0, UsePotions = false };
+        var skills = new CharacterSkills(host);
+        skills.SetPlayerId(Player);
+        var sm = new SpellManager(host, s);
+        sm.InitializeNatively();
+        sm.SetCharacterSkills(skills);
+        var vitals = new PlayerVitalsCache { MaxHealth = 100, CurrentHealth = 100, MaxStamina = 100, CurrentStamina = 100, MaxMana = 100, CurrentMana = 10 };
+        var b = new BuffManager(host, s, sm, vitals);
+        b.SetCharacterSkills(skills);
+
+        Check.True(b.CheckVitals(), "10% mana: Stamina to Mana is cast");
+        int vital = FakeHost.Casts[^1].SpellId;
+        int attack = SpellTable.Rows.First(r => r.Name == "Flame Arc II").Id;
+        Check.True(host.CastSpellFor(0x70000001, attack, "Combat", "Flame Arc II"), "an attack spell goes out after it");
+        Check.Eq(ActionPacer.LastCastSpellId, attack, "the pacer remembers the attack as the last cast sent");
+
+        b.OnChatWindowText("You don't have all the components for this spell.", 26);
+        Check.False(sm.LacksComponents(vital), "the vital's level is not blamed for the attack's refusal");
+
+        // The same refusal with the vital as the last cast sent is the vital's.
+        Check.True(host.CastSpellFor(0, vital, "Buff", "vital"), "the vital goes out again (last cast sent)");
+        b.OnChatWindowText("You don't have all the components for this spell.", 26);
+        Check.True(sm.LacksComponents(vital), "now the vital's level is passed over");
+    }
+
+    /// <summary>SpellManager's no-components list: marked, read, lifted by more scarabs or tapers (bought or looted).</summary>
+    private static void NoComponentsMemory()
+    {
+        FakeHost.Reset();
+        var host = FakeHost.Create();
+        var sm = new SpellManager(host, new LegacyUiSettings());
+        int flameArc2 = SpellTable.Rows.First(r => r.Name == "Flame Arc II").Id;
+        Check.False(sm.LacksComponents(flameArc2), "nothing listed at the start");
+        sm.NoteComponentCounts(scarabs: 5, tapers: 0);
+        sm.MarkNoComponents(flameArc2);
+        Check.True(sm.LacksComponents(flameArc2), "a refused spell is listed");
+        sm.NoteComponentCounts(scarabs: 4, tapers: 0);
+        Check.True(sm.LacksComponents(flameArc2), "fewer components (one spent): still listed");
+        sm.NoteComponentCounts(scarabs: 4, tapers: 10);
+        Check.False(sm.LacksComponents(flameArc2), "tapers bought: the list is lifted and the spell tried again");
+        Check.True(SpellManager.NoComponentsSec >= 300, "passed over for minutes, not a tick");
     }
 
     /// <summary>One CheckVitals on a fresh BuffManager; true when it cast a Stamina to Health spell.</summary>

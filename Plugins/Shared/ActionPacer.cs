@@ -1117,6 +1117,13 @@ internal static class ActionPacer
     /// CastSpell, recorded as the outstanding action. RynthAi's callers check MayStart first;
     /// <paramref name="asked"/> (a player command or meta) is never held, only recorded.
     /// </summary>
+    /// <summary>
+    /// The spell of the last cast sent by any subsystem (0 before the first). A server refusal
+    /// ("You don't have all the components for this spell.") names no spell: it answers this one,
+    /// so the buff and combat paths each blame a refusal only when it is their own cast.
+    /// </summary>
+    public static int LastCastSpellId { get; private set; }
+
     public static bool CastSpellFor(this RynthCoreHost host, uint targetId, int spellId, string who, string label, bool asked = false)
     {
         // No cast goes out with a held stop still waiting (2026-10-12): the stop is sent first. The
@@ -1128,6 +1135,7 @@ internal static class ActionPacer
         if (ok)
         {
             CastsSent++;
+            LastCastSpellId = spellId;
             LastCastSeqAtSend = host.HasUseDoneSeq ? seq : -1;
             Begin(host, PacedKind.Cast, unchecked((uint)spellId), label, who, seq);
             lock (Gate) { if (_cur is { Kind: PacedKind.Cast } c && c.Id == unchecked((uint)spellId)) c.Target = targetId; }

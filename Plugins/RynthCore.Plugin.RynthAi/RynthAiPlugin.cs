@@ -1980,6 +1980,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     ScanInventoryStatus(out int freeSlots, out int scarabs, out int tapers, out var scarabsByType, out var equipment);
                     _dashboard?.SetFreeSlots(freeSlots);
                     _dashboard?.SetComponentCounts(scarabs, tapers, scarabsByType);
+                    // More scarabs or tapers (bought, looted): spells refused for components are tried again.
+                    _spellManager?.NoteComponentCounts(scarabs, tapers);
                     _dashboard?.SetEquipment(AppraiseEquipment(equipment));
 
                     // Remote full-inventory snapshot (P1) — same 3s gate, reuses the cached walk.

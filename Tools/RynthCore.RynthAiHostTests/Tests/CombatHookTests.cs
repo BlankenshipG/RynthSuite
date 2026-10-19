@@ -1437,7 +1437,8 @@ internal static class CombatHookTests
         MethodInfo issue = typeof(CombatManager).GetMethod("IssueScriptCast", BindingFlags.NonPublic | BindingFlags.Instance)!;
         void ScriptAttack(HealRig rig) =>
             Check.True((bool)issue.Invoke(rig.C, new object[] { drain, (uint)Target, RynthAiCombat.FlagArea, "Fire" })!, "the script's attack cast went out");
-        bool HealParked(HealRig rig, int id) => Field<System.Collections.Generic.Dictionary<int, DateTime>>(rig.B, "_noComponentsUntil").ContainsKey(id);
+        // The no-components list is SpellManager's since 2026-10-18 (shared with combat's spell choice).
+        bool HealParked(HealRig rig, int id) => Field<SpellManager>(rig.B, "_spellManager").LacksComponents(id);
 
         // Control: the refusal right after the script's cast is the script spell's.
         var ctl = new HealRig();

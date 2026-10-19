@@ -190,8 +190,9 @@ public class SpellManager
         BaseNameAliases.TryGetValue(cleanBase, out string? alias);
         for (int tier = maxTier + 1; tier <= 8; tier++)
         {
-            if (TryGetTierId(cleanBase, tier, out int id)) return id;
-            if (alias != null && TryGetTierId(alias, tier, out int idAlias)) return idAlias;
+            // A level the server refused for components is no better than none.
+            if (TryGetTierId(cleanBase, tier, out int id) && !LacksComponents(id)) return id;
+            if (alias != null && TryGetTierId(alias, tier, out int idAlias) && !LacksComponents(idAlias)) return idAlias;
         }
         return 0;
     }
@@ -265,6 +266,39 @@ public class SpellManager
     public void MarkSpellUnresolvable(int spellId)
     {
         if (spellId > 0) _unresolvableSpellIds.Add(spellId);
+    }
+
+    // Spells the server refused for missing components ("You don't have all the components for
+    // this spell."). The character KNOWS them, so the unresolvable set can't hold them (every
+    // refresh purges known spells from it, and combat never reads it): Sk's Flame Arc II was
+    // "marked unresolvable" 228 times and recast every time, and Heal Self V was retried every
+    // 0.4 s (2026-10-18). Combat (TrySpellByName) and the vital / buff pickers skip a spell here
+    // until it expires or the character picks up more scarabs or tapers.
+    private readonly Dictionary<int, DateTime> _noComponentsUntil = new();
+    /// <summary>How long a spell the server refused for components is passed over.</summary>
+    public const double NoComponentsSec = 600.0;
+    private int _lastScarabs = -1, _lastTapers = -1;
+
+    /// <summary>The server refused <paramref name="spellId"/> for missing components: pass it over for <see cref="NoComponentsSec"/>.</summary>
+    public void MarkNoComponents(int spellId)
+    {
+        if (spellId > 0) _noComponentsUntil[spellId] = DateTime.Now.AddSeconds(NoComponentsSec);
+    }
+
+    /// <summary>True while <paramref name="spellId"/> is passed over for missing components.</summary>
+    public bool LacksComponents(int spellId)
+        => _noComponentsUntil.TryGetValue(spellId, out DateTime until) && DateTime.Now < until;
+
+    /// <summary>
+    /// The pack's scarab and taper counts (the plugin's 3 s inventory scan): more of either than
+    /// last time (bought or looted) lets every spell refused for components be tried again.
+    /// </summary>
+    public void NoteComponentCounts(int scarabs, int tapers)
+    {
+        bool more = (_lastScarabs >= 0 && scarabs > _lastScarabs) || (_lastTapers >= 0 && tapers > _lastTapers);
+        _lastScarabs = scarabs;
+        _lastTapers = tapers;
+        if (more && _noComponentsUntil.Count > 0) _noComponentsUntil.Clear();
     }
 
     /// <summary>Persisted by BuffManager so the tier-7→6 drop is learned once
