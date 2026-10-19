@@ -18,8 +18,8 @@ namespace RynthCore.Plugin.RynthOracle;
 /// </summary>
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
-    // Previous release: 0.5.4.
-    public const string Version = "0.6.1";
+    // Previous release: 0.6.1.
+    public const string Version = "0.6.2";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;

@@ -7,8 +7,8 @@ namespace RynthCore.Plugin.RynthChat;
 public sealed class RynthChatPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthChat");
-    // Previous release: 0.3.3.
-    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.3.4");
+    // Previous release: 0.3.4.
+    internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi("0.3.5");
 
     /// <summary>How long after login completes the server's system text still counts as the login burst.</summary>
     internal const long LoginBurstMs = 30_000;
