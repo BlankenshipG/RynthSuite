@@ -35,6 +35,12 @@ internal sealed class IltSigilShortfall
     public bool Covered => CoinsShort == 0 && TrinketsShort == 0 && ExtractsShort == 0 && SplittersShort == 0 && PlantsShort == 0;
 }
 
+/// <summary>The "How to get" text of each chain row (IltSigilChain.HowTo).</summary>
+internal sealed class IltSigilHowTo
+{
+    public string Ascension = "", Elixir = "", Resin = "", Coins = "", Trinkets = "", Extracts = "", Splitters = "", Plants = "";
+}
+
 internal static class IltSigilChain
 {
     public const int FirstTarget = 301;
@@ -48,6 +54,8 @@ internal static class IltSigilChain
     public const string LifebloomResin = "Lifebloom Resin";
     public const string NecrolyticExtract = "Necrolytic Extract";
     public const string LifebloodElixir = "Lifeblood Elixir";
+    /// <summary>What a vendor trades for Necrolytic Extracts (not part of the craft chain).</summary>
+    public const string Trophy = "Trophy";
 
     public static bool IsSigilTarget(int t) => t >= FirstTarget && t <= LastTarget;
 
@@ -108,7 +116,39 @@ internal static class IltSigilChain
     {
         string n = (itemName ?? string.Empty).Trim();
         return n.Equals(chainName, StringComparison.OrdinalIgnoreCase)
-            || n.Equals(chainName + "s", StringComparison.OrdinalIgnoreCase);
+            || n.Equals(chainName + "s", StringComparison.OrdinalIgnoreCase)
+            // "Trophy" stacks as "Trophies".
+            || (chainName.EndsWith('y') && n.Equals(chainName[..^1] + "ies", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// How to get each chain item, for the planner's "How to get" column: the recipe of a crafted
+    /// item (with the amounts still to craft), or a vendor trade. Rates of 0 hide a trade.
+    /// </summary>
+    /// <param name="lumPerCoin">Luminance price of one e-coin (0 = not priced).</param>
+    public static IltSigilHowTo HowTo(IltSigilShortfall s, int extractsPerAscension, int extractsPerTrophyTrade,
+                                      int trophiesPerTrade, long lumPerCoin, long trophiesHave)
+    {
+        string N(long v) => v.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+        var h = new IltSigilHowTo
+        {
+            Ascension = $"craft: E-coin + {YalaniTrinket}"
+                        + (s.AscensionToCraft > 0 ? $" ({N(s.AscensionToCraft)} each)" : "")
+                        + (extractsPerAscension > 0
+                            ? $"; or buy: {N(extractsPerAscension)} {NecrolyticExtract}s each"
+                              + (s.AscensionToCraft > 0 ? $" ({N(s.AscensionToCraft * extractsPerAscension)} for all)" : "")
+                            : ""),
+            Elixir = $"craft: {LifebloomResin} + {NecrolyticExtract}" + (s.ElixirsToCraft > 0 ? $" ({N(s.ElixirsToCraft)} each)" : ""),
+            Resin = $"craft: {LifeSplitter} + {Plant}" + (s.ResinsToCraft > 0 ? $" ({N(s.ResinsToCraft)} each)" : ""),
+            Coins = lumPerCoin > 0
+                ? $"buy: ~{IltParse.Compact(lumPerCoin)} lum each"
+                  + (s.CoinsShort > 0 ? $" (~{IltParse.Compact((double)s.CoinsShort * lumPerCoin)} for the short)" : "")
+                : "",
+            Extracts = extractsPerTrophyTrade > 0 && trophiesPerTrade > 0
+                ? $"vendor: {N(extractsPerTrophyTrade)} extracts trade for {N(trophiesPerTrade)} Trophies (have {N(trophiesHave)})"
+                : "",
+        };
+        return h;
     }
 
     private static long Short(long demand, long have) => Math.Max(0, demand - Math.Max(0, have));

@@ -80,6 +80,8 @@ internal sealed class IltProgression : IIltFeature
     private readonly long[] _enlHave = new long[4]; // tokens, medallions, sigils, crests
     // 301-325 sigil chain stock (pack items by name; EnlightenedCoins = bank + pack). Pump thread only.
     private IltSigilStock _chain = new();
+    // Trophies in the pack (the Necrolytic Extract vendor trade). Pump thread only.
+    private long _trophies;
     private long _lastFactsAt;
     private readonly uint[] _enchIds = new uint[256];
     private readonly double[] _enchExp = new double[256];
@@ -329,6 +331,7 @@ internal sealed class IltProgression : IIltFeature
             LifeSplitters = inv.CountByChainName(IltSigilChain.LifeSplitter),
             Plants = inv.CountByChainName(IltSigilChain.Plant),
         };
+        _trophies = inv.CountByChainName(IltSigilChain.Trophy);
 
         _hasVitae = false;
         if (_ctx.Host.HasReadPlayerEnchantments)
@@ -513,12 +516,20 @@ internal sealed class IltProgression : IIltFeature
         Str(sb, "short", coinsShort > 0
             ? $"Coins short: {IltParse.N0(coinsShort)}" + (lumPerCoin > 0 ? $" (~{IltParse.Compact((double)coinsShort * lumPerCoin)} luminance to buy)" : "")
             : string.Empty);
-        // "banked" key kept for older SkillsFace builds; text is character AvailableLuminance.
-        decimal haveLum = _characterLum;
-        decimal stillNeed = Math.Max(0, totalLum - haveLum);
-        Str(sb, "banked", $"Character luminance: {IltParse.Compact(_characterLum)}"
-                          + (stillNeed > 0 ? $"   still need ~{IltParse.Compact((double)stillNeed)} for this plan" : "   covers this plan")
-                          + (_bankedLum > 0 ? $"   (banked {IltParse.Compact(_bankedLum)}, not used here)" : ""));
+        // "banked" key kept for older SkillsFace builds: what luminance there is to spend.
+        Str(sb, "banked", $"Character luminance: {IltParse.Compact(_characterLum)}   banked (/bank): {IltParse.Compact(_bankedLum)}");
+
+        // The STILL NEEDED row: the plan's luminance less what is banked and on the character,
+        // and the e-coins still short (bought with luminance when Lum per e-coin is set).
+        decimal haveLum = (decimal)Math.Max(0, _characterLum) + Math.Max(0, _bankedLum);
+        decimal stillLum = Math.Max(0, totalLum - haveLum);
+        decimal coinLum = lumPerCoin > 0 ? (decimal)coinsShort * lumPerCoin : 0;
+        Str(sb, "stillLum", totalLum <= 0 ? "-" : IltParse.Compact((double)stillLum));
+        sb.Append(",\"stillCoins\":").Append(coinsShort);
+        Str(sb, "stillLine", totalLum <= 0 ? string.Empty
+            : $"Luminance still needed: {(stillLum > 0 ? "~" + IltParse.Compact((double)stillLum) : "none")}"
+              + $"   (plan {IltParse.Compact((double)totalLum)} - banked {IltParse.Compact(_bankedLum)} - character {IltParse.Compact(_characterLum)})"
+              + (coinLum > 0 ? $"   with the short e-coins: ~{IltParse.Compact((double)(stillLum + coinLum))}" : ""));
         Str(sb, "copyDiscord", AugDiscordText(plan));
         Str(sb, "copyIngame", AugIngameText(plan));
         AppendAugCostJson(sb);
@@ -653,7 +664,10 @@ internal sealed class IltProgression : IIltFeature
         sb.Append(']');
 
         int coinsPerToken = C.EnlightenedCoinsPerToken;
-        sb.Append(",\"coinsPerToken\":").Append(coinsPerToken);
+        sb.Append(",\"coinsPerToken\":").Append(coinsPerToken)
+          .Append(",\"extractsPerAsc\":").Append(C.ExtractsPerAscensionCoin)
+          .Append(",\"trophyExtracts\":").Append(C.ExtractsPerTrophyTrade)
+          .Append(",\"trophyCount\":").Append(C.TrophiesPerTrophyTrade);
         string tokensShort = string.Empty;
         if (totals.TryGetValue("Enlightenment Tokens", out long tokNeed) && coinsPerToken > 0)
         {
@@ -727,7 +741,7 @@ internal sealed class IltProgression : IIltFeature
         decimal haveLum = (decimal)_characterLum;
         sb.Append(",\"materials\":[");
         bool firstMat = true;
-        void Mat(string label, string need, string have, bool ok)
+        void Mat(string label, string need, string have, bool ok, string how = "")
         {
             if (!firstMat) sb.Append(',');
             firstMat = false;
@@ -735,6 +749,7 @@ internal sealed class IltProgression : IIltFeature
             Str(sb, "label", label, first: true);
             Str(sb, "need", need);
             Str(sb, "have", have);
+            Str(sb, "how", how);
             sb.Append(",\"ok\":").Append(Bool(ok)).Append('}');
         }
         if (lumTotal > 0)
@@ -743,15 +758,20 @@ internal sealed class IltProgression : IIltFeature
             Mat("Luminance (character)", lumStill > 0 ? IltParse.Compact((double)lumStill) : "0",
                 IltParse.Compact((double)haveLum), lumStill == 0);
         }
-        void Item(string key, string label, long have, bool extraOk = false)
+        void Item(string key, string label, long have, bool extraOk = false, string how = "")
         {
             if (!totals.TryGetValue(key, out long need)) return;
             long still = Math.Max(0, need - have);
-            Mat(label, IltParse.N0(still), IltParse.N0(have), still == 0 || extraOk);
+            Mat(label, IltParse.N0(still), IltParse.N0(have), still == 0 || extraOk, how);
         }
-        Item("Enlightenment Tokens", "Tokens", _enlHave[0]);
+        long tokensStillForHow = totals.TryGetValue("Enlightenment Tokens", out long tokTotal) ? Math.Max(0, tokTotal - _enlHave[0]) : 0;
+        int perToken = C.EnlightenedCoinsPerToken;
+        Item("Enlightenment Tokens", "Tokens", _enlHave[0], how: perToken > 0
+            ? $"buy: {IltParse.N0(perToken)} e-coins each" + (tokensStillForHow > 0 ? $" ({IltParse.N0(tokensStillForHow * perToken)} for the rest)" : "")
+            : "");
         Item("Enlightenment Medallions", "Medallions", _enlHave[1]);
-        Item("Enlightenment Sigils", "Sigils", _enlHave[2], extraOk: shortfall.Covered);
+        Item("Enlightenment Sigils", "Sigils", _enlHave[2], extraOk: shortfall.Covered,
+             how: $"craft: {IltSigilChain.LifebloodElixir} + {IltSigilChain.AscensionCoin} (chain below)");
         Item("Enlightenment Crests", "Crests", _enlHave[3]);
         sb.Append(']');
 
@@ -760,26 +780,30 @@ internal sealed class IltProgression : IIltFeature
         if (sigilsNeed > 0)
         {
             bool firstRow = true;
-            void Row(string label, long need, long have, bool ok, bool craft)
+            void Row(string label, long need, long have, bool ok, bool craft, string how)
             {
                 if (!firstRow) sb.Append(',');
                 firstRow = false;
                 sb.Append('{');
                 Str(sb, "label", label, first: true);
                 sb.Append(",\"need\":").Append(need).Append(",\"have\":").Append(have)
-                  .Append(",\"ok\":").Append(Bool(ok)).Append(",\"craft\":").Append(Bool(craft)).Append('}');
+                  .Append(",\"ok\":").Append(Bool(ok)).Append(",\"craft\":").Append(Bool(craft));
+                Str(sb, "how", how);
+                sb.Append('}');
             }
+            IltSigilHowTo how = IltSigilChain.HowTo(shortfall, C.ExtractsPerAscensionCoin, C.ExtractsPerTrophyTrade,
+                                                    C.TrophiesPerTrophyTrade, C.LumPerEnlightenedCoin, _trophies);
             Row("Ascension Coins", shortfall.AscensionToCraft, _chain.AscensionCoins,
-                shortfall.AscensionToCraft == 0 || (shortfall.CoinsShort == 0 && shortfall.TrinketsShort == 0), true);
+                shortfall.AscensionToCraft == 0 || (shortfall.CoinsShort == 0 && shortfall.TrinketsShort == 0), true, how.Ascension);
             Row("Lifeblood Elixirs", shortfall.ElixirsToCraft, _chain.LifebloodElixirs,
-                shortfall.ElixirsToCraft == 0 || (shortfall.ExtractsShort == 0 && shortfall.SplittersShort == 0 && shortfall.PlantsShort == 0), true);
+                shortfall.ElixirsToCraft == 0 || (shortfall.ExtractsShort == 0 && shortfall.SplittersShort == 0 && shortfall.PlantsShort == 0), true, how.Elixir);
             Row("Lifebloom Resins", shortfall.ResinsToCraft, _chain.LifebloomResins,
-                shortfall.ResinsToCraft == 0 || (shortfall.SplittersShort == 0 && shortfall.PlantsShort == 0), true);
-            Row("E-coins", shortfall.CoinsShort, _chain.EnlightenedCoins, shortfall.CoinsShort == 0, false);
-            Row("Ancient Yalani Trinkets", shortfall.TrinketsShort, _chain.YalaniTrinkets, shortfall.TrinketsShort == 0, false);
-            Row("Necrolytic Extracts", shortfall.ExtractsShort, _chain.NecrolyticExtracts, shortfall.ExtractsShort == 0, false);
-            Row("Life Splitters", shortfall.SplittersShort, _chain.LifeSplitters, shortfall.SplittersShort == 0, false);
-            Row("Plants", shortfall.PlantsShort, _chain.Plants, shortfall.PlantsShort == 0, false);
+                shortfall.ResinsToCraft == 0 || (shortfall.SplittersShort == 0 && shortfall.PlantsShort == 0), true, how.Resin);
+            Row("E-coins", shortfall.CoinsShort, _chain.EnlightenedCoins, shortfall.CoinsShort == 0, false, how.Coins);
+            Row("Ancient Yalani Trinkets", shortfall.TrinketsShort, _chain.YalaniTrinkets, shortfall.TrinketsShort == 0, false, how.Trinkets);
+            Row("Necrolytic Extracts", shortfall.ExtractsShort, _chain.NecrolyticExtracts, shortfall.ExtractsShort == 0, false, how.Extracts);
+            Row("Life Splitters", shortfall.SplittersShort, _chain.LifeSplitters, shortfall.SplittersShort == 0, false, how.Splitters);
+            Row("Plants", shortfall.PlantsShort, _chain.Plants, shortfall.PlantsShort == 0, false, how.Plants);
         }
         sb.Append(']');
         Str(sb, "chainNote", sigilsNeed > 0
@@ -875,6 +899,10 @@ internal sealed class IltProgression : IIltFeature
                 break;
             case "enltarget": C.EnlTargetLevel = Math.Max(_enl + 1, n); break;
             case "coinspertoken": C.EnlightenedCoinsPerToken = Math.Max(0, n); break;
+            // Sigil chain vendor trades ("How to get"): 0 hides the trade.
+            case "extractsperasc": C.ExtractsPerAscensionCoin = Math.Max(0, n); break;
+            case "trophyextracts": C.ExtractsPerTrophyTrade = Math.Max(0, n); break;
+            case "trophycount": C.TrophiesPerTrophyTrade = Math.Max(0, n); break;
             case "enlighten": SendEnlighten("manual, Skills panel"); break;
             case "autoenl":
                 switch (arg1.ToLowerInvariant())

@@ -15,6 +15,31 @@ internal static class SigilChainTests
         r.Add("sigil chain: shortfall uses stock top-down", ShortfallTopDown);
         r.Add("sigil chain: fulfillable count and shared e-coin pool", FulfillableAndCoins);
         r.Add("sigil chain: item names (plural stacks, Plant exact)", Names);
+        r.Add("sigil chain: how to get each item (recipes and vendor trades)", HowTo);
+    }
+
+    // 2026-10-19 vendor trades (owner): 100 Necrolytic Extracts buy 1 Ascension Coin, and a vendor
+    // trades 50 extracts for 100 Trophies. E-coins are priced by Lum per e-coin.
+    private static void HowTo()
+    {
+        var s = IltSigilChain.Shortfall(10, new IltSigilStock { AscensionCoins = 3, EnlightenedCoins = 5 });
+        IltSigilHowTo h = IltSigilChain.HowTo(s, 100, 50, 100, 79_000_000_000, 12);
+        Check.True(h.Ascension.Contains("craft: E-coin + Ancient Yalani Trinket (7 each)"), "Ascension Coin recipe with the crafts left: " + h.Ascension);
+        Check.True(h.Ascension.Contains("or buy: 100 Necrolytic Extracts each (700 for all)"), "Ascension Coin vendor price: " + h.Ascension);
+        Check.True(h.Elixir.StartsWith("craft: Lifebloom Resin + Necrolytic Extract (10 each)"), "Elixir recipe: " + h.Elixir);
+        Check.True(h.Resin.StartsWith("craft: Life Splitter + Plant (10 each)"), "Resin recipe: " + h.Resin);
+        Check.True(h.Coins.Contains("79.00B lum each") && h.Coins.Contains("158.00B for the short"), "e-coins priced in luminance: " + h.Coins);
+        Check.True(h.Extracts.Contains("50 extracts trade for 100 Trophies"), "the Trophy trade: " + h.Extracts);
+        Check.True(h.Extracts.Contains("have 12"), "Trophies on hand");
+        Check.Eq(h.Trinkets, "", "no known vendor for trinkets: nothing claimed");
+
+        IltSigilHowTo off = IltSigilChain.HowTo(s, 0, 0, 0, 0, 0);
+        Check.True(!off.Ascension.Contains("buy"), "0 hides the Ascension Coin vendor");
+        Check.Eq(off.Coins, "", "unpriced e-coins say nothing");
+        Check.Eq(off.Extracts, "", "0 hides the Trophy trade");
+
+        Check.True(IltSigilChain.NameIs("Trophies", IltSigilChain.Trophy), "Trophy stacks as Trophies");
+        Check.True(IltSigilChain.NameIs("Trophy", IltSigilChain.Trophy), "a single Trophy");
     }
 
     private static void TierRates()
