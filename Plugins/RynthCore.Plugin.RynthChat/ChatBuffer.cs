@@ -15,6 +15,8 @@ namespace RynthCore.Plugin.RynthChat;
 ///
 /// JSON per line: {"seq":N,"ts":"HH:mm:ss","chan":"Chat","type":3,"sender":"Bob"|null,"text":"..."}.
 /// "type" (AC's ChatMessageType) was added in 0.2.0; engines before it ignore it.
+/// ,"auto":true (0.3.4) marks automated system text (ChatLine.Auto); absent otherwise,
+/// and engines before 2026.10.18.30 ignore it.
 /// Every non-ASCII character is written as a \uXXXX escape, so the export is
 /// pure ASCII and survives the ANSI marshalling on both sides (before 0.2.0 an
 /// accented name or the "→" of an outgoing tell arrived as "?").
@@ -70,7 +72,8 @@ internal sealed class ChatBuffer
         }
     }
 
-    internal void Add(string? text, int chatType)
+    /// <param name="loginBurst">The character is entering the world: its system text is automated.</param>
+    internal void Add(string? text, int chatType, bool loginBurst = false)
     {
         if (string.IsNullOrEmpty(text)) return;
         string channel = ChatClassifier.IsItemInfo(text) ? ChatClassifier.Items
@@ -78,6 +81,8 @@ internal sealed class ChatBuffer
             : ChatClassifier.ChannelFor(text, chatType);
         string? sender = ChatClassifier.SenderFor(text, chatType);
         string ts = DateTime.Now.ToString("HH:mm:ss");
+        bool auto = ChatClassifier.IsAutomatedText(text, chatType)
+                    || ChatClassifier.IsLoginBurst(channel, chatType, loginBurst);
 
         lock (_lock)
         {
@@ -91,9 +96,29 @@ internal sealed class ChatBuffer
                 ChatType  = chatType,
                 Sender    = sender,
                 Text      = text,
+                Auto      = auto,
             };
             _head = (_head + 1) % _ring.Length;
             if (_count < _ring.Length) _count++;
+        }
+    }
+
+    /// <summary>
+    /// A plugin ate the line just dispatched (the engine calls this after every plugin has seen
+    /// it): marks it automated when it is the newest line here, with the same text. Returns
+    /// whether it was marked. The engine polls the scrollback on the same thread as the chat
+    /// dispatch, so the mark lands before the line is exported.
+    /// </summary>
+    internal bool NoteEaten(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        lock (_lock)
+        {
+            if (_count == 0) return false;
+            ChatLine? newest = _ring[(_head - 1 + _ring.Length) % _ring.Length];
+            if (newest == null || !string.Equals(newest.Text, text, StringComparison.Ordinal)) return false;
+            newest.Auto = true;
+            return true;
         }
     }
 
@@ -147,7 +172,9 @@ internal sealed class ChatBuffer
             }
             sb.Append(",\"text\":\"");
             AppendEscaped(sb, line.Text);
-            sb.Append("\"}");
+            sb.Append('"');
+            if (line.Auto) sb.Append(",\"auto\":true");
+            sb.Append('}');
         }
 
         sb.Append(']');
