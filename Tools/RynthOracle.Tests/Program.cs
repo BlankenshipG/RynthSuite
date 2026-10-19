@@ -169,6 +169,36 @@ namespace RynthOracle.Tests
             var counts = DynamicStampList.Counts(f, qbDone);
             Check(counts.InMyQuests == 3 && counts.InQb == 3 && counts.Matched == 2, $"stamp sources for the log: {counts}");
 
+            // 2026-10-19 (Silentkelpie: 3 Dynamic flags in /qb, 0 of 243 matched): the sheet copied the
+            // "!" closing the server's "You've stamped {flag}!" line. The server's flag has no "!", and a
+            // chain errand's delivery NPC stamps the flag with "_d" added (QuestManager.ComputeDynamicQuest).
+            DynamicStamp bq = all.First(s => s.Stamp == "dynamic_1_bq7brhg!");
+            Check(bq.Stem == "dynamic_1_bq7brhg", "the stem drops the copied !");
+            var real = new QuestFlagStore();
+            real.OnChatLine($"Dynamic_1_Bq7Brhg - 1 solves ({at})\"Dynamic\" 1 0", t);
+            real.Tick(t + 5_000);
+            Check(bq.MatchedFlag(real) == "dynamic_1_bq7brhg", "the server's flag (no !) matches the sheet's stamp (with !)");
+            Check(DynamicStampList.Unlisted(real).Count == 0, "and isn't also shown as not in the list");
+            DynamicStamp bang = all.First(s => s.Stamp.EndsWith("!!"));
+            Check(bang.MatchedFlag(none, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { bang.Stem }) == bang.Stem,
+                  "a flag that really ends in ! (the sheet shows !!) matches with one !: " + bang.Stamp);
+            var qbReal = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Dynamic_1_Bq7Brhg", "Dynamic_1_Bq7Brhg_d" };
+            Check(bq.MatchedFlag(none, qbReal)?.Equals("dynamic_1_bq7brhg", StringComparison.OrdinalIgnoreCase) == true,
+                  "the errand's own flag and its _d: the errand's flag");
+            Check(DynamicStampList.Unlisted(none, qbReal).Count == 0, "a listed stamp's _d is not shown as not in the list");
+            var qbDelivered = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Dynamic_1_Bq7Brhg_d" };
+            Check(bq.Have(none, qbDelivered), "only the _d delivery flag: the stamp is done");
+            var qbUnlisted = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Dynamic_1_NewErrand", "Dynamic_1_NewErrand_d" };
+            List<string> errands = DynamicStampList.Unlisted(none, qbUnlisted);
+            Check(errands.Count == 1 && errands[0].Equals("dynamic_1_newerrand", StringComparison.OrdinalIgnoreCase),
+                  "an unlisted errand shows once, by its own flag: " + string.Join(",", errands));
+            var cut = new DynamicStamp { Area = "Test", Npc = "Cut", Stamp = "dynamic_1_abcdefg!" };   // a row cut short, with the copied !
+            var qbCut = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Dynamic_1_abcdefgXY", "Dynamic_1_abcdefgXY_d" };
+            Check(cut.MatchedFlag(none, qbCut)?.Equals("dynamic_1_abcdefgxy", StringComparison.OrdinalIgnoreCase) == true,
+                  "a cut-short row matches by its stem; the errand and its _d are one");
+            qbCut.Add("Dynamic_1_abcdefgZZ");
+            Check(!cut.Have(none, qbCut), "two errands starting with the stem: can't tell which");
+
             // Quest walkthroughs: every coordinate pair, labelled with its step, duplicates once.
             var grael = NavTargets.Stops("Give Progenitor's Ichor to Hoshar. - Speak with Hoshar ibn Jalaq 59.6S 88.0W - Kill Mukkir Progenitor 86.5N 57.3E"
                                          + " - Speak with Hoshar ibn Jalaq - Abyssal Totem Gateway 86.5N 57.3E - Abyssal Totem Temple 86.5N 57.3E");

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
 using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 using RynthCore.Plugin.RynthOracle.Views;
@@ -19,7 +21,7 @@ namespace RynthCore.Plugin.RynthOracle;
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.6.2.
-    public const string Version = "0.6.3";
+    public const string Version = "0.6.4";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -55,8 +57,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
     /// <summary>
     /// Infinite Leaftide: logs where the Dynamic stamps come from whenever the flags or the /qb list
-    /// change and the counts move (Dynamic flags in /myquests, in the completed /qb list, and the
-    /// listed stamps matched), so a stamp shown as not done can be told apart from one never read.
+    /// change and the counts move (Dynamic flags in /myquests, in the /qb list, and the listed
+    /// stamps matched), so a stamp shown as not done can be told apart from one never read. Names
+    /// the flags no listed stamp matched (up to 10), so a sheet row that doesn't fit is visible.
     /// </summary>
     private void LogStampSources()
     {
@@ -65,11 +68,14 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _stampFlagRevision = _c.Flags.Revision;
         _stampIltRevision = _c.Ilt.Revision;
         if (_c.Flags.Flags.Count == 0) return;
-        var counts = DynamicStampList.Counts(_c.Flags, _c.Ilt.QbCompletedSet);
+        IReadOnlySet<string> qbStamps = _c.Ilt.QbStampSet;
+        var counts = DynamicStampList.Counts(_c.Flags, qbStamps);
         if (counts == _loggedStamps) return;
         _loggedStamps = counts;
+        List<string> unlisted = DynamicStampList.Unlisted(_c.Flags, qbStamps);
         Host.Log($"[RynthOracle] Dynamic stamps: {counts.InMyQuests} Dynamic flag(s) in /myquests, {counts.InQb} in the /qb list"
-                 + $" ({_c.Ilt.QbCompletedSet.Count} completed flags read); {counts.Matched} of {DynamicStampList.All.Count} listed stamps done.");
+                 + $" ({_c.Ilt.QbCompletedSet.Count} completed flags read); {counts.Matched} of {DynamicStampList.All.Count} listed stamps done"
+                 + (unlisted.Count == 0 ? "." : $"; not in the list: {string.Join(" ", unlisted.Take(10))}{(unlisted.Count > 10 ? " ..." : "")}."));
     }
     // RynthCore's server list (ServerStateClient.Revision) last applied to the server identity.
     private int _seenServerStateRevision = -1;

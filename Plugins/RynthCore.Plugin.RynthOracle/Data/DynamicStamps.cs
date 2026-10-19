@@ -27,38 +27,50 @@ internal sealed class DynamicStamp
     public string Label => Npc.Length > 0 ? Npc : Place;
 
     /// <summary>
-    /// The flag this character has for the stamp, or null. The sheet has a few stamps copied
-    /// without their closing "!" or cut short: those also match with "!" added and, when at
-    /// least <see cref="MinPrefixLength"/> long, the one Dynamic flag on the character starting
-    /// with them. <paramref name="qbDone"/> is RynthILT's completed /qb list (Infinite
-    /// Leaftide): /myquests leaves out flags the server holds no quest text for, so a stamp
-    /// that isn't in /myquests is looked for there too, with the same rules.
+    /// The stamp without the "!" the sheet copied from the server's "You've stamped {flag}!" line.
+    /// ACECustom names a stamp "Dynamic_1_" plus random letters, digits and ! @ # $ ^ &amp;
+    /// (QuestManager.ComputeDynamicQuest), yet 238 of the 243 listed stamps end in "!".
     /// </summary>
-    public string? MatchedFlag(QuestFlagStore flags, IReadOnlySet<string>? qbDone = null)
+    public string Stem => Stamp.EndsWith('!') ? Stamp[..^1] : Stamp;
+
+    /// <summary>
+    /// The flag this character has for the stamp, or null. Tried in order: the stamp as listed,
+    /// without the copied closing "!" (the server's flag, almost always), with "!" added (a few
+    /// rows lost a real one), its errand's delivery flag ("_d"), then, when the stem is at least
+    /// <see cref="MinPrefixLength"/> long, the one errand whose flag starts with it (a row cut
+    /// short). <paramref name="qbStamps"/> is the Dynamic flags of RynthILT's /qb list (Infinite
+    /// Leaftide): /myquests leaves out flags the server holds no quest text for, so a stamp that
+    /// isn't in /myquests is looked for there too, with the same rules.
+    /// </summary>
+    public string? MatchedFlag(QuestFlagStore flags, IReadOnlySet<string>? qbStamps = null)
     {
         string? mine = Match(k => flags.TryGet(k, out _), flags.Flags.Keys);
-        if (mine != null || qbDone == null || qbDone.Count == 0) return mine;
-        return Match(qbDone.Contains, qbDone);
+        if (mine != null || qbStamps == null || qbStamps.Count == 0) return mine;
+        return Match(qbStamps.Contains, qbStamps);
     }
 
-    /// <summary>The matching rules over one source: exact, with "!" added, then the one flag starting with it.</summary>
+    /// <summary>The matching rules over one source (see <see cref="MatchedFlag"/>).</summary>
     private string? Match(Func<string, bool> has, IEnumerable<string> keys)
     {
+        string stem = Stem;
         if (has(Stamp)) return Stamp;
-        if (Stamp.EndsWith('!')) return null;
-        if (has(Stamp + "!")) return Stamp + "!";
-        if (Stamp.Length < MinPrefixLength) return null;
+        if (stem != Stamp && has(stem)) return stem;
+        if (stem == Stamp && has(Stamp + "!")) return Stamp + "!";
+        if (has(stem + DynamicStampList.DeliverySuffix)) return stem + DynamicStampList.DeliverySuffix;
+        if (stem.Length < MinPrefixLength) return null;
         string? only = null;
         foreach (string key in keys)
         {
-            if (!key.StartsWith(Stamp, StringComparison.OrdinalIgnoreCase)) continue;
-            if (only != null) return null;   // more than one: can't tell which
-            only = key;
+            if (!key.StartsWith(stem, StringComparison.OrdinalIgnoreCase)) continue;
+            // An errand's own flag and its "_d" delivery flag are one stamp; two errands can't be told apart.
+            if (only != null && !DynamicStampList.ErrandOf(only).Equals(DynamicStampList.ErrandOf(key), StringComparison.OrdinalIgnoreCase))
+                return null;
+            if (only == null || key.Length < only.Length) only = key;   // the errand's own flag over its "_d"
         }
         return only;
     }
 
-    public bool Have(QuestFlagStore flags, IReadOnlySet<string>? qbDone = null) => MatchedFlag(flags, qbDone) != null;
+    public bool Have(QuestFlagStore flags, IReadOnlySet<string>? qbStamps = null) => MatchedFlag(flags, qbStamps) != null;
 
     // Sheet areas that are groupings, not places on the map.
     private static readonly HashSet<string> NotPlaces = new(StringComparer.OrdinalIgnoreCase)
@@ -103,6 +115,16 @@ internal static class DynamicStampList
     /// <summary>Dynamic stamp quest flags start with this (lower case).</summary>
     public const string FlagPrefix = "dynamic_";
 
+    /// <summary>
+    /// A chain errand's second flag: the NPC the item is delivered to stamps the errand's flag
+    /// with this added (QuestManager.ComputeDynamicQuest, questName + "_d").
+    /// </summary>
+    public const string DeliverySuffix = "_d";
+
+    /// <summary>The errand a Dynamic flag belongs to: the flag without its "_d" delivery suffix.</summary>
+    public static string ErrandOf(string flag) =>
+        flag.EndsWith(DeliverySuffix, StringComparison.OrdinalIgnoreCase) ? flag[..^DeliverySuffix.Length] : flag;
+
     public static List<DynamicStamp> All { get; } = Load();
 
     /// <summary>The areas in list order (Facility Hub, Looking Around, ...).</summary>
@@ -112,19 +134,20 @@ internal static class DynamicStampList
     /// Dynamic stamps on this character that the list doesn't have (new or unlisted NPCs), so the
     /// tab can show them and the count isn't only what the sheet knows.
     /// </summary>
-    public static List<string> Unlisted(QuestFlagStore flags, IReadOnlySet<string>? qbDone = null)
+    public static List<string> Unlisted(QuestFlagStore flags, IReadOnlySet<string>? qbStamps = null)
     {
+        // By errand: a listed stamp's "_d" delivery flag is that stamp, and an unlisted errand shows once.
         var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (DynamicStamp s in All)
-            if (s.MatchedFlag(flags, qbDone) is string f) matched.Add(f);
+            if (s.MatchedFlag(flags, qbStamps) is string f) matched.Add(ErrandOf(f));
         var extra = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (string key in flags.Flags.Keys)
-            if (key.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase) && !matched.Contains(key))
-                extra.Add(key);
-        if (qbDone != null)
-            foreach (string key in qbDone)
-                if (key.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase) && !matched.Contains(key))
-                    extra.Add(key);
+            if (key.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase) && !matched.Contains(ErrandOf(key)))
+                extra.Add(ErrandOf(key));
+        if (qbStamps != null)
+            foreach (string key in qbStamps)
+                if (key.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase) && !matched.Contains(ErrandOf(key)))
+                    extra.Add(ErrandOf(key));
         var list = extra.ToList();
         list.Sort(StringComparer.OrdinalIgnoreCase);
         return list;
@@ -132,13 +155,13 @@ internal static class DynamicStampList
 
     /// <summary>
     /// Where this character's stamps come from, for the log: Dynamic flags in /myquests, Dynamic
-    /// flags in the completed /qb list, and the listed stamps matched from either.
+    /// flags in the /qb list, and the listed stamps matched from either.
     /// </summary>
-    public static (int InMyQuests, int InQb, int Matched) Counts(QuestFlagStore flags, IReadOnlySet<string>? qbDone)
+    public static (int InMyQuests, int InQb, int Matched) Counts(QuestFlagStore flags, IReadOnlySet<string>? qbStamps)
     {
         int mine = flags.Flags.Keys.Count(k => k.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase));
-        int qb = qbDone?.Count(k => k.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase)) ?? 0;
-        int matched = All.Count(s => s.Have(flags, qbDone));
+        int qb = qbStamps?.Count(k => k.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase)) ?? 0;
+        int matched = All.Count(s => s.Have(flags, qbStamps));
         return (mine, qb, matched);
     }
 

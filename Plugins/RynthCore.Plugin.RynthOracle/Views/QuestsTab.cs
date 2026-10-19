@@ -428,14 +428,14 @@ internal sealed partial class OracleView
         if (Shows(QuestKind.Dynamic))
         {
             List<DynamicStamp> all = DynamicStampList.All;
-            IReadOnlySet<string> qbDone = _c.Ilt.QbCompletedSet;
+            IReadOnlySet<string> qbStamps = _c.Ilt.QbStampSet;
             int have = 0;
-            foreach (DynamicStamp s in all) if (s.Have(flags, qbDone)) have++;
-            int unlisted = DynamicStampList.Unlisted(flags, qbDone).Count;
+            foreach (DynamicStamp s in all) if (s.Have(flags, qbStamps)) have++;
+            int unlisted = DynamicStampList.Unlisted(flags, qbStamps).Count;
             w.ProgressBar(all.Count == 0 ? 0f : (float)have / all.Count, -1f, 0f,
                 $"{have} / {all.Count} listed Dynamic stamps" + (unlisted > 0 ? $" (+{unlisted} not in the list)" : ""));
             w.Tooltip("Dynamic stamps are one-time quest flags (Dynamic_1_...) from handing items to NPCs on Infinite Leaftide.\n"
-                      + "Done: in /myquests, or in the completed /qb list (/myquests leaves out flags the server has no quest text for).\n"
+                      + "Done: in /myquests, or in the /qb list (/myquests leaves out flags the server has no quest text for).\n"
                       + "List: the players' ExtraDyn sheet. Click a stamp for RynthNav's route to it and the Parchment hand-in."
                       + (unlisted > 0 ? "\nStamps not in the sheet show as quests with Not in list." : ""));
             DrawStampQbSource(w);
@@ -464,7 +464,7 @@ internal sealed partial class OracleView
             _c.Send("/ilt qb");
         }
         w.TextDisabled(loaded
-            ? $"Also counted from the /qb list ({TimeText.Number(_c.Ilt.QbCompletedSet.Count)} completed flags)."
+            ? $"Also counted from the /qb list ({TimeText.Number(_c.Ilt.QbStampSet.Count)} Dynamic flag(s) in it)."
             : "Reading the /qb list for stamps /myquests leaves out...");
         w.SameLine();
         w.SmallButton("Read /qb", "dy.qb", () => { if (!_c.Send("/ilt qb")) _c.Print("Log in first."); });
@@ -915,7 +915,7 @@ internal sealed partial class OracleView
         _questBuiltMs = _c.NowMs;
 
         QuestFlagStore flags = _c.Flags;
-        IReadOnlySet<string> qbDone = _c.Ilt.QbCompletedSet;
+        IReadOnlySet<string> qbStamps = _c.Ilt.QbStampSet;
         string[] terms = _questSearch.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         _questRows.Clear();
 
@@ -923,7 +923,12 @@ internal sealed partial class OracleView
         var stampFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (kinds.Contains(QuestKind.Dynamic))
             foreach (DynamicStamp s in DynamicStampList.All)
-                if (s.MatchedFlag(flags, qbDone) is string f) stampFlags.Add(f);
+                if (s.MatchedFlag(flags, qbStamps) is string f)
+                {
+                    // The errand's flag and its "_d" delivery flag are both this stamp's row.
+                    stampFlags.Add(f);
+                    stampFlags.Add(DynamicStampList.ErrandOf(f) + DynamicStampList.DeliverySuffix);
+                }
 
         if (KindListed(QuestKind.Quest, kinds))
         {
@@ -966,7 +971,7 @@ internal sealed partial class OracleView
                 {
                     DynamicStamp s = DynamicStampList.All[i];
                     if (_dynArea > 0 && (_dynArea > DynamicStampList.Areas.Count || DynamicStampList.Areas[_dynArea - 1] != s.Area)) continue;
-                    var r = new QuestRow { Kind = QuestKind.Dynamic, Key = "dy:" + s.Stamp, Label = s.Label, Group = s.Area, Order = i, Done = s.Have(flags, qbDone), D = s };
+                    var r = new QuestRow { Kind = QuestKind.Dynamic, Key = "dy:" + s.Stamp, Label = s.Label, Group = s.Area, Order = i, Done = s.Have(flags, qbStamps), D = s };
                     if (KeepTracker(r, repeatable: false, tracked: false, $"{s.Npc} {s.Place} {s.Reward} {s.Area} {s.Stamp} {s.Note}", terms)) _questRows.Add(r);
                 }
 

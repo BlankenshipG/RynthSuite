@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using RynthCore.Plugin.Shared;
@@ -242,6 +243,36 @@ internal sealed unsafe class IltServerLink
                 _qbSet = new HashSet<string>(done, StringComparer.OrdinalIgnoreCase);
             }
             return _qbSet;
+        }
+    }
+
+    // The Dynamic stamp flags of both /qb lists, rebuilt only when either list changes.
+    private IReadOnlyList<string>? _stampDoneSource, _stampTodoSource;
+    private HashSet<string> _stampSet = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Every Dynamic stamp flag in the /qb list (any case), from both sections; empty until
+    /// RynthILT has read the list this session. ACECustom writes a stamp's account row with one
+    /// completion when the NPC stamps it, so a Dynamic flag in the list is a done stamp. The
+    /// incomplete section is read too: two reads 90 s apart split the same 3,859 flags
+    /// 3,740 / 119 and 3,132 / 727 (Silentkelpie, 2026-10-19), and a stamp moved there would
+    /// read as not done.
+    /// </summary>
+    public IReadOnlySet<string> QbStampSet
+    {
+        get
+        {
+            IltQuestBonusList? qb = QuestBonus;
+            IReadOnlyList<string> done = qb?.Completed ?? Array.Empty<string>();
+            IReadOnlyList<string> todo = qb?.Incomplete ?? Array.Empty<string>();
+            if (!ReferenceEquals(done, _stampDoneSource) || !ReferenceEquals(todo, _stampTodoSource))
+            {
+                _stampDoneSource = done;
+                _stampTodoSource = todo;
+                _stampSet = new HashSet<string>(done.Concat(todo).Where(f => f.StartsWith(DynamicStampList.FlagPrefix, StringComparison.OrdinalIgnoreCase)),
+                                                StringComparer.OrdinalIgnoreCase);
+            }
+            return _stampSet;
         }
     }
 
