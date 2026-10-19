@@ -484,6 +484,8 @@ public partial class CombatManager : IDisposable
     // the scanner would re-lock the dead-but-not-yet-corpse mob and burn another
     // cast on it. Self-prunes at the top of ScanNearbyTargets.
     private readonly Dictionary<int, DateTime> _recentlyKilled = new();
+    /// <summary>Attack spells already announced in chat as lacking components (once per spell per session).</summary>
+    private readonly HashSet<int> _noCompsAnnounced = new();
     private readonly List<int> _killPruneScratch = new();
     private const double RECENTLY_KILLED_SUPPRESS_MS = 4000.0;  // confirmed kill
     private const double PREDICTED_SWAP_SUPPRESS_MS  = 2000.0;  // predicted kill (re-acquirable if it survived)
@@ -1698,12 +1700,31 @@ public partial class CombatManager : IDisposable
                 lo.Contains("you do not have the") ||
                 lo.Contains("have all the components for this spell"))
             {
-                _spellManager?.MarkSpellUnresolvable(_pendingOffensiveSpellId);
-                _host.Log($"[CombatCast] NO-COMPONENTS id={_pendingOffensiveSpellId} " +
-                          $"'{SpellTableStub.GetById(_pendingOffensiveSpellId)?.Name}' — '{text.Trim()}'. " +
-                          $"Marked unresolvable → tiering down to an alternative.");
+                // The refusal names no spell: it answers the LAST cast sent. A heal or buff sent
+                // after this attack is the one refused (BuffManager takes it); ours is in flight.
+                int lastSent = ActionPacer.LastCastSpellId;
+                if (lastSent != 0 && lastSent != _pendingOffensiveSpellId)
+                {
+                    // Not ours: nothing marked, pending kept; the debuff handling below still runs.
+                    _host.Log($"[CombatCast] refusal '{text.Trim()}' is for the last cast sent " +
+                              $"({SpellTableStub.GetById(lastSent)?.Name ?? lastSent.ToString()}), not attack {_pendingOffensiveSpellId}: pending kept.");
+                }
+                else
+                {
+                bool noComps = lo.Contains("components") || lo.Contains("missing some required");
+                // A known spell refused for components goes on SpellManager's no-components list,
+                // which TrySpellByName skips (the unresolvable set is purged for known spells, so
+                // Flame Arc II was recast 228 times, 2026-10-18); anything else stays unresolvable.
+                if (noComps) _spellManager?.MarkNoComponents(_pendingOffensiveSpellId);
+                else _spellManager?.MarkSpellUnresolvable(_pendingOffensiveSpellId);
+                string name = SpellTableStub.GetById(_pendingOffensiveSpellId)?.Name ?? _pendingOffensiveSpellId.ToString();
+                _host.Log($"[CombatCast] NO-COMPONENTS id={_pendingOffensiveSpellId} '{name}' — '{text.Trim()}'. " +
+                          $"{(noComps ? $"Passed over for {SpellManager.NoComponentsSec / 60:0} min" : "Marked unresolvable")} → tiering down to an alternative.");
+                if (noComps && _noCompsAnnounced.Add(_pendingOffensiveSpellId))
+                    _host.WriteToChat($"[RynthAi] No components for {name}: attacking with a lower level or another spell for {SpellManager.NoComponentsSec / 60:0} min.", 2);
                 _pendingOffensiveSpellId = 0;
                 _predictKillSwapArmed = false; // the cast never went out — don't swap off a live mob
+                }
             }
             else
             {
@@ -6834,6 +6855,9 @@ public partial class CombatManager : IDisposable
         // mis-bound engine oracle — selection is purely predictive so nothing
         // self-poisons.
         if (!_spellManager.TryResolveKnownSpellId(name, out int id)) return 0;
+        // Refused by the server for missing components: the tier loop drops to a level (or
+        // another spell) the character can pay for. The server's answer, not a prediction.
+        if (_spellManager.LacksComponents(id)) return 0;
 
         // Scarab gate DISABLED (EnablePredictiveComponentGate=false). Field-
         // tested 2026-05-17, pid 15372: it rejected every KNOWN Force Arc

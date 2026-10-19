@@ -167,13 +167,11 @@ public partial class BuffManager : IDisposable
     private const double BuffFailCooldownSec = 120.0;
 
     // A vital spell LEVEL the server refused for missing components (Revitalize, Heal, Stamina
-    // to Mana...): that level is passed over for NoComponentsLevelSec and the next lower level
-    // with components is cast instead. It used to park the whole family, then retry the same
-    // top level the character had no components for (2026-10-08).
-    private readonly Dictionary<int, DateTime> _noComponentsUntil = new();
-    private const double NoComponentsLevelSec = 600.0;
-    private bool LevelLacksComponents(int spellId)
-        => _noComponentsUntil.TryGetValue(spellId, out DateTime until) && DateTime.Now < until;
+    // to Mana...): that level is passed over for SpellManager.NoComponentsSec and the next lower
+    // level with components is cast instead. It used to park the whole family, then retry the
+    // same top level the character had no components for (2026-10-08). The memory is
+    // SpellManager's since 2026-10-18, shared with combat's spell choice.
+    private bool LevelLacksComponents(int spellId) => _spellManager.LacksComponents(spellId);
 
     // Per-family SILENT no-show counter. Distinct from _buffFailCooldownUntil
     // (which catches chat-explicit hard rejects). This catches the /god case:
@@ -4260,17 +4258,29 @@ public partial class BuffManager : IDisposable
             lower.Contains("you must specify") ||
             lower.Contains("have all the components for this spell"))
         {
+            // The refusal names no spell: it answers the LAST cast sent. With a combat cast sent
+            // after this one (an attack spell while a heal was pending), it is that cast's
+            // (CombatManager takes it) and this one is still in flight. Blaming the pending heal
+            // parked Sk's only castable Heal Self I for a Flame Arc II refusal (2026-10-18).
+            int lastSent = ActionPacer.LastCastSpellId;
+            if (_pendingSpellId != 0 && lastSent != 0 && lastSent != _pendingSpellId)
+            {
+                _host.Log($"[BuffChat] refusal is for the last cast sent ({SpellTableStub.GetById(lastSent)?.Name ?? lastSent.ToString()}), " +
+                          $"not pending {SpellTableStub.GetById(_pendingSpellId)?.Name ?? _pendingSpellId.ToString()}: pending kept.");
+                return;
+            }
             _cast.Result(null, "refused by the server", atStart: true);
             if (_pendingSpellId != 0)
             {
                 var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
-                bool noCompsVital = _pendingSpellId == _pendingVitalSpellId
-                    && (lower.Contains("components") || lower.Contains("missing some required"));
+                bool noComps = lower.Contains("components") || lower.Contains("missing some required");
+                bool noCompsVital = _pendingSpellId == _pendingVitalSpellId && noComps;
+                // Every spell refused for components is remembered (combat skips it too).
+                if (noComps) _spellManager.MarkNoComponents(_pendingSpellId);
                 if (pendingSpell != null && noCompsVital)
                 {
                     // A vital spell: pass over this level only; the next lower one goes next.
-                    _noComponentsUntil[_pendingSpellId] = DateTime.Now.AddSeconds(NoComponentsLevelSec);
-                    _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: using a lower level for {NoComponentsLevelSec / 60:0} min.", 2);
+                    _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: using a lower level for {SpellManager.NoComponentsSec / 60:0} min.", 2);
                 }
                 else if (pendingSpell != null)
                 {
@@ -4285,7 +4295,6 @@ public partial class BuffManager : IDisposable
                     // "Casting:" line, so say which one. The server's text is not
                     // echoed: this line comes back through this handler, and it must
                     // not match the refusal phrases above.
-                    bool noComps = lower.Contains("components") || lower.Contains("missing some required");
                     _host.WriteToChat($"[RynthAi] Skipping {pendingSpell.Name} for {BuffFailCooldownSec / 60:0} min " +
                                       $"({(noComps ? "no components for it" : "the server refused it")}).", 2);
                 }
