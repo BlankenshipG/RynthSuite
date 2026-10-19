@@ -5748,6 +5748,8 @@ public partial class CombatManager : IDisposable
                 // exemption never applied and it ran its whole ladder on an empty quiver.
                 _lastMissileNoAmmoAt = DateTime.Now;
                 LastCombatSkipReason = "no-ammo";   // D4 record-only
+                // A fitting stack in the pack goes on next tick (nothing else would wield it).
+                ReloadFromPack(targetWeaponId);
                 return false;
             }
 

@@ -38,6 +38,34 @@ internal static class AmmoTests
         r.Add("ammo: a launcher's element is its ammo's (prismatic takes the launcher's)", ElementFromAmmo);
         r.Add("ammo: thrown weapons, melee and magic lists are untouched", ThrownMeleeMagicUntouched);
         r.Add("ammo: Prismatic is universal damage (the target's weakest element)", PrismaticUniversal);
+        r.Add("ammo: a swap abandoned after the ammo came off reloads the launcher in hand", AbandonedSwapReloads);
+    }
+
+    // 2026-10-19 (Silentkelpie, 15:24-16:55): the darts went into the pack for an atlatl -> crossbow
+    // swap, the target died, and the next one wanted the atlatl still in hand. Nothing wielded the
+    // darts again, so combat held a target in peace mode with no attack for 90 minutes.
+    private static void AbandonedSwapReloads()
+    {
+        var rig = new Rig();
+        rig.Store.SetManualWeapon(Wcid, Crossbow);
+        Check.False(rig.Tick(), "tick 1: the arrows go into the pack for the crossbow");
+        Check.True(FakeHost.Moves.Count == 1 && FakeHost.Moves[0] == (Arrows, Pack, 120), "the arrow stack moved");
+        Rig.Unwield(Arrows);                                  // the arrows landed in the pack
+
+        rig.Store.SetManualWeapon(Wcid, Bow);                 // the next target wants the bow still in hand
+        rig.List(Bow, Crossbow);                              // a new list: the plan is worked out again
+        Check.Eq(unchecked((uint)rig.C.PlanFor(rig.Target, null).WeaponId), Bow, "the plan: the bow in hand");
+
+        Check.False(rig.Tick(), "bow in hand, empty quiver: not ready");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("reload:") && l.Contains("'Longbow'")), "the reload is logged");
+        rig.Tick();
+        Check.Eq(FakeHost.Uses.Count(u => u == Arrows), 1, "the arrows are wielded again from the pack");
+        Check.Eq(FakeHost.Uses.Count(u => u == Crossbow), 0, "the abandoned crossbow isn't wielded");
+        rig.Tick();
+        Check.Eq(FakeHost.Uses.Count(u => u == Arrows), 1, "one ammo wield in flight: not sent again");
+
+        Rig.Wield(Arrows, AmmoSlot);                          // the arrows are on
+        Check.True(rig.Tick(), "bow and arrows: ready to shoot");
     }
 
     // 2026-10-19 (owner): prismatic ammo deals every damage type, so it does what the target is

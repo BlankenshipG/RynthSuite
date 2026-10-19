@@ -52,6 +52,13 @@ public partial class CombatManager
 
     private readonly HashSet<int> _noAmmoNoted = new();
 
+    // Reloading a launcher already in hand from the pack (see ReloadFromPack): the earliest the
+    // next reload may be armed. Pushed out after a give-up so a resting stack isn't retried each tick.
+    private DateTime _reloadArmNextAt = DateTime.MinValue;
+
+    /// <summary>How long after a failed or held ammo wield before the in-hand reload tries again. Settable for tests.</summary>
+    internal double ReloadArmEveryMs { get; set; } = 10_000;
+
     /// <summary>
     /// A launcher swap's ammo step is under way (the old stack going into the pack, or the new
     /// one being wielded). Ammo crafting waits: it would otherwise equip ammo for the launcher
@@ -67,6 +74,7 @@ public partial class CombatManager
         _ammoDequipPendingId = _ammoDequipTries = 0;
         _ammoDequipRestUntil = DateTime.MinValue;
         _ammoOffSeenAt = DateTime.MinValue;
+        _reloadArmNextAt = DateTime.MinValue;
         _noAmmoNoted.Clear();
     }
 
@@ -292,8 +300,8 @@ public partial class CombatManager
 
     /// <summary>
     /// Step 3, with <paramref name="launcherId"/> confirmed in hand. True while the attack should
-    /// wait for the ammo wield. Only after combat's own launcher swap: an empty quiver otherwise is
-    /// left to ammo crafting (which may craft better ammo first), as before.
+    /// wait for the ammo wield. Armed by combat's own launcher swap, or by <see cref="ReloadFromPack"/>
+    /// when the launcher in hand has an empty ammunition slot and a fitting stack is in the pack.
     /// </summary>
     private bool AmmoFollowUp(int launcherId, WorldObject target, MonsterRule? rule)
     {
@@ -326,6 +334,7 @@ public partial class CombatManager
         {
             _host.Log($"[EquipDiag] no {MissileAmmo.Label(lt)} left for 0x{(uint)launcherId:X8} '{wo.Name}' — leaving it to ammo crafting");
             EndAmmoFollowUp();
+            _reloadArmNextAt = now.AddMilliseconds(ReloadArmEveryMs);
             return false;
         }
 
@@ -351,10 +360,44 @@ public partial class CombatManager
             case WeaponSwapTracker.Step.Hold:
                 _host.Log($"[EquipDiag] ammo: not wielding 0x{(uint)pick.Id:X8} '{pick.Name}' ({AmmoTracker.HoldReason}) — leaving it to ammo crafting");
                 EndAmmoFollowUp();
+                _reloadArmNextAt = now.AddMilliseconds(ReloadArmEveryMs);
                 return false;
             default:
                 EndAmmoFollowUp();
                 return false;
         }
+    }
+
+    /// <summary>
+    /// The chosen launcher is in hand with nothing in the ammunition slot, and a stack that fits
+    /// it is in the pack: arm step 3 so the next tick wields that stack. Step 3 used to run only
+    /// right after combat's own launcher swap; any other empty quiver waited for an ammo crafting
+    /// pass that RynthAi no longer has. A swap abandoned halfway (the old ammo already in the pack
+    /// when the next target wanted the launcher still in hand) left the character in peace mode
+    /// with a target and no attack for 90 minutes (Silentkelpie, 2026-10-19 15:24-16:55). After a
+    /// give-up, waits <see cref="ReloadArmEveryMs"/> before arming again.
+    /// </summary>
+    private void ReloadFromPack(int launcherId)
+    {
+        DateTime now = DateTime.Now;
+        if (now < _reloadArmNextAt) return;
+        if (_ammoFollowUpFor == launcherId && now < _ammoFollowUpUntil) return;   // already armed
+        var wo = _worldFilter[launcherId];
+        int lt = LauncherTypeOf(wo);
+        if (wo == null || lt == 0) return;                   // thrown, or a launcher type not known
+
+        var pack = PackAmmo();
+        if (pack.Any(a => a.Wielded)) return;                // something is on: the swap path deals with it
+        if (!pack.Any(a => MissileAmmo.Fits(lt, a.AmmoType))) return;   // nothing fits: crafting's job, as before
+
+        // The launcher this swap was for is the one in hand, so an old-ammo dequip that is still
+        // recorded has landed; left set, it would also hold the stance (LauncherSwapHoldsStance).
+        if (_ammoDequipPendingId != 0)
+        {
+            _weaponSwapGate?.MoveDone(_ammoDequipPendingId);
+            _ammoDequipPendingId = 0; _ammoDequipTries = 0; _ammoOffSeenAt = DateTime.MinValue;
+        }
+        ArmAmmoFollowUp(launcherId, now);
+        _host.Log($"[EquipDiag] reload: 0x{(uint)launcherId:X8} '{wo.Name}' is in hand with no {MissileAmmo.Label(lt)} on — wielding a stack from the pack");
     }
 }
