@@ -284,6 +284,26 @@ namespace RynthOracle.Tests
             s3.Tick(t5 + 5_000);
             Check(s3.Flags.Count == 95 && !s3.TryGet("flag099", out _), "a near-full reply still replaces (a dropped flag goes away)");
 
+            // 25,000 flags (an ACECustom character) arriving in two pieces 3 s apart: a long reply
+            // waits 5 s of quiet, so both pieces make one full reply instead of a split one.
+            var s4 = new QuestFlagStore();
+            long tBig = 900_000;
+            for (int i = 0; i < 12_500; i++)
+                s4.OnChatLine($"bigflag{i:D5} - 1 solves (1719432000)\"Q{i}\" -1 0", tBig);
+            s4.Tick(tBig + 3_000);
+            Check(s4.Loading && s4.Flags.Count == 0, "a long reply isn't ended by a 3 s pause");
+            for (int i = 12_500; i < 25_000; i++)
+                s4.OnChatLine($"bigflag{i:D5} - 1 solves (1719432000)\"Q{i}\" -1 0", tBig + 3_000);
+            s4.Tick(tBig + 3_000 + 4_000);
+            Check(s4.Flags.Count == 0, "still reading 4 s after the last piece");
+            s4.Tick(tBig + 3_000 + 5_000);
+            Check(s4.Flags.Count == 25_000 && s4.LastPartialReply == null && s4.LastLongReply is { Lines: 25_000, Ms: 3_000 },
+                  $"25,000 flags read as one reply ({s4.Flags.Count})");
+            var s5 = new QuestFlagStore();
+            for (int i = 0; i < 10; i++) s5.OnChatLine($"small{i} - 1 solves (1719432000)\"Q\" -1 0", tBig);
+            s5.Tick(tBig + 1_500);
+            Check(s5.Flags.Count == 10 && s5.LastLongReply == null, "a short reply still ends after 1.5 s");
+
             // ACECustom's once-a-minute limit: the throttle line ends "Reading..." and keeps the flags.
             int had = s3.Flags.Count;
             long t6 = t5 + 30_000;
@@ -462,7 +482,23 @@ namespace RynthOracle.Tests
             IltServerProfile qb = IltServerProfile.Parse(QbProfileJson);
             Check(qb.QuestBonus is { Disabled: false, Generation: 3, Count: 41 } b && b.Completed.Count == 2 && b.Incomplete.Count == 1
                   && b.Incomplete[0] == "qbflagthree" && b.Status == "2 completed, 1 incomplete", "quest bonus list parsed");
+
+            // RynthILT 0.2.22+: the profile counts the lists; they arrive through GetQuestBonusJson.
+            var link = new IltServerLink();
+            link.SetJson(QbProfileCountsJson);
+            Check(link.QuestBonus is { ListsElsewhere: true, CompletedCount: 2, IncompleteCount: 1 }, "counts-only profile: lists still to read");
+            link.SetQuestBonusJson("{\"generation\":3,\"completed\":[\"qbflagone\",\"qbflagtwo\"],\"incomplete\":[\"qbflagthree\"]}");
+            Check(link.QuestBonus is { ListsElsewhere: false } l && l.Completed.Count == 2 && l.Incomplete[0] == "qbflagthree",
+                  "the lists read separately fill the /qb list in");
+            link.SetJson(QbProfileCountsJson.Replace("\"generation\":3", "\"generation\":4"));
+            Check(link.QuestBonus is { ListsElsewhere: true }, "a new generation waits for its own lists (no stale ones)");
+            link.SetQuestBonusJson("not json");
+            Check(link.QuestBonus is { ListsElsewhere: true }, "a broken list JSON is ignored");
         }
+
+        private const string QbProfileCountsJson = "{\"ilt\":true,\"world\":\"InfiniteLeaftide\",\"fellowship\":{\"maxMembers\":29},"
+            + "\"questBonus\":{\"disabled\":false,\"generation\":3,\"count\":41,\"status\":\"2 completed, 1 incomplete\","
+            + "\"completedCount\":2,\"incompleteCount\":1}}";
 
         private const string QbProfileJson = "{\"ilt\":true,\"world\":\"InfiniteLeaftide\",\"fellowship\":{\"maxMembers\":29},"
             + "\"questBonus\":{\"disabled\":false,\"generation\":3,\"count\":41,\"status\":\"2 completed, 1 incomplete\","

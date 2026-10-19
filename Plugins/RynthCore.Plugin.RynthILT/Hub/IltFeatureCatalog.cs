@@ -309,30 +309,49 @@ internal static class IltFeatureCatalog
           .Append(",\"luminanceShare\":").Append(State("fellowship_luminance").ToString(CultureInfo.InvariantCulture))
           .Append('}');
 
-        // The /qb list (ILT worlds only): RynthOracle's Quests tab draws it.
+        // The /qb summary (ILT worlds only). The flag lists themselves go out through
+        // GetQuestBonusJson (BuildQuestBonusJson): at 25,000 flags they would be ~1 MB in a profile
+        // every reader polls every couple of seconds, past their 512 KB cap.
         if (questBonus != null && iltWorld)
         {
             sb.Append(",\"questBonus\":{\"disabled\":").Append(questBonus.Disabled ? "true" : "false")
               .Append(",\"generation\":").Append(questBonus.Generation.ToString(CultureInfo.InvariantCulture))
               .Append(",\"count\":").Append(questBonus.Count.ToString(CultureInfo.InvariantCulture))
-              .Append(",\"status\":\"").Append(Escape(questBonus.Status)).Append('"');
-            AppendList(sb, "completed", questBonus.Completed);
-            AppendList(sb, "incomplete", questBonus.Incomplete);
-            sb.Append('}');
+              .Append(",\"status\":\"").Append(Escape(questBonus.Status)).Append('"')
+              .Append(",\"completedCount\":").Append(questBonus.Completed.Count.ToString(CultureInfo.InvariantCulture))
+              .Append(",\"incompleteCount\":").Append(questBonus.Incomplete.Count.ToString(CultureInfo.InvariantCulture))
+              .Append('}');
         }
         sb.Append('}');
         return sb.ToString();
+    }
 
-        static void AppendList(StringBuilder b, string name, IReadOnlyList<string> items)
+    /// <summary>
+    /// The "RynthILT.Server" GetQuestBonusJson payload: {"generation":n,"completed":[...],"incomplete":[...]}.
+    /// Built once per parsed "/qb list" (pre-sized: a 25,000-flag list is about 1 MB).
+    /// </summary>
+    public static string BuildQuestBonusJson(int generation, IReadOnlyList<string> completed, IReadOnlyList<string> incomplete)
+    {
+        int estimate = 64;
+        foreach (string s in completed) estimate += s.Length + 3;
+        foreach (string s in incomplete) estimate += s.Length + 3;
+        var sb = new StringBuilder(estimate);
+        sb.Append("{\"generation\":").Append(generation.ToString(CultureInfo.InvariantCulture));
+        AppendList(sb, "completed", completed);
+        AppendList(sb, "incomplete", incomplete);
+        sb.Append('}');
+        return sb.ToString();
+    }
+
+    private static void AppendList(StringBuilder b, string name, IReadOnlyList<string> items)
+    {
+        b.Append(",\"").Append(name).Append("\":[");
+        for (int i = 0; i < items.Count; i++)
         {
-            b.Append(",\"").Append(name).Append("\":[");
-            for (int i = 0; i < items.Count; i++)
-            {
-                if (i > 0) b.Append(',');
-                b.Append('"').Append(Escape(items[i])).Append('"');
-            }
-            b.Append(']');
+            if (i > 0) b.Append(',');
+            b.Append('"').Append(Escape(items[i])).Append('"');
         }
+        b.Append(']');
     }
 
     /// <summary>The chat listing for "/ra hub features": one line per feature, ASCII only.</summary>

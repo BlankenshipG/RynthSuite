@@ -1,6 +1,8 @@
 // ServerInterface.cs - RynthILT's side of the "RynthILT.Server" interface (Plugins/Shared/RynthIltServerApi.cs):
 // the profile JSON other plugins read (RynthOracle's Fellowship / Quests qb list / feature list):
 // the Leaftide feature list with the server's state for each, and the server's fellowship rules.
+// Version 2 (RynthILT 0.2.22) moves the full /qb lists out of the profile into GetQuestBonusJson,
+// because a 15,000-25,000 flag list overran the 512 KB profile readers and blanked the whole profile.
 //
 // Restored 2026-10-16: this export was dropped when "RynthServer.Profile" (salvage / identity) was
 // added, so Oracle still detected ILT via RynthCore but never received feature / qb / fellowship
@@ -37,6 +39,7 @@ internal static unsafe class ServerInterface
             var t = (RynthIltServerApiV1*)NativeMemory.AllocZeroed((nuint)sizeof(RynthIltServerApiV1));
             t->StructSize = (uint)sizeof(RynthIltServerApiV1);
             t->GetProfileJson = &GetProfileJson;
+            t->GetQuestBonusJson = &GetQuestBonusJson;
             t->Version = RynthIltServerApiV1.InterfaceVersion;
             _table = t;
         }
@@ -61,6 +64,21 @@ internal static unsafe class ServerInterface
         {
             if (_released) return 0;
             return Write(CurrentJson(), buffer, capacity);
+        }
+        catch { return 0; }
+    }
+
+    /// <summary>The "/qb list" JSON now: the live controller's, or an empty list before login.</summary>
+    internal static string CurrentQuestBonusJson()
+        => (_released ? null : PluginExports.Runtime.Plugin?.Hub?.QuestBonus.ListJson) ?? IltQuestBonus.EmptyListJson;
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetQuestBonusJson(byte* buffer, int capacity)
+    {
+        try
+        {
+            if (_released) return 0;
+            return Write(CurrentQuestBonusJson(), buffer, capacity);
         }
         catch { return 0; }
     }

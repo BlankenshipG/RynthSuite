@@ -206,7 +206,7 @@ internal sealed partial class OracleView
         _questPage = Pager(w, "q.page", _questPage, rows.Count, QuestPageSize, p => _questPage = p);
 
         // A fixed-height list when something follows it (the opened row, the /qb list); else it fills the page.
-        IltQuestBonusList? qb = ilt && !_qTrackers ? _c.Ilt.Profile.QuestBonus : null;
+        IltQuestBonusList? qb = ilt && !_qTrackers ? _c.Ilt.QuestBonus : null;
         bool selected = HasSelection();
         w.BeginChild("q.list", 0f, selected || qb != null ? QuestListHeightWithPanel : 0f, border: true);
         w.TextDisabled("*");
@@ -831,17 +831,32 @@ internal sealed partial class OracleView
         w.SameLine();
         w.TextDisabled(qb.Generation == 0 && qb.Status == "not loaded" ? "Not loaded yet this session." : qb.Status);
 
-        string[] terms = _questSearch.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        QbList(w, "Incomplete", "q.qb.todo", qb.Incomplete, terms, UiColors.Yellow);
-        QbList(w, "Completed", "q.qb.done", qb.Completed, terms, UiColors.Green);
+        if (qb.ListsElsewhere)
+        {
+            w.TextDisabled($"Reading the list from RynthILT ({TimeText.Number(qb.CompletedCount + qb.IncompleteCount)} flags)...");
+            return;
+        }
+        QbList(w, "Incomplete", "q.qb.todo", qb.Incomplete, UiColors.Yellow);
+        QbList(w, "Completed", "q.qb.done", qb.Completed, UiColors.Green);
     }
 
-    private static void QbList(UiWindow w, string label, string id, IReadOnlyList<string> items, string[] terms, uint color)
+    // The filtered /qb lists, per list id: re-filtered only when the list or the search changes
+    // (a character can hold 25,000+ flags, too many to filter on every draw).
+    private readonly Dictionary<string, (IReadOnlyList<string> Items, string Search, List<string> Shown)> _qbShown = new();
+
+    private void QbList(UiWindow w, string label, string id, IReadOnlyList<string> items, uint color)
     {
-        var shown = new List<string>();
-        foreach (string s in items)
-            if (MatchesAll(s, terms)) shown.Add(s);
-        string counts = terms.Length > 0 ? $"{shown.Count} of {items.Count}" : items.Count.ToString();
+        if (!_qbShown.TryGetValue(id, out var cached) || !ReferenceEquals(cached.Items, items) || cached.Search != _questSearch)
+        {
+            string[] terms = _questSearch.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var filtered = new List<string>();
+            foreach (string s in items)
+                if (MatchesAll(s, terms)) filtered.Add(s);
+            cached = (items, _questSearch, filtered);
+            _qbShown[id] = cached;
+        }
+        List<string> shown = cached.Shown;
+        string counts = shown.Count != items.Count ? $"{shown.Count} of {items.Count}" : items.Count.ToString();
         if (!w.CollapsingHeader($"{label} ({counts})", id)) return;
         for (int i = 0; i < shown.Count && i < QbShownMax; i++) w.TextColored(color, shown[i]);
         if (shown.Count > QbShownMax) w.TextDisabled($"... and {shown.Count - QbShownMax} more. Narrow them with Search.");

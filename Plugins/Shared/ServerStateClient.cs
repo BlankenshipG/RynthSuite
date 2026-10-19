@@ -119,8 +119,9 @@ internal sealed unsafe class ServerStateClient
     {
         if (InterfaceFor(owner) == RynthIltServerApiV1.InterfaceName)
         {
-            var t = (RynthIltServerApiV1*)host.GetPluginInterface(owner, RynthIltServerApiV1.InterfaceName, RynthIltServerApiV1.InterfaceVersion);
-            if (t == null || t->Version < 1 || t->StructSize < (uint)sizeof(RynthIltServerApiV1) || t->GetProfileJson == null) return false;
+            // Ask for the base version and accept a version-1-sized table: an older RynthILT still answers.
+            var t = (RynthIltServerApiV1*)host.GetPluginInterface(owner, RynthIltServerApiV1.InterfaceName, RynthIltServerApiV1.BaseVersion);
+            if (t == null || t->Version < 1 || t->StructSize < RynthIltServerApiV1.V1Size || t->GetProfileJson == null) return false;
             _tableVersion = &t->Version;
             _getProfileJson = t->GetProfileJson;
             return true;

@@ -23,6 +23,12 @@ internal sealed class IltQuestBonus : IIltFeature
     private static readonly Regex QbFlagLine = new(@"^[a-zA-Z0-9_\-!@\(\)?]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private const long QbCooldownMs = 60_000;
+    // Rows one list draws in the panel: ACECustom characters hold 15,000-25,000+ flags, and
+    // drawing every one each frame stalls the render. The filter narrows past this.
+    private const int QbShownMax = 500;
+
+    /// <summary>The GetQuestBonusJson answer before any "/qb list" (or without a controller).</summary>
+    public static readonly string EmptyListJson = IltFeatureCatalog.BuildQuestBonusJson(0, Array.Empty<string>(), Array.Empty<string>());
 
     private readonly IltHubContext _ctx;
     private long _lastQbAt = -QbCooldownMs;
@@ -30,6 +36,10 @@ internal sealed class IltQuestBonus : IIltFeature
     // QB results (replaced wholesale; read by the render thread).
     private volatile string[] _qbCompleted = Array.Empty<string>();
     private volatile string[] _qbIncomplete = Array.Empty<string>();
+    // Every flag of both lists, for QbHasFlag (O(1) instead of a 25,000-string scan per check).
+    private volatile HashSet<string> _qbAll = new(StringComparer.OrdinalIgnoreCase);
+    // The GetQuestBonusJson payload, rebuilt once per parsed list (any thread reads it).
+    private volatile string _listJson = EmptyListJson;
     private volatile string _qbStatus = "not loaded";
     private long _qbCount = -1;
     private volatile int _qbGeneration; // bumped per successful "/qb list"; 0 = never loaded this session
@@ -116,14 +126,25 @@ internal sealed class IltQuestBonus : IIltFeature
         }
         done.Sort(StringComparer.OrdinalIgnoreCase);
         todo.Sort(StringComparer.OrdinalIgnoreCase);
+        var all = new HashSet<string>(done.Count + todo.Count, StringComparer.OrdinalIgnoreCase);
+        all.UnionWith(done);
+        all.UnionWith(todo);
+        int generation = _qbGeneration + 1;
         _qbCompleted = done.ToArray();
         _qbIncomplete = todo.ToArray();
-        _qbStatus = $"{done.Count} completed, {todo.Count} incomplete";
-        _qbGeneration++;
+        _qbAll = all;
+        _listJson = IltFeatureCatalog.BuildQuestBonusJson(generation, _qbCompleted, _qbIncomplete);
+        _qbStatus = $"{IltParse.N0(done.Count)} completed, {IltParse.N0(todo.Count)} incomplete";
+        _qbGeneration = generation;
+        RynthLog.Write(LogCat.IltQuests, $"/qb list parsed: {done.Count} completed, {todo.Count} incomplete from {r.Lines.Count} line(s)"
+                                        + $" (list JSON {_listJson.Length / 1024} KB, generation {generation})");
     }
 
     /// <summary>Increments each time a "/qb list" reply is parsed (0 = not loaded this session).</summary>
     public int QbGeneration => _qbGeneration;
+
+    /// <summary>The "RynthILT.Server" GetQuestBonusJson payload for the last parsed list. Any thread.</summary>
+    public string ListJson => _listJson;
 
     /// <summary>
     /// Snapshot for the "RynthILT.Server" profile JSON (Oracle Quests / Fellowship). Pump thread.
@@ -135,11 +156,7 @@ internal sealed class IltQuestBonus : IIltFeature
     public bool QbHasFlag(string flag)
     {
         if (string.IsNullOrWhiteSpace(flag)) return false;
-        foreach (string f in _qbCompleted)
-            if (f.Equals(flag, StringComparison.OrdinalIgnoreCase)) return true;
-        foreach (string f in _qbIncomplete)
-            if (f.Equals(flag, StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
+        return _qbAll.Contains(flag.Trim());
     }
 
     /// <summary>Login probe tap: "/qb" (no args) prints the count line.</summary>
@@ -162,6 +179,8 @@ internal sealed class IltQuestBonus : IIltFeature
     {
         _qbCompleted = Array.Empty<string>();
         _qbIncomplete = Array.Empty<string>();
+        _qbAll = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        _listJson = EmptyListJson;
         _qbCount = -1;
         _qbStatus = "not loaded";
         _qbGeneration = 0;
@@ -202,7 +221,9 @@ internal sealed class IltQuestBonus : IIltFeature
         if (ImGui.TreeNode($"{label} ({shown.Length})##qb{label}"))
         {
             if (ImGui.SmallButton($"Copy##qbc{label}")) ImGui.SetClipboardText(string.Join(Environment.NewLine, shown));
-            foreach (string s in shown) SafeImGui.TextColored(color, s);
+            for (int i = 0; i < shown.Length && i < QbShownMax; i++) SafeImGui.TextColored(color, shown[i]);
+            if (shown.Length > QbShownMax)
+                SafeImGui.TextDisabled($"... and {IltParse.N0(shown.Length - QbShownMax)} more. Narrow them with the filter (Copy takes them all).");
             ImGui.TreePop();
         }
     }

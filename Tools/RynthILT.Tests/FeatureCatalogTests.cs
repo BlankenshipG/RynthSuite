@@ -100,14 +100,33 @@ internal static class FeatureCatalogTests
         Check.Eq(q.GetProperty("generation").GetInt32(), 2, "generation");
         Check.Eq(q.GetProperty("count").GetInt64(), 41L, "count");
         Check.Eq(q.GetProperty("status").GetString(), "2 completed, 1 incomplete", "status");
-        Check.Eq(q.GetProperty("completed").GetArrayLength(), 2, "completed flags");
-        Check.Eq(q.GetProperty("completed")[0].GetString(), "flag\"one", "quotes in a flag survive");
-        Check.Eq(q.GetProperty("incomplete")[0].GetString(), "flagThree", "incomplete flags");
+        // The lists moved to GetQuestBonusJson (Version 2): the profile only counts them.
+        Check.False(q.TryGetProperty("completed", out _), "the profile no longer carries the completed list");
+        Check.Eq(q.GetProperty("completedCount").GetInt32(), 2, "completed count");
+        Check.Eq(q.GetProperty("incompleteCount").GetInt32(), 1, "incomplete count");
         Check.True(doc.RootElement.TryGetProperty("fellowship", out _), "the fellowship rules are still there");
 
         string off = IltFeatureCatalog.BuildProfileJson(false, "", false, "", DateTime.MinValue, _ => IltTri.On, qb);
         using JsonDocument d2 = JsonDocument.Parse(off);
         Check.False(d2.RootElement.TryGetProperty("questBonus", out _), "off ILT: no /qb list");
+
+        // The separate list JSON carries the flags (escaped).
+        string lists = IltFeatureCatalog.BuildQuestBonusJson(2, qb.Completed, qb.Incomplete);
+        using JsonDocument d3 = JsonDocument.Parse(lists);
+        Check.Eq(d3.RootElement.GetProperty("generation").GetInt32(), 2, "list generation");
+        Check.Eq(d3.RootElement.GetProperty("completed").GetArrayLength(), 2, "completed flags");
+        Check.Eq(d3.RootElement.GetProperty("completed")[0].GetString(), "flag\"one", "quotes in a flag survive");
+        Check.Eq(d3.RootElement.GetProperty("incomplete")[0].GetString(), "flagThree", "incomplete flags");
+
+        // 25,000 flags: the profile stays small, the list JSON holds them all.
+        var many = new string[25_000];
+        for (int i = 0; i < many.Length; i++) many[i] = $"questbonusflag_{i:D5}_completed";
+        var big = new IltQuestBonusInfo(false, 3, 25_000, "", many, Array.Empty<string>());
+        string bigProfile = IltFeatureCatalog.BuildProfileJson(true, "Infinite Leaftide", false, "probe", DateTime.MinValue, _ => IltTri.On, big);
+        Check.True(bigProfile.Length < 64 * 1024, $"a 25,000-flag profile stays small ({bigProfile.Length / 1024} KB)");
+        string bigLists = IltFeatureCatalog.BuildQuestBonusJson(3, many, Array.Empty<string>());
+        using JsonDocument d4 = JsonDocument.Parse(bigLists);
+        Check.Eq(d4.RootElement.GetProperty("completed").GetArrayLength(), 25_000, "the list JSON holds all 25,000 flags");
     }
 
     private static readonly string[] Requested =
