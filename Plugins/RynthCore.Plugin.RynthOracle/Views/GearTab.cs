@@ -25,7 +25,8 @@ internal sealed partial class OracleView
     private static readonly uint TierMinor = UiFormat.Rgb(120, 220, 120), TierMajor = UiFormat.Rgb(140, 180, 255),
         TierEpic = UiFormat.Rgb(200, 140, 255), TierLegendary = UiFormat.Rgb(255, 180, 100), TierLower = UiFormat.Rgb(190, 190, 190);
     private static readonly uint HeaderBlue = UiFormat.Rgb(180, 200, 255), SetPurple = UiFormat.Rgb(200, 180, 255),
-        ParagonTan = UiFormat.Rgb(220, 200, 140), WornGreen = UiFormat.Rgb(200, 235, 180), PackGrey = UiFormat.Rgb(210, 210, 210);
+        ParagonTan = UiFormat.Rgb(220, 200, 140), WornGreen = UiFormat.Rgb(200, 235, 180), PackGrey = UiFormat.Rgb(210, 210, 210),
+        T11Teal = UiFormat.Rgb(120, 220, 210);
 
     private string GearView
     {
@@ -276,7 +277,16 @@ internal sealed partial class OracleView
             StartGearCheck();
         });
         w.Tooltip("Also list the sets, levels and ratings of the gear in your packs (each one is appraised once).");
-        w.TextDisabled("Loc | Item | Type | Set | Level | Ratings. Weapon rows are tinted by damage type.");
+        bool mag = _c.Settings.GearRatingsMag;
+        w.SameLine();
+        w.ToggleButton("Mag-style", "g.fmt.mag", mag, () => { _c.Settings.GearRatingsMag = true; _c.Settings.Save(); }, small: true);
+        w.Tooltip("Each item as one Mag-Tools ItemInfo line (what Mag-Tools prints when you identify it).");
+        w.SameLine();
+        w.ToggleButton("Columns", "g.fmt.col", !mag, () => { _c.Settings.GearRatingsMag = false; _c.Settings.Save(); }, small: true);
+        w.Tooltip("Rated items in columns: Loc, Item, Type, Set, Level, Ratings.");
+        w.TextDisabled(mag
+            ? "Mag-Tools ItemInfo lines for your gear; [D, DR, C, CD, CR, CDR, HB, V ...] are its ratings, T11 [...] its modifiers."
+            : "Loc | Item | Type | Set | Level | Ratings (T11 modifier lines under the item). Weapon rows are tinted by damage type.");
 
         RatingsReport? r = _c.Gear.Ratings;
         if (r == null)
@@ -284,13 +294,24 @@ internal sealed partial class OracleView
             w.TextDisabled("Press Check to read your gear's sets, levels and ratings.");
             return;
         }
-        w.Text($"Checked {r.CheckedLocal:HH:mm:ss}  |  {r.Rows.Count} item(s)  |  {r.EquippedRows} worn  |  "
+        int rated = r.RatedRows.Count();
+        w.Text($"Checked {r.CheckedLocal:HH:mm:ss}  |  {(mag ? r.Rows.Count : rated)} item(s)  |  {rated} rated, {r.EquippedRows} of them worn  |  "
                + (r.IncludePack ? "worn + packs" : "worn only"));
         if (r.IncludePack != pack) w.TextColored(UiColors.Yellow, "The pack option changed: Check again to apply it.");
         if (r.WornTotals.Count > 0)
             w.TextColored(UiColors.Gold, "Worn totals: " + string.Join("  ", r.WornTotals.Select(t => GearAnalysis.RatingShort(t.Prop) + " " + t.Value)));
+        if (r.WornTotals.Count > 0 || r.T11Totals.Count > 0)
+            w.Tooltip(string.Join("\n", r.WornTotals.Select(t => GearAnalysis.RatingLong(t.Prop) + " " + t.Value))
+                      + (r.T11Rows > 0 ? "\nT11 modifier ratings are included (the appraisal lists them under Modifiers, not Ratings)." : ""));
+        if (r.T11Totals.Count > 0)
+            w.TextColored(T11Teal, "T11 worn: " + string.Join("  |  ", r.T11Totals.Select(t => t.Name + " " + t.Value)));
 
-        if (r.Rows.Count == 0)
+        if (mag)
+        {
+            DrawMagLines(w, r);
+            return;
+        }
+        if (rated == 0)
         {
             w.TextDisabled("No gear with a set, an item level or ratings.");
             return;
@@ -301,11 +322,11 @@ internal sealed partial class OracleView
         w.SameLine(330f); w.TextColored(HeaderBlue, "Set");
         w.SameLine(480f); w.TextColored(HeaderBlue, "Level");
         w.SameLine(550f); w.TextColored(HeaderBlue, "Ratings");
-        foreach (RatingRow row in r.Rows)
+        foreach (RatingRow row in r.RatedRows)
         {
             GearPiece p = row.Piece;
             uint baseColor = p.Equipped ? WornGreen : PackGrey;
-            uint tint = (p.ItemType & GearAnalysis.ItemWeapons) != 0 && p.DamageType != 0 ? ElementColorFlags(p.DamageType) : baseColor;
+            uint tint = RowTint(p, baseColor);
             w.TextColored(baseColor, p.Equipped ? "Worn" : "Pack");
             w.SameLine(45f); w.TextColored(tint, Cut(p.Name, 26));
             w.Tooltip(p.Name);
@@ -315,6 +336,56 @@ internal sealed partial class OracleView
             w.SameLine(550f);
             if (row.Stats.Length > 0) w.TextWrapped(row.Stats);
             else w.TextDisabled("-");
+            // T11 gear: its modifier lines, under the row (the rating ones are also in Ratings above).
+            if (row.T11.Length > 0)
+            {
+                w.Dummy(1f, 0f);   // starts the line; the label then sits under the Item column
+                w.SameLine(45f);
+                w.TextColored(T11Teal, "T11:");
+                w.SameLine(90f);
+                w.TextWrapped(row.T11 + (p.ZoneLocked ? "  (zone locked: power reduced outside its zone)" : ""));
+            }
+        }
+    }
+
+    /// <summary>A weapon's row in its damage type's colour, anything else in the worn / pack colour.</summary>
+    private static uint RowTint(GearPiece p, uint baseColor) =>
+        (p.ItemType & GearAnalysis.ItemWeapons) != 0 && p.DamageType != 0 ? ElementColorFlags(p.DamageType) : baseColor;
+
+    /// <summary>
+    /// The Mag-style view: every item as its Mag-Tools ItemInfo line, worn first, weapons tinted by
+    /// damage type, paragon pieces in tan; Print to chat writes the lines as Mag-Tools would.
+    /// </summary>
+    private void DrawMagLines(UiWindow w, RatingsReport r)
+    {
+        if (r.Rows.Count == 0)
+        {
+            w.TextDisabled("No gear found.");
+            return;
+        }
+        RatingsReport report = r;
+        w.SmallButton("Print to chat", "g.mag.print", () =>
+        {
+            foreach (RatingRow row in report.Rows) _c.Print((row.Piece.Equipped ? "" : "(pack) ") + row.Mag);
+        });
+        w.Tooltip("Writes every line below to your chat window (only you see it).");
+        bool packHeader = false;
+        foreach (RatingRow row in r.Rows)
+        {
+            GearPiece p = row.Piece;
+            if (!p.Equipped && !packHeader)
+            {
+                w.SeparatorText("In your packs");
+                packHeader = true;
+            }
+            uint baseColor = p.Equipped ? WornGreen : PackGrey;
+            uint tint = row.Paragon ? ParagonTan : RowTint(p, baseColor);
+            w.TextColored(baseColor, p.Equipped ? "Worn" : "Pack");
+            w.SameLine(45f);
+            w.PushStyleColor(0, tint);   // ImGuiCol_Text: TextWrapped has no colour of its own
+            w.TextWrapped(row.Mag);
+            w.PopStyleColor();
+            if (!p.Appraised) w.Tooltip("Not appraised yet: Check again in a moment for its full line.");
         }
     }
 

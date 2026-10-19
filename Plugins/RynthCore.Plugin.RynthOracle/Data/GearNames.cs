@@ -14,7 +14,23 @@ namespace RynthCore.Plugin.RynthOracle.Data;
 /// </summary>
 internal static class GearNames
 {
-    private static Dictionary<int, string>? _families, _sets;
+    private static Dictionary<int, string>? _families, _sets, _materials, _masteries, _skills;
+
+    /// <summary>A material ("Black Garnet") by PropertyInt.MaterialType (131); "" when unknown or none.</summary>
+    public static string Material(int id) => Named(ref _materials, "materials.csv", id);
+
+    /// <summary>A weapon mastery ("Two Handed") by PropertyInt.WeaponType (353); "" when unknown or none.</summary>
+    public static string Mastery(int id) => Named(ref _masteries, "masteries.csv", id);
+
+    /// <summary>A skill ("Melee Defense") by its number; "" when unknown.</summary>
+    public static string Skill(int id) => Named(ref _skills, "skills.csv", id);
+
+    private static string Named(ref Dictionary<int, string>? table, string file, int id)
+    {
+        if (id <= 0) return "";
+        table ??= Load(file);
+        return table.TryGetValue(id, out string? n) ? Pretty(n) : "";
+    }
 
     /// <summary>ACE's name for a spell family ("SlashWardProtection"), or "".</summary>
     public static string FamilyRaw(uint category)

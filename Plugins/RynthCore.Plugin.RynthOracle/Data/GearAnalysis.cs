@@ -34,12 +34,128 @@ internal sealed class GearPiece
     public int DamageType;
     /// <summary>The gear ratings it carries (PropertyInt 370-389), non-zero only.</summary>
     public (int Prop, int Value)[] Ratings = Array.Empty<(int, int)>();
+    /// <summary>T11+ modifier lines from the appraisal's "Modifiers:" section (<see cref="T11Modifiers"/>); none elsewhere.</summary>
+    public GearModifier[] Modifiers = Array.Empty<GearModifier>();
+    /// <summary>The appraisal says "Zone Locked (Power Reduced)": the modifiers are dormant outside their zones.</summary>
+    public bool ZoneLocked;
+    /// <summary>The appraised int properties the Mag-style line reads (<see cref="MagFormat.IntProps"/>), present ones only.</summary>
+    public Dictionary<int, int> Ints = new();
+    /// <summary>The appraised float properties the Mag-style line reads (<see cref="MagFormat.FloatProps"/>), present ones only.</summary>
+    public Dictionary<int, double> Floats = new();
+
+    public int Int(int prop) => Ints.TryGetValue(prop, out int v) ? v : 0;
+    public double Float(int prop, double fallback) => Floats.TryGetValue(prop, out double v) ? v : fallback;
 
     /// <summary>Gains levels from experience (ItemBaseXp, ItemMaxLevel and ItemXpStyle all set).</summary>
     public bool Leveled => BaseXp > 0 && MaxLevel > 0 && XpStyle > 0;
 
     /// <summary>The item's level from its experience (0 for an item that doesn't level).</summary>
     public int Level => Leveled ? GearMath.ItemLevel(TotalXp, BaseXp, MaxLevel, XpStyle) : 0;
+}
+
+/// <summary>
+/// One T11 modifier line ("Damage Rating +52"): its name, its number, the line as shown, and the
+/// gear rating it adds (0 for the lines that aren't ratings: All Attributes, the slot specials...).
+/// </summary>
+internal readonly record struct GearModifier(string Name, int Value, bool HasValue, string Text, int RatingProp);
+
+/// <summary>
+/// T11+ gear's modifier lines (ACECustom "zone modifiers"). The appraisal shows them as a
+/// "Modifiers:" section of "- Name value [min-max]" lines: in the Use text on armour, clothing and
+/// jewelry, in the long description on weapons (AppraiseInfo.PromoteZoneModifierLines). A line
+/// that is a gear rating is taken OUT of the item's appraised ratings so it doesn't show twice,
+/// which is why the Ratings view adds them back from here. Servers without these lines show none.
+/// </summary>
+internal static class T11Modifiers
+{
+    public const string SectionHeader = "Modifiers:";
+    public const string ZoneLockedLine = "Zone Locked (Power Reduced)";
+
+    /// <summary>The lines that are gear ratings, and the PropertyInt each adds (ACECustom ZoneModifiers.Catalog).</summary>
+    public static readonly (string Name, int Prop)[] RatingLines =
+    {
+        ("Damage Rating", 370), ("Damage Resist", 371), ("Crit Chance", 372), ("Crit Resist", 373),
+        ("Crit Damage Rating", 374), ("Crit Damage Resist", 375), ("Healing Boost", 376),
+        ("Nether Resist", 377), ("Max Health", 379),
+    };
+
+    /// <summary>The slot specials: the highest single one worn counts (MAX-wins), not the sum.</summary>
+    public static readonly HashSet<string> MaxWins = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Fortify Vitals", "Battle Mending", "Pct HP Damage", "Cheat Death", "Regeneration",
+    };
+
+    /// <summary>Lines that change only their own piece (its armour), so they have no character total.</summary>
+    public static readonly HashSet<string> PerPiece = new(StringComparer.OrdinalIgnoreCase) { "Armor Level", "Reinforced" };
+
+    /// <summary>Every line name the catalog has, longest first so "Max Health Pct" is not read as "Max Health".</summary>
+    private static readonly string[] KnownNames = new[]
+    {
+        "Max Health", "Armor Level", "Damage Rating", "Crit Damage Rating", "Healing Boost", "Spell Duration",
+        "Crit Chance", "Fortify Vitals", "Battle Mending", "Pct HP Damage", "Cheat Death", "Regeneration",
+        "Max Health Pct", "Life on Hit", "Reinforced", "All Attributes", "Damage Resist", "Crit Damage Resist",
+        "Crit Resist", "Nether Resist",
+    }.OrderByDescending(n => n.Length).ToArray();
+
+    private static readonly System.Text.RegularExpressions.Regex Range =
+        new(@"\s*\[\s*-?\d+\s*-\s*-?\d+\s*\]\s*$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex Number =
+        new(@"[+-]?\d+", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>The modifier lines in any of the appraisal texts given (Use, long description), and the zone lock.</summary>
+    public static (GearModifier[] Lines, bool ZoneLocked) Parse(params string?[] texts)
+    {
+        var lines = new List<GearModifier>();
+        bool locked = false;
+        foreach (string? text in texts)
+        {
+            if (string.IsNullOrEmpty(text) || text.IndexOf(SectionHeader, StringComparison.Ordinal) < 0) continue;
+            bool inSection = false;
+            foreach (string raw in text.Split('\n'))
+            {
+                string line = raw.Trim();
+                if (!inSection)
+                {
+                    inSection = line == SectionHeader;
+                    continue;
+                }
+                if (!line.StartsWith("- ", StringComparison.Ordinal)) break;   // the section ends at the first other line
+                string body = line[2..].Trim();
+                if (body.Equals(ZoneLockedLine, StringComparison.OrdinalIgnoreCase)) { locked = true; continue; }
+                if (body.Length == 0) continue;
+                GearModifier m = ParseLine(body);
+                if (!lines.Contains(m)) lines.Add(m);
+            }
+        }
+        return (lines.ToArray(), locked);
+    }
+
+    /// <summary>"Damage Rating +52 [14-69]": the name, the first number after it, the line without the roll range.</summary>
+    internal static GearModifier ParseLine(string body)
+    {
+        string shown = Range.Replace(body, "").Trim();
+        string name = "";
+        foreach (string known in KnownNames)
+            if (shown.StartsWith(known, StringComparison.OrdinalIgnoreCase)
+                && (shown.Length == known.Length || shown[known.Length] == ' '))
+            {
+                name = known;
+                break;
+            }
+        if (name.Length == 0)
+        {
+            // A line the catalog didn't have when this was written: its name runs up to the first number.
+            System.Text.RegularExpressions.Match first = Number.Match(shown);
+            name = (first.Success ? shown[..first.Index] : shown).Trim();
+        }
+        string rest = shown.Length > name.Length ? shown[name.Length..] : "";
+        System.Text.RegularExpressions.Match num = Number.Match(rest);
+        int value = num.Success && int.TryParse(num.Value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int v) ? v : 0;
+        int prop = 0;
+        foreach (var (n, p) in RatingLines)
+            if (n.Equals(name, StringComparison.OrdinalIgnoreCase)) { prop = p; break; }
+        return new GearModifier(name, value, num.Success, shown, prop);
+    }
 }
 
 /// <summary>A spell as the Gear tab knows it: from portal.dat, else SpellData.txt, else only its id.</summary>
@@ -169,6 +285,14 @@ internal sealed class RatingRow
     public string SetName = "-";
     public bool Paragon;
     public string Stats = "";
+    /// <summary>The ratings with the T11 modifier lines' added (the appraisal leaves those out).</summary>
+    public (int Prop, int Value)[] Effective = Array.Empty<(int, int)>();
+    /// <summary>The T11 modifier lines, as the appraisal shows them ("Damage Rating +52, All Attributes +40").</summary>
+    public string T11 = "";
+    /// <summary>Has a set, an item level, gear ratings or T11 modifiers (the column view lists only these).</summary>
+    public bool Rated;
+    /// <summary>The item as one Mag-Tools ItemInfo line (<see cref="MagFormat"/>).</summary>
+    public string Mag = "";
 }
 
 internal sealed class RatingsReport
@@ -176,9 +300,14 @@ internal sealed class RatingsReport
     public DateTime CheckedLocal;
     public bool IncludePack;
     public List<RatingRow> Rows = new();
-    /// <summary>Every rating summed over the worn items.</summary>
+    /// <summary>Every rating summed over the worn items (T11 modifier ratings included).</summary>
     public List<(int Prop, int Value)> WornTotals = new();
-    public int EquippedRows => Rows.Count(r => r.Piece.Equipped);
+    /// <summary>The worn T11 modifiers that aren't ratings: summed, the slot specials the highest one.</summary>
+    public List<(string Name, string Value)> T11Totals = new();
+    /// <summary>The rows with a set, a level, ratings or modifiers (<see cref="RatingRow.Rated"/>).</summary>
+    public IEnumerable<RatingRow> RatedRows => Rows.Where(r => r.Rated);
+    public int EquippedRows => Rows.Count(r => r.Rated && r.Piece.Equipped);
+    public int T11Rows => Rows.Count(r => r.T11.Length > 0);
 }
 
 /// <summary>Item experience to level (ACE ExperienceSystem.ItemTotalXPToLevel).</summary>
@@ -249,8 +378,8 @@ internal static class GearAnalysis
     public static readonly (int Prop, string Short, string Long)[] RatingProps =
     {
         (370, "D", "Damage"), (371, "DR", "Damage resist"), (372, "C", "Crit"), (373, "CR", "Crit resist"),
-        (374, "CD", "Crit damage"), (375, "CDR", "Crit damage resist"), (376, "H", "Healing boost"),
-        (377, "NR", "Nether resist"), (378, "LR", "Life resist"), (379, "MH", "Max health"),
+        (374, "CD", "Crit damage"), (375, "CDR", "Crit damage resist"), (376, "HB", "Healing boost"),
+        (377, "NR", "Nether resist"), (378, "LR", "Life resist"), (379, "V", "Max health"),
         (383, "PKD", "PK damage"), (384, "PKDR", "PK damage resist"), (388, "OP", "Overpower"), (389, "OPR", "Overpower resist"),
     };
 
@@ -513,28 +642,34 @@ internal static class GearAnalysis
     // ── Ratings (sets, levels, gear ratings) ─────────────────────────────────
 
     /// <summary>
-    /// Items with a set, an item level or gear ratings, worn first; and the ratings summed over
-    /// what is worn. UB-ILT's Paragon gear view, without the server's paragon gate: paragon items
-    /// are marked where they exist.
+    /// Every wearable, worn first, each with its Mag-style line; the ones with a set, an item level,
+    /// gear ratings or T11 modifiers marked <see cref="RatingRow.Rated"/>; and the ratings summed over
+    /// what is worn. UB-ILT's Paragon gear view, without the server's paragon gate: paragon items are
+    /// marked where they exist. <paramref name="lookup"/> names the spells in the Mag-style lines.
     /// </summary>
-    public static RatingsReport Ratings(IReadOnlyList<GearPiece> items, bool includePack, DateTime nowLocal)
+    public static RatingsReport Ratings(IReadOnlyList<GearPiece> items, bool includePack, DateTime nowLocal, Func<uint, SpellMeta>? lookup = null)
     {
         var report = new RatingsReport { CheckedLocal = nowLocal, IncludePack = includePack };
         foreach (GearPiece p in items)
         {
             if (!includePack && !p.Equipped) continue;
-            bool candidate = p.SetId > 0 || p.Ratings.Length > 0 || (p.MaxLevel > 0 && (p.ItemType & ItemWearables) != 0);
-            if (!candidate) continue;
+            bool rated = p.SetId > 0 || p.Ratings.Length > 0 || p.Modifiers.Length > 0 || (p.MaxLevel > 0 && (p.ItemType & ItemWearables) != 0);
+            if (!rated && (p.ItemType & ItemWearables) == 0) continue;
             string category = CategoryOf(p.ItemType);
             string element = (p.ItemType & ItemWeapons) != 0 ? ElementShort(p.DamageType) : "";
+            var effective = EffectiveRatings(p);
             report.Rows.Add(new RatingRow
             {
                 Piece = p,
+                Rated = rated,
+                Mag = MagFormat.Describe(p, lookup, effective),
                 Category = category,
                 TypeLabel = element.Length > 0 ? category + " " + element : category,
                 SetName = GearNames.SetName(p.SetId),
                 Paragon = IsParagonSet(p.SetId) || ((p.ItemType & ItemWeapons) != 0 && p.MaxLevel > 0 && p.BaseXp >= ParagonWeaponBaseXp),
-                Stats = string.Join(", ", p.Ratings.Select(r => RatingLong(r.Prop) + " " + r.Value.ToString(CultureInfo.InvariantCulture))),
+                Effective = effective,
+                Stats = string.Join(", ", effective.Select(r => RatingLong(r.Prop) + " " + r.Value.ToString(CultureInfo.InvariantCulture))),
+                T11 = string.Join(", ", p.Modifiers.Select(m => m.Text)),
             });
         }
         report.Rows = report.Rows
@@ -545,11 +680,69 @@ internal static class GearAnalysis
 
         var totals = new Dictionary<int, int>();
         foreach (GearPiece p in items.Where(p => p.Equipped))
-            foreach (var (prop, value) in p.Ratings)
+            foreach (var (prop, value) in EffectiveRatings(p))
                 totals[prop] = totals.TryGetValue(prop, out int t) ? t + value : value;
         foreach (var (prop, _, _) in RatingProps)
             if (totals.TryGetValue(prop, out int v) && v != 0) report.WornTotals.Add((prop, v));
+        report.T11Totals = T11Totals(items.Where(p => p.Equipped));
         return report;
+    }
+
+    /// <summary>
+    /// A piece's ratings with its T11 rating lines folded in. A line's rating is only added where
+    /// the appraisal didn't send that rating: on T11 gear the server removes it (it shows under
+    /// Modifiers instead); on older pieces it sends both, and the sent value already holds it.
+    /// </summary>
+    public static (int Prop, int Value)[] EffectiveRatings(GearPiece p)
+    {
+        if (p.Modifiers.Length == 0) return p.Ratings;
+        var list = p.Ratings.ToList();
+        foreach (GearModifier m in p.Modifiers)
+        {
+            if (m.RatingProp == 0 || !m.HasValue || m.Value == 0) continue;
+            int at = list.FindIndex(r => r.Prop == m.RatingProp);
+            if (at < 0) list.Add((m.RatingProp, m.Value));
+            else if (p.Ratings.All(r => r.Prop != m.RatingProp)) list[at] = (m.RatingProp, list[at].Value + m.Value);   // two lines of one rating
+        }
+        return list.OrderBy(r => Array.FindIndex(RatingProps, x => x.Prop == r.Prop)).ToArray();
+    }
+
+    /// <summary>
+    /// The worn T11 modifiers that aren't ratings, by name: summed across pieces (All Attributes,
+    /// Max Health Pct, Life on Hit), the slot specials the highest single one, and a line with no
+    /// number (Battle Mending, Cheat Death) as "yes".
+    /// </summary>
+    internal static List<(string Name, string Value)> T11Totals(IEnumerable<GearPiece> worn)
+    {
+        var sums = new Dictionary<string, (int Value, bool HasValue, string Suffix)>(StringComparer.OrdinalIgnoreCase);
+        var order = new List<string>();
+        foreach (GearPiece p in worn)
+            foreach (GearModifier m in p.Modifiers)
+            {
+                if (m.RatingProp != 0 || T11Modifiers.PerPiece.Contains(m.Name)) continue;
+                string suffix = m.Text.Contains('%') ? "%" : "";
+                if (!sums.TryGetValue(m.Name, out var cur))
+                {
+                    sums[m.Name] = (m.Value, m.HasValue, suffix);
+                    order.Add(m.Name);
+                    continue;
+                }
+                int next = T11Modifiers.MaxWins.Contains(m.Name) ? Math.Max(cur.Value, m.Value) : cur.Value + m.Value;
+                sums[m.Name] = (next, cur.HasValue || m.HasValue, cur.Suffix);
+            }
+        var list = new List<(string, string)>();
+        foreach (string name in order)
+        {
+            var (value, has, suffix) = sums[name];
+            string best = T11Modifiers.MaxWins.Contains(name) ? " (best)" : "";
+            string shown = !has ? "yes"
+                // Its number is tenths of a percent of the target's maximum health.
+                : name.Equals("Pct HP Damage", StringComparison.OrdinalIgnoreCase)
+                    ? (value / 10.0).ToString("0.#", CultureInfo.InvariantCulture) + "% of max HP per hit" + best
+                    : (value >= 0 ? "+" : "") + value.ToString(CultureInfo.InvariantCulture) + suffix + best;
+            list.Add((name, shown));
+        }
+        return list;
     }
 
     public static string RatingShort(int prop)

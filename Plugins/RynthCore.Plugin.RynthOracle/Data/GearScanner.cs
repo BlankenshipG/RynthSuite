@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using RynthCore.PluginSdk;
 
 namespace RynthCore.Plugin.RynthOracle.Data;
@@ -181,10 +182,10 @@ internal sealed class GearScanner
         uint[] buffs = PlayerBuffs(host);
         DateTime local = DateTime.Now;
         Overlap = GearAnalysis.Analyze(worn, buffs, Lookup, SetOf, characterName, local);
-        Ratings = GearAnalysis.Ratings(all, _includePack, local);
+        Ratings = GearAnalysis.Ratings(all, _includePack, local, Lookup);
         _log?.Invoke($"[RynthOracle] Gear check: {worn.Count} worn, {Overlap.SpellSources} spells, "
                      + $"{Overlap.Count(OverlapKind.Overlap)} overlap, {Overlap.Count(OverlapKind.Duplicate)} duplicate; "
-                     + $"{Ratings.Rows.Count} rated item(s); spells from {(Book.HasDat ? "portal.dat" : "SpellData.txt (" + Book.Status + ")")}.");
+                     + $"{Ratings.RatedRows.Count()} rated item(s), {Ratings.T11Rows} with T11 modifiers; spells from {(Book.HasDat ? "portal.dat" : "SpellData.txt (" + Book.Status + ")")}.");
     }
 
     /// <summary>The spell facts: the client's spell table, else SpellData.txt, else only the id.</summary>
@@ -254,6 +255,18 @@ internal sealed class GearScanner
             if (v != 0) ratings.Add((prop, v));
         }
         p.Ratings = ratings.ToArray();
+
+        // T11 modifier lines: the appraisal's "Modifiers:" section, in the Use text (14) on armour
+        // and jewelry, in the long description (16) on weapons.
+        string use = host.TryGetObjectStringProperty(id, 14, out string u) ? u : "";
+        string longDesc = host.TryGetObjectStringProperty(id, 16, out string d) ? d : "";
+        (p.Modifiers, p.ZoneLocked) = T11Modifiers.Parse(use, longDesc);
+
+        // The Mag-style line's properties (only the ones the appraisal has).
+        foreach (int prop in MagFormat.IntProps)
+            if (host.TryGetObjectIntProperty(id, (uint)prop, out int iv)) p.Ints[prop] = iv;
+        foreach (int prop in MagFormat.FloatProps)
+            if (host.TryGetObjectDoubleProperty(id, (uint)prop, out double fv)) p.Floats[prop] = fv;
         return p;
     }
 

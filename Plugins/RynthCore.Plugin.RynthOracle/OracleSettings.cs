@@ -39,6 +39,8 @@ internal sealed class OracleSettings
     public bool GearHideOverlap;
     /// <summary>Gear, Ratings: list the packs' gear as well as what is worn.</summary>
     public bool GearIncludePack;
+    /// <summary>Gear, Ratings: each item as a Mag-Tools ItemInfo line (true) or in columns (false).</summary>
+    public bool GearRatingsMag = true;
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore", "rynthoracle.json");
@@ -62,6 +64,7 @@ internal sealed class OracleSettings
             AlertAllTimers = Bool(r, "alertAllTimers", AlertAllTimers);
             GearHideOverlap = Bool(r, "gearHideOverlap", GearHideOverlap);
             GearIncludePack = Bool(r, "gearIncludePack", GearIncludePack);
+            GearRatingsMag = Bool(r, "gearRatingsMag", GearRatingsMag);
             if (r.TryGetProperty("tabName", out JsonElement t) && t.ValueKind == JsonValueKind.String) TabName = t.GetString() ?? TabName;
             if (r.TryGetProperty("gearView", out JsonElement gv) && gv.ValueKind == JsonValueKind.String) GearView = gv.GetString() ?? GearView;
             if (r.TryGetProperty("lastQuestListCheck", out JsonElement c) && c.ValueKind == JsonValueKind.String
@@ -92,6 +95,7 @@ internal sealed class OracleSettings
             sb.Append("  \"alertAllTimers\": ").Append(AlertAllTimers ? "true" : "false").Append(",\n");
             sb.Append("  \"gearHideOverlap\": ").Append(GearHideOverlap ? "true" : "false").Append(",\n");
             sb.Append("  \"gearIncludePack\": ").Append(GearIncludePack ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearRatingsMag\": ").Append(GearRatingsMag ? "true" : "false").Append(",\n");
             sb.Append("  \"gearView\": \"").Append(JsonEncodedText.Encode(GearView).ToString()).Append("\",\n");
             sb.Append("  \"tabName\": \"").Append(JsonEncodedText.Encode(TabName).ToString()).Append("\"\n");
             sb.Append("}\n");

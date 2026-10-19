@@ -246,8 +246,10 @@ namespace RynthOracle.Tests
             pieces.Add(new GearPiece { Id = 0x8000_0011, Name = "Plain Cloak", ItemType = GearAnalysis.ItemClothing });
 
             RatingsReport worn = GearAnalysis.Ratings(pieces, includePack: false, DateTime.Now);
-            Check(worn.Rows.All(x => x.Piece.Equipped) && worn.Rows.Count == 4 && worn.Rows.All(x => x.Piece.Name != "Unread Gloves"),
-                  $"ratings: worn items with a set or ratings, the plain gloves left out ({worn.Rows.Count})");
+            var wornRated = worn.RatedRows.ToList();
+            Check(worn.Rows.All(x => x.Piece.Equipped) && wornRated.Count == 4 && wornRated.All(x => x.Piece.Name != "Unread Gloves"),
+                  $"ratings: worn items with a set or ratings rated, the plain gloves not ({wornRated.Count})");
+            Check(worn.Rows.Any(x => x.Piece.Name == "Unread Gloves" && !x.Rated), "ratings: every worn wearable still gets a Mag-style line");
             Check(worn.WornTotals.Contains((370, 9)) && worn.WornTotals.Contains((371, 3)) && worn.WornTotals.Contains((374, 2)),
                   "ratings: worn totals add up: " + string.Join(" ", worn.WornTotals));
             RatingRow sword = worn.Rows.First(x => x.Piece.Name == "Fire Sword");
@@ -257,9 +259,95 @@ namespace RynthOracle.Tests
             RatingRow bow = all.Rows.First(x => x.Piece.Name == "Spare Paragon Bow");
             Check(bow.Paragon && bow.SetName == "Paragon Missile" && bow.Piece.Level == 3 && !bow.Piece.Equipped,
                   $"ratings: a pack paragon bow, level {bow.Piece.Level}/50");
-            Check(all.Rows.All(x => x.Piece.Name != "Plain Cloak"), "ratings: gear with no set, level or ratings is left out");
+            Check(all.RatedRows.All(x => x.Piece.Name != "Plain Cloak"), "ratings: gear with no set, level or ratings isn't rated");
             Check(all.Rows.First().Piece.Equipped && !all.Rows.Last().Piece.Equipped, "ratings: worn first, then the packs");
             Check(!all.WornTotals.Any(t => t.Prop == 0), "ratings: pack items don't count in the worn totals");
+
+            GearT11();
+            GearMagLines();
+        }
+
+        /// <summary>The appraisal texts of T11 pieces, as ACECustom's AppraiseInfo builds them.</summary>
+        private const string T11ArmorUse = "Modifiers:\n- Zone Locked (Power Reduced)\n- Damage Rating +52 [14-69]\n- All Attributes +40\n"
+                                         + "- Damage Resist +60\n- Fortify Vitals +18% vitals\n- Battle Mending\n- Armor Level +200\n\nUse this item to ...";
+        private const string T11WeaponDesc = "Property Details:\n- Rend\n\nModifiers:\n- Crit Damage Rating +30\n- Pct HP Damage 50 (5 pct of max HP per hit)\n- Brand New Line +7\n\nA fine sword.";
+
+        private static void GearT11()
+        {
+            var (armor, locked) = T11Modifiers.Parse(T11ArmorUse, "");
+            Check(locked && armor.Length == 6, $"T11: six modifier lines and the zone lock read from the Use text ({armor.Length})");
+            Check(armor[0] == new GearModifier("Damage Rating", 52, true, "Damage Rating +52", 370), "T11: name, value, shown text (range dropped) and its rating");
+            Check(armor.Any(m => m.Name == "Battle Mending" && !m.HasValue) && armor.Any(m => m.Name == "Fortify Vitals" && m.Value == 18),
+                  "T11: a line with no number, and a percent line");
+            var (weapon, wlocked) = T11Modifiers.Parse("", T11WeaponDesc);
+            Check(!wlocked && weapon.Length == 3 && weapon.All(m => m.Name != "Rend"), "T11: a weapon's lines from its long description, not its Property Details");
+            Check(weapon[2].Name == "Brand New Line" && weapon[2].Value == 7 && weapon[2].RatingProp == 0, "T11: a line the catalog doesn't know keeps its name and number");
+            Check(T11Modifiers.ParseLine("Max Health Pct +2%").Name == "Max Health Pct" && T11Modifiers.ParseLine("Max Health +40").RatingProp == 379,
+                  "T11: Max Health Pct isn't read as Max Health");
+            Check(T11Modifiers.Parse("Spells: Legendary Strength", "").Lines.Length == 0, "T11: no Modifiers section, no lines (every other server)");
+
+            // The appraisal drops a line's rating from the item's ratings: the Ratings view adds it back once.
+            var chest = new GearPiece { Id = 1, Name = "T11 Chest", ItemType = GearAnalysis.ItemArmor, Equipped = true,
+                                        Ratings = new[] { (373, 4) }, Modifiers = armor, ZoneLocked = locked };
+            var sword = new GearPiece { Id = 2, Name = "T11 Sword", ItemType = GearAnalysis.ItemMelee, Equipped = true, DamageType = 0x1,
+                                        Ratings = new[] { (374, 30) }, Modifiers = weapon };
+            var eff = GearAnalysis.EffectiveRatings(chest);
+            Check(eff.Contains((370, 52)) && eff.Contains((371, 60)) && eff.Contains((373, 4)), "T11: the chest's line ratings added to its ratings");
+            Check(GearAnalysis.EffectiveRatings(sword).Count(x => x.Prop == 374) == 1 && GearAnalysis.EffectiveRatings(sword).Contains((374, 30)),
+                  "T11: a rating the appraisal already sent isn't counted twice");
+
+            RatingsReport r = GearAnalysis.Ratings(new[] { chest, sword }, false, DateTime.Now);
+            Check(r.WornTotals.Contains((370, 52)) && r.WornTotals.Contains((374, 30)) && r.T11Rows == 2, "T11: worn totals include the modifier ratings");
+            var t11 = r.T11Totals.ToDictionary(t => t.Name, t => t.Value);
+            Check(t11.TryGetValue("All Attributes", out string? aa) && aa == "+40" && t11["Battle Mending"] == "yes"
+                  && t11["Fortify Vitals"] == "+18% (best)" && t11["Pct HP Damage"] == "5% of max HP per hit (best)",
+                  "T11 worn: summed lines, specials as the best one, flags as yes: " + string.Join("; ", r.T11Totals));
+            Check(!t11.ContainsKey("Armor Level") && !t11.ContainsKey("Damage Rating"), "T11 worn: per-piece lines and ratings aren't in the modifier totals");
+            Check(r.Rows.First(x => x.Piece.Name == "T11 Chest").T11.StartsWith("Damage Rating +52, All Attributes +40"), "T11: the row lists the lines as shown");
+        }
+
+        private static void GearMagLines()
+        {
+            var scanner = new GearScanner { Book = TestBook() };
+            // A loot crossbow: gold, Crossbow mastery, a set, imbue, tinks, damage, mods, cantrips and a low spell.
+            var bow = new GearPiece
+            {
+                Id = 1, Name = "Heavy Crossbow", ItemType = GearAnalysis.ItemMissile, Equipped = true, Appraised = true,
+                SetId = 13, Inscribed = new uint[] { 2, 1, 7 }, Ratings = new[] { (370, 3), (374, 2) },
+            };
+            bow.Ints[MagFormat.PropMaterial] = 60; bow.Ints[MagFormat.PropMastery] = 9; bow.Ints[MagFormat.PropImbued] = 1 | 512;
+            bow.Ints[MagFormat.PropTinks] = 3; bow.Ints[MagFormat.PropDamage] = 47; bow.Ints[MagFormat.PropElementalBonus] = 12;
+            bow.Ints[MagFormat.PropWieldRequirement] = 7; bow.Ints[MagFormat.PropWieldSkill] = 1; bow.Ints[MagFormat.PropWieldDifficulty] = 180;
+            bow.Ints[MagFormat.PropDifficulty] = 300; bow.Ints[MagFormat.PropWorkmanship] = 9; bow.Ints[MagFormat.PropValue] = 12345; bow.Ints[MagFormat.PropBurden] = 50;
+            bow.Floats[MagFormat.FloatVariance] = 0.25; bow.Floats[MagFormat.FloatDamageMod] = 1.2; bow.Floats[MagFormat.FloatOffense] = 1.05;
+            bow.Floats[MagFormat.FloatMeleeDefense] = 1.1;
+            string line = MagFormat.Describe(bow, scanner.Lookup, GearAnalysis.EffectiveRatings(bow));
+            Check(line.StartsWith("Gold Heavy Crossbow (Crossbow), Set 13") || line.StartsWith("Gold Heavy Crossbow (Crossbow), "),
+                  "Mag: material, name and mastery first: " + line);
+            Check(line.Contains(", CS FireRend, Tinks 3, 35.25-47, +12, +20%, +5%a, 10%md"), "Mag: imbues, tinks, damage range and mods in Mag's order: " + line);
+            Check(line.Contains("Legendary Strength") && line.Contains("Major Strength") && line.Contains("Legendary Defender"), "Mag: the cantrips shown");
+            Check(line.Contains(", Wield Lvl 180, Diff 300, Craft 9, Value 12,345, BU 50, [D 3, CD 2]"), "Mag: requirements, value, burden and the rating cluster: " + line);
+
+            // Mag's filter: a level 7 spell (power 300) and a level 1-6 spell are hidden on loot.
+            var buffs = new GearPiece { Id = 2, Name = "Ring", ItemType = GearAnalysis.ItemJewelry, Inscribed = new uint[] { 5, 2 } };
+            buffs.Ints[MagFormat.PropMaterial] = 60;
+            var shown = MagFormat.ShownSpells(buffs, id => id == 5 ? new SpellMeta(5, "Strength Self VI", 1, 250, true, false, true) : scanner.Lookup(id));
+            Check(shown.SequenceEqual(new[] { "Legendary Strength" }), "Mag filter: a VI spell hidden on loot: " + string.Join(", ", shown));
+            buffs.Ints.Remove(MagFormat.PropMaterial);
+            shown = MagFormat.ShownSpells(buffs, id => id == 5 ? new SpellMeta(5, "Strength Self VI", 1, 250, true, false, true) : scanner.Lookup(id));
+            Check(shown.Count == 2, "Mag filter: an item that isn't loot (no material) shows every spell");
+
+            // Unenchantable armour: banes shown and the protection list.
+            var armor = new GearPiece { Id = 3, Name = "Chest", ItemType = GearAnalysis.ItemArmor, Inscribed = new uint[] { 5 },
+                                        Modifiers = T11Modifiers.Parse(T11ArmorUse, "").Lines, ZoneLocked = true };
+            armor.Ints[MagFormat.PropMaterial] = 60; armor.Ints[MagFormat.PropResistMagic] = 9999; armor.Ints[MagFormat.PropArmorLevel] = 600;
+            armor.Floats[MagFormat.FloatSlashProt] = 1.4; armor.Floats[MagFormat.FloatPierceProt] = 1.4; armor.Floats[MagFormat.FloatBludgeonProt] = 1.2;
+            armor.Floats[MagFormat.FloatColdProt] = 1; armor.Floats[MagFormat.FloatFireProt] = 1; armor.Floats[MagFormat.FloatAcidProt] = 1; armor.Floats[MagFormat.FloatLightningProt] = 1;
+            string aline = MagFormat.Describe(armor, scanner.Lookup, GearAnalysis.EffectiveRatings(armor));
+            Check(aline.Contains(", AL 600") && aline.Contains("Legendary Slashing Bane") && aline.Contains("[1.4/1.4/1.2/1.0/1.0/1.0/1.0]"),
+                  "Mag: unenchantable armour shows its bane and protections: " + aline);
+            Check(aline.Contains("[D 52, DR 60]") && aline.Contains(", T11 [Damage Rating +52, All Attributes +40") && aline.EndsWith("(zone locked)"),
+                  "Mag: T11 ratings in the cluster, the modifier lines and the lock at the end: " + aline);
         }
 
         private static void GearPages()
@@ -300,12 +388,29 @@ namespace RynthOracle.Tests
             main.MarkSubmitted(true);
 
             c.Settings.GearView = OracleView.GearRatings;
+            c.Settings.GearRatingsMag = false;
             main.Begin(); view.Draw(main); main.End();
             ParseAll(host, "gear ratings", out int rops);
             string rbody = Encoding.UTF8.GetString(main.Body);
-            Check(rops > 10 && rops < 1400, $"gear ratings: {rops} ops");
+            Check(rops > 10 && rops < 1400, $"gear ratings (columns): {rops} ops");
             Check(rbody.Contains("Worn totals") && rbody.Contains("Fire Sword") && rbody.Contains("Include pack items"),
                   "gear ratings: totals, rows and the pack option");
+            main.MarkSubmitted(true);
+
+            // Mag-style (the default): a Mag-Tools line per item, T11 rows included.
+            c.Settings.GearRatingsMag = true;
+            var t11 = new GearPiece { Id = 9, Name = "T11 Chest", ItemType = GearAnalysis.ItemArmor, Equipped = true, Appraised = true,
+                                      Modifiers = T11Modifiers.Parse(T11ArmorUse, "").Lines, ZoneLocked = true };
+            var items = TestPieces();
+            items.Add(t11);
+            c.Gear.UseReports(TestReport(scanner), GearAnalysis.Ratings(items, true, DateTime.Now, scanner.Lookup));
+            main.Begin(); view.Draw(main); main.End();
+            ParseAll(host, "gear ratings mag", out int mops);
+            string mbody = Encoding.UTF8.GetString(main.Body);
+            Check(mops > 10 && mops < 1400, $"gear ratings (Mag-style): {mops} ops");
+            Check(mbody.Contains("Fire Sword") && mbody.Contains("[D 5, CD 2]") && mbody.Contains("T11 [Damage Rating +52") && mbody.Contains("T11 worn:"),
+                  "gear ratings Mag-style: lines with ratings, T11 modifiers and the T11 totals");
+            Console.WriteLine($"  gear ratings Mag-style: {mops} ops");
             main.MarkSubmitted(true);
             c.Settings.GearView = OracleView.GearOverlap;
             c.Settings.GearHideOverlap = false;

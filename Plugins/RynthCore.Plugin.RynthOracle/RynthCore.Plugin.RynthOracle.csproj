@@ -54,6 +54,9 @@
     <!-- The Gear tab's spell family and equipment set names (ACE's enums: Tools\RynthOracle.QuestPackGen\Make-GearNames.ps1). -->
     <EmbeddedResource Include="Resources\spellcategories.csv" LogicalName="RynthOracle.spellcategories.csv" />
     <EmbeddedResource Include="Resources\equipmentsets.csv" LogicalName="RynthOracle.equipmentsets.csv" />
+    <EmbeddedResource Include="Resources\materials.csv" LogicalName="RynthOracle.materials.csv" />
+    <EmbeddedResource Include="Resources\masteries.csv" LogicalName="RynthOracle.masteries.csv" />
+    <EmbeddedResource Include="Resources\skills.csv" LogicalName="RynthOracle.skills.csv" />
     <!-- Spell names and durations: RynthAi's spell table, shared rather than copied. -->
     <EmbeddedResource Include="..\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthOracle.SpellData.txt" Link="Shared\SpellData.txt" />
   </ItemGroup>

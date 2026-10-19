@@ -59,6 +59,9 @@
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\customquests.csv" LogicalName="RynthOracle.customquests.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\spellcategories.csv" LogicalName="RynthOracle.spellcategories.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\equipmentsets.csv" LogicalName="RynthOracle.equipmentsets.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\materials.csv" LogicalName="RynthOracle.materials.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\masteries.csv" LogicalName="RynthOracle.masteries.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\skills.csv" LogicalName="RynthOracle.skills.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthOracle.SpellData.txt" />
   </ItemGroup>
 
