@@ -24,6 +24,9 @@
 //       yield (MayRestartMacro), and a death drops the pending recall (the player's
 //       Stop Macro On Death stands).
 //  Health back over the line (or 100%) ends the episode. Nothing counts in portal space.
+//  The failsafe (jump included) is for a character that can heal: it arms only with a heal that went
+//  out in the last minute, or a heal spell / kit / health potion at hand (HealCapableNow). A melee
+//  character with nothing to heal with is not jumped or recalled. HpFailsafeRecall defaults to off.
 // ============================================================================
 
 using System;
@@ -92,6 +95,9 @@ public partial class BuffManager
             ResetHpFailsafe();
             return;
         }
+        // Only a character that can heal at all: a melee character with no spell, kit or potion
+        // (resting, or out-healed) has nothing for the failsafe to retry, and a recall there is wrong.
+        if (!HealCapableNow(now)) { ResetHpFailsafe(); return; }
         if (!_fsActive)
         {
             _fsActive = true;
@@ -144,6 +150,59 @@ public partial class BuffManager
             return;
         }
         StartFailsafeRecall(now, hp, failedSec);
+    }
+
+    // A heal (spell, kit or potion) that actually went out: the failsafe's proof the character can heal.
+    private DateTime _lastHealSentAt = DateTime.MinValue;
+    private DateTime _healCapableCheckAt = DateTime.MinValue;
+    private bool _healCapableCached;
+    /// <summary>A heal sent this recently proves the character can heal (kit used up since, a script's drain).</summary>
+    internal const double HealSentProofMs = 60_000;
+
+    /// <summary>Every heal that goes out (cast, kit, potion) records itself here, then feeds the latency tracker.</summary>
+    private void NoteHealSent(string action)
+    {
+        _lastHealSentAt = Now;
+        _healLatency.HealSent(Now, action);
+    }
+
+    /// <summary>
+    /// Can this character heal at all? A heal went out in the last HealSentProofMs, or one could now: a known
+    /// Heal Self / Stamina to Health Self with Life Magic trained, a healing kit, or a health potion
+    /// (Use Potions on and one listed or in the pack). Read at most once a second (it walks the pack).
+    /// </summary>
+    private bool HealCapableNow(DateTime now)
+    {
+        if (_lastHealSentAt != DateTime.MinValue && (now - _lastHealSentAt).TotalMilliseconds < HealSentProofMs) return true;
+        if ((now - _healCapableCheckAt).TotalMilliseconds < 1000 && _healCapableCheckAt != DateTime.MinValue) return _healCapableCached;
+        _healCapableCheckAt = now;
+        bool capable = false;
+        try
+        {
+            if (IsSkillUsable(AcSkillType.LifeMagic))
+            {
+                foreach (string spell in new[] { "Heal Self", "Stamina to Health Self" })
+                {
+                    if (_spellManager.GetDynamicSelfBuffId(spell, AcSkillType.LifeMagic) != 0
+                        || _spellManager.GetSelfSpellIdAboveAllowedTier(spell, AcSkillType.LifeMagic) != 0) { capable = true; break; }
+                }
+            }
+            if (!capable && _worldObjectCache != null)
+            {
+                if (BestPackHealingKit() != null) capable = true;
+                else
+                {
+                    foreach (var r in _settings.ConsumableRules)
+                        if (r.Type.Equals("HealthKit", StringComparison.OrdinalIgnoreCase)
+                            && !(r.Name ?? "").Contains("Stamina Kit", StringComparison.OrdinalIgnoreCase)
+                            && ConsumableLookup.Resolve(_worldObjectCache, r) != null) { capable = true; break; }
+                }
+                if (!capable && _settings.UsePotions && HasListedPotion("HealthPotion")) capable = true;
+            }
+        }
+        catch { capable = false; }
+        _healCapableCached = capable;
+        return capable;
     }
 
     private void ResetHpFailsafe()

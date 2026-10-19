@@ -62,6 +62,8 @@
     <Compile Include="..\Shared\ServerCommandPanel.cs" Link="Shared\ServerCommandPanel.cs" />
     <!-- Mini Remote session stats: RynthTracker's code, so the two show the same numbers (2026-10-11). -->
     <Compile Include="..\Shared\KillCounter.cs" Link="Shared\KillCounter.cs" />
+    <!-- The pet-capture success replies: the Pets tab's auto-capture and RynthILT's Vaulted Dungeons timer. -->
+    <Compile Include="..\Shared\PetCaptureLines.cs" Link="Shared\PetCaptureLines.cs" />
     <Compile Include="..\Shared\TrackerSessionStore.cs" Link="Shared\TrackerSessionStore.cs" />
     <Compile Include="..\Shared\SessionStats.cs" Link="Shared\SessionStats.cs" />
     <Compile Include="..\Shared\SessionStatsTracker.cs" Link="Shared\SessionStatsTracker.cs" />

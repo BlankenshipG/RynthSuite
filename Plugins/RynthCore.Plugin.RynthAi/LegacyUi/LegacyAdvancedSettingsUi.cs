@@ -26,7 +26,7 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.SetNextItemWidth(120);
         ImGui.SliderInt($"Hits to trip##envlimit{id}", ref _settings.EnvironmentImpactLimit, 1, 10);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Environment hits on one target, within the window, before combat reacts.\nShared by missiles and magic.");
+            SafeImGui.SetTooltip("Environment hits on one target, within the window, before combat reacts.\nShared by missiles and magic.");
         ImGui.SetNextItemWidth(120);
         ImGui.SliderInt($"Window (s)##envwin{id}", ref _settings.EnvironmentImpactWindowSec, 5, 120);
         ImGui.SetNextItemWidth(120);
@@ -34,7 +34,7 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.SetNextItemWidth(120);
         ImGui.SliderInt($"Closest (m)##envmin{id}", ref _settings.EnvironmentMinDistance, 1, 30);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Never moves nearer than this. Already this close, a new target is picked instead.");
+            SafeImGui.SetTooltip("Never moves nearer than this. Already this close, a new target is picked instead.");
         ImGui.SetNextItemWidth(120);
         ImGui.SliderInt($"Skip target (s)##envskip{id}", ref _settings.EnvironmentSkipSec, 5, 300);
         ImGui.Unindent();
@@ -329,6 +329,9 @@ internal sealed class LegacyAdvancedSettingsUi
 
                 ImGui.Spacing();
                 ImGui.Checkbox("Peace Mode When Idle", ref _settings.PeaceModeWhenIdle);
+                ImGui.Checkbox("Weapons Back After Heals", ref _settings.RearmAfterVitals);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("After a heal, restam or remana spell with nothing to fight, put the last fight's weapons (main hand and off hand) back on.");
                 ImGui.Checkbox("Start Macro On Login", ref _settings.StartMacroOnLogin);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Automatically starts the macro when RynthAi loads.");
@@ -449,9 +452,9 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Text("Give Queue");
                 ImGui.SetNextItemWidth(150);
-                ImGui.SliderInt("Give Interval (ms)", ref _settings.GiveQueueIntervalMs, 50, 2000);
+                ImGui.SliderInt("Give Interval (ms)", ref _settings.GiveQueueIntervalMs, 0, 2000);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Minimum delay between each item sent by /ra givea commands.\nLower = faster but may drop items if the server can't keep up.");
+                    ImGui.SetTooltip("Minimum gap between two gives sent by /ra givea commands.\n0 = send the next give the moment the server answers the last (fastest).\nThe queue always waits for the server's answer first.");
                 break;
 
             case "Recharge":
@@ -563,7 +566,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Combo("Missile Response", ref _settings.MissileEnvironmentResponse,
                     EnvironmentImpactPlanner.ResponseNames, EnvironmentImpactPlanner.ResponseNames.Length);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("When arrows or bolts keep hitting walls or objects instead of the target\n" +
+                    SafeImGui.SetTooltip("When arrows or bolts keep hitting walls or objects instead of the target\n" +
                                      "(\"Your missile attack hit the environment.\"), stop shooting and:\n" +
                                      "  Move closer - run toward the target for a clearer shot\n" +
                                      "  New target - skip this one for a while and fight another\n" +
@@ -576,13 +579,13 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.SetNextItemWidth(150);
                 ImGui.SliderInt("Pull Distance (m)", ref _settings.KitePullMeters, 3, 100);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("When a monster rule's Kite is Pull away (or Default follows the\n" +
+                    SafeImGui.SetTooltip("When a monster rule's Kite is Pull away (or Default follows the\n" +
                                      "DEFAULT row set to Pull away), tag the mob then run until it has\n" +
                                      "been dragged this many metres from where it stood, then kill it.\n" +
                                      "Set per mob on the Monsters / Damage panels.");
                 ImGui.Checkbox("Tag Before Fleeing", ref _settings.KiteTagFirst);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Land a hit before running so aggro sticks. Off = flee as soon as locked.");
+                    SafeImGui.SetTooltip("Land a hit before running so aggro sticks. Off = flee as soon as locked.");
 
                 ImGui.Spacing();
                 ImGui.Text("Weapon Swaps");
@@ -652,7 +655,8 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SetTooltip(
                         "At or under Emergency Heal At with heals failing: break the\n" +
                         "stuck cast with a jump and heal again; if that fails too,\n" +
-                        "recall to the lifestone.");
+                        "recall to the lifestone. Off by default; only a character that\n" +
+                        "can heal (a heal spell, kit or potion) is ever recalled.");
 
                 ImGui.SetNextItemWidth(180);
                 ImGui.SliderInt("Attack Spell Delay (ms)", ref _settings.AttackSpellIntervalMs, 0, 5000);
@@ -687,7 +691,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Combo("Magic Response", ref _settings.MagicEnvironmentResponse,
                     EnvironmentImpactPlanner.ResponseNames, EnvironmentImpactPlanner.ResponseNames.Length);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("When bolts, streaks, arcs or blasts keep stopping short of the target\n" +
+                    SafeImGui.SetTooltip("When bolts, streaks, arcs or blasts keep stopping short of the target\n" +
                                      "(a wall, a pillar, the ceiling) with no hit or resist, stop casting and:\n" +
                                      "  Move closer - run toward the target for a clearer line\n" +
                                      "  New target - skip this one for a while and fight another\n" +
@@ -729,6 +733,9 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SetTooltip("Drop a locked target only past this distance (hysteresis).\n0 or <= Monster Range = auto (Monster Range + 3).");
                 ImGui.SetNextItemWidth(120);
                 ImGui.InputInt("Ring Range", ref _settings.RingRange);
+                ImGui.Checkbox("Evade Handler Ring", ref _settings.HandlerRingEvade);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Empyrean Handler: when it channels its lethal ring and you are within 12 yards (or Ring Range if larger),\nback-jump away and re-engage. Acts only while the macro is running with combat on.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.InputInt("Approach Range", ref _settings.ApproachRange);
 

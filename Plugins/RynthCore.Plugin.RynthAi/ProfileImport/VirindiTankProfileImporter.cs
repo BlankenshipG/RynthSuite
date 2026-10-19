@@ -244,6 +244,7 @@ public static class VirindiTankProfileImporter
         dst.PreferredAmmoItemId = src.PreferredAmmoItemId;
         dst.PetDamage = src.PetDamage;
         dst.AttackPower = src.AttackPower;
+        dst.Kite = src.Kite;
     }
 
     private static MonsterRule CloneMonsterRule(MonsterRule row) =>
@@ -270,6 +271,7 @@ public static class VirindiTankProfileImporter
             PreferredAmmoItemId = row.PreferredAmmoItemId,
             PetDamage = row.PetDamage,
             AttackPower = row.AttackPower,
+            Kite = row.Kite,
             PreferredDamage = row.PreferredDamage,
         };
 

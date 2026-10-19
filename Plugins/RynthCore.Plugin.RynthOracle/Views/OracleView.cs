@@ -20,14 +20,15 @@ internal sealed partial class OracleView
     // the Quests tab since 2026-10-18 (QuestsTab.cs, ShowTrackers); a saved tab name of theirs falls
     // back to Quests.
 
-    /// <summary>A tab: shown where any of its server tags matches the server; no tags = everywhere (retail).</summary>
-    private sealed record TabDef(string Name, string[] Servers, Action<UiWindow> Draw, bool LiveTimers);
+    /// <summary>
+    /// A tab: shown where any of its server tags matches the server; no tags = everywhere (retail).
+    /// Refresh is the page's Refresh button (Views\RefreshBar.cs); Help its tooltip.
+    /// </summary>
+    private sealed record TabDef(string Name, string[] Servers, Action<UiWindow> Draw, bool LiveTimers,
+                                 Func<RefreshResult> Refresh, Func<string> Help);
 
     private readonly OracleContext _c;
     private readonly TabDef[] _tabs;
-    /// <summary>Last SkillsFace embed tab signalled to the engine (-2 = never).</summary>
-    private int _lastSkillsEmbed = -2;
-
     /// <summary>Asks the plugin to show or hide the Void window (the Void tab's button).</summary>
     public Action<bool>? SetVoidWindow;
     public Func<bool>? VoidWindowVisible;
@@ -38,22 +39,35 @@ internal sealed partial class OracleView
         string[] any = Array.Empty<string>();
         _tabs = new TabDef[]
         {
-            new(TabQuests, any, DrawQuests, true),
-            new(TabCharacter, any, DrawCharacter, true),
-            // Skills / Attributes / Progress: engine SkillsFace body embedded by ScriptWindowFace.
-            new(TabSkills, any, DrawSkillsEmbed, true),
-            new(TabAttributes, any, DrawAttributesEmbed, true),
-            new(TabProgress, any, DrawProgressEmbed, true),
-            new(TabAugs, any, DrawAugs, true),
-            new(TabSociety, any, DrawSociety, true),
-            new(TabTitles, any, DrawTitles, false),
-            new(TabVoid, any, DrawVoid, true),
-            new(TabFellowship, any, DrawFellowship, false),
+            new(TabQuests, any, DrawQuests, true, () => RefreshQuests(),
+                () => "Sends /myquests to the server and reads the reply (every quest, Legendary quest, marker and stamp)."),
+            new(TabCharacter, any, DrawCharacter, true, RefreshCharacter,
+                () => "Re-reads your level, experience, buffs and skills from the game now (and RynthAi's session)."),
+            // Skills / Attributes / Progress: RynthCore draws its Skills panel body under the tab
+            // strip (SkillsEmbed). The engine's panel reads the game itself, so there is no Refresh row.
+            new(TabSkills, any, DrawEmbedded, false, RefreshCharacter,
+                () => "RynthCore's skills panel: raise and train skills."),
+            new(TabAttributes, any, DrawEmbedded, false, RefreshCharacter,
+                () => "RynthCore's skills panel: attributes and vitals."),
+            new(TabProgress, any, DrawEmbedded, false, RefreshCharacter,
+                () => "RynthCore's skills panel: progression planners (Infinite Leaftide)."),
+            new(TabAugs, any, DrawAugs, true, RefreshCharacterAndQuests,
+                () => "Re-reads your character from the game and sends /myquests for the gem timers."),
+            new(TabSociety, any, DrawSociety, true, RefreshCharacterAndQuests,
+                () => "Re-reads your society standing from the game and sends /myquests for today's ribbons and quest timers."),
+            new(TabTitles, any, DrawTitles, false, RefreshTitles,
+                () => "Re-reads the titles you hold from the game."),
+            new(TabVoid, any, DrawVoid, true, RefreshVoid,
+                () => "Re-reads your buffs from the game and drops the spell timers that ran out."),
+            new(TabFellowship, any, DrawFellowship, false, RefreshFellowship,
+                () => "Re-reads the fellowship and its members from the game."),
             // Server-specific: each parser and its commands only exist on its own server.
-            new(TabBoards, new[] { Data.ServerTags.Conquest, Data.ServerTags.Aelrynth }, DrawBoards, false),
-            new(TabConquest, new[] { Data.ServerTags.Conquest }, DrawConquest, true),
-            new(TabBreeding, new[] { Data.ServerTags.InfiniteLeaftide }, DrawBreeding, false),
-            new(TabAbout, any, DrawAbout, false),
+            new(TabBoards, new[] { Data.ServerTags.Conquest, Data.ServerTags.Aelrynth }, DrawBoards, false, RefreshBoards, BoardsHelp),
+            new(TabConquest, new[] { Data.ServerTags.Conquest }, DrawConquest, true, RefreshConquest, ConquestHelp),
+            new(TabBreeding, new[] { Data.ServerTags.InfiniteLeaftide }, DrawBreeding, false, RefreshBreeding,
+                () => "The pet breeding list comes from RynthILT, read again every few seconds while this tab is open."),
+            new(TabAbout, any, DrawAbout, false, RefreshAbout,
+                () => "Loads the quest list and server pack from their files again and asks RynthCore which server this is."),
         };
     }
 
@@ -110,38 +124,25 @@ internal sealed partial class OracleView
         }
         w.Separator();
 
-        // Keep the engine SkillsFace embed in sync with the selected Oracle tab.
-        int embed = tab switch
-        {
-            TabSkills => 0,
-            TabAttributes => 1,
-            TabProgress => 2,
-            _ => -1,
-        };
-        if (embed != _lastSkillsEmbed)
-        {
-            _lastSkillsEmbed = embed;
-            _c.SkillsEmbedChanged(embed);
-        }
-
         if (!_c.InWorld && tab != TabAbout)
         {
             w.TextDisabled("Log in to a character to see this page.");
             return;
         }
 
-        // Skills-family tabs: leave the body empty so ScriptWindowFace can paint SkillsFace
-        // into the remaining content region after the script tab strip.
-        if (embed >= 0)
-        {
-            (current?.Draw ?? DrawSkillsEmbed)(w);
-            return;
-        }
+        // Skills / Attributes / Progress: nothing more is recorded. The rest of the window is
+        // the region RynthCore fills with its Skills panel body (see SkillsEmbed), so the page
+        // has no Refresh row and no child of its own to cover it.
+        if (SkillsEmbed.IsEmbedTab(tab)) return;
 
+        if (current != null) DrawRefreshRow(w, current);
         w.BeginChild("page." + tab, 0f, 0f, border: false);
         (current?.Draw ?? DrawAbout)(w);
         w.EndChild();
     }
+
+    /// <summary>The Skills-family tabs record nothing: <see cref="Draw"/> returns before it would call this.</summary>
+    private void DrawEmbedded(UiWindow w) { }
 
     // ── Shared helpers ──────────────────────────────────────────────────────
 
@@ -160,7 +161,7 @@ internal sealed partial class OracleView
         w.Text(value);
     }
 
-    /// <summary>Prints a quest's name, status, notes and wiki link in chat (upstream "thinks" them).</summary>
+    /// <summary>Prints an entry's name, status, notes and wiki link in chat (upstream "thinks" them). Quests print more: <see cref="OracleContext.PrintQuest"/>.</summary>
     private void PrintEntry(string name, string flag, string status, string details, string url)
     {
         _c.Print(flag.Length > 0 ? $"{name} ({flag}){(status.Length > 0 ? " - " + status : "")}" : name);
@@ -176,7 +177,7 @@ internal sealed partial class OracleView
     private void QuestFlagsBar(UiWindow w, string id, string what)
     {
         QuestFlagStore flags = _c.Flags;
-        w.SmallButton("Refresh", id + ".refresh", _c.RequestQuests);
+        w.SmallButton("Refresh", id + ".refresh", () => _c.RequestQuests());
         w.Tooltip("Reads your quest flags again (/myquests), as the Quests tab's Refresh does.");
         w.SameLine();
         int wait = flags.ThrottleSecondsLeft(_c.NowMs);

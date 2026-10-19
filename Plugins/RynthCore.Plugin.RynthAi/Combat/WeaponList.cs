@@ -219,47 +219,46 @@ internal static class WeaponList
     /// class; never by name). 0 = none.
     /// </summary>
     public static int FindWand(IEnumerable<ItemRule> rules, Func<int, WorldObject?> lookup, Func<WorldObject, bool> isWielded,
-        IEnumerable<WorldObject> inventory, bool allowUnlisted, out bool unlisted)
+        IEnumerable<WorldObject> inventory, bool allowUnlisted, out bool unlisted, Func<WorldObject, bool>? skip = null,
+        Func<WorldObject, int>? rank = null)
     {
+        // 2026-10-18 deep dive (Drakkon): the wand is the caster in hand, else a listed caster that is
+        // carried and not skipped (lowest rank first, then list order). Any other caster from the pack
+        // only when nothing listed is carried: no caster on the Items list, or every listed one was
+        // dropped or lost (owner, 2026-10-18), and allowUnlisted. A listed caster that is carried but
+        // can't be wielded never opens the pack: the old fallback had Drakkon trying casters he never
+        // listed, and the same-name stand-in took any pack item named "Wand" for his lost one.
         unlisted = false;
-        int first = 0;
-        bool anyListedCarried = false;
-        // Only a wand the character still carries (in the pack or in hand). A listed wand the
-        // client saw once but that left the pack (sold, given, on a mule) used to be returned:
-        // the server ignores a wield of it, every buff got parked "fighting unbuffed", and
-        // Drakkon died over and over (2026-10-11, wand 0x8000EF07 shown as '?').
         var pack = inventory as ICollection<WorldObject> ?? new List<WorldObject>(inventory);
         var carried = new HashSet<int>();
         foreach (var wo in pack) carried.Add(wo.Id);
-        var gone = new List<(ItemRule Rule, WorldObject Wo)>();
+        // A caster already in hand is the one to use, listed or not: it is wielded, so it can be.
+        foreach (var wo in pack)
+            if (IsWand(wo) && isWielded(wo)) return wo.Id;
+        bool anyListedCarried = false;
+        int best = 0, bestRank = int.MaxValue;
         foreach (var r in rules)
         {
             var wo = lookup(r.Id);
-            if (wo == null) continue;
-            if (!IsWand(wo)) continue;
+            if (wo == null || !IsWand(wo)) continue;
             if (isWielded(wo)) return r.Id;
-            if (!carried.Contains(wo.Id)) { gone.Add((r, wo)); continue; }
+            // Only a wand the character still carries: a listed wand that left the pack (sold, given,
+            // on a mule) gets no answer from the server (2026-10-11, wand 0x8000EF07 shown as '?').
+            if (!carried.Contains(wo.Id)) continue;
             anyListedCarried = true;
-            if (first == 0) first = r.Id;
+            if (skip != null && skip(wo)) continue;   // can't be wielded (requirement, not identified yet, refused)
+            int k = rank?.Invoke(wo) ?? 0;
+            if (k < bestRank) { best = r.Id; bestRank = k; }
         }
-        if (first != 0) return first;
-        // A listed wand no longer carried: another of the same name in the pack stands in for it.
-        foreach (var (r, wo) in gone)
-        {
-            string name = !string.IsNullOrWhiteSpace(r.Name) ? r.Name : wo.Name ?? "";
-            if (name.Length < 3 || name == "?") continue;
-            foreach (var p in pack)
-                if (IsWand(p) && string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
-                    return p.Id;
-        }
-        if (anyListedCarried || !allowUnlisted) return 0;
+        if (best != 0 || anyListedCarried || !allowUnlisted) return best;
         foreach (var wo in pack)
-            if (wo.ObjectClass == AcObjectClass.WandStaffOrb)
-            {
-                unlisted = true;
-                return wo.Id;
-            }
-        return 0;
+        {
+            if (wo.ObjectClass != AcObjectClass.WandStaffOrb || (skip != null && skip(wo))) continue;
+            int k = rank?.Invoke(wo) ?? 0;
+            if (k < bestRank) { best = wo.Id; bestRank = k; }
+        }
+        unlisted = best != 0;
+        return best;
     }
 
     /// <summary>

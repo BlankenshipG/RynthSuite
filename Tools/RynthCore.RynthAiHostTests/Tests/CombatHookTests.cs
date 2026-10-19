@@ -28,6 +28,8 @@ internal static class CombatHookTests
     public static void Register(Runner r)
     {
         r.Add("combat hook: the decided spell reaches the cast (hook off: RynthAi's bolt)", DecidedSpellIsCast);
+        r.Add("combat hook: a rule with no attack shapes enabled is not asked and not cast at, script or not", ScriptRespectsNoAttackShapes);
+        r.Add("combat hook: shutdown clears the UseDone reader (it captured the host)", ShutdownDropsUseDoneReader);
         r.Add("combat hook: a decline casts RynthAi's own spell the same tick", DeclineGoesNative);
         r.Add("combat hook: no answer by the deadline - RynthAi's spell, the timeout logged once a minute", TimeoutGoesNative);
         r.Add("combat hook: a lapsed lease is native; another owner is refused while the lease is live", LeaseExpiry);
@@ -234,6 +236,45 @@ internal static class CombatHookTests
         Check.True(CombatHook.Poll(Atk, out var next), "the next cycle opens a new request");
         Check.True(next.Seq != req.Seq, "with a new seq");
         Check.Eq((next.LastSeq, next.LastSpell, next.LastTarget), (req.Seq, (uint)drain, (uint)Target), "ctx.last is the previous cast");
+    });
+
+    // A rule with every attack shape off means no offensive cast at that monster; a script's attack is no exception.
+    private static void ScriptRespectsNoAttackShapes() => Guard(() =>
+    {
+        int drain = Id("Drain Health Other V");
+
+        var off = new AttackRig();
+        off.S.MonsterRules.Clear();
+        off.S.MonsterRules.Add(new MonsterRule { Name = "Default", DamageType = "Fire", UseBolt = false, UseArc = false, UseStreak = false, UseRing = false, UseBlast = false, UseWall = false });
+        Claim(Atk);
+        off.Attack();
+        Check.Eq(CombatHook.Attack.Opened, 0, "no shapes: the script is not even asked");
+        Check.Eq(off.C.LastCombatSkipReason, "no-attack-shapes", "skipped for the rule");
+        Check.False(off.C.ScriptHeld, "and not held for an answer");
+        Check.Eq(FakeHost.Casts.Count, 0, "nothing cast");
+
+        // Control: the same script with a shape on is asked and its spell is cast.
+        var on = new AttackRig();
+        Claim(Atk);
+        ScriptCast(on, drain);
+        Check.Eq(CombatHook.Attack.Opened, 1, "a shape on: the script is asked");
+        Check.True(FakeHost.Casts.Any(c => c.SpellId == drain), "and its spell is cast");
+    });
+
+    // The UseDone reader the plugin installs captures its host; a shut-down plugin must not keep it.
+    private static void ShutdownDropsUseDoneReader() => Guard(() =>
+    {
+        CombatHook.LastUseDone = () => (1, 0u);
+        CombatHookInterface.Shutdown();            // PluginExports.Shutdown calls it for every unload
+        Check.Null(CombatHook.LastUseDone, "the exported shutdown clears the reader");
+
+        FakeHost.Reset();
+        var host = FakeHost.Create(Player);
+        var plugin = new RynthAiPlugin();
+        PacerEdgeTests.SetHost(plugin, host);
+        CombatHook.LastUseDone = () => (1, 0u);
+        plugin.Shutdown();
+        Check.Null(CombatHook.LastUseDone, "and so does the plugin's own Shutdown");
     });
 
     private static void DeclineGoesNative() => Guard(() =>

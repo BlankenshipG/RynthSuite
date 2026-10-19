@@ -44,6 +44,7 @@ internal static unsafe class HubInterface
             t->SessionStats = &SessionStats;
             t->SessionReset = &SessionReset;
             t->SessionStatsMore = &SessionStatsMore;
+            t->VaultedDungeonsEnabled = &VaultedDungeonsEnabled;
             t->Version = RynthAiHubApiV1.InterfaceVersion;
             _table = t;
         }
@@ -247,6 +248,14 @@ internal static unsafe class HubInterface
             more->RadPerHour = v.RadPerHour;
             return 1;
         }
+        catch { return 0; }
+    }
+
+    /// <summary>RynthAi's Vaulted Dungeons setting: RynthILT's keeper runs only while it is on (off by default).</summary>
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int VaultedDungeonsEnabled()
+    {
+        try { return Plugin?.VaultedDungeonsEnabledForIlt == true ? 1 : 0; }
         catch { return 0; }
     }
 

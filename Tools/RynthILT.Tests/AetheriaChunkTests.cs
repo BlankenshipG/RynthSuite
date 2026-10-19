@@ -5,7 +5,6 @@ namespace RynthILT.Tests;
 
 // The Lugian-hammer aetheria rules (Hub/IltChunkClap.cs): Infinite Leaftide aetheria goes up to
 // level 10, and aetheria carrying a C, CD or CDR rating is kept unless its keep switch is off.
-// Only the Lugian Aetheria Hammer chunks, and ILT's result lines name the item and the tool.
 // The cap covers levelled Coalesced Aetheria; an unlevelled one chunks, as in ub-IT. Corrupted
 // weapons follow ub-IT's hard rules and its optional keep rules, and /clap needs a colour with its
 // own trinket.
@@ -16,13 +15,13 @@ internal static class AetheriaChunkTests
         r.Add("aetheria: the chunk cap runs to one past ILT's level 10", Cap);
         r.Add("aetheria: C / CD / CDR ratings are kept by default, each with its own switch", Ratings);
         r.Add("aetheria: rating level - at or above keeps, below chunks (Coalesced too)", RatingLevel);
-        r.Add("chunk: only the Lugian Aetheria Hammer is the tool, never a Lugian Hammer weapon", HammerOnly);
-        r.Add("chunk: ILT's result lines (item and tool named) end the wait; combat lines don't", ResultLines);
         r.Add("aetheria: the level cap applies to levelled Coalesced Aetheria; unlevelled Coalesced chunks (ub-IT)", CoalescedCap);
+        r.Add("aetheria: a failed read is not 'unlevelled': unreadable pieces are kept, levelled Coalesced keeps its cap", UnreadableAetheria);
         r.Add("aetheria: never-chunk, tinker / imbue, item XP, ratings and the cap each keep a piece", AetheriaRules);
         r.Add("chunk: kind by class and name; chunks and powder are clap material", Kinds);
         r.Add("corrupted: ub-IT hard rules (workmanship, cleave 1, or 2 on two-handed non-thrust)", CorruptedHardRules);
         r.Add("corrupted: ub-IT keep rules, all off by default", CorruptedKeepRules);
+        r.Add("corrupted: a failed read is kept; two-handed cleave 2 chunks and other cleave 2 does not", UnreadableCorrupted);
         r.Add("chunk: busy blocks peace mode, not combat with chunk-in-combat on (ub-IT v2.0.1059)", BusyGate);
         r.Add("chunk: a target that leaves the pack counts as chunked; still carried after 10 s times out", WaitOutcome);
         r.Add("clap: the server's WCIDs, each colour paired with its trinket, Coalesced only unrevealed level 1-3", ClapPairs);
@@ -61,6 +60,44 @@ internal static class AetheriaChunkTests
         g.KeepAetheriaWithCrit = false;
         Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { Crit = 2 }), null, "C switch off: a C 2 piece chunks");
         Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { Coalesced = false }), "no level read", "revealed aetheria needs a level");
+    }
+
+    /// <summary>
+    /// The rules read 0 for "the item has none" and for "the host could not read it". An unlevelled
+    /// Coalesced piece is chunked (ub-IT), but only when its level was truly read as none; a piece whose
+    /// properties could not be read is kept, whatever the numbers say.
+    /// </summary>
+    private static void UnreadableAetheria()
+    {
+        var g = new IltGearState();
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced), null, "read as unlevelled: chunks");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { Unreadable = "no appraisal" }),
+            "item data unreadable (no appraisal)", "the same piece with failed reads: kept");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { MaxLevel = 2, Unreadable = "no item XP" }),
+            "item data unreadable (no item XP)", "a levelled piece with failed reads: kept");
+        Check.Eq(IltChunkClap.AetheriaSkip(new IltGearState { ChunkAetheriaUnderLevel = 1 }, PlainCoalesced), null, "unlevelled chunks at the lowest cap too");
+
+        // Levelled Coalesced pieces keep the cap.
+        var cap9 = new IltGearState { ChunkAetheriaUnderLevel = 9 };
+        Check.Eq(IltChunkClap.AetheriaSkip(cap9, PlainCoalesced with { MaxLevel = 8 }), null, "levelled 8 under a cap of 9");
+        Check.Eq(IltChunkClap.AetheriaSkip(cap9, PlainCoalesced with { MaxLevel = 9 }), "level at or above the cap", "levelled 9 at a cap of 9");
+        Check.Eq(IltChunkClap.AetheriaSkip(cap9, PlainCoalesced with { MaxLevel = 10 }), "level at or above the cap", "levelled 10 over a cap of 9");
+        Check.Eq(IltChunkClap.AetheriaSkip(new IltGearState { ChunkAetheriaUnderLevel = 11 }, PlainCoalesced with { MaxLevel = 10 }), null, "cap 11 chunks every level");
+    }
+
+    private static void UnreadableCorrupted()
+    {
+        var g = new IltGearState();
+        Check.Eq(IltChunkClap.CorruptedSkip(g, PlainSword with { Unreadable = "no appraisal" }),
+            "item data unreadable (no appraisal)", "failed reads: kept (they would read as a plain weapon)");
+        var keepCb = new IltGearState { KeepCorruptedCrushingBlow = true };
+        Check.Eq(IltChunkClap.CorruptedSkip(keepCb, PlainSword with { Unreadable = "float properties" }),
+            "item data unreadable (float properties)", "a keep rule whose float cannot be read keeps the weapon");
+        var twoHanded = PlainSword with { WieldSkill = 41, Cleaving = 2 };
+        Check.Eq(IltChunkClap.CorruptedSkip(g, twoHanded), null, "two-handed cleave 2 chunks");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, PlainSword with { Cleaving = 2 }), "cleave over the limit", "other cleave 2 is kept");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, twoHanded with { WieldSkill = 0, WeaponType = 11 }), null, "WeaponType two-handed counts");
+        Check.Eq(IltChunkClap.CorruptedSkip(g, twoHanded with { AttackType = 2 }), "cleave over the limit", "two-handed thrust keeps the 1 limit");
     }
 
     private static void Kinds()
@@ -178,29 +215,6 @@ internal static class AetheriaChunkTests
         Check.False(IltChunkClap.CanClap(new[] { E, F }), "trinkets alone");
         Check.False(IltChunkClap.CanClap(new[] { R, B }), "aetheria alone");
         Check.False(IltChunkClap.CanClap(System.Array.Empty<IltChunkClap.ClapPart>()), "nothing carried");
-    }
-
-    /// <summary>
-    /// Silentkelpie 2026-10-15: the Flaming Lugian Hammer (a loot weapon) matched " Lugian Hammer",
-    /// chunked nothing, and all 9 Coalesced Aetheria timed out into the skip list.
-    /// </summary>
-    private static void HammerOnly()
-    {
-        Check.True(IltChunkClap.IsChunkHammer("Lugian Aetheria Hammer"), "the ILT tool");
-        Check.True(IltChunkClap.IsChunkHammer("lugian aetheria hammer"), "any case");
-        Check.False(IltChunkClap.IsChunkHammer("Flaming Lugian Hammer"), "a loot weapon is not the tool");
-        Check.False(IltChunkClap.IsChunkHammer("Lugian Hammer"), "nor the plain one");
-        Check.False(IltChunkClap.IsChunkHammer("Acid Lugian Hammer"), "nor any variant");
-    }
-
-    private static void ResultLines()
-    {
-        Check.Eq(IltChunkClap.ClassifyChat("You smash the Corrupted Sword with the Lugian Aetheria Hammer."), IltChunkClap.ChunkResult.Done, "ILT corrupted line");
-        Check.Eq(IltChunkClap.ClassifyChat("You smash the aetheria with the hammer."), IltChunkClap.ChunkResult.Done, "aetheria line");
-        Check.Eq(IltChunkClap.ClassifyChat("The aetheria is too powerful to chunk."), IltChunkClap.ChunkResult.Refused, "refused");
-        Check.Eq(IltChunkClap.ClassifyChat("You're too busy!"), IltChunkClap.ChunkResult.Busy, "busy");
-        Check.Eq(IltChunkClap.ClassifyChat("You smash Corrupted Shadow for 147 points of bludgeoning damage!"), IltChunkClap.ChunkResult.None,
-            "a combat line naming a corrupted monster is no result");
     }
 
     private static void Cap()

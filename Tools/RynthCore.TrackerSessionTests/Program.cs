@@ -96,8 +96,9 @@ internal static partial class Program
         unsafe
         {
             Eq(RynthCore.Plugin.Shared.RynthAiHubApiV1.BaseStructSize, (uint)(8 + 10 * sizeof(nint)), "the hub table's base size (10 functions)");
-            Eq((uint)sizeof(RynthCore.Plugin.Shared.RynthAiHubApiV1), RynthCore.Plugin.Shared.RynthAiHubApiV1.BaseStructSize + (uint)sizeof(nint),
-               "SessionStatsMore appended right after the base");
+            // SessionStatsMore (2026-10-13), then VaultedDungeonsEnabled (2026-10-18), appended after the base.
+            Eq((uint)sizeof(RynthCore.Plugin.Shared.RynthAiHubApiV1), RynthCore.Plugin.Shared.RynthAiHubApiV1.BaseStructSize + 2 * (uint)sizeof(nint),
+               "SessionStatsMore and VaultedDungeonsEnabled appended right after the base");
         }
     }
 

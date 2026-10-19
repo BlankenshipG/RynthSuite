@@ -230,7 +230,7 @@ internal sealed class IltProgression : IIltFeature
         foreach (var (k, _) in IltAugCosts.Labels)
             if (k.Equals(key, StringComparison.OrdinalIgnoreCase)) { known = true; break; }
         if (!known) return false;
-        lock (_augLevels) _augLevels[key] = (int)IltParse.ParseLeadingLong(m.Groups[2].Value);
+        lock (_augLevels) _augLevels[key] = (int)IltParse.ParseAugValue(m.Groups[2].Value);
         return true;
     }
 

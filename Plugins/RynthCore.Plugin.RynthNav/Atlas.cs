@@ -143,7 +143,6 @@ internal sealed class Atlas
 
     // ── Search ───────────────────────────────────────────────────────────────
 
-    /// <summary>How well <paramref name="name"/> matches <paramref name="q"/> (lower case): 0 = not at all.</summary>
     /// <summary>
     /// "a || b || c": the first candidate that is coordinates, or that names a place on the map as a
     /// whole word or more (<see cref="MatchScore"/> 60+: "Mite Maze" yes, "Bur" inside "Burun" no),
@@ -160,6 +159,7 @@ internal sealed class Atlas
         return null;
     }
 
+    /// <summary>How well <paramref name="name"/> matches <paramref name="q"/> (lower case): 0 = not at all.</summary>
     public static int MatchScore(string name, string q)
     {
         if (q.Length == 0) return 1;

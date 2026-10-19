@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.LegacyUi;
@@ -71,6 +72,7 @@ internal static class NavEngineTests
         r.Add("nav engine: a Linear index past the end carries on from that end", LinearIndexOffEnd);   // was a known failure; fixed by 91178c1
         r.Add("nav engine: a chat point that loads another route hands over to it", ChatLoadsRoute);   // was a known failure; fixed by a8e5de0
         r.Add("nav engine: a recall that never fires, next waypoint far: stops instead of walking off", RecallTimeoutFar);   // was a known failure; fixed by 5cfbcea
+        r.Add("nav engine: a portal/NPC use the engine did not send is not logged as sent and is asked again", PortalNpcUseNotSent);
     }
 
     // ── Rig ───────────────────────────────────────────────────────────────────
@@ -340,6 +342,34 @@ internal static class NavEngineTests
         nav.Run(0.4);
         Check.Eq(nav.Idx, 1, "after the settle: on to [1]");
         Check.True(nav.S.EnableNavigation, "nav still on");
+    }
+
+    private static void PortalNpcUseNotSent()
+    {
+        FakeHost.Reset(); At(0, 0);
+        FakeHost.WeaponCalls = true;   // UseObject
+        const uint Npc = 0x7A000001, Me = 0x50000F01;
+        var pose = FakeHost.PlayerPose;
+        FakeHost.Names[Me] = "Tester";
+        FakeHost.Positions[Me] = pose;
+        FakeHost.Names[Npc] = "Gateway";
+        FakeHost.Positions[Npc] = (pose.Cell, pose.X + 1f, pose.Y, pose.Z);
+        var host = FakeHost.Create(Me);
+        var cache = FakeHost.MakeCache(host, Me, new[] { Npc });
+        var nav = new Nav(Route(RT.Once, Pt(10, 0), Pt(20, 0)));
+        nav.E.SetWorldObjectCache(cache);
+        nav.E.SetPlayerId(Me);
+        var fire = typeof(NavigationEngine).GetMethod("FirePortalNpcUse", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var point = new NavPoint { Type = T.PortalNPC, TargetName = "Gateway" };
+
+        FakeHost.UseObjectAccepts = false;
+        Check.False((bool)fire.Invoke(nav.E, new object[] { point })!, "the engine did not send the use: not fired, the caller asks again");
+        Check.Eq(LogCount("UseObject portal 'Gateway' (dist="), 0, "and no 'used' line is logged");
+        Check.Eq(LogCount("was not sent - will retry"), 1, "the refusal is logged");
+
+        FakeHost.UseObjectAccepts = true;
+        Check.True((bool)fire.Invoke(nav.E, new object[] { point })!, "once the engine sends it the portal counts as fired");
+        Check.Eq(LogCount("UseObject portal 'Gateway' (dist="), 1, "and the 'used' line is logged");
     }
 
     private static void RecallTimeoutNear()

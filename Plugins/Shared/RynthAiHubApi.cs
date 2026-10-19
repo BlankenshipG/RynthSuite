@@ -166,4 +166,19 @@ public unsafe struct RynthAiHubApiV1
     /// cap); 0 before login. RynthTracker shows RynthAi's session through this and SessionStats. Any thread.
     /// </summary>
     public delegate* unmanaged[Cdecl]<SessionStatsMoreV1*, int> SessionStatsMore;
+
+    // ── Appended 2026-10-18 (check with Has before calling) ─────────────────
+
+    /// <summary>
+    /// The byte offset of <see cref="VaultedDungeonsEnabled"/> (for <see cref="Has"/>): right after
+    /// SessionStatsMore.
+    /// </summary>
+    public static int VaultedDungeonsEnabledOffset => (int)BaseStructSize + sizeof(nint);
+
+    /// <summary>
+    /// VaultedDungeonsEnabled(): 1 when RynthAi's "Vaulted Dungeons" setting (Settings > Navigation) is
+    /// on. That setting is the master switch of RynthILT's Vaulted Dungeons keeper and lives only in
+    /// RynthAi; 0 (off) is also the answer before login and after shutdown. Any thread.
+    /// </summary>
+    public delegate* unmanaged[Cdecl]<int> VaultedDungeonsEnabled;
 }

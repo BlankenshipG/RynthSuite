@@ -54,9 +54,10 @@ internal sealed class QuestTimersView
         foreach (Quest q in _rows)
         {
             string flag = q.Flag;
-            w.Text(Cut(q.Label, 26));
+            Quest row = q;
+            w.Selectable(Cut(q.Label, 26), "qt.r." + flag, false, () => _c.PrintQuest(row), StatusX - 10f);
             string reward = _c.Book.RewardText(flag);
-            w.Tooltip(reward.Length > 0 ? $"{q.Label}\n{flag}\nRewards: {reward}" : $"{q.Label}\n{flag}");
+            w.Tooltip((reward.Length > 0 ? $"{q.Label}\n{flag}\nRewards: {reward}" : $"{q.Label}\n{flag}") + "\nClick: prints its texts in chat.");
             w.SameLine(StatusX);
             QuestTimerState s = QuestTimer.State(q, flags, now, out string text);
             bool held = flags.TryGet(flag, out _);
@@ -74,7 +75,7 @@ internal sealed class QuestTimersView
 
         if (flags.Loading) w.TextColored(UiColors.Yellow, "Reading quest flags...");
         else if (flags.LastReadUtc == DateTime.MinValue) w.TextDisabled("Quest flags not read yet.");
-        w.SmallButton("Refresh", "qt.refresh", _c.RequestQuests);
+        w.SmallButton("Refresh", "qt.refresh", () => _c.RequestQuests());
         w.Tooltip("Sends /myquests and reads the reply (timers count down by themselves between reads).");
         if (flags.LastReadUtc != DateTime.MinValue)
         {

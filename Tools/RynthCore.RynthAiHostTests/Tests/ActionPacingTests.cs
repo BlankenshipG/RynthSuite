@@ -66,7 +66,8 @@ internal static class ActionPacingTests
         r.Add("refusal: missile crafting asks for peace until accepted, and combines after the 2.5 s ceiling; already in peace it combines on the first tick with no mode request", CraftingPeaceRefusal);
         r.Add("pacing (stance): a refused ChangeCombatMode burns no try and no backoff step, and the next tick asks again (pacing on and off)", RefusedStanceBurnsNothing);
         r.Add("corpse id: a refused RequestId is not recorded as asked - the next evaluation asks again and the accepted one goes out", CorpseIdRefusedRetried);
-        r.Add("corpse id: an accepted request with no data is asked again after 3 s (not before), once per 3 s, with no give-up cap", CorpseIdReaskedWithoutData);
+        r.Add("corpse id: an accepted request with no data is asked again after 3 s (not before), once per 3 s, at most 3 re-asks per corpse", CorpseIdReaskedWithoutData);
+        r.Add("corpse id: Loot From All Corpses needs no killer name - the first request goes out, no re-ask ever follows; My Kills Only gives up after 3 re-asks, a new corpse starts over", CorpseIdAllCorpsesNoReask);
         r.Add("corpse id: two corpses in range, no data for either - only the targeted one re-asks; the other stays at one accepted request (a refused one is still retried)", CorpseIdOnlyCandidateReasks);
         r.Add("corpse id: 20 uncached corpses, a refusal window, then accept - at most 2 requests in the first accepted tick, the target among them; refused retries are 250 ms apart", CorpseIdBurstCapped);
         r.Add("corpse id: the open container is a candidate and re-asks; delete and the >200 prune clear every id map", CorpseIdOpenContainerAndCleanup);
@@ -871,13 +872,46 @@ internal static class ActionPacingTests
         Check.Eq(Asked(), 2, "1 s after the re-ask: waits");
         _t += 2_000;
         bot.Call("EvaluateCorpseLootDecision", obj);
-        Check.Eq(Asked(), 3, "one re-ask per 3 s, and no cap");
+        Check.Eq(Asked(), 3, "one re-ask per 3 s");
+        _t += 3_000;
+        bot.Call("EvaluateCorpseLootDecision", obj);
+        Check.Eq(Asked(), 4, "the third re-ask is the last");
         for (int i = 0; i < 10; i++) { _t += 3_000; bot.Call("EvaluateCorpseLootDecision", obj); }
-        Check.Eq(Asked(), 13, "ten more 3 s periods, ten more asks");
+        Check.Eq(Asked(), 4, "ten more 3 s periods, no more asks: the corpse is given up on");
         FakeHost.Strings[(Corpse, LongDescKey)] = $"Killed by {Me}.";
         _t += 3_000;
         bot.Call("EvaluateCorpseLootDecision", obj);
-        Check.Eq(Asked(), 13, "once the data has arrived nothing more is asked");
+        Check.Eq(Asked(), 4, "and once the data has arrived nothing is asked either");
+    });
+
+    private static void CorpseIdAllCorpsesNoReask() => Paced(() =>
+    {
+        // All Corpses: the killer name decides nothing, so no stream of requests (each accepted one
+        // raises the client's busy count). The one first request still goes out: the radar colours
+        // your own kills from the LongDesc it brings.
+        var (bot, obj) = CorpseIdRig();
+        bot.S.LootOwnership = 2;
+        int Asked() => FakeHost.IdRequests.Count(i => i == Corpse);
+        bot.Call("EvaluateCorpseLootDecision", obj);
+        Check.Eq(Asked(), 1, "All Corpses: the first request goes out");
+        for (int i = 0; i < 6; i++) { _t += 3_000; bot.Call("EvaluateCorpseLootDecision", obj); }
+        Check.Eq(Asked(), 1, "All Corpses: no re-ask in 18 s without data");
+        object dec = bot.Call("EvaluateCorpseLootDecision", obj)!;
+        Check.True((bool)dec.GetType().GetProperty("ShouldLoot")!.GetValue(dec)!, "the corpse is looted either way");
+
+        // The same corpse in My Kills Only: the cap applies, the count is per corpse and a deleted
+        // corpse starts over.
+        bot.S.LootOwnership = 0;
+        _t += 3_000; bot.Call("EvaluateCorpseLootDecision", obj);
+        Check.Eq(Asked(), 2, "My Kills Only: the name is needed, so it re-asks");
+        for (int i = 0; i < 10; i++) { _t += 3_000; bot.Call("EvaluateCorpseLootDecision", obj); }
+        Check.Eq(Asked(), 4, "and stops after the third re-ask");
+        bot.Call("HandleCorpseObjectDeleted", Corpse);
+        _t += 3_000; bot.Call("EvaluateCorpseLootDecision", obj);
+        Check.Eq(Asked(), 5, "a corpse that comes back (deleted and created again) starts over");
+        var counts = bot.Get<System.Collections.Generic.Dictionary<int, int>>("_corpseIdAskCount");
+        bot.Call("HandleCorpseObjectDeleted", Corpse);
+        Check.False(counts.ContainsKey(unchecked((int)Corpse)), "delete clears _corpseIdAskCount");
     });
     private static void CorpseIdOnlyCandidateReasks() => Paced(() =>
     {
@@ -900,7 +934,7 @@ internal static class ActionPacingTests
         Check.Eq(Asked(Corpse), 1, "the candidate: refused once, then one accepted request");
         Check.Eq(Asked(CorpseB), 1, "the other corpse: a refused request is retried, one accepted request");
         for (int i = 0; i < 4; i++) { _t += 3_000; Both(); }
-        Check.Eq(Asked(Corpse), 5, "no data: the candidate re-asks once per 3 s");
+        Check.Eq(Asked(Corpse), 4, "no data: the candidate re-asks once per 3 s, three times at most");
         Check.Eq(Asked(CorpseB), 1, "the other corpse never asks a second time");
         bot.Set("_targetCorpseId", unchecked((int)CorpseB));
         _t += 3_000; Both();

@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Threading;
 using RynthCore.Plugin.RynthLua;
 using RynthCore.PluginCore;
@@ -37,6 +39,7 @@ internal static unsafe class Program
         Console.WriteLine($"=== RynthLua UtilityBelt compatibility tests ({scripts.Count} scripts) ===");
         int passed = 0, checks = 0;
         var failed = new List<string>();
+        if (filter.Length == 0 && !CheckBuiltInVerbsMatchSwitch()) failed.Add("built-in /lua verbs");
         try
         {
             foreach (string file in scripts)
@@ -123,6 +126,36 @@ internal static unsafe class Program
             foreach (string l in console.Split('\n').TakeLast(25)) Console.WriteLine("    | " + l);
         }
         return (ok, Harness.Checks);
+    }
+
+    /// <summary>
+    /// RynthLuaPlugin.BuiltInLuaVerbs is kept in step with the switch in HandleLuaChatCommand by hand: a verb in
+    /// the switch but not the set would be shadowed by a script command of the same name (and listed as a script
+    /// command in the usage); a verb in the set but not the switch would be unreachable from both. This compares
+    /// the set with the case labels of that switch, read from the source file.
+    /// </summary>
+    private static bool CheckBuiltInVerbsMatchSwitch([System.Runtime.CompilerServices.CallerFilePath] string source = "")
+    {
+        string path = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(source) ?? string.Empty, "..", "..", "Plugins", "RynthCore.Plugin.RynthLua", "ScriptManager.cs"));
+        if (!File.Exists(path)) { Console.WriteLine("SKIP built-in /lua verbs: ScriptManager.cs not found beside the project."); return true; }
+        var field = typeof(RynthLuaPlugin).GetField("BuiltInLuaVerbs", BindingFlags.NonPublic | BindingFlags.Static);
+        if (field?.GetValue(null) is not HashSet<string> verbs) { Console.WriteLine("FAIL built-in /lua verbs: RynthLuaPlugin.BuiltInLuaVerbs not found."); return false; }
+
+        string text = File.ReadAllText(path);
+        int start = text.IndexOf("switch (sub)", StringComparison.Ordinal);
+        int end = start < 0 ? -1 : text.IndexOf("default:", start, StringComparison.Ordinal);
+        if (start < 0 || end < 0) { Console.WriteLine("FAIL built-in /lua verbs: the 'switch (sub)' in HandleLuaChatCommand was not found."); return false; }
+        var cases = Regex.Matches(text.Substring(start, end - start), @"case\s+""([^""]+)""\s*:")
+            .Select(m => m.Groups[1].Value).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var missingFromSet = cases.Except(verbs, StringComparer.OrdinalIgnoreCase).ToList();
+        var missingFromSwitch = verbs.Except(cases, StringComparer.OrdinalIgnoreCase).ToList();
+        bool ok = cases.Count > 0 && missingFromSet.Count == 0 && missingFromSwitch.Count == 0;
+        Console.WriteLine($"{(ok ? "PASS" : "FAIL")} built-in /lua verbs match the dispatch switch ({cases.Count} verbs)");
+        if (missingFromSet.Count > 0) Console.WriteLine("    in the switch but not in BuiltInLuaVerbs: " + string.Join(", ", missingFromSet));
+        if (missingFromSwitch.Count > 0) Console.WriteLine("    in BuiltInLuaVerbs but not in the switch: " + string.Join(", ", missingFromSwitch));
+        if (cases.Count == 0) Console.WriteLine("    no case labels found (did the switch change shape?)");
+        return ok;
     }
 
     /// <summary>The project's own Scripts folder (so a deleted script can't linger in bin), else the copy in bin.</summary>

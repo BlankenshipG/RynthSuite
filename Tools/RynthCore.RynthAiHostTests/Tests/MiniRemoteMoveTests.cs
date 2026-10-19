@@ -41,6 +41,7 @@ internal static class MiniRemoteMoveTests
         r.Add("mini remote: without RynthILT there are no ILT tabs, bits or verbs", NoRynthIlt);
         r.Add("mini remote: /ra hub|quests|pets stay RynthAi's; quest windows point to RynthOracle; ILT verbs say RynthILT is needed", Commands);
         r.Add("mini remote: the pyreal refill path never spends without RynthILT's confirmation", RefillNeedsIlt);
+        r.Add("vaulted dungeons: the master switch is off by default, saved with the profile, and an older engine's save leaves it alone", VaultedMasterSwitch);
         r.Add("profile: the old Server Features fields still round-trip (RynthILT migrates them)", LegacyProfileFields);
         r.Add("RynthAi.Hub: table, spell names, nothing before login", HubTable);
     }
@@ -180,6 +181,39 @@ internal static class MiniRemoteMoveTests
         Check.False(fresh.Contains("InfiniteLeaftide"), "a fresh profile no longer gets an ILT server list");
     }
 
+    /// <summary>
+    /// "Vaulted Dungeons" (Settings > Navigation) is RynthILT's keeper's master switch and lives only in
+    /// RynthAi's profile: off for a new or older profile, round-tripped through the settings bridge, and
+    /// an engine that predates the row (it sends no such field) never flips it.
+    /// </summary>
+    private static void VaultedMasterSwitch()
+    {
+        Check.False(new LegacyUiSettings().EnableVaultedDungeons, "off by default");
+        var oldProfile = JsonSerializer.Deserialize("{\"BoostNavPriority\":true}", RynthAiJsonContext.Default.LegacyUiSettings)!;
+        Check.False(oldProfile.EnableVaultedDungeons, "a profile saved before the switch existed has it off");
+
+        var on = new LegacyUiSettings { EnableVaultedDungeons = true };
+        string json = JsonSerializer.Serialize(on, RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.LegacyUiSettings)!.EnableVaultedDungeons, "saved with the profile");
+
+        var s = new LegacyUiSettings();
+        var dash = (LegacyDashboardRenderer)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+        var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+        typeof(LegacyDashboardRenderer).GetField("_settings", flags)!.SetValue(dash, s);
+        typeof(LegacyDashboardRenderer).GetField("_advancedSettingsUi", flags)!.SetValue(dash, new LegacyAdvancedSettingsUi(s));
+
+        var sent = JsonSerializer.Deserialize(dash.BuildSettingsJson(), RynthAiJsonContext.Default.SettingsBridgePayload)!;
+        Check.True(sent.EnableVaultedDungeons == false, "the Settings face is sent the switch (off)");
+        dash.ApplySettingsJson("{\"EnableVaultedDungeons\":true}");
+        Check.True(s.EnableVaultedDungeons, "the Settings checkbox turns it on");
+        dash.ApplySettingsJson("{\"NavRingThickness\":6}");
+        Check.True(s.EnableVaultedDungeons, "an older engine's save (no such field) leaves it on");
+        dash.ApplySettingsJson("{\"EnableVaultedDungeons\":false}");
+        Check.False(s.EnableVaultedDungeons, "the checkbox turns it off");
+        dash.ApplySettingsJson("{\"NavRingThickness\":6}");
+        Check.False(s.EnableVaultedDungeons, "and an older engine's save leaves it off");
+    }
+
     private static unsafe void HubTable()
     {
         Check.Eq(HubInterface.Query("RynthILT.Hub", 1), IntPtr.Zero, "not ours");
@@ -196,6 +230,8 @@ internal static class MiniRemoteMoveTests
         QuestStatusV1 st;
         Check.Eq(t->QuestStatus(&st), 0, "no quest tracker before login");
         Check.Eq(t->MiniRemoteVisible(), 0, "no Mini Remote before login");
+        Check.True(t->VaultedDungeonsEnabled != null, "the Vaulted Dungeons master switch is served");
+        Check.Eq(t->VaultedDungeonsEnabled(), 0, "the master switch is off before login (and by default)");
         SessionStatsV1 ss;
         Check.Eq(t->SessionStats(&ss), 0, "no session before login");
     }

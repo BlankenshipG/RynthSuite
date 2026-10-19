@@ -2912,8 +2912,9 @@ internal sealed partial class ExpressionEngine
         if (_host.HasGetObjectWielderInfo)
         {
             uint pid = _host.GetPlayerId();
+            if (EquippedState.IsWielded(_host, id) is bool tracked) return tracked;
             if (pid != 0 && _host.TryGetObjectWielderInfo((uint)id, out uint wielder, out _))
-                return wielder == pid;
+                return wielder == pid && _worldObjectCache?.InPackWalk(id) != true;
         }
         return false;
     }
@@ -3609,6 +3610,7 @@ internal sealed partial class ExpressionEngine
             ["EnableCombineSalvage"]= (() => B(s.EnableCombineSalvage),v => s.EnableCombineSalvage= ToDouble(v) != 0),
             ["SalvageWithoutPanel"] = (() => B(s.SalvageWithoutPanel), v => s.SalvageWithoutPanel = ToDouble(v) != 0),
             ["PeaceModeWhenIdle"]   = (() => B(s.PeaceModeWhenIdle),   v => s.PeaceModeWhenIdle   = ToDouble(v) != 0),
+            ["RearmAfterVitals"]    = (() => B(s.RearmAfterVitals),    v => s.RearmAfterVitals    = ToDouble(v) != 0),
             ["RebuffWhenIdle"]      = (() => B(s.RebuffWhenIdle),      v => s.RebuffWhenIdle      = ToDouble(v) != 0),
             ["UsePotions"] = (() => B(s.UsePotions), v => s.UsePotions = ToDouble(v) != 0),
             ["UseBuffItems"] = (() => B(s.UseBuffItems), v => s.UseBuffItems = ToDouble(v) != 0),
@@ -3647,6 +3649,9 @@ internal sealed partial class ExpressionEngine
             ["EnvironmentApproachMeters"]  = (() => I(s.EnvironmentApproachMeters),  v => { if (int.TryParse(v, out int i)) s.EnvironmentApproachMeters  = Math.Clamp(i, 1, 30); }),
             ["EnvironmentMinDistance"]     = (() => I(s.EnvironmentMinDistance),     v => { if (int.TryParse(v, out int i)) s.EnvironmentMinDistance     = Math.Clamp(i, 1, 30); }),
             ["EnvironmentSkipSec"]         = (() => I(s.EnvironmentSkipSec),         v => { if (int.TryParse(v, out int i)) s.EnvironmentSkipSec         = Math.Clamp(i, 5, 300); }),
+            // Pull-away kite (Combat/KiteModes.cs).
+            ["KitePullMeters"]             = (() => I(s.KitePullMeters),             v => { if (int.TryParse(v, out int i)) s.KitePullMeters             = Math.Clamp(i, 3, 100); }),
+            ["KiteTagFirst"]               = (() => B(s.KiteTagFirst),               v => s.KiteTagFirst               = ToDouble(v) != 0),
             ["WeaponSwapSettleMs"]         = (() => I(s.WeaponSwapSettleMs),         v => { if (int.TryParse(v, out int i)) s.WeaponSwapSettleMs         = Math.Clamp(i, 0, 3000); }),
             ["WeaponSwapMinHealthPct"]     = (() => I(s.WeaponSwapMinHealthPct),     v => { if (int.TryParse(v, out int i)) s.WeaponSwapMinHealthPct     = Math.Clamp(i, 0, 100); }),
             ["WeaponSwapMinGainPct"]       = (() => I(s.WeaponSwapMinGainPct),       v => { if (int.TryParse(v, out int i)) s.WeaponSwapMinGainPct       = Math.Clamp(i, 0, 200); }),

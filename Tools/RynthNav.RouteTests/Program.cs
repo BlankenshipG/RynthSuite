@@ -406,6 +406,8 @@ internal static partial class Program
         Check(atlas.FirstOnMap("Cave Hermit || Holtburg", false, 0, 0) == "Holtburg", "a place with no map position is skipped");
         Check(atlas.FirstOnMap("olt || Holtburg", false, 0, 0) == "Holtburg", "inside a word ('olt' in Holtburg) doesn't count");
         Check(atlas.FirstOnMap("zzz || qqq", false, 0, 0) == null, "none on the map");
+        Check(atlas.FirstOnMap("  nowhere keep ||  || HOLTBURG  ", false, 0, 0) == "HOLTBURG", "extra spaces, empty candidates and case are fine");
+        Check(atlas.FirstOnMap("", false, 0, 0) == null, "no candidates at all");
 
         var p2 = atlas.ById(2)!;
         Check(p2.HasDest && p2.DestOnMap, "portal destination");

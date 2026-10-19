@@ -207,6 +207,10 @@ public sealed class LegacyUiSettings
     // setting loads it as on.
     public bool TargetLock = true;
     public int RingRange = 5;
+    // Empyrean Handler lethal ring (CombatManager.HandleChatForRingEvade): when the Handler channels the
+    // ring and the character is inside its danger radius, back-jump away and re-engage. Only acts while
+    // the macro is running with combat on. On by default because it is gated that way.
+    public bool HandlerRingEvade = true;
     public int ApproachRange = 4;
     public int MinRingTargets = 4;
     // Blast like a ring: with BlastRange > 0, a rule with Blast on casts a blast only when
@@ -253,8 +257,10 @@ public sealed class LegacyUiSettings
 
     public bool BoostNavPriority;
     /// <summary>
-    /// Options > Navigation: show RynthILT's Mini Remote "Vaulted Dungeons" tab on ILT worlds.
-    /// Off by default; the feature still lives in RynthILT and only runs on ILT-like servers.
+    /// Options > Navigation > Vaulted Dungeons: the MASTER switch of RynthILT's Vaulted Dungeons
+    /// keeper (Infinite Leaftide / ACECustom only). Off by default. RynthILT reads it through
+    /// "RynthAi.Hub" VaultedDungeonsEnabled; while it is off the keeper does nothing (no recalls,
+    /// no /rc quit, no tab). This is the one place the switch lives.
     /// </summary>
     public bool EnableVaultedDungeons;
     public bool BoostLootPriority;
@@ -289,6 +295,9 @@ public sealed class LegacyUiSettings
     /// <summary>Also pick up loose ground items that match the loot profile, within the corpse max range.</summary>
     public bool EnableGroundLoot;
     public bool PeaceModeWhenIdle = true;
+    /// <summary>After a heal, restam or remana spell with no monster to fight, put the last fight's
+    /// weapons (main hand and off hand) back on instead of waiting for the next target.</summary>
+    public bool RearmAfterVitals;
     public bool RebuffWhenIdle;
     /// <summary>
     /// Re-cast a self buff when its remaining duration drops below this many seconds.
@@ -402,7 +411,7 @@ public sealed class LegacyUiSettings
     /// </summary>
     public List<string> MonsterNameBlacklist { get; set; } = new();
 
-    public int GiveQueueIntervalMs = 150;
+    public int GiveQueueIntervalMs = 0;
 
     /// <summary>
     /// Item augmentation count used for T11 wield gates in loot rules ("T11: Can Wield").
@@ -435,7 +444,7 @@ public sealed class LegacyUiSettings
     /// breaker runs and the heal is tried again; when that fails too, recall to the lifestone.
     /// Off: the breaker still runs, no recall.
     /// </summary>
-    public bool HpFailsafeRecall = true;
+    public bool HpFailsafeRecall = false;
 
     /// <summary>
     /// Minimum delay between offensive (war/void) COMBAT spell casts, in ms.
@@ -1033,6 +1042,8 @@ public sealed class SettingsBridgePayload
     public int TargetFPSBackground { get; set; }
     public bool EnableAutocram { get; set; }
     public bool PeaceModeWhenIdle { get; set; }
+    // Optional: an engine without the row doesn't send it, and that must not turn it off.
+    public bool? RearmAfterVitals { get; set; }
     public bool StartMacroOnLogin { get; set; }
     public bool PatrolOnLogin { get; set; }
     // Dungeon patrol. Nullable: an engine that predates them doesn't send them, and its save
@@ -1156,8 +1167,11 @@ public sealed class SettingsBridgePayload
 
     // Navigation
     public bool BoostNavPriority { get; set; }
-    /// <summary>Options > Navigation > Vaulted Dungeons (Mini Remote ILT tab gate).</summary>
-    public bool EnableVaultedDungeons { get; set; }
+    /// <summary>
+    /// Options > Navigation > Vaulted Dungeons: the keeper's master switch (off by default). Nullable:
+    /// an engine that predates the row omits it, and absent = unchanged (never switches it off or on).
+    /// </summary>
+    public bool? EnableVaultedDungeons { get; set; }
     public float FollowNavMin { get; set; }
     public float NavRingThickness { get; set; }
     public float NavLineThickness { get; set; }

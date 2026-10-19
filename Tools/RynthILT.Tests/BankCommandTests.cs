@@ -16,6 +16,7 @@ internal static class BankCommandTests
         r.Add("bank: one item table matches ACECustom's handler (deposit / withdraw / transfer)", ItemTable);
         r.Add("bank: transfer commands, trade notes by denomination, quoted names", Transfers);
         r.Add("bank: transfer replies (notes' equivalent, bound prestige coins) are recognised", TransferReplies);
+        r.Add("bank: only the balance dump is backstop-eaten, and only just after a quiet refresh", LeakedDump);
     }
 
     private static int TransferIndex(string code) =>
@@ -116,5 +117,30 @@ internal static class BankCommandTests
         Check.False(IltBankCommands.IsActionReply("No one is near."), "other 'No ...' lines are not");
         Check.False(IltBankCommands.IsActionReply("Bob tells you, \"Deposited 5 pyreals\""), "a tell is not");
         Check.False(IltBankCommands.IsActionReply(""), "empty");
+    }
+
+    /// <summary>
+    /// SilentKelpie's backstop for a quiet refresh whose reply leaked into chat, narrowed: the dump's
+    /// header and "Label: N" lines only, never errors, bound-coin notes or Transferred / Received lines,
+    /// and never a balance read outside the window after a quiet refresh (a macro's or plugin's /bank).
+    /// </summary>
+    private static void LeakedDump()
+    {
+        Check.True(IltBanking.IsBalanceDumpLine("[BANK] Your balances are:"), "header");
+        Check.True(IltBanking.IsBalanceDumpLine("[BANK] Pyreals: 1,000"), "pyreals");
+        Check.True(IltBanking.IsBalanceDumpLine("[BANK] Luminance: 2,500,000"), "luminance");
+        Check.True(IltBanking.IsBalanceDumpLine("[BANK] Weakly Enlightened Coins: 3"), "weakly enlightened coins");
+        Check.True(IltBanking.IsBalanceDumpLine("[BANK] Prestige Coins: 2 (bound to you and cannot be traded)"), "prestige coins");
+        Check.False(IltBanking.IsBalanceDumpLine("[BANK] Too many parameters"), "an error");
+        Check.False(IltBanking.IsBalanceDumpLine("[BANK] Prestige Coins are bound to you and cannot be transferred."), "the bound-coin note");
+        Check.False(IltBanking.IsBalanceDumpLine("Transferred 1,000,000 Pyreals to Bob"), "a transfer reply");
+        Check.False(IltBanking.IsBalanceDumpLine("Received 5 Pyreals from Bob"), "a received line");
+        Check.False(IltBanking.IsBalanceDumpLine("Bob tells you, \"[BANK] Pyreals: 5\""), "a tell quoting a dump");
+
+        const long Win = IltBanking.QuietBalanceWindowMs;
+        Check.True(IltBanking.EatLeakedDump(true, 1_000, 1_000 + Win), "a dump line inside the window is eaten");
+        Check.False(IltBanking.EatLeakedDump(true, 1_000 + Win + 1, 1_000 + Win), "after the window it shows (a macro's /bank)");
+        Check.False(IltBanking.EatLeakedDump(true, 1_000, 0), "no quiet refresh out: it shows (typed /bank, loud refresh, other plugins)");
+        Check.False(IltBanking.EatLeakedDump(false, 1_000, 1_000 + Win), "a non-dump [BANK] line inside the window still shows");
     }
 }

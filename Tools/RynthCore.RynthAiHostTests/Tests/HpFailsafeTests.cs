@@ -12,7 +12,7 @@ namespace RynthCore.RynthAiHostTests.Tests;
 // HP failsafe: under Emergency Heal At with heals failing (here: every heal sent and never answered,
 // as in a client log's hung casts), the character must not sit and die. 3 rounds of 2.5 s with no
 // rise: a forced jump (ActionPacer.ForceBreak), then healing again; 3 more: the macro stops and
-// "/lifestone" goes out (HpFailsafeRecall, default on).
+// "/lifestone" goes out (HpFailsafeRecall, default off; the tests turn it on).
 internal static class HpFailsafeTests
 {
     private const uint Player = 0x50000B31;
@@ -30,6 +30,10 @@ internal static class HpFailsafeTests
         r.Add("hp failsafe: a death drops the pending recall (0 health, and the plugin's death hold): no /lifestone, the macro stays off", DeathDropsRecall);
         r.Add("hp failsafe: a failed recall does not switch the macro back on past a VTank yield", VTankYieldRespected);
         r.Add("hp failsafe: our name unreadable: the recall line is taken as ours, and that is logged once", RecallNameUnreadable);
+        r.Add("hp failsafe: HP Failsafe Recall is off by default; a profile with no saved value loads off, one that saved true keeps it", RecallOffByDefault);
+        r.Add("hp failsafe: a character that cannot heal at all (no spell, kit or potion) never jumps or recalls", NoHealCapabilityNeverFires);
+        r.Add("hp failsafe: a character that can heal (a known Heal Self) and is stuck still jumps, then recalls when the option is on", CapableStuckStillRecalls);
+        r.Add("hp failsafe: a heal that went out proves the character can heal (a listed potion, no spell)", PotionSentProvesCapability);
         r.Add("vitals (L8):a heal the server leaves unanswered is not re-sent at the 2.5 s give-up after a 'too busy' answer", VitalResendObeysLatch);
         r.Add("vitals: under Emergency Heal At with a weapon out and no usable kit, a health potion before Heal Self's wand swap", EmergencyPotionBeforeWandSwap);
         r.Add("low components: tapers at 10, a scarab at 2 (not Diamond), kinds never carried ignored, a kind run out still counts", LowComponentsRule);
@@ -132,7 +136,7 @@ internal static class HpFailsafeTests
         public readonly RynthCore.PluginSdk.RynthCoreHost Host;
         public int MacroStops;
 
-        public Rig(int healthPct = 20)
+        public Rig(int healthPct = 20, bool canHeal = true, bool recall = true)
         {
             FakeHost.Reset();
             FakeHost.WeaponCalls = true;
@@ -143,14 +147,24 @@ internal static class HpFailsafeTests
             FakeHost.Names[Player] = "Mira";
             FakeHost.PlayerPose = (0x6347028Au, 100f, 100f, 0f);
             FakeHost.Positions[Player] = FakeHost.PlayerPose;
-            foreach (var row in SpellTable.Rows) FakeHost.Spellbook.Add((uint)row.Id);
-            FakeHost.Skills[(Player, STypeLife)] = (400, 2);
+            if (canHeal)
+            {
+                foreach (var row in SpellTable.Rows) FakeHost.Spellbook.Add((uint)row.Id);
+                FakeHost.Skills[(Player, STypeLife)] = (400, 2);
+            }
+            else
+            {
+                // A warm spellbook that holds no heal (an empty one reads as "not loaded yet").
+                FakeHost.Spellbook.Add((uint)SpellTable.Rows.First(row => !row.Name.Contains("Heal", StringComparison.OrdinalIgnoreCase)
+                    && !row.Name.Contains("Health", StringComparison.OrdinalIgnoreCase)).Id);
+            }
             var host = Host = FakeHost.Create(Player);
             S = new LegacyUiSettings
             {
                 IsMacroRunning = true, HealAt = 60, TopOffHP = 60, EmergencyHealAt = 30, StaminaToHealthAt = 0,
                 GetManaAt = 0, TopOffMana = 0, RestamAt = 0, TopOffStam = 0, UsePotions = false,
                 EnableBuffing = false, SpellCastIntervalMs = 100,
+                HpFailsafeRecall = recall,   // off by default now; most tests here are about the recall
             };
             var skills = new CharacterSkills(host);
             skills.SetPlayerId(Player);
@@ -200,6 +214,113 @@ internal static class HpFailsafeTests
         ActionPacer.StuckCastMs = 8000;
         MoveAudit.Reset();
         MoveAudit.NowMs = () => Environment.TickCount64;
+    }
+
+    private static void CopySettings(LegacyUiSettings src, LegacyUiSettings dst) =>
+        typeof(RynthCore.Plugin.RynthAi.LegacyUi.LegacyDashboardRenderer).GetMethod("CopySettings",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)!
+            .Invoke(null, new object[] { src, dst });
+
+    private static void RecallOffByDefault()
+    {
+        Check.False(new LegacyUiSettings().HpFailsafeRecall, "a new settings object has the recall off");
+        var ctx = RynthAiJsonContext.Default.LegacyUiSettings;
+        // A profile with no saved value for it: off.
+        var node = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(new LegacyUiSettings(), ctx))!.AsObject();
+        Check.True(node.Remove("HpFailsafeRecall"), "the key is a serialized setting");
+        var noKey = System.Text.Json.JsonSerializer.Deserialize(node.ToJsonString(), ctx)!;
+        var live = new LegacyUiSettings { HpFailsafeRecall = true };
+        CopySettings(noKey, live);
+        Check.False(live.HpFailsafeRecall, "no saved value: the recall loads off");
+        // A profile that saved true (the owner turned it on, or the earlier default was saved): kept.
+        node["HpFailsafeRecall"] = true;
+        var saved = System.Text.Json.JsonSerializer.Deserialize(node.ToJsonString(), ctx)!;
+        var live2 = new LegacyUiSettings();
+        CopySettings(saved, live2);
+        Check.True(live2.HpFailsafeRecall, "a saved true stays on");
+    }
+
+    // A melee character with nothing to heal with (no spell, kit or potion), resting or out-healed at
+    // low health, must not be jumped around and sent to the lifestone: there is nothing to retry.
+    private static void NoHealCapabilityNeverFires()
+    {
+        try
+        {
+            var r = new Rig(healthPct: 20, canHeal: false);
+            r.Run(0, 40);
+            Check.Eq(FakeHost.Casts.Count, 0, "nothing to cast with");
+            Check.Eq(FakeHost.TapJumps, 0, "no failsafe jump");
+            Check.Eq(r.B.HpFailsafeBreaks, 0, "nothing counted");
+            Check.Eq(FakeHost.ChatCommands.Count, 0, "no /lifestone");
+            Check.Eq(r.B.HpFailsafeRecalls, 0, "no recall");
+            Check.True(r.S.IsMacroRunning, "the macro keeps running");
+
+            // Life Magic trained but no Heal Self known, and a potion listed with Use Potions off: still nothing.
+            const uint Potion = 0x80001234;
+            var p = new Rig(healthPct: 20, canHeal: false);
+            FakeHost.Skills[(Player, STypeLife)] = (400, 2);
+            FakeHost.Names[Potion] = "Healing Elixir";
+            p.S.UsePotions = false;
+            p.S.ConsumableRules.Add(new ConsumableRule { Id = unchecked((int)Potion), Name = "Healing Elixir", Type = "HealthPotion" });
+            var cache = new WorldObjectCache(p.Host);
+            cache.SetPlayerId(Player);
+            cache.OnCreateObject(Player);
+            _ = cache[unchecked((int)Potion)];
+            cache.Tick();
+            p.B.SetWorldObjectCache(cache);
+            p.Run(0, 40);
+            Check.Eq(FakeHost.TapJumps, 0, "no spell known, potions off: no jump");
+            Check.Eq(FakeHost.ChatCommands.Count, 0, "and no recall");
+            Check.True(p.S.IsMacroRunning, "the macro keeps running");
+        }
+        finally { Done(); }
+    }
+
+    // The gate does not switch the failsafe off for a character that can heal: stuck heals still break, then recall.
+    private static void CapableStuckStillRecalls()
+    {
+        try
+        {
+            var r = new Rig(healthPct: 20, canHeal: true, recall: true);
+            r.Run(0, 15.0);
+            Check.Eq(FakeHost.TapJumps, 1, "capable + stuck: the jump");
+            Check.False(r.S.IsMacroRunning, "capable + stuck + recall on: the macro stops");
+            r.Run(15.1, 16.0);
+            Check.Eq(FakeHost.ChatCommands.Count, 1, "and /lifestone goes out");
+
+            // The option off (the default): the jump only, the macro keeps running.
+            var d = new Rig(healthPct: 20, canHeal: true, recall: false);
+            d.Run(0, 30.0);
+            Check.Eq(FakeHost.TapJumps, 1, "recall off: the jump still");
+            Check.True(d.S.IsMacroRunning, "recall off: no stop");
+            Check.Eq(FakeHost.ChatCommands.Count, 0, "recall off: no /lifestone");
+        }
+        finally { Done(); }
+    }
+
+    // No spell, but a listed health potion with Use Potions on: the potion goes out (a heal sent), so
+    // the failsafe can arm when the potion does not raise health.
+    private static void PotionSentProvesCapability()
+    {
+        const uint Potion = 0x80001234;
+        try
+        {
+            var r = new Rig(healthPct: 20, canHeal: false);
+            FakeHost.Names[Potion] = "Healing Elixir";
+            r.S.UsePotions = true;
+            r.S.ConsumableRules.Add(new ConsumableRule { Id = unchecked((int)Potion), Name = "Healing Elixir", Type = "HealthPotion" });
+            var cache = new WorldObjectCache(r.Host);
+            cache.SetPlayerId(Player);
+            cache.OnCreateObject(Player);
+            _ = cache[unchecked((int)Potion)];
+            cache.Tick();
+            r.B.SetWorldObjectCache(cache);
+            r.Run(0, 15.0);
+            Check.True(FakeHost.Uses.Contains(Potion), "the potion is drunk");
+            Check.Eq(FakeHost.TapJumps, 1, "it did not raise health: the failsafe jump");
+            Check.False(r.S.IsMacroRunning, "and the recall stage");
+        }
+        finally { Done(); }
     }
 
     private static void BreakThenRecall()

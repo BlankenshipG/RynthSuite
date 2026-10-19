@@ -124,7 +124,7 @@ public sealed class PetTabState
     // Auto siphon-lens capture (ACECustom MonsterCapture; Mini Remote > Pets).
     /// <summary>When on, use the selected siphon lens on a nearby creature once it is weak enough.</summary>
     public bool AutoCaptureEnabled;
-    /// <summary>Index into <see cref="PetCaptureRules.Lenses"/> (Flawed…Asheron's).</summary>
+    /// <summary>Index into <see cref="PetCaptureRules.Lenses"/> (Flawed to Asheron).</summary>
     public int CaptureLensIndex;
 }
 

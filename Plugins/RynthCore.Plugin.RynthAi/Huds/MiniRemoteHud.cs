@@ -11,9 +11,9 @@
 // Quest Timers and Fellowship, Skills, Inventory, Item Count, Inventory HUDs: windows every server
 // has), then "Server: <name>", i.e. the installed server plugins' windows for the world you're on,
 // which RynthCore sends (ServerMenuModel), or a link to RynthCore's Options > Diagnostics (where a
-// server is forced) when none matches. Options: docked left-click opens RynthAi Settings
-// (right-click = Mini Remote section/layout popup); undocked left-click opens that expanded
-// Options popup. Float / Dock next to Options (and in the popup) call /rc miniremote undock|dock.
+// server is forced) when none matches. The Options button opens RynthAi Settings (/rc ui open
+// Settings); the small gear next to it, or a right-click on Options, holds the Mini Remote's own
+// settings (sections, layout, slot size), and so does a click on Options when there is no chat parser.
 // The V/H button stacks the sections (vertical) or lays them out in three columns (horizontal).
 //
 // Remote sections (each can be hidden from the Options menu):
@@ -60,8 +60,7 @@ internal sealed class MiniRemoteHud
     /// <summary>Pixels per Ctrl+wheel notch over the slot grid.</summary>
     private const float SlotSizeStep = 2f;
     /// <summary>Narrowest horizontal-layout column (fits the stat lines and the translate row).</summary>
-    private const float MinColumnWidth = 190f;
-    private const float HeaderButtonWidth = 80f;
+    internal const float MinColumnWidth = 190f;
 
     private static readonly Vector4 ColLabel = new(0.80f, 0.84f, 0.90f, 1f);
     private static readonly Vector4 ColReady = new(0.40f, 0.95f, 0.45f, 1f);
@@ -84,6 +83,8 @@ internal sealed class MiniRemoteHud
     private bool _onRemoteTab = true;
     // The Options button was clicked this frame (the popup opens at window level).
     private bool _openOptions;
+    // The header's Options button was right-clicked this frame: its popup opens, not the remote's menu.
+    private bool _headerRightClick;
     /// <summary>One tab after Remote: a universal one (drawn here) or RynthILT's.</summary>
     private readonly record struct TabEntry(string Id, string Label, Vector2 Size, bool Ilt);
 
@@ -127,7 +128,7 @@ internal sealed class MiniRemoteHud
 
         // Right-click on the remote opens the Character / server menu, unless a slot's own menu is
         // open (the ILT tabs have their own right-click menus).
-        if (_onRemoteTab && _slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
+        if (_onRemoteTab && _slotMenuIndex < 0 && !_headerRightClick && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
             ImGui.OpenPopup(MenuPopup);
         RenderOptions(s, embedded: false);
         RenderMenu(s);
@@ -155,7 +156,7 @@ internal sealed class MiniRemoteHud
             // Without tabs (RynthCore's sections show them instead) the remote alone.
             float width = RenderBody(s, _hud.Remote(), allowTabs: tabs && !InDrawer);
 
-            if (_onRemoteTab && _slotMenuIndex < 0 && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
+            if (_onRemoteTab && _slotMenuIndex < 0 && !_headerRightClick && ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) && ImGui.IsMouseReleased(ImGuiMouseButton.Right))
                 ImGui.OpenPopup(MenuPopup);
             RenderOptions(s, embedded: true);
             RenderMenu(s);
@@ -183,6 +184,7 @@ internal sealed class MiniRemoteHud
     private float RenderBody(HudState s, MiniRemoteController? remote, bool allowTabs)
     {
         _onRemoteTab = true;
+        _headerRightClick = false;
         _tabs.Clear();
         if (allowTabs && remote != null)
         {
@@ -321,41 +323,53 @@ internal sealed class MiniRemoteHud
 
     // ── Layout ──────────────────────────────────────────────────────────────
 
-    /// <summary>[V/H], [Options], and (engine window) Dock/Float buttons. Fixed widths so auto-resize can't grow from them.</summary>
+    /// <summary>
+    /// [V/H], [Options] and a small gear. Fixed widths (MiniRemoteHeader, sized to fit MinColumnWidth)
+    /// so the auto-resizing window can't grow from them.
+    /// </summary>
     private void RenderHeaderRow(HudState s)
     {
-        if (ImGui.Button((s.MiniRemoteHorizontal ? "H" : "V") + "##mrlayout", new Vector2(HeaderButtonWidth, 0)))
+        if (ImGui.Button((s.MiniRemoteHorizontal ? "H" : "V") + "##mrlayout", new Vector2(MiniRemoteHeader.LayoutButtonWidth, 0)))
             s.MiniRemoteHorizontal = !s.MiniRemoteHorizontal;
         if (ImGui.IsItemHovered())
             SafeImGui.SetTooltip(s.MiniRemoteHorizontal ? "Horizontal: sections in columns. Click to stack them." : "Vertical: sections stacked. Click to lay them out in columns.");
         ImGui.SameLine();
-        // Undocked: left-click opens the expanded Mini Remote Options popup (sections / layout).
-        // Docked: left-click opens RynthAi Settings; right-click always opens the Options popup.
-        if (ImGui.Button("Options##mropts", new Vector2(HeaderButtonWidth, 0)))
+        // Left-click: RynthAi Settings (the engine's "Settings" panel); without a chat parser, and on a
+        // right-click, the Mini Remote popup (RenderOptions: this row sits inside the Remote tab, whose
+        // ID the popup must not get, so the popup opens at window level through _openOptions).
+        if (ImGui.Button("Options##mropts", new Vector2(MiniRemoteHeader.OptionsButtonWidth, 0)))
         {
-            if (_popped || !_hud.Host.HasInvokeChatParser)
-                _openOptions = true;
-            else
-                _hud.RunEngineCommand(MovedTabs.Settings);
+            string? command = MiniRemoteHeader.OptionsLeftClickCommand(_hud.Host.HasInvokeChatParser);
+            if (command != null) _hud.RunEngineCommand(command);
+            else _openOptions = true;
         }
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Right)) _openOptions = true;
         if (ImGui.IsItemHovered())
         {
-            SafeImGui.SetTooltip(_popped
-                ? "Mini Remote sections, layout, slot size (undocked).\nSettings is in this Options menu."
-                : "Open RynthAi Settings (Advanced Settings).\nRight-click: Mini Remote sections, layout, slot size.\nUse Float to undock for a larger Options window.");
+            _headerRightClick = true;   // the remote's right-click menu stays closed over this button
+            if (ImGui.IsMouseClicked(ImGuiMouseButton.Right)) _openOptions = true;
+            SafeImGui.SetTooltip(_hud.Host.HasInvokeChatParser
+                ? "Open RynthAi Settings (Advanced Settings).\nRight-click: Mini Remote sections, layout, slot size."
+                : "Mini Remote settings: sections, layout, slot size.");
         }
-        // Engine Mini Remote window only: dock / undock without hunting the title ↗.
-        if (_inWindow && _hud.Host.HasInvokeChatParser)
+        ImGui.SameLine();
+        if (ImGui.Button("##mrgear", new Vector2(MiniRemoteHeader.GearButtonWidth, 0))) _openOptions = true;
+        DrawGear(ImGui.GetItemRectMin(), ImGui.GetItemRectMax());
+        if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("Mini Remote sections, layout, slot size");
+    }
+
+    /// <summary>A small gear (ring and eight teeth) centred in the button's rectangle, in the text colour.</summary>
+    private static void DrawGear(Vector2 min, Vector2 max)
+    {
+        var draw = ImGui.GetWindowDrawList();
+        uint col = ImGui.GetColorU32(ImGuiCol.Text);
+        Vector2 c = (min + max) * 0.5f;
+        float r = MathF.Min(max.X - min.X, max.Y - min.Y) * 0.22f;
+        draw.AddCircle(c, r, col, 12, 1.6f);
+        for (int i = 0; i < 8; i++)
         {
-            ImGui.SameLine();
-            string dockLabel = _popped ? "Dock" : "Float";
-            if (ImGui.Button(dockLabel + "##mrdock", new Vector2(HeaderButtonWidth, 0)))
-                _hud.RunEngineCommand(_popped ? "/rc miniremote dock" : "/rc miniremote undock");
-            if (ImGui.IsItemHovered())
-                SafeImGui.SetTooltip(_popped
-                    ? "Dock Mini Remote back into the game window (/rc miniremote dock)."
-                    : "Undock Mini Remote into a floating window for expanded Options (/rc miniremote undock).");
+            float a = i * MathF.PI / 4f;
+            var dir = new Vector2(MathF.Cos(a), MathF.Sin(a));
+            draw.AddLine(c + dir * (r + 0.5f), c + dir * (r + 3f), col, 2f);
         }
     }
 

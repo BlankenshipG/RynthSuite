@@ -159,6 +159,8 @@ public sealed partial class RynthAiPlugin
     internal MiniRemote.MiniRemoteController? MiniRemoteForIlt => _miniRemote;
     internal WorldObjectCache? ObjectCacheForIlt => _objectCache;
     internal RynthCore.Plugin.Shared.SessionStatsTracker? SessionStatsForIlt => _sessionStats;
+    /// <summary>The Vaulted Dungeons master switch (Settings > Navigation); false before login.</summary>
+    internal bool VaultedDungeonsEnabledForIlt => _dashboard?.Settings.EnableVaultedDungeons == true;
 
     /// <summary>Item Info window, created once settings exist.</summary>
     private void EnsureItemInfoUi()

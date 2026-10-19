@@ -50,11 +50,15 @@ namespace RynthOracle.Tests
             ConquestReplies();
             AelrynthReplies();
             Void();
+            TimerAlerts();
             Pages();
             CharacterExtras();
             Breeding();
             Trackers();
             Events();
+            QuestTexts();
+            Refreshes();
+            SkillsTabs();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;
         }
@@ -221,6 +225,42 @@ namespace RynthOracle.Tests
             Check(SpellTable.Name(5393) == "Corrosion VII", "spell 5393 is Corrosion VII: " + SpellTable.Name(5393));
             Check(SpellTable.TryGet(5395, out SpellInfo s) && s.IsDebuff && s.Duration == 31, "Corruption I is a 31 s debuff");
             Check(SpellTable.TryGet(4305, out SpellInfo f) && !f.IsDebuff && f.Duration == 5400, "Incantation of Focus Self is a 5400 s buff");
+        }
+
+        private static void TimerAlerts()
+        {
+            // "hourly" has a 1 h timer finished at t0; "daily" finished long ago; "never" is one-time.
+            DateTime t0 = new(2026, 10, 18, 12, 0, 0, DateTimeKind.Utc);
+            long done = new DateTimeOffset(t0).ToUnixTimeSeconds();
+            var store = new QuestFlagStore();
+            store.OnChatLine($"hourly - 1 solves ({done})\"Hourly\" -1 3600", 1000);
+            store.OnChatLine($"daily - 1 solves ({done - 100000})\"Daily\" -1 3600", 1000);
+            store.OnChatLine($"never - 1 solves ({done})\"Once\" 1 0", 1000);
+            store.Tick(5000);
+            var cat = new QuestCatalog();
+            var tracked = new List<string> { "hourly", "daily", "never", "unknown" };
+            var w = new QuestTimerWatcher();
+
+            Check(w.Check(store, cat, tracked, t0.AddMinutes(10)).Count == 0, "no alert for what was ready when first seen");
+            Check(w.Check(store, cat, tracked, t0.AddMinutes(59)).Count == 0, "no alert while on cooldown");
+            var up = w.Check(store, cat, tracked, t0.AddMinutes(61));
+            Check(up.Count == 1 && up[0].Flag == "hourly", "alert when the timer comes up");
+            Check(w.Check(store, cat, tracked, t0.AddMinutes(62)).Count == 0, "alert only once");
+
+            var w2 = new QuestTimerWatcher();
+            w2.Check(store, cat, new List<string>(), t0.AddMinutes(10));
+            Check(w2.Check(store, cat, new List<string>(), t0.AddMinutes(61)).Count == 0, "an untracked quest is silent");
+            var w3 = new QuestTimerWatcher();
+            w3.Check(store, cat, null, t0.AddMinutes(10));
+            Check(w3.Check(store, cat, null, t0.AddMinutes(61)).Count == 1, "watching everything alerts on the repeatable only");
+
+            store.OnChatLine($"hourly - 2 solves ({done + 4000})\"Hourly\" -1 3600", 9000);
+            store.Tick(12000);
+            Check(w.Check(store, cat, tracked, t0.AddMinutes(80)).Count == 0, "a fresh completion waits again");
+            Check(w.Check(store, cat, tracked, t0.AddMinutes(140)).Count == 1, "and alerts again when it comes up");
+
+            // Not read yet: nothing to say.
+            Check(new QuestTimerWatcher().Check(new QuestFlagStore(), cat, tracked, t0).Count == 0, "no alerts before the flags are read");
         }
 
         private static void QuestLines()
@@ -1134,6 +1174,312 @@ namespace RynthOracle.Tests
             // The player closes the window with its X.
             Apply(host, Event(8, 3, main.Hash, 0, new byte[] { 0, 1 }));
             Check(!main.Visible, "a player close hides the window");
+        }
+
+        /// <summary>
+        /// A click on a quest prints its texts in chat the way upstream's list "thinks" them: the info and
+        /// hint, the link, and the flag's history ("Never completed" for a flag the character lacks).
+        /// </summary>
+        private static void QuestTexts()
+        {
+            OracleContext c = Context();
+            var printed = new List<string>();
+            c.PrintSink = printed.Add;
+
+            Check(c.Catalog.TryGet("30minattributes", out Quest held), "the catalog has 30minattributes");
+            List<string> lines = QuestText.Lines(held, c.Flags, c.Book, c.UtcNow);
+            Check(lines[0].StartsWith("Attribute and Skill Redistribution (30minattributes) - "), "first line: name, flag, status: " + lines[0]);
+            Check(lines[1] == "30minattributes: " + held.Details() && lines[1].Contains("30 Minutes to pick up Attribute Gems"), "the info and hint text: " + lines[1]);
+            Check(lines[2] == "30minattributes: " + held.Url && held.Url.StartsWith("https://"), "the wiki link");
+            Check(lines[3].StartsWith("30minattributes: x CompletedOn:") && lines[3].Contains("Solves:4 MaxSolves:-1 RepeatTime:30m"),
+                  "a held flag prints its history (upstream's QuestFlag text): " + lines[3]);
+            Check(c.Book.TryGetReward("30minattributes", out QuestReward rw) && lines[4] == "Rewards: " + rw.LongSummary(), "recorded rewards come last: " + lines[4]);
+
+            // A flag no list knows and the character lacks: says so rather than staying silent.
+            List<string> none = QuestText.Lines(new Quest { Flag = "madeupflag", IsNew = true }, c.Flags, c.Book, c.UtcNow);
+            Check(none.Count == 4 && none[0] == "Not in the quest list (madeupflag) - not done", "unknown quest header: " + none[0]);
+            Check(none[1] == "madeupflag: No hint available" && none[2] == "madeupflag: No url available" && none[3] == "madeupflag: Never completed",
+                  "no hint, no link, never completed: " + string.Join(" | ", none));
+
+            // The click itself, on the Quests tab and in the Quest Timers window.
+            c.Settings.TabName = OracleView.TabQuests;
+            var view = new OracleView(c);
+            var host = new UiHost();
+            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
+            main.Begin(); view.Draw(main); main.End();
+            Apply(host, Event(1, 40, main.Hash, main.KeyOf("q.r.30minattributes"), new byte[] { 1, 0, 0 }));
+            Check(printed.Count == lines.Count && printed[1] == lines[1], $"a click on a quest prints its texts ({printed.Count} lines)");
+            main.Begin(); view.Draw(main); main.End();
+            Check(Encoding.UTF8.GetString(main.Body).Contains("Save rewards"), "the click still opens the quest below the list");
+            printed.Clear();
+            Apply(host, Event(1, 41, main.Hash, main.KeyOf("q.r.30minattributes"), new byte[] { 1, 0, 0 }));
+            Check(printed.Count == lines.Count, "a second click prints again (and closes it), as upstream's list did");
+
+            UiWindow timersW = host.Add(new UiWindow("RynthOracle/QuestTimers", "Quest Timers") { Visible = true });
+            var tv = new QuestTimersView(c);
+            timersW.Begin(); tv.Draw(timersW); timersW.End();
+            printed.Clear();
+            Apply(host, Event(1, 42, timersW.Hash, timersW.KeyOf("qt.r.30minattributes"), new byte[] { 1, 0, 0 }));
+            Check(printed.Count == lines.Count && printed[1] == lines[1], "a click on a tracked quest in the Quest Timers window prints its texts");
+        }
+
+        /// <summary>
+        /// The Skills, Attributes and Progress tabs: three more tabs, the others untouched, and the
+        /// /rc oracle-skills hand-off sent only when the wanted mode changes.
+        /// </summary>
+        private static void SkillsTabs()
+        {
+            // The tabs: after Character, on every server; every earlier tab is still there (markers are
+            // rows of the Quests tab since 2026-10-18, not a tab of their own).
+            string[] earlier = { OracleView.TabQuests, OracleView.TabCharacter, OracleView.TabAugs, OracleView.TabSociety,
+                OracleView.TabTitles, OracleView.TabVoid, OracleView.TabFellowship, OracleView.TabAbout };
+            OracleContext c = Context();
+            var view = new OracleView(c);
+            foreach (string server in new[] { ServerTags.Aelrynth, ServerTags.Conquest, "" })
+            {
+                c.Server.Force(server, server);
+                string[] tabs = view.VisibleTabs();
+                string label = server.Length > 0 ? server : "other";
+                Check(earlier.All(tabs.Contains), $"{label}: every earlier tab is still there: " + string.Join(",", tabs));
+                int ch = Array.IndexOf(tabs, OracleView.TabCharacter);
+                Check(tabs.Skip(ch + 1).Take(3).SequenceEqual(new[] { OracleView.TabSkills, OracleView.TabAttributes, OracleView.TabProgress }),
+                    $"{label}: Skills, Attributes, Progress follow Character");
+            }
+            Check((OracleView.TabSkills, OracleView.TabAttributes, OracleView.TabProgress) == ("Skills", "Attributes", "Progress"), "the tabs are named Skills, Attributes, Progress");
+
+            // The page: the tab strip and nothing below it (the engine fills the rest), and a click selects the tab.
+            var host = new UiHost();
+            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
+            string Draw()
+            {
+                main.Begin(); view.Draw(main); main.End();
+                string body = Encoding.UTF8.GetString(main.Body);
+                main.MarkSubmitted(true);
+                return body;
+            }
+            c.Settings.TabName = OracleView.TabQuests;
+            Draw();
+            Apply(host, Event(1, 500, main.Hash, main.KeyOf("tab." + OracleView.TabSkills), new byte[] { 1, 0, 0 }));
+            Check(view.Tab == OracleView.TabSkills, "a click on the Skills tab selects it");
+            main.Begin(); view.Draw(main); main.End();
+            string skills = Encoding.UTF8.GetString(main.Body);
+            ParseAll(host, "skills tab", out int ops);
+            main.MarkSubmitted(true);
+            Check(skills.Contains("tab.Attributes") && skills.Contains("tab.Progress"), "the Skills page still shows the whole tab strip");
+            Check(!skills.Contains("Refresh###") && !skills.Contains("page.Skills") && !skills.Contains("Log in to a character"),
+                "the Skills page has no Refresh row and no child covering the engine's region");
+            Check(ops > 5, $"skills tab parses ({ops} ops)");
+            c.InWorld = false;
+            Check(Draw().Contains("Log in to a character"), "logged out, the Skills tab says to log in (the engine is told off)");
+            c.InWorld = true;
+
+            // The state machine.
+            var sent = new List<string>();
+            bool accept = true;
+            var e = new SkillsEmbed(cmd => { sent.Add(cmd); return accept; });
+            long now = 10_000;
+            bool U(string tab, bool visible = true, bool inWorld = true) => e.Update(tab, visible, inWorld, now += 16);
+
+            for (int i = 0; i < 50; i++) U(OracleView.TabSkills, inWorld: false);
+            Check(sent.Count == 0 && !e.Announced, "logged out, before any command: nothing is sent");
+            for (int i = 0; i < 50; i++) U(OracleView.TabQuests);
+            Check(sent.SequenceEqual(new[] { "/rc oracle-skills off" }) && e.Announced,
+                "in the world on another tab: one off, the announcement that Oracle has these tabs, and no more");
+            sent.Clear();
+            for (int i = 0; i < 100; i++) U(OracleView.TabSkills);
+            Check(sent.SequenceEqual(new[] { "/rc oracle-skills skills" }), "Skills: one command, however many frames follow");
+            U(OracleView.TabAttributes); U(OracleView.TabAttributes);
+            U(OracleView.TabProgress); U(OracleView.TabProgress);
+            U(OracleView.TabSkills);
+            Check(sent.Skip(1).SequenceEqual(new[] { "/rc oracle-skills attrs", "/rc oracle-skills progress", "/rc oracle-skills skills" }),
+                "moving between the three tabs sends the new mode once each: " + string.Join(" | ", sent));
+            sent.Clear();
+            U(OracleView.TabQuests);
+            for (int i = 0; i < 20; i++) U(OracleView.TabQuests);
+            U(OracleView.TabCharacter);
+            Check(sent.SequenceEqual(new[] { "/rc oracle-skills off" }), "leaving for another tab sends off once");
+
+            sent.Clear();
+            U(OracleView.TabSkills);
+            U(OracleView.TabSkills, visible: false); U(OracleView.TabSkills, visible: false);
+            Check(sent.SequenceEqual(new[] { "/rc oracle-skills skills", "/rc oracle-skills off" }), "hiding the window (its X, /ro) sends off once");
+            sent.Clear();
+            U(OracleView.TabSkills);
+            Check(sent.SequenceEqual(new[] { "/rc oracle-skills skills" }), "showing it again on the same tab sends the mode again");
+            sent.Clear();
+            U(OracleView.TabSkills, inWorld: false); U(OracleView.TabSkills, inWorld: false);
+            Check(sent.SequenceEqual(new[] { "/rc oracle-skills off" }), "logging out sends off once");
+            sent.Clear();
+            U(OracleView.TabAbout, visible: false);
+            Check(sent.Count == 0 && e.Sent == SkillsEmbed.Off, "already off: nothing more is sent");
+
+            // The first command is the mode itself when the window opens on a Skills tab at login; Shutdown before any command sends nothing.
+            var first = new List<string>();
+            var fresh = new SkillsEmbed(cmd => { first.Add(cmd); return true; });
+            fresh.Update(OracleView.TabAttributes, true, true, 1); fresh.Update(OracleView.TabAttributes, true, true, 2);
+            Check(first.SequenceEqual(new[] { "/rc oracle-skills attrs" }), "a window that opens on Attributes sends attrs once, and no separate off");
+            var never = new SkillsEmbed(cmd => { first.Add(cmd); return true; });
+            first.Clear();
+            Check(!never.Shutdown() && first.Count == 0, "Shutdown before any command sends nothing");
+
+            // Shutdown: off if (and only if) a body is up.
+            Check(!e.Shutdown() && sent.Count == 0, "Shutdown while off sends nothing");
+            U(OracleView.TabProgress);
+            sent.Clear();
+            Check(e.Shutdown() && sent.SequenceEqual(new[] { "/rc oracle-skills off" }) && e.Sent == SkillsEmbed.Off, "Shutdown while a body is up sends off");
+            Check(!e.Shutdown() && sent.Count == 1, "a second Shutdown sends nothing");
+
+            // A refused send is retried, but not every frame.
+            sent.Clear();
+            accept = false;
+            now = 50_000;
+            Check(!e.Update(OracleView.TabSkills, true, true, now), "a refused send reports false");
+            for (int i = 0; i < 30; i++) e.Update(OracleView.TabSkills, true, true, now + i * 16);
+            Check(sent.Count == 1 && e.Sent == SkillsEmbed.Off, $"a refused send is not repeated every frame ({sent.Count} attempts)");
+            accept = true;
+            Check(!e.Update(OracleView.TabSkills, true, true, now + SkillsEmbed.RetryMs - 1) && sent.Count == 1, "no retry before the gap has passed");
+            Check(e.Update(OracleView.TabSkills, true, true, now + SkillsEmbed.RetryMs) && e.Sent == "skills", "retried after the gap, and then recorded");
+            accept = false;
+            Check(!e.Shutdown() && e.Sent == "skills", "a refused Shutdown send keeps the state");
+            accept = true;
+            Check(e.Shutdown() && e.Sent == SkillsEmbed.Off, "and a later Shutdown tries again");
+
+            // Which tab wants what.
+            Check(SkillsEmbed.Wanted(OracleView.TabSkills, true, true) == "skills" && SkillsEmbed.Wanted(OracleView.TabAttributes, true, true) == "attrs"
+                  && SkillsEmbed.Wanted(OracleView.TabProgress, true, true) == "progress", "the three modes are skills, attrs, progress");
+            Check(SkillsEmbed.Wanted(OracleView.TabQuests, true, true) == "off" && SkillsEmbed.Wanted(OracleView.TabAbout, true, true) == "off", "every other tab is off");
+        }
+
+        /// <summary>Every page has a Refresh button; each does its own reload and says what it did.</summary>
+        private static void Refreshes()
+        {
+            OracleContext c = Context();
+            var sent = new List<string>();
+            int quests = 0, chars = 0, titles = 0, lists = 0;
+            c.Send = cmd => { sent.Add(cmd); return true; };
+            c.RequestQuests = () => { quests++; return true; };
+            c.RereadCharacter = () => chars++;
+            c.RereadTitles = () => titles++;
+            c.ReloadQuestList = () => lists++;
+            var view = new OracleView(c);
+            var host = new UiHost();
+            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
+            uint seq = 100;
+
+            string Draw()
+            {
+                main.Begin(); view.Draw(main); main.End();
+                string body = Encoding.UTF8.GetString(main.Body);
+                main.MarkSubmitted(true);
+                return body;
+            }
+            void Click(string id)
+            {
+                Draw();
+                Apply(host, Event(1, seq++, main.Hash, main.KeyOf(id), new byte[] { 1, 0, 0 }));
+            }
+            void Press(string scope) => Click("refresh." + scope);
+
+            // A Refresh button on every tab, on every server.
+            foreach (string server in new[] { ServerTags.Aelrynth, ServerTags.Conquest, "" })
+            {
+                c.Server.Force(server, server);
+                foreach (string tab in view.VisibleTabs())
+                {
+                    if (SkillsEmbed.IsEmbedTab(tab)) continue;   // RynthCore draws these pages; see SkillsTabs()
+                    c.Settings.TabName = tab;
+                    string body = Draw();
+                    Check(body.Contains("Refresh###refresh." + tab), $"{(server.Length > 0 ? server : "other")}/{tab} has a Refresh button");
+                }
+            }
+
+            // Quests: /myquests, and the line waits for the flags.
+            c.Server.Force("", "Coldeve");
+            c.Settings.TabName = OracleView.TabQuests;
+            Press("Quests");
+            Check(quests == 1, "Quests: Refresh asks for the quest flags");
+            string waiting = Draw();
+            Check(waiting.Contains("Asked the server for your quest flags") && waiting.Contains("Waiting for the reply"), "Quests: the line says it is waiting");
+            c.Flags.OnChatLine("freshflag - 1 solves (1719432000)\"x\" -1 0", c.NowMs);
+            c.Flags.Tick(c.NowMs + 5000);
+            Check(Draw().Contains("Updated "), "Quests: the line says Updated once the reply lands");
+            c.NowMs += 20_000;
+            Press("Quests");
+            Check(Draw().Contains("Waiting for the reply"), "Quests: a second Refresh waits again");
+            c.NowMs += 16_000;
+            Check(Draw().Contains("No reply yet"), "Quests: no reply for 15 s says so");
+
+            // Tabs built from the character: re-read it; those with quest timers ask for the flags too.
+            foreach ((string tab, int wantChars, int wantQuests) in new[]
+            {
+                (OracleView.TabCharacter, 1, 0), (OracleView.TabAugs, 1, 1), (OracleView.TabSociety, 1, 1),
+                (OracleView.TabVoid, 1, 0),
+            })
+            {
+                chars = quests = 0;
+                c.Settings.TabName = tab;
+                Press(tab);
+                Check(chars == wantChars && quests == wantQuests, $"{tab}: Refresh re-reads {wantChars}x character, {wantQuests}x quest flags (got {chars}, {quests})");
+                Check(Draw().Contains(wantQuests > 0 ? "Waiting for the reply" : "Refreshed "), $"{tab}: the line says what happened");
+            }
+
+            // Titles, Fellowship, About: local reloads.
+            c.EarnedTitles.Add(1);
+            c.TitlesKnown = true;
+            c.Settings.TabName = OracleView.TabTitles;
+            Press("Titles");
+            Check(titles == 1 && Draw().Contains("Re-read your titles from the game: 1 held."), "Titles: re-reads the titles the engine holds");
+            c.Settings.TabName = OracleView.TabFellowship;
+            Press("Fellowship");
+            Check(Draw().Contains("Re-read the fellowship from the game."), "Fellowship: re-reads the member table");
+            c.Settings.TabName = OracleView.TabAbout;
+            c.NowMs += 10_000;
+            Press("About");
+            Check(lists == 1 && Draw().Contains("Reloaded the quest list"), "About: reloads the quest list files");
+            Press("About");
+            Check(lists == 1 && Draw().Contains("wait a few seconds"), "About: pressed again at once, nothing reloads");
+            c.NowMs += 4000;
+            Press("About");
+            Check(lists == 2, "About: allowed again after the pause");
+
+            // ConquestAC: the sub-page's own command, once per pause; the line follows the reply.
+            c.Server.Force(ServerTags.Conquest, "Conquest");
+            c.Settings.TabName = OracleView.TabConquest;
+            string[] want = { "/b", "/augs", "/enl augs", "/bonus", "/fship list" };
+            for (int v = 0; v < 6; v++)
+            {
+                Click("cq.v." + v);
+                sent.Clear();
+                quests = 0;
+                c.NowMs += 4000;
+                Press("Conquest" + v);
+                if (v < 5) Check(sent.Count == 1 && sent[0] == want[v], $"Conquest view {v}: Refresh sends {want[v]} (sent {string.Join(",", sent)})");
+                else Check(sent.Count == 0 && quests == 1, "Conquest custom quests: Refresh asks for the quest flags");
+                Press("Conquest" + v);
+                Check(sent.Count == (v < 5 ? 1 : 0), $"Conquest view {v}: a second press at once sends nothing more");
+            }
+            Click("cq.v.0");
+            c.NowMs += 4000;
+            Press("Conquest0");
+            System.Threading.Thread.Sleep(5);
+            c.Conquest.OnChatLine("[BANK] Pyreals: 2,000", c.NowMs, out _);
+            Check(Draw().Contains("Updated "), "Conquest bank: the line says Updated when the balances arrive");
+
+            // Boards: ConquestAC's board, then Aelrynth's three views.
+            c.Settings.TabName = OracleView.TabBoards;
+            sent.Clear();
+            c.NowMs += 4000;
+            Press(OracleView.TabBoards + "00");
+            Check(sent.Count == 1 && sent[0].StartsWith("/top "), "ConquestAC boards: Refresh sends /top <board>: " + string.Join(",", sent));
+            c.Server.Force(ServerTags.Aelrynth, "Aeshnidae");
+            sent.Clear();
+            foreach ((int viewNo, string cmd) in new[] { (0, "/top"), (1, "/top me"), (2, "/trial") })
+            {
+                Click("ab.v" + viewNo);
+                c.NowMs += 4000;
+                Press($"{OracleView.TabBoards}{viewNo}0");
+                Check(sent.Count > 0 && sent[^1].TrimEnd() == cmd, $"Aelrynth boards view {viewNo}: Refresh sends {cmd} (sent {sent.LastOrDefault()})");
+            }
         }
 
         private static byte[] Event(ushort type, uint seq, uint window, uint key, byte[] payload)

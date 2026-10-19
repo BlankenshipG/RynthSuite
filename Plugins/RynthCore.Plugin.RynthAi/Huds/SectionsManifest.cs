@@ -67,8 +67,10 @@ internal static class SectionsManifest
         {
             ["gear"] = ("inventory", "Gear", 210, "ILT gear tools (RynthILT)."),
             ["games"] = ("games", "Games", 100, "ILT games (RynthILT)."),
+            // Listed only while RynthILT shows the tab: the Vaulted Dungeons master switch (RynthAi
+            // Settings > Navigation) is on, on an ILT world.
             ["vaulted"] = ("nav", "Vaulted Dungeons", 220,
-                "Keep the character in one Vaulted Dungeon (RynthILT; Options > Navigation)."),
+                "Keep the character in one Vaulted Dungeon (RynthILT; Settings > Navigation > Vaulted Dungeons)."),
         };
 
     /// <summary>The surface name of a tab's view ("section:gear").</summary>

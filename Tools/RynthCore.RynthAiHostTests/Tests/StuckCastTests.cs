@@ -30,6 +30,10 @@ internal static class StuckCastTests
         r.Add("stuck cast: StuckCastMs 0 turns nothing and breaks nothing; no TapJump -> Peace mode", BreakerOffAndNoJump);
         r.Add("move settle: no start in the tick of a movement change; 150 ms and a clear motion queue (or 600 ms) let it go", MoveSettle);
         r.Add("stuck cast: the HP failsafe's forced break jumps once and holds starts until landed", ForcedBreak);
+        r.Add("pacer: an emergency heal is not held by the 'too busy' latch (a refused pickup, a hung cast); a plain heal and other starts still are", EmergencyHealThroughLatch);
+        r.Add("pacer: an emergency heal does not wait for the movement settle, and still obeys an unanswered action in flight", EmergencyHealSkipsSettle);
+        r.Add("pacer: while a plain heal waits on the 'too busy' latch, a start that is no heal does not take the probe slot", HealKeepsProbeSlot);
+        r.Add("pacer: a 'too busy' UseDone that came while the macro was off does not latch the server as busy at the macro start", StaleUseDoneAtMacroStart);
         r.Add("stuck cast: a script's cast is not jumped before ScriptCastMinBreakMs (6 s): answered at 5.5 s, no jump; RynthAi's own is jumped at 5 s", ScriptCastGetsNudgeWindow);
     }
 
@@ -80,6 +84,192 @@ internal static class StuckCastTests
     private static int JumpLines() => FakeHost.Logs.Count(l => l.Contains("stuck cast broken by jump after"));
 
     private static void Run(RynthCoreHost host, long ms) { for (long s = 0; s < ms; s += 100) { _t += 100; May(host); } }
+
+    private static bool MayAs(RynthCoreHost host, string who, HealNeed heal) =>
+        ActionPacer.MayStart(host, who, heal, out _);
+
+    // Emergency Heal At: the heal is not held by the 'too busy' latch, whatever set it. A door/corpse use or a
+    // pickup the server refused (UseDone 0x1D) latched every start before, the heal included.
+    private static void EmergencyHealThroughLatch()
+    {
+        var host = Setup();
+        ActionPacer.StuckCastMs = 0;
+        try
+        {
+            Check.True(May(host), "free");                       // the observer's baseline
+            Cast(host, "Heart Rend");
+            _t += 100;
+            FakeHost.UseDone(ActionPacer.TooBusyErr);            // any refused action latches the server as busy
+            Check.False(MayAs(host, "Loot", HealNeed.None), "a corpse use is held by the latch");
+            Check.False(MayAs(host, "Buff", HealNeed.Heal), "a plain heal is held too (it waits for the probe)");
+            Check.True(MayAs(host, "Buff", HealNeed.Emergency), "the emergency heal goes at once");
+            Check.True(MayAs(host, "Buff", HealNeed.Emergency), "and keeps going (not a probe slot)");
+            Check.False(MayAs(host, "Loot", HealNeed.None), "the latch still holds the others");
+            Check.True(ActionPacer.ServerBusy, "still taken as busy");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("the emergency heal goes ahead of the server's 'too busy' answer")), "logged");
+            Check.True(ActionPacer.EmergencyThroughLatch >= 2, "counted");
+        }
+        finally { Done(); }
+
+        // A hung cast (no UseDone in CastMaxMs) is a latch too.
+        var hung = Setup();
+        ActionPacer.StuckCastMs = 0;
+        try
+        {
+            Cast(hung);
+            _t += ActionPacer.CastMaxMs + 100;
+            Check.False(MayAs(hung, "Loot", HealNeed.None), "a hung cast holds a corpse use");
+            Check.True(MayAs(hung, "Buff", HealNeed.Emergency), "but not the emergency heal");
+        }
+        finally { Done(); }
+
+        // The in-flight rules still apply: our own unanswered cast (inside CastMaxMs) holds even an emergency heal.
+        var open = Setup();
+        ActionPacer.StuckCastMs = 0;
+        try
+        {
+            Cast(open);
+            _t += 500;
+            Check.False(MayAs(open, "Buff", HealNeed.Emergency), "an unanswered cast of ours holds the heal (no result yet)");
+        }
+        finally { Done(); }
+    }
+
+    // The 150-600 ms wait after any movement call RynthAi sends does not delay an emergency heal.
+    private static void EmergencyHealSkipsSettle()
+    {
+        var host = Setup();
+        try
+        {
+            FakeHost.AutoRun = true;
+            host.SetAutoRunBy("Nav", true);
+            _t += 1000;
+            host.SetAutoRunBy("Nav", false);                      // nav's stop goes out this tick
+            Check.False(MayAs(host, "Buff", HealNeed.Heal), "a plain heal waits for the settle");
+            Check.False(MayAs(host, "Loot", HealNeed.None), "other starts too");
+            Check.True(MayAs(host, "Buff", HealNeed.Emergency), "the emergency heal does not");
+            FakeHost.CastBusy = 1;                                // the client still animates the stop
+            Check.False(MayAs(host, "Buff", HealNeed.Heal), "the plain heal: still held while the queue is busy");
+            Check.True(ActionPacer.MayStart(host, "Buff", HealNeed.Emergency, out _, animationGate: false), "the emergency heal (animation gate off): goes");
+            FakeHost.CastBusy = 0;
+        }
+        finally { Done(); }
+
+        // It still waits for an action the server has not answered.
+        var inflight = Setup();
+        try
+        {
+            Cast(inflight);
+            _t += 100;
+            Check.False(MayAs(inflight, "Buff", HealNeed.Emergency), "an unanswered cast in flight: the emergency heal waits (pacing in-flight rule)");
+        }
+        finally { Done(); }
+    }
+
+    // The probe after a 'too busy' latch is one start per 1.5 s, doubling. A plain heal waiting on the latch gets
+    // it; a corpse or door use that happens to be evaluated first no longer takes it.
+    private static void HealKeepsProbeSlot()
+    {
+        var host = Setup();
+        ActionPacer.StuckCastMs = 0;
+        try
+        {
+            Check.True(May(host), "free");                          // the observer's baseline
+            Cast(host, "Heart Rend");
+            _t += 100;
+            FakeHost.UseDone(ActionPacer.TooBusyErr);
+            Check.False(MayAs(host, "Buff", HealNeed.Heal), "latched");
+            _t += ActionPacer.BusyProbeMs - 100;
+            Check.False(MayAs(host, "Buff", HealNeed.Heal), "the heal waits (marks it as waiting)");
+            _t += 100;                                            // the probe is due
+            Check.False(MayAs(host, "Door", HealNeed.None), "the door use does not take the slot while a heal waits");
+            Check.True(MayAs(host, "Buff", HealNeed.Heal), "the heal gets the probe");
+            Check.False(MayAs(host, "Door", HealNeed.None), "one probe only");
+        }
+        finally { Done(); }
+
+        // No heal waiting: the first start of any kind still takes the probe (the latch is not left to the 15 s expiry).
+        var plain = Setup();
+        ActionPacer.StuckCastMs = 0;
+        try
+        {
+            Check.True(May(plain), "free");                          // the observer's baseline
+            Cast(plain, "Heart Rend");
+            _t += 100;
+            FakeHost.UseDone(ActionPacer.TooBusyErr);
+            Check.False(MayAs(plain, "Door", HealNeed.None), "latched");
+            _t += ActionPacer.BusyProbeMs;
+            Check.True(MayAs(plain, "Door", HealNeed.None), "no heal waiting: a door use takes the probe");
+        }
+        finally { Done(); }
+
+        // The mark goes stale: a heal that stopped asking does not hold the slot from the others.
+        var stale = Setup();
+        ActionPacer.StuckCastMs = 0;
+        try
+        {
+            Check.True(May(stale), "free");                          // the observer's baseline
+            Cast(stale, "Heart Rend");
+            _t += 100;
+            FakeHost.UseDone(ActionPacer.TooBusyErr);
+            Check.False(MayAs(stale, "Buff", HealNeed.Heal), "latched, a heal waited");
+            _t += ActionPacer.BusyProbeMs;
+            Check.True(MayAs(stale, "Door", HealNeed.None), "the heal has not asked for over HealWaitFreshMs: the door use takes the probe");
+        }
+        finally { Done(); }
+    }
+
+    // The macro was off (nothing checked UseDones); the player's own action was refused 0x1D. At the macro start the
+    // pacer's observer took that for a fresh answer and held every start for the probe wait.
+    private static void StaleUseDoneAtMacroStart()
+    {
+        var host = Setup();
+        ActionPacer.StuckCastMs = 0;
+        try
+        {
+            Check.True(May(host), "macro running: the observer's baseline");
+            FakeHost.UseDone(ActionPacer.TooBusyErr);            // while the macro is off: a refused player action
+            _t += 60_000;
+            ActionPacer.NoteMacroStart();                         // the macro is switched on
+            Check.True(May(host), "the stale 0x1D is not news: nothing is held");
+            Check.False(ActionPacer.ServerBusy, "not latched");
+            FakeHost.UseDone(ActionPacer.TooBusyErr);            // a real refusal after the start still latches
+            Check.False(May(host), "a 0x1D after the start latches as before");
+            Check.True(ActionPacer.ServerBusy, "latched");
+        }
+        finally { Done(); }
+
+        // Control: without the macro-start note the same stale 0x1D latches (what the review found).
+        var ctl = Setup();
+        ActionPacer.StuckCastMs = 0;
+        try
+        {
+            Check.True(May(ctl), "baseline");
+            FakeHost.UseDone(ActionPacer.TooBusyErr);
+            _t += 60_000;
+            Check.False(May(ctl), "no note: held (the old behaviour)");
+        }
+        finally { Done(); }
+
+        // The plugin notes the off-to-on edge of IsMacroRunning (and only that).
+        var plugin = new RynthCore.Plugin.RynthAi.RynthAiPlugin();
+        var note = typeof(RynthCore.Plugin.RynthAi.RynthAiPlugin).GetMethod("NoteMacroForPacer",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var edge = Setup();
+        ActionPacer.StuckCastMs = 0;
+        try
+        {
+            note.Invoke(plugin, new object[] { false });
+            Check.True(May(edge), "macro off: baseline");
+            FakeHost.UseDone(ActionPacer.TooBusyErr);
+            note.Invoke(plugin, new object[] { true });          // switched on
+            Check.True(May(edge), "off to on: the stale 0x1D is dropped");
+            FakeHost.UseDone(ActionPacer.TooBusyErr);
+            note.Invoke(plugin, new object[] { true });          // still running: no edge
+            Check.False(May(edge), "running on: a 0x1D is a 0x1D");
+        }
+        finally { Done(); }
+    }
 
     private static void ScriptCastGetsNudgeWindow()
     {

@@ -23,6 +23,7 @@ internal static class PetRefillTests
     private const uint Mob = 0x80300010;
     private const uint Essence = 0x80300001;
     private const uint Spirit = 0x80300002;
+    private const uint Essence2 = 0x80300003;   // a second essence, only for the assume-window test
     private const uint StructureKey = 92;   // AcIntProperty.Structure
     private const uint Lb = 0xA9B40000;
 
@@ -38,6 +39,7 @@ internal static class PetRefillTests
         r.Add("pets: 'not enough charges' after a confirmed refill ends the trust; refill again", TrustEndsOnEmptySummon);
         r.Add("pets: refilled twice in 2 min and still empty (no reply) -> parked 5 min", SilentRefillsParked);
         r.Add("pets: the server's 'full' trust expires after 30 min", TrustExpires);
+        r.Add("pets: a landed summon whose pet is not in the cache yet holds a second essence back for the 10 s window", LandedSummonHoldsWindow);
         r.Add("pets: failed summon (no charge drop) does not assume a pet; waits the 45 s essence cooldown", FailedSummonRespectsCooldown);
     }
 
@@ -49,7 +51,7 @@ internal static class PetRefillTests
         public readonly LegacyUiSettings S = new() { SummonPets = true, MonsterRange = 20, CustomPetRange = 5, PetAutoRefill = true };
         public readonly PetManager Pets;
 
-        public Rig(int charges)
+        public Rig(int charges, bool secondEssence = false)
         {
             FakeHost.Reset();
             FakeHost.WeaponCalls = true;   // UseObject (summon), RequestId (re-identify)
@@ -62,11 +64,19 @@ internal static class PetRefillTests
             FakeHost.Names[Spirit] = "Encapsulated Spirit";
             FakeHost.Containers[Spirit] = Player;
             SetCharges(charges);
+            if (secondEssence)
+            {
+                FakeHost.Names[Essence2] = "Frost Moar Essence (50)";
+                FakeHost.Containers[Essence2] = Player;
+                FakeHost.Ints[(Essence2, StructureKey)] = 50;
+            }
 
             var host = FakeHost.Create(Player);
-            var cache = FakeHost.MakeCache(host, Player, new[] { Mob, Essence, Spirit });
+            var cache = FakeHost.MakeCache(host, Player, secondEssence ? new[] { Mob, Essence, Spirit, Essence2 } : new[] { Mob, Essence, Spirit });
             S.IsMacroRunning = true;
             S.ConsumableRules.Add(new ConsumableRule { Id = unchecked((int)Essence), Name = "Fire Moar Essence (50)", Type = "Pet" });
+            if (secondEssence)
+                S.ConsumableRules.Add(new ConsumableRule { Id = unchecked((int)Essence2), Name = "Frost Moar Essence (50)", Type = "Pet" });
             var combat = new CombatManager(host, S, cache);
             combat.SetPlayerId(Player);
             combat.ScanNearbyTargets();
@@ -102,6 +112,7 @@ internal static class PetRefillTests
 
         public int Refills => FakeHost.UsesOn.Count(u => u.Source == Spirit && u.Target == Essence);
         public int Summons => FakeHost.Uses.Count(u => u == Essence);
+        public int AllSummons => FakeHost.Uses.Count(u => u == Essence || u == Essence2);
 
         public void Dispose() => PetManager.Clock = static () => Environment.TickCount64;
     }
@@ -219,5 +230,22 @@ internal static class PetRefillTests
         Check.Eq(rig.Summons, 1, "still cooling at ~44 s from first Use");
         rig.Run(4_000);
         Check.Eq(rig.Summons, 2, "second Use after the 45 s essence cooldown");
+    }
+
+    /// <summary>
+    /// The charge dropped (the Use landed) but the pet is not in the landscape cache yet: the assume
+    /// window must keep a second essence from being summoned beside it, and lapse after 10 s.
+    /// </summary>
+    private static void LandedSummonHoldsWindow()
+    {
+        using var rig = new Rig(charges: 50, secondEssence: true);
+        rig.Run(1500);
+        Check.Eq(rig.AllSummons, 1, "first Use fired");
+        Rig.SetCharges(49);
+        FakeHost.Ints[(Essence2, StructureKey)] = 49;     // whichever essence it was, its charge dropped
+        rig.Run(8_000);
+        Check.Eq(rig.AllSummons, 1, "inside the 10 s window the other essence is not used");
+        rig.Run(5_000);
+        Check.Eq(rig.AllSummons, 2, "window over and still no pet: the other essence is used");
     }
 }

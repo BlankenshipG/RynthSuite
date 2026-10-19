@@ -31,7 +31,10 @@ internal static class MovedTabs
     /// <summary>RynthCore Options > Diagnostics (the server picker; RynthCore 2026.10.5.54+).</summary>
     public const string Diagnostics = "/rc diagnostics";
 
-    /// <summary>RynthAi Settings (Advanced Settings panel; RynthCore SettingsFace).</summary>
+    /// <summary>
+    /// RynthAi Settings (Advanced Settings): RynthCore's "Settings" panel (SettingsFace.Title), opened
+    /// by name through "/rc ui open &lt;Panel&gt;" (RynthCoreChatCommands, the generic panel verb).
+    /// </summary>
     public const string Settings = "/rc ui open Settings";
 
     /// <summary>
@@ -51,6 +54,8 @@ internal static class MovedTabs
         OracleCharacter => "RynthOracle's Character tab",
         OracleBreeding => "RynthOracle's Pet Breeding tab",
         GlobalBank or GlobalInventory => "Global Inventory",
+        Diagnostics => "RynthCore Options > Diagnostics",
+        Settings => "RynthAi Settings (Advanced Settings)",
         _ => command,
     };
 }

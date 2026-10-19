@@ -123,6 +123,44 @@ internal sealed unsafe class RynthAiClient
         }
     }
 
+    // ── Vaulted Dungeons (master switch, activity) ──────────────────────────
+
+    /// <summary>
+    /// RynthAi's "Vaulted Dungeons" setting (Settings > Navigation): the master switch of the Vaulted
+    /// Dungeons keeper, and the only place it is stored. False when RynthAi isn't loaded, is older than
+    /// the call, hasn't logged in, or has it off (the default): the keeper then does nothing. Any thread.
+    /// </summary>
+    public bool VaultedDungeonsEnabled
+    {
+        get
+        {
+            var t = AnyThreadTable;
+            return t != null && RynthAiHubApiV1.Has(t, RynthAiHubApiV1.VaultedDungeonsEnabledOffset)
+                   && t->VaultedDungeonsEnabled != null && t->VaultedDungeonsEnabled() != 0;
+        }
+    }
+
+    /// <summary>
+    /// What RynthAi is doing now (its "RynthAi.Activity" interface: combat, buffing, loot, a use or cast
+    /// waiting on the server...); null when RynthAi isn't loaded or isn't ready. Resolved again every
+    /// call, as that interface requires (a RynthAi reload frees its table). Pump thread.
+    /// </summary>
+    public RynthAiActivity? Activity()
+    {
+        if (!_host.HasGetPluginInterface) return null;
+        try
+        {
+            var act = (RynthAiActivityApiV1*)_host.GetPluginInterface(RynthAiHub.PluginName, RynthAiActivityApiV1.InterfaceName, RynthAiActivityApiV1.InterfaceVersion);
+            if (act == null || act->Version < 1 || act->StructSize < (uint)sizeof(RynthAiActivityApiV1) || act->GetActivityFlags == null) return null;
+            uint flags = 0;
+            return act->GetActivityFlags(&flags) != 0 ? (RynthAiActivity)flags : null;
+        }
+        catch
+        {
+            return null;   // a RynthAi mid-reload: not there this tick
+        }
+    }
+
     // ── Quests (/myquests) ──────────────────────────────────────────────────
 
     /// <summary>A /myquests flag from RynthAi's tracker (pump thread).</summary>

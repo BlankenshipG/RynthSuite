@@ -14,8 +14,9 @@ namespace RynthCore.Plugin.RynthAi.Loot;
 ///
 /// AutoStack merges two partial stacks of the same weenie (arrows, components,
 /// pyreals, etc.) by dropping the smaller one onto the larger one's slot — the
-/// server merges only same-WCID stackables. Groups by WCID (not display name) and
-/// skips pairs that would overflow MaxStackSize.
+/// server merges only same-WCID stackables. Groups by WCID (not display name). A
+/// pair whose total is over MaxStackSize is still tried: the server fills the
+/// target and leaves the rest in the source, which is progress, not a failure.
 /// </summary>
 public sealed class InventoryManager
 {
@@ -34,7 +35,7 @@ public sealed class InventoryManager
     // engine return is enqueue-accepted, not moved-confirmed (AcMainThreadQueue
     // gesture-defers a move up to ~250 ticks ≈ 4-8s), so success and failure are
     // indistinguishable at the call site. We confirm on a LATER snapshot.
-    private sealed class Pending { public DateTime EnqueuedAt; public int FromContainer; }
+    private sealed class Pending { public DateTime EnqueuedAt; public int FromContainer; public int TargetCount; public int SourceCount; }
     private sealed class Backoff { public DateTime NextRetry; public int Attempts; public DateTime LastTouched; }
     private readonly Dictionary<int, Pending> _cramPending = new();        // item id -> in-flight move
     private readonly Dictionary<int, Backoff> _cramBackoff = new();        // item id -> confirmed-fail backoff
@@ -314,7 +315,9 @@ public sealed class InventoryManager
                     if (_stackPending.TryGetValue(key, out var sp))
                     {
                         bool sourceGone = !inv.Any(x => x.Id == parts[si].Item.Id);
-                        if (sourceGone)
+                        // Past the max the server fills the target and the source survives smaller:
+                        // that is a merge too, not a failure.
+                        if (sourceGone || MergeProgressed(sp.TargetCount, sp.SourceCount, parts[ti].Count, parts[si].Count))
                         {
                             _stackPending.Remove(key);
                             _stackBackoff.Remove(key);
@@ -356,7 +359,7 @@ public sealed class InventoryManager
             // Enqueue accepted — record PENDING, confirm on a later snapshot. Do NOT
             // add the pair-key on success (the old bug that poisoned good merges and
             // starved multi-partial consolidation).
-            _stackPending[pairKey] = new Pending { EnqueuedAt = DateTime.Now, FromContainer = playerId };
+            _stackPending[pairKey] = new Pending { EnqueuedAt = DateTime.Now, FromContainer = playerId, TargetCount = target.Count, SourceCount = source.Count };
             return true; // one action per tick
         }
 
@@ -409,17 +412,21 @@ public sealed class InventoryManager
     // ── Stack-size / group-key lookup ─────────────────────────────────────
 
     /// <summary>
-    /// AutoStack group key: WCID when known (Decal Type / TryGetObjectWcid), else name.
-    /// Name-only is a cold-start fallback; once WCID is known, incompatible same-name
+    /// AutoStack group key: the WCID when known (Decal Type / TryGetObjectWcid), else the name.
+    /// Name-only is a cold-start fallback; once a WCID is known, same-name stacks of different
     /// weenies stay in separate groups.
     /// </summary>
+    internal static string StackGroupKey(int wcid, string? name) => wcid > 0 ? "w:" + wcid : "n:" + (name ?? "");
+
     private static string StackGroupKey(WorldObject item)
-    {
-        int wcid = item.Values(unchecked((int)WorldObjectCache.DecalTypeKey), 0);
-        if (wcid > 0) return "w:" + wcid.ToString();
-        string n = item.Name ?? "";
-        return "n:" + n;
-    }
+        => StackGroupKey(item.Values(unchecked((int)WorldObjectCache.DecalTypeKey), 0), item.Name);
+
+    /// <summary>
+    /// True when a merge we sent moved something: the target grew or the source shrank since it was
+    /// enqueued. Counts are read from the same snapshot, so a refused merge changes neither.
+    /// </summary>
+    internal static bool MergeProgressed(int targetBefore, int sourceBefore, int targetNow, int sourceNow)
+        => targetBefore > 0 && sourceBefore > 0 && (targetNow > targetBefore || sourceNow < sourceBefore);
 
     private static int GetMaxStackSize(WorldObject item)
     {

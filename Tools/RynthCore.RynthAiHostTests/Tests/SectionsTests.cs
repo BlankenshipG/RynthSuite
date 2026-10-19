@@ -22,6 +22,8 @@ internal static class SectionsTests
         r.Add("sections: the engine catalog places RynthAi's views by server", CatalogPlacement);
         r.Add("sections: tab surfaces map back to their tabs; foreign ids are refused", SurfaceRoundTrip);
         r.Add("sections: Character / Charms / Banking redirect to RynthOracle and Global Inventory", MovedTabRedirects);
+        r.Add("mini remote: Options left-click runs the Settings command with a chat parser, else the popup", OptionsClickRouting);
+        r.Add("mini remote: the header row (V/H, Options, gear) fits the narrowest remote", HeaderRowFits);
     }
 
     private static void MovedTabRedirects()
@@ -36,6 +38,24 @@ internal static class SectionsTests
         Check.Eq(MovedTabs.GlobalBank, "/ginv bank", "the Global Inventory command");
         Check.Eq(MovedTabs.GlobalInventory, "/ginv", "the Global Inventory window command");
         Check.Eq(MovedTabs.Diagnostics, "/rc diagnostics", "the engine's Diagnostics command");
+    }
+
+    private static void OptionsClickRouting()
+    {
+        Check.Eq(MiniRemoteHeader.OptionsLeftClickCommand(true), "/rc ui open Settings", "a chat parser: the engine opens RynthAi Settings");
+        Check.Eq(MiniRemoteHeader.OptionsLeftClickCommand(true), MovedTabs.Settings, "through MovedTabs.Settings");
+        Check.True(MiniRemoteHeader.OptionsLeftClickCommand(false) == null, "no chat parser: no command, the click opens the Mini Remote popup");
+        Check.True(MovedTabs.CommandFor("settings") == null, "Settings is not a moved Mini Remote tab");
+        Check.Eq(MovedTabs.HomeOf(MovedTabs.Settings), "RynthAi Settings (Advanced Settings)", "its words");
+    }
+
+    private static void HeaderRowFits()
+    {
+        // The remote's own item spacing is 4 (MiniRemoteHud pushes it); allow a theme up to 12.
+        foreach (float spacing in new[] { 3f, 4f, 8f, 12f })
+            Check.True(MiniRemoteHeader.RowWidth(spacing) <= MiniRemoteHud.MinColumnWidth,
+                $"header row {MiniRemoteHeader.RowWidth(spacing)} fits {MiniRemoteHud.MinColumnWidth} at spacing {spacing}");
+        Check.True(MiniRemoteHeader.GearButtonWidth >= 20f, "the gear stays clickable");
     }
 
     private const string Payload =

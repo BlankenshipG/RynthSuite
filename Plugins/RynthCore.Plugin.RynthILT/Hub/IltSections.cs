@@ -31,8 +31,8 @@ internal enum IltSection
     Gear,
     Games,
     /// <summary>
-    /// Vaulted Dungeons keeper (portal-recall gem + kill-client). Mini Remote tab on ILT worlds when
-    /// Options > Navigation > Vaulted Dungeons is enabled (RynthAi filters the tab).
+    /// Vaulted Dungeons keeper (portal-recall gem + kill-client). A Mini Remote tab on ILT worlds only,
+    /// and only while RynthAi's "Vaulted Dungeons" master switch (Settings > Navigation) is on.
     /// </summary>
     VaultedDungeons,
     /// <summary>Moved out (2026-10-13): RynthOracle's Character tab (the charms list).</summary>

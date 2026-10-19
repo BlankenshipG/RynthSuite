@@ -70,6 +70,8 @@ internal sealed class WeaponSwapTracker
     public string HoldReason { get; private set; } = "";
     /// <summary>A line to log once (a give-up), then cleared by the caller reading it.</summary>
     public string? Notice { get; set; }
+    /// <summary>The weapon given up on in the last <see cref="Next"/> (its tries used up), else null; the caller clears it.</summary>
+    public int? GaveUpId { get; set; }
 
     /// <summary>
     /// What to do about <paramref name="chosenId"/> with <paramref name="inHandId"/> in hand
@@ -222,6 +224,7 @@ internal sealed class WeaponSwapTracker
         if (!_tries.TryGetValue(id, out int tries) || tries < MaxTries) return;
         _tries.Remove(id);
         _restUntil[id] = now.AddMilliseconds(GiveUpMs);
+        GaveUpId = id;
         string name = nameOf?.Invoke(id) ?? "";
         Notice = $"0x{(uint)id:X8} '{name}' didn't wield after {MaxTries} tries ({why}) — fighting with what's in hand for {GiveUpMs / 60000:0.#} min";
     }

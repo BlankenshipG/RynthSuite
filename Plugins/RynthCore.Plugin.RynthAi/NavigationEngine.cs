@@ -1785,7 +1785,12 @@ internal sealed class NavigationEngine
             return false;
         }
 
-        _host.UseFor((uint)bestId, "Nav", $"portal/NPC waypoint '{target}'");
+        // A use the engine did not send (UseObject said no) is not a use: false lets the caller ask again.
+        if (!_host.UseFor((uint)bestId, "Nav", $"portal/NPC waypoint '{target}'"))
+        {
+            _host.Log($"Nav: UseObject portal '{target}' (0x{bestId:X8}) was not sent - will retry");
+            return false;
+        }
         // Publish the resolved object so the marker renderer can draw a ring +
         // line to the portal's real position (the waypoint coord is a placeholder).
         _settings.ActivePortalObjId = (uint)bestId;

@@ -21,11 +21,47 @@ internal static class IgnoreMonsterTests
 
     public static void Register(Runner r)
     {
+        r.Add("monster ignore: a profile with a Priority 0 row logs and says in chat what Priority 0 means now, once", PriorityZeroIsAnnounced);
         r.Add("monster ignore: a Priority 0 monster is never targeted", NotTargeted);
         r.Add("monster ignore: a Priority 0 monster holds nothing up (nav, combat, close-threat gates)", HoldsNothingUp);
         r.Add("monster ignore: the kill-shot swap does not count a Priority 0 monster as an alternate", KillShotAlternate);
         r.Add("monster ignore: a Priority 0 monster hitting the player is still never targeted", NotTargetedWhenAttackingUs);
         r.Add("monster ignore: Priority 1, no rule and the Default row behave as before", UnchangedForOtherPriorities);
+    }
+
+    // -- 0. the owner is told what Priority 0 means now -----------------------
+
+    private static int Notices() => FakeHost.Logs.Count(l => l.Contains("Priority 0 now means"));
+
+    private static void PriorityZeroIsAnnounced()
+    {
+        var c = World(GrubIgnored(), out var ids, (Grub, 3f));
+        var s = (LegacyUiSettings)typeof(CombatManager).GetField("_settings", Any)!.GetValue(c)!;
+        s.IsMacroRunning = true;
+        c.OnHeartbeat();                                   // the macro runs: the first check
+        c.OnHeartbeat();
+        c.NotePriorityZeroRules();
+        Check.Eq(Notices(), 1, "one log line for the profile's Priority 0 row, however often it is checked");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Priority 0 now means") && l.Contains("never attacked or tracked") && l.Contains(Grub)), "it says what it means and names the row");
+        Check.Eq(FakeHost.Chat.Count(l => l.Contains("Priority 0 now means")), 1, "and one chat notice");
+        Check.False(Scanned(c, ids[0]), "behavior unchanged: the Priority 0 monster is still never scanned");
+
+        // Another profile loads with the same Priority 0 rule: nothing new to say.
+        s.MonsterRules = GrubIgnored();
+        c.NotePriorityZeroRules();
+        Check.Eq(Notices(), 1, "the same Priority 0 set again: not repeated");
+        // A different Priority 0 row: said again.
+        s.MonsterRules = new() { new MonsterRule { Name = "Default", Priority = 1 }, new MonsterRule { Name = Soldier, Priority = 0 } };
+        c.NotePriorityZeroRules();
+        Check.Eq(Notices(), 2, "a different set of Priority 0 rows: said again");
+
+        // No Priority 0 row: silent.
+        var none = World(new() { new MonsterRule { Name = "Default", Priority = 1 }, new MonsterRule { Name = Grub, Priority = 2 } }, out _, (Grub, 3f));
+        none.NotePriorityZeroRules();
+        Check.Eq(Notices(), 0, "no Priority 0 row: no notice");
+        var noRules = World(null, out _, (Grub, 3f));
+        noRules.NotePriorityZeroRules();
+        Check.Eq(Notices(), 0, "default rules: no notice");
     }
 
     private static uint _next;

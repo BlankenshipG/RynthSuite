@@ -2249,11 +2249,7 @@ public sealed partial class RynthAiPlugin
             case "cancel": HandleCancelForceBuff(); break;
             case "skipped":
                 if (_buffManager == null) { ChatLine("[RynthAi] Buff manager not ready."); break; }
-                _buffManager.BuildDynamicBuffList();   // refresh the skip list
-                string summary = _buffManager.FilterSkipSummary();
-                ChatLine(summary.Length == 0
-                    ? "[RynthAi] Buff filter: nothing is being skipped."
-                    : $"[RynthAi] Buff filter skips: {summary}");
+                _buffManager.RequestSkipReport();   // chat commands run on AC's thread; the pump builds the list and answers
                 break;
             default:
                 ChatLine("[RynthAi] /ra buff force    - recast every buff now, whatever time is left");
@@ -2605,10 +2601,7 @@ public sealed partial class RynthAiPlugin
         if (allItems)
         {
             foreach (var item in matches)
-            {
-                int stackSize = Math.Max(1, item.Values(LongValueKey.StackCount, 1));
-                EnqueueGive((uint)item.Id, (uint)target.Id, stackSize);
-            }
+                EnqueueGive((uint)item.Id, (uint)target.Id, 0);   // 0 = the whole stack, whatever it reads at send time
             ChatLine($"[RynthAi] Queued {matches.Count} stack(s) matching '{itemPart}' → {target.Name}");
         }
         else if (countGiven)
@@ -2629,8 +2622,8 @@ public sealed partial class RynthAiPlugin
             }
             if (gives.Count == 1)
             {
-                GiveItem((uint)gives[0].Item.Id, (uint)target.Id, gives[0].Amount,
-                    Math.Max(1, gives[0].Item.Values(LongValueKey.StackCount, 1)));
+                // Through the queue: an NPC that takes one item per give needs the repeat-until-met loop.
+                EnqueueGive((uint)gives[0].Item.Id, (uint)target.Id, gives[0].Amount);
                 ChatLine($"[RynthAi] Giving {gives[0].Amount} x '{gives[0].Item.Name}' to {target.Name}");
             }
             else
@@ -2710,8 +2703,7 @@ public sealed partial class RynthAiPlugin
                 if (IsGiveProfileExempt(item)) continue;
                 var (action, _) = Loot.LootEvaluator.Classify(nativeProfile, item, null);
                 if (action != RynthCore.Loot.LootAction.Keep) continue;
-                int stackSize = Math.Max(1, item.Values(LongValueKey.StackCount, 1));
-                EnqueueGive((uint)item.Id, (uint)target.Id, stackSize);
+                EnqueueGive((uint)item.Id, (uint)target.Id, 0);   // 0 = the whole stack
                 queued++;
             }
         }
@@ -2726,8 +2718,7 @@ public sealed partial class RynthAiPlugin
                 foreach (var rule in vtProfile.Rules)
                     if (VTankLootEvaluator.Match(rule, item, lootCtx)) { matched = rule; break; }
                 if (matched == null || (matched.Action != VTankLootAction.Keep && matched.Action != VTankLootAction.KeepUpTo)) continue;
-                int stackSize = Math.Max(1, item.Values(LongValueKey.StackCount, 1));
-                EnqueueGive((uint)item.Id, (uint)target.Id, stackSize);
+                EnqueueGive((uint)item.Id, (uint)target.Id, 0);   // 0 = the whole stack
                 queued++;
             }
         }

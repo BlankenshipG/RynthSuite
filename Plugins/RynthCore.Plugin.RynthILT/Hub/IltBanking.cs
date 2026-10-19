@@ -15,9 +15,13 @@
 //   are bound (deposit and withdraw only); pyreal peas and luminance tokens deposit only.
 // Deposit, withdraw and transfer share the server's bank_command_limit throttle; a balance
 // refresh doesn't, so it has its own (client-side) spacing.
-// Balance lines are parsed whenever they appear. They are EATEN for quiet Hub refreshes
-// (login probe, auto-refresh, Banking tab Refresh) and shown only when the player asked
-// (typed /bank, or RequestRefresh(quiet: false)). Transfers always need a confirmation.
+// Balance lines are parsed whenever they appear (player-typed /bank too) but only EATEN
+// when the Hub asked. Transfers always need a confirmation (UB had none).
+// Backstop (SilentKelpie's PR 12, narrowed): the capture queue eats a quiet refresh's reply, but if
+// it misses, balance-dump lines arriving within QuietBalanceWindowMs of a quiet refresh are eaten
+// here. Only the dump itself (header and "Label: N" lines): other [BANK] lines (errors, bound-coin
+// notes), Transferred / Received lines, and balance reads nobody here asked for (a macro's or another
+// plugin's /bank, outside the window) are left alone.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -58,12 +62,10 @@ internal sealed class IltBanking : IIltFeature
     private long _moveUntil;
     /// <summary>How long after a deposit / withdrawal reply the moved amounts are not income (covers the balance re-read).</summary>
     private const long MoveWindowMs = 12_000;
-    /// <summary>
-    /// Until this tick, [BANK] balance lines may show in chat (player typed /bank or asked for a
-    /// loud refresh). Quiet Hub / login probes leave this at 0 so the lines stay hidden.
-    /// </summary>
-    private long _showBankReplyUntil;
-    private const long ShowBankReplyWindowMs = 15_000;
+    /// <summary>Until this tick, a balance dump that reaches chat is the reply to a quiet Hub refresh (0 = no quiet refresh out).</summary>
+    private long _quietBalanceUntil;
+    /// <summary>How long after a quiet refresh is queued its leaked dump lines are still eaten here.</summary>
+    internal const long QuietBalanceWindowMs = 15_000;
 
     // Render-thread form state.
     private string _amountText = string.Empty;
@@ -124,12 +126,12 @@ internal sealed class IltBanking : IIltFeature
     // ── Commands ────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Player typed /bank (or /b with no verb) in the chat bar: the next balance dump may show.
-    /// Pump thread.
+    /// Player typed /bank (or /b with no verb) in the chat bar: the next balance dump shows, even
+    /// within a quiet refresh's window (the player asked for it). Pump thread.
     /// </summary>
     public void NoteTypedBalanceCommand()
     {
-        _showBankReplyUntil = IltHubContext.NowMs + ShowBankReplyWindowMs;
+        _quietBalanceUntil = 0;
         RynthLog.Trace(LogCat.IltBanking, "NoteTypedBalanceCommand: next [BANK] dump may show in chat");
     }
 
@@ -141,8 +143,7 @@ internal sealed class IltBanking : IIltFeature
         long now = IltHubContext.NowMs;
         if (now - _lastBalanceAt < BalanceSpacingMs) return;
         _lastBalanceAt = now;
-        if (!quiet)
-            _showBankReplyUntil = now + ShowBankReplyWindowMs;
+        _quietBalanceUntil = quiet ? now + QuietBalanceWindowMs : 0;
         _ctx.Capture.Enqueue(new IltChatRequest
         {
             Command = "/bank",
@@ -312,12 +313,9 @@ internal sealed class IltBanking : IIltFeature
     {
         if (text.StartsWith("[BANK]", StringComparison.OrdinalIgnoreCase))
         {
-            ParseBalanceLine(text);
-            // Capture.Eat already hides quiet refreshes; this is the backstop when that miss
-            // (Silentstorm 2026-10-16: Mini Remote open + 120s auto-refresh leaked every dump).
-            // Show only while the player asked (typed /bank or loud RequestRefresh).
-            bool show = IltHubContext.NowMs < _showBankReplyUntil;
-            return !show;
+            bool dump = ParseBalanceLine(text);
+            // Eating is decided by the capture queue; this only backs it up for a quiet refresh's dump.
+            return EatLeakedDump(dump, IltHubContext.NowMs, _quietBalanceUntil);
         }
         // A deposit or withdrawal reply (ours or a typed /b): the next balance and pack changes are moves.
         if (text.StartsWith("Deposited ", StringComparison.Ordinal) || text.StartsWith("Withdrew ", StringComparison.Ordinal))
@@ -333,27 +331,67 @@ internal sealed class IltBanking : IIltFeature
 
     // ── Parsing ─────────────────────────────────────────────────────────────
 
-    private void ParseBalanceLine(string text)
+    /// <summary>
+    /// True when a quiet refresh's dump line that reached chat should be eaten here: it is a balance
+    /// line (see <see cref="ParseBalanceLine"/>) and a quiet refresh was queued within the window.
+    /// </summary>
+    internal static bool EatLeakedDump(bool isBalanceLine, long nowMs, long quietUntilMs)
+        => isBalanceLine && quietUntilMs != 0 && nowMs < quietUntilMs;
+
+    /// <summary>The balance key a dump label belongs to ("Weakly Enlightened Coins" -> WeaklyEnlightenedCoins), or null.</summary>
+    internal static string? BalanceKeyFor(string label)
     {
+        // Order matters: "Weakly Enlightened Coins" also contains "Enlightened Coins".
+        if (label.Contains("Prestige", StringComparison.OrdinalIgnoreCase)) return "PrestigeCoins";
+        if (label.Contains("Weakly", StringComparison.OrdinalIgnoreCase)) return "WeaklyEnlightenedCoins";
+        if (label.Contains("Enlightened", StringComparison.OrdinalIgnoreCase)) return "EnlightenedCoins";
+        if (label.Contains("Mythical", StringComparison.OrdinalIgnoreCase)) return "MythicalKeys";
+        if (label.Contains("Legendary", StringComparison.OrdinalIgnoreCase)) return "LegendaryKeys";
+        if (label.Contains("Luminance", StringComparison.OrdinalIgnoreCase)) return "Luminance";
+        if (label.Contains("Pyreal", StringComparison.OrdinalIgnoreCase)) return "Pyreals";
+        return null;
+    }
+
+    /// <summary>
+    /// True when a "[BANK] ..." line is part of the /bank balance dump: the "Your balances are:" header
+    /// or a "Label: N" line for a known currency. Errors, the bound-coin note and the like are not.
+    /// </summary>
+    internal static bool IsBalanceDumpLine(string text)
+    {
+        if (!text.StartsWith("[BANK]", StringComparison.OrdinalIgnoreCase)) return false;
+        string body = text.Substring("[BANK]".Length).Trim();
+        if (body.StartsWith("Your balances", StringComparison.OrdinalIgnoreCase)) return true;
+        int colon = body.IndexOf(':');
+        if (colon <= 0) return false;
+        if (body.Substring(colon + 1).Trim().Length == 0) return true;   // a header ending in a colon
+        return BalanceKeyFor(body.Substring(0, colon).Trim()) != null;
+    }
+
+    /// <summary>Reads a "[BANK] ..." line into the balances. Returns <see cref="IsBalanceDumpLine"/>.</summary>
+    private bool ParseBalanceLine(string text)
+    {
+        if (!IsBalanceDumpLine(text)) return false;
         string body = text.Substring("[BANK]".Length).Trim();
         int colon = body.IndexOf(':');
-        if (colon <= 0) return;
+        if (colon <= 0 || body.Substring(colon + 1).Trim().Length == 0) return true;   // a header: nothing to read
         string label = body.Substring(0, colon).Trim();
         long value = IltParse.ParseLeadingLong(body.Substring(colon + 1));
-        if (body.Substring(colon + 1).Trim().Length == 0) return; // header "Your balances are:"
 
-        // Order matters: "Weakly Enlightened Coins" also contains "Enlightened Coins".
-        if (label.Contains("Prestige", StringComparison.OrdinalIgnoreCase)) Apply("PrestigeCoins", ref Bank.PrestigeCoins, value);
-        else if (label.Contains("Weakly", StringComparison.OrdinalIgnoreCase)) Apply("WeaklyEnlightenedCoins", ref Bank.WeaklyEnlightenedCoins, value);
-        else if (label.Contains("Enlightened", StringComparison.OrdinalIgnoreCase)) Apply("EnlightenedCoins", ref Bank.EnlightenedCoins, value);
-        else if (label.Contains("Mythical", StringComparison.OrdinalIgnoreCase)) Apply("MythicalKeys", ref Bank.MythicalKeys, value);
-        else if (label.Contains("Legendary", StringComparison.OrdinalIgnoreCase)) Apply("LegendaryKeys", ref Bank.LegendaryKeys, value);
-        else if (label.Contains("Luminance", StringComparison.OrdinalIgnoreCase)) Apply("Luminance", ref Bank.Luminance, value);
-        else if (label.Contains("Pyreal", StringComparison.OrdinalIgnoreCase)) Apply("Pyreals", ref Bank.Pyreals, value);
-        else return;
+        switch (BalanceKeyFor(label))
+        {
+            case "PrestigeCoins": Apply("PrestigeCoins", ref Bank.PrestigeCoins, value); break;
+            case "WeaklyEnlightenedCoins": Apply("WeaklyEnlightenedCoins", ref Bank.WeaklyEnlightenedCoins, value); break;
+            case "EnlightenedCoins": Apply("EnlightenedCoins", ref Bank.EnlightenedCoins, value); break;
+            case "MythicalKeys": Apply("MythicalKeys", ref Bank.MythicalKeys, value); break;
+            case "LegendaryKeys": Apply("LegendaryKeys", ref Bank.LegendaryKeys, value); break;
+            case "Luminance": Apply("Luminance", ref Bank.Luminance, value); break;
+            case "Pyreals": Apply("Pyreals", ref Bank.Pyreals, value); break;
+            default: return false;
+        }
 
         Bank.LastUpdated = DateTime.Now;
         _ctx.Options.Set(IltFeature.Bank, IltTri.On);
+        return true;
     }
 
     private void Apply(string key, ref long field, long value)

@@ -48,6 +48,8 @@ public sealed partial class RynthAiPlugin
     private int _corpseIdAcceptedThisTick;
     private long _corpseIdBudgetAt;   // when the budget last started over (a scan tick, or CorpseIdRefusedRetryMs without one)
     private const long CorpseIdReaskMs = 3000;   // no appraisal data this long after an accepted request: ask once more
+    private const int CorpseIdMaxReasks = 3;     // ...at most this many times per corpse (each accepted ask raises the client's busy count and holds opens)
+    private readonly Dictionary<int, int> _corpseIdAskCount = new(); // accepted requests per corpse, the first included
     private int _busyCount;
     private long _busyCountLastIncrementAt;
     private long _busyCountBecamePositiveAt; // when count first went 0→positive
@@ -399,6 +401,7 @@ public sealed partial class RynthAiPlugin
             _corpseIdRequested.Clear();
             _corpseIdAskedAt.Clear();
             _corpseIdRefusedAt.Clear();
+            _corpseIdAskCount.Clear();
         }
         if (_corpseSkipLogged.Count > 200)
             _corpseSkipLogged.Clear();
@@ -1019,8 +1022,11 @@ public sealed partial class RynthAiPlugin
     /// requests, so a refused or dropped one is asked again. A refused one is retried every
     /// CorpseIdRefusedRetryMs; an accepted one with no data is asked again every CorpseIdReaskMs, and only for
     /// the corpse the bot is targeting or has open (any other corpse in range gets one accepted request, not a
-    /// stream). At most CorpseIdPerTick requests are accepted per scan tick, so a refusal window ending with
-    /// many uncached corpses in range does not burst. No give-up cap.
+    /// stream), at most CorpseIdMaxReasks times, and only while the loot mode needs the killer name (My Kills
+    /// Only, Fellowship Kills). All Corpses still gets the one first request (the radar colours own kills from
+    /// it) but never a stream of them; Recover My Corpse keeps its own 5 s ask (RequestOwnCorpseId). At most
+    /// CorpseIdPerTick requests are accepted per scan tick, so a refusal window ending with many uncached
+    /// corpses in range does not burst.
     /// </summary>
     private void TryRequestCorpseId(WorldObject corpse, string longDesc)
     {
@@ -1028,14 +1034,17 @@ public sealed partial class RynthAiPlugin
         long idNow = ActionPacer.NowMs();
         if (idNow - _corpseIdBudgetAt >= CorpseIdRefusedRetryMs) { _corpseIdAcceptedThisTick = 0; _corpseIdBudgetAt = idNow; }   // evaluations outside a scan must not exhaust it for good
         bool candidate = corpse.Id == _targetCorpseId || (_openedContainerId != 0 && corpse.Id == _openedContainerId);
+        int asks = _corpseIdAskCount.TryGetValue(corpse.Id, out int askCount) ? askCount : 0;
         bool due = !_corpseIdRequested.Contains(corpse.Id)
-                   || (candidate && _corpseIdAskedAt.TryGetValue(corpse.Id, out long askedAt) && idNow - askedAt >= CorpseIdReaskMs);
+                   || (candidate && asks <= CorpseIdMaxReasks && CorpseNameNeeded()
+                       && _corpseIdAskedAt.TryGetValue(corpse.Id, out long askedAt) && idNow - askedAt >= CorpseIdReaskMs);
         if (!due || _corpseIdAcceptedThisTick >= CorpseIdPerTick) return;
         if (_corpseIdRefusedAt.TryGetValue(corpse.Id, out long refusedAt) && idNow - refusedAt < CorpseIdRefusedRetryMs) return;
         if (Host.RequestId(unchecked((uint)corpse.Id)))
         {
             _corpseIdRequested.Add(corpse.Id);
             _corpseIdAskedAt[corpse.Id] = idNow;
+            _corpseIdAskCount[corpse.Id] = asks + 1;
             _corpseIdRefusedAt.Remove(corpse.Id);
             _corpseIdAcceptedThisTick++;
         }
@@ -1044,6 +1053,9 @@ public sealed partial class RynthAiPlugin
             _corpseIdRefusedAt[corpse.Id] = idNow;
         }
     }
+
+    /// <summary>The loot mode reads the killer name (My Kills Only, Fellowship Kills); All Corpses does not.</summary>
+    private bool CorpseNameNeeded() => (_dashboard?.Settings?.LootOwnership ?? 0) < 2;
 
     private CorpseLootDecision EvaluateCorpseLootDecision(WorldObject? corpse)
     {
@@ -1917,6 +1929,10 @@ public sealed partial class RynthAiPlugin
     }
 
     private bool _pickupHeldLogged;
+    private long _pickupHoldTickAt;   // CorpseNowMs of the previous held call; 0 = no hold running
+
+    /// <summary>A gap between two held calls longer than this was not one continuous hold (the corpse clock is not paid back for it).</summary>
+    internal const long PickupHoldMaxGapMs = 500;
 
     /// <summary>
     /// True while the server owes an answer to a cast or use (ActionPacer): ACE refuses a pickup
@@ -1930,6 +1946,7 @@ public sealed partial class RynthAiPlugin
         if (!ActionPacer.Outstanding(Host, out var pending) || pending == null)
         {
             _pickupHeldLogged = false;
+            _pickupHoldTickAt = 0;
             return false;
         }
         if (!_pickupHeldLogged)
@@ -1937,7 +1954,30 @@ public sealed partial class RynthAiPlugin
             _pickupHeldLogged = true;
             LootDiag($"[RynthAi] Corpse loot: pickup waits - the server still owes an answer to {ActionPacer.Describe(pending.Kind, pending.Label)} ({pending.Who}).");
         }
+        PauseCorpseClockWhileHeld();
         return true;
+    }
+
+    /// <summary>
+    /// The corpse's timeout clock does not run while a pickup is held for the server's answer to a
+    /// cast or use, as it does not for the buff / salvage-panel holds (FreezeCorpseTimeout). The hold
+    /// is bounded by the pacer: an action unanswered past its limit (ActionPacer.CastMaxMs for a
+    /// cast) stops being outstanding. FreezeCorpseTimeout itself cannot be used here: the
+    /// open-container branch of TickCorpseOpening resets its frozen age every tick, so this adds the
+    /// time since the previous held call to the claim time instead. Without it a corpse held for
+    /// 12 s timed out the moment the cast was answered, and AbandonCurrentCorpse gave the opened
+    /// corpse the 30-minute completed mark, which skipped its loot.
+    /// </summary>
+    private void PauseCorpseClockWhileHeld()
+    {
+        long now = CorpseNowMs;
+        long last = _pickupHoldTickAt;
+        _pickupHoldTickAt = now;
+        if (last == 0 || _targetCorpseId == 0 || _corpseTargetSince == 0)
+            return;
+        long gap = now - last;
+        if (gap > 0 && gap <= PickupHoldMaxGapMs)
+            _corpseTargetSince += gap;
     }
 
     private void TickPendingCorpsePickup(LegacyUiSettings settings)
@@ -3398,6 +3438,7 @@ public sealed partial class RynthAiPlugin
         _corpseIdRequested.Remove(sid);
         _corpseIdAskedAt.Remove(sid);
         _corpseIdRefusedAt.Remove(sid);
+        _corpseIdAskCount.Remove(sid);
         _corpseSkipLogged.Remove(sid);
         _corpseWaitingSince.Remove(sid);
 
@@ -3554,14 +3595,40 @@ public sealed partial class RynthAiPlugin
     /// <summary>A held-back close is sent anyway when no other corpse has been opened this long.</summary>
     internal const long DeferredCloseMaxMs = 3000;
 
-    /// <summary>Another corpse to loot is in range (the finished one is already marked completed).</summary>
+    /// <summary>
+    /// Another corpse to loot is in range (the finished one is already marked completed) and the
+    /// looter can go to it now: <see cref="CanClaimNextCorpse"/>. A corpse that combat, a full pack, a
+    /// refusing server or a buff / mana drain hold keeps from being claimed would leave the finished
+    /// one open for nothing (metas and Lua read the open container meanwhile).
+    /// </summary>
     private bool OtherCorpseToLoot(int doneCorpseId)
     {
         var settings = _dashboard?.Settings;
         if (settings == null || _objectCache == null) return false;
         double maxMeters = GetCorpseApproachRangeMaxMeters(settings);
         if (maxMeters <= 0.25) return false;
+        if (!CanClaimNextCorpse(settings, maxMeters)) return false;
         return TryFindNearestCorpse(maxMeters, out WorldObject? next, out _) && next != null && next.Id != doneCorpseId;
+    }
+
+    /// <summary>
+    /// The holds TickCorpseOpening applies before it claims or opens a corpse, as one answer for
+    /// "would the next corpse be claimed now": looting blocked by a full pack (your own corpse
+    /// excepted), the use-refusal back-off, buffing, a mana drain, and combat's priority (the open
+    /// container no longer shields a claim once the finished corpse is released). What the activity
+    /// arbiter hands out later is not known here; the deferred close is sent after DeferredCloseMaxMs,
+    /// or as soon as one of these holds starts (TickDeferredClose). Distance is no reason to close
+    /// early: a far corpse is used at once and the server walks the character to it.
+    /// </summary>
+    private bool CanClaimNextCorpse(LegacyUiSettings settings, double maxMeters)
+    {
+        if (IsLootingBlockedByPack(settings) && !OwnCorpseBypassesPackGate(settings, maxMeters)) return false;
+        if (_useRefusals.HoldsOpens(CorpseNowMs)) return false;
+        if (string.Equals(settings.BotAction, "Buffing", StringComparison.OrdinalIgnoreCase)) return false;
+        if (_manaStoneManager?.HoldsLootForDrain() == true) return false;
+        if (settings.EnableCombat && _combatManager?.HasTargets == true && !settings.BoostLootPriority && !_lootStarveTurn)
+            return false;
+        return true;
     }
 
     /// <summary>Holds the close of a finished corpse back. Only when the engine can close it later and
@@ -3593,10 +3660,13 @@ public sealed partial class RynthAiPlugin
             return;
         }
         bool stopped = !settings.IsMacroRunning || !settings.EnableLooting || settings.BoostNavPriority;
-        if (!stopped && CorpseNowMs - _closeDeferredAt < DeferredCloseMaxMs)
+        // A hold that began after the close was deferred (a fight, a full pack) ends the wait too.
+        double maxMeters = GetCorpseApproachRangeMaxMeters(settings);
+        bool blocked = !stopped && maxMeters > 0.25 && !CanClaimNextCorpse(settings, maxMeters);
+        if (!stopped && !blocked && CorpseNowMs - _closeDeferredAt < DeferredCloseMaxMs)
             return;
         _closeDeferredFor = 0;
-        CloseCorpseContainer(id, stopped ? "completed; looting stopped" : "completed; no other corpse opened");
+        CloseCorpseContainer(id, stopped ? "completed; looting stopped" : blocked ? "completed; the next corpse can't be claimed now" : "completed; no other corpse opened");
     }
 
     private void CloseCorpseContainer(int corpseId, string why)

@@ -204,9 +204,10 @@ internal sealed class CombatHudTracker
 
         if (_appraiseAttempts >= AppraiseMaxAttempts || !_host.HasRequestId) return;
         if (_lastAppraiseAt != 0 && now - _lastAppraiseAt < AppraiseRetryMs) return;
+        // Counted only when the engine took it (it refuses around a death or a portal).
+        if (!_host.RequestId(uid)) return;
         _appraiseAttempts++;
         _lastAppraiseAt = now;
-        _host.RequestId(uid);
     }
 
     /// <summary>Polls the pet's health, then hands the server's health stream back to the fight target.</summary>

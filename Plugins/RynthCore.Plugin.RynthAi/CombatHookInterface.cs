@@ -406,6 +406,7 @@ internal static unsafe class CombatHookInterface
         _table = null;
         if (t != null) NativeMemory.Free(t);
         CombatHook.Reset();
+        CombatHook.LastUseDone = null;   // the lambda captured the host: don't keep a shut-down instance's host alive
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]

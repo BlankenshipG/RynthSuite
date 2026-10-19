@@ -44,9 +44,6 @@ internal sealed partial class OracleView
     private void DrawConquestBank(UiWindow w)
     {
         ConquestData cq = _c.Conquest;
-        w.Button("Refresh", "cq.bank.refresh", () => _c.Send(cq.RequestBank(_c.NowMs)));
-        w.Tooltip("Sends /b and reads your balances.");
-        w.SameLine();
         w.TextDisabled(ReadAt(cq.BankUtc));
         foreach (NamedValue b in cq.Bank.OrderBy(b => b.Name, StringComparer.OrdinalIgnoreCase))
         {
@@ -90,9 +87,6 @@ internal sealed partial class OracleView
     private void DrawConquestAugs(UiWindow w)
     {
         ConquestData cq = _c.Conquest;
-        w.Button("Refresh", "cq.augs.refresh", () => _c.Send(cq.RequestAugs(_c.NowMs)));
-        w.Tooltip("Sends /augs.");
-        w.SameLine();
         w.TextDisabled($"{ReadAt(cq.AugsUtc)}, {cq.AugTotal} in total");
         w.TextDisabled("Aug"); w.SameLine(120f); w.TextDisabled("Have"); w.SameLine(170f); w.TextDisabled("Next costs"); w.SameLine(330f); w.TextDisabled("Effect now");
         foreach (ConquestAug a in cq.Augs)
@@ -111,9 +105,6 @@ internal sealed partial class OracleView
     private void DrawConquestEnl(UiWindow w)
     {
         ConquestData cq = _c.Conquest;
-        w.Button("Refresh", "cq.enl.refresh", () => _c.Send(cq.RequestEnl(_c.NowMs)));
-        w.Tooltip("Sends /enl augs.");
-        w.SameLine();
         w.TextDisabled(ReadAt(cq.EnlUtc));
         foreach (NamedValue a in cq.EnlAugs)
         {
@@ -157,9 +148,6 @@ internal sealed partial class OracleView
         w.Text($"Next costs {TimeText.Number(ConquestData.EnlCoinCost(target))} coins and {(ConquestData.EnlLuminanceCost(target) / 1_000_000.0):0.##}M luminance");
 
         w.SeparatorText("Experience bonuses");
-        w.Button("Refresh", "cq.bonus.refresh", () => _c.Send(cq.RequestBonus(_c.NowMs)));
-        w.Tooltip("Sends /bonus.");
-        w.SameLine();
         w.TextDisabled(ReadAt(cq.BonusUtc));
         foreach (NamedValue b in cq.Bonuses)
         {
@@ -172,9 +160,6 @@ internal sealed partial class OracleView
     private void DrawConquestFships(UiWindow w)
     {
         ConquestData cq = _c.Conquest;
-        w.Button("Refresh", "cq.fship.refresh", () => _c.Send(cq.RequestFships(_c.NowMs)));
-        w.Tooltip("Sends /fship list.");
-        w.SameLine();
         w.TextDisabled($"{ReadAt(cq.FshipUtc)}, {cq.Fellowships.Count} looking for members");
         w.Combo("Sort", "cq.fship.sort", _fshipSort, new[] { "Name", "Leader", "Most members", "Location" }, i => _fshipSort = i);
         var list = _fshipSort switch

@@ -39,6 +39,14 @@ internal static class OffhandTests
         r.Add("offhand: dual wield with the Dual Wield skill", DualWield);
         r.Add("offhand: the weapon in hand is the main hand's when the wielded slot reads 0 (the weenie's wielder record)", InHandFromWielderInfo);
         r.Add("weapons: a weapon refused 'skill too low' is left out of the choice (the off hand stays)", SkillTooLowLeftOut);
+        r.Add("offhand: two weapons wielded and no slot read says which: the one RynthAi put in the off hand is the off hand's", OffhandRemembered);
+        r.Add("weapons: a weapon in a pack is not in hand, though its wielder record still says the player", PackedIsNotWielded);
+        r.Add("weapons: the equip step wields a weapon whose stale wielder record says 'in hand' while it is in a pack", EquipIgnoresStaleRecord);
+        r.Add("weapons: a wielded item the client lists in the player's own contents is still wielded", WieldedInOwnContentsIsWielded);
+        r.Add("tracker (v87): the server's list decides what is in hand, whatever the client's stale fields say", TrackerDecidesInHand);
+        r.Add("tracker (v87): the main hand and the off hand come from the server's slots", TrackerHands);
+        r.Add("tracker (v87): not ready yet (-1): the old reads answer", TrackerNotReadyFallsBack);
+        r.Add("weapons: a two-hander needing untrained Two Handed Combat is never chosen, so the off hand stays", UnmetRequirementNotChosen);
         r.Add("offhand: no Dual Wield skill -> the shield", NoSkillShield);
         r.Add("offhand: None -> hands off (a worn shield is never taken off)", NoneHandsOff);
         r.Add("offhand: an unlisted shield is never wielded", UnlistedNeverUsed);
@@ -120,9 +128,12 @@ internal static class OffhandTests
         private readonly MethodInfo _equip = typeof(CombatManager).GetMethod("EquipWeaponAndSetStance", BindingFlags.Instance | BindingFlags.NonPublic)!;
         private readonly FieldInfo _lastEquip = typeof(CombatManager).GetField("_lastEquipTime", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
-        public Rig(bool dualWieldSkill = false, bool shieldOn = false, bool wieldCalls = true, bool wielderInfo = false, bool weenieErrors = false)
+        public Rig(bool dualWieldSkill = false, bool shieldOn = false, bool wieldCalls = true, bool wielderInfo = false, bool weenieErrors = false,
+                   bool contents = false, bool tracker = false)
         {
             FakeHost.Reset();
+            FakeHost.EquippedCalls = tracker;         // v87 GetWieldedItems (answering FakeHost.Equipped)
+            FakeHost.ContentsCalls = contents;        // the client's container walk (answering FakeHost.Containers)
             FakeHost.WeaponCalls = true;
             FakeHost.SalvageCalls = wielderInfo;      // GetObjectWielderInfo (answering FakeHost.Wielded)
             FakeHost.WeenieErrorCalls = weenieErrors;
@@ -142,6 +153,9 @@ internal static class OffhandTests
             if (shieldOn) Wield(Shield, ShieldSlot);
             FakeHost.Wcids[Monster] = Wcid;
             FakeHost.Skills[(Player, 49)] = dualWieldSkill ? (220, 2) : (10, 1);
+            // With the container walk: a side pack in the main pack, which also turns on the
+            // ownership read (GetObjectOwnershipInfo: the item's own container field).
+            if (contents) { FakeHost.Names[Pack] = "Pack"; FakeHost.ItemTypes[Pack] = 0x200; FakeHost.Containers[Pack] = Player; }
             var host = FakeHost.Create(wielderInfo ? Player : 0);
             var cache = FakeHost.MakeCache(host, Player, new[] { Sword, Dagger, Great, Shield, Round, Bow, Arrows, Wand });
             C = new CombatManager(host, S, cache);
@@ -443,6 +457,142 @@ internal static class OffhandTests
         rig.C.InHandOverride = null;
         Check.Eq(unchecked((uint)rig.C.InHandWeaponId(fresh: true)), Sword, "the main hand: the sword, not the off-hand dagger");
         Check.Eq(unchecked((uint)rig.C.OffhandInSlot(fresh: true)), Dagger, "the off hand: the dagger");
+    }
+
+    // 2026-10-17: the off-hand Frost Hand Wraps read as the main weapon again (no slot read said
+    // Shield), a swap went out for the Acid pair already in the main hand, and Drakkon fought
+    // bare-handed; the off-hand wield also waited out its full confirm time every fight.
+    private static void OffhandRemembered()
+    {
+        var rig = new Rig(dualWieldSkill: true, wielderInfo: true);
+        rig.List(Sword, Dagger);
+        rig.S.PreferDualWield = true;
+        rig.Tick();
+        Check.Eq(rig.ShieldWields(Dagger), 1, "the dagger is wielded into the off hand");
+        // Both now wielded, and both read as melee-slot items (no Shield slot anywhere).
+        Rig.Unwield(Sword);
+        FakeHost.Wielded[Sword] = (uint)MeleeSlot;
+        FakeHost.Wielded[Dagger] = (uint)MeleeSlot;
+        rig.C.InHandOverride = null;
+        Check.Eq(unchecked((uint)rig.C.InHandWeaponId(fresh: true)), Sword, "the main hand: the sword");
+        Check.Eq(unchecked((uint)rig.C.OffhandInSlot(fresh: true)), Dagger, "the off hand: the dagger RynthAi put there");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("two weapons read as in hand")), "the slot reads are logged");
+        Check.True(rig.Tick(), "sword and dagger: ready, no wait on the off-hand confirm");
+    }
+
+    // 2026-10-17: buffing put both Hand Wraps into the pack for the wand; their wielder records still
+    // said the player, combat took him as armed, and Drakkon fought bare-handed until he died.
+    private static void PackedIsNotWielded()
+    {
+        var rig = new Rig(wielderInfo: true, contents: true);
+        rig.List(Sword, Dagger);
+        Rig.Unwield(Sword);
+        FakeHost.Containers[Sword] = Pack;              // in a side pack (where buffing's wand swap puts it)
+        FakeHost.Wielded[Sword] = (uint)MeleeSlot;      // a wielder record left over from when it was wielded
+        rig.C.InHandOverride = null;
+        Check.Eq(rig.C.InHandWeaponId(fresh: true), 0, "nothing in hand: the sword is in the pack");
+        FakeHost.Containers.Remove(Sword);              // wielded again
+        System.Threading.Thread.Sleep(300);             // the walk refreshes after 250 ms of real time
+        Check.Eq(unchecked((uint)rig.C.InHandWeaponId(fresh: true)), Sword, "back in hand: the sword");
+    }
+
+    // 2026-10-18: the player's own contents hold the wielded items too (the export listed the
+    // wielded Sceptre). Read as "in the pack", buffing ignored the caster in hand and tried every
+    // other one; combat could take a wielded weapon for one in the pack.
+    private static void WieldedInOwnContentsIsWielded()
+    {
+        var rig = new Rig(wielderInfo: true, contents: true);
+        rig.List(Sword);
+        Rig.Unwield(Sword);
+        FakeHost.Wielded[Sword] = (uint)MeleeSlot;      // wielded: the record says so
+        FakeHost.ContentsExtra[Player] = new() { Sword };   // and the client lists it in the player's contents, with no container
+        rig.C.InHandOverride = null;
+        Check.Eq(unchecked((uint)rig.C.InHandWeaponId(fresh: true)), Sword, "in hand: the sword, though the walk lists it");
+    }
+
+    // 2026-10-18 00:07: after buffing's wand swap the equip step read the Acid Hand Wraps as wielded
+    // (their wielder record still named Drakkon) while they sat in the pack, and attacked bare-handed.
+    private static void EquipIgnoresStaleRecord()
+    {
+        var rig = new Rig(wielderInfo: true, contents: true);
+        rig.List(Sword);
+        Rig.Unwield(Sword);
+        FakeHost.Containers[Sword] = Pack;              // in a side pack (where buffing's wand swap puts it)
+        FakeHost.Wielded[Sword] = (uint)MeleeSlot;      // the stale record
+        rig.C.InHandOverride = null;
+        rig.Tick();
+        Check.True(FakeHost.Uses.Contains(Sword), "the sword is wielded, not taken as already in hand");
+    }
+
+    // 2026-10-18: every read of the client's own fields had a way to be wrong (the slot reads 0, the
+    // wielder record outlives the move into a pack, the player's contents list wielded items). With
+    // the engine's tracker (the server's messages) the answer is the server's.
+    private static void TrackerDecidesInHand()
+    {
+        var rig = new Rig(wielderInfo: true, tracker: true);
+        rig.List(Sword);
+        Rig.Wield(Sword, MeleeSlot);                    // the client's fields say: in hand
+        FakeHost.Wielded[Sword] = (uint)MeleeSlot;
+        rig.C.InHandOverride = null;
+        RynthCore.Plugin.RynthAi.EquippedState.Invalidate();
+        Check.Eq(rig.C.InHandWeaponId(fresh: true), 0, "the server says nothing is wielded: nothing in hand");
+        rig.Tick();
+        Check.True(FakeHost.Uses.Contains(Sword), "so the sword is wielded");
+
+        FakeHost.Equipped[Sword] = (uint)MeleeSlot;     // the server's WieldObject
+        RynthCore.Plugin.RynthAi.EquippedState.Invalidate();
+        Check.Eq(unchecked((uint)rig.C.InHandWeaponId(fresh: true)), Sword, "now in hand");
+        Rig.Unwield(Sword); FakeHost.Wielded.Remove(Sword);   // the client's fields go blank: still in hand
+        RynthCore.Plugin.RynthAi.EquippedState.Invalidate();
+        Check.Eq(unchecked((uint)rig.C.InHandWeaponId(fresh: true)), Sword, "the client's blank fields don't matter");
+    }
+
+    private static void TrackerHands()
+    {
+        var rig = new Rig(dualWieldSkill: true, wielderInfo: true, tracker: true);
+        rig.List(Sword, Dagger);
+        FakeHost.Equipped[Sword] = (uint)MeleeSlot;
+        FakeHost.Equipped[Dagger] = (uint)ShieldSlot;
+        Rig.Wield(Dagger, MeleeSlot);                   // a wrong client field: ignored
+        rig.C.InHandOverride = null;
+        RynthCore.Plugin.RynthAi.EquippedState.Invalidate();
+        Check.Eq(unchecked((uint)rig.C.InHandWeaponId(fresh: true)), Sword, "main hand: the sword");
+        Check.Eq(unchecked((uint)rig.C.OffhandInSlot(fresh: true)), Dagger, "off hand: the dagger");
+    }
+
+    // 2026-10-18 14:14: the Damage tab picked a Tetsubo (Two Handed Combat, untrained); the client refused
+    // the wield unasked, and every fight took the off-hand weapon off for it and put it back.
+    private static void UnmetRequirementNotChosen()
+    {
+        var rig = new Rig(dualWieldSkill: true);
+        rig.List(Sword, Dagger, Great);
+        rig.S.PreferDualWield = true;
+        FakeHost.Ints[(Great, 158)] = 2;     // WieldRequirements: RawSkill
+        FakeHost.Ints[(Great, 159)] = 41;    // Two Handed Combat
+        FakeHost.Ints[(Great, 160)] = 250;
+        FakeHost.Skills[(Player, 41)] = (0, 1);   // untrained
+        Rig.Wield(Dagger, ShieldSlot);
+        rig.Store.SetManualWeapon(Wcid, Great);
+        for (int i = 0; i < 4; i++) { rig.Unpace(); rig.Tick(); }
+        Check.False(FakeHost.Uses.Contains(Great), "the greatsword is never wielded");
+        Check.False(FakeHost.Moves.Any(m => m.Id == Dagger), "the off-hand dagger never comes off for it");
+        Check.False(rig.C.ListedCandidates().Any(c => c.Id == unchecked((int)Great)), "not a candidate");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("can't be wielded (needs Two Handed Combat, untrained)")), "the player is told: " + string.Join(" | ", FakeHost.Chat));
+
+        // A class switch: Two Handed Combat trained (and high enough): the greatsword is a candidate again.
+        FakeHost.Skills[(Player, 41)] = (300, 2);
+        System.Threading.Thread.Sleep(1100);   // skill reads are cached for up to a second
+        Check.True(rig.C.ListedCandidates().Any(c => c.Id == unchecked((int)Great)), "after training it: a candidate again, nothing to re-list");
+    }
+
+    private static void TrackerNotReadyFallsBack()
+    {
+        var rig = new Rig(tracker: true);
+        FakeHost.EquippedNotReady = true;
+        rig.List(Sword);
+        rig.C.InHandOverride = null;
+        RynthCore.Plugin.RynthAi.EquippedState.Invalidate();
+        Check.Eq(unchecked((uint)rig.C.InHandWeaponId(fresh: true)), Sword, "-1 from the engine: the client's slot read answers (the sword reads wielded)");
     }
 
     // 2026-10-16: a Nodachi the character lacked the skill for was chosen whenever a monster was

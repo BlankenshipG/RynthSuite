@@ -12,6 +12,7 @@ internal sealed class OracleContext
     public readonly OracleSettings Settings = new();
     public readonly QuestFlagStore Flags = new();
     public readonly QuestCatalog Catalog = new();
+    public readonly QuestTimerWatcher Timers = new();
     public readonly QuestCatalogUpdater Updater = new();
     /// <summary>This character's tracked quests and recorded rewards (loaded once the name is known).</summary>
     public readonly QuestBook Book = new();
@@ -65,8 +66,20 @@ internal sealed class OracleContext
     /// <summary>The last thing the quest list check said, shown on the About tab.</summary>
     public string UpdaterMessage = "";
 
-    /// <summary>Set by the plugin: sends /myquests (reply hidden when the setting says so).</summary>
-    public Action RequestQuests = () => { };
+    /// <summary>Set by the plugin: sends /myquests (reply hidden when the setting says so). False when nothing was sent (not in world, or one went out moments ago).</summary>
+    public Func<bool> RequestQuests = () => false;
+
+    /// <summary>Set by the plugin (the Refresh buttons): re-reads the character's stats and buffs, and RynthAi's session, at once.</summary>
+    public Action RereadCharacter = () => { };
+
+    /// <summary>Set by the plugin: re-reads the titles the engine holds for the character.</summary>
+    public Action RereadTitles = () => { };
+
+    /// <summary>Set by the plugin: reloads the quest list and server pack from their files and re-asks RynthCore which server this is.</summary>
+    public Action ReloadQuestList = () => { };
+
+    /// <summary>Where <see cref="Print"/> goes instead of the chat window (the offline tests).</summary>
+    public Action<string>? PrintSink = null;
 
     /// <summary>Set by the plugin: sends a chat command to the server as if typed (the views' buttons).</summary>
     public Func<string, bool> Send = _ => false;
@@ -76,12 +89,6 @@ internal sealed class OracleContext
 
     /// <summary>Set by the plugin: runs a chat command through RynthCore's plugin dispatch (another plugin's window).</summary>
     public Func<string, bool> RunCommand = _ => false;
-
-    /// <summary>
-    /// Set by the plugin: tells the engine which SkillsFace body to embed in Oracle
-    /// (0 Skills, 1 Attributes, 2 Progress, -1 off). Bridge is /rc oracle-skills.
-    /// </summary>
-    public Action<int> SkillsEmbedChanged = _ => { };
 
     /// <summary>Set by the plugin: shows or hides the Quest Timers window.</summary>
     public Action<bool> SetQuestTimersWindow = _ => { };
@@ -93,7 +100,14 @@ internal sealed class OracleContext
     /// <summary>A line in the player's chat window only (nothing is sent to the server).</summary>
     public void Print(string text)
     {
+        if (PrintSink != null) { PrintSink(text); return; }
         if (!Host.WriteToChat("[RynthOracle] " + text, 1))
             Host.Log("[RynthOracle] " + text);
+    }
+
+    /// <summary>A click on a quest: its info and hint text, link and flag history in chat (upstream "thinks" them).</summary>
+    public void PrintQuest(Quest q)
+    {
+        foreach (string line in QuestText.Lines(q, Flags, Book, UtcNow)) Print(line);
     }
 }

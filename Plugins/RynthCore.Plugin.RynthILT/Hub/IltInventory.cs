@@ -242,6 +242,25 @@ internal sealed class IltInventory
     public bool HasAppraisal(WorldObject wo)
         => !_host.HasHasAppraisalData || _host.HasAppraisalData(unchecked((uint)wo.Id));
 
+    /// <summary>
+    /// Why an item's property reads cannot be trusted (null = they can). Every property read here
+    /// answers 0 / false both for "the item has none" and for "the host cannot read it", so a chunk
+    /// rule that acts on a 0 must first know the read was real: the host must expose the readers
+    /// and confirm the item's appraisal arrived. <paramref name="quads"/> adds the 64-bit reads
+    /// (item XP), <paramref name="doubles"/> the float reads and <paramref name="spells"/> the
+    /// spell list, for the rules that use them.
+    /// </summary>
+    public string? ReadGap(WorldObject wo, bool quads = false, bool doubles = false, bool spells = false)
+    {
+        if (!_host.HasGetObjectIntProperty) return "int properties";
+        if (!_host.HasGetObjectBoolProperty) return "bool properties";
+        if (quads && !_host.HasGetObjectQuadProperty) return "item XP";
+        if (doubles && !_host.HasGetObjectDoubleProperty) return "float properties";
+        if (spells && !_host.HasGetObjectSpellIds) return "spells";
+        if (!_host.HasHasAppraisalData || !_host.HasAppraisalData(unchecked((uint)wo.Id))) return "appraisal";
+        return null;
+    }
+
     /// <summary>Requests appraisal data, throttled per object. Returns true if a request was sent.</summary>
     public bool RequestAppraisal(WorldObject wo)
     {

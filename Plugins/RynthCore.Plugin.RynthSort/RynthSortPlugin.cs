@@ -60,6 +60,13 @@ public sealed class RynthSortPlugin : RynthPluginBase
     /// <summary>For the engine's dashboard toggle (RynthSortAutoState): -1 not logged in yet, 0 auto-sort off, 1 on. Any thread.</summary>
     public int AutoState => _autoState;
 
+    /// <summary>
+    /// A command from another plugin (RynthPluginApplyRemoteCommand): the /rsort argument when
+    /// <paramref name="action"/> is "rsort" (value "now", "status"...), else null (not ours).
+    /// </summary>
+    internal static string? RemoteSortArgument(string? action, string? value)
+        => string.Equals(action, "rsort", StringComparison.OrdinalIgnoreCase) ? value ?? string.Empty : null;
+
     /// <summary>An /rsort command from the engine (RynthSortCommand), without "/rsort". Any thread; runs on the tick.</summary>
     public void EnqueueCommand(string? arg)
     {
@@ -77,7 +84,8 @@ public sealed class RynthSortPlugin : RynthPluginBase
             Warnings = () => _warnings,
             Character = () => _identityKnown ? _character : string.Empty,
         };
-        // No bar button of its own: open from Inventory's Sort button, Scripts menu, or /rsort.
+        // No bar button of its own: opened from the engine Inventory window's Sort button, the
+        // Scripts menu or /rsort.
         _window = _ui.Add(new UiWindow("RynthSort/Main", "RynthSort")
         {
             DefaultWidth = 360f, DefaultHeight = 420f, MinWidth = 300f, MinHeight = 200f,

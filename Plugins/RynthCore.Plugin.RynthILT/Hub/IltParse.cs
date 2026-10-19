@@ -46,6 +46,22 @@ internal static class IltParse
     /// <summary>"/attr" success: "[ATTR] Strength attribute raised by 10, costing 1,234!".</summary>
     public static readonly Regex AttrRaised = new(@"^\[ATTR\] (\w+) attribute raised by (\d+), costing ([\d,]+)", Opt);
 
+    private static readonly Regex GroupedInt = new(@"^\d{1,3}(?:[,.\s']\d{3})+|^\d+", RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The level in an AugLine value: digits grouped by a comma, period, space or apostrophe
+    /// ("4,300", "4.300", "4 300", "4'300") read as one number; "2 (adds 5)" as 2; "1.5" as 1. 0 when absent.
+    /// </summary>
+    public static long ParseAugValue(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+        var m = GroupedInt.Match(text.Trim());
+        if (!m.Success) return 0;
+        var digits = new System.Text.StringBuilder(m.Value.Length);
+        foreach (char c in m.Value) if (char.IsDigit(c)) digits.Append(c);
+        return long.TryParse(digits.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out long v) ? v : 0;
+    }
+
     /// <summary>Strips commas and parses the leading integer; 0 when absent.</summary>
     public static long ParseLeadingLong(string text)
     {

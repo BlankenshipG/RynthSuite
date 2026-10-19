@@ -133,13 +133,54 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
     // Give queue — drained one item per tick with a cooldown (interval comes from settings)
     private readonly Queue<(uint itemId, uint targetId, int stackSize)> _pendingGives = new();
-    private DateTime _lastGiveAt = DateTime.MinValue;
     // The give the server hasn't answered yet (0 = none): the next one waits for it.
     private uint _giveInFlightId, _giveInFlightTarget;
-    private int _giveInFlightAmount, _giveInFlightStack, _giveInFlightTries;
+    private int _giveInFlightStack, _giveInFlightTries;
     private long _giveInFlightAt;
     private const long GiveConfirmMs = 3000;
     private const int GiveMaxTries = 2;
+    // Items still to hand over from the in-flight give (a whole stack = its size; each shrink lowers it).
+    private int _giveInFlightRemaining;
+    // The in-flight request is a genuine "give all" (amount 0 from the caller): the only kind that may go out as a plain,
+    // whole-object give when the stack count cannot be read. A re-send of it stays "all".
+    private bool _giveInFlightAll;
+    // True once the in-flight give has been sent more than once (a busy re-send or a no-answer re-send):
+    // an "Item not found!" then means an earlier send already landed.
+    private bool _giveInFlightResent;
+    private string _giveInFlightName = string.Empty;
+    private long _giveLastSendAt = long.MinValue;
+    // A busy refusal re-sends the same give after this long (up to GiveBusyGiveUpMs in total).
+    private const long GiveBusyRetryMs = 300;
+    private long _giveBusyRetryAt;   // 0 = not waiting on a busy re-send
+    // Continuous busy waiting on one give: since when, how many busy answers, when the player was last told.
+    private long _giveBusySince, _giveBusyNoticeAt;
+    private int _giveBusyCount;
+    private const long GiveBusyNoticeMs = 10000;
+    // Busy waiting on one give is given up after this long in total: the item is skipped and counted.
+    private const long GiveBusyGiveUpMs = 60000;
+    // A stackable item whose stack count will not read: which item, since when. After GiveReadFailMs the
+    // give goes out anyway (an explicit amount, or a plain give for amount 1) so the queue always advances.
+    private uint _giveReadFailId;
+    private long _giveReadFailSince;
+    private const long GiveReadFailMs = 2000;
+    // Consecutive ticks the in-flight item read as unreadable (no cache entry, Container 0); 2 = gone.
+    private int _giveGoneStreak;
+    private int _giveUnclassified;   // unclassified chat lines logged for this give (max 5)
+    // Chat verdict on the in-flight give, set by OnChatWindowText and read on the tick.
+    private enum GiveChat { None, Busy, Permanent, ItemNotFound }
+    private int _giveChatVerdict;   // a GiveChat, handed from OnChatWindowText to the tick with Interlocked
+    private string _giveChatLine = string.Empty;
+    private bool _giveSawAcceptLine;
+    // A stack that shrank but is still carried goes again before anything else in the queue.
+    private (uint itemId, uint targetId, int remaining)? _giveRedo;
+    // Run summary (reset when the queue empties).
+    private bool _giveRunActive;
+    private long _giveRunStartAt, _giveRunLastAnswerAt;
+    private int _giveRunItems;
+    private readonly List<string> _giveRunSkips = new();
+    // Test seam: a fake millisecond clock.
+    private Func<long>? _giveClock;
+    private long GiveNow() => _giveClock?.Invoke() ?? Environment.TickCount64;
     private RynthCore.Loot.LootProfile? _nativeLootProfile;
     private string _nativeLootProfilePath = string.Empty;
     private DateTime _nativeLootProfileTime = DateTime.MinValue;
@@ -261,6 +302,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         RynthCore.Plugin.Shared.UseAudit.WorldUseHold = null;
         RynthCore.Plugin.Shared.ActionPacer.Enabled = false;
         RynthCore.Plugin.Shared.ActionPacer.Forget("shutdown");
+        CombatHook.LastUseDone = null;   // captured this instance's host (set again at Init)
 
         // Give the heap back. When a changed RynthAi is deployed, the engine loads
         // it as a new copy and this one is abandoned for good (a NativeAOT DLL can't
@@ -450,6 +492,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _playerId = 0;
         _loginComplete = false;
         _pendingGives.Clear();
+        ResetGiveState();
         // A /ub delay armed before logout must not fire into the next character's session.
         _delayedCommands.Clear();
         ClearPropertyDump();
@@ -691,6 +734,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager.SetWeaponSwapGate(_weaponSwapGate);
         _combatManager.Vitals = _vitals;   // the script hook's request carries the player's vitals
         _combatManager.HoldIdlePeace = LootHoldsIdlePeace;
+        _combatManager.LastVitalCastAt = () => _buffManager?.LastVitalCastAt ?? DateTime.MinValue;
+        _combatManager.BuffingWantsTick = () => _buffManager != null
+            && (_buffManager.PendingSpellId != 0 || _buffManager.WantsVitalRecharge
+                || (_dashboard?.Settings?.EnableBuffing == true && _buffManager.NeedsAnyBuff()));
         _combatManager.HoldNewTarget = BoostLootHoldsNewTarget;   // Boost Loot Priority: one kill, one loot
         _combatManager.ManaReserveHold = spellId => _buffManager?.OffensiveCastHold(spellId);   // the mana reserve
         _combatManager.ManaCanEverAfford = spellId => _buffManager?.CanEverAfford(spellId) ?? true;   // script hook: never-payable spells
@@ -1016,7 +1063,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         ["TargetFPSFocused"] = (10, 240), ["TargetFPSBackground"] = (5, 60),
         ["BlacklistAttempts"] = (1, 20), ["BlacklistTimeoutSec"] = (5, 120), ["BlacklistCastSettleMs"] = (500, 5000),
-        ["TargetNoProgressTimeoutSec"] = (0, 300), ["GiveQueueIntervalMs"] = (50, 2000),
+        ["TargetNoProgressTimeoutSec"] = (0, 300), ["GiveQueueIntervalMs"] = (0, 2000),
         ["BowArcVelocity"] = (10, 60), ["CrossbowArcVelocity"] = (10, 80), ["AtlatlArcVelocity"] = (10, 60), ["MagicArcVelocity"] = (10, 60), ["MissileArcClearance"] = (0, 3),
         ["HealAt"] = (0, 100), ["EmergencyHealAt"] = (0, 100),
         ["StaminaToHealthAt"] = (0, 100), ["StaminaToHealthMinStamina"] = (0, 100), ["RestamAt"] = (0, 100), ["RestamTo"] = (0, 100), ["GetManaAt"] = (0, 100),
@@ -1028,6 +1075,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ["MissileEnvironmentResponse"] = (0, 3), ["MagicEnvironmentResponse"] = (0, 3),
         ["EnvironmentImpactLimit"] = (1, 10), ["EnvironmentImpactWindowSec"] = (5, 120),
         ["EnvironmentApproachMeters"] = (1, 30), ["EnvironmentMinDistance"] = (1, 30), ["EnvironmentSkipSec"] = (5, 300),
+        ["KitePullMeters"] = (3, 100),
         ["WeaponSwapSettleMs"] = (0, 3000), ["WeaponSwapMinHealthPct"] = (0, 100), ["WeaponSwapMinGainPct"] = (0, 200),
         ["PetMinMonsters"] = (1, 20),
         ["SpellCastIntervalMs"] = (100, 1500), ["StuckCastBreakMs"] = (0, 60000), ["RecoveryRetryMs"] = (200, 5000), ["AttackSpellIntervalMs"] = (0, 5000), ["MinRingTargets"] = (1, 20), ["MinBlastTargets"] = (1, 20), ["BlastRange"] = (0, 100), ["MinWallTargets"] = (1, 20), ["WallRange"] = (0, 100),
@@ -1131,9 +1179,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             int id = unchecked((int)e.Id);
             if (Host.HasRequestId && idRequests < 3
                 && (!Host.HasHasAppraisalData || !Host.HasAppraisalData(e.Id))
-                && _equipIdRequested.Add(e.Id))
+                && !_equipIdRequested.Contains(e.Id))
             {
-                Host.RequestId(e.Id);   // appraisal 0xC9 lands in the engine cache; read it next pass
+                // Remembered only when the engine took it: it refuses around a death or a portal, and a refused
+                // request marked as done would never be asked again. Appraisal 0xC9 lands in the engine cache;
+                // read it next pass.
+                if (Host.RequestId(e.Id)) _equipIdRequested.Add(e.Id);
                 idRequests++;
             }
             var a = new EquipAppraisal { Name = e.Name, Id = e.Id, Slot = e.Slot };
@@ -1657,7 +1708,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 RynthCore.Plugin.Shared.ActionPacer.NoteFrame();
                 // Stuck Cast Break, once per tick: the breaker runs for every subsystem's casts.
                 if (_dashboard?.Settings is { } paceSettings)
+                {
                     RynthCore.Plugin.Shared.ActionPacer.StuckCastMs = Math.Max(0, paceSettings.StuckCastBreakMs);
+                    NoteMacroForPacer(paceSettings.IsMacroRunning);
+                }
                 NotePortalForPacer();
                 if (HoldForDeath())
                     return;
@@ -2312,6 +2366,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         else _dashboard?.PushChatLine(text, chatType);
         OnChatLocalFeatures(text, chatType, ref eat);
         try { NoteHotspotChat(text, chatType); } catch (Exception ex) { Host.Log($"[RynthAi] Hazard chat check failed: {ex.Message}"); }
+        try { NoteGiveChat(text, chatType); } catch (Exception ex) { Host.Log($"[RynthAi] Give chat check failed: {ex.Message}"); }
         _buffManager?.OnChatWindowText(text, chatType);
         _manaStoneManager?.OnChatWindowText(text);
         _salvageManager?.OnChatWindowText(text);
@@ -3409,75 +3464,353 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
     internal void CancelGiveQueue()
     {
-        int count = _pendingGives.Count;
+        var redo = _giveRedo;
+        int count = _pendingGives.Count + (redo.HasValue ? 1 : 0);
         _pendingGives.Clear();
-        _giveInFlightId = 0;
+        ResetGiveState();
         ChatLine(count > 0
             ? $"[RynthAi] Give queue cancelled ({count} item(s) remaining)."
             : "[RynthAi] Give queue is already empty.");
     }
 
+    /// <summary>Drops the in-flight give, the redo slot and the run summary (cancel, logout).</summary>
+    private void ResetGiveState()
+    {
+        _giveInFlightId = 0;
+        _giveRedo = null;
+        _giveBusyRetryAt = 0;
+        _giveBusySince = 0;
+        _giveBusyCount = 0;
+        _giveGoneStreak = 0;
+        _giveReadFailId = 0;
+        Interlocked.Exchange(ref _giveChatVerdict, 0);
+        _giveRunActive = false;
+        _giveRunItems = 0;
+        _giveRunSkips.Clear();
+    }
+
     /// <summary>
-    /// One give at a time, each after the server has taken the last: the item has left the
-    /// inventory (or its stack shrank, for part of a stack). The queue used to send a give
-    /// every 150 ms; the server takes one give at a time and answers the rest "too busy",
-    /// so /ub give handed over one item and dropped the rest (2026-10-08). A give with no
-    /// answer in GiveConfirmMs is sent once more, then skipped.
+    /// Classifies a chat line as an answer to the in-flight give. Lowercase substrings: the client
+    /// renders WeenieError text from its own string table, so only the server's custom strings
+    /// ("Item not found!", "Target not found!", "Give amount not valid!") are exact.
+    /// </summary>
+    private static GiveChat ClassifyGiveChat(string text)
+    {
+        string t = text.ToLowerInvariant();
+        // Busy class first: "<npc> is too busy to accept gifts" must not read as "not accepting gifts".
+        if (t.Contains("too busy") || t.Contains("is busy right now")) return GiveChat.Busy;
+        if (t.Contains("item not found")) return GiveChat.ItemNotFound;
+        if (t.Contains("give amount not valid") || t.Contains("target not found")
+            || t.Contains("doesn't want") || t.Contains("does not want")
+            || t.Contains("not accepting gifts") || t.Contains("cowers from you"))
+            return GiveChat.Permanent;
+        return GiveChat.None;
+    }
+
+    /// <summary>
+    /// Speech, tells and emotes are other players' words, never the server's answer to a give. The text
+    /// shape is the real guard. Chat type 17 is the client's Spellcasting type (spell words, ours and
+    /// other casters': "chat type=17 ... says, "Zojak Ves""), which is never an answer either, so it is
+    /// skipped too; system notices such as "You give ..." arrive as 0.
+    /// </summary>
+    private static bool IsGiveChatSpeech(string text, int chatType)
+    {
+        if (chatType == 17) return true;
+        string t = text.ToLowerInvariant();
+        return t.Contains(" says, \"") || t.Contains(" tells you, \"") || t.Contains(" asks, \"")
+               || t.Contains(" exclaims, \"") || t.Contains(" yells, \"") || t.Contains(" whispers, \"")
+               || t.StartsWith("you say, ", StringComparison.Ordinal) || t.StartsWith("you tell ", StringComparison.Ordinal)
+               || t.StartsWith("you whisper", StringComparison.Ordinal) || t.StartsWith("you exclaim", StringComparison.Ordinal)
+               || t.StartsWith("you yell", StringComparison.Ordinal) || t.StartsWith("you ask", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// OnChatWindowText: only records the verdict; every send happens in DrainGiveQueue. The engine
+    /// dispatches chat from ProcessPendingActions and the plugin tick from TickAll, back to back in
+    /// one driver (EntryPoint.cs:1120-1122, ImGui/EngineFrameController.cs:461-467 in RynthCore-autoid),
+    /// so this is one thread in practice; the verdict still goes through Interlocked.
+    /// </summary>
+    private void NoteGiveChat(string text, int chatType = 0)
+    {
+        if (_giveInFlightId == 0) return;
+        if (IsGiveChatSpeech(text, chatType)) return;
+        if (text.StartsWith("You give ", StringComparison.Ordinal)) { _giveSawAcceptLine = true; return; }
+        var kind = ClassifyGiveChat(text);
+        if (kind == GiveChat.None)
+        {
+            // Types 1 (RynthAi's own lines), 7 (magic) and 17 (spell words) are never worth a slot.
+            if (_giveUnclassified < 10 && chatType != 1 && chatType != 7 && !text.StartsWith("[", StringComparison.Ordinal))
+            {
+                _giveUnclassified++;
+                Host.Log($"[Give] unclassified chat: type={chatType} '{text}'");
+            }
+            return;
+        }
+        // The first verdict noted for this give stands until the tick takes it.
+        if (Interlocked.CompareExchange(ref _giveChatVerdict, (int)kind, 0) == 0) _giveChatLine = text;
+    }
+
+    /// <summary>
+    /// One give at a time, answered before the next goes out (ACE cancels a move chain when a second
+    /// give arrives, and answers extras "too busy"). An answer is the item leaving the pack or its
+    /// stack shrinking: an NPC with a Give emote takes ONE item per give, so a shrunk stack goes
+    /// again at once, in the same tick. Busy refusals re-send after GiveBusyRetryMs, for up to GiveBusyGiveUpMs in total;
+    /// permanent refusals skip the stack. No answer at all in GiveConfirmMs re-sends, up to
+    /// GiveMaxTries, then skips. GiveQueueIntervalMs is only a minimum gap between two sends.
     /// </summary>
     private void DrainGiveQueue()
     {
-        long now = Environment.TickCount64;
+        long now = GiveNow();
         if (_giveInFlightId != 0)
         {
-            if (GiveLanded())
-            {
-                _giveInFlightId = 0;
-                _lastGiveAt = DateTime.UtcNow;
-                if (_pendingGives.Count == 0)
-                    ChatLine("[RynthAi] Give queue complete.");
-            }
-            else if (now - _giveInFlightAt < GiveConfirmMs)
-                return;
-            else if (_giveInFlightTries < GiveMaxTries)
-            {
-                GiveItem(_giveInFlightId, _giveInFlightTarget, _giveInFlightAmount, _giveInFlightStack);
-                _giveInFlightTries++;
-                _giveInFlightAt = now;
-                return;
-            }
-            else
-            {
-                ChatLine($"[RynthAi] Give: the server didn't take 0x{_giveInFlightId:X8} - skipping it.");
-                _giveInFlightId = 0;
-                if (_pendingGives.Count == 0) return;
-            }
+            if (!ResolveGiveInFlight(now)) return;
         }
 
-        if (_pendingGives.Count == 0) return;
-        int intervalMs = _dashboard?.Settings.GiveQueueIntervalMs ?? 150;
-        if ((DateTime.UtcNow - _lastGiveAt).TotalMilliseconds < intervalMs) return;
+        var redo = _giveRedo;
+        if (!redo.HasValue && _pendingGives.Count == 0)
+        {
+            FinishGiveRun(now);
+            return;
+        }
+        int intervalMs = Math.Max(0, _dashboard?.Settings.GiveQueueIntervalMs ?? 0);
+        if (intervalMs > 0 && _giveLastSendAt != long.MinValue && now - _giveLastSendAt < intervalMs) return;
 
-        var (itemId, targetId, stackSize) = _pendingGives.Dequeue();
-        // The queued amount is what to hand over; GiveItem gives the whole object when it is
-        // the whole stack (amount 0) and uses AC's real give action, which an NPC accepts.
-        int whole = _objectCache?[unchecked((int)itemId)] is WorldObject wo ? Math.Max(1, wo.Values(LongValueKey.StackCount, 1)) : stackSize;
-        GiveItem(itemId, targetId, stackSize, whole);
-        _lastGiveAt = DateTime.UtcNow;
-        _giveInFlightId = itemId;
-        _giveInFlightTarget = targetId;
-        _giveInFlightAmount = stackSize;
-        _giveInFlightStack = whole;
-        _giveInFlightTries = 1;
-        _giveInFlightAt = now;
+        uint itemId, targetId;
+        int amount;
+        if (redo.HasValue)
+        {
+            (itemId, targetId, amount) = redo.Value;
+            _giveRedo = null;
+        }
+        else
+            (itemId, targetId, amount) = _pendingGives.Dequeue();
+        if (!_giveRunActive)
+        {
+            _giveRunActive = true;
+            _giveRunStartAt = now;
+            _giveRunLastAnswerAt = now;
+            _giveRunItems = 0;
+            _giveRunSkips.Clear();
+        }
+        if (!SendGive(itemId, targetId, amount, 1, resent: false, now))
+            _giveRedo = (itemId, targetId, amount);   // unreadable stack: first in line again next tick
     }
 
-    /// <summary>The in-flight give went through: the item left the inventory, or part of its stack did.</summary>
-    private bool GiveLanded()
+    /// <summary>
+    /// Settles the in-flight give. Returns true when it is done (landed or skipped) and the tick may
+    /// send the next give now; false when the tick must stop (still waiting, or a re-send just went out).
+    /// </summary>
+    private bool ResolveGiveInFlight(long now)
     {
-        if (_objectCache?[unchecked((int)_giveInFlightId)] is not WorldObject wo) return true;
-        if (!InPlayerInventory(wo.Container)) return true;
-        return _giveInFlightAmount < _giveInFlightStack
-               && Math.Max(1, wo.Values(LongValueKey.StackCount, 1)) < _giveInFlightStack;
+        long sinceSend = now - _giveInFlightAt;
+        string tag = $"0x{_giveInFlightId:X8} '{_giveInFlightName}'";
+
+        // 1. Progress: the item left the pack, or its stack shrank. A failed read is "no information":
+        // the stack count reads -1 (never a clamped 1, which looked like a shrink of 99), and an
+        // unreadable object (no cache entry, Container 0) must read the same on two ticks in a row.
+        var wo = _objectCache?[unchecked((int)_giveInFlightId)];
+        // Where it is: in the pack (the player, or a pack the player carries), with the give target (gone),
+        // or somewhere we cannot place. A container that is neither the player nor the target and whose own
+        // container reads 0 is unreadable, not gone.
+        int cont = wo?.Container ?? 0;
+        bool readable = wo != null && cont != 0;
+        bool carried = false;
+        if (readable)
+        {
+            int playerInt = unchecked((int)_playerId);
+            if (cont == playerInt) carried = true;
+            else if (cont != unchecked((int)_giveInFlightTarget))
+            {
+                int outer = _objectCache?.GetContainerId(cont) ?? 0;
+                if (outer == 0) readable = false;
+                else carried = outer == playerInt;
+            }
+        }
+        int stackNow = wo != null ? wo.Values(LongValueKey.StackCount, -1) : -1;
+        bool gone;
+        if (readable && !carried) { gone = true; _giveGoneStreak = 0; }
+        else if (readable) { gone = false; _giveGoneStreak = 0; }
+        else
+        {
+            _giveGoneStreak++;
+            gone = _giveGoneStreak >= 2;
+        }
+        if (gone)
+        {
+            int given = Math.Max(1, Math.Min(_giveInFlightRemaining, _giveInFlightStack));
+            Host.Log($"[RynthAi] Give answer: gone {tag} +{given} item(s) after {sinceSend} ms (accept line seen: {_giveSawAcceptLine})");
+            CompleteGiveStack(given, now);
+            return true;
+        }
+        if (carried && stackNow >= 0 && stackNow < _giveInFlightStack)
+        {
+            int delta = _giveInFlightStack - stackNow;
+            int remaining = _giveInFlightRemaining - delta;
+            Host.Log($"[RynthAi] Give answer: shrink {tag} {_giveInFlightStack}->{stackNow} after {sinceSend} ms (accept line seen: {_giveSawAcceptLine})");
+            _giveRunItems += delta;
+            _giveRunLastAnswerAt = now;
+            uint shrunkId = _giveInFlightId;
+            _giveInFlightId = 0;
+            _giveBusyRetryAt = 0;
+            _giveBusySince = 0;
+            if (remaining > 0)
+                _giveRedo = (shrunkId, _giveInFlightTarget, remaining);
+            return true;
+        }
+
+        // 2. A chat verdict.
+        var chat = (GiveChat)Interlocked.Exchange(ref _giveChatVerdict, 0);
+        if (chat == GiveChat.ItemNotFound)
+        {
+            // "Item not found" after a re-send means the earlier send landed, but only if the pack agrees:
+            // gone (or unreadable) counts as given; still carried with the same stack is a plain skip.
+            if (_giveInFlightResent && !carried)
+            {
+                int given = Math.Max(1, _giveInFlightRemaining);
+                Host.Log($"[RynthAi] Give answer: item-not-found after a re-send, item gone, counted as given {tag} +{given} item(s) after {sinceSend} ms");
+                CompleteGiveStack(given, now);
+                return true;
+            }
+            Host.Log($"[RynthAi] Give answer: permanent {tag} '{_giveChatLine}' after {sinceSend} ms");
+            SkipGiveStack("item not found", tag, now);
+            return true;
+        }
+        if (chat == GiveChat.Permanent)
+        {
+            Host.Log($"[RynthAi] Give answer: permanent {tag} '{_giveChatLine}' after {sinceSend} ms");
+            SkipGiveStack("refused", tag, now);
+            return true;
+        }
+        if (chat == GiveChat.Busy)
+        {
+            _giveBusyCount++;
+            if (_giveBusySince == 0) { _giveBusySince = now; _giveBusyNoticeAt = now; }
+            if (now - _giveBusySince >= GiveBusyGiveUpMs)
+            {
+                // A target that stays busy (a player in a trade) would otherwise be re-sent, and answer
+                // "too busy" in the player's chat, every GiveBusyRetryMs for ever.
+                Host.Log($"[RynthAi] Give answer: busy #{_giveBusyCount} {tag} for {now - _giveBusySince} ms; giving up");
+                string? busyWho = _objectCache?[unchecked((int)_giveInFlightTarget)]?.Name;
+                ChatLine($"[RynthAi] Give: {(string.IsNullOrEmpty(busyWho) ? "the target" : busyWho)} stayed busy for {(now - _giveBusySince) / 1000} s - skipping 0x{_giveInFlightId:X8}.");
+                SkipGiveStack("busy too long", tag, now);
+                return true;
+            }
+            if (_giveBusyCount == 1 || _giveBusyCount % 10 == 0)
+                Host.Log($"[RynthAi] Give answer: busy #{_giveBusyCount} {tag} '{_giveChatLine}' after {sinceSend} ms; re-sending in {GiveBusyRetryMs} ms");
+            if (now - _giveBusyNoticeAt >= GiveBusyNoticeMs)
+            {
+                _giveBusyNoticeAt = now;
+                string? who = _objectCache?[unchecked((int)_giveInFlightTarget)]?.Name;
+                ChatLine($"[RynthAi] Give: {(string.IsNullOrEmpty(who) ? "the target" : who)} is busy - still retrying (/ra givea stop to cancel).");
+            }
+            _giveBusyRetryAt = now + GiveBusyRetryMs;
+        }
+        if (_giveBusyRetryAt != 0)
+        {
+            if (now < _giveBusyRetryAt) return false;
+            _giveBusyRetryAt = 0;
+            if (!SendGive(_giveInFlightId, _giveInFlightTarget, _giveInFlightAll ? 0 : _giveInFlightRemaining, _giveInFlightTries, resent: true, now))
+                _giveBusyRetryAt = now;   // unreadable stack: try again next tick
+            return false;
+        }
+
+        // 3. No answer at all.
+        if (sinceSend < GiveConfirmMs) return false;
+        if (_giveInFlightTries < GiveMaxTries)
+        {
+            Host.Log($"[RynthAi] Give answer: no-answer {tag} after {sinceSend} ms; re-sending");
+            if (!SendGive(_giveInFlightId, _giveInFlightTarget, _giveInFlightAll ? 0 : _giveInFlightRemaining, _giveInFlightTries + 1, resent: true, now))
+            {
+                _giveInFlightTries++;     // this was a try even though nothing went out: GiveMaxTries stays a cap on sends
+                _giveBusyRetryAt = now;   // unreadable stack: try again next tick
+            }
+            return false;
+        }
+        Host.Log($"[RynthAi] Give answer: no-answer {tag} after {sinceSend} ms; giving up");
+        ChatLine($"[RynthAi] Give: the server didn't take 0x{_giveInFlightId:X8} - skipping it.");
+        SkipGiveStack("no answer", tag, now);
+        return true;
+    }
+
+    private void CompleteGiveStack(int items, long now)
+    {
+        _giveRunItems += items;
+        _giveRunLastAnswerAt = now;
+        _giveInFlightId = 0;
+        _giveReadFailId = 0;
+        _giveBusyRetryAt = 0;
+        _giveBusySince = 0;
+    }
+
+    private void SkipGiveStack(string why, string tag, long now)
+    {
+        _giveRunSkips.Add($"{tag}: {why}");
+        Host.Log($"[RynthAi] Give skip: {tag} ({why})");
+        _giveRunLastAnswerAt = now;
+        _giveInFlightId = 0;
+        _giveReadFailId = 0;
+        _giveBusyRetryAt = 0;
+        _giveBusySince = 0;
+    }
+
+    /// <summary>
+    /// Sends one give and records it as the in-flight one. <paramref name="amount"/> is the items still to hand over;
+    /// 0 (or less) is a genuine "give all", the only request that may go out as a whole-object give when the stack
+    /// count cannot be read. An explicit amount, 1 included, always goes out as that explicit amount.
+    /// </summary>
+    private bool SendGive(uint itemId, uint targetId, int amount, int tries, bool resent, long now)
+    {
+        WorldObject? wo = _objectCache?[unchecked((int)itemId)];
+        int read = wo != null ? wo.Values(LongValueKey.StackCount, -1) : -1;
+        // A failed read on a stackable item (MaxStackSize above 1) is no information: nothing is sent this
+        // tick, and the caller tries again next tick. A read that keeps failing for GiveReadFailMs must not
+        // hold the queue for ever: then the give goes out anyway, as the explicit amount asked for (1 included:
+        // a "give 1" of a stack that is really 99 must not hand over all 99) or, for a genuine give-all, as a
+        // plain give, and says so in the log.
+        bool all = amount <= 0;
+        if (read < 0 && wo != null && wo.Values(LongValueKey.MaxStackSize, -1) > 1)
+        {
+            if (_giveReadFailId != itemId) { _giveReadFailId = itemId; _giveReadFailSince = now; }
+            if (now - _giveReadFailSince < GiveReadFailMs) return false;
+            Host.Log($"[RynthAi] Give: stack count of 0x{itemId:X8} '{wo.Name}' unreadable for {now - _giveReadFailSince} ms; sending anyway ({(all ? "plain give" : $"amount {amount}")})");
+        }
+        else _giveReadFailId = 0;
+        // Here a negative read means a non-stackable item, an unknown one, or a stackable whose count stayed
+        // unreadable: record max(1, amount) as its stack. An explicit amount is sent as that explicit amount
+        // (an explicit 1 is what the engine sends for a single item anyway); only a give-all goes out whole.
+        int whole = read >= 0 ? Math.Max(1, read) : Math.Max(1, amount);
+        string name = wo?.Name ?? string.Empty;
+        _giveInFlightId = itemId;
+        _giveInFlightTarget = targetId;
+        _giveInFlightRemaining = read < 0 ? Math.Max(1, amount) : (amount <= 0 || amount > whole ? whole : amount);
+        _giveInFlightStack = whole;
+        _giveInFlightAll = all;
+        _giveInFlightTries = tries;
+        _giveInFlightResent = resent;
+        _giveInFlightName = name;
+        _giveInFlightAt = now;
+        _giveLastSendAt = now;
+        Interlocked.Exchange(ref _giveChatVerdict, 0);
+        _giveSawAcceptLine = false;
+        _giveGoneStreak = 0;
+        if (!resent) { _giveBusyCount = 0; _giveBusySince = 0; _giveUnclassified = 0; }
+        GiveItem(itemId, targetId, amount, read >= 0 ? whole : (all ? 0 : amount + 1));   // amount + 1: GiveItem must not fold an explicit amount into a whole give
+        Host.Log($"[RynthAi] Give send: 0x{itemId:X8} '{name}' stack={(read >= 0 ? whole.ToString() : "?")} amount={amount} try={tries}{(resent ? " (re-send)" : string.Empty)}");
+        return true;
+    }
+
+    private void FinishGiveRun(long now)
+    {
+        if (!_giveRunActive) return;
+        _giveRunActive = false;
+        long elapsed = Math.Max(0, _giveRunLastAnswerAt - _giveRunStartAt);
+        string avg = _giveRunItems > 0 ? $"{elapsed / _giveRunItems} ms" : "n/a";
+        string why = _giveRunSkips.Count == 0 ? string.Empty : $" ({string.Join("; ", _giveRunSkips)})";
+        string line = $"[RynthAi] Give queue complete: {_giveRunItems} item(s) given, {_giveRunSkips.Count} stack(s) skipped{why}, {elapsed / 1000.0:0.0}s total, {avg} per give.";
+        Host.Log(line);
+        ChatLine(line);
+        _giveRunItems = 0;
+        _giveRunSkips.Clear();
     }
 
     /// <summary>

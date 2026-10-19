@@ -14,7 +14,7 @@ namespace RynthCore.Plugin.RynthAi;
 ///      (wear, getxy, stfl/stfr, arrow, navgoto, frame limits, fellow dismiss/leader/status,
 ///      qblist, augs, window save, packsort*, miniremote, meta/combat/sloot on|off, debug, lps).
 ///   2. ub-Rythai's verbs, which RynthAi leaves to that plugin without a reply.
-///   3. ub-IT features that mean nothing here (videopatch, chat max, playeroption, ...): accepted
+///   3. ub-IT features that mean nothing here (statushud, chat max, playeroption, ...): accepted
 ///      without error, said once per session, so a meta that sends them keeps running.
 /// </summary>
 public sealed partial class RynthAiPlugin
@@ -41,7 +41,7 @@ public sealed partial class RynthAiPlugin
         "questbonus", "queuestatus", "refreshqueues", "resolution", "revalidate", "setui", "shittalk",
         "soak", "spell", "statushud", "storm", "surgingstrength", "swearallegiance", "testassessor",
         "textures", "tinkcalc", "trace", "tracearmorbuffs", "ubhudrecover", "ucm", "unstack",
-        "vhudbridgestatus", "videopatch", "xp", "xpdebug",
+        "vhudbridgestatus", "xp", "xpdebug",
     };
 
     // No-equivalent verbs already reported this session (one chat line each, not one per meta pulse).

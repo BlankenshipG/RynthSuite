@@ -28,6 +28,10 @@ internal static class ProfileLoadTests
         r.Add("profile: every saved setting survives loading (CopySettings lists each serialized field)", EverySavedFieldIsCopied);
         r.Add("profile: Describe Items and the Item Info options survive a save and a reload", ItemInfoSurvivesReload);
         r.Add("profile: a profile with null item info / nav overlay loads defaults, not null", NullNestedOptionsLoadDefaults);
+        r.Add("profile: a save is atomic (temp file swapped in, no temp left) and keeps the previous profile as .bak", SaveKeepsBackup);
+        r.Add("profile: a profile that doesn't read loads the .bak, sets the broken file aside and puts the backup back", UnreadableLoadsBackup);
+        r.Add("profile: a profile that doesn't read and has no backup is kept, not overwritten by defaults until a setting changes", UnreadableKeptNotOverwritten);
+        r.Add("profile: switching to a profile that doesn't read keeps it (backup used when there is one)", SwitchUnreadableKept);
     }
 
     /// <summary>LegacyDashboardRenderer.CopySettings(src, dst): what LoadSettings / SwitchProfile run.</summary>
@@ -168,5 +172,162 @@ internal static class ProfileLoadTests
         var live2 = new LegacyUiSettings();
         CopySettings(edited, live2);
         Check.Eq(live2.ItemInfoSettings.Prefix.Length, 32, "prefix trimmed to 32");
+    }
+
+    // ── Settings no longer reset after a bad read (2026-10-17, Silentkelpie's design) ──────────────
+    // Saving used File.WriteAllText, which empties the profile first: a client killed mid-save left an
+    // empty / cut-off file, the load swallowed the failed read, kept defaults and the autosave wrote
+    // them over the profile. Saves now swap a temp file in and keep the previous one as <profile>.json.bak;
+    // a profile that doesn't read loads the .bak, else is set aside as .unreadable-<time> and not
+    // written over until something changes. Scratch folders only: ProfilesBase / MonstersBase are
+    // pointed at them.
+
+    private static string NewCharDir(string name, out LegacyDashboardRenderer dash)
+    {
+        string root = Path.Combine(Program.TempRoot, "profile-reset", name);
+        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        LegacyDashboardRenderer.ProfilesBase = Path.Combine(root, "SettingsProfiles");
+        LegacyDashboardRenderer.MonstersBase = Path.Combine(root, "MonsterProfiles");
+        RynthCore.RynthAiHostTests.Fakes.FakeHost.Reset();
+        RynthCore.RynthAiHostTests.Fakes.FakeHost.WorldName = "TestWorld";
+        dash = new LegacyDashboardRenderer(RynthCore.RynthAiHostTests.Fakes.FakeHost.Create());
+        string dir = Path.Combine(LegacyDashboardRenderer.ProfilesBase, "TestWorld", "Tester");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private static LegacyUiSettings SettingsOf(LegacyDashboardRenderer dash) =>
+        (LegacyUiSettings)typeof(LegacyDashboardRenderer).GetField("_settings", Any)!.GetValue(dash)!;
+
+    private static string Json(LegacyUiSettings s) => JsonSerializer.Serialize(s, RynthAiJsonContext.Default.LegacyUiSettings);
+
+    private static int ChatCount(string part)
+    {
+        int n = 0;
+        foreach (string c in RynthCore.RynthAiHostTests.Fakes.FakeHost.Chat)
+            if (c.Contains(part, StringComparison.OrdinalIgnoreCase)) n++;
+        return n;
+    }
+
+    private static void SaveKeepsBackup()
+    {
+        string dir = NewCharDir("bak", out var dash);
+        dash.LoadSettings("Tester");
+        LegacyUiSettings live = SettingsOf(dash);
+        string path = Path.Combine(dir, "Default.json");
+
+        live.EnableGroundLoot = false;
+        dash.SaveSettings();
+        string first = File.ReadAllText(path);
+        Check.True(File.Exists(path) && !File.Exists(path + LegacyDashboardRenderer.BackupSuffix), "first save: the profile, no backup yet");
+
+        live.EnableGroundLoot = true;
+        dash.SaveSettings();
+        string second = File.ReadAllText(path);
+        Check.True(first != second, "the profile now holds the second state");
+        Check.Eq(File.ReadAllText(path + LegacyDashboardRenderer.BackupSuffix), first, ".bak holds the previous profile");
+        Check.Eq(Directory.GetFiles(dir, "*.tmp").Length, 0, "no temp file left behind");
+
+        // A failing swap leaves the profile and no temp file.
+        using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            live.EnableGroundLoot = false;
+            dash.SaveSettings();
+        }
+        Check.Eq(File.ReadAllText(path), second, "a save that can't swap in leaves the profile as it was");
+        Check.Eq(Directory.GetFiles(dir, "*.tmp").Length, 0, "and no temp file");
+    }
+
+    private static void UnreadableLoadsBackup()
+    {
+        string dir = NewCharDir("loads-bak", out var dash);
+        string path = Path.Combine(dir, "Default.json");
+
+        // The last good save: ground loot on. Then a save cut off mid-write.
+        var good = new LegacyUiSettings { EnableGroundLoot = true };
+        string goodJson = Json(good);
+        File.WriteAllText(path + LegacyDashboardRenderer.BackupSuffix, goodJson);
+        string cut = goodJson.Substring(0, goodJson.Length / 2);
+        File.WriteAllText(path, cut);
+
+        dash.LoadSettings("Tester");
+        LegacyUiSettings live = SettingsOf(dash);
+        Check.True(live.EnableGroundLoot, "the backup's settings are in use");
+        Check.Eq(File.ReadAllText(path), goodJson, "the backup is put back as the profile");
+        Check.Eq(File.ReadAllText(path + LegacyDashboardRenderer.BackupSuffix), goodJson, "and stays as the backup");
+        string[] kept = Directory.GetFiles(dir, "Default.json.unreadable-*");
+        Check.Eq(kept.Length, 1, "the broken file is kept");
+        Check.True(kept.Length == 1 && File.ReadAllText(kept[0]) == cut, "with its contents intact");
+        Check.Eq(ChatCount("restored the backup"), 1, "chat says so");
+
+        // The autosave after login may rewrite the profile normalized, but it still holds the backup's settings,
+        // and the .bak is still a readable profile.
+        dash.TickAutoSave();
+        var again = JsonSerializer.Deserialize(File.ReadAllText(path), RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(again != null && again.EnableGroundLoot, "the profile after the autosave still holds the backup's settings");
+        var bak = JsonSerializer.Deserialize(File.ReadAllText(path + LegacyDashboardRenderer.BackupSuffix), RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(bak != null && bak.EnableGroundLoot, "and so does the .bak (never the broken file)");
+    }
+
+    private static void UnreadableKeptNotOverwritten()
+    {
+        foreach (string broken in new[] { "", "{ \"EnableGroundLoot\": tru", "not json at all" })
+        {
+            string dir = NewCharDir("kept", out var dash);
+            string path = Path.Combine(dir, "Default.json");
+            File.WriteAllText(path, broken);
+
+            dash.LoadSettings("Tester");
+            LegacyUiSettings live = SettingsOf(dash);
+            Check.Eq(ChatCount("didn't read"), 1, "chat says the file didn't read (" + (broken.Length == 0 ? "empty" : broken) + ")");
+
+            // The autosave must not write the defaults over it.
+            for (int i = 0; i < 3; i++) dash.TickAutoSave();
+            Check.Eq(File.ReadAllText(path), broken, "the unreadable profile is untouched by the autosave");
+            string[] kept = Directory.GetFiles(dir, "Default.json.unreadable-*");
+            Check.Eq(kept.Length, 1, "a copy is kept");
+            Check.True(kept.Length == 1 && File.ReadAllText(kept[0]) == broken, "with the original contents");
+            Check.False(File.Exists(path + LegacyDashboardRenderer.BackupSuffix), "no backup was invented");
+
+            // A real change is saved normally, and the kept copy is still there.
+            live.EnableGroundLoot = !live.EnableGroundLoot;
+            dash.TickAutoSave();
+            string now = File.ReadAllText(path);
+            Check.True(now.Length > 2 && now.Contains("EnableGroundLoot"), "once a setting changes the profile is written");
+            Check.Eq(Directory.GetFiles(dir, "Default.json.unreadable-*").Length, 1, "the kept copy is still there");
+        }
+
+        // A missing profile is still a fresh character: defaults, saved at once, nothing set aside.
+        string fresh = NewCharDir("fresh", out var dash2);
+        dash2.LoadSettings("Tester");
+        dash2.TickAutoSave();
+        Check.True(File.Exists(Path.Combine(fresh, "Default.json")), "a new character's profile is created");
+        Check.Eq(Directory.GetFiles(fresh, "*.unreadable-*").Length, 0, "nothing to set aside");
+    }
+
+    private static void SwitchUnreadableKept()
+    {
+        string dir = NewCharDir("switch", out var dash);
+        dash.LoadSettings("Tester");
+        LegacyUiSettings live = SettingsOf(dash);
+        dash.SaveSettings();
+
+        // 'Other' is unreadable and has no backup: kept, with the reason in chat.
+        string other = Path.Combine(dir, "Other.json");
+        File.WriteAllText(other, "{ broken");
+        dash.LoadProfile("Other");
+        Check.Eq(Directory.GetFiles(dir, "Other.json.unreadable-*").Length, 1, "the unreadable profile is kept");
+        Check.Eq(ChatCount("Profile 'Other' didn't read"), 1, "and chat says so");
+
+        // 'Third' is unreadable but has a backup: the backup is used and put back.
+        var good = new LegacyUiSettings { EnableGroundLoot = true, SelectedProfile = "Third" };
+        string goodJson = Json(good);
+        File.WriteAllText(Path.Combine(dir, "Third.json.bak"), goodJson);
+        File.WriteAllText(Path.Combine(dir, "Third.json"), "");
+        live.EnableGroundLoot = false;
+        dash.LoadProfile("Third");
+        Check.True(SettingsOf(dash).EnableGroundLoot, "the backup's settings are loaded");
+        Check.Eq(File.ReadAllText(Path.Combine(dir, "Third.json")), goodJson, "and put back as the profile");
+        Check.Eq(Directory.GetFiles(dir, "Third.json.unreadable-*").Length, 1, "the empty file is kept too");
     }
 }

@@ -636,7 +636,7 @@ internal sealed class AutoTradeManager
         {
             _idState.TryGetValue(id, out var st);
             if (st.Attempts > 0 && now - st.LastAt < IdResendMs) continue;
-            _host.RequestId(id);
+            if (!_host.RequestId(id)) break;   // refused (a death or a portal): not an attempt, asked again next tick
             _idState[id] = (st.Attempts + 1, now);
             _lastIdSentAt = now;
             break;

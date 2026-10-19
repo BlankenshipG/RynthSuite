@@ -309,6 +309,9 @@ public class FellowshipTracker : IDisposable
         return IsReadablePointer(fel) ? fel : IntPtr.Zero;
     }
 
+    /// <summary>Drops the refresh throttle: the next read re-walks the client's member table (RynthOracle's Refresh button).</summary>
+    public void Invalidate() => _lastRefresh = DateTime.MinValue;
+
     private void RefreshIfNeeded()
     {
         if ((DateTime.Now - _lastRefresh).TotalMilliseconds < REFRESH_INTERVAL_MS) return;

@@ -185,7 +185,7 @@ internal sealed class LegacyWeaponsUi
     {
         switch (wo.ObjectClass)
         {
-            case AcObjectClass.HealingKit: return "HealthKit";
+            case AcObjectClass.HealingKit: return (wo.Name ?? "").Contains("Stamina", StringComparison.OrdinalIgnoreCase) ? "StaminaKit" : "HealthKit";
             case AcObjectClass.Food:       return PotionType(wo);
             case AcObjectClass.Lockpick:   return "Lockpick";
             case AcObjectClass.Misc:
@@ -235,9 +235,10 @@ internal sealed class LegacyWeaponsUi
             name.Contains("Mana Stone", StringComparison.OrdinalIgnoreCase))
             return "ManaStone";
 
-        // Stamina items
+        // Stamina items. A stamina kit is used on yourself, not drunk: its own type, so the
+        // potion step never takes it ("Stamina" is the old name for stamina potions).
         if (name.Contains("Stamina", StringComparison.OrdinalIgnoreCase))
-            return "Stamina";
+            return name.TrimEnd().EndsWith(" Kit", StringComparison.OrdinalIgnoreCase) ? "StaminaKit" : "Stamina";
 
         // Lockpicks
         if (name.Contains("Lockpick", StringComparison.OrdinalIgnoreCase) ||

@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using RynthCore.Loot;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.Shared;
@@ -35,6 +36,8 @@ internal static class OneTouchHealTests
         r.Add("one-touch: a request waits out a kit in flight, then goes; a second press while waiting is not a second heal", HealWaitsForKit);
         r.Add("one-touch: a request that stays blocked gives up after OneTouchWaitMs and says why", HealGivesUp);
         r.Add("one-touch: stamina takes a stamina kit, a listed potion out of Magic stance, else Revitalize", StaminaChoice);
+        r.Add("vitals: a stamina kit is typed StaminaKit and never taken by the potion step (it was drunk with no target)", StaminaKitNeverDrunk);
+        r.Add("buff wand: a caster that needs untrained War Magic is never picked to buff; the next listed one is", BuffWandSkipsUnwieldable);
         r.Add("one-touch: mana casts Stamina to Mana; with stamina at the floor it refills stamina first", ManaChoice);
         r.Add("one-touch: /ra heal, /ra stam and /ra mana request a pass (and say so before login)", Commands);
     }
@@ -272,6 +275,55 @@ internal static class OneTouchHealTests
         Pump(r.B, OneTouchVital.Stamina);
         Check.Eq(FakeHost.Casts.Count, 1, "Revitalize Self");
         Check.True(IsFamily(FakeHost.Casts[0].SpellId, "Revitalize Self I"), "Revitalize Self");
+    }
+
+    // 2026-10-17: Drakkon's Greater Stamina Kit sat on the Items list as type "Stamina" (the old
+    // name for stamina potions). The kit failed Kit Min Success, and the potion step then used it
+    // with no target every 3 s; the server never answered and Revitalize never went out.
+    private static void StaminaKitNeverDrunk()
+    {
+        var kit = new WorldObject(0x60002001, "Greater Stamina Kit", AcObjectClass.HealingKit);
+        Check.Eq(RynthCore.Plugin.RynthAi.LegacyUi.LegacyWeaponsUi.PackConsumableType(kit), "StaminaKit",
+            "a stamina kit is its own type: not a health kit, not a stamina potion");
+        Check.Eq(RynthCore.Plugin.RynthAi.LegacyUi.LegacyWeaponsUi.PackConsumableType(new WorldObject(0x60002002, "Peerless Healing Kit", AcObjectClass.HealingKit)),
+            "HealthKit", "a healing kit stays a health kit");
+        Check.True(BuffManager.IsKitName("Greater Stamina Kit"), "a kit by name: the potion step skips it");
+        Check.False(BuffManager.IsKitName("Stamina Tincture"), "a potion is not a kit");
+    }
+
+    // 2026-10-18 01:00-01:24: with the buff wand gone, buffing tried an Electric Baton that needs War
+    // Magic (untrained) every 8 s for 24 minutes; Heal Self couldn't go and Drakkon died.
+    private static void BuffWandSkipsUnwieldable()
+    {
+        var r = Make(CombatMode.Melee);
+        const uint Baton = 0x80400070, Sceptre = 0x80400071;
+        FakeHost.Ints[(Baton, 158)] = 2;      // WieldRequirements: RawSkill
+        FakeHost.Ints[(Baton, 159)] = 34;     // War Magic
+        FakeHost.Ints[(Baton, 160)] = 300;
+        FakeHost.Skills[(Player, 34)] = (0, 1);   // War Magic untrained
+        FakeHost.Appraised.Add(Baton); FakeHost.Appraised.Add(Sceptre);   // both identified: their requirements are known
+        var skip = typeof(BuffManager).GetMethod("SkipBuffWand", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var baton = new WorldObject(unchecked((int)Baton), "Electric Baton", AcObjectClass.WandStaffOrb);
+        var sceptre = new WorldObject(unchecked((int)Sceptre), "Sceptre", AcObjectClass.WandStaffOrb);
+        Check.True((bool)skip.Invoke(r.B, new object[] { baton })!, "the War Magic baton is skipped");
+        Check.False((bool)skip.Invoke(r.B, new object[] { sceptre })!, "a caster with no requirement is not");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("Electric Baton can't be wielded")), "the player is told once: " + AllChat);
+        // Not identified yet: skipped, and identified first (the Acid Staff was tried unidentified, 2026-10-18).
+        var staff = new WorldObject(0x60400073, "Acid Staff", AcObjectClass.WandStaffOrb);
+        Check.True((bool)skip.Invoke(r.B, new object[] { staff })!, "an unidentified caster is not tried");
+        Check.True(FakeHost.IdRequests.Contains(0x60400073u), "it is identified first");
+
+        var rules = new[] { new ItemRule { Id = baton.Id, Name = baton.Name }, new ItemRule { Id = sceptre.Id, Name = sceptre.Name } };
+        var objs = new[] { baton, sceptre };
+        int pick = WeaponList.FindWand(rules, id => objs.FirstOrDefault(o => o.Id == id), _ => false, objs, false, out _,
+            wo => wo.Id == baton.Id);
+        Check.Eq(pick, sceptre.Id, "the finder passes over the skipped baton to the next listed caster");
+
+        // The player wielded an unlisted caster (the one he can wield): that is the buff wand.
+        var bronze = new WorldObject(0x60400072, "Bronze Sceptre", AcObjectClass.WandStaffOrb);
+        var withBronze = new[] { baton, sceptre, bronze };
+        int inHand = WeaponList.FindWand(rules, id => withBronze.FirstOrDefault(o => o.Id == id), wo => wo.Id == bronze.Id, withBronze, false, out _);
+        Check.Eq(inHand, bronze.Id, "a caster already in hand wins, listed or not");
     }
 
     private static void ManaChoice()

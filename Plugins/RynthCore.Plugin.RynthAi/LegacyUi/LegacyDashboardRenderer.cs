@@ -69,8 +69,9 @@ internal sealed partial class LegacyDashboardRenderer
     // the server sends at login. Before 2026-09-28 every server shared
     // SettingsProfiles\ACEmulator, so the same character name on two servers
     // shared one profile; that folder is still used when no name is known.
-    private static readonly string ProfilesBase = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "SettingsProfiles");
-    private static readonly string MonstersBase = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "MonsterProfiles");
+    // internal + settable only so the host tests can point LoadSettings at a scratch folder.
+    internal static string ProfilesBase = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "SettingsProfiles");
+    internal static string MonstersBase = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "MonsterProfiles");
     private const string LegacyServerFolder = "ACEmulator";
     private string _serverFolder = LegacyServerFolder;
     private string _settingsRoot   => Path.Combine(ProfilesBase, _serverFolder);
@@ -386,6 +387,7 @@ internal sealed partial class LegacyDashboardRenderer
         // new character kept the previous character's weapons and consumables,
         // and autosave then wrote them into its Default.json.
         bool freshProfile = !File.Exists(_settingsFilePath);
+        bool holdUnreadable = false;
         if (freshProfile)
         {
             CopySettings(new LegacyUiSettings(), _settings);
@@ -399,27 +401,29 @@ internal sealed partial class LegacyDashboardRenderer
         else if (TryReadProfile(_settingsFilePath + BackupSuffix, out LegacyUiSettings? fromBak, out string bakJson, out _))
         {
             // The profile didn't read (cut off by a client that died mid-save, say): the copy
-            // kept by the last good save is used, and saved back as the profile on the next change.
+            // kept by the last good save is used. The broken file is set aside and the backup put
+            // back as the profile, so the next save doesn't turn the broken file into the new .bak.
             CopySettings(fromBak!, _settings);
             _lastSavedJson = bakJson;
             KeepUnreadableProfile(_settingsFilePath);
+            try { File.Copy(_settingsFilePath + BackupSuffix, _settingsFilePath, overwrite: true); }
+            catch (Exception ex) { _host.Log($"[RynthAi] Settings: putting the backup back as {_settingsFilePath} failed: {ex.Message}"); }
             _host.Log($"[RynthAi] Settings: {_settingsFilePath} didn't read ({readError}); loaded the backup instead.");
             _host.WriteToChat($"[RynthAi] Your settings file didn't read ({readError}); restored the backup copy.", 1);
         }
         else
         {
             // Neither reads. Before, the defaults kept here were autosaved over the profile at once,
-            // so one bad read reset the character for good. Now the file is set aside and nothing is
-            // written until a setting is actually changed.
+            // so one bad read reset the character for good. Now a copy is set aside and nothing is
+            // written until a setting is actually changed (the baseline is re-taken below).
             CopySettings(new LegacyUiSettings(), _settings);
             KeepUnreadableProfile(_settingsFilePath);
-            try { _lastSavedJson = JsonSerializer.Serialize(_settings, RynthAiJsonContext.Default.LegacyUiSettings); }
-            catch { _lastSavedJson = string.Empty; }
+            holdUnreadable = true;
             _host.Log($"[RynthAi] Settings: {_settingsFilePath} didn't read ({readError}) and there's no good backup; using defaults without saving over it.");
             _host.WriteToChat($"[RynthAi] Your settings file didn't read ({readError}). A copy was kept next to it (.unreadable); defaults are in use until you change something.", 1);
         }
         _packSetup = freshProfile ? PackSetup.FillNew
-                   : _settings.ProfileItemsChecked ? PackSetup.None : PackSetup.CheckExisting;
+                   : holdUnreadable || _settings.ProfileItemsChecked ? PackSetup.None : PackSetup.CheckExisting;
         _packSetupStart = 0;
         _packLastCount = -1;
 
@@ -474,6 +478,15 @@ internal sealed partial class LegacyDashboardRenderer
         // combat system has no fallback weapon/damage selection for unmatched mobs.
         _settings.EnsureDefaultRule();
         SetupMonsterWatcher();
+
+        if (holdUnreadable)
+        {
+            // The defaults now in memory (and the monster rules just loaded) are not a change: take
+            // them as the saved state, so the autosave leaves the unreadable file alone until the
+            // player changes something.
+            try { CaptureTransientUiState(); _lastSavedJson = JsonSerializer.Serialize(_settings, RynthAiJsonContext.Default.LegacyUiSettings); }
+            catch { _lastSavedJson = string.Empty; }
+        }
     }
 
     /// <summary>
@@ -519,17 +532,24 @@ internal sealed partial class LegacyDashboardRenderer
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             // Written beside it and swapped in, the previous file kept as .bak: File.WriteAllText
-            // emptied the profile first, so a client closed or killed mid-save (relaunching for a
+            // empties the profile first, so a client closed or killed mid-save (relaunching for a
             // DXVK change, the launcher's stuck-client kill) left a cut-off file that then loaded
             // as defaults.
             string tmp = path + "." + Environment.ProcessId + ".tmp";
-            File.WriteAllText(tmp, json);
-            if (File.Exists(path)) File.Replace(tmp, path, path + BackupSuffix, ignoreMetadataErrors: true);
-            else File.Move(tmp, path);
+            try
+            {
+                File.WriteAllText(tmp, json);
+                if (File.Exists(path)) File.Replace(tmp, path, path + BackupSuffix, ignoreMetadataErrors: true);
+                else File.Move(tmp, path);
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            }
         }, out reason, callerShows);
 
     /// <summary>The last good profile kept by each save (profile path + this).</summary>
-    private const string BackupSuffix = ".bak";
+    internal const string BackupSuffix = ".bak";
 
     /// <summary>Reads and parses a settings profile; false (with the reason) when it's missing or doesn't parse.</summary>
     private static bool TryReadProfile(string path, out LegacyUiSettings? settings, out string json, out string error)
@@ -1102,6 +1122,7 @@ internal sealed partial class LegacyDashboardRenderer
                 TargetFPSBackground        = s.TargetFPSBackground,
                 EnableAutocram             = s.EnableAutocram,
                 PeaceModeWhenIdle          = s.PeaceModeWhenIdle,
+                RearmAfterVitals           = s.RearmAfterVitals,
                 StartMacroOnLogin          = s.StartMacroOnLogin,
                 PatrolOnLogin              = s.PatrolOnLogin,
                 YieldToVTank               = s.YieldToVTank,
@@ -1353,6 +1374,7 @@ internal sealed partial class LegacyDashboardRenderer
             s.TargetFPSBackground        = p.TargetFPSBackground;
             s.EnableAutocram             = p.EnableAutocram;
             s.PeaceModeWhenIdle          = p.PeaceModeWhenIdle;
+            if (p.RearmAfterVitals is bool rav) s.RearmAfterVitals = rav;
             s.StartMacroOnLogin          = p.StartMacroOnLogin;
             s.PatrolOnLogin              = p.PatrolOnLogin;
             s.YieldToVTank               = p.YieldToVTank;
@@ -1455,7 +1477,7 @@ internal sealed partial class LegacyDashboardRenderer
             s.CorpseApproachRangeMin     = p.CorpseApproachRangeMin;
             // Navigation
             s.BoostNavPriority           = p.BoostNavPriority;
-            s.EnableVaultedDungeons      = p.EnableVaultedDungeons;
+            if (p.EnableVaultedDungeons is bool vaulted) s.EnableVaultedDungeons = vaulted;           // absent = unchanged
             s.FollowNavMin               = p.FollowNavMin;
             s.NavRingThickness           = p.NavRingThickness;
             s.NavLineThickness           = p.NavLineThickness;
@@ -1756,18 +1778,30 @@ internal sealed partial class LegacyDashboardRenderer
         // Load from new profile file if it exists
         if (File.Exists(_settingsFilePath))
         {
-            try
+            if (TryReadProfile(_settingsFilePath, out LegacyUiSettings? loaded, out string json, out string readError))
             {
-                string json = File.ReadAllText(_settingsFilePath);
-                var loaded = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.LegacyUiSettings);
-                if (loaded != null)
+                CopySettings(loaded!, _settings);
+                _settings.SelectedProfile = newProfile;
+                _lastSavedJson = json;
+            }
+            else
+            {
+                // Same as at login: the profile that didn't read is set aside (and the backup used
+                // when there is one) instead of being overwritten by the profile we just left.
+                KeepUnreadableProfile(_settingsFilePath);
+                if (TryReadProfile(_settingsFilePath + BackupSuffix, out LegacyUiSettings? fromBak, out string bakJson, out _))
                 {
-                    CopySettings(loaded, _settings);
+                    CopySettings(fromBak!, _settings);
                     _settings.SelectedProfile = newProfile;
-                    _lastSavedJson = json;
+                    _lastSavedJson = bakJson;
+                    try { File.Copy(_settingsFilePath + BackupSuffix, _settingsFilePath, overwrite: true); } catch { }
+                    _host.WriteToChat($"[RynthAi] Profile '{newProfile}' didn't read ({readError}); restored its backup copy.", 1);
+                }
+                else
+                {
+                    _host.WriteToChat($"[RynthAi] Profile '{newProfile}' didn't read ({readError}); a copy was kept next to it (.unreadable). Your current settings are in use under that name.", 1);
                 }
             }
-            catch { }
         }
         else
         {
@@ -1932,6 +1966,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.TargetSelection          = Math.Clamp(tmp.TargetSelection, 0, 3);
         dst.TargetLock               = tmp.TargetLock;
         dst.RingRange                = tmp.RingRange;
+        dst.HandlerRingEvade         = tmp.HandlerRingEvade;   // a profile saved before this setting loads it as on
         dst.ApproachRange            = tmp.ApproachRange;
         dst.MinRingTargets           = tmp.MinRingTargets;
         dst.BlastRange               = tmp.BlastRange;
@@ -1967,6 +2002,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.LootOnlyRareCorpses      = tmp.LootOnlyRareCorpses;
         dst.EnableGroundLoot         = tmp.EnableGroundLoot;
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
+        dst.RearmAfterVitals         = tmp.RearmAfterVitals;
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;
         dst.RebuffTopOffSecondsRemaining = tmp.RebuffTopOffSecondsRemaining;

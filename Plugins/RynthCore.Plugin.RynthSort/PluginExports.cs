@@ -75,7 +75,8 @@ public static unsafe class PluginExports
         {
             string action = actionAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(actionAnsi) ?? "" : "";
             string value = valueAnsi != IntPtr.Zero ? Marshal.PtrToStringAnsi(valueAnsi) ?? "" : "";
-            if (action.Equals("rsort", StringComparison.OrdinalIgnoreCase)) Runtime.Plugin?.EnqueueCommand(value);
+            string? arg = RynthSortPlugin.RemoteSortArgument(action, value);
+            if (arg != null) Runtime.Plugin?.EnqueueCommand(arg);
         }
         catch { }
     }

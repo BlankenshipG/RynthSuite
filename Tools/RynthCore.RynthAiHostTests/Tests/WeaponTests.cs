@@ -912,7 +912,13 @@ internal static class WeaponTests
         Check.Eq(unchecked((uint)got), ListedWand, "a listed wand in hand counts as carried");
         var sameName = new WorldObject(0x7000ABCD, cache[unchecked((int)ListedWand)]!.Name, AcObjectClass.WandStaffOrb);
         got = WeaponList.FindWand(rig.S.ItemRules, Look, _ => false, new[] { sameName }, allowUnlisted: false, out _);
-        Check.Eq(got, 0x7000ABCD, "listed wand gone: another of the same name in the pack stands in");
+        Check.Eq(got, 0, "listed wand gone, setting off: no same-name stand-in (it took unlisted 'Wand's, 2026-10-18)");
+        got = WeaponList.FindWand(rig.S.ItemRules, Look, _ => false, new[] { sameName }, allowUnlisted: true, out unlisted);
+        Check.Eq(got, 0x7000ABCD, "listed wand gone, setting on: any caster in the pack");
+        Check.True(unlisted, "from the pack");
+        got = WeaponList.FindWand(rig.S.ItemRules, Look, _ => false, invWithListed, allowUnlisted: true, out unlisted,
+            skip: wo => wo.Id == unchecked((int)ListedWand));
+        Check.Eq(got, 0, "the listed wand is carried but can't be wielded: no caster from the pack (owner, 2026-10-18)");
 
         var none = new List<ItemRule>();
         got = WeaponList.FindWand(none, Look, _ => false, new[] { cache[unchecked((int)NamedJunk)]! }, allowUnlisted: true, out _);

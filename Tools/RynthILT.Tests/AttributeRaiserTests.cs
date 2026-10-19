@@ -31,6 +31,8 @@ internal static class AttributeRaiserTests
         r.Add("attr raiser: by-hand +1 / +10 priced like UB, refused when unaffordable, costs read on tab open", ByHandPriced);
         r.Add("aug planner: /aug pulled on tab open, totals, reset targets, copy texts", AugPlanner);
         r.Add("aug refresh: banner alone does not end /aug; Current updates from level lines", AugRefreshWaitsForLevelLines);
+        r.Add("aug refresh: a probe that left Current empty retries /aug once; a click during the probe runs after it", AugProbeRetry);
+        r.Add("aug lines: separators in the level (4,300 / 4.300 / 4 300 / 4'300) and trailing notes read", AugLineValues);
         r.Add("aug costs: UB's ILT model (tier starts at its S level) in closed form", AugCostModel);
         r.Add("aug costs: per-server multipliers and rules, saved and reset", AugCostSettings);
     }
@@ -223,6 +225,63 @@ internal static class AttributeRaiserTests
             prog.AppendSnapshotJson(sb);
             return sb.ToString().Contains("\"cur\":4300", StringComparison.Ordinal);
         }), "Current updates once Creature:/Item: lines arrive");
+    }
+
+    // Silentkelpie (PR #12): the login probe could end on the banner alone (chat-hold backlog) and leave
+    // Current empty with nothing to retry it; a Refresh current click during the probe was dropped.
+    private static void AugProbeRetry()
+    {
+        var hub = NewHub("InfiniteLeaftide", new IltSettings(), "aug-probe-retry", out _);
+        var prog = hub.Progression;
+
+        // Probe reply: the banner and no level lines. The tap runs ApplyAugLines then AfterExternalAugCapture.
+        prog.ApplyAugLines(new List<string> { "---------------------------", "Advanced Augmentation Levels:" });
+        prog.AfterExternalAugCapture();
+        Check.True(TickUntil(hub, () => FakeHost.ChatCommands.Contains("/aug")), "Current still empty: /aug is sent again");
+        prog.AfterExternalAugCapture();   // the retry is in flight, and was the one retry
+        prog.ApplyAugLines(new List<string> { "Advanced Augmentation Levels:" });
+        prog.AfterExternalAugCapture();
+        for (int i = 0; i < 20; i++) { hub.Tick(); Thread.Sleep(25); }
+        Check.Eq(FakeHost.ChatCommands.Count(x => x == "/aug"), 1, "only one retry");
+
+        Reply(hub, "Creature:4,300", "Item:100");
+        Check.True(TickUntil(hub, () =>
+        {
+            var sb = new System.Text.StringBuilder();
+            prog.AppendSnapshotJson(sb);
+            return sb.ToString().Contains("\"cur\":4300", StringComparison.Ordinal);
+        }), "the retry's level lines fill Current");
+
+        // A probe with levels needs no retry.
+        var hub2 = NewHub("InfiniteLeaftide", new IltSettings(), "aug-probe-ok", out _);
+        hub2.Progression.ApplyAugLines(new List<string> { "Creature: 12" });
+        hub2.Progression.AfterExternalAugCapture();
+        for (int i = 0; i < 20; i++) { hub2.Tick(); Thread.Sleep(25); }
+        Check.Eq(FakeHost.ChatCommands.Count(x => x == "/aug"), 0, "levels present: no retry");
+    }
+
+    private static void AugLineValues()
+    {
+        Check.True(IltParse.AugLine.IsMatch("Creature:4,300") && IltParse.AugLine.IsMatch("Creature: 4.300")
+                   && IltParse.AugLine.IsMatch("Creature: 4 300") && IltParse.AugLine.IsMatch("Creature: 4'300"), "the regex matches each grouping");
+        Check.False(IltParse.AugLine.IsMatch("Creature: none") || IltParse.AugLine.IsMatch("Advanced Augmentation Levels:"), "and not a line with no number");
+        Check.Eq(IltParse.ParseAugValue(IltParse.AugLine.Match("Creature:4,300").Groups[2].Value), 4300L, "comma");
+        Check.Eq(IltParse.ParseAugValue(IltParse.AugLine.Match("Creature: 4.300").Groups[2].Value), 4300L, "period");
+        Check.Eq(IltParse.ParseAugValue(IltParse.AugLine.Match("Creature: 4 300").Groups[2].Value), 4300L, "space");
+        Check.Eq(IltParse.ParseAugValue(IltParse.AugLine.Match("Creature: 4'300").Groups[2].Value), 4300L, "apostrophe");
+        Check.Eq(IltParse.ParseAugValue(IltParse.AugLine.Match("Creature: 1,234,567").Groups[2].Value), 1234567L, "two groups");
+        Check.Eq(IltParse.ParseAugValue(IltParse.AugLine.Match("Duration: 5 (adds 3)").Groups[2].Value), 5L, "a trailing note");
+        Check.Eq(IltParse.ParseAugValue(IltParse.AugLine.Match("Specialize: 2").Groups[2].Value), 2L, "plain");
+        Check.Eq(IltParse.ParseAugValue(IltParse.AugLine.Match("Item: 2750").Groups[2].Value), 2750L, "no separator");
+        Check.Eq(IltParse.ParseAugValue(""), 0L, "empty");
+
+        var hub = NewHub("InfiniteLeaftide", new IltSettings(), "aug-values", out _);
+        hub.Progression.ApplyAugLines(new List<string> { "Creature: 2 750", "Item: 1.200", "Life: 300" });
+        var sb = new System.Text.StringBuilder();
+        hub.Progression.AppendSnapshotJson(sb);
+        string snap = sb.ToString();
+        Check.True(snap.Contains("\"cur\":2750", StringComparison.Ordinal) && snap.Contains("\"cur\":1200", StringComparison.Ordinal)
+                   && snap.Contains("\"cur\":300", StringComparison.Ordinal), "the planner takes the grouped levels whole");
     }
 
     private static void Patterns()

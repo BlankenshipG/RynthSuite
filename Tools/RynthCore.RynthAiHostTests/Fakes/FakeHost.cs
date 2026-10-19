@@ -51,6 +51,14 @@ internal static unsafe class FakeHost
     /// <summary>Item id -> container id. When it has entries at Create() time the host also gets
     /// GetObjectOwnershipInfo (opt-in, so tests written without it see no ownership, as before).</summary>
     public static readonly Dictionary<uint, uint> Containers = new();
+    /// <summary>Extra ids GetContainerContents lists for a container without them being in it (the
+    /// client lists what the player wields in the player's own contents; ownership says no container).</summary>
+    public static readonly Dictionary<uint, List<uint>> ContentsExtra = new();
+    /// <summary>Opt-in (set before Create): v87 GetWieldedItems answering <see cref="Equipped"/> (the
+    /// engine's EquipmentTracker: item -> EquipMask). <see cref="EquippedNotReady"/> answers -1.</summary>
+    public static bool EquippedCalls;
+    public static bool EquippedNotReady;
+    public static readonly Dictionary<uint, uint> Equipped = new();
     /// <summary>Item id -> the creature wielding it (GetObjectOwnershipInfo's wielder). Entries here
     /// also install GetObjectOwnershipInfo; an id in neither map reads as unknown ownership.</summary>
     public static readonly Dictionary<uint, uint> Wielders = new();
@@ -105,10 +113,16 @@ internal static unsafe class FakeHost
     /// <summary>When true (the default) a give lands at once, as the server does when it isn't busy:
     /// the item goes to the target. False = the server hasn't taken it (still carried).</summary>
     public static bool GiveLands = true;
+    /// <summary>Optional: runs for every give instead of the default landing (a test's own server: NPC takes one per give, busy, ...).</summary>
+    public static Action<uint, uint, int>? GiveHandler;
     /// <summary>Opt-in: wires StopCompletely (off by default so no other test sees it).</summary>
     public static bool StopCalls;
     /// <summary>StopCompletely calls (opt-in with <see cref="StopCalls"/>).</summary>
     public static int Stops;
+    /// <summary>Opt-in: wires MeleeAttack and MissileAttack; calls land in <see cref="AttackCalls"/>.</summary>
+    public static bool AttackSendCalls;
+    /// <summary>Every melee or missile attack (kind, target, height, power), in order (opt-in with <see cref="AttackSendCalls"/>).</summary>
+    public static readonly List<(string Kind, uint Target, int Height, float Power)> AttackCalls = new();
     /// <summary>Opt-in: wires SetMotion; calls land in <see cref="MotionCalls"/>.</summary>
     public static bool SetMotionCalls;
     /// <summary>Every SetMotion (motion, on), in order (opt-in with <see cref="SetMotionCalls"/>).</summary>
@@ -131,6 +145,8 @@ internal static unsafe class FakeHost
     /// and is counted in <see cref="RefusedIdRequests"/>, not in <see cref="IdRequests"/>.</summary>
     public static bool RequestIdAccepts = true;
     public static int RefusedIdRequests;
+    /// <summary>False = UseObject returns 0 (the engine did not send it); the use is still recorded in <see cref="Uses"/>.</summary>
+    public static bool UseObjectAccepts = true;
     /// <summary>Opt-in (set before Create): UseObject, RequestId, HasAppraisalData and
     /// GetCurrentCombatMode (answering <see cref="CombatModeValue"/>). Tests written without
     /// them keep seeing those calls as absent.</summary>
@@ -252,19 +268,23 @@ internal static unsafe class FakeHost
 
     public static void Reset()
     {
+        EquippedCalls = false; EquippedNotReady = false; Equipped.Clear();
+#if !RYNTHILT_TESTS
+        RynthCore.Plugin.RynthAi.EquippedState.Invalidate();
+#endif
         Nav3DCalls = false; Nav3DRings.Clear(); Nav3DLines.Clear(); Nav3DTriangles.Clear();
         Names.Clear(); Positions.Clear(); ItemTypes.Clear();
         Ints.Clear(); Doubles.Clear(); Quads.Clear(); Bools.Clear(); Strings.Clear();
         Skills.Clear(); SkillLevels.Clear(); Attributes.Clear();
         SpellIds.Clear(); DataIds.Clear(); InstanceIds.Clear(); Palettes.Clear(); KnownSpells.Clear(); NotAttackable.Clear(); Enchantments.Clear();
-        Containers.Clear(); Wielders.Clear(); Bitfields.Clear();
+        Containers.Clear(); ContentsExtra.Clear(); Wielders.Clear(); Bitfields.Clear();
         ServerTime = 0; Vitae = 1.0f; Portaling = false; PlayerPose = default; HasPose = true;
         Vitals = default; BaseVitals = default; WorldName = ""; AccountName = "";
         HeadingDeg = 0; Wcids.Clear(); Spellbook.Clear(); PlayerIdValue = 0;
         Logs.Clear(); Chat.Clear(); ChatCommands.Clear(); AfterCastSpell = null;
-        AutoRunCalls.Clear(); AutoRun = false; Jumps = 0; TapJumpCalls = false; TapJumps = 0; TapJumpRefuse = false; Turns = 0; Casts.Clear(); CastRefused = false; CastsRefused = 0; StopCalls = false; Stops = 0; SetMotionCalls = false; MotionCalls.Clear(); Sent.Clear(); GiveCalls = false; Gives.Clear(); GiveLands = true;
+        AutoRunCalls.Clear(); AutoRun = false; Jumps = 0; TapJumpCalls = false; TapJumps = 0; TapJumpRefuse = false; Turns = 0; Casts.Clear(); CastRefused = false; CastsRefused = 0; StopCalls = false; Stops = 0; SetMotionCalls = false; MotionCalls.Clear(); AttackSendCalls = false; AttackCalls.Clear(); Sent.Clear(); GiveCalls = false; Gives.Clear(); GiveLands = true; GiveHandler = null;
         Uses.Clear(); IdRequests.Clear(); TargetCalls = false; HealthQueries.Clear(); IdTimes.Clear(); Moves.Clear(); Appraised.Clear(); WeaponCalls = false; ContentsCalls = false; CombatModeValue = 1;
-        RequestIdAccepts = true; RefusedIdRequests = 0;
+        RequestIdAccepts = true; RefusedIdRequests = 0; UseObjectAccepts = true;
         VTankFlags = -1; VTankSeq = 0; LogCostMicros = 0;
         ServerGates = false; UseDoneSeq = 0; CastBusy = 0; LastUseDoneError = 0; LastUseDoneCalls = false;
         WeenieErrorCalls = false; WeenieErrSeq = 0; WeenieErrCode = WeenieErrEvent = WeenieErrObject = 0;
@@ -319,6 +339,8 @@ internal static unsafe class FakeHost
             api.GetPlayerIdFn       = (IntPtr)(delegate* unmanaged[Cdecl]<uint>)&GetPlayerId;
         if (Containers.Count > 0 || Wielders.Count > 0)
             api.GetObjectOwnershipInfoFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint*, uint*, uint*, int>)&GetObjectOwnershipInfo;
+        if (EquippedCalls)
+            api.GetWieldedItemsFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint*, uint*, int, int>)&GetWieldedItems;
         if (ContentsCalls)
             api.GetContainerContentsFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint*, int, int>)&GetContainerContents;
         if (Bitfields.Count > 0)
@@ -337,6 +359,13 @@ internal static unsafe class FakeHost
         api.CastSpellFn             = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int>)&CastSpell;
         if (StopCalls)
             api.StopCompletelyFn    = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&StopCompletely;
+        if (SetMotionCalls)
+            api.SetMotionFn         = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int>)&SetMotion;
+        if (AttackSendCalls)
+        {
+            api.MeleeAttackFn       = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, float, int>)&MeleeAttack;
+            api.MissileAttackFn     = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, float, int>)&MissileAttack;
+        }
         if (Nav3DCalls)
         {
             api.Nav3DClearFn       = (IntPtr)(delegate* unmanaged[Cdecl]<void>)&Nav3DClear;
@@ -449,6 +478,7 @@ internal static unsafe class FakeHost
             api.GetObjectPropertiesFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, byte*, int, int>)&GetObjectProperties;
         }
         LastApi = api;
+        if (EquippedCalls) api.Version = Math.Max(api.Version, 87u);   // v87 GetWieldedItems
         return new RynthCoreHost(api);
     }
 
@@ -569,11 +599,27 @@ internal static unsafe class FakeHost
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetWieldedItems(uint* ids, uint* locations, int max)
+    {
+        if (EquippedNotReady) return -1;
+        int n = 0;
+        foreach (var kv in Equipped)
+        {
+            if (n >= max) break;
+            ids[n] = kv.Key; locations[n] = kv.Value; n++;
+        }
+        return n;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int GetContainerContents(uint container, uint* output, int max)
     {
         int n = 0;
         foreach (var kv in Containers)
             if (kv.Value == container && n < max) output[n++] = kv.Key;
+        if (ContentsExtra.TryGetValue(container, out var extra))
+            foreach (uint id in extra)
+                if (n < max) output[n++] = id;
         return n;
     }
 
@@ -750,6 +796,12 @@ internal static unsafe class FakeHost
     private static int SetAutoRun(int on) { AutoRun = on != 0; AutoRunCalls.Add(AutoRun); Sent.Add(AutoRun ? "autorun on" : "autorun off"); return 1; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int MeleeAttack(uint target, int height, float power) { AttackCalls.Add(("melee", target, height, power)); return 1; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int MissileAttack(uint target, int height, float power) { AttackCalls.Add(("missile", target, height, power)); return 1; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int SetMotion(uint motion, int on) { MotionCalls.Add((motion, on != 0)); Sent.Add($"motion 0x{motion:X8} {(on != 0 ? "on" : "off")}"); return 1; }
 
     // The fake character turns instantly.
@@ -774,7 +826,10 @@ internal static unsafe class FakeHost
     private static int GiveObjectTo(uint item, uint target, int amount)
     {
         Gives.Add((item, target, amount));
-        if (GiveLands && amount == 0) Containers[item] = target;
+        if (GiveHandler != null) { GiveHandler(item, target, amount); return 1; }
+        // The server takes the whole object for amount 0, or for an amount that covers the stack (a single
+        // item has no StackCount: its stack is 1, so an explicit 1 takes it whole).
+        if (GiveLands && (amount == 0 || amount >= (Ints.TryGetValue((item, 12), out int stack) ? stack : 1))) Containers[item] = target;
         return 1;
     }
 
@@ -784,7 +839,7 @@ internal static unsafe class FakeHost
     private static int ChangeCombatMode(int mode) { if (CombatModeRefuse) { CombatModeRefusals++; return 0; } CombatModeRequests.Add(mode); return 1; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    private static int UseObject(uint id) { Uses.Add(id); OnUseObject?.Invoke(id); return 1; }
+    private static int UseObject(uint id) { Uses.Add(id); OnUseObject?.Invoke(id); return UseObjectAccepts ? 1 : 0; }
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int GetObjectState(uint id, uint* state)
     {

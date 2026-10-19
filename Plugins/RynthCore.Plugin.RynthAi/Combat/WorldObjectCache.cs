@@ -343,6 +343,15 @@ public class WorldObjectCache
     private const int MaxInitialScanRetries = 15;
     private readonly List<WorldObject> _directInventory = new();
     private readonly HashSet<int> _directInventoryIds = new();
+    // The ids the last container walk found inside a pack: a side pack, or the main pack when the
+    // item's container field is set. The player's own contents also hold what the player wields.
+    private readonly HashSet<int> _packWalkIds = new();
+
+    /// <summary>True when the last container walk (GetDirectInventory) found <paramref name="id"/> inside a pack.</summary>
+    public bool InPackWalk(int id)
+    {
+        lock (_gate) return _packWalkIds.Contains(id);
+    }
     private readonly Dictionary<int, int> _directInventoryIndex = new();
     private DateTime _lastDirectInventoryScan = DateTime.MinValue;
     private const int DirectInventoryCooldownMs = 1000;
@@ -1395,6 +1404,7 @@ public class WorldObjectCache
         _directInventory.Clear();
         _directInventoryIds.Clear();
         _directInventoryIndex.Clear();
+        _packWalkIds.Clear();
 
         uint playerId = _host.GetPlayerId();
         if (playerId == 0)
@@ -1428,6 +1438,16 @@ public class WorldObjectCache
                 // parent/slot for the remote inventory view (stashed onto the WorldObject).
                 if (!TryAddDirectInventoryItem(itemId, playerId, containerId, i, out bool isContainer))
                     continue;
+                // The player's own contents can list what the player wields (the 07:27 export had the
+                // wielded Sceptre in it, 2026-10-18), and reading a wielded caster as "in the pack" made
+                // buffing ignore it and try every other one. So only a side pack, or the main pack with
+                // the item's own container field set and no wielder, means "in a pack". Buffing's wand
+                // swap puts the weapons into a side pack (the stale-record case of 2026-10-17/18).
+                if (containerId != playerId) _packWalkIds.Add(unchecked((int)itemId));
+                else if (_host.HasGetObjectOwnershipInfo
+                         && _host.TryGetObjectOwnershipInfo(itemId, out uint inContainer, out uint byWielder, out _)
+                         && inContainer != 0 && byWielder == 0)
+                    _packWalkIds.Add(unchecked((int)itemId));
 
                 if (isContainer && seenContainers.Add(itemId))
                     pendingContainers.Enqueue(itemId);
@@ -1490,6 +1510,13 @@ public class WorldObjectCache
     /// </summary>
     public static bool IsWieldedByPlayer(RynthCoreHost host, WorldObject wo)
     {
+        // The server's word (the engine's EquipmentTracker, API v87) when the engine has it.
+        if (EquippedState.IsWielded(host, wo.Id) is bool tracked) return tracked;
+        // Found inside a pack by the client's container walk: not wielded, whatever the weenie's
+        // wielder record still says. It kept the player after buffing put both Hand Wraps into the
+        // pack for the wand (2026-10-17), so combat took Drakkon as armed, never wielded anything,
+        // and he fought bare-handed for 19 s until he died.
+        if (wo.Cache != null && wo.Cache.InPackWalk(wo.Id)) return false;
         if (wo.Values(LongValueKey.CurrentWieldedLocation, 0) > 0) return true;
         if (wo.Values(LongValueKey.EquippedSlots, 0) != 0) return true;
         if (!host.HasGetObjectWielderInfo) return false;

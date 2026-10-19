@@ -74,12 +74,14 @@ internal sealed class WeaponElementTracker
             if (id == 0 || IsIdentified(id)) continue;
             int n = _requests.TryGetValue(id, out int c) ? c : 0;
             if (n >= MaxRequestsPerItem) continue;
+            bool taken = false;
+            try { taken = _host.RequestId(unchecked((uint)id)); } catch { }
+            _lastRequestAt = now;   // paces a retry as it paces a request
+            if (!taken) return 0;   // the engine refused (a death or a portal): not counted, asked again after the gap
             _requests[id] = n + 1;
             _inFlightId = id;
             _inFlightAt = now;
-            _lastRequestAt = now;
             RequestsSent++;
-            try { _host.RequestId(unchecked((uint)id)); } catch { }
             return id;
         }
         return 0;

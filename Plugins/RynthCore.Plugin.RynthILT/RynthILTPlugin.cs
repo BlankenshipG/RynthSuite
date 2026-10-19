@@ -534,7 +534,11 @@ public sealed class RynthILTPlugin : RynthPluginBase
     }
 
     // The server's killer notification: this character landed the killing blow.
-    public override void OnKillNotification(string? deathMessage) => _bounties?.OnKill();
+    public override void OnKillNotification(string? deathMessage)
+    {
+        _bounties?.OnKill();
+        _hub?.OnKillNotification();
+    }
 
     private void DrainTypedBounty()
     {
@@ -693,7 +697,8 @@ public sealed class RynthILTPlugin : RynthPluginBase
             case "vaulted":
             case "vaulteddungeons":
             {
-                // "/ilt vaulted [on|off|toggle|status]": the Vaulted Dungeons keeper.
+                // "/ilt vaulted [on|off|toggle|status]": the Vaulted Dungeons keeper (ILT only; the
+                // module answers "not available" elsewhere, and while the master switch is off).
                 if (_hub == null) { ChatLine("[RynthILT] ILT features not ready (log in first)."); return; }
                 _hub.VaultedDungeons.HandleCommand(args);
                 return;
@@ -718,7 +723,7 @@ public sealed class RynthILTPlugin : RynthPluginBase
             case "help":
                 ChatLine("[RynthILT] /ilt hub ... (the Mini Remote's ILT tabs; same as /ra hub ...), /ilt guardian ..., /ilt servers [list|<names>|default],");
                 ChatLine("[RynthILT] /ilt bounty [list|refresh] - the tracked ACECustom bounties (the Bounties window: the ILT button on the RynthCore bar, or /rc bounties),");
-                ChatLine("[RynthILT] /ilt vaulted [on|off|toggle|status] - Vaulted Dungeons (Mini Remote tab; enable in Options > Navigation),");
+                ChatLine("[RynthILT] /ilt vaulted [on|off|toggle|status] - Vaulted Dungeons keeper (ILT only; master switch: RynthAi Settings > Navigation > Vaulted Dungeons, off by default),");
                 ChatLine("[RynthILT] /ilt settings [show|hide|toggle] - the ILT settings: the world verdict, the ILT world names and a feature summary (force a server: RynthCore Options > Diagnostics; all features: RynthOracle > About),");
                 ChatLine("[RynthILT] /ilt fellow [show|hide|toggle] - ILT's /fship commands as buttons (also in the Mini Remote's Fellowship section and RynthOracle's Fellowship tab),");
                 ChatLine("[RynthILT] /ilt trace <category|all|list> [on|off], /ilt debug [on|off].");

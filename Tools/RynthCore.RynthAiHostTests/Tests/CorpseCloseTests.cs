@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using RynthCore.Loot;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginCore;
 using RynthCore.PluginSdk;
 using RynthCore.RynthAiHostTests.Fakes;
@@ -41,6 +42,9 @@ internal static class CorpseCloseTests
         r.Add("corpse close: the next corpse is opened without closing the finished one; its late close doesn't disturb the new open", NextCorpseWithoutClose);
         r.Add("corpse close: a held-back close is sent when no other corpse is opened in time, and when the macro stops", DeferredCloseFallback);
         r.Add("loot pickup: a pickup that merges into a pack stack is confirmed when the stack grows, not after 4 s", StackMergeConfirmed);
+        r.Add("loot timeout: a pickup held for a cast's answer does not time the corpse out; the pickup goes on the answer", HeldPickupKeepsCorpseClock);
+        r.Add("loot timeout: an unheld stall (nothing to take, nothing held) still times the corpse out", UnheldStallStillTimesOut);
+        r.Add("corpse close: the close is held back only when the next corpse can be claimed now (not while buffing), and a hold that starts later ends the wait", DeferredCloseNeedsClaimableCorpse);
     }
 
     private static long _now;
@@ -52,6 +56,21 @@ internal static class CorpseCloseTests
         RynthAiPlugin.CorpseClock = () => _now;
         try { body(); }
         finally { RynthAiPlugin.CorpseClock = old; }
+    }
+
+    /// <summary>The pacer (and the audits whose stop / use times it reads) on the same hand-moved clock as the loot.</summary>
+    private static void PacerOn()
+    {
+        ActionPacer.Reset(); ActionPacer.Enabled = true; ActionPacer.NowMs = () => _now;
+        MoveAudit.Reset(); MoveAudit.NowMs = () => _now;
+        UseAudit.NowMs = () => _now;
+    }
+
+    private static void PacerOff()
+    {
+        ActionPacer.Enabled = false; ActionPacer.Reset(); ActionPacer.NowMs = () => Environment.TickCount64;
+        MoveAudit.Reset(); MoveAudit.NowMs = () => Environment.TickCount64;
+        UseAudit.NowMs = () => Environment.TickCount64;
     }
 
     private static void Corpse(uint id, float dx)
@@ -225,6 +244,101 @@ internal static class CorpseCloseTests
         bot3.Create(CorpseA, GemA);
         LootCorpseA(bot3);
         Check.Eq(string.Join(",", FakeHost.Closes.Select(c => $"{c:X8}")), $"{CorpseA:X8}", "the last corpse is closed at once");
+    });
+
+    // A pickup is refused (ACE: YoureTooBusy) while the server owes an answer to a cast, so it waits
+    // (ActionPacer.Outstanding). The corpse's own clock (LootCorpseTimeoutMs) used to keep running
+    // through that wait, and the first tick after the answer abandoned an OPENED corpse, which gets
+    // the 30-minute completed mark: its loot was skipped.
+    private static void HeldPickupKeepsCorpseClock() => Clocked(() =>
+    {
+        World(twoCorpses: false);
+        FakeHost.ServerGates = true;   // GetUseDoneSeq, GetCastBusyState
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.LootCorpseTimeoutMs = 2000;
+        PacerOn();
+        try
+        {
+            bot.Create(CorpseA, GemA);
+            bot.Tick();
+            Check.True(FakeHost.Uses.Contains(CorpseA), "corpse A is opened");
+            FakeHost.UseDone(0);
+            FakeHost.GroundContainer = CorpseA;
+            bot.P.OnViewObjectContents(CorpseA);
+
+            // A cast goes out and has no answer yet when the contents arrive: the pickup waits for it,
+            // two and a half corpse timeouts, still inside the pacer's own limit (CastMaxMs, 7 s).
+            ActionPacer.Begin(host, PacedKind.Cast, 0, "Bloodstone Bolt VII", "Combat", FakeHost.UseDoneSeq);
+            bot.TickFor(5_000);
+            Check.False(FakeHost.ExternalMoves.Any(m => m.Id == GemA), "no pickup while the cast is unanswered");
+            Check.True(Logged("pickup waits - the server still owes an answer"), "the hold is logged");
+            Check.False(Logged("abandoning corpse"), "the corpse is not abandoned while the pickup is held");
+            Check.Eq(bot.Get<int>("_openedContainerId"), unchecked((int)CorpseA), "and stays the open corpse");
+
+            FakeHost.UseDone(0);   // the cast is answered
+            for (int i = 0; i < 100 && !FakeHost.ExternalMoves.Any(m => m.Id == GemA); i++) { _now += 20; bot.Tick(); }
+            Check.True(FakeHost.ExternalMoves.Any(m => m.Id == GemA), "the pickup goes on the answer");
+            FakeHost.Containers[GemA] = Player;
+            for (int i = 0; i < 200 && !bot.Completed(CorpseA); i++) { _now += 20; bot.Tick(); }
+            Check.True(bot.Completed(CorpseA), "and the corpse is completed by its loot, not by the timeout");
+            Check.False(Logged("abandoning corpse"), "never abandoned");
+        }
+        finally { PacerOff(); }
+    });
+
+    private static void UnheldStallStillTimesOut() => Clocked(() =>
+    {
+        World(twoCorpses: false);
+        FakeHost.ServerGates = true;
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.LootCorpseTimeoutMs = 2000;
+        bot.S.LootEmptyCorpseMs = 60_000;   // the corpse neither shows items nor is called empty: a stall
+        PacerOn();
+        try
+        {
+            bot.Create(CorpseA);   // the gem is never seen
+            bot.Tick();
+            Check.True(FakeHost.Uses.Contains(CorpseA), "corpse A is opened");
+            FakeHost.UseDone(0);
+            FakeHost.GroundContainer = CorpseA;
+            bot.P.OnViewObjectContents(CorpseA);
+            bot.TickFor(1_500);
+            Check.False(Logged("abandoning corpse"), "inside the timeout");
+            bot.TickFor(1_000);
+            Check.True(Logged("abandoning corpse") && Logged("(timeout)"), "an unheld stall is still abandoned on the timeout");
+        }
+        finally { PacerOff(); }
+    });
+
+    private static void DeferredCloseNeedsClaimableCorpse() => Clocked(() =>
+    {
+        // The next-corpse test itself: B is in range and A is done. Buffing holds every claim, so
+        // there is nothing to wait for.
+        World(twoCorpses: true);
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Create(CorpseA, CorpseB, GemA, GemB);
+        bot.Get<Dictionary<int, long>>("_completedCorpses")[unchecked((int)CorpseA)] = _now;
+        bool Other() => (bool)typeof(RynthAiPlugin).GetMethod("OtherCorpseToLoot", Any)!.Invoke(bot.P, new object[] { unchecked((int)CorpseA) })!;
+        Check.True(Other(), "B is in range and claimable: the close is worth deferring");
+        bot.S.BotAction = "Buffing";
+        Check.False(Other(), "buffing holds every claim: no deferral");
+        bot.S.BotAction = "Default";
+        Check.True(Other(), "and it is back once the hold ends");
+
+        // A hold that starts while the close is deferred ends the wait at once (not after 3 s).
+        World(twoCorpses: true);
+        var host2 = FakeHost.Create(Player);
+        var bot2 = new Bot(host2);
+        bot2.Create(CorpseA, CorpseB, GemA, GemB);
+        LootCorpseA(bot2);
+        Check.Eq(FakeHost.Closes.Count, 0, "held back while B can be claimed");
+        bot2.S.BotAction = "Buffing";
+        _now += 20; bot2.Tick(BotActivity.Looting);
+        Check.Eq(string.Join(",", FakeHost.Closes.Select(c => $"{c:X8}")), $"{CorpseA:X8}", "buffing began: A is closed at once, once");
+        Check.True(Logged("the next corpse can't be claimed now"), "and the reason is logged");
     });
 
     private static void StackMergeConfirmed() => Clocked(() =>

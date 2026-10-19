@@ -12,6 +12,8 @@ internal static class PetCaptureRulesTests
         r.Add("pet capture: Asheron's Lens bypasses the health gate", AsheronsBypass);
         r.Add("pet capture: range is 5 m; dead creatures are never capturable", RangeAndDead);
         r.Add("pet capture: lens WCIDs match PetGuideController", LensWcids);
+        r.Add("pet capture: a creature is left alone after 5 tries with no capture, then retried after the block", ThrottlePerTarget);
+        r.Add("pet capture: 15 lens uses with no capture anywhere trip the backstop; a success resets it", ThrottleBackstop);
     }
 
     private static void HealthGate()
@@ -66,5 +68,41 @@ internal static class PetCaptureRulesTests
         Check.Eq(PetCaptureRules.LensAt(3).Wcid, 78780010u, "Resonance");
         Check.Eq(PetCaptureRules.LensAt(4).Wcid, 78780012u, "Asheron's");
         Check.Eq(PetCaptureRules.LensNames.Length, PetCaptureRules.Lenses.Length, "combo labels match");
+    }
+
+    private static void ThrottlePerTarget()
+    {
+        var t = new PetCaptureThrottle();
+        long now = 1000;
+        for (int i = 0; i < PetCaptureThrottle.MaxTriesPerTarget; i++)
+        {
+            Check.True(t.MayAttempt(7, now), $"try {i + 1} allowed");
+            t.RecordAttempt(7, now);
+            now += 2500;
+        }
+        Check.False(t.MayAttempt(7, now), "5 tries used: blocked");
+        Check.True(t.BlockedSecondsLeft(7, now) > 0, "block time left reported");
+        Check.True(t.MayAttempt(8, now), "another creature is not blocked");
+        Check.False(t.MayAttempt(7, now + PetCaptureThrottle.TargetBlockMs - 3000), "still blocked just before the block ends");
+        Check.True(t.MayAttempt(7, now + PetCaptureThrottle.TargetBlockMs + 1), "block served: tries again");
+        t.RecordAttempt(7, now + PetCaptureThrottle.TargetBlockMs + 1);
+        Check.True(t.MayAttempt(7, now + PetCaptureThrottle.TargetBlockMs + 2), "a fresh set of tries after the block");
+    }
+
+    private static void ThrottleBackstop()
+    {
+        var t = new PetCaptureThrottle();
+        long now = 0;
+        for (int i = 0; i < PetCaptureThrottle.MaxTriesWithoutSuccess; i++)
+        {
+            Check.False(t.Exhausted, $"not exhausted before use {i + 1}");
+            t.RecordAttempt(100 + i, now);          // a new creature each time: per-target never trips
+            now += 2500;
+        }
+        Check.True(t.Exhausted, "15 uses over many creatures, no capture: exhausted");
+        Check.False(t.MayAttempt(999, now), "nothing more is allowed");
+        t.RecordSuccess();
+        Check.False(t.Exhausted, "a capture reply resets the backstop");
+        Check.True(t.MayAttempt(100, now), "and the per-target blocks");
     }
 }

@@ -29,6 +29,10 @@ internal sealed class OracleSettings
     public string TabName = "Quests";
     /// <summary>ConquestAC: "/bank deposit" at every ten-minute mark (upstream's auto-deposit; off by default).</summary>
     public bool ConquestAutoDeposit;
+    /// <summary>Say so in chat when a tracked quest's timer comes up.</summary>
+    public bool AlertTimers = true;
+    /// <summary>false: only tracked quests are watched; true: every quest the character holds.</summary>
+    public bool AlertAllTimers;
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore", "rynthoracle.json");
@@ -48,6 +52,8 @@ internal sealed class OracleSettings
             MainWindowOpen = Bool(r, "mainWindowOpen", MainWindowOpen);
             QuestTimersOpen = Bool(r, "questTimersOpen", QuestTimersOpen);
             ConquestAutoDeposit = Bool(r, "conquestAutoDeposit", ConquestAutoDeposit);
+            AlertTimers = Bool(r, "alertTimers", AlertTimers);
+            AlertAllTimers = Bool(r, "alertAllTimers", AlertAllTimers);
             if (r.TryGetProperty("tabName", out JsonElement t) && t.ValueKind == JsonValueKind.String) TabName = t.GetString() ?? TabName;
             if (r.TryGetProperty("lastQuestListCheck", out JsonElement c) && c.ValueKind == JsonValueKind.String
                 && DateTime.TryParse(c.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime when))
@@ -73,6 +79,8 @@ internal sealed class OracleSettings
             sb.Append("  \"mainWindowOpen\": ").Append(MainWindowOpen ? "true" : "false").Append(",\n");
             sb.Append("  \"questTimersOpen\": ").Append(QuestTimersOpen ? "true" : "false").Append(",\n");
             sb.Append("  \"conquestAutoDeposit\": ").Append(ConquestAutoDeposit ? "true" : "false").Append(",\n");
+            sb.Append("  \"alertTimers\": ").Append(AlertTimers ? "true" : "false").Append(",\n");
+            sb.Append("  \"alertAllTimers\": ").Append(AlertAllTimers ? "true" : "false").Append(",\n");
             sb.Append("  \"tabName\": \"").Append(JsonEncodedText.Encode(TabName).ToString()).Append("\"\n");
             sb.Append("}\n");
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);

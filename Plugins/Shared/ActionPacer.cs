@@ -197,7 +197,8 @@ internal static class ActionPacer
             _gapEnd = 0;
             _gapLen = 0;
             _errorAnswers.Clear();
-            _staleDrops = _latchExpiries = _burstHolds = 0;
+            _staleDrops = _latchExpiries = _burstHolds = _emergencyThroughLatch = 0;
+            _healWaitAt = 0;
         }
     }
 
@@ -381,8 +382,10 @@ internal static class ActionPacer
         bool animationGate = true, bool settleGate = true, bool attackRepeat = false)
     {
         if (!Enabled) { why = ""; return true; }
-        if (ServerBusyHolds(host, who, attackRepeat, out why, healStart: heal != HealNeed.None)) return false;
-        if (settleGate && MoveAudit.SettleHolds(host, out why))
+        if (ServerBusyHolds(host, who, attackRepeat, out why, heal)) return false;
+        // An emergency heal does not wait for the movement settle (150-600 ms): at Emergency Heal At
+        // the heal comes first; it still obeys the in-flight rules below (OutstandingAllows, GestureHolds).
+        if (settleGate && heal != HealNeed.Emergency && MoveAudit.SettleHolds(host, out why))
         {
             bool log;
             lock (Gate) { _settleHolds++; log = _settleLogged.Add(who); }
@@ -662,7 +665,11 @@ internal static class ActionPacer
     private static long _lastFrameMs;                // the last NoteFrame (gap detection; 0 = never)
     private static long _gapEnd, _gapLen;            // the frame that ended the last gap, and its length (0 = none)
     private static readonly Queue<long> _errorAnswers = new();   // times of error UseDones (burst limiter)
-    private static long _staleDrops, _latchExpiries, _burstHolds;
+    private static long _staleDrops, _latchExpiries, _burstHolds, _emergencyThroughLatch;
+    private static long _healWaitAt;                 // when a plain heal was last held by the 'too busy' latch (0 = none)
+    /// <summary>A heal held by the latch this recently keeps the latch's probe slot from starts that are no heal.</summary>
+    public const long HealWaitFreshMs = 500;
+    public static long EmergencyThroughLatch => _emergencyThroughLatch;
     public static long StaleDrops => _staleDrops;
     public static long LatchExpiries => _latchExpiries;
     public static long BurstHolds => _burstHolds;
@@ -711,6 +718,16 @@ internal static class ActionPacer
         }
     }
 
+    /// <summary>
+    /// The macro was switched on. The host gives no time for a UseDone, only its count, so a UseDone that
+    /// came while nothing was checking (the macro off) cannot be told from a new one; the next check takes
+    /// the current count as its baseline instead, so a stale 0x1D read at the start latches nothing.
+    /// </summary>
+    public static void NoteMacroStart()
+    {
+        lock (Gate) _lastSeenSeq = int.MinValue;
+    }
+
     /// <summary>Reads the last UseDone: a 0x1D starts or feeds the latch, any other answer clears it.</summary>
     private static void ObserveUseDone(RynthCoreHost host, long now, out string? line)
     {
@@ -745,9 +762,10 @@ internal static class ActionPacer
     /// a hung cast) or the character is in the air after a breaker jump. Runs the held-cast turn and
     /// the stuck-cast breaker. Called by MayStart.
     /// </summary>
-    private static bool ServerBusyHolds(RynthCoreHost host, string who, bool attackRepeat, out string why, bool healStart = false)
+    private static bool ServerBusyHolds(RynthCoreHost host, string who, bool attackRepeat, out string why, HealNeed heal = HealNeed.None)
     {
         why = "";
+        bool healStart = heal != HealNeed.None;
         long now = NowMs();
         long gapEnd, gapLen;
         lock (Gate) { gapEnd = _gapEnd; gapLen = _gapLen; }
@@ -789,7 +807,12 @@ internal static class ActionPacer
             // A forced break with no cast of ours open (stage for nothing): once on the ground, it is
             // over. Left set it would block the latch expiry and the probe for good.
             else if (_stageFor == null && _stage != BreakStage.None && _jumpAt == 0) { _stage = BreakStage.None; _stageAt = 0; }
-            if (!attackRepeat && stuck == null && _busySince != 0 && _stage == BreakStage.None
+            // A plain heal held by the latch (an emergency heal is never held by it): the probe slot is its.
+            // While one waited a moment ago, a start that is no heal does not take the slot (a door or corpse
+            // use would send first every time and the heal would see the next slot, up to BusyProbeMaxMs later).
+            if (heal == HealNeed.Heal && _busySince != 0) _healWaitAt = now;
+            bool healWaiting = heal != HealNeed.Heal && _healWaitAt != 0 && now - _healWaitAt < HealWaitFreshMs;
+            if (!attackRepeat && stuck == null && _busySince != 0 && _stage == BreakStage.None && !healWaiting
                 && now - Math.Max(_busySince, _lastProbeAt) >= Math.Min(BusyProbeMs << Math.Min(_probes, 8), BusyProbeMaxMs))
             {
                 probe = true;
@@ -825,6 +848,16 @@ internal static class ActionPacer
         lock (Gate) latched = _busySince != 0 || _hung != null;
         // Our cast still inside CastMaxMs with no 0x1D: OutstandingAllows holds it (heal rules included).
         if (!latched) return false;
+        // At Emergency Heal At the heal is not held by the latch, whatever set it (any refused use or
+        // pickup): a refusal of the heal costs a chat line, a held heal can cost the character. The jump
+        // wait (AirborneHolds, above) and the in-flight rules (MayStart) still apply.
+        if (heal == HealNeed.Emergency)
+        {
+            bool logEm;
+            lock (Gate) { _emergencyThroughLatch++; logEm = _busyLogged.Add(who + "/emergency"); }
+            if (logEm) Log(host, $"[Pace] {who}: the emergency heal goes ahead of the server's 'too busy' answer");
+            return false;
+        }
         if (probe)
         {
             Log(host, $"[Pace] {who}: one try (#{_probes}) after the server's 'too busy' answer; no cast of ours is open");

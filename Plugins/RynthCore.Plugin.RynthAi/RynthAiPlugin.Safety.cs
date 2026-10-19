@@ -58,6 +58,19 @@ public sealed partial class RynthAiPlugin
     /// </summary>
     private bool _wasPortalingForPacer;
 
+    private bool _wasMacroForPacer;
+
+    /// <summary>
+    /// The macro is switched on (off to on, whoever did it): a UseDone that arrived while it was off, a
+    /// player's own refused action, is not news. Without this the pacer's observer took it for a fresh
+    /// 'too busy' answer at the first check and held every start for the probe wait (~1.5 s).
+    /// </summary>
+    private void NoteMacroForPacer(bool running)
+    {
+        if (running && !_wasMacroForPacer) RynthCore.Plugin.Shared.ActionPacer.NoteMacroStart();
+        _wasMacroForPacer = running;
+    }
+
     /// <summary>Portal space starts: the server dropped what was open (no breaker on a teleport's gap).</summary>
     private void NotePortalForPacer()
     {

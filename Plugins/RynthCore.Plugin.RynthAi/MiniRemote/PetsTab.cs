@@ -24,7 +24,7 @@
 //   * Healing pet (UB HealingBuddy subset): summons a heal pet when HP drops, dismisses it
 //     after the heal lands, holds PetManager's combat summons while it is out.
 //   * Auto siphon capture (ACECustom MonsterCapture): when enabled, uses the chosen lens on the
-//     nearest attackable creature within 5 m once it is ≤20% health or under 20 HP (Asheron's
+//     nearest attackable creature within 5 m once it is <=20% health or under 20 HP (Asheron's
 //     Lens skips the health gate). Resonance still needs a prior failed capture on the server.
 //   * /pets and /shinies logs: RynthILT's (RynthILT.Hub section "pets-logs", ILT only).
 //   * Breeding sub-tab (Infinite Leaftide only): the tab becomes Roster | Breeding when RynthILT
@@ -67,6 +67,9 @@ internal sealed class PetsTab
     private const long CaptureThinkMs = 250;
     private const long CaptureCooldownMs = 2500;
     private const long CaptureFailBackoffMs = 8000;
+    // Hard cap on lens uses: the loop stops on reply strings we only guess at, so it is also bounded
+    // per creature and over all creatures (PetCaptureThrottle).
+    private readonly PetCaptureThrottle _captureThrottle = new();
 
     // Roster snapshot (rebuilt on the pump thread, read by the render thread).
     private volatile PetStats[] _pets = Array.Empty<PetStats>();
@@ -355,12 +358,10 @@ internal sealed class PetsTab
         if (S.AutoCaptureEnabled && text.Length > 0)
         {
             long now = MiniRemoteContext.NowMs;
-            if (ContainsAny(text,
-                    "successfully siphoned the essence",
-                    "The echo resonates perfectly",
-                    "The essence is captured"))
+            if (PetCaptureLines.IsSuccess(text))
             {
                 _captureStatus = "captured";
+                _captureThrottle.RecordSuccess();
                 _captureCooldownUntil = now + CaptureCooldownMs;
             }
             else if (ContainsAny(text,
@@ -395,7 +396,7 @@ internal sealed class PetsTab
     }
 
     private static string Truncate(string s, int max)
-        => s.Length <= max ? s : s[..(max - 1)] + "…";
+        => s.Length <= max ? s : s[..(max - 3)] + "...";
 
     public void OnLogout()
     {
@@ -407,6 +408,7 @@ internal sealed class PetsTab
         _cosmeticNextAt = 0;
         _captureCooldownUntil = 0;
         _captureStatus = "off";
+        _captureThrottle.Reset();
     }
 
     // ── Healing pet ─────────────────────────────────────────────────────────
@@ -475,6 +477,8 @@ internal sealed class PetsTab
         if (essence != null) _ctx.Inventory.Use(essence);
     }
 
+    // ── Active pet ──────────────────────────────────────────────────────────
+
     // ── Auto siphon capture (ACECustom MonsterCapture) ───────────────────────
 
     /// <summary>
@@ -520,7 +524,7 @@ internal sealed class PetsTab
 
         if (!PetCaptureRules.InRange(distM))
         {
-            _captureStatus = $"{target!.Name} at {distM:0.0} m (need ≤{PetCaptureRules.CaptureRangeM:0} m)";
+            _captureStatus = $"{target!.Name} at {distM:0.0} m (need <={PetCaptureRules.CaptureRangeM:0} m)";
             return;
         }
 
@@ -528,8 +532,14 @@ internal sealed class PetsTab
         {
             float pct = maxHp > 0 ? curHp * 100f / maxHp : -1f;
             _captureStatus = pct >= 0
-                ? $"{target!.Name} at {pct:0}% / {curHp} HP (need ≤{PetCaptureRules.CaptureMaxHealthFraction:P0} or <{PetCaptureRules.CaptureMaxHealthPoints} HP)"
+                ? $"{target!.Name} at {pct:0}% / {curHp} HP (need <={PetCaptureRules.CaptureMaxHealthFraction:P0} or <{PetCaptureRules.CaptureMaxHealthPoints} HP)"
                 : $"{target!.Name}: health unknown";
+            return;
+        }
+
+        if (!_captureThrottle.MayAttempt(target!.Id, now))
+        {
+            _captureStatus = $"{target.Name}: {PetCaptureThrottle.MaxTriesPerTarget} tries, no capture; left alone for {_captureThrottle.BlockedSecondsLeft(target.Id, now)}s";
             return;
         }
 
@@ -537,6 +547,14 @@ internal sealed class PetsTab
         {
             _captureStatus = "UseObject refused";
             return;
+        }
+        _captureThrottle.RecordAttempt(target.Id, now);
+        if (_captureThrottle.Exhausted)
+        {
+            // Backstop: this many lenses with no recognized capture means something is off. Stop, don't keep burning them.
+            S.AutoCaptureEnabled = false;
+            RynthLog.Write(LogCat.Pets,
+                $"[Pets] auto-capture: {PetCaptureThrottle.MaxTriesWithoutSuccess} lens uses without a capture reply; auto-capture switched off");
         }
 
         float shown = maxHp > 0 ? curHp * 100f / maxHp : 0f;
@@ -608,8 +626,6 @@ internal sealed class PetsTab
         cur = (uint)Math.Clamp((int)Math.Round(ratio * 1000f), 1, 1000);
         return true;
     }
-
-    // ── Active pet ──────────────────────────────────────────────────────────
 
     /// <summary>The live "&lt;Me&gt;'s …" creature (server pet naming), or null.</summary>
     private WorldObject? FindOwnPet()
@@ -1016,13 +1032,18 @@ internal sealed class PetsTab
         ImGui.BeginDisabled(captureOff);
         bool en = S.AutoCaptureEnabled;
         if (ImGui.Checkbox("Auto-capture when a creature is weak enough", ref en))
+        {
             S.AutoCaptureEnabled = en;
+            _captureThrottle.Reset();
+        }
         if (ImGui.IsItemHovered())
         {
             SafeImGui.SetTooltip(
                 "Uses the selected siphon lens on the nearest attackable creature within 5 m once it is\n" +
                 "at or below 20% health or under 20 HP (ACECustom MonsterCapture). Asheron's Lens skips\n" +
-                "the health gate. Resonance Lens still needs a prior failed capture on the server.");
+                "the health gate. Resonance Lens still needs a prior failed capture on the server.\n" +
+                "Off by default. Stops on its own after 5 tries on one creature (it is left alone for 2 min)\n" +
+                "or 15 lens uses in a row with no capture.");
         }
         ImGui.SameLine();
         ImGui.SetNextItemWidth(120);

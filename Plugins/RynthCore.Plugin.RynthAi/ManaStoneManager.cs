@@ -962,9 +962,9 @@ internal sealed class ManaStoneManager
         if (!_host.HasRequestId) return false;
         if (_host.HasHasAppraisalData && _host.HasAppraisalData(unchecked((uint)id))) return false;
         if (_stoneIdRequestedAt.TryGetValue(id, out long at) && now - at < StoneIdRetryMs) return false;
+        if (!_host.RequestId(unchecked((uint)id))) return false;   // refused (a death or a portal): asked again next pass, not in 5 minutes
         _stoneIdRequestedAt[id] = now;
         _host.Log($"[RynthAi] ManaStone: identifying stone 0x{(uint)id:X8} (its charge can't be read).");
-        _host.RequestId(unchecked((uint)id));
         return true;
     }
 
@@ -1078,8 +1078,7 @@ internal sealed class ManaStoneManager
                 if (!requestedThisPass && _host.HasRequestId
                     && (!_manaIdRequestedAt.TryGetValue(item.Id, out long at) || nowMs - at > 300_000))
                 {
-                    _manaIdRequestedAt[item.Id] = nowMs;
-                    _host.RequestId(unchecked((uint)item.Id));
+                    if (_host.RequestId(unchecked((uint)item.Id))) _manaIdRequestedAt[item.Id] = nowMs;   // a refused one is asked again next pass
                     requestedThisPass = true;
                 }
                 continue;
@@ -1101,9 +1100,11 @@ internal sealed class ManaStoneManager
                     && nowMs - _lastGearRefreshAt >= GearRefreshSpacingMs
                     && (!_gearReadRefreshedAt.TryGetValue(item.Id, out long readAt) || nowMs - readAt >= GearRefreshMs))
                 {
-                    _gearReadRefreshedAt[item.Id] = nowMs;
-                    _lastGearRefreshAt = nowMs;
-                    _host.RequestId(unchecked((uint)item.Id));
+                    if (_host.RequestId(unchecked((uint)item.Id)))   // a refused one is asked again next pass
+                    {
+                        _gearReadRefreshedAt[item.Id] = nowMs;
+                        _lastGearRefreshAt = nowMs;
+                    }
                     requestedThisPass = true;
                 }
             }

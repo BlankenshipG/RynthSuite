@@ -70,6 +70,7 @@ internal static class BuffTests
         r.Add("buff filter: the skip line groups by reason, is capped, and repeats only when it changes", SkipLineGroupedAndCapped);
         r.Add("buff filter: the weapon kit is cached for a second, and rebuilt when its inputs change", KitCached);
         r.Add("buff filter: skipped buffs are named, once per run", FilterVisibility);
+        r.Add("buff filter: untrained skills alone never print a chat line (log, page and /ra buff skipped keep them)", UntrainedSkillIsQuiet);
         r.Add("buff filter: SkipUnusableBuffs defaults on, loads, saves, bridges, is in the settings map", SkipUnusableSetting);
 
         r.Add("buff choice: spell names the tables miss (Bludgeon Bane, Nuhmudira's, T'ing, Celdiseth's)", NameGapsResolve);   // was a known failure; fixed by 940cb21
@@ -93,6 +94,11 @@ internal static class BuffTests
         r.Add("buff upgrade: a late line the cast tracker credits to an earlier send does not confirm the pending cast", UpgradeLateLineFromEarlierSend);
         r.Add("buff upgrade: two upgrade no-shows do not park the family; its lower level running low is recast", UpgradeNoShowsDoNotPark);
         r.Add("buff upgrade: two item spell upgrades with no chat do not park the family; its lower level running low is recast", UpgradeArmorNoChatDoesNotPark);
+        r.Add("buff upgrade: an upgrade an item spell never lands is parked, not looped; the lower level is still refreshed and the park ends", UpgradeArmorNoChatParksUpgrade);
+        r.Add("buff upgrade: three silent self-buff no-shows park the upgrade only; the lower level is still refreshed", UpgradeNoShowsParkUpgrade);
+        r.Add("buff upgrade: an in-run upgrade the server never answers is parked and the force run ends", UpgradeNoShowInRunEnds);
+        r.Add("buff upgrade: a confirmed upgrade resets the no-show count", UpgradeConfirmedResetsNoShows);
+        r.Add("buff upgrade: Cancel Buffing ends the pending upgrade", UpgradeCancelEndsPending);
         r.Add("buff upgrade: an upgrade that would leave mana under the reserve waits for Stamina to Mana, then goes", UpgradeWaitsForManaReserve);
     }
 
@@ -1389,10 +1395,12 @@ internal static class BuffTests
 
     /// <summary>Lets the pending <paramref name="id"/> reach its give-up unanswered twice (it is resent
     /// in between); returns the give-ups done. Every other cast is confirmed.</summary>
-    private static int FailTwice(BeatRig h, int id)
+    private static int FailTwice(BeatRig h, int id) => FailTimes(h, id, 2);
+
+    private static int FailTimes(BeatRig h, int id, int times)
     {
         int gaveUp = 0;
-        for (int k = 0; k < 20 && gaveUp < 2; k++)
+        for (int k = 0; k < 20 && gaveUp < times; k++)
         {
             if (h.R.B.PendingSpellId != id) { if (h.Beats(40, x => x == id) == 0) break; continue; }
             h.SendLongAgo(6);
@@ -1446,6 +1454,133 @@ internal static class BuffTests
         object rec = ((System.Collections.IDictionary)Fld<object>(h.R.B, "_itemSpellTimers"))[fam]!;
         rec.GetType().GetField("ExpiresAt")!.SetValue(rec, DateTime.Now.AddSeconds(100));
         Check.True(h.Beats(40, id => FamilyOf(id) == fam) != 0, "running low: recast");
+    }
+
+    private static bool Has(BuffManager b, string field, int key) => ((System.Collections.IDictionary)Fld<object>(b, field)).Contains(key);
+
+    /// <summary>The registry as the first run left it (every player buff of the suite at tier 6), CEM with <paramref name="cemLeft"/> s left.</summary>
+    private static (string, double)[] SixRegistry(int cem, double cemLeft) =>
+        FakeHost.Casts.Select(c => c.SpellId).Where(id => !BuffManager.IsItemEnchantment(NameOf(id))).Distinct()
+            .Select(id => (NameOf(id), FamilyOf(id) == cem ? cemLeft : 3000.0)).ToArray();
+
+    // Review finding (PR 15): an upgrade that is a SILENT no-show was never struck, parked or counted, so it
+    // was recast at every give-up forever (12x/minute), and a force/batch run never ended. Now: after three in
+    // a row the upgrade alone is parked; the family is not blacklisted and its lower level still refreshes.
+    private static void UpgradeNoShowsParkUpgrade()
+    {
+        int cem = FamilyOfBuff("Creature Enchantment Mastery Self VI");
+        var h = new BeatRig(300);
+        h.FirstRun();
+        FakeHost.Skills[(Player, STypeCreature)] = (340, 2);
+        h.R.Live(SixRegistry(cem, 3000));
+        int seven = h.Beats(60, id => FamilyOf(id) == cem && LevelOf(id) == 7);
+        Check.True(seven != 0, "CEM 7 is sent over the live VI");
+        Check.Eq(FailTimes(h, seven, 3), 3, "three no-shows");
+        Check.Eq(FakeHost.Casts.Count(c => c.SpellId == seven), 3, "sent three times, not a fourth: the upgrade is parked");
+        Check.False(Parked(h.R, cem), "the family itself is not parked");
+
+        // Nothing more goes out for it, and the run (the batch the upgrade started) ends.
+        h.Beats(150, _ => false);
+        Check.Eq(FakeHost.Casts.Count(c => c.SpellId == seven), 3, "still three after 150 more beats");
+        Check.False(h.R.B.GetStateSnapshot().IsForceRebuffing, "the run ends");
+        Check.Eq(h.R.B.PendingSpellId, 0, "nothing pending");
+
+        // The level it was cast over runs low: a normal refresh goes out (not counted as an upgrade).
+        int upgrades = h.R.B.BuffUpgrades;
+        h.R.Live(SixRegistry(cem, 100));
+        Check.True(h.Beats(150, id => FamilyOf(id) == cem) != 0, "the lower level running low is recast while the upgrade is parked");
+        Check.Eq(h.R.B.BuffUpgrades, upgrades, "and that cast is not an upgrade");
+        Check.False(Parked(h.R, cem), "the family is still not parked");
+    }
+
+    // The item spell twin (armor lost on death / weapon swapped, its lower record still unexpired).
+    private static void UpgradeArmorNoChatParksUpgrade()
+    {
+        var h = new BeatRig(300);
+        h.FirstRun();
+        FakeHost.Skills[(Player, STypeItem)] = (340, 2);
+        int item7 = h.Beats(80, id => BuffManager.IsItemEnchantment(NameOf(id)) && LevelOf(id) == 7);
+        Check.True(item7 != 0, "an item spell is upgraded to 7: " + NameOf(item7));
+        int fam = FamilyOf(item7);
+        Check.Eq(FailTimes(h, item7, 3), 3, "three no-chat give-ups");
+        Check.Eq(FakeHost.Casts.Count(c => c.SpellId == item7), 3, "sent three times, not a fourth");
+        Check.False(Parked(h.R, fam), "the family itself is not parked");
+        h.Beats(150, _ => false);
+        Check.Eq(FakeHost.Casts.Count(c => c.SpellId == item7), 3, "still three after 150 more beats");
+        Check.False(h.R.B.GetStateSnapshot().IsForceRebuffing, "the run ends");
+
+        // Its VI record runs low: the family is recast (a normal refresh, not an upgrade).
+        int upgrades = h.R.B.BuffUpgrades;
+        object rec = ((System.Collections.IDictionary)Fld<object>(h.R.B, "_itemSpellTimers"))[fam]!;
+        rec.GetType().GetField("ExpiresAt")!.SetValue(rec, DateTime.Now.AddSeconds(100));
+        Check.True(h.Beats(60, id => FamilyOf(id) == fam) != 0, "running low: recast while the upgrade is parked");
+        Check.Eq(h.R.B.BuffUpgrades, upgrades, "not an upgrade");
+        Check.False(Parked(h.R, fam), "the family is not parked");
+
+        // The park is time-boxed: once it ends the upgrade is tried again.
+        h.R.B.CancelBuffing();
+        rec.GetType().GetField("ExpiresAt")!.SetValue(rec, DateTime.Now.AddSeconds(3000));
+        ((System.Collections.IDictionary)Fld<object>(h.R.B, "_upgradeParkedUntil"))[fam] = DateTime.Now.AddSeconds(-1);
+        Check.True(h.Beats(80, id => id == item7) != 0, "after the park ends the upgrade is cast again");
+    }
+
+    // An explicit force run with an upgrade the server never answers: parked after three, the run ends.
+    private static void UpgradeNoShowInRunEnds()
+    {
+        int cem = FamilyOfBuff("Creature Enchantment Mastery Self VI");
+        var h = new BeatRig(300);
+        h.R.Live(("Strength Self I", 3000));
+        h.R.B.ForceFullRebuff();
+        int n = 0;
+        int seven = h.Beats(150, id => { if (++n == 3) FakeHost.Skills[(Player, STypeCreature)] = (340, 2); return FamilyOf(id) == cem && LevelOf(id) == 7; });
+        Check.True(seven != 0, "CEM 7 is sent in the run, over the VI it cast");
+        Check.Eq(FailTimes(h, seven, 3), 3, "three no-shows");
+        h.Beats(200, _ => false);
+        // The registry here never shows the run's VIs, so once the upgrade is parked CEM is cast as an ordinary
+        // buff with no timer, and the usual two-strike no-show park ends that: three upgrade sends + at most two.
+        int sends = FakeHost.Casts.Count(c => c.SpellId == seven);
+        Check.True(sends <= 3 + 2, $"bounded: {sends} sends of CEM 7");
+        Check.False(h.R.B.GetStateSnapshot().IsForceRebuffing, "the force run ends (it kept buffing's priority for good)");
+        Check.Eq(h.R.B.PendingSpellId, 0, "nothing pending");
+    }
+
+    // Confirmed upgrades are unchanged: they land, and they reset the count (the next upgrade starts from zero).
+    private static void UpgradeConfirmedResetsNoShows()
+    {
+        var h = new BeatRig(300);
+        h.FirstRun();
+        FakeHost.Skills[(Player, STypeItem)] = (340, 2);
+        int item7 = h.Beats(80, id => BuffManager.IsItemEnchantment(NameOf(id)) && LevelOf(id) == 7);
+        Check.True(item7 != 0, "an item spell is upgraded to 7");
+        int fam = FamilyOf(item7);
+        Check.Eq(FailTimes(h, item7, 2), 2, "two no-chat give-ups");
+        Check.Eq(h.R.B.PendingSpellId, item7, "sent again");
+        Check.True(Has(h.R.B, "_upgradeNoShowCounts", fam), "two are counted");
+        h.R.B.OnChatWindowText($"You cast {NameOf(item7)} on Rune Robe", 7);        // it lands
+        Check.False(Has(h.R.B, "_upgradeNoShowCounts", fam), "the count is reset by the landing");
+        Check.False(Has(h.R.B, "_upgradeParkedUntil", fam), "nothing parked");
+        int sends = FakeHost.Casts.Count(c => c.SpellId == item7);
+        h.Beats(60, _ => false);
+        Check.Eq(FakeHost.Casts.Count(c => c.SpellId == item7), sends, "landed at 7: not cast again");
+
+        // The record falls back to VI (armor swapped): the upgrade gets a full three tries again.
+        object rec = ((System.Collections.IDictionary)Fld<object>(h.R.B, "_itemSpellTimers"))[fam]!;
+        rec.GetType().GetField("SpellLevel")!.SetValue(rec, 6);
+        Check.True(h.Beats(80, id => id == item7) != 0, "the upgrade is cast again");
+        Check.Eq(FailTimes(h, item7, 2), 2, "two more no-shows");
+        Check.Eq(h.R.B.PendingSpellId, item7, "not parked: sent again after the second");
+        Check.False(Has(h.R.B, "_upgradeParkedUntil", fam), "the count started from zero");
+    }
+
+    // Cancelling the buff step left the pending upgrade behind.
+    private static void UpgradeCancelEndsPending()
+    {
+        var (rig, seven) = PendingCem7();
+        Check.True(seven != 0 && rig.B.PendingSpellId == seven, "CEM 7 is pending");
+        Check.Eq(Fld<int>(rig.B, "_pendingUpgradeSpellId"), seven, "as an upgrade");
+        rig.B.CancelBuffing();
+        Check.Eq(rig.B.PendingSpellId, 0, "cancelled");
+        Check.Eq(Fld<int>(rig.B, "_pendingUpgradeSpellId"), 0, "the upgrade is no longer pending");
     }
 
     // No limit and no rest, through OnHeartbeat: an always-fizzling CEM 7 is sent on
@@ -1637,8 +1772,15 @@ internal static class BuffTests
         Check.False(rig.B.GetStateSnapshot().IsForceRebuffing, "/ra buff cancel ends it");
 
         FakeHost.Chat.Clear();
+        int kitRuns = rig.B.KitComputations;
         Cmd("skipped");
-        Check.True(FakeHost.Chat.Any(c => c.Contains("Buff filter")), "/ra buff skipped answers");
+        Check.Eq(FakeHost.Chat.Count, 0, "/ra buff skipped only queues the report: the command thread builds nothing and says nothing");
+        Check.Eq(rig.B.KitComputations, kitRuns, "and never touches the pump's weapon-kit state");
+        rig.B.OnHeartbeat();
+        Check.True(FakeHost.Chat.Any(c => c.Contains("Buff filter")), "/ra buff skipped answers from the next heartbeat");
+        FakeHost.Chat.Clear();
+        rig.B.OnHeartbeat();
+        Check.Eq(FakeHost.Chat.Count, 0, "once per request");
         FakeHost.Chat.Clear();
         Cmd();
         Check.True(FakeHost.Chat.Any(c => c.Contains("/ra buff force")), "no word: the help");
@@ -1751,7 +1893,8 @@ internal static class BuffTests
         Check.True(lines[0].Contains("skill untrained: ") && lines[0].Contains("Heavy Weapon"), "it names the untrained mastery and why: " + lines[0]);
         Check.True(lines[0].Contains("no melee or missile weapon listed: Blood Drinker"), "and the weapon aura and why: " + lines[0]);
         Check.False(lines[0].Contains("Spirit Drinker"), "but not what stays");
-        Check.True(FakeHost.Chat.Any(c => c.Contains("Buff run skips")), "the same line goes to chat");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("Buff run skips") && c.Contains("no melee or missile weapon listed")), "a line goes to chat for the aura");
+        Check.False(FakeHost.Chat.Any(c => c.Contains("Buff run skips") && c.Contains("skill untrained")), "but the untrained skill stays out of the chat line");
         Check.True(rig.B.FilterSkipSummary().Contains("Swift Killer"), "the settings page reads the same list");
 
         // The automatic batch logs it too, once.
@@ -1767,6 +1910,27 @@ internal static class BuffTests
         clean.Live(("Strength Self I", 3000));
         clean.B.ForceFullRebuff();
         Check.Eq(FakeHost.Logs.Count(l => l.Contains("[Buff] filter skips:")), 0, "nothing skipped: no line");
+    }
+
+    // An untrained skill is the normal state of most characters. It must not print a chat line at every buff run.
+    private static void UntrainedSkillIsQuiet()
+    {
+        var rig = SuiteRig(MeleeItem, WandItem);
+        FakeHost.Skills[(Player, SkillHeavy)] = (10, 1);   // untrained, and nothing else is skipped
+        rig.Live(("Strength Self I", 3000));
+        rig.B.ForceFullRebuff();
+        Check.True(rig.B.FilterSkips.Count > 0 && rig.B.FilterSkips.All(s => s.Reason == "skill untrained"), "only untrained skills are skipped");
+        Check.Eq(FakeHost.Chat.Count(c => c.Contains("Buff run skips")), 0, "no chat line for untrained skills alone");
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("[Buff] filter skips:") && l.Contains("skill untrained")), 1, "the log keeps it");
+        Check.True(rig.B.FilterSkipSummary().Contains("skill untrained: ") && rig.B.FilterSkipSummary().Contains("Heavy Weapon"), "the Buffing page summary keeps it");
+        rig.B.RequestSkipReport();
+        rig.B.OnHeartbeat();
+        Check.True(FakeHost.Chat.Any(c => c.Contains("Buff filter skips: ") && c.Contains("skill untrained")), "so does /ra buff skipped");
+
+        // A later run stays quiet in chat too.
+        FakeHost.Chat.Clear();
+        rig.B.ForceFullRebuff();
+        Check.Eq(FakeHost.Chat.Count(c => c.Contains("Buff run skips")), 0, "still quiet");
     }
 
     private static void KitEdgeCases()

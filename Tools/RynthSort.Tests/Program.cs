@@ -86,6 +86,7 @@ namespace RynthSort.Tests
                 Run("moves: answers for moves within a pack", MoveAnswersInPlace);
                 Run("plan: a fixed inventory runs out of moves", Converges);
                 Run("loop: auto-sort tidies every pack, then stays still", ConvergesInTheLoop);
+                Run("remote: another plugin's \"rsort\" command reaches /rsort, anything else is not ours", RemoteCommand);
             }
             finally
             {
@@ -94,6 +95,17 @@ namespace RynthSort.Tests
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             if (_pass == 0) { Console.WriteLine("ABORT: zero assertions ran."); return 1; }
             return _fail == 0 ? 0 : 1;
+        }
+
+        // RynthAi sends ub-IT's /ub packsort as SendPluginCommand("RynthSort", "rsort", "now").
+        private static void RemoteCommand()
+        {
+            Eq(RynthSortPlugin.RemoteSortArgument("rsort", "now"), "now", "rsort now");
+            Eq(RynthSortPlugin.RemoteSortArgument("RSort", "status"), "status", "case-insensitive action");
+            Eq(RynthSortPlugin.RemoteSortArgument("rsort", null), "", "no value is an empty /rsort");
+            Check(RynthSortPlugin.RemoteSortArgument("sort", "now") == null, "another action is not ours");
+            Check(RynthSortPlugin.RemoteSortArgument(null, "now") == null, "no action is not ours");
+            Check(RynthSortPlugin.RemoteSortArgument("", "now") == null, "empty action is not ours");
         }
 
         private static void Run(string name, Action test)

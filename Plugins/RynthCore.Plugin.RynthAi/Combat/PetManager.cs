@@ -62,6 +62,7 @@ internal sealed class PetManager
     // pet is active for at least this long, so we don't re-issue before the new
     // pet's CreateObject lands in the cache. Name-detection takes over once it does.
     private long _assumePetActiveUntil;
+    private bool _petSeenSinceSummon;   // the pet has shown up in the cache during this assume window
 
     // Devices that just failed (skill too low, timed out, empty with no spirit)
     // get parked so we advance to the next configured essence instead of looping.
@@ -83,14 +84,14 @@ internal sealed class PetManager
 
     private const long ThinkIntervalMs           = 1000;
     private const long ActionTimeoutMs           = 8000;
-    /// <summary>Brief hold after a confirmed summon until the pet lands in the landscape cache.</summary>
-    private const long AssumeActiveAfterSummonMs = 5_000;
+    /// <summary>Hold after a confirmed summon until the pet lands in the landscape cache (kept at the base's 10 s).</summary>
+    private const long AssumeActiveAfterSummonMs = 10_000;
     /// <summary>
     /// Retail / ACE PetDevice use cooldown (~45 s). Applies after every Use we fire — success
     /// or fail — so we do not re-Use while the server still refuses the essence.
     /// </summary>
     private const long DeviceUseCooldownMs        = 45_000;
-    private const long DeviceFailCooldownMs      = DeviceUseCooldownMs; // alias: failed Use still burns the CD
+    private const long DeviceFailCooldownMs      = 30_000;   // a refill that timed out (a summon is parked from IssueSummon)
     private const long DeviceNoSpiritCooldownMs  = 15_000;
     private const long ServerSaidFullTrustMs     = 30 * 60_000;
     private const long RefillWindowMs            = 120_000;  // two refills inside this and the
@@ -153,7 +154,7 @@ internal sealed class PetManager
             {
                 _summonElement = PetChoice.ElementOf(_host, unchecked((uint)_activeDeviceId),
                     _objectCache[_activeDeviceId]?.Name ?? "");
-                _assumePetActiveUntil = now + AssumeActiveAfterSummonMs;
+                AssumePetFor(now, AssumeActiveAfterSummonMs);
                 GoIdle();
             }
         }
@@ -186,8 +187,10 @@ internal sealed class PetManager
             // after a refused Use (Kelpie stuck/fail).
             // Only assume a pet when the Use clearly landed; a failed Use must not block
             // resummon after the cooldown (false assume + short park left gaps).
+            if (_state != PetState.Summoning && _activeDeviceId != 0)
+                _deviceCooldownUntil[_activeDeviceId] = now + DeviceFailCooldownMs;   // refill timeout: park as before
             if (summonConfirmed)
-                _assumePetActiveUntil = now + AssumeActiveAfterSummonMs;
+                AssumePetFor(now, AssumeActiveAfterSummonMs);
             else if (_state == PetState.Summoning)
                 _assumePetActiveUntil = 0;
             Reset();
@@ -211,7 +214,7 @@ internal sealed class PetManager
             // "<pet> is already active" — a pet is up but our detection lagged. Back off.
             if (text.Contains("is already active", StringComparison.OrdinalIgnoreCase))
             {
-                _assumePetActiveUntil = NowMs + AssumeActiveAfterSummonMs;
+                AssumePetFor(NowMs, AssumeActiveAfterSummonMs);
                 GoIdle();
                 return;
             }
@@ -253,6 +256,13 @@ internal sealed class PetManager
 
     // ── Decision ───────────────────────────────────────────────────────────────
 
+    /// <summary>Treat a pet as out until <paramref name="now"/> + <paramref name="ms"/> (it may not be in the cache yet).</summary>
+    private void AssumePetFor(long now, long ms)
+    {
+        _assumePetActiveUntil = now + ms;
+        _petSeenSinceSummon = false;
+    }
+
     private void TryBeginAction(long now)
     {
         // A pet is already up (just summoned, or detected in the world) — done.
@@ -261,14 +271,17 @@ internal sealed class PetManager
         bool petOut = IsPetActive();
         if (now < _assumePetActiveUntil)
         {
-            if (petOut) return;
+            if (petOut) { _petSeenSinceSummon = true; return; }
+            // The pet came and went (died / lifespan ended): don't wait out the window. A pet that has not
+            // landed in the cache yet keeps the window, or a second essence would be summoned beside it.
+            if (!_petSeenSinceSummon) return;
             _assumePetActiveUntil = 0;
         }
         if (petOut)
         {
             // A cosmetic pet in the slot steps aside for the fight; wait for the dismiss to land.
             if (YieldPetForCombat != null && MonstersNearby() && YieldPetForCombat())
-                _assumePetActiveUntil = now + 3000;
+                AssumePetFor(now, 3000);
             return;
         }
         if (HoldSummons?.Invoke() == true) return;
@@ -497,8 +510,6 @@ internal sealed class PetManager
             if (wo == null) continue;
             // Corpses keep the pet's name briefly; don't treat them as a live summon.
             if (wo.ObjectClass == AcObjectClass.Corpse) continue;
-            if (wo.ObjectClass is not (AcObjectClass.Monster or AcObjectClass.CombatPet or AcObjectClass.Unknown))
-                continue;
             string n = wo.Name;
             if (string.IsNullOrEmpty(n) || !n.StartsWith(prefix, StringComparison.Ordinal)) continue;
             if (n.Contains("Corpse", StringComparison.OrdinalIgnoreCase)) continue;

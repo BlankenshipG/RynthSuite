@@ -56,8 +56,13 @@
     <!-- The two interfaces between RynthILT and RynthAi (linked into both plugins). -->
     <Compile Include="..\Shared\RynthIltHubApi.cs" Link="Shared\RynthIltHubApi.cs" />
     <Compile Include="..\Shared\RynthIltServerApi.cs" Link="Shared\RynthIltServerApi.cs" />
-    <Compile Include="..\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
     <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />
+    <!-- "RynthAi.Activity": what the bot is doing (the Vaulted Dungeons keeper waits out combat and buffing). -->
+    <Compile Include="..\Shared\RynthAiActivityApi.cs" Link="Shared\RynthAiActivityApi.cs" />
+    <!-- The pet-capture success lines (shared with RynthAi's Pets tab): they count as a kill for Vaulted Dungeons' timer. -->
+    <Compile Include="..\Shared\PetCaptureLines.cs" Link="Shared\PetCaptureLines.cs" />
+    <!-- "RynthILT.Data": the charms list and bank balances for other plugins (DataInterface.cs). -->
+    <Compile Include="..\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
     <!-- RynthCore's server list (API v86): the ILT verdict the Hub follows (IltSettingsView/). -->
     <Compile Include="..\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
     <!-- "RynthServer.Profile": ILT's settings and tinkering salvage (Hub/IltSalvage.cs) for other

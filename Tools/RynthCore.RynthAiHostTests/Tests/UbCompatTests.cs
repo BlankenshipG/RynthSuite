@@ -70,10 +70,11 @@ internal static class UbCompatTests
     private static void NoEquivalentAccepted()
     {
         var w = new World();
-        Check.True(w.Ub("/ub videopatch on"), "/ub videopatch is handled");
-        Check.True(w.Ub("/ub videopatch off"), "again");
-        Check.Eq(w.ChatWith("/ub videopatch"), 1, "said once per session, not per meta pulse");
-        foreach (string line in new[] { "/ub chat max", "/ub playeroption AutoRepeatAttack on", "/ub statushud toggle", "/ub professor war 7", "/ub xp level" })
+        // /ub videopatch is the engine's /rc videopatch now (UtilityBeltCommands); statushud still has no equivalent.
+        Check.True(w.Ub("/ub statushud toggle"), "/ub statushud is handled");
+        Check.True(w.Ub("/ub statushud toggle"), "again");
+        Check.Eq(w.ChatWith("/ub statushud"), 1, "said once per session, not per meta pulse");
+        foreach (string line in new[] { "/ub chat max", "/ub playeroption AutoRepeatAttack on", "/ub videopatch on", "/ub professor war 7", "/ub xp level" })
             Check.True(w.Ub(line), line + " is handled");
         Check.Eq(w.ChatWith("Unrecognized"), 0, "no 'Unrecognized /ub command'");
         Check.False(w.Ub("/ub notaubitcommand"), "a verb ub-IT doesn't have is still unknown");

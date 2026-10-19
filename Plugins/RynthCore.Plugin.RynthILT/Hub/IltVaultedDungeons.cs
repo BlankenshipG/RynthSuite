@@ -1,11 +1,25 @@
 // IltVaultedDungeons.cs — Mini Remote "Vaulted Dungeons" tab (ILT / ACECustom only).
-// Port of the UtilityBelt VaultedDungeons.lua script (owner 2026-09-27 / 2026-10-03):
-// keeps the character in one Vaulted Dungeon via a tied Portal Recall Gem, and optionally
-// /rc quit after N minutes without a real kill ("You've banked N Luminance." system line).
+// Written by Silentkelpie (RynthSuite PR #12), a port of the UtilityBelt VaultedDungeons.lua script
+// (owner 2026-09-27 / 2026-10-03): keeps the character in one Vaulted Dungeon via a tied Portal
+// Recall Gem, and optionally /rc quit after N minutes without a kill.
 //
-// Shown only on ILT-like worlds, and only when Options > Navigation > Vaulted Dungeons is on
-// (RynthAi filters the tab; this module still runs whenever the character is on ILT so a
-// saved Active state keeps working after a relog even if the tab is hidden).
+// Safety rules (the owner's, added when it was taken in):
+//   * ILT only. The module does nothing (no tick work, no recall, no quit, no tab) unless
+//     IltServerOptions.IsIltLikeWorld says this is an Infinite Leaftide / ACECustom world, the same
+//     verdict every other ILT feature follows. A command answers "not available on this server".
+//   * Master switch, off by default: RynthAi's "Vaulted Dungeons" setting (Settings > Navigation),
+//     read through RynthAi.Hub VaultedDungeonsEnabled. It is the only copy. While it is off the module
+//     ignores AutoStart, never ticks, sends no recall and no /rc quit, and the tab is hidden. Turning
+//     it off while running stops the keeper at once and says so once.
+//   * Active is never resumed from the saved settings. It starts when the player turns it on, or on
+//     arriving in the chosen dungeon with Auto Start On Arrival on (master on); a relog starts Off.
+//   * No recall gem while RynthAi is in combat, buffing or waiting on the server, or the client is
+//     busy: the recall waits until it is clear (a warning on the normal 30 s cadence).
+//   * /rc quit goes out at most once per activation, and only if Active, ILT and the master are all
+//     still true at the moment of sending.
+//   * The no-kill timer restarts on the luminance line, on the server's killer notification (a
+//     killing blow of yours) and on a pet-capture success reply. Kills by pets or fellows that pay
+//     no luminance still don't count; the tab says so.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -66,12 +80,22 @@ internal sealed class IltVaultedDungeons : IIltFeature
         @"^You've banked [\d,]+ Luminance\.\s*$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    /// <summary>Why the keeper is idle (<see cref="Snapshot.Gate"/>): "" = it may run.</summary>
+    private const string GateWorld = "world", GateMaster = "master";
+
     private readonly IltHubContext _ctx;
     private readonly object _gate = new();
     private Cfg _cfg = new();
     private bool _loaded;
     private bool _dirty;
     private string? _lastGoodJson;
+
+    // Seams (the tests fake them): the master switch, what RynthAi is doing, the clock, the gem use.
+    internal Func<bool> MasterEnabled;
+    internal Func<RynthAiActivity?> Activity;
+    internal Func<long> Clock = () => IltHubContext.NowMs;
+    /// <summary>Uses the named gem from the pack; false when the pack has none.</summary>
+    internal Func<string, bool> UseGem;
 
     // Runtime (pump thread).
     private long _outSinceMs;
@@ -80,7 +104,8 @@ internal sealed class IltVaultedDungeons : IIltFeature
     private long _realKillMs;
     private bool _wasInside;
     private bool _quitSent;
-    private long _lastWarnMs;
+    private long _lastWarnMs = -WarnEveryMs;
+    private string _publishedGate = "?";
     private string _state = "paused";   // paused / setup / in / out / portal / nogem
     private long? _quitLeftMs;
     private bool? _presentBefore;
@@ -94,7 +119,42 @@ internal sealed class IltVaultedDungeons : IIltFeature
     // Snapshot for the render thread (copied under _gate).
     private Snapshot _snap = Snapshot.Empty;
 
-    public IltVaultedDungeons(IltHubContext ctx) => _ctx = ctx;
+    public IltVaultedDungeons(IltHubContext ctx)
+    {
+        _ctx = ctx;
+        MasterEnabled = () => _ctx.Ai.VaultedDungeonsEnabled;
+        Activity = () => _ctx.Ai.Activity();
+        UseGem = gemName =>
+        {
+            var gem = _ctx.Inventory.FindByName(n => n.Equals(gemName, StringComparison.OrdinalIgnoreCase));
+            if (gem == null) return false;
+            _ctx.Inventory.Use(gem);
+            return true;
+        };
+    }
+
+    /// <summary>Whether the keeper is running (tests, status).</summary>
+    internal bool IsActive => _cfg.Active;
+
+    private long Now() => Clock();
+
+    /// <summary>
+    /// The two hard rules, asked fresh each time: an ILT-like world, and the master switch on.
+    /// <paramref name="gate"/> says which one failed ("" when allowed).
+    /// </summary>
+    private bool Allowed(out string gate)
+    {
+        gate = !_ctx.Options.IsIltLikeWorld ? GateWorld : !MasterEnabled() ? GateMaster : string.Empty;
+        return gate.Length == 0;
+    }
+
+    /// <summary>Same, for commands and the tab: why the keeper can't be used now (null = it can).</summary>
+    private static string? GateReply(string gate) => gate switch
+    {
+        GateWorld => "Not available on this server (Infinite Leaftide / ACECustom only).",
+        GateMaster => "Off: turn on \"Vaulted Dungeons\" in Settings > Navigation first (the master switch, off by default).",
+        _ => null,
+    };
 
     // ── Persistence ─────────────────────────────────────────────────────────
 
@@ -159,9 +219,11 @@ internal sealed class IltVaultedDungeons : IIltFeature
         }
     }
 
-
     private static Cfg Sanitize(Cfg c)
     {
+        // Never resumed from disk: the file keeps its "active" field, but a relog (or turning the
+        // master switch back on) starts Off. Auto Start On Arrival is the only way back in by itself.
+        c.Active = false;
         c.Dungeon = ClampInt(c.Dungeon, 0, Dungeons.Length, 0);
         c.Gem = ClampInt(c.Gem, 0, GemNames.Length, 0);
         c.QuitMinutes = ClampInt(c.QuitMinutes, QuitMin, QuitMax, 2);
@@ -194,6 +256,15 @@ internal sealed class IltVaultedDungeons : IIltFeature
 
     public void Tick(long nowMs)
     {
+        // The hard rules first: ILT only, master switch on. Nothing below runs otherwise (not even
+        // reading the settings file), and a keeper that was running is stopped on the spot.
+        if (!Allowed(out string gate))
+        {
+            StopForGate(gate);
+            PublishGate(gate);
+            return;
+        }
+
         EnsureLoaded();
         SaveIfDirty();
 
@@ -251,7 +322,6 @@ internal sealed class IltVaultedDungeons : IIltFeature
             if (!_wasInside)
             {
                 _clockStartMs = nowMs;
-                _quitSent = false;
                 _inSinceMs = nowMs;
             }
             _wasInside = true;
@@ -265,6 +335,15 @@ internal sealed class IltVaultedDungeons : IIltFeature
                 _quitLeftMs = Math.Max(0, quitAfterMs - (nowMs - _clockStartMs));
                 if (nowMs - _clockStartMs >= quitAfterMs && !_quitSent)
                 {
+                    // Once per activation, and only if ILT, the master switch and Active are all
+                    // still true right now (asked again: they may have changed since the top of the tick).
+                    string nowGate = string.Empty;
+                    if (!_cfg.Active || !Allowed(out nowGate))
+                    {
+                        StopForGate(nowGate);
+                        PublishGate(nowGate);
+                        return;
+                    }
                     _quitSent = true;
                     _ctx.Chat($"[Vaulted Dungeons] No kill in {_cfg.QuitMinutes} minute"
                               + (_cfg.QuitMinutes == 1 ? "" : "s") + " — quitting.");
@@ -294,12 +373,18 @@ internal sealed class IltVaultedDungeons : IIltFeature
                    || (tried && nowMs - _lastRecallMs >= RecallAfterMs);
         if (due)
         {
-            var gem = _ctx.Inventory.FindByName(n => n.Equals(gemName, StringComparison.OrdinalIgnoreCase));
-            if (gem != null)
+            // Not in the middle of a fight, a buff chain or an unanswered use/cast: the recall waits
+            // (still due, so it goes out on the first clear tick) and says so on the normal cadence.
+            string? busy = BusyReason();
+            if (busy != null)
+            {
+                _state = "busy";
+                Warn(nowMs, $"Waiting to use the {gemName}: {busy}.");
+            }
+            else if (UseGem(gemName))
             {
                 _lastRecallMs = nowMs;
                 _ctx.Chat($"[Vaulted Dungeons] Not in {dungeon.Value.Name} — using the {gemName}.");
-                _ctx.Inventory.Use(gem);
             }
             else
             {
@@ -310,23 +395,94 @@ internal sealed class IltVaultedDungeons : IIltFeature
         Publish();
     }
 
+    /// <summary>
+    /// Why a recall gem must not be used now, or null when it may. RynthAi's activity (its "RynthAi.Activity"
+    /// bits: combat, buffing, loot, salvage, crafting, a use/cast waiting on the server) and the client's
+    /// busy hourglass; RynthAi not answering counts as busy (nothing is known, so nothing is used).
+    /// </summary>
+    private string? BusyReason()
+    {
+        RynthAiActivity? a = Activity();
+        if (a is null) return "RynthAi is not ready";
+        RynthAiActivity f = a.Value;
+        if ((f & RynthAiActivity.Combat) != 0) return "RynthAi is in combat";
+        if ((f & RynthAiActivity.Buffing) != 0) return "RynthAi is buffing";
+        if ((f & RynthAiActivity.ServerAction) != 0) return "RynthAi is waiting on the server";
+        if ((f & RynthAiActivity.Looting) != 0) return "RynthAi is looting";
+        if ((f & RynthAiActivity.Salvaging) != 0) return "RynthAi is salvaging";
+        if ((f & RynthAiActivity.Crafting) != 0) return "RynthAi is crafting";
+        if (_ctx.Inventory.IsBusy) return "the client is busy";
+        return null;
+    }
+
+    /// <summary>
+    /// A rule failed (not ILT any more, or the master switch went off): a running keeper stops at once
+    /// and says so once; an idle one has nothing to do. Safe to call every tick.
+    /// </summary>
+    private void StopForGate(string gate)
+    {
+        _outSinceMs = 0;
+        _wasInside = false;
+        _quitLeftMs = null;
+        _presentBefore = null;
+        if (!_cfg.Active) return;
+        _cfg.Active = false;
+        _dirty = true;
+        _state = "paused";
+        _ctx.Chat("[Vaulted Dungeons] Stopped: " + (gate == GateWorld
+            ? "this is not an Infinite Leaftide / ACECustom world."
+            : "\"Vaulted Dungeons\" was turned off in Settings > Navigation."));
+        SaveIfDirty();
+    }
+
+    /// <summary>The idle snapshot (only when the reason changes: nothing else runs while gated).</summary>
+    private void PublishGate(string gate)
+    {
+        if (gate == _publishedGate) return;
+        _publishedGate = gate;
+        Publish(gate);
+    }
+
     public bool OnChat(string text)
     {
-        if (string.IsNullOrEmpty(text) || !KillLine.IsMatch(text.TrimEnd('\r', '\n'))) return false;
-        long now = IltHubContext.NowMs;
-        _clockStartMs = now;
-        _quitSent = false;
-        _realKillMs = now;
-        if (_state == "in") _kills++;
-        Publish();
+        if (string.IsNullOrEmpty(text)) return false;
+        string line = text.TrimEnd();
+        bool luminance = KillLine.IsMatch(line);
+        // A pet-capture success counts as a kill for the timer too (the same replies RynthAi's Pets
+        // tab matches); nothing else is guessed.
+        if (!luminance && !PetCaptureLines.IsSuccess(line)) return false;
+        if (!_cfg.Active || !Allowed(out _)) return false;
+        NoteKill(Now(), countKill: luminance);
         return false; // never eat the luminance line
+    }
+
+    /// <summary>
+    /// The server's killer notification: this character landed a killing blow (RynthILTPlugin
+    /// .OnKillNotification, pump thread). Restarts the no-kill timer, like the luminance line.
+    /// </summary>
+    public void OnKillNotification()
+    {
+        if (!_cfg.Active || !Allowed(out _)) return;
+        NoteKill(Now(), countKill: false);
+    }
+
+    /// <summary>Restarts the Kill Client timer. The kill counter moves only on the luminance line (one per kill).</summary>
+    private void NoteKill(long now, bool countKill)
+    {
+        _clockStartMs = now;
+        _realKillMs = now;
+        if (countKill && _state == "in") _kills++;
+        Publish();
     }
 
     public void OnLogout()
     {
+        // Logging out ends the run: Active is never carried over (see Sanitize).
+        _cfg.Active = false;
         SaveIfDirty();
         _wasInside = false;
         _outSinceMs = 0;
+        _presentBefore = null;
         _state = "paused";
         Publish();
     }
@@ -335,13 +491,14 @@ internal sealed class IltVaultedDungeons : IIltFeature
 
     private void OnArrive(VaultedDungeon dungeon, long nowMs)
     {
+        // Only called while ILT and the master switch are on (Tick's gate), so Auto Start is honoured here only.
         if (_cfg.AutoStart && !_cfg.Active)
         {
-            _cfg.Active = true;
-            _outSinceMs = 0;
-            _dirty = true;
+            Activate(nowMs);
             _ctx.Chat($"[Vaulted Dungeons] Arrived in {dungeon.Name} — switched On (Auto Start On Arrival).");
         }
+        // The arrival settings are part of running the keeper: nothing is sent while it is Off.
+        if (!_cfg.Active) return;
         if (_cfg.DisableMeta) Invoke(CmdMetaOff);
         if (_cfg.DisableNav) Invoke(CmdNavOff);
         if (_cfg.RepeatAttack) Invoke(CmdRepeatOn);
@@ -363,6 +520,14 @@ internal sealed class IltVaultedDungeons : IIltFeature
     /// <summary>Pump-thread: /ilt vaulted [on|off|toggle|status].</summary>
     public bool HandleCommand(string[] args)
     {
+        // ILT only, master switch on: otherwise the only answer is why (the keeper itself stays idle).
+        if (!Allowed(out string gate))
+        {
+            if (_cfg.Active) StopForGate(gate);
+            _ctx.Chat("[Vaulted Dungeons] " + GateReply(gate));
+            return true;
+        }
+
         EnsureLoaded();
         string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "status";
         switch (sub)
@@ -370,7 +535,6 @@ internal sealed class IltVaultedDungeons : IIltFeature
             case "on":
             case "start":
                 SetActive(true);
-                _ctx.Chat("[Vaulted Dungeons] On.");
                 return true;
             case "off":
             case "stop":
@@ -379,7 +543,7 @@ internal sealed class IltVaultedDungeons : IIltFeature
                 return true;
             case "toggle":
                 SetActive(!_cfg.Active);
-                _ctx.Chat("[Vaulted Dungeons] " + (_cfg.Active ? "On." : "Off."));
+                if (!_cfg.Active) _ctx.Chat("[Vaulted Dungeons] Off.");
                 return true;
             default:
                 string d = _cfg.Dungeon > 0 && _cfg.Dungeon <= Dungeons.Length
@@ -388,31 +552,57 @@ internal sealed class IltVaultedDungeons : IIltFeature
                     ? GemNames[_cfg.Gem - 1] : "(none)";
                 _ctx.Chat($"[Vaulted Dungeons] {(_cfg.Active ? "On" : "Off")} — dungeon={d}, gem={g}, "
                           + $"kill-client={(_cfg.Quit ? $"{_cfg.QuitMinutes}m" : "off")}, state={_state}.");
-                _ctx.Chat("[Vaulted Dungeons] /ilt vaulted [on|off|toggle|status]  (Mini Remote tab; Options > Navigation > Vaulted Dungeons)");
+                _ctx.Chat("[Vaulted Dungeons] /ilt vaulted [on|off|toggle|status]  (Mini Remote tab; master switch: Settings > Navigation > Vaulted Dungeons)");
                 return true;
         }
     }
 
+    /// <summary>Starts the keeper (the player's own action, or Auto Start On Arrival). Pump thread; ILT and master already checked.</summary>
+    private void Activate(long nowMs)
+    {
+        _cfg.Active = true;
+        _dirty = true;
+        _outSinceMs = 0;
+        _wasInside = false;       // the no-kill clock starts when the first in-dungeon tick sees us inside
+        _clockStartMs = nowMs;
+        _quitSent = false;        // /rc quit: once per activation
+        _lastRecallMs = 0;
+        Publish();
+    }
+
     private void SetActive(bool value)
     {
-        _cfg.Active = value;
+        if (value)
+        {
+            // From the tab's button too (posted to the pump): re-check, the switch may have gone off since.
+            if (!Allowed(out string gate))
+            {
+                _ctx.Chat("[Vaulted Dungeons] " + GateReply(gate));
+                return;
+            }
+            EnsureLoaded();
+            if (!_cfg.Active)
+            {
+                Activate(Now());
+                _ctx.Chat("[Vaulted Dungeons] On.");
+            }
+            return;
+        }
+        _cfg.Active = false;
         _outSinceMs = 0;
         _dirty = true;
-        if (!value)
-        {
-            _clockStartMs = IltHubContext.NowMs;
-            _quitSent = false;
-            _wasInside = false;
-            _quitLeftMs = null;
-            _state = "paused";
-        }
+        _clockStartMs = Now();
+        _wasInside = false;
+        _quitLeftMs = null;
+        _state = "paused";
         Publish();
     }
 
     // ── Render snapshot ─────────────────────────────────────────────────────
 
-    private void Publish()
+    private void Publish(string gate = "")
     {
+        _publishedGate = gate;
         lock (_gate)
         {
             _snap = new Snapshot(
@@ -420,7 +610,7 @@ internal sealed class IltVaultedDungeons : IIltFeature
                 _cfg.ShowInDungeon, _cfg.AutoStart, _cfg.DisableMeta, _cfg.DisableNav,
                 _cfg.RepeatAttack, _cfg.SetPower, _cfg.AttackPower,
                 _state, _quitLeftMs, _idleSecs, _inSinceMs, _outSinceMs, _portalSinceMs,
-                _realKillMs, _kills, _dungeonSecs, IltHubContext.NowMs);
+                _realKillMs, _kills, _dungeonSecs, Now(), gate);
         }
     }
 
@@ -437,6 +627,7 @@ internal sealed class IltVaultedDungeons : IIltFeature
     {
         _ctx.Post(() =>
         {
+            if (!Allowed(out _)) return;   // gated while it waited: an edit changes nothing
             EnsureLoaded();
             edit(_cfg);
             _dirty = true;
@@ -461,6 +652,14 @@ internal sealed class IltVaultedDungeons : IIltFeature
         ImGui.TextColored(colTitleRed, "Vaulted");
         ImGui.SameLine(0, ImGui.CalcTextSize(" ").X);
         ImGui.TextColored(colValue, "Dungeons");
+
+        // Not offered right now (the tab is hidden then; this covers a stale frame or a direct open).
+        if (s.Gate.Length > 0)
+        {
+            ImGui.Separator();
+            ImGui.TextWrapped(GateReply(s.Gate) ?? "Not available.");
+            return;
+        }
         ImGui.SameLine(0, 16);
         Vector4 pill = s.Active ? colGreen : new(0.85f, 0.10f, 0.10f, 1f);
         ImGui.PushStyleColor(ImGuiCol.Button, pill);
@@ -495,6 +694,7 @@ internal sealed class IltVaultedDungeons : IIltFeature
             "portal" => ("Portal Space", colPurple),
             "setup" => ("Setup Needed", colAmber),
             "nogem" => ("No Gem", colRed),
+            "busy" => ("Waiting (busy)", colAmber),
             _ => ("Not Running", colRed),
         };
         long since = s.State == "in" ? s.InSinceMs
@@ -556,18 +756,20 @@ internal sealed class IltVaultedDungeons : IIltFeature
                 bool on = quit;
                 _ctx.Post(() =>
                 {
+                    if (!Allowed(out _)) return;
                     EnsureLoaded();
                     _cfg.Quit = on;
                     _cfg.QuitMinutes = ClampInt(_cfg.QuitMinutes, QuitMin, QuitMax, 2);
-                    _clockStartMs = IltHubContext.NowMs;
-                    _quitSent = false;
+                    _clockStartMs = Now();
                     _dirty = true;
                     Publish();
                 });
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("No kill for the set minutes in the dungeon → /rc quit closes the client.\n"
-                                 + "A kill is the server's \"You've banked N Luminance.\" line.");
+                ImGui.SetTooltip("No kill for the set minutes in the dungeon: /rc quit closes the client (once per run).\n"
+                                 + "The timer restarts on the server's \"You've banked N Luminance.\" line, on your own killing blow,\n"
+                                 + "and on a successful pet capture. Kills by pets or fellows that pay you no luminance\n"
+                                 + "do NOT restart it, so keep the minutes generous if you hunt with pets.");
 
             ImGui.SameLine();
             ImGui.TextColored(colLabel, "after");
@@ -575,20 +777,20 @@ internal sealed class IltVaultedDungeons : IIltFeature
             if (ImGui.SmallButton($"{s.QuitMinutes} minute{(s.QuitMinutes == 1 ? "" : "s")}##vdmincycle"))
                 _ctx.Post(() =>
                 {
+                    if (!Allowed(out _)) return;
                     EnsureLoaded();
                     _cfg.QuitMinutes = StepPreset(_cfg.QuitMinutes, +1);
-                    _clockStartMs = IltHubContext.NowMs;
-                    _quitSent = false;
+                    _clockStartMs = Now();
                     _dirty = true;
                     Publish();
                 });
             if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                 _ctx.Post(() =>
                 {
+                    if (!Allowed(out _)) return;
                     EnsureLoaded();
                     _cfg.QuitMinutes = StepPreset(_cfg.QuitMinutes, -1);
-                    _clockStartMs = IltHubContext.NowMs;
-                    _quitSent = false;
+                    _clockStartMs = Now();
                     _dirty = true;
                     Publish();
                 });
@@ -625,7 +827,9 @@ internal sealed class IltVaultedDungeons : IIltFeature
         }
 
         ImGui.Spacing();
-        ImGui.TextDisabled("Note: the client sees the landblock, not the layer — standing in the retail copy also counts as \"in it\".");
+        ImGui.TextDisabled("Note: the client sees the landblock, not the layer - standing in the retail copy also counts as \"in it\".");
+        ImGui.TextDisabled("Kill Client: pet or fellow kills that pay you no luminance do not restart its timer.");
+        ImGui.TextDisabled("Recalls wait while RynthAi is in combat, buffing or waiting on the server.");
         ImGui.TextDisabled("/ilt vaulted [on|off|toggle|status]");
     }
 
@@ -694,22 +898,22 @@ internal sealed class IltVaultedDungeons : IIltFeature
         bool ShowInDungeon, bool AutoStart, bool DisableMeta, bool DisableNav,
         bool RepeatAttack, bool SetPower, float AttackPower,
         string State, long? QuitLeftMs, long IdleSecs, long InSinceMs, long OutSinceMs, long PortalSinceMs,
-        long RealKillMs, int Kills, long DungeonSecs, long NowMs)
+        long RealKillMs, int Kills, long DungeonSecs, long NowMs, string Gate)
     {
+        /// <summary>Before the first tick (the tab is only offered while the keeper may run).</summary>
         public static Snapshot Empty => new(false, 0, 0, false, 2,
             false, false, false, false, false, false, 0f,
-            "paused", null, 0, 0, 0, 0, 0, 0, 0, 0);
+            "paused", null, 0, 0, 0, 0, 0, 0, 0, 0, string.Empty);
     }
 }
 
 // Source-generated JSON only: the NativeAOT build (what the installer ships) has reflection-based
 // serialization turned off, so JsonSerializer.Deserialize<Cfg>(text, options) failed there and the
 // Vaulted Dungeons settings never loaded or saved. Same file format as before (camelCase,
-// indented, nulls left out).
+// indented, nulls left out, case-sensitive property names on read).
 [JsonSerializable(typeof(IltVaultedDungeons.Cfg))]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
-    PropertyNameCaseInsensitive = true,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 internal partial class IltVaultedDungeonsJsonContext : JsonSerializerContext { }

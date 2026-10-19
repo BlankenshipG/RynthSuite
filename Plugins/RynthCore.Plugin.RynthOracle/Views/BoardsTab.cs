@@ -34,9 +34,6 @@ internal sealed partial class OracleView
             w.ToggleButton(cq.Boards[i].Label, "cb.tab." + i, i == _conquestBoard, () => _conquestBoard = index, small: true);
         }
         ConquestBoard b = cq.Boards[_conquestBoard];
-        w.Button("Refresh", "cb.refresh", () => _c.Send(cq.RequestBoard(b, _c.NowMs)));
-        w.Tooltip($"Sends {b.Command} and reads the reply.");
-        w.SameLine();
         w.TextDisabled(b.UpdatedUtc == DateTime.MinValue ? "not read yet" : $"read at {b.UpdatedUtc.ToLocalTime():HH:mm}");
         if (b.You != null) w.Text($"You: #{b.You.Rank} with {b.You.Value}");
         DrawRows(w, "cb.rows", b.Rows);
@@ -76,8 +73,6 @@ internal sealed partial class OracleView
 
         if (_aelrynthView == 1)
         {
-            w.Button("Refresh", "ab.me", () => _c.Send(a.RequestTop("me", _c.NowMs)));
-            w.Tooltip("Sends /top me.");
             w.BeginChild("ab.melist", 0f, 0f, border: true);
             foreach (AelrynthStanding s in a.Standings)
             {
@@ -93,9 +88,6 @@ internal sealed partial class OracleView
 
         if (_aelrynthView == 2)
         {
-            w.Button("Refresh", "ab.trials", () => _c.Send(a.RequestTrial("", _c.NowMs)));
-            w.Tooltip("Sends /trial.");
-            w.SameLine();
             w.InputText("Dungeon", "ab.trialarg", _trialArg, 48, s => _trialArg = s);
             w.SameLine();
             w.Button("Top 10", "ab.trialtop", () => { if (_trialArg.Trim().Length > 0) _c.Send(a.RequestTrial(_trialArg, _c.NowMs)); });

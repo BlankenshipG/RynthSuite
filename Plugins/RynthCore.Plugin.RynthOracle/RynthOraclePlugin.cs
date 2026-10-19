@@ -33,6 +33,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private OracleView? _mainView;
     private VoidView? _voidView;
     private QuestTimersView? _timersView;
+    private SkillsEmbed? _skills;
     private int _seenBookRevision = -1;
 
     private readonly ConcurrentQueue<string> _commands = new();
@@ -62,17 +63,19 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Host = Host;
         _c.Settings.Load();
         _c.RequestQuests = RequestQuests;
+        _c.RereadCharacter = RereadCharacter;
+        _c.RereadTitles = RereadTitles;
+        _c.ReloadQuestList = ReloadQuestList;
         _c.Send = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
         _c.RunCommand = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
-        // SkillsFace embed: engine /rc oracle-skills bridge (works logged out too for tab prep).
-        _c.SkillsEmbedChanged = tab =>
-            Host.InvokeChatParser(tab < 0 ? "/rc oracle-skills off" : $"/rc oracle-skills {tab}");
         _c.ToggleCharm = ToggleCharm;
         _c.BreedingCommand = BreedingCommand;
         _c.GuardianCommand = GuardianCommand;
         _ui.Log = msg => Host.Log(msg);
 
         _mainView = new OracleView(_c);
+        // The Skills / Attributes / Progress tabs: RynthCore draws its Skills panel body in the window.
+        _skills = new SkillsEmbed(cmd => Host.InvokeChatParser(cmd));
         _voidView = new VoidView(_c);
         _timersView = new QuestTimersView(_c);
         _main = _ui.Add(new UiWindow("RynthOracle/Oracle", "Oracle")
@@ -148,6 +151,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         if (_void != null) { _void.Visible = false; _void.NeedsPass = true; }
         // The quest book loads once the character's name (and world) are known (TickData).
         _c.Book.Clear();
+        _c.Timers.Reset();
         if (_timers != null) { _timers.Visible = _c.Settings.QuestTimersOpen; _timers.NeedsPass = true; }
     }
 
@@ -159,8 +163,10 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         if (_main != null) { _main.Visible = false; _main.NeedsPass = true; }
         if (_void != null) { _void.Visible = false; _void.NeedsPass = true; }
         if (_timers != null) { _timers.Visible = false; _timers.NeedsPass = true; }
+        _skills?.Update(string.Empty, false, false, Environment.TickCount64);
         _ui.SubmitEmpty(Host);
         _c.Book.Clear();   // saved as it changed
+        _c.Timers.Reset();
         _c.Flags.Clear();
         _c.Void.Clear();
         _c.Conquest.Clear();
@@ -321,6 +327,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
     public override void Shutdown()
     {
+        _skills?.Shutdown();
         _ui.SubmitEmpty(Host);
         _c.Updater.Shutdown();
         _c.Settings.Save();
@@ -430,6 +437,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 break;
             case "attrs":
             case "attributes":
+            case "attribute":
             case "vitals":
                 ShowTab(OracleView.TabAttributes);
                 break;
@@ -500,7 +508,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 break;
         }
         if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char" or "charms" or "charm"
-                or "skills" or "skill" or "attrs" or "attributes" or "vitals" or "progress" or "progression"
+                or "skills" or "skill" or "attrs" or "attributes" or "attribute" or "vitals" or "progress" or "progression"
                 or "breeding" or "breed" or "pets" or "legendary" or "legend" or "john" or "markers" or "marker" or "trackers"
                 or "dynamic" or "dyn" or "dyno" or "stamps" or "guardian" or "guardians" or "about" or "features" && !Host.HasUi && !_noUiLogged)
         {
@@ -509,17 +517,61 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         }
     }
 
-    private void RequestQuests()
+    /// <summary>Sends /myquests; false when nothing went out (not in the world, or one was sent moments ago).</summary>
+    private bool RequestQuests()
     {
-        if (!_c.InWorld) return;
+        if (!_c.InWorld) return false;
         long now = Environment.TickCount64;
-        if (!_c.Flags.Request(cmd => Host.InvokeChatParser(cmd), now))
+        bool sent = _c.Flags.Request(cmd => Host.InvokeChatParser(cmd), now);
+        if (!sent)
         {
             int wait = _c.Flags.ThrottleSecondsLeft(now);
             Host.Log(wait > 0
                 ? $"[RynthOracle] The server answers one /myquests a minute; try again in {wait}s (the flags shown are kept)."
                 : "[RynthOracle] /myquests was sent moments ago; waiting for that reply.");
         }
+        if (_main != null) _main.NeedsPass = true;
+        return sent;
+    }
+
+    // ── The Oracle window's Refresh buttons (the data side; Views\RefreshBar.cs has the rest) ──
+
+    /// <summary>Reads the character's stats, buffs and (on the Character tab) RynthAi's session now, not at the next timer.</summary>
+    private void RereadCharacter()
+    {
+        if (!_c.InWorld) return;
+        long now = Environment.TickCount64;
+        _c.Character.Read(Host);
+        _c.Void.RemoveExpired(now);
+        _nextCharacterReadMs = now + CharacterReadMs;
+        _nextCharacterExtrasMs = 0;
+        ReadCharacterExtras(now);
+        if (_main != null) _main.NeedsPass = true;
+        if (_void != null) _void.NeedsPass = true;
+    }
+
+    /// <summary>Asks the engine for the character's titles again (it keeps them from the login events).</summary>
+    private void RereadTitles()
+    {
+        _titleCount = -2;
+        ReadTitles();
+        if (_main != null) _main.NeedsPass = true;
+    }
+
+    /// <summary>
+    /// Reloads the quest list and the server's pack from their files (a downloaded list, or a pack
+    /// dropped into %APPDATA%\RynthCore\RynthOracle\packs) and asks RynthCore which server this is.
+    /// </summary>
+    private void ReloadQuestList()
+    {
+        long now = Environment.TickCount64;
+        _c.ServerState.Poll(Host, now, force: true);
+        _seenServerStateRevision = _c.ServerState.Revision;
+        _c.Server.Refresh(Host, _c.Character.PlayerId != 0 ? _c.Character.PlayerId : Host.GetPlayerId(), _c.Ilt.Profile.Ilt, _c.ServerState.State);
+        try { _c.Catalog.Load(_c.Server.Tag, msg => Host.Log(msg)); }
+        catch (Exception ex) { Host.Log($"[RynthOracle] Couldn't load the quest list: {ex.Message}"); }
+        _c.Catalog.SyncDiscoveries(_c.Flags);
+        ApplyServer();
         if (_main != null) _main.NeedsPass = true;
     }
 
@@ -537,6 +589,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         TickData(now);
 
         if (!Host.HasUi) return;
+        // After the poll, so a tab clicked this tick is already selected.
+        if (_skills != null && _main != null && _mainView != null)
+            _skills.Update(_mainView.Tab, _main.Visible, _c.InWorld, now);
         RecordWindows(now);
         _ui.Submit(Host, now);
 
@@ -649,6 +704,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             _c.Server.Refresh(Host, _c.Character.PlayerId, _c.Ilt.Profile.Ilt, _c.ServerState.State);
             ApplyServer();
             LoadQuestBook(now);
+            AnnounceTimers();
             ReadTitles();
             TickConquest(now);
             if (!_voidAutoDecided && _c.Character.Valid)
@@ -668,6 +724,15 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             if (_void != null) _void.NeedsPass = true;
             if (_main != null && _mainView != null && _mainView.Tab == OracleView.TabVoid) _main.NeedsPass = true;
         }
+    }
+
+    /// <summary>Says in chat which watched quest timers came up: tracked quests, or every held quest if so set.</summary>
+    private void AnnounceTimers()
+    {
+        if (!_c.Settings.AlertTimers || !_c.Book.Loaded) { _c.Timers.Reset(); return; }
+        var ready = _c.Timers.Check(_c.Flags, _c.Catalog, _c.Settings.AlertAllTimers ? null : _c.Book.Tracked, _c.UtcNow);
+        foreach (Quest q in ready)
+            _c.Print($"Quest ready again: {q.Label}");
     }
 
     /// <summary>

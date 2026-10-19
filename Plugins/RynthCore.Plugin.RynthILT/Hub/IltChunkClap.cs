@@ -23,9 +23,8 @@
 //   (ILT does not always send a known line). Each item's skip reason is logged when it changes
 //   and tallied in the status line.
 //   The tool is the "Lugian Aetheria Hammer" only. The Lugian Hammer weapons (Flaming, Acid, ...)
-//   are loot and chunk nothing on ILT: the server answers "done" with no result line. Matching
-//   them by name ending used the Flaming Lugian Hammer on Silentkelpie's 9 Coalesced Aetheria,
-//   every one timed out and was skipped, and the status sat on "nothing eligible" (2026-10-15).
+//   are loot and chunk nothing: the server answers with no result line, so every item timed out
+//   into the skip list and the status sat on "nothing eligible" (SilentKelpie, 2026-10-15).
 // Clap: "/clap all" converts aetheria + trinkets into coins server-side: red (Coalesced level 1-3,
 //   chunks, powder) with Empyrean Trinkets, blue with Falatacot Trinkets. Auto-clap sends it only
 //   when a pair is carried. Needs the AutoCraftingEnabled stamp; 30 min ± 2 min interval, first
@@ -121,14 +120,21 @@ internal sealed class IltChunkClap : IIltFeature
     /// <summary>An aetheria piece's chunk facts, read after appraisal.</summary>
     internal readonly record struct AetheriaFacts(
         bool Coalesced, int MaxLevel, bool NeverChunk, long ItemXp, int Tinkers, int Imbue,
-        int Crit, int CritDamage, int CritDamageResist);
+        int Crit, int CritDamage, int CritDamageResist, string? Unreadable = null);
 
     /// <summary>
     /// Why an aetheria piece is kept, or null when it may be chunked (ub-IT AetheriaChunkGuard plus
     /// RynthILT's C / CD / CDR keep switches). Pure: the tests drive it.
+    /// <para>
+    /// <see cref="AetheriaFacts.Unreadable"/> is set when the item's properties could not be read (the
+    /// host lacks a reader or the appraisal never arrived). A property that failed to read looks
+    /// exactly like one the item lacks (level 0, no XP, no tinks), so such a piece is kept: an
+    /// "unlevelled" Coalesced piece is only chunked when its level was truly read as none.
+    /// </para>
     /// </summary>
     internal static string? AetheriaSkip(IltGearState g, in AetheriaFacts f)
     {
+        if (f.Unreadable != null) return $"item data unreadable ({f.Unreadable})";
         if (f.NeverChunk) return "never-chunk flag";
         if (f.Tinkers != 0 || f.Imbue != 0) return "tinkered or imbued";
         if (f.ItemXp != 0) return "has item XP";
@@ -144,6 +150,7 @@ internal sealed class IltChunkClap : IIltFeature
         var inv = _ctx.Inventory;
         if (inv.IsEquipped(wo)) return "equipped";
         if (!inv.HasAppraisal(wo)) { inv.RequestAppraisal(wo); return Appraising; }
+        string? gap = inv.ReadGap(wo, quads: true);
         var f = new AetheriaFacts(
             Coalesced: wo.Name.Equals("Coalesced Aetheria", StringComparison.OrdinalIgnoreCase),
             MaxLevel: inv.Int(wo, IltInventory.IntItemMaxLevel),
@@ -153,7 +160,8 @@ internal sealed class IltChunkClap : IIltFeature
             Imbue: inv.Int(wo, IltInventory.IntImbuedEffect),
             Crit: inv.Int(wo, IltInventory.IntGearCrit),
             CritDamage: inv.Int(wo, IltInventory.IntGearCritDamage),
-            CritDamageResist: inv.Int(wo, IltInventory.IntGearCritDamageResist));
+            CritDamageResist: inv.Int(wo, IltInventory.IntGearCritDamageResist),
+            Unreadable: gap);
         return AetheriaSkip(G, f);
     }
 
@@ -212,6 +220,8 @@ internal sealed class IltChunkClap : IIltFeature
         public int ElementalBonus { get; init; }
         public int MaxDamage { get; init; }
         public IReadOnlyList<int> Spells { get; init; } = Array.Empty<int>();
+        /// <summary>What could not be read (null = everything the rules need was); see AetheriaFacts.Unreadable.</summary>
+        public string? Unreadable { get; init; }
     }
 
     /// <summary>
@@ -227,6 +237,9 @@ internal sealed class IltChunkClap : IIltFeature
     /// </summary>
     internal static string? CorruptedSkip(IltGearState g, CorruptedFacts f)
     {
+        // A property that failed to read looks like one the weapon lacks (0), which would chunk it.
+        if (f.Unreadable != null) return $"item data unreadable ({f.Unreadable})";
+
         // Hard rules (always on).
         if (f.NeverChunk) return "never-chunk flag";
         if (f.Tinkers != 0 || f.Imbue != 0) return "tinkered or imbued";
@@ -267,8 +280,11 @@ internal sealed class IltChunkClap : IIltFeature
         var inv = _ctx.Inventory;
         if (inv.IsEquipped(wo)) return "equipped";
         if (!inv.HasAppraisal(wo)) { inv.RequestAppraisal(wo); return Appraising; }
+        bool needDoubles = G.KeepCorruptedCrushingBlow || G.KeepCorruptedBitingStrike || G.KeepCorruptedArmorCleaving;
+        bool needSpells = G.KeepCorruptedAnySpell || !string.IsNullOrWhiteSpace(G.KeepCorruptedSpellIds);
         var f = new CorruptedFacts
         {
+            Unreadable = inv.ReadGap(wo, doubles: needDoubles, spells: needSpells),
             NeverChunk = inv.Bool(wo, IltInventory.BoolNeverChunk),
             Tinkers = inv.Int(wo, IltInventory.IntNumTimesTinkered),
             Imbue = inv.Int(wo, IltInventory.IntImbuedEffect),
@@ -284,8 +300,7 @@ internal sealed class IltChunkClap : IIltFeature
             ElementalBonus = inv.Int(wo, IltInventory.IntElementalDamageBonus),
             MaxDamage = inv.Int(wo, IltInventory.IntDamage),
             // Spells are only read when a spell rule is on (the read copies the item's spell list).
-            Spells = G.KeepCorruptedAnySpell || !string.IsNullOrWhiteSpace(G.KeepCorruptedSpellIds)
-                ? inv.SpellIds(wo) : Array.Empty<int>(),
+            Spells = needSpells ? inv.SpellIds(wo) : Array.Empty<int>(),
         };
         return CorruptedSkip(G, f);
     }
@@ -578,7 +593,7 @@ internal sealed class IltChunkClap : IIltFeature
 
     public void Render()
     {
-        ImGui.TextColored(IltStyle.ColTeal, $"Chunking ({HammerName})");
+        SafeImGui.TextColored(IltStyle.ColTeal, $"Chunking ({HammerName})");
         bool a = G.AutoChunkAetheria, c = G.AutoChunkCorrupted, comb = G.ChunkInCombat;
         if (ImGui.Checkbox("Auto-chunk low aetheria", ref a)) G.AutoChunkAetheria = a;
         ImGui.SameLine();
@@ -588,7 +603,7 @@ internal sealed class IltChunkClap : IIltFeature
         ImGui.SetNextItemWidth(100);
         if (ImGui.InputInt("Chunk aetheria with max level below", ref under)) G.ChunkAetheriaUnderLevel = ClampUnderLevel(under);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip($"Infinite Leaftide aetheria goes up to level {IltInventory.AetheriaMaxLevel}; {IltInventory.AetheriaMaxLevel + 1} chunks every level.\nA levelled Coalesced Aetheria gets the cap too; an unlevelled one (level 0 after appraisal) is chunked, as in ub-IT.");
+            SafeImGui.SetTooltip($"Infinite Leaftide aetheria goes up to level {IltInventory.AetheriaMaxLevel}; {IltInventory.AetheriaMaxLevel + 1} chunks every level.\nA levelled Coalesced Aetheria gets the cap too; an unlevelled one (level 0 after appraisal) is chunked, as in ub-IT.");
         bool kc = G.KeepAetheriaWithCrit, kcd = G.KeepAetheriaWithCritDamage, kcdr = G.KeepAetheriaWithCritDamageResist;
         ImGui.TextUnformatted("Never chunk aetheria with:");
         ImGui.SameLine();
