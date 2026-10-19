@@ -137,6 +137,12 @@ public sealed class IltCharacterState
     /// <summary>Enlightenment planner target level (0 = current + 5).</summary>
     public int EnlTargetLevel;
     public int EnlightenedCoinsPerToken = 20;
+    /// <summary>Vendor price of one Ascension Coin in Necrolytic Extracts (0 = no such vendor; sigil chain "How to get").</summary>
+    public int ExtractsPerAscensionCoin = 100;
+    /// <summary>Vendor trade: this many Necrolytic Extracts ...</summary>
+    public int ExtractsPerTrophyTrade = 50;
+    /// <summary>... for this many Trophies (0 = don't show the trade).</summary>
+    public int TrophiesPerTrophyTrade = 100;
     /// <summary>
     /// Auto-enlighten preference. Even when true it stays DISARMED each session until the
     /// player confirms in the Hub, and the server's own Yes/No dialog is never auto-clicked.
