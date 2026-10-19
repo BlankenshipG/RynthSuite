@@ -37,6 +37,29 @@ internal static class AmmoTests
         r.Add("ammo: no flip-flop back to the bow after a swap", NoFlipFlop);
         r.Add("ammo: a launcher's element is its ammo's (prismatic takes the launcher's)", ElementFromAmmo);
         r.Add("ammo: thrown weapons, melee and magic lists are untouched", ThrownMeleeMagicUntouched);
+        r.Add("ammo: Prismatic is universal damage (the target's weakest element)", PrismaticUniversal);
+    }
+
+    // 2026-10-19 (owner): prismatic ammo deals every damage type, so it does what the target is
+    // weakest to; the Items panel offers "Prismatic" for missile weapons and ammo.
+    private static void PrismaticUniversal()
+    {
+        var weak = new List<List<string>> { new() { "Acid" }, new() { "Fire" }, new() { "Pierce", "Slash" } };
+        Check.Eq(MissileAmmo.BestElement("", weak), "Acid", "best element: the weakest");
+        Check.Eq(MissileAmmo.BestElement("Cold", weak), "Cold", "best element: a Monsters rule's damage type wins");
+        Check.Eq(MissileAmmo.BestElement("", null), "", "nothing known: none");
+        var prism = new AmmoCandidate(1, "Prismatic Arrow", 1, "", true, 1, -1, false);
+        Check.Eq(MissileAmmo.EffectiveElement(prism, "Fire", "Acid"), "Acid", "prismatic does the target's weakest element, over the bow's");
+        Check.Eq(MissileAmmo.EffectiveElement(prism, "Fire"), "Fire", "nothing known about the target: the bow's, as before");
+        var acid = new AmmoCandidate(2, "Acid Arrow", 1, "Acid", false, 1, -1, false);
+        Check.Eq(MissileAmmo.EffectiveElement(acid, "", "Fire"), "Acid", "elemental ammo keeps its own element");
+        var deadlyFire = new AmmoCandidate(3, "Deadly Fire Arrow", 1, "Fire", false, 400, -1, false);
+        var rank = MissileAmmo.RankBy("", weak);
+        Check.Eq(MissileAmmo.Choose(1, "", new List<AmmoCandidate> { deadlyFire, prism }, rank, "Acid")?.Id, 1,
+                 "weak to Acid: prismatic (Acid) beats better fire arrows");
+        Check.True(MissileAmmo.IsUniversal("Prismatic") && MissileAmmo.IsUniversal(" prismatic ") && !MissileAmmo.IsUniversal("Pierce"),
+                   "the Items panel's Prismatic is the universal marker");
+        Check.Eq(WeaponElements.Normalize("Prismatic"), "", "Prismatic isn't an element of its own");
     }
 
     // ── Pure rules ────────────────────────────────────────────────────────────

@@ -222,6 +222,29 @@ internal sealed unsafe class IltServerLink
         }
     }
 
+    // The completed /qb flags as a set (Dynamic stamps are looked up in it), rebuilt only when
+    // the list itself changes: it can hold 25,000+ flags.
+    private IReadOnlyList<string>? _qbSetSource;
+    private HashSet<string> _qbSet = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The completed /qb flags (any case), empty until RynthILT has read the list this session.
+    /// /myquests leaves out flags the server holds no quest text for; this list has them.
+    /// </summary>
+    public IReadOnlySet<string> QbCompletedSet
+    {
+        get
+        {
+            IReadOnlyList<string> done = QuestBonus?.Completed ?? Array.Empty<string>();
+            if (!ReferenceEquals(done, _qbSetSource))
+            {
+                _qbSetSource = done;
+                _qbSet = new HashSet<string>(done, StringComparer.OrdinalIgnoreCase);
+            }
+            return _qbSet;
+        }
+    }
+
     /// <summary>Forget the profile (logout); the next poll reads it again.</summary>
     public void Clear()
     {

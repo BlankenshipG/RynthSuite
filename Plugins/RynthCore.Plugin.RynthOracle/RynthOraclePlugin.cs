@@ -18,8 +18,8 @@ namespace RynthCore.Plugin.RynthOracle;
 /// </summary>
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
-    // Previous release: 0.6.1.
-    public const string Version = "0.6.2";
+    // Previous release: 0.6.2.
+    public const string Version = "0.6.3";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -49,6 +49,28 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private bool _voidAutoDecided;
     private bool _dailyCheckStarted;
     private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1, _seenIltRevision = -1;
+    // The Dynamic stamp sources last logged (LogStampSources), and the revisions they were read at.
+    private (int InMyQuests, int InQb, int Matched) _loggedStamps = (-1, -1, -1);
+    private int _stampFlagRevision = -1, _stampIltRevision = -1;
+
+    /// <summary>
+    /// Infinite Leaftide: logs where the Dynamic stamps come from whenever the flags or the /qb list
+    /// change and the counts move (Dynamic flags in /myquests, in the completed /qb list, and the
+    /// listed stamps matched), so a stamp shown as not done can be told apart from one never read.
+    /// </summary>
+    private void LogStampSources()
+    {
+        if (!_c.Server.Is(ServerTags.InfiniteLeaftide)) return;
+        if (_c.Flags.Revision == _stampFlagRevision && _c.Ilt.Revision == _stampIltRevision) return;
+        _stampFlagRevision = _c.Flags.Revision;
+        _stampIltRevision = _c.Ilt.Revision;
+        if (_c.Flags.Flags.Count == 0) return;
+        var counts = DynamicStampList.Counts(_c.Flags, _c.Ilt.QbCompletedSet);
+        if (counts == _loggedStamps) return;
+        _loggedStamps = counts;
+        Host.Log($"[RynthOracle] Dynamic stamps: {counts.InMyQuests} Dynamic flag(s) in /myquests, {counts.InQb} in the /qb list"
+                 + $" ({_c.Ilt.QbCompletedSet.Count} completed flags read); {counts.Matched} of {DynamicStampList.All.Count} listed stamps done.");
+    }
     // RynthCore's server list (ServerStateClient.Revision) last applied to the server identity.
     private int _seenServerStateRevision = -1;
     private bool _noUiLogged;
@@ -623,6 +645,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             _c.Flags.LastLongReply = null;
             Host.Log($"[RynthOracle] /myquests long reply: {longReply.Lines} flag line(s) over {longReply.Ms} ms; {_c.Flags.Flags.Count} flags held.");
         }
+        LogStampSources();
         if (_c.Flags.Revision != _seenFlagRevision)
         {
             _seenFlagRevision = _c.Flags.Revision;

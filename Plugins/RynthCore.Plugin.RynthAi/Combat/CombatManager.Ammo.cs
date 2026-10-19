@@ -101,9 +101,11 @@ public partial class CombatManager
             uint uid = unchecked((uint)wo.Id);
             int? dt = _host.HasGetObjectIntProperty && _host.TryGetObjectIntProperty(uid, WeaponElements.PropDamageType, out int d) ? d : null;
             int? fx = _host.HasGetObjectIntProperty && _host.TryGetObjectIntProperty(uid, WeaponElements.PropUiEffects, out int f) ? f : null;
-            bool prismatic = MissileAmmo.IsPrismatic(dt, wo.Name);
-            string elem = prismatic ? "" : WeaponElements.Detect(dt, null, fx, wo.Name).Element;
             int listIdx = rules.FindIndex(r => r.Id == wo.Id);
+            // Prismatic: its properties or name say so, or the Items panel marks this ammo Prismatic.
+            bool prismatic = MissileAmmo.IsPrismatic(dt, wo.Name)
+                             || (listIdx >= 0 && MissileAmmo.IsUniversal(rules[listIdx].Element));
+            string elem = prismatic ? "" : WeaponElements.Detect(dt, null, fx, wo.Name).Element;
             int quality = AmmoRecipes.OutputRank(wo.Name, MissileAmmo.CategoryOf(type));
             bool wielded = WorldObjectCache.IsWieldedByPlayer(_host, wo);
             list.Add(new AmmoCandidate(wo.Id, wo.Name, type, elem, prismatic, quality, listIdx, wielded));
@@ -136,35 +138,44 @@ public partial class CombatManager
 
         List<AmmoCandidate>? pack = null;
         var rank = AmmoRank(ruleElement, weak);
+        // Universal damage (prismatic ammo, or a launcher set to Prismatic in the Items panel) does
+        // whatever this target is weakest to: the Monsters rule's damage type, else the weakest element.
+        string best = MissileAmmo.BestElement(WeaponElements.Normalize(ruleElement),
+            weak != null && weak.Order.Count > 0 ? WeaponPlanner.TieGroups(weak) : null);
+        WeaponCandidate Resolve(WeaponCandidate c) => MissileAmmo.IsUniversal(c.Element) ? c with { Element = best } : c;
+
         var result = new List<WeaponCandidate>(listed.Count);
         var dropped = new List<(WeaponCandidate C, int Type)>();
         foreach (var c in listed)
         {
             if (c.Kind != CombatMode.Missile) { result.Add(c); continue; }
             int lt = LauncherTypeOf(_worldFilter[c.Id]);
-            if (lt == 0) { result.Add(c); continue; }        // thrown, or a type not known: as before
+            if (lt == 0) { result.Add(Resolve(c)); continue; }        // thrown, or a type not known: as before
 
+            string launcherElement = MissileAmmo.IsUniversal(c.Element) ? "" : c.Element;
             pack ??= PackAmmo();
             var wielded = pack.FirstOrDefault(a => a.Wielded);
             var use = wielded != null && MissileAmmo.Fits(lt, wielded.AmmoType)
                 ? wielded
-                : MissileAmmo.Choose(lt, c.Element, pack, rank);
+                : MissileAmmo.Choose(lt, launcherElement, pack, rank, best);
             if (use == null)
             {
-                if (c.InHand) { result.Add(c); continue; }   // ran out in hand: crafting's job, as before
+                if (c.InHand) { result.Add(Resolve(c)); continue; }   // ran out in hand: crafting's job, as before
                 dropped.Add((c, lt));
                 continue;
             }
             _noAmmoNoted.Remove(c.Id);
             // An element the user picked in the Items panel wins over the ammo's (owner's call,
-            // 2026-10-01), although the server uses the ammo's element for the damage.
+            // 2026-10-01), although the server uses the ammo's element for the damage. Prismatic
+            // there means universal: the best element for this target.
             if (_settings.ItemRules.FirstOrDefault(x => x.Id == c.Id)?.ElementSource == WeaponList.SourceSet)
             {
-                result.Add(c);
+                result.Add(Resolve(c));
                 continue;
             }
-            string e = MissileAmmo.EffectiveElement(use, c.Element);
-            result.Add(e.Length > 0 && e != c.Element ? c with { Element = e } : c);
+            string e = MissileAmmo.EffectiveElement(use, launcherElement, best);
+            WeaponCandidate r = Resolve(c);
+            result.Add(e.Length > 0 && e != r.Element ? r with { Element = e } : r);
         }
 
         if (dropped.Count == 0) return result;
@@ -172,7 +183,7 @@ public partial class CombatManager
         // still wielded and ammo crafting makes ammo for it), rather than turning an archer into a
         // swordsman or a mage because the pack ran dry.
         if (listed[0].Kind == CombatMode.Missile && !result.Any(c => c.Kind == CombatMode.Missile))
-            return listed;
+            return listed.Select(Resolve).ToList();
         foreach (var (c, lt) in dropped)
             if (_noAmmoNoted.Add(c.Id))
                 _host.Log($"[EquipDiag] 0x{(uint)c.Id:X8} '{c.Name}' has no {MissileAmmo.Label(lt)} in the pack — not swapping to it");
@@ -306,7 +317,11 @@ public partial class CombatManager
             return false;
         }
 
-        var pick = MissileAmmo.Choose(lt, LauncherElement(launcherId, wo), pack, AmmoRank(RuleElementOf(rule), WeaknessFor(target)));
+        var weakFor = WeaknessFor(target);
+        string ruleElem = RuleElementOf(rule);
+        // Prismatic (universal) ammo does the target's best element: it ranks as that element here too.
+        string bestElem = MissileAmmo.BestElement(ruleElem, weakFor != null && weakFor.Order.Count > 0 ? WeaponPlanner.TieGroups(weakFor) : null);
+        var pick = MissileAmmo.Choose(lt, LauncherElement(launcherId, wo), pack, AmmoRank(ruleElem, weakFor), bestElem);
         if (pick == null)
         {
             _host.Log($"[EquipDiag] no {MissileAmmo.Label(lt)} left for 0x{(uint)launcherId:X8} '{wo.Name}' — leaving it to ammo crafting");

@@ -20,7 +20,9 @@ internal sealed class IltQuestBonus : IIltFeature
 {
     private static readonly Regex KillTaskRegex = new(@"(killtask|killcount|slayerquest|totalgolem.*dead|(kills$))",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    private static readonly Regex QbFlagLine = new(@"^[a-zA-Z0-9_\-!@\(\)?]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    // One flag per line, no spaces. Infinite Leaftide's Dynamic stamps use # $ & ^ as well
+    // ("Dynamic_1_XH!!nh#^NaRp!"): 93 of the 243 listed ones were dropped before 2026-10-19.
+    private static readonly Regex QbFlagLine = new(@"^[a-zA-Z0-9_\-!@\(\)?#$&^%*+.~=]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private const long QbCooldownMs = 60_000;
     // Rows one list draws in the panel: ACECustom characters hold 15,000-25,000+ flags, and
@@ -83,7 +85,7 @@ internal sealed class IltQuestBonus : IIltFeature
         return "Loading quest bonus list...";
     }
 
-    private static bool IsQbLine(string t)
+    internal static bool IsQbLine(string t)
     {
         if (t.StartsWith("Your completed quest bonus list", StringComparison.OrdinalIgnoreCase)
             || t.StartsWith("Your incomplete quest bonus list", StringComparison.OrdinalIgnoreCase)

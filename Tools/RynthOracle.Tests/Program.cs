@@ -156,6 +156,19 @@ namespace RynthOracle.Tests
             sf.Tick(t + 5_000);
             Check(!shortStamp.Have(sf), "a cut-short stem under 14 characters isn't matched by prefix");
 
+            // 2026-10-19: /myquests leaves out flags the server holds no quest text for; the completed
+            // /qb list (RynthILT) has them, in the server's case, and a stamp found there is done.
+            var none = new QuestFlagStore();
+            var qbDone = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Dynamic_1_&9jiyTB!", "Dynamic_1_ANND!", "Dynamic_1_QbOnlyNew!", "blankaug" };
+            Check(!felscuda.Have(none) && felscuda.Have(none, qbDone), "a stamp only in the /qb list is done");
+            Check(annd.MatchedFlag(none, qbDone) == "dynamic_1_annd!", "the /qb list takes the same rules (the lost ! added)");
+            Check(!all.First(s => s.Npc == "Raxanza Folthid").Have(none, qbDone), "a stamp in neither list is not done");
+            List<string> qbExtra = DynamicStampList.Unlisted(none, qbDone);
+            Check(qbExtra.Count == 1 && qbExtra[0].Equals("dynamic_1_qbonlynew!", StringComparison.OrdinalIgnoreCase),
+                  "unlisted from the /qb list too: " + string.Join(",", qbExtra));
+            var counts = DynamicStampList.Counts(f, qbDone);
+            Check(counts.InMyQuests == 3 && counts.InQb == 3 && counts.Matched == 2, $"stamp sources for the log: {counts}");
+
             // Quest walkthroughs: every coordinate pair, labelled with its step, duplicates once.
             var grael = NavTargets.Stops("Give Progenitor's Ichor to Hoshar. - Speak with Hoshar ibn Jalaq 59.6S 88.0W - Kill Mukkir Progenitor 86.5N 57.3E"
                                          + " - Speak with Hoshar ibn Jalaq - Abyssal Totem Gateway 86.5N 57.3E - Abyssal Totem Temple 86.5N 57.3E");

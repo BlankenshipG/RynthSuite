@@ -4981,10 +4981,13 @@ public partial class CombatManager : IDisposable
             if (wo.ObjectClass == AcObjectClass.MissileWeapon && IsAmmoItem(wo)) continue;   // listed arrows are the ammo choice, never a weapon to wield
             if (IsShieldItem(wo)) continue;                                                  // listed shields are the off hand's (CombatManager.Offhand.cs)
             var info = ElementTracker.Read(r.Id, wo.Name);
+            int kind = WeaponKind(r.Id);
             string elem = WeaponElements.Normalize(r.Element);
+            // Prismatic (missile weapons only): universal damage, resolved per target in ApplyAmmo.
+            if (kind == CombatMode.Missile && MissileAmmo.IsUniversal(r.Element)) elem = MissileAmmo.Universal;
             if (elem.Length == 0) elem = info.Element;
             var (slayType, slayBonus) = SlayerOf(r.Id);
-            list.Add(new WeaponCandidate(r.Id, wo.Name, WeaponKind(r.Id), elem, info.Rending, r.Id == inHand, slayType, slayBonus));
+            list.Add(new WeaponCandidate(r.Id, wo.Name, kind, elem, info.Rending, r.Id == inHand, slayType, slayBonus));
         }
         return list;
     }

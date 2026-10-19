@@ -30,16 +30,26 @@ internal sealed class DynamicStamp
     /// The flag this character has for the stamp, or null. The sheet has a few stamps copied
     /// without their closing "!" or cut short: those also match with "!" added and, when at
     /// least <see cref="MinPrefixLength"/> long, the one Dynamic flag on the character starting
-    /// with them.
+    /// with them. <paramref name="qbDone"/> is RynthILT's completed /qb list (Infinite
+    /// Leaftide): /myquests leaves out flags the server holds no quest text for, so a stamp
+    /// that isn't in /myquests is looked for there too, with the same rules.
     /// </summary>
-    public string? MatchedFlag(QuestFlagStore flags)
+    public string? MatchedFlag(QuestFlagStore flags, IReadOnlySet<string>? qbDone = null)
     {
-        if (flags.TryGet(Stamp, out _)) return Stamp;
+        string? mine = Match(k => flags.TryGet(k, out _), flags.Flags.Keys);
+        if (mine != null || qbDone == null || qbDone.Count == 0) return mine;
+        return Match(qbDone.Contains, qbDone);
+    }
+
+    /// <summary>The matching rules over one source: exact, with "!" added, then the one flag starting with it.</summary>
+    private string? Match(Func<string, bool> has, IEnumerable<string> keys)
+    {
+        if (has(Stamp)) return Stamp;
         if (Stamp.EndsWith('!')) return null;
-        if (flags.TryGet(Stamp + "!", out _)) return Stamp + "!";
+        if (has(Stamp + "!")) return Stamp + "!";
         if (Stamp.Length < MinPrefixLength) return null;
         string? only = null;
-        foreach (string key in flags.Flags.Keys)
+        foreach (string key in keys)
         {
             if (!key.StartsWith(Stamp, StringComparison.OrdinalIgnoreCase)) continue;
             if (only != null) return null;   // more than one: can't tell which
@@ -48,7 +58,7 @@ internal sealed class DynamicStamp
         return only;
     }
 
-    public bool Have(QuestFlagStore flags) => MatchedFlag(flags) != null;
+    public bool Have(QuestFlagStore flags, IReadOnlySet<string>? qbDone = null) => MatchedFlag(flags, qbDone) != null;
 
     // Sheet areas that are groupings, not places on the map.
     private static readonly HashSet<string> NotPlaces = new(StringComparer.OrdinalIgnoreCase)
@@ -102,17 +112,34 @@ internal static class DynamicStampList
     /// Dynamic stamps on this character that the list doesn't have (new or unlisted NPCs), so the
     /// tab can show them and the count isn't only what the sheet knows.
     /// </summary>
-    public static List<string> Unlisted(QuestFlagStore flags)
+    public static List<string> Unlisted(QuestFlagStore flags, IReadOnlySet<string>? qbDone = null)
     {
         var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (DynamicStamp s in All)
-            if (s.MatchedFlag(flags) is string f) matched.Add(f);
-        var extra = new List<string>();
+            if (s.MatchedFlag(flags, qbDone) is string f) matched.Add(f);
+        var extra = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (string key in flags.Flags.Keys)
             if (key.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase) && !matched.Contains(key))
                 extra.Add(key);
-        extra.Sort(StringComparer.OrdinalIgnoreCase);
-        return extra;
+        if (qbDone != null)
+            foreach (string key in qbDone)
+                if (key.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase) && !matched.Contains(key))
+                    extra.Add(key);
+        var list = extra.ToList();
+        list.Sort(StringComparer.OrdinalIgnoreCase);
+        return list;
+    }
+
+    /// <summary>
+    /// Where this character's stamps come from, for the log: Dynamic flags in /myquests, Dynamic
+    /// flags in the completed /qb list, and the listed stamps matched from either.
+    /// </summary>
+    public static (int InMyQuests, int InQb, int Matched) Counts(QuestFlagStore flags, IReadOnlySet<string>? qbDone)
+    {
+        int mine = flags.Flags.Keys.Count(k => k.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase));
+        int qb = qbDone?.Count(k => k.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase)) ?? 0;
+        int matched = All.Count(s => s.Have(flags, qbDone));
+        return (mine, qb, matched);
     }
 
     private static List<DynamicStamp> Load()

@@ -428,17 +428,47 @@ internal sealed partial class OracleView
         if (Shows(QuestKind.Dynamic))
         {
             List<DynamicStamp> all = DynamicStampList.All;
+            IReadOnlySet<string> qbDone = _c.Ilt.QbCompletedSet;
             int have = 0;
-            foreach (DynamicStamp s in all) if (s.Have(flags)) have++;
-            int unlisted = DynamicStampList.Unlisted(flags).Count;
+            foreach (DynamicStamp s in all) if (s.Have(flags, qbDone)) have++;
+            int unlisted = DynamicStampList.Unlisted(flags, qbDone).Count;
             w.ProgressBar(all.Count == 0 ? 0f : (float)have / all.Count, -1f, 0f,
                 $"{have} / {all.Count} listed Dynamic stamps" + (unlisted > 0 ? $" (+{unlisted} not in the list)" : ""));
             w.Tooltip("Dynamic stamps are one-time quest flags (Dynamic_1_...) from handing items to NPCs on Infinite Leaftide.\n"
+                      + "Done: in /myquests, or in the completed /qb list (/myquests leaves out flags the server has no quest text for).\n"
                       + "List: the players' ExtraDyn sheet. Click a stamp for RynthNav's route to it and the Parchment hand-in."
                       + (unlisted > 0 ? "\nStamps not in the sheet show as quests with Not in list." : ""));
+            DrawStampQbSource(w);
         }
 
         if (Shows(QuestKind.Guardian)) DrawGuardianControls(w);
+    }
+
+    // The /qb list was asked for this session on the stamps' behalf (once: the server allows one a minute).
+    private bool _qbAskedForStamps;
+
+    /// <summary>
+    /// Under the Dynamic stamps bar: whether the completed /qb list is in, which can mark stamps
+    /// done that /myquests leaves out. Asks RynthILT for it once per session while it hasn't been
+    /// read, and offers a button to read it again.
+    /// </summary>
+    private void DrawStampQbSource(UiWindow w)
+    {
+        if (!_c.InWorld) { _qbAskedForStamps = false; return; }
+        IltQuestBonusList? qb = _c.Ilt.QuestBonus;
+        if (qb == null || qb.Disabled) return;   // no RynthILT, or /qb is off on this server
+        bool loaded = qb.Generation > 0 && !qb.ListsElsewhere;
+        if (!loaded && !_qbAskedForStamps && qb.Generation == 0)
+        {
+            _qbAskedForStamps = true;
+            _c.Send("/ilt qb");
+        }
+        w.TextDisabled(loaded
+            ? $"Also counted from the /qb list ({TimeText.Number(_c.Ilt.QbCompletedSet.Count)} completed flags)."
+            : "Reading the /qb list for stamps /myquests leaves out...");
+        w.SameLine();
+        w.SmallButton("Read /qb", "dy.qb", () => { if (!_c.Send("/ilt qb")) _c.Print("Log in first."); });
+        w.Tooltip("RynthILT reads your quest bonus list (/qb list; the server allows once a minute).");
     }
 
     /// <summary>
@@ -877,13 +907,15 @@ internal sealed partial class OracleView
     {
         string key = $"{_questSearch}|{_qDone}{_qNotDone}{_qRepeatable}{_qOneTime}{_qNew}{_qServer}{_qTracked}{_qKill}|{_questSort}"
                      + $"|{_qTrackers}|{_qKind}|{_dynArea}|{string.Join(",", kinds)}"
-                     + $"|{_c.Flags.Revision}|{_c.Catalog.Revision}|{(_qTracked ? _c.Book.Revision : 0)}|{_c.GuardianRevision}";
+                     + $"|{_c.Flags.Revision}|{_c.Catalog.Revision}|{(_qTracked ? _c.Book.Revision : 0)}|{_c.GuardianRevision}"
+                     + $"|{_c.Ilt.Revision}";   // a new /qb list can mark Dynamic stamps done
         bool timeSorted = _questSort == 4;
         if (key == _questKey && (!timeSorted || _c.NowMs - _questBuiltMs < 5000)) return _questRows;
         _questKey = key;
         _questBuiltMs = _c.NowMs;
 
         QuestFlagStore flags = _c.Flags;
+        IReadOnlySet<string> qbDone = _c.Ilt.QbCompletedSet;
         string[] terms = _questSearch.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         _questRows.Clear();
 
@@ -891,7 +923,7 @@ internal sealed partial class OracleView
         var stampFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (kinds.Contains(QuestKind.Dynamic))
             foreach (DynamicStamp s in DynamicStampList.All)
-                if (s.MatchedFlag(flags) is string f) stampFlags.Add(f);
+                if (s.MatchedFlag(flags, qbDone) is string f) stampFlags.Add(f);
 
         if (KindListed(QuestKind.Quest, kinds))
         {
@@ -934,7 +966,7 @@ internal sealed partial class OracleView
                 {
                     DynamicStamp s = DynamicStampList.All[i];
                     if (_dynArea > 0 && (_dynArea > DynamicStampList.Areas.Count || DynamicStampList.Areas[_dynArea - 1] != s.Area)) continue;
-                    var r = new QuestRow { Kind = QuestKind.Dynamic, Key = "dy:" + s.Stamp, Label = s.Label, Group = s.Area, Order = i, Done = s.Have(flags), D = s };
+                    var r = new QuestRow { Kind = QuestKind.Dynamic, Key = "dy:" + s.Stamp, Label = s.Label, Group = s.Area, Order = i, Done = s.Have(flags, qbDone), D = s };
                     if (KeepTracker(r, repeatable: false, tracked: false, $"{s.Npc} {s.Place} {s.Reward} {s.Area} {s.Stamp} {s.Note}", terms)) _questRows.Add(r);
                 }
 

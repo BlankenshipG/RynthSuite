@@ -19,6 +19,7 @@ internal static class FeatureCatalogTests
         r.Add("features: profile JSON is valid ASCII with features and the fellowship rules", ProfileJson);
         r.Add("features: the interface copies the JSON only when it fits, NUL-terminated", InterfaceWrite);
         r.Add("features: the /qb list rides the profile JSON on ILT worlds only", QuestBonusJson);
+        r.Add("features: /qb list lines with # $ & ^ (Dynamic stamps) are read", QbStampLines);
         r.Add("features: the ILT profile is on with the world; a refusal in chat turns a feature off", ProfileOnWithTheWorld);
         r.Add("features: probed features read checking; options ILT runs off are off until chat shows them", ProbedAndOffInIlt);
         r.Add("features: charms are on with the ILT world unless refused; rows describe themselves", Charms);
@@ -87,6 +88,18 @@ internal static class FeatureCatalogTests
         Check.Eq(group, IltFeatureCatalog.GroupCharms, "charms have their own section");
         Check.True(tooltip.Contains("Mana absorbs"), "the tooltip carries the charm's effect");
         Check.Eq(IltFeatureCatalog.Describe("something_new").Group, IltFeatureCatalog.GroupOther, "an unknown bit goes to Other");
+    }
+
+    // 2026-10-19: 93 of the 243 listed Dynamic stamps use # $ & ^, which the /qb reader used to drop.
+    private static void QbStampLines()
+    {
+        foreach (string stamp in new[] { "Dynamic_1_&9jiyTB!", "Dynamic_1_XH!!nh#^NaRp!", "Dynamic_1_HLq&!", "Dynamic_1_HgaUKA#hxa!", "dynamic_1_a$b!" })
+            Check.True(IltQuestBonus.IsQbLine(stamp), "a stamp line is read: " + stamp);
+        Check.True(IltQuestBonus.IsQbLine("blankaug"), "a plain flag is still read");
+        Check.True(IltQuestBonus.IsQbLine("Your completed quest bonus list:"), "the section header is read");
+        Check.False(IltQuestBonus.IsQbLine("Bob says, \"hi\""), "chat with spaces isn't a flag");
+        Check.False(IltQuestBonus.IsQbLine("You have 5 items"), "a sentence isn't a flag");
+        Check.False(IltQuestBonus.IsQbLine("[General] lol"), "a channel line isn't a flag");
     }
 
     private static void QuestBonusJson()
