@@ -258,6 +258,7 @@ public sealed partial class RynthAiPlugin
             _spellsUi?.Render();
             _miniRemote?.Render();
             _huds?.Render();
+            Huds.CastWarningHud.Render();   // "Out of components" pop-up
             RenderTranslateWindow();
         }
         catch (Exception ex)
@@ -302,6 +303,7 @@ public sealed partial class RynthAiPlugin
             try { _miniRemote?.Render(); }
             finally { ImGui.PopStyleColor(pushedColors); }
             _huds?.Render();
+            Huds.CastWarningHud.Render();   // "Out of components" pop-up
             RenderTranslateWindow();
             _navOverlay?.Render();
             _itemInfoUi?.Render();
