@@ -10,7 +10,7 @@ namespace RynthCore.Plugin.RynthOracle.Views;
 /// </summary>
 internal sealed partial class OracleView
 {
-    public const string TabQuests = "Quests", TabCharacter = "Character",
+    public const string TabQuests = "Quests", TabCharacter = "Character", TabGear = "Gear",
         TabSkills = "Skills", TabAttributes = "Attributes", TabProgress = "Progress",
         TabAugs = "Augs", TabSociety = "Society",
         TabTitles = "Titles", TabVoid = "Void", TabFellowship = "Fellowship",
@@ -51,6 +51,9 @@ internal sealed partial class OracleView
                 () => "RynthCore's skills panel: attributes and vitals."),
             new(TabProgress, any, DrawEmbedded, false, RefreshCharacter,
                 () => "RynthCore's skills panel: progression planners (Infinite Leaftide)."),
+            // Gear: every server's (the spells come from the client's own spell table).
+            new(TabGear, any, DrawGear, false, RefreshGear,
+                () => "Checks your gear again: worn items are appraised where needed, then the overlap and ratings lists are rebuilt."),
             new(TabAugs, any, DrawAugs, true, RefreshCharacterAndQuests,
                 () => "Re-reads your character from the game and sends /myquests for the gem timers."),
             new(TabSociety, any, DrawSociety, true, RefreshCharacterAndQuests,

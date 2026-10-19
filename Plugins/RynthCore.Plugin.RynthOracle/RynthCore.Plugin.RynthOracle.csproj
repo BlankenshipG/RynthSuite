@@ -29,6 +29,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+    <!-- The dat reader: the Gear tab reads the client's spell table (portal.dat 0x0E00000E). -->
+    <ProjectReference Include="..\..\Shared\RynthCore.TerrainData\RynthCore.TerrainData.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -49,6 +51,9 @@
     <!-- Infinite Leaftide Dynamic Stamps (the players' ExtraDyn sheet, 10.13.2026): Data\DynamicStamps.cs. -->
     <EmbeddedResource Include="Resources\dynstamps.csv" LogicalName="RynthOracle.dynstamps.csv" />
     <EmbeddedResource Include="Resources\customquests.csv" LogicalName="RynthOracle.customquests.csv" />
+    <!-- The Gear tab's spell family and equipment set names (ACE's enums: Tools\RynthOracle.QuestPackGen\Make-GearNames.ps1). -->
+    <EmbeddedResource Include="Resources\spellcategories.csv" LogicalName="RynthOracle.spellcategories.csv" />
+    <EmbeddedResource Include="Resources\equipmentsets.csv" LogicalName="RynthOracle.equipmentsets.csv" />
     <!-- Spell names and durations: RynthAi's spell table, shared rather than copied. -->
     <EmbeddedResource Include="..\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthOracle.SpellData.txt" Link="Shared\SpellData.txt" />
   </ItemGroup>

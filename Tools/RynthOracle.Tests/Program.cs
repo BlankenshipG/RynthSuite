@@ -25,7 +25,7 @@ namespace RynthCore.Engine.UI.ScriptWindows
 
 namespace RynthOracle.Tests
 {
-    internal static class Program
+    internal static partial class Program
     {
         private static int _pass, _fail;
 
@@ -59,6 +59,7 @@ namespace RynthOracle.Tests
             QuestTexts();
             Refreshes();
             SkillsTabs();
+            Gear();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;
         }

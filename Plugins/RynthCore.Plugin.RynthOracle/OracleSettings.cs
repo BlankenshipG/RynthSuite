@@ -33,6 +33,12 @@ internal sealed class OracleSettings
     public bool AlertTimers = true;
     /// <summary>false: only tracked quests are watched; true: every quest the character holds.</summary>
     public bool AlertAllTimers;
+    /// <summary>The Gear tab's view: "Overlap" or "Ratings".</summary>
+    public string GearView = "Overlap";
+    /// <summary>Gear, Overlap: hide the families where spells compete.</summary>
+    public bool GearHideOverlap;
+    /// <summary>Gear, Ratings: list the packs' gear as well as what is worn.</summary>
+    public bool GearIncludePack;
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore", "rynthoracle.json");
@@ -54,7 +60,10 @@ internal sealed class OracleSettings
             ConquestAutoDeposit = Bool(r, "conquestAutoDeposit", ConquestAutoDeposit);
             AlertTimers = Bool(r, "alertTimers", AlertTimers);
             AlertAllTimers = Bool(r, "alertAllTimers", AlertAllTimers);
+            GearHideOverlap = Bool(r, "gearHideOverlap", GearHideOverlap);
+            GearIncludePack = Bool(r, "gearIncludePack", GearIncludePack);
             if (r.TryGetProperty("tabName", out JsonElement t) && t.ValueKind == JsonValueKind.String) TabName = t.GetString() ?? TabName;
+            if (r.TryGetProperty("gearView", out JsonElement gv) && gv.ValueKind == JsonValueKind.String) GearView = gv.GetString() ?? GearView;
             if (r.TryGetProperty("lastQuestListCheck", out JsonElement c) && c.ValueKind == JsonValueKind.String
                 && DateTime.TryParse(c.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime when))
                 LastQuestListCheckUtc = when.ToUniversalTime();
@@ -81,6 +90,9 @@ internal sealed class OracleSettings
             sb.Append("  \"conquestAutoDeposit\": ").Append(ConquestAutoDeposit ? "true" : "false").Append(",\n");
             sb.Append("  \"alertTimers\": ").Append(AlertTimers ? "true" : "false").Append(",\n");
             sb.Append("  \"alertAllTimers\": ").Append(AlertAllTimers ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearHideOverlap\": ").Append(GearHideOverlap ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearIncludePack\": ").Append(GearIncludePack ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearView\": \"").Append(JsonEncodedText.Encode(GearView).ToString()).Append("\",\n");
             sb.Append("  \"tabName\": \"").Append(JsonEncodedText.Encode(TabName).ToString()).Append("\"\n");
             sb.Append("}\n");
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);

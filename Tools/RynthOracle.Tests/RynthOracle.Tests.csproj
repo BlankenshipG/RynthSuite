@@ -23,6 +23,8 @@
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
     <!-- The engine parser's whitelists use ImGui.NET's enums. -->
     <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
+    <!-- The Gear tab's dat reader (portal.dat spell table). -->
+    <ProjectReference Include="..\..\Shared\RynthCore.TerrainData\RynthCore.TerrainData.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -55,6 +57,8 @@
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\legendary.csv" LogicalName="RynthOracle.legendary.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\dynstamps.csv" LogicalName="RynthOracle.dynstamps.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\customquests.csv" LogicalName="RynthOracle.customquests.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\spellcategories.csv" LogicalName="RynthOracle.spellcategories.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\equipmentsets.csv" LogicalName="RynthOracle.equipmentsets.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthOracle.SpellData.txt" />
   </ItemGroup>
 

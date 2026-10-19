@@ -54,6 +54,8 @@ internal sealed class OracleContext
     public readonly ConquestData Conquest = new();
     /// <summary>Aelrynth's leaderboards (tag Aelrynth); fed only while on Aelrynth.</summary>
     public readonly AelrynthBoards Boards = new();
+    /// <summary>The Gear tab's Check (worn gear's spells, wards and banes, ratings); every server.</summary>
+    public readonly GearScanner Gear = new();
 
     /// <summary>Titles the character holds (engine API v75); TitlesKnown false until the engine has the list.</summary>
     public readonly System.Collections.Generic.HashSet<int> EarnedTitles = new();

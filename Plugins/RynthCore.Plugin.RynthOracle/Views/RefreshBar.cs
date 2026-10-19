@@ -38,6 +38,7 @@ internal sealed partial class OracleView
     {
         TabConquest => tab + _conquestView,
         TabBoards => tab + _aelrynthView + _conquestBoard,
+        TabGear => tab + GearView,
         _ => tab,
     };
 

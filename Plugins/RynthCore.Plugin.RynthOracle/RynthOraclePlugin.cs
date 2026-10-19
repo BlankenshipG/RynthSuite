@@ -21,7 +21,7 @@ namespace RynthCore.Plugin.RynthOracle;
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.6.2.
-    public const string Version = "0.6.4";
+    public const string Version = "0.7.0";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -153,6 +153,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.InWorld = true;
         _c.Flags.Clear();
         _c.Void.Clear();
+        _c.Gear.Clear();
         _c.Server.Reset();
         _c.Ilt.Clear();
         _c.Ilt.Poll(Host, Environment.TickCount64);
@@ -204,6 +205,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.ServerState.Clear();
         _c.TitlesKnown = false;
         _c.EarnedTitles.Clear();
+        _c.Gear.Clear();
         ClearCharacterExtras();
     }
 
@@ -458,6 +460,11 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 // RynthAi, RynthILT and RynthCore's menus link here; it shows, never toggles off.
                 ShowTab(OracleView.TabCharacter);
                 break;
+            case "gear":
+            case "overlap":
+                // The Gear tab: spell overlap on the worn gear, wards and banes, ratings (any server).
+                ShowTab(OracleView.TabGear);
+                break;
             case "skills":
             case "skill":
                 // Engine SkillsFace body (raise/train) embedded under Oracle.
@@ -527,7 +534,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 break;
             default:
                 _c.Print("Commands: /ro (window), /ro character (Character tab: status, session, charms), "
-                         + "/ro skills|attrs|progress (raise/train and ILT planners), /ro void (Void window), "
+                         + "/ro gear (Gear tab: spell overlap, wards and banes, ratings), /ro skills|attrs|progress (raise/train and ILT planners), /ro void (Void window), "
                          + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), /ro breeding (Pet Breeding tab, Infinite Leaftide), "
                          + "/ro trackers (Quests tab, trackers only), /ro legendary (John's 30 key quests), /ro markers, "
                          + "/ro dynamic and /ro guardians (Infinite Leaftide: NPC stamps, Temple guardians), "
@@ -536,7 +543,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 break;
         }
         if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char" or "charms" or "charm"
-                or "skills" or "skill" or "attrs" or "attributes" or "attribute" or "vitals" or "progress" or "progression"
+                or "gear" or "overlap" or "skills" or "skill" or "attrs" or "attributes" or "attribute" or "vitals" or "progress" or "progression"
                 or "breeding" or "breed" or "pets" or "legendary" or "legend" or "john" or "markers" or "marker" or "trackers"
                 or "dynamic" or "dyn" or "dyno" or "stamps" or "guardian" or "guardians" or "about" or "features" && !Host.HasUi && !_noUiLogged)
         {
@@ -698,6 +705,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         ReadCharacterExtras(now);
         ReadBreeding(now);
         ReadGuardian(now);
+        // The Gear tab's Check runs on (appraisals spaced out) whichever tab is showing.
+        if (_c.Gear.Tick(Host, now, _c.Character.Name) && _main != null) _main.NeedsPass = true;
 
         // RynthCore's server list (every 2 s): a new pick or override applies now, not at the next character read.
         _c.ServerState.Poll(Host, now);
