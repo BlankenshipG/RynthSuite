@@ -18,6 +18,7 @@ internal static class AetheriaChunkTests
         r.Add("aetheria: the level cap applies to levelled Coalesced Aetheria; unlevelled Coalesced chunks (ub-IT)", CoalescedCap);
         r.Add("aetheria: a failed read is not 'unlevelled': unreadable pieces are kept, levelled Coalesced keeps its cap", UnreadableAetheria);
         r.Add("aetheria: never-chunk, tinker / imbue, item XP, ratings and the cap each keep a piece", AetheriaRules);
+        r.Add("aetheria: the item-XP keep switch - on by default (ub-IT); off, XP does not protect a piece", ItemXpSwitch);
         r.Add("chunk: kind by class and name; chunks and powder are clap material", Kinds);
         r.Add("corrupted: ub-IT hard rules (workmanship, cleave 1, or 2 on two-handed non-thrust)", CorruptedHardRules);
         r.Add("corrupted: ub-IT keep rules, all off by default", CorruptedKeepRules);
@@ -98,6 +99,29 @@ internal static class AetheriaChunkTests
         Check.Eq(IltChunkClap.CorruptedSkip(g, PlainSword with { Cleaving = 2 }), "cleave over the limit", "other cleave 2 is kept");
         Check.Eq(IltChunkClap.CorruptedSkip(g, twoHanded with { WieldSkill = 0, WeaponType = 11 }), null, "WeaponType two-handed counts");
         Check.Eq(IltChunkClap.CorruptedSkip(g, twoHanded with { AttackType = 2 }), "cleave over the limit", "two-handed thrust keeps the 1 limit");
+    }
+
+    /// <summary>
+    /// Silentkelpie 2026-10-19: a Coalesced Aetheria with CDR 4 (CDR switch off, cap 9) was kept as
+    /// "has item XP"; the XP check runs before the rating switches and the cap, so they never applied.
+    /// </summary>
+    private static void ItemXpSwitch()
+    {
+        var g = new IltGearState();
+        Check.True(g.KeepAetheriaWithItemXp, "on by default, as ub-IT");
+        var withXp = PlainCoalesced with { MaxLevel = 7, ItemXp = 1_000, CritDamageResist = 4 };
+        var kelpie = new IltGearState
+        {
+            ChunkAetheriaUnderLevel = 9, KeepAetheriaWithCrit = false, KeepAetheriaWithCritDamage = false,
+            KeepAetheriaWithCritDamageResist = false, KeepAetheriaRatingAtLeast = 4,
+        };
+        Check.Eq(IltChunkClap.AetheriaSkip(kelpie, withXp), "has item XP", "switch on: XP keeps it");
+        kelpie.KeepAetheriaWithItemXp = false;
+        Check.Eq(IltChunkClap.AetheriaSkip(kelpie, withXp), null, "switch off: a level 7 CDR 4 piece chunks under cap 9 with CDR off");
+        Check.Eq(IltChunkClap.AetheriaSkip(kelpie, withXp with { MaxLevel = 9 }), "level at or above the cap", "the cap still applies");
+        kelpie.KeepAetheriaWithCritDamageResist = true;
+        Check.Eq(IltChunkClap.AetheriaSkip(kelpie, withXp), "kept for its C / CD / CDR rating", "the CDR switch still applies");
+        Check.Eq(IltChunkClap.AetheriaSkip(g, PlainCoalesced with { ItemXp = -1 }), null, "a negative read is not XP (ub-IT: > 0)");
     }
 
     private static void Kinds()

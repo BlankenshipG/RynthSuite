@@ -229,6 +229,13 @@ public sealed class IltGearState
     /// a lower one does not protect it (it chunks if the other rules allow). 1 = any rating keeps.
     /// </summary>
     public int KeepAetheriaRatingAtLeast = 1;
+    /// <summary>
+    /// Never chunk aetheria carrying item XP (ItemTotalXp int64 4 &gt; 0), as ub-IT's AetheriaChunkGuard:
+    /// XP means it was levelled by use. On by default. Off: XP does not protect a piece, so it chunks
+    /// when the level cap and the C / CD / CDR switches allow (Silentkelpie 2026-10-19: Infinite
+    /// Leaftide Coalesced Aetheria read with XP, so a CDR piece with the CDR switch off was kept).
+    /// </summary>
+    public bool KeepAetheriaWithItemXp = true;
 
     // Corrupted-weapon keep rules (ub-IT IdleActs > Corr Chunk). All off by default, as in ub-IT:
     // the hard rules (unmodified, workmanship, cleaving, never-chunk) always apply on top.

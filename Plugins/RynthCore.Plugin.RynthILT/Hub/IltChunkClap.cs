@@ -137,7 +137,7 @@ internal sealed class IltChunkClap : IIltFeature
         if (f.Unreadable != null) return $"item data unreadable ({f.Unreadable})";
         if (f.NeverChunk) return "never-chunk flag";
         if (f.Tinkers != 0 || f.Imbue != 0) return "tinkered or imbued";
-        if (f.ItemXp != 0) return "has item XP";
+        if (g.KeepAetheriaWithItemXp && f.ItemXp > 0) return "has item XP";
         if (KeptForRatings(g, f.Crit, f.CritDamage, f.CritDamageResist)) return "kept for its C / CD / CDR rating";
         if (!UnderChunkCap(f.MaxLevel, g.ChunkAetheriaUnderLevel, f.Coalesced))
             return f.MaxLevel > 0 ? "level at or above the cap" : "no level read";
@@ -622,6 +622,11 @@ internal sealed class IltChunkClap : IIltFeature
             ImGui.SetTooltip("Rating level for the C / CD / CDR switches above (Coalesced Aetheria and revealed aetheria).\n"
                            + "At or above this level: kept. Below it: the rating does not protect the piece, so it chunks\n"
                            + "if the level cap and the other rules allow. 1 = any rating keeps.");
+        bool kxp = G.KeepAetheriaWithItemXp;
+        if (ImGui.Checkbox("Never chunk aetheria with item XP##keepxp", ref kxp)) G.KeepAetheriaWithItemXp = kxp;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("On (as ub-IT): aetheria carrying item XP is kept, since XP means it was levelled by use.\n"
+                           + "Off: XP does not protect it; it chunks when the level cap and the C / CD / CDR switches allow.");
         if (ImGui.TreeNode("Corrupted weapon keep rules##corrkeep"))
         {
             // ub-IT IdleActs > Corr Chunk: each matching rule keeps the weapon.
