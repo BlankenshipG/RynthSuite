@@ -683,6 +683,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _weaponSwapGate.IsWielded = id => RynthCore.Plugin.Shared.ActionPacer.IsWieldedByPlayer(Host, unchecked((uint)id));
 
         _buffManager = new BuffManager(Host, _dashboard.Settings, _spellManager, _vitals);
+        // Use Fellowship Buffs: the fellowship versions only while in one (the tracker is made below).
+        _buffManager.InFellowship = () => _fellowshipTracker?.IsInFellowship == true;
         // The HP failsafe's recall stops the macro as /ra stop does (the macro-stop edge in OnTick
         // then cancels the attack and stops movement): a move during the recall cancels it.
         _buffManager.MacroStopForRecall = () =>

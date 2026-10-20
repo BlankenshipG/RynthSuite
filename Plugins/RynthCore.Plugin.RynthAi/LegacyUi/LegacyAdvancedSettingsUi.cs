@@ -950,6 +950,14 @@ internal sealed class LegacyAdvancedSettingsUi
                 string skipped = _buffSkips?.Invoke() ?? "";
                 if (_settings.SkipUnusableBuffs && skipped.Length > 0)
                     SafeImGui.TextWrapped("Skipping: " + skipped);
+                ImGui.Checkbox("Use fellowship buffs in a fellowship", ref _settings.UseFellowshipBuffs);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "While you're in a fellowship, cast the fellowship version of a buff where one exists\n" +
+                        "(Empowering the Conclave for Strength, the Clutch defenses, the Chants, the Wards,\n" +
+                        "the Winds): it replaces your own buff and buffs every member too. The highest level\n" +
+                        "your skill allows that you know and can cast; otherwise the self buff.\n" +
+                        "Off by default. Solo, it never applies. Works with buff profiles too.");
 
                 ImGui.Spacing();
                 if (ImGui.Button("Force Buff##forceBuff") && _forceBuff != null) _forceBuff();

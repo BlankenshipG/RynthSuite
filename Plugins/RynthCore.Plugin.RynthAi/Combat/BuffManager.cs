@@ -2957,11 +2957,77 @@ public partial class BuffManager : IDisposable
     /// <summary>Casts that replaced an active buff of the same family at a lower level (tests, status).</summary>
     internal int BuffUpgrades { get; private set; }
 
+    /// <summary>
+    /// The spell a buff casts now: the highest level the skill allows (the Buffing tier lines) that
+    /// the character knows and can cast, else the next lower one; 0 when no level is castable. A
+    /// level the server refused for components is passed over (<see cref="LevelUnusable"/>), so the
+    /// buff drops to the next lower level. With Use Fellowship Buffs on and in a fellowship,
+    /// the buff's fellowship version replaces it (<see cref="FellowshipVersion"/>).
+    /// </summary>
     internal int FindBestSpellId(string baseName, AcSkillType skill)
     {
-        int id = _spellManager.GetDynamicSelfBuffId(baseName, skill);
-        return id != 0 ? id : ResolveProfileFallback(baseName, skill);
+        int id = _spellManager.GetDynamicSelfBuffId(baseName, skill, LevelUnusable);
+        if (id == 0) id = ResolveProfileFallback(baseName, skill);
+        return id != 0 ? FellowshipVersion(id, skill) : 0;
     }
+
+    /// <summary>True while the character is in a fellowship (set by the plugin; null = never).</summary>
+    internal Func<bool>? InFellowship { get; set; }
+
+    // The fellowship answer, kept a second: the picker asks per buff per tick, and the tracker
+    // reads client memory.
+    private bool _inFellowshipCached;
+    private long _inFellowshipAt = long.MinValue / 2;
+
+    private bool InFellowshipNow()
+    {
+        long now = Environment.TickCount64;
+        if (now - _inFellowshipAt >= 1000)
+        {
+            _inFellowshipAt = now;
+            try { _inFellowshipCached = InFellowship?.Invoke() == true; }
+            catch { _inFellowshipCached = false; }
+        }
+        return _inFellowshipCached;
+    }
+
+    /// <summary>
+    /// A level the buff picker passes over: the server refused it for components ("You don't have
+    /// all the components for this spell."), for SpellManager.NoComponentsSec or until more scarabs
+    /// or tapers are picked up. It goes on the server's answer, not a prediction: portal.dat's
+    /// scarab names don't match ACE's inventory names, and the same check in combat rejected every
+    /// level of spells the character had the scarab for (CombatManager.EnablePredictiveComponentGate).
+    /// </summary>
+    private bool LevelUnusable(int spellId) => LevelLacksComponents(spellId);
+
+    /// <summary>
+    /// With Use Fellowship Buffs on and in a fellowship: the fellowship version of
+    /// <paramref name="selfId"/>'s family (Empowering the Conclave for Strength, the Wards for the
+    /// protections, ...), at the highest level the skill allows that the character knows and can
+    /// cast, and never a lower level than <paramref name="selfId"/> (it would weaken your own buff).
+    /// Same family, so it replaces the self buff rather than stacking. Otherwise <paramref name="selfId"/>.
+    /// </summary>
+    private int FellowshipVersion(int selfId, AcSkillType skill)
+    {
+        if (!_settings.UseFellowshipBuffs || !_spellManager.IsKnownSnapshotWarm || !InFellowshipNow()) return selfId;
+        SpellCatalog.EnsureLoaded(m => _host.Log(m));   // the built-in list never loads it otherwise
+        SpellCatalogEntry? self = SpellCatalog.Get(selfId);
+        if (self == null || self.IsItemTarget) return selfId;
+        int maxTier = _spellManager.GetHighestBuffSpellTier(skill);
+        SpellCatalogEntry? best = null;
+        foreach (SpellCatalogEntry c in SpellCatalog.Family(self.FamilyId))
+        {
+            if (!IsFellowshipSpell(c) || !c.IsBuff || c.Level > maxTier || c.Level < self.Level) continue;
+            if (!_spellManager.IsKnownSpellId(c.Id) || LevelUnusable(c.Id)) continue;
+            if (best == null || c.Level > best.Level || (c.Level == best.Level && c.Power > best.Power)) best = c;
+        }
+        return best?.Id ?? selfId;
+    }
+
+    /// <summary>A spell cast on the whole fellowship ("... all Fellowship members ..." in ACE's catalog).</summary>
+    internal static bool IsFellowshipSpell(SpellCatalogEntry c) =>
+        c.Target.Equals("Fellowship", StringComparison.OrdinalIgnoreCase)
+        || c.Description.Contains("fellowship member", StringComparison.OrdinalIgnoreCase);
 
     // True for enchantments that live on an ITEM (armor or weapon), NOT on the
     // player. These do NOT appear in ReadPlayerEnchantments, so they must be
@@ -4427,11 +4493,24 @@ public partial class BuffManager : IDisposable
                 if (noComps && pendingSpell != null)
                     Huds.CastWarningHud.Post(pendingSpell.Name, noCompsVital
                         ? $"RynthAi casts a lower level of it instead, or a kit or potion ({SpellManager.NoComponentsSec / 60:0} min)."
-                        : $"RynthAi skips it for {BuffFailCooldownSec / 60:0} min.");
+                        : $"RynthAi buffs with a lower level of it instead ({SpellManager.NoComponentsSec / 60:0} min).");
                 if (pendingSpell != null && noCompsVital)
                 {
                     // A vital spell: pass over this level only; the next lower one goes next.
                     _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: using a lower level for {SpellManager.NoComponentsSec / 60:0} min.", 2);
+                }
+                else if (pendingSpell != null && noComps)
+                {
+                    // A buff: the same. The picker (FindBestSpellId) passes over a level marked
+                    // above, so the next lower level of this buff goes next; with none left the buff
+                    // is left out. Parking the whole family here skipped the buff for the cooldown
+                    // although a lower level was castable.
+                    if (IsItemEnchantment(pendingSpell.Name))
+                    {
+                        _itemSpellTimers.Remove(pendingSpell.Family);
+                        SaveBuffTimers();
+                    }
+                    _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: buffing with a lower level for {SpellManager.NoComponentsSec / 60:0} min.", 2);
                 }
                 else if (pendingSpell != null)
                 {
@@ -4446,8 +4525,7 @@ public partial class BuffManager : IDisposable
                     // "Casting:" line, so say which one. The server's text is not
                     // echoed: this line comes back through this handler, and it must
                     // not match the refusal phrases above.
-                    _host.WriteToChat($"[RynthAi] Skipping {pendingSpell.Name} for {BuffFailCooldownSec / 60:0} min " +
-                                      $"({(noComps ? "no components for it" : "the server refused it")}).", 2);
+                    _host.WriteToChat($"[RynthAi] Skipping {pendingSpell.Name} for {BuffFailCooldownSec / 60:0} min (the server refused it).", 2);
                 }
                 _host.Log($"[BuffChat] CLEARED+COOLED pending={_pendingSpellId} ({BuffFailCooldownSec:0}s) — hard rejection in '{text}'");
             }
