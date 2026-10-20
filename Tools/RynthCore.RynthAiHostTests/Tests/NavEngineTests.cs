@@ -57,6 +57,10 @@ internal static class NavEngineTests
         r.Add("nav engine: at the last waypoint before the area change it walks on through for 6 s", AreaGraceWalk);
         r.Add("nav engine: with recovery off the area is never checked", AreaRecoveryOff);
         r.Add("nav area: the decision (same dungeon, other dungeon, landscape, off the map)", ClassifyArea);
+        r.Add("nav engine: steep ground on the way to a waypoint: a way round is planned before getting stuck", SteepAheadDetours);
+        r.Add("nav engine: the steep check runs once per waypoint and again every 10 yd walked", SteepAheadRecheck);
+        r.Add("nav engine: a way round whose first leg climbs steep ground is refused", SteepFirstLegRefused);
+        r.Add("nav steep ground: climbing or crossing a red slope blocks, running down it doesn't", SteepGroundRule);
         r.Add("nav recovery: a waypoint behind a wall is in the room whose floor holds it, not the nearest centre", ContainingCellByFloor);
 
         r.Add("nav point reach: values under 1.5 yd work (it used to be floored at 1.5)", ReachBelowOneAndAHalf);
@@ -128,6 +132,18 @@ internal static class NavEngineTests
             var plan = new NavRecoveryPlan { Planner = "fake planner", LengthYd = walk.Value };
             plan.Points.Add(new NavPoint { Type = T.Point, NS = target.NS + 1 / 240.0, EW = target.EW });
             return plan;
+        }
+
+        /// <summary>Steep ground on a leg: yards along it, or null for none (the default).</summary>
+        public Func<double, double, double, double, double?>? SteepAt;
+        public int SteepCalls;
+
+        public bool CrossesSteepGround(double aNs, double aEw, double bNs, double bEw, out double atYd)
+        {
+            SteepCalls++;
+            double? at = SteepAt?.Invoke(aNs, aEw, bNs, bEw);
+            atYd = at ?? -1;
+            return at != null;
         }
 
         public NavAreaCheck CheckArea(uint playerCell, double tNs, double tEw, out string routeArea, out string playerArea)
@@ -667,6 +683,73 @@ internal static class NavEngineTests
         Check.Eq(IndexOf(nav, p.PlanTargets.FirstOrDefault()), 3, "rejoins at [3], the nearest point ahead (passing [2])");
         Check.True(nav.Recovery.Contains("-> [3]"), $"the detour heads for [3] ({nav.Recovery})");
         Check.True(FakeHost.Logs.Exists(l => l.Contains("passes over 2 waypoint(s)")), "logged as passing over 2 waypoints");
+    }
+
+    // ── Steep ground ahead (Silentkelpie 2026-10-20: the route ran up to red slopes in water) ──
+
+    private static void SteepAheadDetours()
+    {
+        FakeHost.Reset(); At(0, 0);
+        var wp = Pt(100, 0);
+        // Steep only on the straight leg to the waypoint; the way round's first leg is clear.
+        var p = new FakePlanner { GivePlan = true, SteepAt = (_, _, bNs, _) => Math.Abs(bNs - wp.NS) < 1e-9 ? 30 : null };
+        var nav = new Nav(Route(RT.Circular, wp, Pt(200, 0)), planner: p);
+        nav.Tick();
+        Check.Eq(p.PlanTargets.Count, 1, "a way round is planned on the first tick, no stuck needed");
+        Check.Eq(FakeHost.Jumps, 0, "no jump");
+        Check.True(FakeHost.Logs.Exists(l => l.Contains("steep ground 30yd ahead on the way to waypoint 1")), "logged with the distance");
+        Check.True(nav.Recovery != "none" && !nav.Recovery.StartsWith("none"), $"a detour is running ({nav.Recovery})");
+    }
+
+    private static void SteepAheadRecheck()
+    {
+        FakeHost.Reset(); At(0, 0);
+        var p = new FakePlanner { GivePlan = true };   // SteepAt null: the way is clear
+        var nav = new Nav(Route(RT.Circular, Pt(100, 0), Pt(200, 0)), planner: p);
+        nav.Tick(); nav.Tick(); nav.Tick();
+        Check.Eq(p.SteepCalls, 1, "checked once for the waypoint, not every tick");
+        At(9, 0); nav.Tick();
+        Check.Eq(p.SteepCalls, 1, "9 yd walked: not again yet");
+        At(11, 0); nav.Tick();
+        Check.Eq(p.SteepCalls, 2, "10+ yd walked: checked again from here");
+        Check.Eq(p.PlanTargets.Count, 0, "a clear way plans nothing");
+    }
+
+    private static void SteepFirstLegRefused()
+    {
+        FakeHost.Reset(); At(0, 0);
+        // The leg to the waypoint and the plan's first leg both climb a slope.
+        var p = new FakePlanner { GivePlan = true, SteepAt = (_, _, _, _) => 4 };
+        var nav = new Nav(Route(RT.Circular, Pt(100, 0), Pt(200, 0)), planner: p);
+        nav.Tick();
+        Check.Eq(p.PlanTargets.Count, 1, "planned once");
+        Check.True(FakeHost.Logs.Exists(l => l.Contains("its first leg climbs steep ground")), "refused, and logged why");
+        Check.True(nav.Recovery.StartsWith("none"), $"no detour runs ({nav.Recovery})");
+    }
+
+    private static void SteepGroundRule()
+    {
+        const uint key = 0x8080;                       // landblock 0x80, 0x80
+        double ox = 0x80 * 192.0, oy = 0x80 * 192.0;
+        var cliff = new float[9, 9];                   // flat west of x = 72, then 40 up per 24 yd (59°)
+        for (int ix = 0; ix < 9; ix++)
+            for (int iy = 0; iy < 9; iy++)
+                cliff[ix, iy] = ix <= 3 ? 0f : (ix - 3) * 40f;
+        var flat = new float[9, 9];
+        Func<uint, float[,]?> Cliff = k => k == key ? cliff : null;
+        Func<uint, float[,]?> Flat = k => k == key ? flat : null;
+
+        Check.Eq(NavSteepGround.FirstBlockedYd(ox + 10, oy + 100, ox + 150, oy + 100, Flat, 0, 0, 500), -1.0, "flat ground: clear");
+        double at = NavSteepGround.FirstBlockedYd(ox + 10, oy + 100, ox + 150, oy + 100, Cliff, 0, 0, 500);
+        Check.True(at >= 61 && at <= 63, $"east, uphill: blocked where the slope starts, 62 yd along ({at})");
+        Check.Eq(NavSteepGround.FirstBlockedYd(ox + 150, oy + 100, ox + 10, oy + 100, Cliff, 0, 0, 500), -1.0, "west, down the same slope: clear");
+        Check.True(NavSteepGround.FirstBlockedYd(ox + 110, oy + 10, ox + 110, oy + 180, Cliff, 0, 0, 500) >= 0, "north, across the slope: blocked");
+        Check.Eq(NavSteepGround.FirstBlockedYd(ox + 10, oy + 100, ox + 150, oy + 100, Cliff, 0, 0, 40), -1.0, "beyond the lookahead: not checked");
+        Check.Eq(NavSteepGround.FirstBlockedYd(ox + 10, oy + 100, ox + 150, oy + 100, _ => null, 0, 0, 500), -1.0, "landscape not loaded: clear");
+
+        var gentle = new float[9, 9];                  // 10 up per 24 yd (23°): walkable
+        for (int ix = 0; ix < 9; ix++) for (int iy = 0; iy < 9; iy++) gentle[ix, iy] = ix * 10f;
+        Check.Eq(NavSteepGround.FirstBlockedYd(ox + 10, oy + 100, ox + 150, oy + 100, k => k == key ? gentle : null, 0, 0, 500), -1.0, "a walkable climb: clear");
     }
 
     private static void RejoinLimits()

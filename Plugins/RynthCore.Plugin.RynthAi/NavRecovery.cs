@@ -60,6 +60,12 @@ internal interface INavRecoveryPlanner
 {
     NavRecoveryPlan? TryPlan(NavPoint target, out string why);
     NavAreaCheck CheckArea(uint playerCell, double tNs, double tEw, out string routeArea, out string playerArea);
+    /// <summary>
+    /// Outdoors: does the straight walk from (aNs, aEw) to (bNs, bEw) climb ground too steep to
+    /// walk (RynthVision's red slopes)? <paramref name="atYd"/> is how far along; false indoors
+    /// or when the landscape isn't loaded.
+    /// </summary>
+    bool CrossesSteepGround(double aNs, double aEw, double bNs, double bEw, out double atYd);
 }
 
 internal sealed class NavRecoveryPlanner : INavRecoveryPlanner
@@ -247,6 +253,31 @@ internal sealed class NavRecoveryPlanner : INavRecoveryPlanner
         double pNs = (sy / 24.0 - 1019.5) / 10.0, pEw = (sx / 24.0 - 1019.5) / 10.0;
         plan.LengthYd = PathLengthYd(pNs, pEw, plan.Points, tNs, tEw);
         return plan;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  STEEP GROUND AHEAD (the red slope overlay's rule, on a straight leg)
+    // ══════════════════════════════════════════════════════════════════════
+
+    // Where the character stands and where the waypoint sits are not checked (either may sit
+    // on the edge of a slope), nor anything farther ahead than SteepLookaheadYd: the engine
+    // asks again as the character comes closer.
+    private const double SteepSkipStartYd  = 0.5;
+    private const double SteepSkipEndYd    = 2.0;
+    private const double SteepLookaheadYd  = 150.0;
+
+    public bool CrossesSteepGround(double aNs, double aEw, double bNs, double bEw, out double atYd)
+    {
+        atYd = -1;
+        if (!_host.HasGetPlayerPose ||
+            !_host.TryGetPlayerPose(out uint cell, out _, out _, out _, out _, out _, out _, out _))
+            return false;
+        if (cell == 0 || (cell & 0xFFFF) >= 0x0100) return false;   // indoors: the dungeon map's job
+        var geo = _raycast()?.GeometryLoader;
+        if (geo == null) return false;
+        atYd = NavSteepGround.FirstBlockedYd(NavToWorld(aEw), NavToWorld(aNs), NavToWorld(bEw), NavToWorld(bNs),
+            key => geo.GetLandblockData(key)?.HeightsZ, SteepSkipStartYd, SteepSkipEndYd, SteepLookaheadYd);
+        return atYd >= 0;
     }
 
     // ══════════════════════════════════════════════════════════════════════
