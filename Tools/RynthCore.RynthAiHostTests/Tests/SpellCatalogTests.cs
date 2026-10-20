@@ -39,6 +39,7 @@ internal static class SpellCatalogTests
         r.Add("buffing: a level refused for components drops to the next lower level (built-in and profile)", NoComponentsDropsALevel);
         r.Add("buffing: Use Fellowship Buffs casts the fellowship version only in a fellowship, never a lower level", FellowshipVersions);
         r.Add("buff profile: a spell with no duration (Mana Boost) is left out; the built-in list never had it", InstantSpellsLeftOut);
+        r.Add("buffing: never a heal for health, stamina or mana, nor a dispel; buffs that stay on are fine", NoHealsOrDispels);
     }
 
     // Empowering the Conclave (Strength, every fellowship member): levels 4, 5 and 6.
@@ -112,6 +113,26 @@ internal static class SpellCatalogTests
     // Kelpie's default.json has Incantation of Mana Boost Self: it restores mana at once (duration -1),
     // so as a "buff" it was never active and would be cast on every pass.
     private const int IncantationOfManaBoostSelf = 4315;
+
+    // 2026-10-19 (owner): buffing casts no self heals (health, stamina, mana) and no dispels.
+    private static void NoHealsOrDispels()
+    {
+        foreach (string name in new[] { "Heal Self VI", "Revitalize Self VI", "Mana Boost Self VI", "Stamina to Mana Self VI", "Incantation of Heal Self" })
+        {
+            SpellCatalogEntry? s = SpellCatalog.GetByName(name);
+            Check.True(s != null && !BuffManager.IsLastingBuff(s.Id), $"{name}: not a buff to keep up");
+        }
+        var dispels = SpellCatalog.All.Where(s => s.FamilyName.Contains("Dispel", StringComparison.OrdinalIgnoreCase)).ToList();
+        Check.True(dispels.Count > 10, $"the catalog has the dispels ({dispels.Count})");
+        Check.True(dispels.All(s => !BuffManager.IsLastingBuff(s.Id)), "no dispel (Evaporate / Extinguish ... All Magic) is ever a buff");
+        foreach (int id in new[] { StrengthSelfVI, IncantationOfBladeBane, AuraOfBloodDrinkerSelfIII })
+            Check.True(BuffManager.IsLastingBuff(id), $"{Spell(id).Name}: a buff, fine");
+
+        // In a list or a profile, a heal resolves to nothing: the cast loop skips it.
+        var buffs = NewBuffs(500, out _, SpellCatalog.GetByName("Heal Self VI")!.Id, StrengthSelfVI);
+        Check.Eq(buffs.FindBestSpellId("Heal Self", AcSkillType.LifeMagic), 0, "Heal Self known: still not cast as a buff");
+        Check.Eq(buffs.FindBestSpellId("Strength Self", buffs.SkillFor("Strength Self")), StrengthSelfVI, "Strength Self still is");
+    }
 
     private static void InstantSpellsLeftOut()
     {

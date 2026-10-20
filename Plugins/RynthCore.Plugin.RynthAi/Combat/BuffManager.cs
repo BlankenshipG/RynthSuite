@@ -2968,8 +2968,36 @@ public partial class BuffManager : IDisposable
     {
         int id = _spellManager.GetDynamicSelfBuffId(baseName, skill, LevelUnusable);
         if (id == 0) id = ResolveProfileFallback(baseName, skill);
-        return id != 0 ? FellowshipVersion(id, skill) : 0;
+        if (id == 0 || !IsLastingBuff(id)) return 0;
+        return FellowshipVersion(id, skill);
     }
+
+    /// <summary>
+    /// Buffing casts only buffs that stay on (owner, 2026-10-19): never a heal for health, stamina
+    /// or mana (Heal Self, Revitalize, Mana Boost, Stamina to Mana: the vitals do those, at Heal At
+    /// and the like) and never a dispel. Those have no duration (the spell catalog's -1), and
+    /// dispels are refused by family too. A spell the catalog doesn't know is judged by name only.
+    /// </summary>
+    internal static bool IsLastingBuff(int spellId)
+    {
+        SpellCatalog.EnsureLoaded();
+        SpellCatalogEntry? c = SpellCatalog.Get(spellId);
+        if (c != null)
+            return c.DurationSec > 0 && !c.FamilyName.Contains("Dispel", StringComparison.OrdinalIgnoreCase);
+        string name = SpellTableStub.GetById(spellId)?.Name ?? "";
+        return !IsVitalOrDispelName(name);
+    }
+
+    // The instant spell families by name: dispels (Evaporate / Extinguish / ... All Magic), the
+    // vital heals and the transfers (Stamina to Mana, Mana to Health, ...).
+    private static bool IsVitalOrDispelName(string name) =>
+        name.Contains("All Magic", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Dispel", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Heal Self", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Revitalize", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Mana Boost", StringComparison.OrdinalIgnoreCase)
+        || System.Text.RegularExpressions.Regex.IsMatch(name, @"\b(Health|Stamina|Mana) to (Health|Stamina|Mana)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     /// <summary>True while the character is in a fellowship (set by the plugin; null = never).</summary>
     internal Func<bool>? InFellowship { get; set; }
@@ -3017,7 +3045,7 @@ public partial class BuffManager : IDisposable
         SpellCatalogEntry? best = null;
         foreach (SpellCatalogEntry c in SpellCatalog.Family(self.FamilyId))
         {
-            if (!IsFellowshipSpell(c) || !c.IsBuff || c.Level > maxTier || c.Level < self.Level) continue;
+            if (!IsFellowshipSpell(c) || !c.IsBuff || c.DurationSec <= 0 || c.Level > maxTier || c.Level < self.Level) continue;
             if (!_spellManager.IsKnownSpellId(c.Id) || LevelUnusable(c.Id)) continue;
             if (best == null || c.Level > best.Level || (c.Level == best.Level && c.Power > best.Power)) best = c;
         }
