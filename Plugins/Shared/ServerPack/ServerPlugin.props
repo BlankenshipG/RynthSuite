@@ -40,6 +40,8 @@
 
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)..\SafeImGui.cs" Link="Shared\SafeImGui.cs" />
+    <!-- ImGui.NET bound to the engine's cimgui (one ImGui, one current context; pop-outs included). -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\ImGuiNativeBinding.cs" Link="Shared\ImGuiNativeBinding.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)ServerPackInfo.cs" Link="ServerPack\ServerPackInfo.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)ServerPackModel.cs" Link="ServerPack\ServerPackModel.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)ServerPackUi.cs" Link="ServerPack\ServerPackUi.cs" />
