@@ -305,6 +305,11 @@ internal sealed class MiniRemoteHud
     /// <summary>The Toggles section is drawn: chosen in Options, and never in the dashboard drawer.</summary>
     private bool ShowToggles(HudState s) => s.MiniShowToggles && !InDrawer;
 
+    // Bank and Guardian are RynthILT's, Infinite Leaftide only (MiniRemoteGates): off ILT they take no
+    // column in the horizontal layout and their Options checkboxes aren't offered.
+    private bool ShowBank(HudState s) => MiniRemoteGates.ShowIltSection(IltActive(_hud.Remote()), s.MiniShowBank);
+    private bool ShowGuardian(HudState s) => MiniRemoteGates.ShowIltSection(IltActive(_hud.Remote()), s.MiniShowGuardian);
+
     /// <summary>
     /// The width the sections need: one column stacked, else one per non-empty column side by side.
     /// Never measured from what was drawn, since widgets fill the width they are given.
@@ -316,7 +321,7 @@ internal sealed class MiniRemoteHud
         int cols = 0;
         if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet || s.MiniShowCapture) cols++;
         if (s.MiniShowGems || ShowToggles(s)) cols++;
-        if (s.MiniShowBank || s.MiniShowRebuff || s.MiniShowTranslate || s.MiniShowGuardian) cols++;
+        if (ShowBank(s) || s.MiniShowRebuff || s.MiniShowTranslate || ShowGuardian(s)) cols++;
         cols = Math.Max(1, cols);
         return cols * colW + (cols - 1) * ImGui.GetStyle().ItemSpacing.X;
     }
@@ -402,7 +407,7 @@ internal sealed class MiniRemoteHud
             RenderActionSections(s);
             ImGui.EndChild();
         }
-        if (s.MiniShowBank || s.MiniShowRebuff || s.MiniShowTranslate || s.MiniShowGuardian)
+        if (ShowBank(s) || s.MiniShowRebuff || s.MiniShowTranslate || ShowGuardian(s))
         {
             BeginColumn("##mrcoleconomy", colW);
             RenderEconomySections(s, remote);
@@ -458,11 +463,11 @@ internal sealed class MiniRemoteHud
 
     private void RenderEconomySections(HudState s, MiniRemoteController? remote)
     {
-        // Bank and Guardian are RynthILT's (nothing is drawn off ILT or without it).
-        if (s.MiniShowBank) remote?.Ilt.RenderSection(RynthIltHub.SectionRemoteBank);
+        // Bank and Guardian are RynthILT's, Infinite Leaftide only.
+        if (ShowBank(s)) remote?.Ilt.RenderSection(RynthIltHub.SectionRemoteBank);
         if (s.MiniShowRebuff) RenderRebuff();
         if (s.MiniShowTranslate && _hud.Translate is { } translate) translate.RenderHubSection();
-        if (s.MiniShowGuardian) remote?.Ilt.RenderSection(RynthIltHub.SectionRemoteGuardian);
+        if (ShowGuardian(s)) remote?.Ilt.RenderSection(RynthIltHub.SectionRemoteGuardian);
     }
 
     // ── Sections ────────────────────────────────────────────────────────────
@@ -878,10 +883,11 @@ internal sealed class MiniRemoteHud
         Flag("Item slots", ref s.MiniShowGems);
         // The drawer's dashboard has these switches already; the setting is for the windows.
         if (!InDrawer) Flag("Toggles", ref s.MiniShowToggles);
-        Flag("Bank", ref s.MiniShowBank);
+        bool ilt = IltActive(_hud.Remote());
+        if (ilt) Flag("Bank", ref s.MiniShowBank);
         Flag("Rebuff", ref s.MiniShowRebuff);
         Flag("Translate", ref s.MiniShowTranslate);
-        Flag("Guardian answer", ref s.MiniShowGuardian);
+        if (ilt) Flag("Guardian answer", ref s.MiniShowGuardian);
         ImGui.Separator();
         Flag("Horizontal layout", ref s.MiniRemoteHorizontal);
         RenderSlotSizeSlider(s);

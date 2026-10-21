@@ -6,6 +6,7 @@ using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.Huds;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.MiniRemote;
+using RynthCore.Plugin.RynthAi.MiniRemote.Crafting;
 using RynthCore.Plugin.Shared;
 using RynthCore.PluginSdk;
 using RynthCore.RynthAiHostTests.Fakes;
@@ -39,6 +40,7 @@ internal static class MiniRemoteMoveTests
     {
         r.Add("mini remote: Pets / Quests settings come over from ilt-hub.json once, which is never rewritten", LegacyState);
         r.Add("mini remote: without RynthILT there are no ILT tabs, bits or verbs", NoRynthIlt);
+        r.Add("mini remote: Breeding, Rings, Trinkets, Bank and Guardian show on Infinite Leaftide only", IltOnlyGates);
         r.Add("mini remote: /ra hub|quests|pets stay RynthAi's; quest windows point to RynthOracle; ILT verbs say RynthILT is needed", Commands);
         r.Add("mini remote: the pyreal refill path never spends without RynthILT's confirmation", RefillNeedsIlt);
         r.Add("vaulted dungeons: the master switch is off by default, saved with the profile, and an older engine's save leaves it alone", VaultedMasterSwitch);
@@ -115,6 +117,39 @@ internal static class MiniRemoteMoveTests
         Check.False(c.SkipLoginQuestRefresh, "the login /myquests refresh isn't skipped");
     }
 
+    /// <summary>
+    /// Owner, 2026-10-20: the ILT pieces of RynthAi's universal tabs (Pets > Breeding, Crafting > Rings
+    /// and Trinkets) and the remote's Bank / Guardian sections show on Infinite Leaftide only.
+    /// </summary>
+    private static void IltOnlyGates()
+    {
+        // Pets > Breeding: RynthILT loaded, an ILT world, and the server not reporting breeding off.
+        Check.True(MiniRemoteGates.ShowBreeding(iltLoaded: true, iltWorld: true, breedingFeature: -1), "ILT, breeding not reported yet: shown");
+        Check.True(MiniRemoteGates.ShowBreeding(true, true, 1), "ILT, breeding on: shown");
+        Check.False(MiniRemoteGates.ShowBreeding(true, true, 0), "ILT, server has breeding off: hidden");
+        Check.False(MiniRemoteGates.ShowBreeding(true, false, -1), "another world: hidden");
+        Check.False(MiniRemoteGates.ShowBreeding(false, false, -1), "no RynthILT: hidden");
+
+        // Crafting > Rings (ring spells) and Trinkets.
+        Check.True(MiniRemoteGates.ShowRings(true), "Rings on ILT");
+        Check.False(MiniRemoteGates.ShowRings(false), "no Rings elsewhere");
+        Check.True(MiniRemoteGates.ShowTrinkets(true, 0), "Trinkets on ILT");
+        Check.False(MiniRemoteGates.ShowTrinkets(false, 0), "no Trinkets elsewhere (retail has no trinket tinkering)");
+        Check.True(MiniRemoteGates.ShowTrinkets(false, 2), "unless the server plugin or custom rows add some");
+        Check.Eq(TinkerCatalog.RetailFor(TinkerBench.Trinkets).Count, 0, "retail trinket rows are indeed empty");
+
+        // The remote's Bank and Guardian sections: ILT and switched on.
+        Check.True(MiniRemoteGates.ShowIltSection(iltWorld: true, enabled: true), "ILT, on: shown");
+        Check.False(MiniRemoteGates.ShowIltSection(true, false), "ILT, switched off: hidden");
+        Check.False(MiniRemoteGates.ShowIltSection(false, true), "another world: hidden, whatever the switch");
+
+        // Without RynthILT the controller's client never reports ILT, so all of the above stay hidden.
+        var c = NewController("gates", out _, out _);
+        c.Ilt.Tick();
+        Check.False(MiniRemoteGates.ShowBreeding(c.Ilt.Loaded, c.Ilt.IsIltWorld, c.Ilt.Feature(RynthIltHub.FeaturePetBreeding)), "no RynthILT: no Breeding");
+        Check.False(MiniRemoteGates.ShowRings(c.Ilt.IsIltWorld), "no RynthILT: no Rings");
+    }
+
     private static void Commands()
     {
         var c = NewController("cmds", out _, out _);
@@ -128,22 +163,23 @@ internal static class MiniRemoteMoveTests
         Check.True(c.HandleCommand("pets", new[] { "show" }), "pets show");
         Check.True(FakeHost.Chat.Any(x => x.Contains("tab pets:show")), "same tab");
         FakeHost.Chat.Clear();
-        // RynthOracle's Pet Breeding tab links back here: the Pets tab, on its Breeding sub-tab.
+        // RynthOracle's Pet Breeding tab links back here (the Pets tab's Breeding sub-tab), but Breeding
+        // is Infinite Leaftide's (2026-10-20): without RynthILT there is no sub-tab to open.
         Check.False(SelectBreedingPending(c.Pets), "no Breeding sub-tab request yet");
-        Check.True(c.HandleCommand("hub", new[] { "open", "breeding" }), "hub open breeding");
-        Check.True(FakeHost.Chat.Any(x => x.Contains("tab pets:show")), "shows the Pets tab");
-        Check.True(SelectBreedingPending(c.Pets), "and asks for the Breeding sub-tab on the next frame");
-        SelectBreedingPending(c.Pets) = false;
+        Check.True(c.HandleCommand("hub", new[] { "open", "breeding" }), "hub open breeding is answered");
+        Check.True(FakeHost.Chat.Any(x => x.Contains("RynthILT")), "it says breeding comes with RynthILT");
+        Check.False(FakeHost.Chat.Any(x => x.Contains("tab pets:show")), "the Pets tab isn't opened for it");
+        Check.False(SelectBreedingPending(c.Pets), "and no Breeding sub-tab is asked for");
         FakeHost.Chat.Clear();
-        Check.True(c.HandleCommand("hub", new[] { "tab", "Breed" }), "hub tab breed");
-        Check.False(FakeHost.Chat.Any(), "tab selects quietly");
-        Check.True(SelectBreedingPending(c.Pets), "the Breeding sub-tab again");
+        Check.True(c.HandleCommand("hub", new[] { "tab", "Breed" }), "hub tab breed is answered");
+        Check.False(SelectBreedingPending(c.Pets), "still no Breeding sub-tab off ILT");
         Check.Eq(MovedTabs.OracleBreeding, "/ro breeding", "the Character menu's Pet Breeding opens RynthOracle's tab");
         Check.Eq(MovedTabs.HomeOf(MovedTabs.OracleBreeding), "RynthOracle's Pet Breeding tab", "and names it");
         FakeHost.Chat.Clear();
         Check.True(c.HandleCommand("hub", new[] { "bank" }), "hub bank is handled (answered)");
         Check.True(FakeHost.Chat.Any(x => x.Contains("RynthILT")), "it says the ILT verbs come with RynthILT");
-        Check.True(FakeHost.Chat.Any(x => x.Contains("/ra hub open pets|breeding|crafting")), "and lists what RynthAi still has");
+        // Breeding is Infinite Leaftide's, so the every-world list doesn't offer it.
+        Check.True(FakeHost.Chat.Any(x => x.Contains("/ra hub open pets|crafting")), "and lists what RynthAi still has");
         FakeHost.Chat.Clear();
         // The Quests tab moved to RynthOracle (2026-10-13): its verbs and tab names say so.
         Check.True(c.HandleCommand("hub", new[] { "open", "quests" }), "hub open quests is answered");

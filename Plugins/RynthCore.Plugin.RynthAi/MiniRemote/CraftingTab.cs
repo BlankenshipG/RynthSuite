@@ -120,21 +120,18 @@ internal sealed class CraftingTab
             ImGui.EndTabItem();
         }
         if (ImGui.BeginTabItem("Jewelry")) { RenderBench(TinkerBench.Jewelry); ImGui.EndTabItem(); }
-        if (ImGui.BeginTabItem("Trinkets")) { RenderBench(TinkerBench.Trinkets); ImGui.EndTabItem(); }
-        if (ImGui.BeginTabItem("Rings"))
+        // Trinkets and Rings are Infinite Leaftide's (MiniRemoteGates): hidden on other worlds. A
+        // Rings run already under way keeps ticking until it finishes or is stopped.
+        bool ilt = _ctx.Ilt.IsIltWorld;
+        if (MiniRemoteGates.ShowTrinkets(ilt, ilt ? 1 : RowsFor(TinkerBench.Trinkets).Count)
+            && ImGui.BeginTabItem("Trinkets")) { RenderBench(TinkerBench.Trinkets); ImGui.EndTabItem(); }
+        if (MiniRemoteGates.ShowRings(ilt) && ImGui.BeginTabItem("Rings"))
         {
-            IltOnlyNote();
             RenderRings();
             ImGui.EndTabItem();
         }
         if (ImGui.BeginTabItem("Items")) { RenderBench(TinkerBench.Items); ImGui.EndTabItem(); }
         ImGui.EndTabBar();
-    }
-
-    private void IltOnlyNote()
-    {
-        if (!_ctx.Ilt.IsIltWorld)
-            ImGui.TextColored(LegacyDashboardRenderer.ColAmber, "Infinite Leaftide recipes: this server may not have them.");
     }
 
     private void RenderBench(TinkerBench bench)

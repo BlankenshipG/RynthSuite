@@ -265,6 +265,13 @@ internal sealed class MiniRemoteController
             // "/ra hub open|tab breeding": the Pets tab on its Breeding sub-tab (RynthOracle's Pet Breeding tab links here).
             if (cmd is "open" or "tab" && args.Length > 1 && args[1].Trim().ToLowerInvariant() is "breeding" or "breed")
             {
+                // Infinite Leaftide only (MiniRemoteGates): elsewhere there is no Breeding sub-tab to open.
+                if (!MiniRemoteGates.ShowBreeding(Ilt.Loaded, Ilt.IsIltWorld, Ilt.Feature(RynthIltHub.FeaturePetBreeding)))
+                {
+                    _ctx.Chat(Ilt.Loaded ? "[Mini Remote] Pet breeding is an Infinite Leaftide feature (not on this world, or the server has it off)."
+                                         : "[Mini Remote] " + IltClient.NotLoaded);
+                    return true;
+                }
                 Pets.SelectBreeding();
                 if (cmd == "open") OpenTab(MiniRemoteTabs.Pets, "show");
                 else MiniRemoteTabCommand?.Invoke(MiniRemoteTabs.Pets, "select");

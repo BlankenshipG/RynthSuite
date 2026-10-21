@@ -960,6 +960,16 @@ internal sealed class PetsTab
         var settings = _ctx.Settings;
         if (settings == null) { ImGui.TextDisabled("Not logged in."); return; }
 
+        // Breeding is Infinite Leaftide's: everywhere else the tab is the roster alone, no sub-tabs.
+        bool breeding = MiniRemoteGates.ShowBreeding(_ctx.Ilt.Loaded, _ctx.Ilt.IsIltWorld,
+            _ctx.Ilt.Feature(RynthIltHub.FeaturePetBreeding));
+        if (!breeding)
+        {
+            _selectBreeding = false;
+            RenderRoster(settings);
+            return;
+        }
+
         if (!ImGui.BeginTabBar("##petsub")) return;
         if (ImGui.BeginTabItem("Roster##petroster"))
         {
