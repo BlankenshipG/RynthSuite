@@ -205,6 +205,12 @@ internal sealed partial class ExpressionEngine
     private KillClock? _killClock;
     public void SetKillClock(KillClock? clock) => _killClock = clock;
 
+    // ratargetcount[] (RynthAi only, 2026-10-22): the targets that passed every combat filter in combat's
+    // last scan (CombatManager.LastScanPossible). -1 before the first scan or with no combat manager. The
+    // self-test meta uses it to tell "nothing here to fight" from "a fight that never happened":
+    // wobjectfindnearestmonster[] also finds attackable NPCs (a buff bot) combat rightly leaves alone.
+    internal Func<int>? CombatTargetCount { get; set; }
+
     // ── Backward-compat shim ──────────────────────────────────────────────────
 
     /// <summary>Executes an expression for its side effects. Always returns true.</summary>
@@ -386,6 +392,7 @@ internal sealed partial class ExpressionEngine
             "getunixtime"       => DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture),
             // Whole seconds since our last kill; before the first, since the macro start (or login).
             "secondssincelastkill" => (_killClock?.SecondsSinceLastKill() ?? 0).ToString(CultureInfo.InvariantCulture),
+            "ratargetcount"        => (CombatTargetCount?.Invoke() ?? -1).ToString(CultureInfo.InvariantCulture),
 
             // ── World object queries ──────────────────────────────────────────
             "wobjectfindnearestbytemplatetype"        => EvalWobjectFindNearestByTemplateType(A(0)),

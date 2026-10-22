@@ -381,18 +381,22 @@ namespace RynthLua.ScriptWindowsTests
             var (underId, under) = found.First(f => f.Id != iconId);
             AcIconImage? both = AcIconDecoder.Compose(dat, iconId, underId, 0);
             Check(both != null && both.Width == icon.Width && both.Height == icon.Height, "stacked: the icon's size");
-            if (both == null) return;
+            // Since 2026-10-09 (engine fd12e93) Compose repaints the dat's white outline band, as the client
+            // does, so the icon on its own is Compose with no layers, not the raw Decode.
+            AcIconImage? alone = AcIconDecoder.Compose(dat, iconId, 0, 0);
+            Check(alone != null && alone.Pixels.Length == icon.Pixels.Length, "the icon alone: same size as decoded");
+            if (both == null || alone == null) return;
             bool overOk = true, underOk = true;
             for (int i = 0; i < 1024; i++)
             {
                 int a = icon.Pixels[i * 4 + 3];
-                if (a == 255 && !both.Pixels.AsSpan(i * 4, 4).SequenceEqual(icon.Pixels.AsSpan(i * 4, 4))) overOk = false;
+                if (a == 255 && !both.Pixels.AsSpan(i * 4, 4).SequenceEqual(alone.Pixels.AsSpan(i * 4, 4))) overOk = false;
                 if (a == 0 && !both.Pixels.AsSpan(i * 4, 4).SequenceEqual(under.Pixels.AsSpan(i * 4, 4)) && under.Pixels[i * 4 + 3] == 255) underOk = false;
             }
             Check(overOk, $"stacked: opaque icon pixels win (0x{iconId:X8} over 0x{underId:X8})");
             Check(underOk, "stacked: where the icon is clear, the underlay shows");
             AcIconImage? missingLayers = AcIconDecoder.Compose(dat, iconId, 0x06FFFFFE, 0x06FFFFFD);
-            Check(missingLayers != null && missingLayers.Pixels.AsSpan().SequenceEqual(icon.Pixels), "a missing underlay / overlay is left out");
+            Check(missingLayers != null && missingLayers.Pixels.AsSpan().SequenceEqual(alone.Pixels), "a missing underlay / overlay is left out");
             Check(AcIconDecoder.Compose(dat, 0x06FFFFFE, underId, 0) == null, "no picture when the icon itself is missing");
         }
     }

@@ -188,6 +188,14 @@ internal sealed class MetaManager
         if (_expressions != null) _expressions.CorpseOpenedByMe = check;
     }
 
+    // Combat's target count for ratargetcount[] (the last scan's candidates).
+    private Func<int>? _combatTargetCount;
+    public void SetCombatTargetCount(Func<int>? count)
+    {
+        _combatTargetCount = count;
+        if (_expressions != null) _expressions.CombatTargetCount = count;
+    }
+
     public void SetPlayerId(uint id)
     {
         _playerId = id;
@@ -241,6 +249,7 @@ internal sealed class MetaManager
         engine.SetCreatureStore(_creatureStore);
         engine.SetKillClock(_killClock);
         engine.CorpseOpenedByMe = _corpseOpenedByMe;
+        engine.CombatTargetCount = _combatTargetCount;
         // vtsetsetting[] / vtgetsetting[] take VTank names and units, as '/vt opt set|get' does.
         engine.VtOptionSetter = TrySetVtOption;
         engine.VtOptionGetter = GetVtOption;

@@ -56,6 +56,7 @@ internal static class Program
         MagItemDescriberTests.Register(runner);
         ExpressionTests.Register(runner);
         MetaTests.Register(runner);
+        SelfTestMetaTests.Register(runner);
         NoKillTests.Register(runner);
         MetaSchedulerTests.Register(runner);
         NavEngineTests.Register(runner);

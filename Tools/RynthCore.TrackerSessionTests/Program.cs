@@ -96,8 +96,16 @@ internal static partial class Program
         unsafe
         {
             Eq(RynthCore.Plugin.Shared.RynthAiHubApiV1.BaseStructSize, (uint)(8 + 10 * sizeof(nint)), "the hub table's base size (10 functions)");
-            Eq((uint)sizeof(RynthCore.Plugin.Shared.RynthAiHubApiV1), RynthCore.Plugin.Shared.RynthAiHubApiV1.BaseStructSize + (uint)sizeof(nint),
-               "SessionStatsMore appended right after the base");
+            // Append-only: each field added after the base sits at the offset readers check it by
+            // (VaultedDungeonsEnabled, BackAwayFrom and SetPlayerCounter came after SessionStatsMore).
+            RynthCore.Plugin.Shared.RynthAiHubApiV1 t = default;
+            byte* at = (byte*)&t;
+            Eq((int)((byte*)&t.SessionStatsMore - at), RynthCore.Plugin.Shared.RynthAiHubApiV1.SessionStatsMoreOffset, "SessionStatsMore appended right after the base");
+            Eq((int)((byte*)&t.VaultedDungeonsEnabled - at), RynthCore.Plugin.Shared.RynthAiHubApiV1.VaultedDungeonsEnabledOffset, "VaultedDungeonsEnabled next");
+            Eq((int)((byte*)&t.BackAwayFrom - at), RynthCore.Plugin.Shared.RynthAiHubApiV1.BackAwayFromOffset, "BackAwayFrom next");
+            Eq((int)((byte*)&t.SetPlayerCounter - at), RynthCore.Plugin.Shared.RynthAiHubApiV1.SetPlayerCounterOffset, "SetPlayerCounter next");
+            Eq((uint)sizeof(RynthCore.Plugin.Shared.RynthAiHubApiV1), (uint)(RynthCore.Plugin.Shared.RynthAiHubApiV1.SetPlayerCounterOffset + sizeof(nint)),
+               "SetPlayerCounter is the last field (a new one appends here, with its own offset check)");
         }
     }
 

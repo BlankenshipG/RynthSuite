@@ -44,6 +44,7 @@ internal static partial class Program
         Run(nameof(RecallNotLinked), RecallNotLinked);
         Run(nameof(DungeonLandblocksFromTheAtlas), DungeonLandblocksFromTheAtlas);
         Run(nameof(AtlasSearchAndBestMatch), AtlasSearchAndBestMatch);
+        Run(nameof(AtlasRecallPlaces), AtlasRecallPlaces);
         Run(nameof(ArrowSingleTarget), ArrowSingleTarget);
         Run(nameof(ArrowAlongRoute), ArrowAlongRoute);
         Run(nameof(FavoritesAndRecent), FavoritesAndRecent);
@@ -379,6 +380,36 @@ internal static partial class Program
     }
 
     // ── Atlas ────────────────────────────────────────────────────────────────
+
+    // The recalls' landing spots are found by name (2026-10-22, Skippy: "neft" found nothing).
+    private static void AtlasRecallPlaces()
+    {
+        Atlas atlas = Atlas.Parse(@"{""locations"":[
+            {""id"":1,""name"":""Holtburg"",""type"":""Town"",""cell"":""A9B40019"",""place"":""outdoor"",""ns"":42.1,""ew"":33.6}],
+          ""recalls"":[
+            {""spell"":5541,""name"":""Lost City of Neftet Recall"",""cell"":""8763000E"",""place"":""outdoor"",""ns"":-22.21,""ew"":6.22},
+            {""spell"":1635,""name"":""Ulgrim's Recall"",""cell"":""01960118"",""place"":""dungeon""},
+            {""spell"":1636,""name"":""Ulgrim's Recall"",""cell"":""01960118"",""place"":""dungeon""},
+            {""spell"":2479,""name"":""Advance Camp Recall"",""cell"":""027B0200"",""place"":""dungeon"",""in"":""Vile-Smelling Refuse""},
+            {""spell"":0,""name"":""  "",""cell"":""00000000"",""place"":""dungeon""}]}");
+        Check(atlas.Locations.Count == 1, "the recalls stay out of Locations (the route planner's list)");
+        Check(atlas.Recalls.Count == 5, "the recalls themselves unchanged");
+        Check(atlas.RecallPlaces.Count == 3, "three recall places (Ulgrim's twice is one; no name, none)");
+        bool allRecall = true;
+        foreach (var p in atlas.RecallPlaces) allRecall &= p.Type == Atlas.RecallType && p.Id < 0;
+        Check(allRecall, "type Recall, negative ids");
+
+        var hits = atlas.Search("neft", null, 10);
+        Check(hits.Count == 1 && hits[0].Name == "Lost City of Neftet Recall", "\"neft\" finds Lost City of Neftet Recall");
+        Check(hits.Count == 1 && hits[0].OnMap && Math.Abs(hits[0].Ns + 22.21) < 1e-9 && Math.Abs(hits[0].Ew - 6.22) < 1e-9, "at 22.21S, 6.22E");
+        var best = atlas.FindBest("neftet", false, 0, 0);
+        Check(best != null && best.Type == Atlas.RecallType, "/rnav go neftet resolves to it");
+        Check(atlas.FindBest("ulgrim", false, 0, 0) == null, "a dungeon recall is no arrow target");
+        var camp = atlas.Search("advance camp", null, 10);
+        Check(camp.Count == 1 && camp[0].Desc == "in Vile-Smelling Refuse", "a dungeon recall says where it is");
+        Check(atlas.Search("", Atlas.RecallType, 50).Count == 3, "the Recall type filter");
+        Check(atlas.Search("holtburg", null, 10).Count == 1, "other searches unchanged");
+    }
 
     private static void AtlasSearchAndBestMatch()
     {

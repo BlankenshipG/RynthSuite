@@ -451,9 +451,14 @@ public sealed class LegacyUiSettings
 
     /// <summary>
     /// HP failsafe: at or under Emergency Heal At with heals failing for a while, the stuck-cast
-    /// breaker runs and the heal is tried again; when that fails too, recall to the lifestone.
+    /// breaker runs and the Lifestone Recall spell is cast at once (BuffManager.HpFailsafe.cs).
     /// Off: the breaker still runs, no recall.
+    /// Saved under a new name since 2026-10-22, so it is off for everyone until ticked again: the
+    /// recall stops the macro (heals included) in the middle of a fight, and it was killing players.
+    /// The 10-18 default change only reached profiles that never saved it; an old saved
+    /// "HpFailsafeRecall": true (the default until then) no longer loads.
     /// </summary>
+    [JsonPropertyName("HpFailsafeRecallOptIn")]
     public bool HpFailsafeRecall = false;
 
     /// <summary>

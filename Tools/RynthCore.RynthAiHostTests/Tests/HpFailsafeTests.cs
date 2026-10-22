@@ -10,9 +10,10 @@ using RynthCore.RynthAiTests.Harness;
 namespace RynthCore.RynthAiHostTests.Tests;
 
 // HP failsafe: under Emergency Heal At with heals failing (here: every heal sent and never answered,
-// as in a client log's hung casts), the character must not sit and die. 3 rounds of 2.5 s with no
-// rise: a forced jump (ActionPacer.ForceBreak), then healing again; 3 more: the macro stops and
-// "/lifestone" goes out (HpFailsafeRecall, default off; the tests turn it on).
+// as in a client log's hung casts), the character must not sit and die. Recall off: 3 rounds of 2.5 s
+// with no rise, a forced jump (ActionPacer.ForceBreak), then healing again. HpFailsafeRecall on
+// (default off; most tests here turn it on): 2 rounds, the jump, and the Lifestone Recall SPELL at
+// once (2026-10-22: not "/lifestone", whose long kneel got characters killed).
 internal static class HpFailsafeTests
 {
     private const uint Player = 0x50000B31;
@@ -20,19 +21,18 @@ internal static class HpFailsafeTests
 
     public static void Register(Runner r)
     {
-        r.Add("hp failsafe: 7.5 s at Emergency Heal At with no heal landing -> one jump; 7.5 s more -> macro stop and /lifestone", BreakThenRecall);
+        r.Add("hp failsafe: recall on, 5 s at Emergency Heal At with no heal landing -> one jump, the macro stop and Lifestone Recall cast once landed; portal space ends it", BreakThenRecall);
         r.Add("hp failsafe: a heal landing (+3%) restarts the count; health over the line ends it", HealLandingResets);
-        r.Add("hp failsafe: HP Failsafe Recall off -> the jump still, no recall; no recall line -> 3 sends, then it gives up", RecallOffAndResends);
+        r.Add("hp failsafe: HP Failsafe Recall off -> the jump at 7.5 s, no recall; no portal space -> 3 casts 3 s apart, then it gives up", RecallOffAndResends);
         r.Add("hp failsafe: a recall that never starts turns the macro back on and re-arms; the next recall after 30 s", FailedRecallResumes);
-        r.Add("hp failsafe: another player's recall line is not ours; ours with its first letter dropped is", RecallLineIsOurs);
         r.Add("hp failsafe: Emergency Heal At 100 at full health is not an emergency", FullHealthAtHundred);
         r.Add("hp failsafe: nothing counts in portal space", NothingInPortalSpace);
-        r.Add("hp failsafe: a death drops the pending recall (0 health, and the plugin's death hold): no /lifestone, the macro stays off", DeathDropsRecall);
+        r.Add("hp failsafe: a death drops the pending recall (0 health, and the plugin's death hold): no Lifestone Recall, the macro stays off", DeathDropsRecall);
         r.Add("hp failsafe: a failed recall does not switch the macro back on past a VTank yield", VTankYieldRespected);
-        r.Add("hp failsafe: our name unreadable: the recall line is taken as ours, and that is logged once", RecallNameUnreadable);
-        r.Add("hp failsafe: HP Failsafe Recall is off by default; a profile with no saved value loads off, one that saved true keeps it", RecallOffByDefault);
+        r.Add("hp failsafe: no recall without the spell or its mana: the jump, healing on, the macro keeps running, said once", NoSpellNoManaNoRecall);
+        r.Add("hp failsafe: HP Failsafe Recall is off by default; a profile with no saved value loads off, an old saved true (before 10-22) loads off, a tick since then stays", RecallOffByDefault);
         r.Add("hp failsafe: a character that cannot heal at all (no spell, kit or potion) never jumps or recalls", NoHealCapabilityNeverFires);
-        r.Add("hp failsafe: a character that can heal (a known Heal Self) and is stuck still jumps, then recalls when the option is on", CapableStuckStillRecalls);
+        r.Add("hp failsafe: a character that can heal (a known Heal Self) and is stuck still jumps, then casts Lifestone Recall when the option is on", CapableStuckStillRecalls);
         r.Add("hp failsafe: a heal that went out proves the character can heal (a listed potion, no spell)", PotionSentProvesCapability);
         r.Add("vitals (L8):a heal the server leaves unanswered is not re-sent at the 2.5 s give-up after a 'too busy' answer", VitalResendObeysLatch);
         r.Add("vitals: under Emergency Heal At with a weapon out and no usable kit, a health potion before Heal Self's wand swap", EmergencyPotionBeforeWandSwap);
@@ -136,7 +136,7 @@ internal static class HpFailsafeTests
         public readonly RynthCore.PluginSdk.RynthCoreHost Host;
         public int MacroStops;
 
-        public Rig(int healthPct = 20, bool canHeal = true, bool recall = true)
+        public Rig(int healthPct = 20, bool canHeal = true, bool recall = true, bool knowsRecall = true)
         {
             FakeHost.Reset();
             FakeHost.WeaponCalls = true;
@@ -150,6 +150,7 @@ internal static class HpFailsafeTests
             if (canHeal)
             {
                 foreach (var row in SpellTable.Rows) FakeHost.Spellbook.Add((uint)row.Id);
+                if (!knowsRecall) FakeHost.Spellbook.Remove((uint)BuffManager.RecallSpellId);
                 FakeHost.Skills[(Player, STypeLife)] = (400, 2);
             }
             else
@@ -194,6 +195,19 @@ internal static class HpFailsafeTests
 
         public void At(double seconds) => NowAt = T0.AddMilliseconds(Math.Round(seconds * 1000));
         public bool Logged(string part) => FakeHost.Logs.Any(l => l.Contains(part, StringComparison.Ordinal));
+        public static int Recalls => FakeHost.Casts.Count(c => c.SpellId == BuffManager.RecallSpellId);
+
+        /// <summary>Heartbeats as <see cref="Run"/>; each recall cast is answered at once (done, no teleport: a fizzle or refusal).</summary>
+        public void RunAnswered(double from, double to)
+        {
+            for (int ms = (int)Math.Round(from * 1000); ms <= (int)Math.Round(to * 1000); ms += 100)
+            {
+                At(ms / 1000.0);
+                int before = Recalls;
+                B.OnHeartbeat();
+                if (Recalls > before) FakeHost.UseDone(0);
+            }
+        }
 
         /// <summary>Heartbeats every 100 ms from <paramref name="from"/> up to and including <paramref name="to"/>.</summary>
         public void Run(double from, double to)
@@ -227,17 +241,26 @@ internal static class HpFailsafeTests
         var ctx = RynthAiJsonContext.Default.LegacyUiSettings;
         // A profile with no saved value for it: off.
         var node = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(new LegacyUiSettings(), ctx))!.AsObject();
-        Check.True(node.Remove("HpFailsafeRecall"), "the key is a serialized setting");
+        Check.True(node.Remove("HpFailsafeRecallOptIn"), "the key is a serialized setting, under its 10-22 name");
+        Check.False(node.ContainsKey("HpFailsafeRecall"), "the old name is no longer written");
         var noKey = System.Text.Json.JsonSerializer.Deserialize(node.ToJsonString(), ctx)!;
         var live = new LegacyUiSettings { HpFailsafeRecall = true };
         CopySettings(noKey, live);
         Check.False(live.HpFailsafeRecall, "no saved value: the recall loads off");
-        // A profile that saved true (the owner turned it on, or the earlier default was saved): kept.
+        // A profile saved before 10-22 with the old name on (the default until 10-18): off now. The
+        // recall stops the macro, heals included, mid-fight, and it was killing players.
         node["HpFailsafeRecall"] = true;
+        var old = System.Text.Json.JsonSerializer.Deserialize(node.ToJsonString(), ctx)!;
+        var live2 = new LegacyUiSettings { HpFailsafeRecall = true };
+        CopySettings(old, live2);
+        Check.False(live2.HpFailsafeRecall, "an old saved true (the old name) loads off");
+        // Ticked again since (saved under the new name): kept.
+        node.Remove("HpFailsafeRecall");
+        node["HpFailsafeRecallOptIn"] = true;
         var saved = System.Text.Json.JsonSerializer.Deserialize(node.ToJsonString(), ctx)!;
-        var live2 = new LegacyUiSettings();
-        CopySettings(saved, live2);
-        Check.True(live2.HpFailsafeRecall, "a saved true stays on");
+        var live3 = new LegacyUiSettings();
+        CopySettings(saved, live3);
+        Check.True(live3.HpFailsafeRecall, "ticked since 10-22: stays on");
     }
 
     // A melee character with nothing to heal with (no spell, kit or potion), resting or out-healed at
@@ -251,7 +274,7 @@ internal static class HpFailsafeTests
             Check.Eq(FakeHost.Casts.Count, 0, "nothing to cast with");
             Check.Eq(FakeHost.TapJumps, 0, "no failsafe jump");
             Check.Eq(r.B.HpFailsafeBreaks, 0, "nothing counted");
-            Check.Eq(FakeHost.ChatCommands.Count, 0, "no /lifestone");
+            Check.Eq(Rig.Recalls, 0, "no Lifestone Recall");
             Check.Eq(r.B.HpFailsafeRecalls, 0, "no recall");
             Check.True(r.S.IsMacroRunning, "the macro keeps running");
 
@@ -270,7 +293,7 @@ internal static class HpFailsafeTests
             p.B.SetWorldObjectCache(cache);
             p.Run(0, 40);
             Check.Eq(FakeHost.TapJumps, 0, "no spell known, potions off: no jump");
-            Check.Eq(FakeHost.ChatCommands.Count, 0, "and no recall");
+            Check.Eq(Rig.Recalls, 0, "and no recall");
             Check.True(p.S.IsMacroRunning, "the macro keeps running");
         }
         finally { Done(); }
@@ -282,18 +305,19 @@ internal static class HpFailsafeTests
         try
         {
             var r = new Rig(healthPct: 20, canHeal: true, recall: true);
-            r.Run(0, 15.0);
+            r.Run(0, 5.0);
             Check.Eq(FakeHost.TapJumps, 1, "capable + stuck: the jump");
             Check.False(r.S.IsMacroRunning, "capable + stuck + recall on: the macro stops");
-            r.Run(15.1, 16.0);
-            Check.Eq(FakeHost.ChatCommands.Count, 1, "and /lifestone goes out");
+            r.Run(5.1, 7.0);
+            Check.Eq(Rig.Recalls, 1, "and Lifestone Recall is cast");
+            Check.Eq(FakeHost.ChatCommands.Count, 0, "never /lifestone");
 
             // The option off (the default): the jump only, the macro keeps running.
             var d = new Rig(healthPct: 20, canHeal: true, recall: false);
             d.Run(0, 30.0);
             Check.Eq(FakeHost.TapJumps, 1, "recall off: the jump still");
             Check.True(d.S.IsMacroRunning, "recall off: no stop");
-            Check.Eq(FakeHost.ChatCommands.Count, 0, "recall off: no /lifestone");
+            Check.Eq(Rig.Recalls, 0, "recall off: no Lifestone Recall");
         }
         finally { Done(); }
     }
@@ -318,7 +342,9 @@ internal static class HpFailsafeTests
             r.Run(0, 15.0);
             Check.True(FakeHost.Uses.Contains(Potion), "the potion is drunk");
             Check.Eq(FakeHost.TapJumps, 1, "it did not raise health: the failsafe jump");
-            Check.False(r.S.IsMacroRunning, "and the recall stage");
+            // This spellbook has no Lifestone Recall: no recall, healing goes on.
+            Check.True(r.S.IsMacroRunning, "no recall spell: the macro keeps running");
+            Check.True(r.Logged("no recall: this character doesn't know Lifestone Recall"), "said why");
         }
         finally { Done(); }
     }
@@ -328,32 +354,28 @@ internal static class HpFailsafeTests
         try
         {
             var r = new Rig(healthPct: 20);
-            r.Run(0, 7.4);
+            r.Run(0, 4.9);
             Check.True(FakeHost.Casts.Count > 0, "a heal went out (and is never answered)");
-            Check.Eq(FakeHost.TapJumps, 0, "7.4 s: no jump yet");
-            r.Run(7.5, 7.5);
-            Check.Eq(FakeHost.TapJumps, 1, "7.5 s (3 rounds, no rise): one jump");
+            Check.Eq(FakeHost.TapJumps, 0, "4.9 s: no jump yet");
+            r.Run(5.0, 5.0);
+            Check.Eq(FakeHost.TapJumps, 1, "5 s (2 rounds, no rise, recall on): one jump");
             Check.Eq(r.B.HpFailsafeBreaks, 1, "counted");
-            Check.True(r.Logged("HP failsafe: health 20% at or under Emergency Heal At 30%, no heal landed in 7.5 s: breaking the cast with a jump"),
-                "the break is logged");
-            r.Run(7.6, 14.9);
-            Check.Eq(FakeHost.TapJumps, 1, "only one jump");
-            Check.True(r.S.IsMacroRunning, "14.9 s: still running");
-            r.Run(15.0, 15.0);
-            Check.False(r.S.IsMacroRunning, "15 s (3 more rounds): the macro is stopped");
+            Check.True(r.Logged("HP failsafe: health 20% at or under Emergency Heal At 30%, no heal landed in 5 s: breaking the cast with a jump, then Lifestone Recall at once"),
+                "the break is logged: " + string.Join(" | ", FakeHost.Logs.Where(l => l.Contains("HP failsafe"))));
+            Check.False(r.S.IsMacroRunning, "with the jump: the macro is stopped, no second wait");
             Check.Eq(r.MacroStops, 1, "with the rest of a /ra stop");
             Check.Eq(r.B.HpFailsafeRecalls, 1, "counted");
-            Check.True(FakeHost.Chat.Any(c => c.Contains("recalling to the lifestone")), "and said in chat");
-            Check.Eq(FakeHost.ChatCommands.Count, 0, "the recall waits for the stop to take effect");
-            r.Run(15.1, 15.5);
-            Check.Eq(FakeHost.ChatCommands.Count, 0, "500 ms later: still waiting for the stop to take effect");
-            r.Run(15.6, 15.6);
-            Check.Eq(FakeHost.ChatCommands.Count, 1, "600 ms later: one recall");
-            Check.Eq(FakeHost.ChatCommands[0], BuffManager.RecallCommand, "/lifestone");
-            r.B.OnChatWindowText("Mira is recalling to the lifestone.", 0);
-            r.Run(15.7, 20);
-            Check.Eq(FakeHost.ChatCommands.Count, 1, "the recall line: no resend");
-            Check.True(r.Logged("HP failsafe: the recall started"), "logged");
+            Check.True(FakeHost.Chat.Any(c => c.Contains("casting Lifestone Recall")), "and said in chat");
+            Check.Eq(Rig.Recalls, 0, "not in the same heartbeat: the stop edge runs first");
+            r.Run(5.1, 6.6);
+            Check.Eq(Rig.Recalls, 1, "once landed from the jump (400 ms or more): one Lifestone Recall: " + string.Join(" | ", FakeHost.Logs.Where(l => l.Contains("HP failsafe")).TakeLast(6)));
+            Check.Eq(FakeHost.Casts.Last(c => c.SpellId == BuffManager.RecallSpellId).Target, Player, "on ourselves");
+            Check.Eq(FakeHost.ChatCommands.Count, 0, "never /lifestone");
+            FakeHost.Portaling = true;   // the recall went
+            r.Run(6.7, 20);
+            Check.Eq(Rig.Recalls, 1, "portal space: no recast");
+            Check.True(r.Logged("HP failsafe: the recall went (portal space"), "logged");
+            FakeHost.Portaling = false;
         }
         finally { Done(); }
     }
@@ -362,13 +384,14 @@ internal static class HpFailsafeTests
     {
         try
         {
-            var r = new Rig(healthPct: 20);
+            // The round counting, recall off (the jump at 3 rounds).
+            var r = new Rig(healthPct: 20, recall: false);
             r.Run(0, 5.0);
             r.V.CurrentHealth = 22;     // +2: regeneration, not a heal
             r.Run(5.1, 7.5);
             Check.Eq(FakeHost.TapJumps, 1, "+2% is not a heal landing: the jump at 7.5 s");
 
-            var h = new Rig(healthPct: 20);
+            var h = new Rig(healthPct: 20, recall: false);
             h.Run(0, 5.0);
             h.V.CurrentHealth = 23;     // +3: a heal landed
             h.Run(5.1, 12.4);
@@ -376,7 +399,7 @@ internal static class HpFailsafeTests
             h.Run(12.5, 12.6);
             Check.Eq(FakeHost.TapJumps, 1, "7.5 s after the heal with no other: the jump");
 
-            var o = new Rig(healthPct: 20);
+            var o = new Rig(healthPct: 20, recall: false);
             o.Run(0, 5.0);
             o.V.CurrentHealth = 31;     // over Emergency Heal At 30
             o.Run(5.1, 5.1);
@@ -397,15 +420,17 @@ internal static class HpFailsafeTests
             r.Run(0, 20);
             Check.Eq(FakeHost.TapJumps, 1, "recall off: the jump still");
             Check.True(r.S.IsMacroRunning, "recall off: the macro keeps running");
-            Check.Eq(FakeHost.ChatCommands.Count, 0, "no recall");
+            Check.Eq(Rig.Recalls, 0, "no recall");
             Check.True(r.Logged("HP Failsafe Recall is off"), "said once in the log");
 
             var n = new Rig(healthPct: 20);
-            n.Run(0, 15.0);
+            n.Run(0, 5.0);
             Check.False(n.S.IsMacroRunning, "recall: macro stopped");
-            n.Run(15.1, 25);
-            Check.Eq(FakeHost.ChatCommands.Count, 3, "no recall line: sent 3 times, 1.5 s apart, then stopped");
-            Check.True(n.Logged("no recall seen after 3 tries"), "and logged");
+            n.RunAnswered(5.1, 8.0);
+            Check.Eq(Rig.Recalls, 1, "the first cast; answered, no portal space");
+            n.RunAnswered(8.1, 25);
+            Check.Eq(Rig.Recalls, 3, "cast 3 times, 3 s apart, then stopped: " + string.Join(" | ", FakeHost.Logs.Where(l => l.Contains("HP failsafe")).TakeLast(8)));
+            Check.True(n.Logged("no portal space after 3 cast(s) of Lifestone Recall"), "and logged");
         }
         finally { Done(); }
     }
@@ -416,41 +441,22 @@ internal static class HpFailsafeTests
         try
         {
             var n = new Rig(healthPct: 20);
-            n.Run(0, 15.0);
+            n.Run(0, 5.0);
             Check.False(n.S.IsMacroRunning, "recall: macro stopped");
-            n.Run(15.1, 21.0);
-            Check.Eq(FakeHost.ChatCommands.Count, 3, "3 tries, no recall line");
+            n.RunAnswered(5.1, 17.0);
+            Check.Eq(Rig.Recalls, 3, "3 casts, no portal space");
             Check.True(n.S.IsMacroRunning, "the macro is back on (the heals and kits run again)");
             Check.Eq(n.B.HpFailsafeRecallsFailed, 1, "a failed recall counted");
             Check.True(FakeHost.Chat.Any(c => c.Contains("macro back on to keep healing")), "said in chat");
-            n.Run(21.1, 49.0);
-            Check.Eq(FakeHost.ChatCommands.Count, 3, "inside the 30 s cooldown: no recall");
+            n.RunAnswered(17.1, 40.0);
+            Check.Eq(Rig.Recalls, 3, "inside the 30 s cooldown: no recall");
             Check.True(n.S.IsMacroRunning, "and the macro keeps running");
             int breaks = FakeHost.Logs.Count(l => l.Contains("HP failsafe: health 20% at or under Emergency Heal At 30%, no heal landed in"));
             Check.True(breaks >= 2, $"the failsafe re-armed: it reached the break stage again ({breaks})");
-            n.Run(49.1, 75.0);
+            Check.True(n.Logged("no recall: the last recall never started"), "the cooldown is said");
+            n.RunAnswered(40.1, 75.0);
             Check.Eq(n.B.HpFailsafeRecalls, 2, "after the cooldown: the next recall");
-            Check.True(FakeHost.ChatCommands.Count > 3, "sent");
-        }
-        finally { Done(); }
-    }
-
-    // Only our own recall line ends the wait.
-    private static void RecallLineIsOurs()
-    {
-        try
-        {
-            var r = new Rig(healthPct: 20);
-            r.Run(0, 15.6);
-            Check.Eq(FakeHost.ChatCommands.Count, 1, "the first recall");
-            r.B.OnChatWindowText("Bob is recalling to the lifestone.", 0);
-            r.Run(15.7, 17.1);
-            Check.Eq(FakeHost.ChatCommands.Count, 2, "another player's recall line: sent again");
-            Check.False(r.Logged("HP failsafe: the recall started"), "not taken as ours");
-            r.B.OnChatWindowText("ira is recalling to the lifestone.", 0);   // the first letter dropped by the chat layer
-            r.Run(17.2, 22);
-            Check.Eq(FakeHost.ChatCommands.Count, 2, "ours (first letter dropped): no more sends");
-            Check.True(r.Logged("HP failsafe: the recall started"), "logged");
+            Check.True(Rig.Recalls > 3, "cast");
         }
         finally { Done(); }
     }
@@ -469,31 +475,31 @@ internal static class HpFailsafeTests
         finally { Done(); }
     }
 
-    // A pending recall is dropped on death: after the respawn it must not send /lifestone or switch
+    // A pending recall is dropped on death: after the respawn it must not cast the recall or switch
     // the macro on, against Stop Macro On Death.
     private static void DeathDropsRecall()
     {
         try
         {
             var r = new Rig(healthPct: 20);
-            r.Run(0, 15.0);
+            r.Run(0, 5.0);
             Check.False(r.S.IsMacroRunning, "recall pending: macro stopped");
-            r.V.CurrentHealth = 0;                    // dead before the first send
-            r.Run(15.1, 30);
-            Check.Eq(FakeHost.ChatCommands.Count, 0, "0 health: no /lifestone");
+            r.V.CurrentHealth = 0;                    // dead before the first cast
+            r.Run(5.1, 30);
+            Check.Eq(Rig.Recalls, 0, "0 health: no Lifestone Recall");
             Check.False(r.S.IsMacroRunning, "the macro stays off");
             Check.True(r.Logged("the pending recall is dropped (dead)"), "logged");
 
             // The plugin's death hold drops it too (the vitals cache still reads the old health).
             var p = new Rig(healthPct: 20);
-            p.Run(0, 15.0);
+            p.Run(0, 5.0);
             var plugin = new RynthAiPlugin();
             PacerEdgeTests.SetHost(plugin, p.Host);
             typeof(RynthAiPlugin).GetField("_buffManager", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(plugin, p.B);
             FakeHost.Vitals = (0, 100, 0, 100, 0, 100);
             typeof(RynthAiPlugin).GetMethod("HoldForDeath", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(plugin, null);
-            p.Run(15.1, 30);
-            Check.Eq(FakeHost.ChatCommands.Count, 0, "death hold: no /lifestone after the respawn");
+            p.Run(5.1, 30);
+            Check.Eq(Rig.Recalls, 0, "death hold: no Lifestone Recall after the respawn");
             Check.False(p.S.IsMacroRunning, "death hold: the macro stays off");
             Check.True(p.Logged("the pending recall is dropped (death)"), "logged");
         }
@@ -507,26 +513,35 @@ internal static class HpFailsafeTests
         {
             var r = new Rig(healthPct: 20);
             r.B.MayRestartMacro = () => false;        // VTank runs and yield is on
-            r.Run(0, 21.0);
-            Check.Eq(FakeHost.ChatCommands.Count, 3, "3 tries, no recall line");
+            r.RunAnswered(0, 21.0);
+            Check.Eq(Rig.Recalls, 3, "3 casts, no portal space");
             Check.False(r.S.IsMacroRunning, "VTank yield: the macro stays off");
             Check.True(FakeHost.Chat.Any(c => c.Contains("the macro stays off (VTank yield)")), "said in chat");
         }
         finally { Done(); }
     }
 
-    private static void RecallNameUnreadable()
+    // No recall the character can't make: without the spell, or with less mana than it costs, the jump
+    // runs, healing goes on and the macro keeps running; the reason is logged once per episode.
+    private static void NoSpellNoManaNoRecall()
     {
         try
         {
-            var r = new Rig(healthPct: 20);
-            FakeHost.Names.Remove(Player);
-            r.Run(0, 15.6);
-            Check.Eq(FakeHost.ChatCommands.Count, 1, "the first recall");
-            r.B.OnChatWindowText("Bob is recalling to the lifestone.", 0);
-            r.Run(15.7, 20);
-            Check.Eq(FakeHost.ChatCommands.Count, 1, "no name to compare: taken as ours, no resend");
-            Check.Eq(FakeHost.Logs.Count(l => l.Contains("our name could not be read")), 1, "logged once");
+            var r = new Rig(healthPct: 20, knowsRecall: false);
+            r.Run(0, 20);
+            Check.True(FakeHost.TapJumps >= 1, "the jump still");
+            Check.Eq(Rig.Recalls, 0, "no Lifestone Recall");
+            Check.True(r.S.IsMacroRunning, "the macro keeps running");
+            Check.Eq(FakeHost.Logs.Count(l => l.Contains("no recall: this character doesn't know Lifestone Recall")), 1, "said once");
+
+            var m = new Rig(healthPct: 20);
+            BuffManager.ManaCostOverride = id => id == BuffManager.RecallSpellId ? 50 : 0;   // FakeHost.Reset sets 0 for all
+            m.V.CurrentMana = 10;
+            m.Run(0, 20);
+            Check.True(FakeHost.TapJumps >= 1, "no mana: the jump still");
+            Check.Eq(Rig.Recalls, 0, "no mana: no Lifestone Recall");
+            Check.True(m.S.IsMacroRunning, "no mana: the macro keeps running");
+            Check.True(m.Logged("is under Lifestone Recall's cost"), "said why");
         }
         finally { Done(); }
     }

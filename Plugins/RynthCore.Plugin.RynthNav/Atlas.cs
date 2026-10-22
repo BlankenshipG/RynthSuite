@@ -45,15 +45,54 @@ internal sealed class Atlas
     public string Generated { get; }
     public string Path { get; }
 
+    /// <summary>
+    /// The recalls' landing spots as places of type <see cref="RecallType"/> (2026-10-22), for
+    /// finding a place by name (<see cref="Search"/>, <see cref="FindBest"/>): the world database
+    /// names only the /telepoi towns, so "neft" found nothing while Lost City of Neftet Recall lands
+    /// there. Kept out of <see cref="Locations"/>, which the route planner reads. The engine's
+    /// Atlas panel lists the same places (RynthCore UI/Data/RynthNavAtlasRecalls.cs).
+    /// </summary>
+    public IReadOnlyList<AtlasLocation> RecallPlaces { get; }
+    public const string RecallType = "Recall";
+
     private readonly Dictionary<int, AtlasLocation> _byId = new();
 
     private Atlas(List<AtlasLocation> locations, List<AtlasRecall> recalls, string generated, string path)
     {
         Locations = locations;
         Recalls = recalls;
+        RecallPlaces = RecallPlacesOf(recalls);
         Generated = generated;
         Path = path;
         foreach (var l in locations) _byId[l.Id] = l;
+    }
+
+    private static List<AtlasLocation> RecallPlacesOf(List<AtlasRecall> recalls)
+    {
+        var places = new List<AtlasLocation>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in recalls)
+        {
+            string name = r.Name.Trim();
+            // A spell listed twice for one spot (Ulgrim's Recall) is one place.
+            string key = string.Create(CultureInfo.InvariantCulture, $"{name}|{r.OnMap}|{r.Ns:0.00}|{r.Ew:0.00}|{r.In}");
+            if (name.Length == 0 || !seen.Add(key)) continue;
+            places.Add(new AtlasLocation
+            {
+                Id = -r.SpellId,   // locations have positive ids
+                Name = name, Type = RecallType, OnMap = r.OnMap, Ns = r.Ns, Ew = r.Ew,
+                Place = r.OnMap ? "outdoor" : "dungeon",
+                Desc = r.In.Length > 0 ? "in " + r.In : "",
+            });
+        }
+        return places;
+    }
+
+    /// <summary>What a name search looks through: the locations, then the recall places.</summary>
+    private IEnumerable<AtlasLocation> Searchable()
+    {
+        foreach (var l in Locations) yield return l;
+        foreach (var l in RecallPlaces) yield return l;
     }
 
     public static Atlas Load(string path) => Parse(File.ReadAllText(path), path);
@@ -185,6 +224,7 @@ internal sealed class Atlas
         "Town" => 0,
         "Dungeon" => 1,
         "Landmark" => 2,
+        RecallType => 2,
         "Lifestone" => 3,
         "Bindstone" => 4,
         "Portal" => 5,
@@ -205,7 +245,7 @@ internal sealed class Atlas
         AtlasLocation? best = null;
         int bestScore = 0, bestRank = int.MaxValue;
         double bestDist = double.MaxValue;
-        foreach (var l in Locations)
+        foreach (var l in Searchable())
         {
             if (!l.OnMap) continue;
             int s = MatchScore(l.Name, q);
@@ -229,7 +269,7 @@ internal sealed class Atlas
     {
         string q = query.Trim();
         var hits = new List<(AtlasLocation L, int S)>();
-        foreach (var l in Locations)
+        foreach (var l in Searchable())
         {
             if (!string.IsNullOrEmpty(type) && !l.Type.Equals(type, StringComparison.OrdinalIgnoreCase)) continue;
             int s = MatchScore(l.Name, q);

@@ -672,10 +672,12 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("HP Failsafe Recall", ref _settings.HpFailsafeRecall);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip(
-                        "At or under Emergency Heal At with heals failing: break the\n" +
-                        "stuck cast with a jump and heal again; if that fails too,\n" +
-                        "recall to the lifestone. Off by default; only a character that\n" +
-                        "can heal (a heal spell, kit or potion) is ever recalled.");
+                        "At or under Emergency Heal At with no heal landing for 5 s:\n" +
+                        "break the stuck cast with a jump and cast Lifestone Recall at\n" +
+                        "once (the spell, not /ls). The macro waits while it casts and\n" +
+                        "comes back on if the recall can't go. Needs the spell and its\n" +
+                        "mana; only a character that can heal (a heal spell, kit or\n" +
+                        "potion) is ever recalled. Off: the jump only, after 7.5 s.");
 
                 ImGui.SetNextItemWidth(180);
                 ImGui.SliderInt("Attack Spell Delay (ms)", ref _settings.AttackSpellIntervalMs, 0, 5000);

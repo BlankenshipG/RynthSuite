@@ -1820,10 +1820,13 @@ namespace RynthLua.ScriptWindowsTests
             int Renders() => (int)r.Eval("renders").Number;
             long f = System.Diagnostics.Stopwatch.Frequency;
 
+            // Each pass is timed between a stamp before and one after it, not from "now" after it: on a
+            // busy PC the gap after a pass can be longer than the 1/60 s being checked (2026-10-22).
+            long before = System.Diagnostics.Stopwatch.GetTimestamp();
             RunHudPasses(p);
+            long after = System.Diagnostics.Stopwatch.GetTimestamp();
             Check(Renders() == 1 && h.EverPassed && !h.FirstPassSinceShown && !h.PassNow, "just shown: a pass on the first tick");
-            long left = h.NextPassAt - System.Diagnostics.Stopwatch.GetTimestamp();
-            Check(left > 0 && left <= f / 20, "the next pass is one 20/s interval away");
+            Check(h.NextPassAt > before && h.NextPassAt <= after + f / 20, "the next pass is one 20/s interval away");
             RunHudPasses(p);
             Check(Renders() == 1, "no pass before the interval");
             h.NextPassAt = 0;
@@ -1837,13 +1840,14 @@ namespace RynthLua.ScriptWindowsTests
             Check(Renders() == 3 && h.NextPassAt == due + f / 20, "interval passes keep their cadence");
 
             r.Do("hud.RefreshRate = 60");
+            before = System.Diagnostics.Stopwatch.GetTimestamp();
             RunHudPasses(p);
-            left = h.NextPassAt - System.Diagnostics.Stopwatch.GetTimestamp();
-            Check(Renders() == 4 && left > 0 && left <= f / 60, "a new RefreshRate starts at once, 60/s");
+            after = System.Diagnostics.Stopwatch.GetTimestamp();
+            Check(Renders() == 4 && h.NextPassAt > before && h.NextPassAt <= after + f / 60, "a new RefreshRate starts at once, 60/s");
             r.Do("hud.RefreshRate = 1");
+            before = System.Diagnostics.Stopwatch.GetTimestamp();
             RunHudPasses(p);
-            left = h.NextPassAt - System.Diagnostics.Stopwatch.GetTimestamp();
-            Check(Renders() == 5 && left > f / 2, "1/s");
+            Check(Renders() == 5 && h.NextPassAt - before > f / 2, "1/s");
 
             // Input: a pass on the next tick whatever the rate.
             ApplyHudEvents(p, Ev(HudFormat.EvClicked, 1, h.Hash, Fnv("B", h.Hash), 1, 0));

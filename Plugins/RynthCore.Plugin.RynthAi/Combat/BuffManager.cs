@@ -4272,7 +4272,6 @@ public partial class BuffManager : IDisposable
     public void OnChatWindowText(string text, int chatType)
     {
         string lower = text.ToLowerInvariant();
-        ObserveRecallLine(lower);
 
         // A scroll read that taught a spell (ACE: "The scroll is destroyed."): read the spellbook on
         // the next buff check, so a newly learned higher level is cast (an upgrade) at once.

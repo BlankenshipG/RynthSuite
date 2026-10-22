@@ -791,6 +791,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _metaManager.SetCreatureStore(_creatureStore);
         _metaManager.SetKillClock(_killClock);
         _metaManager.SetCorpseOpenedCheck(id => _completedCorpses.ContainsKey(id));
+        _metaManager.SetCombatTargetCount(() => _combatManager?.LastScanPossible ?? -1);
         if (_dashboard != null)
             _dashboard.MetaSnapshotProvider = () => _metaManager?.GetStateSnapshot();
 
