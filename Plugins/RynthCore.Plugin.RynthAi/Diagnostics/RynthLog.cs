@@ -761,7 +761,7 @@ internal static class RynthLog
 
             string topFrame = ex.StackTrace?.Split('\n')[0].Trim() ?? string.Empty;
             string signature = $"{where}|{ex.GetType().FullName}|{topFrame}";
-            DateTime now = DateTime.Now;
+            DateTime now = RynthClock.Now;   // an interval (the burst window), not the time of day
 
             if (ExceptionSignatures.TryGetValue(signature, out var seen))
             {

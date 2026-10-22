@@ -50,6 +50,8 @@
   <ItemGroup>
     <!-- Fellowship reader (client memory, VirtualQuery-guarded), shared source with RynthAi. -->
     <Compile Include="..\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="Shared\FellowshipTracker.cs" />
+    <!-- Its timing clock (RynthClock: intervals that don't jump when the clocks change, 2026-10-21). -->
+    <Compile Include="..\RynthCore.Plugin.RynthAi\RynthClock.cs" Link="Shared\RynthClock.cs" />
     <!-- RynthAi's session stats ("RynthAi.Hub" SessionStats): the Character tab's session rates
          count the same session as the Mini Remote's Session Stats. -->
     <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />

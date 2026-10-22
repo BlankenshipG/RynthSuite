@@ -79,13 +79,13 @@ public sealed class InventoryManager
 
     public void RunManual(bool cram, bool stack)
     {
-        if (cram)  _manualCramUntil  = DateTime.Now.AddSeconds(60);
-        if (stack) _manualStackUntil = DateTime.Now.AddSeconds(60);
+        if (cram)  _manualCramUntil  = RynthClock.Now.AddSeconds(60);
+        if (stack) _manualStackUntil = RynthClock.Now.AddSeconds(60);
         _nextInventoryActionTime = DateTime.MinValue;
     }
 
-    private bool ManualCram  => DateTime.Now < _manualCramUntil;
-    private bool ManualStack => DateTime.Now < _manualStackUntil;
+    private bool ManualCram  => RynthClock.Now < _manualCramUntil;
+    private bool ManualStack => RynthClock.Now < _manualStackUntil;
 
     public void OnHeartbeat(int busyCount)
     {
@@ -97,13 +97,13 @@ public sealed class InventoryManager
         // that haven't been touched in BackoffMaxIdleMs are dropped so they don't
         // accumulate across a multi-hour session; live backoff state persists so a
         // genuinely-unmovable item stays backed off.
-        if ((DateTime.Now - _lastBackoffPrune).TotalMilliseconds >= BackoffPruneIntervalMs)
+        if ((RynthClock.Now - _lastBackoffPrune).TotalMilliseconds >= BackoffPruneIntervalMs)
         {
             PruneBackoff();
-            _lastBackoffPrune = DateTime.Now;
+            _lastBackoffPrune = RynthClock.Now;
         }
 
-        if (DateTime.Now < _nextInventoryActionTime) return;
+        if (RynthClock.Now < _nextInventoryActionTime) return;
 
         // Snapshot inventory once per tick — both passes use the same list.
         var inv = _cache.GetDirectInventory(forceRefresh: true).ToList();
@@ -115,19 +115,19 @@ public sealed class InventoryManager
         // each other if AutoStack keeps finding new partial pairs every tick.
         if (ProcessAutoCram(inv, (int)playerId))
         {
-            _nextInventoryActionTime = DateTime.Now.AddMilliseconds(500);
+            _nextInventoryActionTime = RynthClock.Now.AddMilliseconds(500);
             return;
         }
 
         if (ProcessAutoStack(inv, (int)playerId))
         {
-            _nextInventoryActionTime = DateTime.Now.AddMilliseconds(500);
+            _nextInventoryActionTime = RynthClock.Now.AddMilliseconds(500);
             return;
         }
 
         // Nothing to do — back off re-scan for a bit, and end a manual run.
         _manualCramUntil = _manualStackUntil = DateTime.MinValue;
-        _nextInventoryActionTime = DateTime.Now.AddMilliseconds(2000);
+        _nextInventoryActionTime = RynthClock.Now.AddMilliseconds(2000);
     }
 
     // ── AutoCram ──────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ public sealed class InventoryManager
                     _cramBackoff.Remove(item.Id);
                     continue;
                 }
-                if ((DateTime.Now - cp.EnqueuedAt).TotalMilliseconds < MoveConfirmGraceMs)
+                if ((RynthClock.Now - cp.EnqueuedAt).TotalMilliseconds < MoveConfirmGraceMs)
                     continue;                       // still in flight — don't re-enqueue or blacklist
                 _cramPending.Remove(item.Id);
                 RegisterFailure(_cramBackoff, item.Id);
@@ -162,7 +162,7 @@ public sealed class InventoryManager
                 continue;
             }
             // Backed-off after a confirmed failure: skip until NextRetry.
-            if (_cramBackoff.TryGetValue(item.Id, out var cb) && DateTime.Now < cb.NextRetry)
+            if (_cramBackoff.TryGetValue(item.Id, out var cb) && RynthClock.Now < cb.NextRetry)
                 continue;
             // Skip items the user has registered in the RynthAi Weapons tab —
             // those are weapons they want to keep accessible at the top level.
@@ -227,7 +227,7 @@ public sealed class InventoryManager
 
             // Enqueue accepted — record as PENDING and confirm on a later snapshot (do
             // NOT blacklist; success and a deferred-but-pending move look identical here).
-            _cramPending[item.Id] = new Pending { EnqueuedAt = DateTime.Now, FromContainer = playerId };
+            _cramPending[item.Id] = new Pending { EnqueuedAt = RynthClock.Now, FromContainer = playerId };
             return true; // one action per tick
         }
 
@@ -320,14 +320,14 @@ public sealed class InventoryManager
                             _stackBackoff.Remove(key);
                             continue; // this pair resolved — try another
                         }
-                        if ((DateTime.Now - sp.EnqueuedAt).TotalMilliseconds < MoveConfirmGraceMs)
+                        if ((RynthClock.Now - sp.EnqueuedAt).TotalMilliseconds < MoveConfirmGraceMs)
                             continue; // still in flight — skip this pair this tick
                         _stackPending.Remove(key);
                         RegisterFailure(_stackBackoff, key);
                         _host.Log($"[RynthAi] AutoStack: CONFIRMED merge failure {key} (source survived after {MoveConfirmGraceMs:0}ms) — backing off");
                         continue;
                     }
-                    if (_stackBackoff.TryGetValue(key, out var sb) && DateTime.Now < sb.NextRetry)
+                    if (_stackBackoff.TryGetValue(key, out var sb) && RynthClock.Now < sb.NextRetry)
                         continue; // backed off — try another pair
                     chosenTarget = parts[ti];
                     chosenSource = parts[si];
@@ -356,7 +356,7 @@ public sealed class InventoryManager
             // Enqueue accepted — record PENDING, confirm on a later snapshot. Do NOT
             // add the pair-key on success (the old bug that poisoned good merges and
             // starved multi-partial consolidation).
-            _stackPending[pairKey] = new Pending { EnqueuedAt = DateTime.Now, FromContainer = playerId, TargetCount = target.Count, SourceCount = source.Count };
+            _stackPending[pairKey] = new Pending { EnqueuedAt = RynthClock.Now, FromContainer = playerId, TargetCount = target.Count, SourceCount = source.Count };
             return true; // one action per tick
         }
 
@@ -374,21 +374,21 @@ public sealed class InventoryManager
             map[key] = b;
         }
         b.Attempts++;
-        b.LastTouched = DateTime.Now;
+        b.LastTouched = RynthClock.Now;
         int shift = b.Attempts - 1;
         if (shift > 6) shift = 6;                       // cap the shift so the multiply can't overflow
         double delay = BackoffBaseMs * (1 << shift);    // 5s,10s,20s,40s,80s,160s,320s→capped
         if (delay > BackoffMaxMs) delay = BackoffMaxMs;
         // Past the attempt budget, park far out (still age-pruned) instead of looping.
         if (b.Attempts >= MaxAttemptsBudget) delay = BackoffMaxMs;
-        b.NextRetry = DateTime.Now.AddMilliseconds(delay);
+        b.NextRetry = RynthClock.Now.AddMilliseconds(delay);
     }
 
     // Age-prune dead/idle entries so the maps don't grow unbounded across a long
     // session (the wholesale clear used to be the de-facto bound).
     private void PruneBackoff()
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         PruneMap(_cramBackoff, b => b.LastTouched, now);
         PruneMap(_stackBackoff, b => b.LastTouched, now);
         PruneMap(_cramPending, p => p.EnqueuedAt, now);

@@ -22,6 +22,7 @@
   <ItemGroup>
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Raycasting\BoundingVolume.cs" Link="Linked\BoundingVolume.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Raycasting\BlacklistManager.cs" Link="Linked\BlacklistManager.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\RynthClock.cs" Link="Linked\RynthClock.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Raycasting\DungeonLOS.cs" Link="Linked\DungeonLOS.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Raycasting\GeometryLoader.cs" Link="Linked\GeometryLoader.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Raycasting\LandblockStructs.cs" Link="Linked\LandblockStructs.cs" />

@@ -208,7 +208,7 @@ internal sealed class ChatTranslator : IDisposable
             {
                 case JobKind.SendRaw:
                     Send(job.Prefix, job.Text);
-                    AddLog(new TranslateLogEntry(DateTime.Now, TranslateDirection.Out, job.Channel, string.Empty,
+                    AddLog(new TranslateLogEntry(RynthClock.Now, TranslateDirection.Out, job.Channel, string.Empty,
                         job.Text, job.Text, string.Empty, string.Empty, "sent untranslated"));
                     break;
                 case JobKind.Inbound:
@@ -274,7 +274,7 @@ internal sealed class ChatTranslator : IDisposable
     {
         if (!r.Ok)
         {
-            AddLog(new TranslateLogEntry(DateTime.Now, TranslateDirection.In, job.Channel, job.Speaker, job.Text,
+            AddLog(new TranslateLogEntry(RynthClock.Now, TranslateDirection.In, job.Channel, job.Speaker, job.Text,
                 string.Empty, job.Source, job.Target, r.Error));
             ChatErrorThrottled(r.Error);
             return;
@@ -286,7 +286,7 @@ internal sealed class ChatTranslator : IDisposable
         if (translated.Length == 0 || string.Equals(translated, job.Text, StringComparison.OrdinalIgnoreCase)) return;
 
         Interlocked.Increment(ref _translated);
-        AddLog(new TranslateLogEntry(DateTime.Now, TranslateDirection.In, job.Channel, job.Speaker, job.Text,
+        AddLog(new TranslateLogEntry(RynthClock.Now, TranslateDirection.In, job.Channel, job.Speaker, job.Text,
             translated, r.DetectedSource, job.Target, string.Empty));
 
         if (Settings.EchoToChat && job.Channel is { } ch)
@@ -312,13 +312,13 @@ internal sealed class ChatTranslator : IDisposable
         else
         {
             QueueEcho($"{EchoPrefix} Couldn't translate ({(r.Ok ? "empty result" : r.Error)}); message not sent.", ChatTypeSystem);
-            AddLog(new TranslateLogEntry(DateTime.Now, TranslateDirection.Out, job.Channel, string.Empty, job.Text,
+            AddLog(new TranslateLogEntry(RynthClock.Now, TranslateDirection.Out, job.Channel, string.Empty, job.Text,
                 string.Empty, r.DetectedSource, job.Target, r.Ok ? "empty result" : r.Error));
             return;
         }
 
         string sent = Send(job.Prefix, body);
-        AddLog(new TranslateLogEntry(DateTime.Now, TranslateDirection.Out, job.Channel, string.Empty, job.Text,
+        AddLog(new TranslateLogEntry(RynthClock.Now, TranslateDirection.Out, job.Channel, string.Empty, job.Text,
             sent, r.DetectedSource, job.Target, r.Ok ? string.Empty : r.Error));
 
         if (r.Ok && Settings.EchoOutbound && job.Channel is { } ch)
@@ -327,7 +327,7 @@ internal sealed class ChatTranslator : IDisposable
 
     private void ApplyTest(Job job, TranslateResult r)
     {
-        AddLog(new TranslateLogEntry(DateTime.Now, TranslateDirection.Test, null, string.Empty, job.Text,
+        AddLog(new TranslateLogEntry(RynthClock.Now, TranslateDirection.Test, null, string.Empty, job.Text,
             r.Ok ? r.Text : string.Empty, r.DetectedSource, job.Target, r.Error));
         QueueEcho(r.Ok
             ? $"{EchoPrefix} Test ({(r.DetectedSource.Length > 0 ? r.DetectedSource : "?")} -> {job.Target}): {r.Text}"

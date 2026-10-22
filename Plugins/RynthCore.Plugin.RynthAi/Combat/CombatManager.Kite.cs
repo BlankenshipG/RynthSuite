@@ -14,7 +14,7 @@ namespace RynthCore.Plugin.RynthAi;
 public partial class CombatManager
 {
     /// <summary>Clock for the kite state machine; tests replace it.</summary>
-    internal Func<DateTime> KiteClock { get; set; } = () => DateTime.Now;
+    internal Func<DateTime> KiteClock { get; set; } = () => RynthClock.Now;
 
     // Face-away + autorun cadence (mirrors EnvironmentApproach).
     private const double KiteTurnRefreshMs = 300;

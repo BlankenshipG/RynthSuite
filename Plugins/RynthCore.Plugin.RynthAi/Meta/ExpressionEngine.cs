@@ -2761,7 +2761,7 @@ internal sealed partial class ExpressionEngine
             return false;
         }
 
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
 
         if (!IsCastWielded(wandId))
         {

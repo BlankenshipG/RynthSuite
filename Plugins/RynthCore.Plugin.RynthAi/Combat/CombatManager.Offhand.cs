@@ -114,7 +114,7 @@ public partial class CombatManager
     /// <see cref="OffhandReadMs"/>, always live while an off-hand action is in flight.</summary>
     internal int OffhandInSlot(bool fresh = false)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (!fresh && OffhandTracker.PendingId == 0 && _offDequipPendingId == 0
             && (now - _offSlotReadAt).TotalMilliseconds < OffhandReadMs)
             return _offSlotId;
@@ -259,11 +259,11 @@ public partial class CombatManager
         if (OffhandRules.OffhandAllowed(kind, offWo != null && IsShieldItem(offWo))) return false;
         string why;
         if (mode == OffhandMode.None) why = "Offhand is None, so it stays";
-        else if (DateTime.Now < _offDequipRestUntil) why = "it didn't come off; resting";
+        else if (RynthClock.Now < _offDequipRestUntil) why = "it didn't come off; resting";
         else return false;
-        if ((DateTime.Now - _lastOffHoldLogAt).TotalSeconds > 10)
+        if ((RynthClock.Now - _lastOffHoldLogAt).TotalSeconds > 10)
         {
-            _lastOffHoldLogAt = DateTime.Now;
+            _lastOffHoldLogAt = RynthClock.Now;
             _host.Log($"[EquipDiag] not wielding 0x{(uint)mainId:X8} '{WeaponName(mainId)}' ({OffhandRules.KindLabel(kind)}): 0x{(uint)off:X8} '{offWo?.Name ?? "?"}' is in the off hand and {why} — the server refuses it otherwise");
         }
         return true;
@@ -291,7 +291,7 @@ public partial class CombatManager
     /// <summary>Put <paramref name="offId"/> (in the off hand) into an open pack: one move in flight, capped.</summary>
     private OffPrep DequipOffhand(int offId, string why, bool gateHeld = false)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (_offDequipPendingId != offId) _offDequipTries = 0;
         if (_offDequipPendingId == offId && (now - _offDequipAt).TotalMilliseconds < OffDequipResolveMs)
             return OffPrep.Busy;
@@ -332,7 +332,7 @@ public partial class CombatManager
     /// </summary>
     private bool OffhandFollowUp(WorldObject target, MonsterRule? rule, int mainId)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         FoldServerAnswer(OffhandTracker, now);
         var plan = OffhandPlanFor(target, rule, mainId);
         int off = OffhandInSlot();

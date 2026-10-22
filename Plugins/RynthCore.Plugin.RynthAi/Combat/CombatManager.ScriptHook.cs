@@ -83,8 +83,8 @@ public partial class CombatManager
     {
         if (_spellManager == null || !_spellManager.IsKnownSpellId((int)spell)) return $"spell {spell} isn't known";
         // A script spell the server refused outright (no components): parked like a vital level.
-        if (_scriptParkedUntil.TryGetValue((int)spell, out DateTime parked) && DateTime.Now < parked)
-            return $"spell {spell} was refused by the server, parked for {(parked - DateTime.Now).TotalSeconds:0} s more";
+        if (_scriptParkedUntil.TryGetValue((int)spell, out DateTime parked) && RynthClock.Now < parked)
+            return $"spell {spell} was refused by the server, parked for {(parked - RynthClock.Now).TotalSeconds:0} s more";
         uint player = _playerId != 0 ? _playerId : _host.GetPlayerId();
         if (castTarget == player) return null;
         // Monster rule Priority 0 = IGNORE: not a target for a script either, even one attacking us.
@@ -140,9 +140,9 @@ public partial class CombatManager
         StartCastChatTrace(spellId, unchecked((int)castTarget));   // the server's answers, logged as for RynthAi's own casts
         SessionAttackCasts++;
         CastsSinceLastKill++;
-        _lastSpellCast = DateTime.Now;
+        _lastSpellCast = RynthClock.Now;
         _scriptCastSpellId = spellId;
-        _scriptCastAt = DateTime.Now;
+        _scriptCastAt = RynthClock.Now;
         _scriptCastSent = ActionPacer.CastsSent;   // includes this cast: any later send changes it
         bool atFight = castTarget == unchecked((uint)activeTargetId);
         bool judged = atFight && !area && !noJudge;
@@ -153,7 +153,7 @@ public partial class CombatManager
             // What the NO DAMAGE report names as the last cast (ReportNoDamageCasts).
             _lastOffensiveCastLine = $"script id={spellId} '{name}' target=0x{castTarget:X8}";
             _pendingOffensiveSpellId  = spellId;
-            _pendingOffensiveCastAt   = DateTime.Now;
+            _pendingOffensiveCastAt   = RynthClock.Now;
             _pendingOffensiveTargetId = activeTargetId;
             NoteOffensiveSeq();
         }
@@ -269,14 +269,14 @@ public partial class CombatManager
     internal const double ScriptRefusalWindowMs = 2_000.0;
 
     /// <summary>Host tests: true while <paramref name="spellId"/> is parked after a refusal.</summary>
-    internal bool ScriptSpellParked(int spellId) => _scriptParkedUntil.TryGetValue(spellId, out DateTime u) && DateTime.Now < u;
+    internal bool ScriptSpellParked(int spellId) => _scriptParkedUntil.TryGetValue(spellId, out DateTime u) && RynthClock.Now < u;
 
     /// <summary>A chat line: park the script's last spell on a hard refusal (missing components, unknown spell).</summary>
     private void NoteScriptCastRefusal(string text)
     {
         if (_scriptCastSpellId == 0) return;
         if (ActionPacer.CastsSent != _scriptCastSent
-            || (DateTime.Now - _scriptCastAt).TotalMilliseconds > ScriptRefusalWindowMs) { _scriptCastSpellId = 0; return; }
+            || (RynthClock.Now - _scriptCastAt).TotalMilliseconds > ScriptRefusalWindowMs) { _scriptCastSpellId = 0; return; }
         string lo = text.ToLowerInvariant();
         string? own = SpellTableStub.GetById(_scriptCastSpellId)?.Name;
         if (own != null && lo.Contains("ou cast " + own.ToLowerInvariant())) { _scriptCastSpellId = 0; return; }   // it landed
@@ -284,7 +284,7 @@ public partial class CombatManager
               || lo.Contains("have all the components for this spell"))) return;
         int spell = _scriptCastSpellId;
         _scriptCastSpellId = 0;
-        _scriptParkedUntil[spell] = DateTime.Now.AddSeconds(ScriptParkSec);
+        _scriptParkedUntil[spell] = RynthClock.Now.AddSeconds(ScriptParkSec);
         _host.Log($"[CombatCast] script spell id={spell} '{SpellTableStub.GetById(spell)?.Name}' refused: '{text.Trim()}'. " +
                   $"Rejected for {ScriptParkSec / 60:0} min (RynthAi chooses instead while the script asks for it).");
     }

@@ -553,7 +553,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (_dashboard is null)
             return;
 
-        _loginCompletedAt = DateTime.Now;
+        _loginCompletedAt = RynthClock.Now;
         _loginComplete = true;
         _killClock.SessionStarted();
         _dashboard.OnLoginComplete();
@@ -769,6 +769,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _missileCraftingManager.SetObjectCache(_objectCache!);
         _missileCraftingManager.SetCharacterSkills(_charSkills);
         _missileCraftingManager.HoldWhile = () => _combatManager?.AmmoSwapInProgress == true;
+        _missileCraftingManager.FightIsOn = () => FightIsOn();   // optional crafts wait for the fight (RynthAiPlugin.Chores.cs)
         _dashboard.SetMissileCraftingManager(_missileCraftingManager);
 
         _fellowshipTracker?.Dispose();
@@ -799,6 +800,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             _manaStoneManager  = new ManaStoneManager(Host, _dashboard.Settings, _objectCache);
             LegacyUi.NavPoint.SpellNameLookup = id => SpellTableStub.GetById(id)?.Name;   // recall steps by name
             _manaStoneManager.IsLootKept = IsKeptByLootProfile;
+            _manaStoneManager.FightIsOn = () => FightIsOn();     // drains wait for the fight (RynthAiPlugin.Chores.cs)
             _petManager        = new PetManager(Host, _dashboard.Settings, _objectCache, _combatManager, _charSkills);
             _combatManager.SummonOut = () => _petManager?.CurrentSummon();
         }
@@ -1443,14 +1445,17 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         bool diag = ++_tickDiag <= 3;
         try
         {
-            _dashboard?.DrainMetaCommands();   // apply queued meta edits on this (plugin-tick) thread
-            if (_loginComplete) PostDataWriteProblems();   // a save that failed / folder not writable: say so in chat
-            CombatHook.ObserveUseDone();        // ctx.last.err: the answer to the hook's last cast
-            TickDelayedCommands();              // /ub delay
-            GameInput.Pump();                   // release keys held for /mt movement | jump | strafe
-            DrainEngineCommands();              // fellowship command buttons (RynthCore's Fellowship section)
-            TickPropertyDump();                 // /ub propertydump: waits for the ID, chat in chunks
-            if (_loginComplete) _dashboard?.TickPackSetup(_objectCache, _playerId);   // new/copied profile items
+            // Each step below runs under its own guard (RynthAiPlugin.TickGuard.cs): one that throws
+            // is logged and the rest of the tick still runs. The try/catch round the whole tick only
+            // catches what sits between the steps.
+            Guard(TickStep.MetaCommands, () => _dashboard?.DrainMetaCommands());   // apply queued meta edits on this (plugin-tick) thread
+            if (_loginComplete) Guard(TickStep.DataWriteProblems, PostDataWriteProblems);   // a save that failed / folder not writable: say so in chat
+            Guard(TickStep.CombatHook, CombatHook.ObserveUseDone);        // ctx.last.err: the answer to the hook's last cast
+            Guard(TickStep.DelayedCommands, TickDelayedCommands);         // /ub delay
+            Guard(TickStep.GameInput, GameInput.Pump);                    // release keys held for /mt movement | jump | strafe
+            Guard(TickStep.EngineCommands, DrainEngineCommands);          // fellowship command buttons (RynthCore's Fellowship section)
+            Guard(TickStep.PropertyDump, () => TickPropertyDump());       // /ub propertydump: waits for the ID, chat in chunks
+            if (_loginComplete) Guard(TickStep.PackSetup, () => _dashboard?.TickPackSetup(_objectCache, _playerId));   // new/copied profile items
 
             // /ra pause <sec>: restart the macro once the window elapses. Cleared by
             // an explicit /ra start or /ra stop, so a manual decision always wins.
@@ -1487,66 +1492,26 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 catch (Exception ex) { Host.Log($"[RynthAi] forwarded remote command '{fwd.action}' failed: {ex.Message}"); }
             }
 
-            // ── Push settings to engine each tick ──────────────────────
-            // RynthAi has no render hook (it draws nothing itself). OnTick runs
-            // unconditionally via PluginManager.TickAll, including in
-            // Decal-coexistence mode. Push the suppression toggles here so the
-            // settings panel controls the radar/powerbar.
-            // (Renamed local to `pushSettings` to avoid collision with the
-            // `settings` local declared further down in OnTick.)
-            var pushSettings = _dashboard?.Settings;
-            if (diag)
-                Host.Log($"[RynthAi] OnTick: settings push entry — settings null? {pushSettings == null}, HasSetRadarSuppressed={Host.HasSetRadarSuppressed}");
-            if (pushSettings != null)
-            {
-                if (diag)
-                    Host.Log($"[RynthAi] OnTick: pushSettings.SuppressRetailRadar={pushSettings.SuppressRetailRadar}, SuppressRetailPowerbar={pushSettings.SuppressRetailPowerbar}");
-                Host.SetFpsLimit(pushSettings.EnableFPSLimit, pushSettings.TargetFPSFocused, pushSettings.TargetFPSBackground);
-                // "Hide UI" (remote): blank the vanilla AC radar/powerbar too. The RynthAi Avalonia
-                // panels are separate windows already excluded by the stream's PrintWindow capture.
-                // NOTE: retail chat suppression is intentionally NOT handled here — it is owned by
-                // the RynthChat plugin (engine-side ChatHooks, driven from RynthChatPanel's gear menu).
-                // RynthAi pushing it every tick clobbered that toggle, so it lives solely in RynthChat now.
-                bool hideUi = _hideUi;
-                if (Host.HasSetRadarSuppressed)
-                    Host.SetRadarSuppressed(hideUi || pushSettings.SuppressRetailRadar);
-                if (Host.HasSetPowerbarSuppressed)
-                    Host.SetPowerbarSuppressed(hideUi || pushSettings.SuppressRetailPowerbar);
+            Guard(TickStep.SettingsPush, () => PushSettingsToEngine(diag));
 
-                // Fellowship-follow: publish the leader's object id so the nav
-                // engine can steer toward their live position. 0 = idle (not in a
-                // fellowship, or we ARE the leader — a leader shouldn't follow itself).
-                if (pushSettings.FollowMode && pushSettings.FollowNamedTargetId != 0)
-                {
-                    pushSettings.FollowTargetId = pushSettings.FollowNamedTargetId;
-                }
-                else if (pushSettings.FollowMode && _fellowshipTracker != null)
-                {
-                    int leader = _fellowshipTracker.LeaderId;
-                    pushSettings.FollowTargetId =
-                        (leader != 0 && !_fellowshipTracker.IsLeader) ? unchecked((uint)leader) : 0u;
-                }
-                else
-                {
-                    pushSettings.FollowTargetId = 0;
-                }
-            }
-
-            _objectCache?.Tick();
+            Guard(TickStep.WorldCache, () => _objectCache?.Tick());
             if (diag) Host.Log("[RynthAi] OnTick: after cache tick");
 
-            if (_loginComplete) TickDifficultyTier();
+            if (_loginComplete) Guard(TickStep.DifficultyTier, TickDifficultyTier);
 
             // A stop the action pacing held (nothing of ours moving, a server action unanswered)
             // goes out as soon as the server has answered: a stop is never dropped (2026-10-12).
-            if (_loginComplete) RynthCore.Plugin.Shared.MoveAudit.FlushPendingStops(Host, "once the server answered");
+            if (_loginComplete) Guard(TickStep.PendingStops, () => RynthCore.Plugin.Shared.MoveAudit.FlushPendingStops(Host, "once the server answered"));
 
             // Periodically flush the creature profile store (~ every 5 seconds at 60Hz).
             if (++_creatureSaveTickCounter >= 300)
             {
                 _creatureSaveTickCounter = 0;
-                _creatureStore?.SaveIfDirty();
-                _damageStore?.SaveIfDirty();
+                Guard(TickStep.CreatureSave, () =>
+                {
+                    _creatureStore?.SaveIfDirty();
+                    _damageStore?.SaveIfDirty();
+                });
             }
 
             // Deferred per-character settings load. OnLoginComplete tries
@@ -1602,7 +1567,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             if (++_settingsSaveTickCounter >= 120)
             {
                 _settingsSaveTickCounter = 0;
-                _dashboard?.TickAutoSave();
+                Guard(TickStep.AutoSave, () => _dashboard?.TickAutoSave());
             }
             // Dungeon floor plans on disk for DrakRemote (StatusAgent /map), whether or not a
             // map panel is open: one pose read about twice a second; the bake itself runs once
@@ -1610,20 +1575,23 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             if (_loginComplete && ++_mapBakeTickCounter >= 30)
             {
                 _mapBakeTickCounter = 0;
-                _dashboard?.TickDungeonMapBake();
+                Guard(TickStep.MapBake, () => _dashboard?.TickDungeonMapBake());
             }
-            // Pick up an external Monster Editor save (monsters.json watcher). This used
-            // to run only inside the legacy dashboard's Render(), which the engine no
-            // longer calls, so edits waited for the next login. A flag check when idle.
-            _dashboard?.TickMonsterReload();
-            // A nav saved into NavProfiles from outside (RynthNav's "save as nav route"): list it.
-            _dashboard?.TickNavFolder();
-            _questTracker?.Tick();
-            TickLocalFeatures();
+            Guard(TickStep.WatchedFiles, () =>
+            {
+                // Pick up an external Monster Editor save (monsters.json watcher). This used
+                // to run only inside the legacy dashboard's Render(), which the engine no
+                // longer calls, so edits waited for the next login. A flag check when idle.
+                _dashboard?.TickMonsterReload();
+                // A nav saved into NavProfiles from outside (RynthNav's "save as nav route"): list it.
+                _dashboard?.TickNavFolder();
+            });
+            Guard(TickStep.QuestTracker, () => _questTracker?.Tick());
+            Guard(TickStep.LocalFeatures, TickLocalFeatures);
             if (diag) Host.Log("[RynthAi] OnTick: after quest tracker");
-            DrainGiveQueue();
+            Guard(TickStep.GiveQueue, DrainGiveQueue);
             if (diag) Host.Log("[RynthAi] OnTick: after drain give queue");
-            _jumper?.Tick();
+            Guard(TickStep.Jumper, () => _jumper?.Tick());
             if (diag) Host.Log("[RynthAi] OnTick: after jumper tick");
 
             // ── Affirmative in-world gate ────────────────────────────────
@@ -1669,65 +1637,51 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 if (diag) Host.Log("[RynthAi] OnTick: entering loginComplete block");
                 // One bot per client (Decal bridge): VTank's macro started -> ours stops, before
                 // anything below can move, attack, cast or buff this tick.
-                if (_dashboard?.Settings is { } yieldSettings) TickVTankYield(yieldSettings);
-                // Player vitals: AC sends none of its own health through OnUpdateHealth (that is the
-                // 0x01C0 health-of-a-target message), so this read is how the bot learns health
-                // dropped. It ran every 30th tick: ~1 s at a background client's 30 fps, 1.5-3 s on a
-                // slower or busier PC, added to every heal at random (2026-10-05, "heals sometimes
-                // late"). The engine's snapshot is a locked struct copy kept current by its vitals
-                // hook, so read it every VitalsPollMs instead.
-                long vitalsNow = Environment.TickCount64;
-                if (vitalsNow - _lastVitalsPollAt >= VitalsPollMs)
-                {
-                    _lastVitalsPollAt = vitalsNow;
-                    if (Host.HasGetPlayerVitals &&
-                        Host.TryGetPlayerVitals(out uint hp, out uint maxHp, out uint st, out uint maxSt, out uint mp, out uint maxMp))
-                    {
-                        _vitals.CurrentHealth = hp;
-                        _vitals.MaxHealth = maxHp;
-                        _vitals.CurrentStamina = st;
-                        _vitals.MaxStamina = maxSt;
-                        _vitals.CurrentMana = mp;
-                        // A big move in the max-mana reading (a death, buffs landing or dropping) is logged:
-                        // the floor and the reserve judge mana by it (2026-10-15).
-                        if (_vitals.MaxMana > 0 && maxMp > 0
-                            && Math.Abs((long)maxMp - _vitals.MaxMana) * 100 >= 15L * _vitals.MaxMana)
-                            Host.Log($"[RynthAi] Vitals: max mana reading {_vitals.MaxMana} -> {maxMp} (mana {mp}).");
-                        _vitals.MaxMana = maxMp;
-                    }
-                }
+                if (_dashboard?.Settings is { } yieldSettings) Guard(TickStep.VTankYield, () => TickVTankYield(yieldSettings));
+                Guard(TickStep.VitalsRead, PollPlayerVitals);
                 if (_dashboard?.Settings is { } safetySettings)
                 {
-                    CheckPlayerDeath(safetySettings);
-                    CheckLowComponents(safetySettings);
+                    Guard(TickStep.DeathCheck, () => CheckPlayerDeath(safetySettings));
+                    Guard(TickStep.LowComponents, () => CheckLowComponents(safetySettings));
                 }
                 // Dead or on the way back from a death: do nothing (HoldForDeath). The
                 // finally below still submits the nav markers.
-                RynthCore.Plugin.Shared.ActionPacer.NoteFrame();
-                // Stuck Cast Break, once per tick: the breaker runs for every subsystem's casts.
-                if (_dashboard?.Settings is { } paceSettings)
+                Guard(TickStep.Pacing, () =>
                 {
-                    RynthCore.Plugin.Shared.ActionPacer.StuckCastMs = Math.Max(0, paceSettings.StuckCastBreakMs);
-                    NoteMacroForPacer(paceSettings.IsMacroRunning);
-                }
-                NotePortalForPacer();
-                if (HoldForDeath())
+                    RynthCore.Plugin.Shared.ActionPacer.NoteFrame();
+                    // Stuck Cast Break, once per tick: the breaker runs for every subsystem's casts.
+                    if (_dashboard?.Settings is { } paceSettings)
+                    {
+                        RynthCore.Plugin.Shared.ActionPacer.StuckCastMs = Math.Max(0, paceSettings.StuckCastBreakMs);
+                        NoteMacroForPacer(paceSettings.IsMacroRunning);
+                    }
+                    NotePortalForPacer();
+                });
+                // A hold whose check throws holds nothing: the tick goes on (healing, combat).
+                if (GuardHold(TickStep.DeathHold, HoldForDeath))
                     return;
                 // Recall On Death in progress: nothing else until it lands or gives up.
-                if (TickDeathRecall())
+                if (GuardHold(TickStep.DeathRecall, TickDeathRecall))
                     return;
                 // Standing in acid or lava: nothing but getting out (RynthAiPlugin.HazardEscape.cs).
-                RecordHazardTrail();
-                if (HoldForHazardEscape())
+                if (GuardHold(TickStep.HazardEscape, () =>
+                    {
+                        RecordHazardTrail();
+                        return HoldForHazardEscape();
+                    }))
                     return;
 
                 if (diag) Host.Log("[RynthAi] OnTick: before CheckBusyTimeout");
-                CheckBusyTimeout();
+                Guard(TickStep.BusyTimeout, CheckBusyTimeout);
                 if (diag) Host.Log("[RynthAi] OnTick: before buffManager");
-                _buffManager?.OnHeartbeat();
+                // Healing and buffs: essential, never switched off by its guard (TickGuard).
+                Guard(TickStep.BuffsAndVitals, () => _buffManager?.OnHeartbeat());
                 if (diag) Host.Log("[RynthAi] OnTick: after buffManager");
-                NoteCarriedOverSessionReady();
-                UpdateReloadBlocker();
+                Guard(TickStep.ReloadBlocker, () =>
+                {
+                    NoteCarriedOverSessionReady();
+                    UpdateReloadBlocker();
+                });
 
                 var settings = _dashboard?.Settings;
                 if (settings == null)
@@ -1775,17 +1729,20 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 _macroWasRunning = settings.IsMacroRunning;
                 _killClock.ObserveMacro(settings.IsMacroRunning);   // a start counts even if nothing reads the clock meanwhile
 
-                if (_patrolOnLoginPending && _raycast?.GeometryLoader?.CellDat?.IsLoaded == true)
+                Guard(TickStep.PatrolReroute, () =>
                 {
-                    _patrolOnLoginPending = false;
-                    HandleDungeonNavPatrol();
-                }
+                    if (_patrolOnLoginPending && _raycast?.GeometryLoader?.CellDat?.IsLoaded == true)
+                    {
+                        _patrolOnLoginPending = false;
+                        HandleDungeonNavPatrol();
+                    }
 
-                // Reroute the active dungeon patrol around any lava/acid hotspot sighted
-                // since the route was built — treats the hotspot as a wall instead of
-                // looping through it — or with the Dungeon Patrol settings changed since.
-                // Cheap no-op unless a new hazard cell was registered or a setting changed.
-                TickDunPatrolHazardReroute();
+                    // Reroute the active dungeon patrol around any lava/acid hotspot sighted
+                    // since the route was built — treats the hotspot as a wall instead of
+                    // looping through it — or with the Dungeon Patrol settings changed since.
+                    // Cheap no-op unless a new hazard cell was registered or a setting changed.
+                    TickDunPatrolHazardReroute();
+                });
 
                 // ── Activity arbiter — STEP 5: AUTHORITATIVE, full stop ──
                 // The arbiter is the SOLE writer of every BotAction string, and
@@ -1839,19 +1796,19 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     else
                     {
                         if (_buffingHeldSince == DateTime.MinValue)
-                            _buffingHeldSince = DateTime.Now;
+                            _buffingHeldSince = RynthClock.Now;
 
-                        double heldMs = (DateTime.Now - _buffingHeldSince).TotalMilliseconds;
+                        double heldMs = (RynthClock.Now - _buffingHeldSince).TotalMilliseconds;
                         // A coma is buffing that has STOPPED casting, not a long cycle: a full
                         // rebuff with Stamina to Mana refills runs past 5 min, and yielding a tick
                         // every 10 s then handed Combat the tick mid-cycle, which drew the weapon
                         // and changed stance between buffs (10-02 18:47, "pulls a weapon out and
                         // fights mid buff cycle"). Only when nothing was cast for BuffComaIdleMs.
-                        double idleMs = (DateTime.Now - _buffManager!.LastCastAttemptAt).TotalMilliseconds;
+                        double idleMs = (RynthClock.Now - _buffManager!.LastCastAttemptAt).TotalMilliseconds;
                         if (heldMs > BuffComaThresholdMs && idleMs > BuffComaIdleMs
-                            && (DateTime.Now - _lastBuffComaBypassAt).TotalMilliseconds > BuffComaBypassEveryMs)
+                            && (RynthClock.Now - _lastBuffComaBypassAt).TotalMilliseconds > BuffComaBypassEveryMs)
                         {
-                            _lastBuffComaBypassAt = DateTime.Now;
+                            _lastBuffComaBypassAt = RynthClock.Now;
                             wantBuff = false; // yield ONE tick so stance recovery can run
                             if (!_buffComaWarned)
                             {
@@ -1964,39 +1921,33 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // inventory — UB takes VTank's Navigation + ItemUse locks the same way.
                 // Bounded by AutoVendor's own 60 s bail timer.
                 var autoVendor = _autoVendor;
-                if (autoVendor != null)
+                if (autoVendor != null
+                    && GuardHold(TickStep.AutoVendor, () => { autoVendor.Tick(_busyCount); return autoVendor.HoldsBot; }))
                 {
-                    autoVendor.Tick(_busyCount);
-                    if (autoVendor.HoldsBot)
-                    {
-                        if (settings.IsMacroRunning)
-                            StopNavFor(BotActivity.Idle);
-                        KeepThreatScanFresh(settings);
-                        FreezeCorpseTimeout(CorpseNowMs);   // a claimed corpse must not time out while held
-                        _metaManager?.Think();
-                        return;
-                    }
+                    if (settings.IsMacroRunning)
+                        StopNavFor(BotActivity.Idle);
+                    KeepThreatScanFresh(settings);
+                    FreezeCorpseTimeout(CorpseNowMs);   // a claimed corpse must not time out while held
+                    ThinkMeta();
+                    return;
                 }
 
                 // ── AutoTrade (UtilityBelt-style) ────────────────────────────────
                 // Same hold as AutoVendor while it fills a trade window: UB takes VTank's
                 // Navigation + ItemUse locks. Bounded by AutoTrade's own 10 s bail timer.
                 var autoTrade = _autoTrade;
-                if (autoTrade != null)
+                if (autoTrade != null
+                    && GuardHold(TickStep.AutoTrade, () => { autoTrade.Tick(_busyCount); return autoTrade.HoldsBot; }))
                 {
-                    autoTrade.Tick(_busyCount);
-                    if (autoTrade.HoldsBot)
-                    {
-                        if (settings.IsMacroRunning)
-                            StopNavFor(BotActivity.Idle);
-                        KeepThreatScanFresh(settings);
-                        FreezeCorpseTimeout(CorpseNowMs);   // a claimed corpse must not time out while held
-                        _metaManager?.Think();
-                        return;
-                    }
+                    if (settings.IsMacroRunning)
+                        StopNavFor(BotActivity.Idle);
+                    KeepThreatScanFresh(settings);
+                    FreezeCorpseTimeout(CorpseNowMs);   // a claimed corpse must not time out while held
+                    ThinkMeta();
+                    return;
                 }
 
-                TickWeaponElements();
+                Guard(TickStep.WeaponElements, TickWeaponElements);
 
                 // ── Priority 1: Buffing ───────────────────────────────────────────
                 // Blocks combat, looting, and navigation entirely. The coma
@@ -2007,40 +1958,30 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     StopNavFor(BotActivity.Buffing);
                     KeepThreatScanFresh(settings);
                     FreezeCorpseTimeout(CorpseNowMs);   // a claimed corpse must not time out while held
-                    _metaManager?.Think();
+                    ThinkMeta();
                     return;
                 }
 
-                // AutoCram / AutoStack — only while idle (not looting a corpse, not crafting).
+                // AutoCram / AutoStack — only while idle (not looting a corpse, not crafting, not
+                // in a fight: RynthAiPlugin.Chores.cs).
                 // Gated on busy count inside the manager so it won't move items mid-cast.
                 // Skip InventoryManager for a short settle window after login.
                 // Its first call does a forced GetDirectInventory which walks every
                 // container via native calls — when the cache is still classifying
                 // hundreds of pending CreateObjects (RL hot-reload, fresh login),
                 // the concurrent native walk has been causing intermittent crashes.
-                bool inventorySettled = (DateTime.Now - _loginCompletedAt).TotalMilliseconds > 3000;
-                if (inventorySettled
-                    && _inventoryManager != null
-                    && _openedContainerId == 0
-                    && _targetCorpseId == 0)
-                {
-                    _inventoryManager.OnHeartbeat(PacedBusy);
-                }
+                bool inventorySettled = (RynthClock.Now - _loginCompletedAt).TotalMilliseconds > 3000;
+                if (inventorySettled)
+                    TickCramStack(settings);
 
                 // Status feed: main-pack empty slots (cache-based, off-thread-safe). Throttled to
                 // ~3s — it walks direct inventory, no need every tick. Mirrors VTankLootEvaluator
                 // .GetMainPackEmptySlots so the phone shows when a box is about to run out of room.
                 if (inventorySettled && _objectCache != null && _playerId != 0
-                    && (DateTime.Now - _lastFreeSlotsPushAt).TotalMilliseconds > 3000)
+                    && (RynthClock.Now - _lastFreeSlotsPushAt).TotalMilliseconds > 3000)
                 {
-                    _lastFreeSlotsPushAt = DateTime.Now;
-                    ScanInventoryStatus(out int freeSlots, out int scarabs, out int tapers, out var scarabsByType, out var equipment);
-                    _dashboard?.SetFreeSlots(freeSlots);
-                    _dashboard?.SetComponentCounts(scarabs, tapers, scarabsByType);
-                    _dashboard?.SetEquipment(AppraiseEquipment(equipment));
-
-                    // Remote full-inventory snapshot (P1) — same 3s gate, reuses the cached walk.
-                    ScanInventoryForRemote();
+                    _lastFreeSlotsPushAt = RynthClock.Now;
+                    Guard(TickStep.InventoryStatus, PushInventoryStatus);
                 }
 
                 // D2/D6 combat telemetry: three-tier target counts + offensive attack-cast/kill
@@ -2048,33 +1989,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // live mobs" or "animates but 0 damage" wedge is diagnosable from the feed/log
                 // instead of guesswork. Independent of the inventory gate above — useful pre-settle.
                 if (_combatManager != null
-                    && (DateTime.Now - _lastCombatTelemetryAt).TotalMilliseconds > 3000)
+                    && (RynthClock.Now - _lastCombatTelemetryAt).TotalMilliseconds > 3000)
                 {
-                    _lastCombatTelemetryAt = DateTime.Now;
-                    int sTotal = _combatManager.LastScanTotalMonsters;
-                    int sRing = _combatManager.LastScanInRing;
-                    int sPoss = _combatManager.LastScanPossible;
-                    int sLos = _combatManager.LastScanLosBlocked;
-                    int atkCasts = _combatManager.SessionAttackCasts;
-                    int sinceKill = _combatManager.CastsSinceLastKill;
-                    _dashboard?.SetScanCounts(sTotal, sRing, sPoss, sLos);
-                    _dashboard?.SetCastStats(atkCasts, sinceKill);
-
-                    // Log only when there's something to see, and only when the picture changed,
-                    // so a healthy idle bot never spams the per-client log. sinceKill is in the key
-                    // so active combat shows periodic progress while a stalled-with-mobs wedge logs
-                    // its snapshot once and then stays quiet. (-1 = no scan yet → OR is negative → skip.)
-                    if ((sTotal | sRing | sPoss | sLos | atkCasts | sinceKill) > 0)
-                    {
-                        int sig = ((sTotal & 0x3FF) << 20) ^ ((sRing & 0x3FF) << 10) ^ (sPoss & 0x3FF)
-                                  ^ (sLos << 6) ^ (sinceKill << 1);
-                        if (sig != _lastCombatTelemetrySig)
-                        {
-                            _lastCombatTelemetrySig = sig;
-                            Host.Log($"[ScanTele] targets total={sTotal} ring={sRing} possible={sPoss} " +
-                                     $"losBlk={sLos} | atkCasts={atkCasts} sinceKill={sinceKill}");
-                        }
-                    }
+                    _lastCombatTelemetryAt = RynthClock.Now;
+                    Guard(TickStep.CombatTelemetry, PushCombatTelemetry);
                 }
 
                 if (diag) Host.Log("[RynthAi] OnTick: before salvageManager");
@@ -2085,11 +2003,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // combine-sweeps next to a mob attacking it: the legacy
                 // 'Salvaging' string blocks CombatManager.canRun and the
                 // arbiter doesn't override it (Salvaging isn't arbiter-
-                // authoritative yet). HasEngageableTarget = actively engaged OR
-                // a scanned mob within MonsterRange — the same predicate the
-                // arbiter uses for Combat-vs-Nav (pure, no side effects;
-                // reflects last tick's scan, which is fine to yield on).
-                bool combatThreat = settings.EnableCombat && _combatManager?.HasEngageableTarget == true;
+                // authoritative yet). FightIsOn = actively engaged OR a scanned
+                // mob within MonsterRange (or on top of us) — the same predicate
+                // the arbiter uses for Combat-vs-Nav (pure, no side effects;
+                // reflects last tick's scan, which is fine to yield on), and the
+                // one every item chore waits on (RynthAiPlugin.Chores.cs).
+                bool combatThreat = FightIsOn(settings);
 
                 // Same settle gate as InventoryManager: BeginCombineSalvage walks
                 // GetDirectInventory which races with cache classification during
@@ -2097,7 +2016,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // combine work while a threat is up so it doesn't contend with
                 // combat over SelectItem; it resumes the moment the threat clears.
                 if (inventorySettled && !combatThreat)
-                    _salvageManager?.OnTick(PacedBusy);
+                    Guard(TickStep.Salvage, () => _salvageManager?.OnTick(PacedBusy));
                 if (diag) Host.Log("[RynthAi] OnTick: before manaStoneManager");
 
                 // STEP 4: the salvage gap-fill that used to pin/release
@@ -2110,28 +2029,26 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // decision from scratch every tick.
 
                 // Mana stone tapping — runs after salvage, independent of looting state.
-                _manaStoneManager?.OnHeartbeat(PacedBusy);
-                _petManager?.OnHeartbeat(PacedBusy);
+                Guard(TickStep.ManaStones, () => _manaStoneManager?.OnHeartbeat(PacedBusy));
+                Guard(TickStep.Pets, () => _petManager?.OnHeartbeat(PacedBusy));
                 if (diag) Host.Log("[RynthAi] OnTick: before combatManager");
 
                 // Missile crafting runs before combat — blocks everything while active.
                 // Gated on the same settle window as InventoryManager: ProcessCrafting
                 // also does a forced GetDirectInventory walk which races with cache
-                // classification right after login/RL.
-                if (inventorySettled && _missileCraftingManager != null && settings.IsMacroRunning)
+                // classification right after login/RL. A fault holds nothing.
+                var crafting = _missileCraftingManager;
+                if (inventorySettled && crafting != null && settings.IsMacroRunning
+                    && GuardHold(TickStep.MissileCrafting, () => { crafting.ProcessCrafting(); return crafting.IsCrafting; }))
                 {
-                    _missileCraftingManager.ProcessCrafting();
-                    if (_missileCraftingManager.IsCrafting)
-                    {
-                        // Crafting can start in the middle of a nav leg (the ammo check runs
-                        // whoever owns the tick). Without a stop, autorun stayed on and the
-                        // bot ran blind on its last heading for the whole craft.
-                        StopNavFor(BotActivity.Idle);
-                        KeepThreatScanFresh(settings);
-                        FreezeCorpseTimeout(CorpseNowMs);   // a claimed corpse must not time out while held
-                        _metaManager?.Think();
-                        return; // Block combat, nav, looting until crafting finishes
-                    }
+                    // Crafting can start in the middle of a nav leg (the ammo check runs
+                    // whoever owns the tick). Without a stop, autorun stayed on and the
+                    // bot ran blind on its last heading for the whole craft.
+                    StopNavFor(BotActivity.Idle);
+                    KeepThreatScanFresh(settings);
+                    FreezeCorpseTimeout(CorpseNowMs);   // a claimed corpse must not time out while held
+                    ThinkMeta();
+                    return; // Block combat, nav, looting until crafting finishes
                 }
 
                 // Learn unknown spells (VTank ReadUnknownScrolls): reads a scroll only at a safe
@@ -2141,7 +2058,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     StopNavFor(BotActivity.Idle);
                     KeepThreatScanFresh(settings);
                     FreezeCorpseTimeout(CorpseNowMs);   // a claimed corpse must not time out while held
-                    _metaManager?.Think();
+                    ThinkMeta();
                     return;
                 }
 
@@ -2175,34 +2092,38 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 // costs nothing and is what keeps the decision honest.
                 if (_activity == BotActivity.Looting)
                 {
-                    TickCorpseOpening();
-                    _combatManager?.OnHeartbeat();
+                    Guard(TickStep.Looting, TickCorpseOpening);
+                    Guard(TickStep.Combat, () => _combatManager?.OnHeartbeat());
                 }
                 else
                 {
-                    _combatManager?.OnHeartbeat();
+                    // Combat: essential, never switched off by its guard (TickGuard).
+                    Guard(TickStep.Combat, () => _combatManager?.OnHeartbeat());
                     if (diag) Host.Log("[RynthAi] OnTick: after combatManager.OnHeartbeat");
-                    TickCorpseOpening();
+                    Guard(TickStep.Looting, TickCorpseOpening);
                 }
 
                 if (diag) Host.Log("[RynthAi] OnTick: before nav");
 
-                if (navOwnsTick || navInPortal)
+                Guard(TickStep.Navigation, () =>
                 {
-                    _navStopIssued = false;
-                    _navStoppedFor = BotActivity.Idle;
+                    if (navOwnsTick || navInPortal)
+                    {
+                        _navStopIssued = false;
+                        _navStoppedFor = BotActivity.Idle;
 
-                    bool doorBlocking = TickDoorInteraction();
-                    if (!doorBlocking)
-                        _navigationEngine?.Tick();
-                }
-                else
-                {
-                    StopNavFor(_activity);
-                }
+                        bool doorBlocking = TickDoorInteraction();
+                        if (!doorBlocking)
+                            _navigationEngine?.Tick();
+                    }
+                    else
+                    {
+                        StopNavFor(_activity);
+                    }
+                });
 
-                TickPendingMtLoot();
-                _metaManager?.Think();
+                Guard(TickStep.MtLoot, TickPendingMtLoot);
+                ThinkMeta();
 
                 }
                 finally
@@ -2236,6 +2157,125 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private long _lastMetaScheduleErrorLogAt = -100_000;
     private long _lastOwnCorpseTravelErrorLogAt = -100_000;
     private long _lastTickErrorLogAt = -100_000;
+
+    /// <summary>
+    /// Push settings to the engine each tick. RynthAi has no render hook (it draws nothing
+    /// itself). OnTick runs unconditionally via PluginManager.TickAll, including in
+    /// Decal-coexistence mode. Push the suppression toggles here so the settings panel controls
+    /// the radar/powerbar.
+    /// </summary>
+    private void PushSettingsToEngine(bool diag)
+    {
+        var pushSettings = _dashboard?.Settings;
+        if (diag)
+            Host.Log($"[RynthAi] OnTick: settings push entry — settings null? {pushSettings == null}, HasSetRadarSuppressed={Host.HasSetRadarSuppressed}");
+        if (pushSettings == null) return;
+
+        if (diag)
+            Host.Log($"[RynthAi] OnTick: pushSettings.SuppressRetailRadar={pushSettings.SuppressRetailRadar}, SuppressRetailPowerbar={pushSettings.SuppressRetailPowerbar}");
+        Host.SetFpsLimit(pushSettings.EnableFPSLimit, pushSettings.TargetFPSFocused, pushSettings.TargetFPSBackground);
+        // "Hide UI" (remote): blank the vanilla AC radar/powerbar too. The RynthAi Avalonia
+        // panels are separate windows already excluded by the stream's PrintWindow capture.
+        // NOTE: retail chat suppression is intentionally NOT handled here — it is owned by
+        // the RynthChat plugin (engine-side ChatHooks, driven from RynthChatPanel's gear menu).
+        // RynthAi pushing it every tick clobbered that toggle, so it lives solely in RynthChat now.
+        bool hideUi = _hideUi;
+        if (Host.HasSetRadarSuppressed)
+            Host.SetRadarSuppressed(hideUi || pushSettings.SuppressRetailRadar);
+        if (Host.HasSetPowerbarSuppressed)
+            Host.SetPowerbarSuppressed(hideUi || pushSettings.SuppressRetailPowerbar);
+
+        // Fellowship-follow: publish the leader's object id so the nav
+        // engine can steer toward their live position. 0 = idle (not in a
+        // fellowship, or we ARE the leader — a leader shouldn't follow itself).
+        if (pushSettings.FollowMode && pushSettings.FollowNamedTargetId != 0)
+        {
+            pushSettings.FollowTargetId = pushSettings.FollowNamedTargetId;
+        }
+        else if (pushSettings.FollowMode && _fellowshipTracker != null)
+        {
+            int leader = _fellowshipTracker.LeaderId;
+            pushSettings.FollowTargetId =
+                (leader != 0 && !_fellowshipTracker.IsLeader) ? unchecked((uint)leader) : 0u;
+        }
+        else
+        {
+            pushSettings.FollowTargetId = 0;
+        }
+    }
+
+    /// <summary>
+    /// Player vitals: AC sends none of its own health through OnUpdateHealth (that is the
+    /// 0x01C0 health-of-a-target message), so this read is how the bot learns health
+    /// dropped. It ran every 30th tick: ~1 s at a background client's 30 fps, 1.5-3 s on a
+    /// slower or busier PC, added to every heal at random (2026-10-05, "heals sometimes
+    /// late"). The engine's snapshot is a locked struct copy kept current by its vitals
+    /// hook, so read it every VitalsPollMs instead.
+    /// </summary>
+    private void PollPlayerVitals()
+    {
+        long vitalsNow = Environment.TickCount64;
+        if (vitalsNow - _lastVitalsPollAt < VitalsPollMs) return;
+        _lastVitalsPollAt = vitalsNow;
+        if (Host.HasGetPlayerVitals &&
+            Host.TryGetPlayerVitals(out uint hp, out uint maxHp, out uint st, out uint maxSt, out uint mp, out uint maxMp))
+        {
+            _vitals.CurrentHealth = hp;
+            _vitals.MaxHealth = maxHp;
+            _vitals.CurrentStamina = st;
+            _vitals.MaxStamina = maxSt;
+            _vitals.CurrentMana = mp;
+            // A big move in the max-mana reading (a death, buffs landing or dropping) is logged:
+            // the floor and the reserve judge mana by it (2026-10-15).
+            if (_vitals.MaxMana > 0 && maxMp > 0
+                && Math.Abs((long)maxMp - _vitals.MaxMana) * 100 >= 15L * _vitals.MaxMana)
+                Host.Log($"[RynthAi] Vitals: max mana reading {_vitals.MaxMana} -> {maxMp} (mana {mp}).");
+            _vitals.MaxMana = maxMp;
+        }
+    }
+
+    /// <summary>Status feed: main-pack empty slots, components, equipment and the remote inventory snapshot.</summary>
+    private void PushInventoryStatus()
+    {
+        ScanInventoryStatus(out int freeSlots, out int scarabs, out int tapers, out var scarabsByType, out var equipment);
+        _dashboard?.SetFreeSlots(freeSlots);
+        _dashboard?.SetComponentCounts(scarabs, tapers, scarabsByType);
+        _dashboard?.SetEquipment(AppraiseEquipment(equipment));
+
+        // Remote full-inventory snapshot (P1) — same 3s gate, reuses the cached walk.
+        ScanInventoryForRemote();
+    }
+
+    /// <summary>Combat telemetry for the status feed, and a [ScanTele] line when the picture changed.</summary>
+    private void PushCombatTelemetry()
+    {
+        var cm = _combatManager;
+        if (cm == null) return;
+        int sTotal = cm.LastScanTotalMonsters;
+        int sRing = cm.LastScanInRing;
+        int sPoss = cm.LastScanPossible;
+        int sLos = cm.LastScanLosBlocked;
+        int atkCasts = cm.SessionAttackCasts;
+        int sinceKill = cm.CastsSinceLastKill;
+        _dashboard?.SetScanCounts(sTotal, sRing, sPoss, sLos);
+        _dashboard?.SetCastStats(atkCasts, sinceKill);
+
+        // Log only when there's something to see, and only when the picture changed,
+        // so a healthy idle bot never spams the per-client log. sinceKill is in the key
+        // so active combat shows periodic progress while a stalled-with-mobs wedge logs
+        // its snapshot once and then stays quiet. (-1 = no scan yet → OR is negative → skip.)
+        if ((sTotal | sRing | sPoss | sLos | atkCasts | sinceKill) > 0)
+        {
+            int sig = ((sTotal & 0x3FF) << 20) ^ ((sRing & 0x3FF) << 10) ^ (sPoss & 0x3FF)
+                      ^ (sLos << 6) ^ (sinceKill << 1);
+            if (sig != _lastCombatTelemetrySig)
+            {
+                _lastCombatTelemetrySig = sig;
+                Host.Log($"[ScanTele] targets total={sTotal} ring={sRing} possible={sPoss} " +
+                         $"losBlk={sLos} | atkCasts={atkCasts} sinceKill={sinceKill}");
+            }
+        }
+    }
 
     private bool _lootInspectMode = true; // always on; /ra lootcheck off to disable
 
@@ -3079,7 +3119,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 foreach (var r in rules)
                     if (r.ElementSource != WeaponList.SourceSet && r.ElementSource.Length > 0 && _loggedWeaponElements.Add((r.Id, r.Element)))
                         Host.Log($"[RynthAi] weapon 0x{(uint)r.Id:X8} '{r.Name}': element {r.Element} (from {r.ElementSource})");
-            if ((DateTime.Now - _loginCompletedAt).TotalMilliseconds < 5000) return;
+            if ((RynthClock.Now - _loginCompletedAt).TotalMilliseconds < 5000) return;
             if (_busyCount > 0 || (Host.HasIsPortaling && Host.IsPortaling())) return;
             var ids = new List<int>(rules.Count);
             foreach (var r in rules) if (r.Id != 0 && !WeaponList.IsShieldRule(r) && cache[r.Id] != null) ids.Add(r.Id);   // shields have no element to identify

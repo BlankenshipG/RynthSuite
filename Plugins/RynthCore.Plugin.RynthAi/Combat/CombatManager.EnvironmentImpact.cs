@@ -25,7 +25,7 @@ namespace RynthCore.Plugin.RynthAi;
 public partial class CombatManager
 {
     /// <summary>Clock for the throttle and the projectile watch; tests replace it.</summary>
-    internal Func<DateTime> EnvClock { get; set; } = () => DateTime.Now;
+    internal Func<DateTime> EnvClock { get; set; } = () => RynthClock.Now;
 
     internal EnvironmentImpactThrottle EnvThrottle { get; } = new();
 

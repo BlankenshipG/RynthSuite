@@ -128,7 +128,7 @@ public partial class BuffManager
             if (IsAwaitingCastResolution()) return "the server hasn't finished the last cast";
             itemsOnly = true;
         }
-        if (vital != OneTouchVital.Health && (DateTime.Now - _lastCastAttempt).TotalMilliseconds < _settings.SpellCastIntervalMs)
+        if (vital != OneTouchVital.Health && (RynthClock.Now - _lastCastAttempt).TotalMilliseconds < _settings.SpellCastIntervalMs)
             return "inside the spell interval";
 
         bool pacerAllows;

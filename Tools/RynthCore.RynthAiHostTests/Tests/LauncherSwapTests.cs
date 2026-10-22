@@ -175,7 +175,7 @@ internal static class LauncherSwapTests
         {
             const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic;
             typeof(CombatManager).GetField("_lockedTargetId", F)!.SetValue(C, unchecked((int)target));
-            typeof(CombatManager).GetField("_targetLockedAt", F)!.SetValue(C, DateTime.Now);
+            typeof(CombatManager).GetField("_targetLockedAt", F)!.SetValue(C, RynthClock.Now);
             typeof(CombatManager).GetField("_lockWasSwitch", F)!.SetValue(C, wasSwitch);
         }
 

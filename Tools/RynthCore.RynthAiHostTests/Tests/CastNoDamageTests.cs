@@ -28,6 +28,100 @@ internal static class CastNoDamageTests
         r.Add("no-damage casts: other monsters still get predicted kills; the memory lapses after 10 min", OthersStillPredicted);
         r.Add("no-damage casts: the chat after a combat cast is logged, swings at us left out, capped, 4 s", CastChatTrace);
         r.Add("no-damage casts (flight 63260): 3 magic casts landing nothing -> one short real sidestep, no cast meanwhile; a hit resets; 30 s apart", ResyncSidestep);
+        r.Add("no-damage casts (R-20261021 c788): a corpse selected mid-fight stops the target's health; its chat hits still count, it is not blacklisted", SelectionElsewhereChatHitsCount);
+    }
+
+    // ── A corpse selected during the fight (report R-20261021-191720-c788, Conquest) ─────────────
+    // "RynthAi interprets a corpse selection during combat as a target for attacks, and stops." The
+    // fight target never changed: the server sends health only for the client's selection, so once
+    // the player selected a corpse (or themselves) no health came for the monster, and a war spell's
+    // hit was seen only in chat, which the no-damage judge didn't count. Three casts that all hit
+    // were "no damage": the live monster was blacklisted, dropped, and combat stopped (the log:
+    // "3 casts with no damage - blacklisting" at a Curator taking 7,000 a cast).
+    private const uint Curator = 0x800F26CD, Marionette = 0x80168E96, Corpse = 0x802B29BD;
+    private const uint CuratorWcid = 40001, MarionetteWcid = 40002;
+    private const string CuratorHit = "You singe Curator of Torment for 7190 points with Incantation of Flame Bolt.";
+
+    private static CombatManager CorpseRig(LegacyUiSettings s)
+    {
+        FakeHost.Reset();
+        FakeHost.WeaponCalls = true;   // installs GetCurrentCombatMode
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        FakeHost.Names[Player] = "Me";
+        FakeHost.Positions[Player] = (Lb | 0x0141, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0141, 96f, 96f, 0f);
+        void Mob(uint id, string name, uint wcid, float north)
+        {
+            FakeHost.Names[id] = name;
+            FakeHost.Positions[id] = (Lb | 0x0141, 96f, 96f + north, 0f);
+            FakeHost.ItemTypes[id] = 0x10;
+            FakeHost.Wcids[id] = wcid;
+        }
+        Mob(Curator, "Curator of Torment", CuratorWcid, 1.9f);
+        Mob(Marionette, "Tormented Marionette", MarionetteWcid, 3f);
+        FakeHost.Names[Corpse] = "Corpse of Qosmos, Guardian of Torment";
+        FakeHost.Positions[Corpse] = (Lb | 0x0141, 97f, 96f, 0f);
+        FakeHost.ItemTypes[Corpse] = 0x200;            // a container
+        FakeHost.Bitfields[Corpse] = 0x00002000;       // the corpse flag
+        FakeHost.NotAttackable.Add(Corpse);
+
+        s.MonsterRange = 20;
+        s.EnableRaycasting = false;    // no raycast warm-up (it suspends the judge)
+        s.BlacklistAttempts = 3;
+        s.BlacklistCastSettleMs = 0;   // each cast is judged at the next one
+        var host = FakeHost.Create();
+        var cache = FakeHost.MakeCache(host, Player, new[] { Curator, Marionette, Corpse });
+        var c = new CombatManager(host, s, cache);
+        c.SetPlayerId(Player);
+        c.SetDamageStores(null, new MonsterDamageStore());
+        c.EngageForTest(unchecked((int)Curator));
+        FakeHost.SelectedItem = Corpse;   // the player clicks the corpse: no health for the Curator from here on
+        return c;
+    }
+
+    /// <summary>Five casts at the Curator, each followed by <paramref name="chat"/> (null: nothing), then one more cast
+    /// so the fifth is judged too.</summary>
+    private static void CastFive(CombatManager c, string? chat)
+    {
+        for (int i = 0; i < 5; i++)
+        {
+            c.RecordOffensiveCast(unchecked((int)Curator));   // judges the cast before it, opens this one's window
+            if (chat != null) c.HandleChatForDamage(chat, 7);
+        }
+        c.RecordOffensiveCast(unchecked((int)Curator));
+    }
+
+    private static void SelectionElsewhereChatHitsCount()
+    {
+        var c = CorpseRig(new LegacyUiSettings());
+        Check.Eq(FakeHost.SelectedItem, Corpse, "the rig: a corpse is selected");
+        CastFive(c, CuratorHit);
+        Check.Eq(unchecked((uint)c.activeTargetId), Curator, "five hits seen in chat: the Curator is still the fight target");
+        Check.False(FakeHost.Chat.Any(l => l.Contains("with no damage", StringComparison.Ordinal)), "no 'casts with no damage' blacklist");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("[Blacklist] 0x800F26CD", StringComparison.Ordinal)), "the Curator was never blacklisted");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("one short sidestep", StringComparison.Ordinal)), "no position re-sync sidestep either");
+        c.ScanNearbyTargets();
+        Check.True(c.ScannedTargets.Any(t => t.Id == unchecked((int)Curator)), "and it stays in the scan");
+        Check.False(c.ScannedTargets.Any(t => t.Id == unchecked((int)Corpse)), "the selected corpse is never a candidate");
+        // A critical hit has its prefix; it counts the same.
+        c.RecordOffensiveCast(unchecked((int)Curator));
+        c.HandleChatForDamage("Critical hit! You singe Curator of Torment for 11259 points with Incantation of Flame Bolt.", 7);
+        c.RecordOffensiveCast(unchecked((int)Curator));
+        Check.Eq(unchecked((uint)c.activeTargetId), Curator, "a critical hit line counts too");
+
+        // The judge still works: casts that land nothing, or hit only another monster, blacklist the target.
+        c = CorpseRig(new LegacyUiSettings());
+        CastFive(c, null);
+        Check.Eq(c.activeTargetId, 0, "no hit line at all: the Curator is blacklisted and dropped, as before");
+        Check.True(FakeHost.Chat.Any(l => l.Contains("3 casts with no damage", StringComparison.Ordinal)), "and chat says so");
+
+        c = CorpseRig(new LegacyUiSettings());
+        CastFive(c, "You singe Tormented Marionette for 4215 points with Incantation of Flame Bolt.");
+        Check.Eq(c.activeTargetId, 0, "hits only on another monster are not the Curator's");
+
+        c = CorpseRig(new LegacyUiSettings());
+        CastFive(c, "You singe Curator of Torment for 0 points with Incantation of Flame Bolt.");
+        Check.Eq(c.activeTargetId, 0, "a 0-point hit is no damage");
     }
 
     private sealed class Rig

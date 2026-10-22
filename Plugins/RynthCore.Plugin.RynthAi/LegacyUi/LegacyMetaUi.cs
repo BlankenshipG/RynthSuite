@@ -139,7 +139,7 @@ internal sealed class LegacyMetaUi
                 ImGuiInputTextFlags.AllowTabInput);
 
             if (!string.IsNullOrEmpty(_sourceApplyMessage) &&
-                (DateTime.Now - _sourceApplyTime).TotalSeconds < 4)
+                (RynthClock.Now - _sourceApplyTime).TotalSeconds < 4)
             {
                 SafeImGui.TextColored(new Vector4(0, 1, 0.4f, 1f), _sourceApplyMessage);
                 ImGui.SameLine();
@@ -174,7 +174,7 @@ internal sealed class LegacyMetaUi
                 {
                     _sourceApplyMessage = $"Error: {ex.Message}";
                 }
-                _sourceApplyTime = DateTime.Now;
+                _sourceApplyTime = RynthClock.Now;
             }
 
             ImGui.SameLine();
@@ -182,7 +182,7 @@ internal sealed class LegacyMetaUi
             {
                 _sourceText = AfFileWriter.SaveToString(_settings.MetaRules, _settings.EmbeddedNavs);
                 _sourceApplyMessage = "Reverted to current rules.";
-                _sourceApplyTime = DateTime.Now;
+                _sourceApplyTime = RynthClock.Now;
             }
 
             RenderMetaEditorPopup();
@@ -210,7 +210,7 @@ internal sealed class LegacyMetaUi
                 bool anyFired = false;
                 foreach (var r in stateRules)
                 {
-                    if ((DateTime.Now - r.LastFiredAt).TotalMilliseconds < 1500)
+                    if ((RynthClock.Now - r.LastFiredAt).TotalMilliseconds < 1500)
                     {
                         anyFired = true;
                         break;
@@ -245,7 +245,7 @@ internal sealed class LegacyMetaUi
 
                     ImGui.TableNextRow();
 
-                    double fadeMs = (DateTime.Now - rule.LastFiredAt).TotalMilliseconds;
+                    double fadeMs = (RynthClock.Now - rule.LastFiredAt).TotalMilliseconds;
                     bool isFlashing = fadeMs < 1500;
                     if (isFlashing)
                     {
@@ -1078,7 +1078,7 @@ internal sealed class LegacyMetaUi
             _openSavePopup = true;
 
         // Status message
-        if (!string.IsNullOrEmpty(_statusMessage) && (DateTime.Now - _statusTime).TotalSeconds < 5)
+        if (!string.IsNullOrEmpty(_statusMessage) && (RynthClock.Now - _statusTime).TotalSeconds < 5)
             SafeImGui.TextColored(new Vector4(0, 1, 0, 1), _statusMessage);
 
         // Save popup
@@ -1158,7 +1158,7 @@ internal sealed class LegacyMetaUi
             _settings.CurrentState = "Default";
             _settings.ForceStateReset = true;
             _statusMessage = "Macro cleared.";
-            _statusTime = DateTime.Now;
+            _statusTime = RynthClock.Now;
             return true;
         }
 
@@ -1174,7 +1174,7 @@ internal sealed class LegacyMetaUi
             else
             {
                 _statusMessage = "Unsupported file type";
-                _statusTime = DateTime.Now;
+                _statusTime = RynthClock.Now;
                 return false;
             }
 
@@ -1186,7 +1186,7 @@ internal sealed class LegacyMetaUi
                 _statusMessage = loaded.Warnings.Count > 0
                     ? $"No rules parsed — {loaded.Warnings.Count} warning(s): {loaded.Warnings[0]}"
                     : "No rules found (profile?)";
-                _statusTime = DateTime.Now;
+                _statusTime = RynthClock.Now;
                 return false;
             }
 
@@ -1207,13 +1207,13 @@ internal sealed class LegacyMetaUi
             _statusMessage = loaded.Warnings.Count == 0
                 ? $"Loaded {loaded.Rules.Count} rules / {stateCount} states / {loaded.EmbeddedNavs.Count} navs from {name}"
                 : $"Loaded {loaded.Rules.Count} rules / {stateCount} states from {name} — {loaded.Warnings.Count} warning(s): {loaded.Warnings[0]}";
-            _statusTime = DateTime.Now;
+            _statusTime = RynthClock.Now;
             return true;
         }
         catch (Exception ex)
         {
             _statusMessage = $"Load error: {ex.Message}";
-            _statusTime = DateTime.Now;
+            _statusTime = RynthClock.Now;
             return false;
         }
     }
@@ -1247,7 +1247,7 @@ internal sealed class LegacyMetaUi
                 path = Path.ChangeExtension(path, ".af");
                 _settings.CurrentMetaPath = path;
                 _statusMessage = $"Converted .met → {Path.GetFileName(path)} for editing (original .met left untouched)";
-                _statusTime = DateTime.Now;
+                _statusTime = RynthClock.Now;
             }
 
             lock (_settings.MetaRulesLock)
@@ -1264,7 +1264,7 @@ internal sealed class LegacyMetaUi
             if (string.IsNullOrWhiteSpace(_saveName))
             {
                 _statusMessage = "Enter a file name";
-                _statusTime = DateTime.Now;
+                _statusTime = RynthClock.Now;
                 return;
             }
 
@@ -1277,18 +1277,18 @@ internal sealed class LegacyMetaUi
             if (!saved)
             {
                 _statusMessage = $"Couldn't save {filePath}: {why}";
-                _statusTime = DateTime.Now;
+                _statusTime = RynthClock.Now;
                 return;
             }
 
             _statusMessage = $"Saved to {_saveName}.af";
-            _statusTime = DateTime.Now;
+            _statusTime = RynthClock.Now;
             RefreshMacroFileList();
         }
         catch (Exception ex)
         {
             _statusMessage = $"Save error: {ex.Message}";
-            _statusTime = DateTime.Now;
+            _statusTime = RynthClock.Now;
         }
     }
 }

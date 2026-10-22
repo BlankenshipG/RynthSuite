@@ -237,7 +237,7 @@ public partial class CombatManager : IDisposable
     // counting it as an attack (no attack interval starts, so the wall goes once settled).
     private bool _wallFaceHeld;
     /// <summary>Tests: the clock the wall facing reads.</summary>
-    internal Func<DateTime> WallClock { get; set; } = () => DateTime.Now;
+    internal Func<DateTime> WallClock { get; set; } = () => RynthClock.Now;
 
     // ── Magic cast cadence guard ────────────────────────────────────────────
     // Don't issue the next combat cast until the previous one's server windup
@@ -676,7 +676,7 @@ public partial class CombatManager : IDisposable
     private DateTime _lockedLastSeenInScan = DateTime.MinValue;
 
     /// <summary>Tests: the clock target selection reads (scan grace, in-flight hold).</summary>
-    internal Func<DateTime> TargetClock { get; set; } = () => DateTime.Now;
+    internal Func<DateTime> TargetClock { get; set; } = () => RynthClock.Now;
 
     public struct ScannedTarget
     {
@@ -903,9 +903,9 @@ public partial class CombatManager : IDisposable
     /// </summary>
     public void ScanNearbyTargets()
     {
-        if ((DateTime.Now - _lastScanTime).TotalMilliseconds < SCAN_INTERVAL_MS)
+        if ((RynthClock.Now - _lastScanTime).TotalMilliseconds < SCAN_INTERVAL_MS)
             return;
-        _lastScanTime = DateTime.Now;
+        _lastScanTime = RynthClock.Now;
 
         // Raycast just became ready (warmup→ready edge, flagged on the bg
         // thread): one-time clean slate. Whatever got blacklisted or had its
@@ -929,7 +929,7 @@ public partial class CombatManager : IDisposable
         // cleared lazily). Allocation-free: scratch list is reused.
         if (_recentlyKilled.Count > 0)
         {
-            DateTime now = DateTime.Now;
+            DateTime now = RynthClock.Now;
             _killPruneScratch.Clear();
             foreach (var kv in _recentlyKilled)
                 if (now >= kv.Value)            // Value = expiry time
@@ -1456,7 +1456,7 @@ public partial class CombatManager : IDisposable
         if (_damageStore == null) return;
         try { LearnFromCombatChat(text); } catch { }
 
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         bool critLine = text.IndexOf("critical", StringComparison.OrdinalIgnoreCase) >= 0;
         if (critLine) _lastCritChatAt = now;
 
@@ -1483,6 +1483,15 @@ public partial class CombatManager : IDisposable
             _dmgDbgCount++;
             _host.Log($"[DmgDbg] amt={amount} crit={crit} victim='{victim}' id=0x{(uint)victimId:X8} fight={(onFight ? 1 : onLastFight ? 2 : 0)} mode={CurrentCombatMode} text='{text}'");
         }
+
+        // A hit on the fight target is damage for the no-damage judge and the no-progress timer,
+        // as a hit on any other monster is (CreditHitToOther). The server sends health only for
+        // the client's selection: once the player selects something else (a corpse, themselves,
+        // an item), the fight target's health stops coming, and this line is the only sign a war
+        // spell landed. Without it, three casts that hit after the player clicked a corpse were
+        // "no damage": the live monster was blacklisted and combat stopped (2026-10-21, Conquest).
+        if (onFight && amount > 0)
+            ReportDamageOnTarget(_fightTargetId);
 
         if (!onFight && !onLastFight)
         {
@@ -1751,7 +1760,7 @@ public partial class CombatManager : IDisposable
         {
             NoteDebuffLanded();
             _waitingForDebuffResult = false;
-            _lastSpellCast = DateTime.Now;
+            _lastSpellCast = RynthClock.Now;
             return;
         }
 
@@ -1794,7 +1803,7 @@ public partial class CombatManager : IDisposable
             _host.WriteToChat($"[RynthAi] {what}: {_pendingDebuffKey} — recasting", 2);
         }
         _waitingForDebuffResult = false;
-        _lastSpellCast = DateTime.Now;
+        _lastSpellCast = RynthClock.Now;
     }
 
     /// <summary>
@@ -1806,7 +1815,7 @@ public partial class CombatManager : IDisposable
     private void NoteDebuffLanded()
     {
         int seconds = SpellDatabase.DurationSeconds(_pendingDebuffSpellId);
-        _debuffs.Landed(_pendingDebuffTargetId, _pendingDebuffKey ?? "", seconds, DateTime.Now);
+        _debuffs.Landed(_pendingDebuffTargetId, _pendingDebuffKey ?? "", seconds, RynthClock.Now);
         if (seconds > 0)
             _host.Log($"[CombatCast] debuff {_pendingDebuffKey} on 0x{(uint)_pendingDebuffTargetId:X8}: lasts {seconds} s, renewed in {seconds - DebuffTimers.Lead(seconds):0} s");
     }
@@ -1926,7 +1935,7 @@ public partial class CombatManager : IDisposable
 
     /// <summary>True while a back-away is holding combat (jump or settle).</summary>
     public bool BackAwayActive =>
-        _backAwayUntil != DateTime.MinValue && DateTime.Now < _backAwayUntil;
+        _backAwayUntil != DateTime.MinValue && RynthClock.Now < _backAwayUntil;
 
     /// <summary>
     /// Backs the character away from <paramref name="objectId"/> when it is within the danger radius:
@@ -1967,7 +1976,7 @@ public partial class CombatManager : IDisposable
         int hold = Math.Clamp(holdMs, BackAwayMinHoldMs, BackAwayMaxHoldMs);
         _backAwayJumpStarted = false;
         // Hold combat long enough for turn + charge + land + one re-engage tick.
-        _backAwayUntil = DateTime.Now.AddMilliseconds(hold + BackAwaySettleMs);
+        _backAwayUntil = RynthClock.Now.AddMilliseconds(hold + BackAwaySettleMs);
 
         // Stop the bound melee/missile attack so the jump isn't eaten by the swing servo.
         try
@@ -1996,7 +2005,7 @@ public partial class CombatManager : IDisposable
     private bool TickBackAway()
     {
         if (_backAwayUntil == DateTime.MinValue) return false;
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         bool jumperBusy = JumpBusy?.Invoke() == true;
 
         // Jump never started / failed: clear early.
@@ -2033,7 +2042,7 @@ public partial class CombatManager : IDisposable
             _consecutiveCastMisses = 0;
         _blacklistManager.ClearFailure(targetId);
         if (targetId == activeTargetId || targetId == _lockedTargetId)
-            _lastDamageDealtAt = DateTime.Now;
+            _lastDamageDealtAt = RynthClock.Now;
     }
 
     /// <summary>
@@ -2064,7 +2073,7 @@ public partial class CombatManager : IDisposable
 
     private void NoteSwingEvidence(string kind)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         _lastSwingEvidenceAt = now;
         _lastSwingEvidenceKind = kind;
         _attacksSinceEvidence = 0;
@@ -2099,7 +2108,7 @@ public partial class CombatManager : IDisposable
         _host.CancelAttack();
         if (!log) return;
 
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if ((now - _lastRebindLogAt).TotalMilliseconds < 2000) { _rebindLogSuppressed++; return; }
         string more = _rebindLogSuppressed > 0 ? $" (+{_rebindLogSuppressed} more since last line)" : "";
         _rebindLogSuppressed = 0;
@@ -2197,7 +2206,7 @@ public partial class CombatManager : IDisposable
 
     private void ReportNoDamageCasts(int tid)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if ((now - _lastNoDamageReportAt).TotalMilliseconds < NoDamageReportGapMs) return;
         _lastNoDamageReportAt = now;
         try
@@ -2226,7 +2235,7 @@ public partial class CombatManager : IDisposable
         if (tid == 0 || tid != _lockedTargetId || _targetLockedAt == DateTime.MinValue) return false;
         if (_lastSwingEvidenceAt >= _targetLockedAt) return false;
         if (_lockSpot == null || TargetSpot(tid) is not GhostSpot now || now.MovedFrom(_lockSpot.Value)) return false;
-        silentMs = ServerSilentMs(tid, DateTime.Now);
+        silentMs = ServerSilentMs(tid, RynthClock.Now);
         return silentMs < 0 || silentMs >= GhostCheck.NoUpdateMs;
     }
 
@@ -2234,7 +2243,7 @@ public partial class CombatManager : IDisposable
     {
         if (_pendingJudgeCastAt == DateTime.MinValue) return;
         if (RaycastWarmingUp) { _pendingJudgeCastAt = DateTime.MinValue; return; }
-        if ((DateTime.Now - _pendingJudgeCastAt).TotalMilliseconds < _settings.BlacklistCastSettleMs)
+        if ((RynthClock.Now - _pendingJudgeCastAt).TotalMilliseconds < _settings.BlacklistCastSettleMs)
             return; // not settled yet — give the damage/health packet time
 
         int tid  = _pendingJudgeTargetId;
@@ -2283,7 +2292,7 @@ public partial class CombatManager : IDisposable
         if (_pendingOffensiveTargetId == 0) return;
         if (_pendingOffensiveCastAt == DateTime.MinValue) return;
         ObserveOffensiveAnswer();
-        if ((DateTime.Now - _pendingOffensiveCastAt).TotalMilliseconds < OffensiveRefusalWindowMs)
+        if ((RynthClock.Now - _pendingOffensiveCastAt).TotalMilliseconds < OffensiveRefusalWindowMs)
             return;
 
         // A refusal is not a cast (in a client log, three healthy targets were blacklisted 'after 3
@@ -2336,7 +2345,7 @@ public partial class CombatManager : IDisposable
         // in-flight hold (Target Lock off, AttackInFlightAtLocked) tracks the most
         // recent cast. Stamping only on change would end the hold mid-fight while
         // still casting at the same mob — the in-flight abandonment it exists to stop.
-        _lastAttackedAt = TargetClock();   // DateTime.Now outside tests
+        _lastAttackedAt = TargetClock();   // RynthClock.Now outside tests
 
         JudgePendingCast(); // verdict on the prior attack if its settle window elapsed
 
@@ -2345,7 +2354,7 @@ public partial class CombatManager : IDisposable
         // clears _pendingJudgeCastAt on settle, so the next attack re-arms here.
         if (_pendingJudgeCastAt != DateTime.MinValue) return;
 
-        _pendingJudgeCastAt   = DateTime.Now;
+        _pendingJudgeCastAt   = RynthClock.Now;
         _pendingJudgeTargetId = targetId;
         _damageSincePendingCast = false;
     }
@@ -2422,7 +2431,7 @@ public partial class CombatManager : IDisposable
         int swapId = activeTargetId;
         if (swapId == 0) return;
 
-        _recentlyKilled[swapId] = DateTime.Now.AddMilliseconds(PREDICTED_SWAP_SUPPRESS_MS);
+        _recentlyKilled[swapId] = RynthClock.Now.AddMilliseconds(PREDICTED_SWAP_SUPPRESS_MS);
         ForgetScanned(swapId);
         _predictedSwapAt[swapId] = TargetClock();   // fought again later = it didn't die (PredictionFailed)
         // Queue this predicted one-shot so it's CREDITED when its death confirms —
@@ -2431,12 +2440,12 @@ public partial class CombatManager : IDisposable
         string pkName = _worldFilter[swapId]?.Name ?? _fightTargetName;
         if (_fightTargetWcid != 0 && _fightCastCount > 0 && !string.IsNullOrEmpty(pkName))
         {
-            DateTime nowSwap = DateTime.Now;
+            DateTime nowSwap = RynthClock.Now;
             _predictedKillPending.RemoveAll(p => p.Expiry < nowSwap);
             _predictedKillPending.Add(new PendingKill(
                 pkName, _fightTargetWcid, _fightCastCount,
                 _lastCastWeaponId, _lastCastElement, _lastCastTier, _fightDamage,
-                DateTime.Now.AddSeconds(5), _fightStartedAt, _fightSummon, swapId));
+                RynthClock.Now.AddSeconds(5), _fightStartedAt, _fightSummon, swapId));
         }
         _host.Log($"[RynthAi] Predicted kill shot 0x{swapId:X8} '{_worldFilter[swapId]?.Name}' (cast#{_fightCastCount} hp~{_fightTargetMaxHp:0} dealt~{_fightDamage:0}) — confirmed accepted, swapping to next target.");
         // The pending-offensive judge state belongs to the mob being dropped —
@@ -2471,7 +2480,7 @@ public partial class CombatManager : IDisposable
         // the fight state has already been cleared/advanced by the time the corpse's
         // KillerNotification lands. Three tiers, most-specific first.
         if (_damageStore == null) return;
-        DateTime nowKill = DateTime.Now;
+        DateTime nowKill = RynthClock.Now;
         _predictedKillPending.RemoveAll(p => p.Expiry < nowKill);
 
         bool recorded = false;
@@ -2640,7 +2649,7 @@ public partial class CombatManager : IDisposable
         if (id == 0) return;
         var pk = new PendingKill(_lastFightName, _lastFightWcid, _lastFightCount > 0 ? _lastFightCount : 1,
                                  _lastFightWeaponId, _lastFightElement, _lastFightTier, 0,
-                                 DateTime.Now.AddMilliseconds(RecentFightTtlMs));
+                                 RynthClock.Now.AddMilliseconds(RecentFightTtlMs));
         for (int i = _recentFights.Count - 1; i >= 0; i--)
             if (_recentFights[i].Id == id) _recentFights.RemoveAt(i);
         _recentFights.Add((id, pk));
@@ -2728,7 +2737,7 @@ public partial class CombatManager : IDisposable
         _fightStartedAt = default;
         _fightSummon = null;
         if (targetId == 0) return;
-        _fightStartedAt = DateTime.Now;
+        _fightStartedAt = RynthClock.Now;
         _fightSummon = SummonOut?.Invoke();
         _fightTargetName = _worldFilter[targetId]?.Name ?? "";
         if (_host.HasGetObjectWcid && _host.TryGetObjectWcid((uint)targetId, out uint wcid))
@@ -3029,7 +3038,7 @@ public partial class CombatManager : IDisposable
         // attacks again, target or not — see ContinueStallRewield.
         if (_stallRewieldId != 0 && ContinueStallRewield())
         {
-            _stallWatch.Hold(DateTime.Now);
+            _stallWatch.Hold(RynthClock.Now);
             return true;
         }
 
@@ -3085,7 +3094,7 @@ public partial class CombatManager : IDisposable
             // refused/fizzled/resisted cast still cancels the arm in HandleChatForDebuffs.
             if (activeTargetId == 0 || _predictArmTargetId != activeTargetId)
                 _predictKillSwapArmed = false; // target already advanced/dropped — stale arm
-            else if ((DateTime.Now - _predictArmCastAt).TotalMilliseconds >= OffensiveRefusalWindowMs)
+            else if ((RynthClock.Now - _predictArmCastAt).TotalMilliseconds >= OffensiveRefusalWindowMs)
             {
                 // ⚠ Do NOT drop the target while the cast gesture is still
                 // animating. A high-tier cast (Force Arc VII) winds up ~2s,
@@ -3098,7 +3107,7 @@ public partial class CombatManager : IDisposable
                 // damage and the predicted swap is correct. Bounded by a
                 // timeout so a missing/forever gesture can't arm-lock combat.
                 bool released = _predictSwapGestureSeen && (!_host.HasGetCastBusyState || _host.CanCastNow);
-                bool timedOut = (DateTime.Now - _predictArmCastAt).TotalMilliseconds >= PredictKillSwapMaxWaitMs;
+                bool timedOut = (RynthClock.Now - _predictArmCastAt).TotalMilliseconds >= PredictKillSwapMaxWaitMs;
                 if (released || timedOut)
                     ExecuteDeferredKillSwap();
             }
@@ -3159,7 +3168,7 @@ public partial class CombatManager : IDisposable
             bool peaceHeld = false;
             if (_settings.PeaceModeWhenIdle && CurrentCombatMode != CombatMode.NonCombat
                 && _scannedTargets.Count == 0 && BusyCount == 0
-                && DateTime.Now >= _navMagicWantedUntil)   // a nav recall wants Magic mode
+                && RynthClock.Now >= _navMagicWantedUntil)   // a nav recall wants Magic mode
             {
                 try { peaceHeld = HoldIdlePeace?.Invoke() == true; } catch { peaceHeld = false; }
                 if (peaceHeld && !_idlePeaceHeldLogged)
@@ -3171,7 +3180,7 @@ public partial class CombatManager : IDisposable
             if (!peaceHeld) _idlePeaceHeldLogged = false;
             if (!peaceHeld && _settings.PeaceModeWhenIdle && CurrentCombatMode != CombatMode.NonCombat
                 && _scannedTargets.Count == 0 && BusyCount == 0
-                && DateTime.Now >= _navMagicWantedUntil)   // a nav recall wants Magic mode
+                && RynthClock.Now >= _navMagicWantedUntil)   // a nav recall wants Magic mode
             {
                 // Defer idle peace-swap while a cast at the just-dropped target is still
                 // resolving: ChangeCombatMode truncates the in-flight gesture → strands
@@ -3180,10 +3189,10 @@ public partial class CombatManager : IDisposable
                 // 4 after that up to 15 s. An unbounded ChangeCombatMode stream is the
                 // 2026-05-25 stance-spam crash class; this used to retry every 500 ms forever.
                 double peaceDelayMs = Math.Min(15_000, 500 * Math.Pow(2, Math.Min(5, _idlePeaceAttempts / 4)));
-                if ((DateTime.Now - _lastPeaceAttempt).TotalMilliseconds > peaceDelayMs && !IsCastInFlight()
+                if ((RynthClock.Now - _lastPeaceAttempt).TotalMilliseconds > peaceDelayMs && !IsCastInFlight()
                     && _host.ChangeCombatModeFor(CombatMode.NonCombat, "Combat", "idle: no target (Peace Mode When Idle)"))
                 {
-                    _lastPeaceAttempt = DateTime.Now;
+                    _lastPeaceAttempt = RynthClock.Now;
                     _idlePeaceAttempts++;
                     if (_idlePeaceAttempts == 16)
                         _host.Log($"[EquipDiag] WARNING: {_idlePeaceAttempts} idle peace-mode requests without reaching peace (mode={CurrentCombatMode}) — backing off to {Math.Min(15_000, 500 * Math.Pow(2, Math.Min(5, _idlePeaceAttempts / 4))) / 1000:0.#}s retries.");
@@ -3203,9 +3212,9 @@ public partial class CombatManager : IDisposable
             // Give it a grace period before dropping — one bad LOS result or scan gap shouldn't
             // hand control to navigation mid-fight.
             if (_targetLostScanTime == DateTime.MinValue)
-                _targetLostScanTime = DateTime.Now;
+                _targetLostScanTime = RynthClock.Now;
 
-            if ((DateTime.Now - _targetLostScanTime).TotalMilliseconds > TARGET_SCAN_GRACE_MS)
+            if ((RynthClock.Now - _targetLostScanTime).TotalMilliseconds > TARGET_SCAN_GRACE_MS)
                 DropTarget("scan grace expired");
             return true;
         }
@@ -3241,7 +3250,7 @@ public partial class CombatManager : IDisposable
         if (noProgressTimeoutSec > 0 && _targetLockedAt != DateTime.MinValue && !RaycastWarmingUp)
         {
             DateTime refTime = _lastDamageDealtAt != DateTime.MinValue ? _lastDamageDealtAt : _targetLockedAt;
-            if ((DateTime.Now - refTime).TotalSeconds > noProgressTimeoutSec)
+            if ((RynthClock.Now - refTime).TotalSeconds > noProgressTimeoutSec)
             {
                 _host.WriteToChat($"[RynthAi] No progress on {targetObj.Name} after {noProgressTimeoutSec}s — blacklisting", 2);
                 _blacklistManager.TimeoutSeconds = _settings.BlacklistTimeoutSec;
@@ -3331,7 +3340,7 @@ public partial class CombatManager : IDisposable
         double attackCmdIntervalMs = AttackIntervalMs(CurrentCombatMode, _settings.AttackSpellIntervalMs,
             hasServerGates: _host.HasUseDoneSeq && _host.HasGetCastBusyState,
             newTarget: activeTargetId != _lastAttackCmdTargetId);
-        if ((DateTime.Now - lastAttackCmd).TotalMilliseconds < attackCmdIntervalMs)
+        if ((RynthClock.Now - lastAttackCmd).TotalMilliseconds < attackCmdIntervalMs)
             _tickWait = CombatLatencyTracker.Wait.Interval;
         else
         {
@@ -3409,13 +3418,13 @@ public partial class CombatManager : IDisposable
                 {
                     ClearCombatTurnMotions();
                     _facingTarget = false;
-                    _faceSettledAt = DateTime.Now;
+                    _faceSettledAt = RynthClock.Now;
                     LastCombatSkipReason = "face-settle-release"; // D4 record-only
                     _tickWait = CombatLatencyTracker.Wait.Face;
                     return true; // settle tick
                 }
                 if (CurrentCombatMode == CombatMode.Magic
-                    && (DateTime.Now - _faceSettledAt).TotalMilliseconds < FACE_SETTLE_MS)
+                    && (RynthClock.Now - _faceSettledAt).TotalMilliseconds < FACE_SETTLE_MS)
                 {
                     LastCombatSkipReason = "face-settle-wait"; // D4 record-only
                     _tickWait = CombatLatencyTracker.Wait.Face;
@@ -3438,9 +3447,9 @@ public partial class CombatManager : IDisposable
                     if (!_facingTarget)
                     {
                         _facingTarget = true;
-                        _faceStartTime = DateTime.Now;
+                        _faceStartTime = RynthClock.Now;
                     }
-                    if ((DateTime.Now - _faceStartTime).TotalMilliseconds < FACE_TIMEOUT_MS)
+                    if ((RynthClock.Now - _faceStartTime).TotalMilliseconds < FACE_TIMEOUT_MS)
                     {
                         _tickWait = CombatLatencyTracker.Wait.Face;
                         return true; // not facing yet, keep waiting
@@ -3462,7 +3471,7 @@ public partial class CombatManager : IDisposable
             // Don't attack in missile mode without ammo
             if (CurrentCombatMode == CombatMode.Missile && !HasWieldedAmmo())
             {
-                _lastMissileNoAmmoAt = DateTime.Now;   // waiting on ammo is not a stall
+                _lastMissileNoAmmoAt = RynthClock.Now;   // waiting on ammo is not a stall
                 LastCombatSkipReason = "no-ammo";      // D4 record-only
                 return true;
             }
@@ -3490,8 +3499,8 @@ public partial class CombatManager : IDisposable
                 // cast and AC paces the swing animation itself.
                 if (!CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s)))
                 {
-                    if ((DateTime.Now - lastAttackCmd).TotalMilliseconds > 5000)
-                        _host.Log($"[CombatCast] CanCastNow=false — gesture gate blocking cast (last attack {(DateTime.Now - lastAttackCmd).TotalMilliseconds:0}ms ago, target=0x{activeTargetId:X8})");
+                    if ((RynthClock.Now - lastAttackCmd).TotalMilliseconds > 5000)
+                        _host.Log($"[CombatCast] CanCastNow=false — gesture gate blocking cast (last attack {(RynthClock.Now - lastAttackCmd).TotalMilliseconds:0}ms ago, target=0x{activeTargetId:X8})");
                     LastCombatSkipReason = "cast-gate"; // D4 record-only (CanCastNow=false)
                     _tickWait = CombatLatencyTracker.Wait.Cast;
                     return true;
@@ -3578,11 +3587,11 @@ public partial class CombatManager : IDisposable
                             _savedWeaponId = 0;
                             _returnToPhysicalCombat = true;
                             _host.UseFor((uint)wandId, "Combat", "wield the wand to cast");
-                            _lastEquipTime = DateTime.Now; // gate AttackWithMagic until wand is wielded
+                            _lastEquipTime = RynthClock.Now; // gate AttackWithMagic until wand is wielded
                             // Held by the pacing until the wield is answered; the wielded branch of
                             // EquipWeaponAndSetStance sends it then (2026-10-06).
                             _host.ChangeCombatModeFor(CombatMode.Magic, "Combat", "debuff: Magic mode after the wand");
-                            lastAttackCmd = DateTime.Now;
+                            lastAttackCmd = RynthClock.Now;
                             _lastAttackCmdTargetId = activeTargetId;
                             return true;
                         }
@@ -3606,7 +3615,7 @@ public partial class CombatManager : IDisposable
             bool magicMode = CurrentCombatMode == CombatMode.Magic && _spellManager != null;
             if (!_lastCastWasRing && (!magicMode || _offensiveCastThisCycle) && physicalSent)
                 RecordOffensiveCast(activeTargetId);
-            lastAttackCmd = DateTime.Now;
+            lastAttackCmd = RynthClock.Now;
             _lastAttackCmdTargetId = activeTargetId;
             // A rebind sent only the CancelAttack: the attack follows as soon as the cancel can
             // have landed, not a whole interval later ("lock->attack 1750 ms (interval 1671)").
@@ -3630,7 +3639,7 @@ public partial class CombatManager : IDisposable
                     _predictSwapGestureSeen = false; // must observe the cast windup before swapping
                     // AttackWithMagic just set these for the cast that predicted the kill.
                     _predictArmTargetId = _pendingOffensiveTargetId != 0 ? _pendingOffensiveTargetId : activeTargetId;
-                    _predictArmCastAt   = _pendingOffensiveCastAt != DateTime.MinValue ? _pendingOffensiveCastAt : DateTime.Now;
+                    _predictArmCastAt   = _pendingOffensiveCastAt != DateTime.MinValue ? _pendingOffensiveCastAt : RynthClock.Now;
                 }
             }
         }
@@ -3648,7 +3657,7 @@ public partial class CombatManager : IDisposable
     {
         long msSinceAttack = lastAttackCmd == DateTime.MinValue
             ? -1
-            : (long)(DateTime.Now - lastAttackCmd).TotalMilliseconds;
+            : (long)(RynthClock.Now - lastAttackCmd).TotalMilliseconds;
         string attackBucket = msSinceAttack < 0 ? "never"
                             : msSinceAttack < 3000 ? "recent"
                             : msSinceAttack < 10_000 ? "stale"
@@ -3674,7 +3683,7 @@ public partial class CombatManager : IDisposable
     /// </summary>
     private bool RunStallWatchdog(WorldObject targetObj, double currentDist)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         int mode = CurrentCombatMode;
         bool physical = mode == CombatMode.Melee || mode == CombatMode.Missile;
         bool toggling = _stallToggleAt != DateTime.MinValue
@@ -3826,7 +3835,7 @@ public partial class CombatManager : IDisposable
         uint pid = _playerId != 0 ? _playerId : _host.GetPlayerId();
         uint lb = pid != 0 && _host.TryGetObjectPosition(pid, out uint pc, out _, out _, out _) ? pc >> 16 : 0;
         GhostSpot spot = TargetSpot(id) ?? new GhostSpot(double.NaN, double.NaN, double.NaN);
-        Ghosts.Mark(id, name ?? "", spot, lb, DateTime.Now);
+        Ghosts.Mark(id, name ?? "", spot, lb, RynthClock.Now);
         _blacklistManager.ClearFailure(id);
         string silent = silentMs < 0 ? "nothing from the server about it since it was first seen" : $"nothing from the server about it for {silentMs / 1000:0}s";
         _host.Log($"[Ghost] 0x{id:X8} '{name}' is a ghost: {why}, {silent}, it hasn't moved [{DescribeTargetPos(id)}]. " +
@@ -3847,10 +3856,10 @@ public partial class CombatManager : IDisposable
     }
 
     /// <summary>The server sent an update for <paramref name="objectId"/> (RynthAiPlugin.OnUpdateObject).</summary>
-    public void OnServerObjectUpdate(uint objectId) => Ghosts.NoteServerUpdate((int)objectId, DateTime.Now);
+    public void OnServerObjectUpdate(uint objectId) => Ghosts.NoteServerUpdate((int)objectId, RynthClock.Now);
 
     /// <summary>The server created <paramref name="objectId"/> (RynthAiPlugin.OnCreateObject).</summary>
-    public void OnObjectCreated(uint objectId) => Ghosts.NoteServerUpdate((int)objectId, DateTime.Now, "the server created it again");
+    public void OnObjectCreated(uint objectId) => Ghosts.NoteServerUpdate((int)objectId, RynthClock.Now, "the server created it again");
 
     /// <summary>
     /// Samples the swing animation and the character's position every stall-watch tick and says
@@ -3918,7 +3927,7 @@ public partial class CombatManager : IDisposable
     public int AttackRebinds   => _attackRebinds;
     public string LastSwingEvidenceDescription => _lastSwingEvidenceAt == DateTime.MinValue
         ? "never"
-        : $"{_lastSwingEvidenceKind} {(DateTime.Now - _lastSwingEvidenceAt).TotalSeconds:0.0}s ago";
+        : $"{_lastSwingEvidenceKind} {(RynthClock.Now - _lastSwingEvidenceAt).TotalSeconds:0.0}s ago";
     private string LastStallStepName => _lastStallStep switch
     {
         CombatStallWatchdog.StallAction.Reissue    => "1 (re-issue)",
@@ -3978,7 +3987,7 @@ public partial class CombatManager : IDisposable
             _host.Log($"{head} re-wield: 0x{wid:X8} '{wo.Name}' -> pack 0x{pack:X8}, then wield it again");
         }
         _stallRewieldId = wid;
-        _stallRewieldAt = DateTime.Now;
+        _stallRewieldAt = RynthClock.Now;
         _stallRewieldCheckAt = DateTime.MinValue;
     }
 
@@ -3990,7 +3999,7 @@ public partial class CombatManager : IDisposable
     /// </summary>
     private bool ContinueStallRewield()
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         int mode = CurrentCombatMode;
         if (mode == CombatMode.Magic)
         {
@@ -4045,7 +4054,7 @@ public partial class CombatManager : IDisposable
     /// first declared (once per episode).</summary>
     private void LogStallSnapshot(WorldObject targetObj, double dist, double stalledMs)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         string Ago(DateTime t) => t == DateTime.MinValue ? "never" : $"{(now - t).TotalMilliseconds:0}ms ago";
         int tid = activeTargetId;
 
@@ -4306,13 +4315,13 @@ public partial class CombatManager : IDisposable
 
         // [CombatLatency]: time this engagement from the lock to its first attack.
         double lockMs = Environment.TickCount64;
-        double sinceKillMs = _lastKillAt == DateTime.MinValue ? double.MaxValue : (DateTime.Now - _lastKillAt).TotalMilliseconds;
+        double sinceKillMs = _lastKillAt == DateTime.MinValue ? double.MaxValue : (RynthClock.Now - _lastKillAt).TotalMilliseconds;
         _latency.OnLock(bestId, lockMs, sinceKillMs <= 2000 ? lockMs - sinceKillMs : double.NaN);
 
         activeTargetId      = bestId;
         _lockedTargetId     = bestId;
         _lockedPriority     = bestPriority;
-        _targetLockedAt     = DateTime.Now;
+        _targetLockedAt     = RynthClock.Now;
         _lockSpot           = TargetSpot(bestId);
         _lastDamageDealtAt  = DateTime.MinValue;
         _lockedLastSeen       = best;   // it was in this tick's scan: the grace covers a blink next tick
@@ -4456,7 +4465,7 @@ public partial class CombatManager : IDisposable
     {
         var rules = _settings.MonsterRules;
         if (!ReferenceEquals(rules, _priorityCacheRules)) { _priorityCache.Clear(); _priorityCacheRules = rules; }
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (_priorityCache.TryGetValue(id, out var hit) && (now - hit.At).TotalMilliseconds < PriorityCacheMs)
             return hit.Priority;
         if (_priorityCache.Count > 512) _priorityCache.Clear();
@@ -4495,7 +4504,7 @@ public partial class CombatManager : IDisposable
     {
         // The equip path and the spell path both ask every tick; the answer only moves when
         // the target, the rule, the list or the hand does, so reuse it for a quarter second.
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         int hand = InHandWeaponId();
         var list = _settings.ItemRules;
         if (_planCache is { } pc && pc.TargetId == target.Id && ReferenceEquals(pc.Rule, rule) && ReferenceEquals(pc.List, list)
@@ -4685,7 +4694,7 @@ public partial class CombatManager : IDisposable
                 // Not within NotCarriedGraceMs of a wield or move of ours: mid-swap a weapon is
                 // briefly in neither hand nor the pack walk. Drakkon's Acid Hand Wraps were dropped
                 // from the choice that way on 2026-10-17 and he fought bare-handed.
-                if ((DateTime.Now - _lastEquipTime).TotalMilliseconds >= NotCarriedGraceMs)
+                if ((RynthClock.Now - _lastEquipTime).TotalMilliseconds >= NotCarriedGraceMs)
                 {
                     if (_notCarriedNoted.Add(r.Id))
                         _host.Log($"[EquipDiag] listed weapon 0x{(uint)r.Id:X8} '{wo.Name}' isn't in your pack (sold, dropped or traded?): skipped");
@@ -4727,7 +4736,7 @@ public partial class CombatManager : IDisposable
     internal int InHandWeaponId(bool fresh = false)
     {
         if (InHandOverride != null) return InHandOverride();
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (!fresh && (now - _inHandReadAt).TotalMilliseconds < InHandReadMs) return _inHandId;
         _inHandReadAt = now;
         int found = 0;
@@ -4813,7 +4822,7 @@ public partial class CombatManager : IDisposable
         if (!_settings.RearmAfterVitals || _fightMainId == 0) return false;
         DateTime vital = LastVitalCastAt?.Invoke() ?? DateTime.MinValue;
         if (vital == DateTime.MinValue || vital <= _rearmedFor) return false;
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if ((now - vital).TotalMilliseconds < RearmSettleMs) return false;   // another vitals spell may follow
         bool buffing;
         try { buffing = BuffingWantsTick?.Invoke() == true; } catch { buffing = true; }
@@ -5007,7 +5016,7 @@ public partial class CombatManager : IDisposable
     internal bool SkillTooLowFor(int id)
     {
         if (!_skillTooLowUntil.TryGetValue(id, out DateTime until)) return false;
-        if (DateTime.Now < until) return true;
+        if (RynthClock.Now < until) return true;
         _skillTooLowUntil.Remove(id);
         return false;
     }
@@ -5016,7 +5025,7 @@ public partial class CombatManager : IDisposable
     {
         if (id == 0) return;
         bool first = !_skillTooLowUntil.ContainsKey(id);
-        _skillTooLowUntil[id] = DateTime.Now.AddMinutes(SkillTooLowSkipMin);
+        _skillTooLowUntil[id] = RynthClock.Now.AddMinutes(SkillTooLowSkipMin);
         _planCache = null;
         if (first)
         {
@@ -5032,7 +5041,7 @@ public partial class CombatManager : IDisposable
     /// </summary>
     private WeaponSwapTracker.Step SwapStep(int chosenId, int inHandId)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         FoldServerAnswer(SwapTracker, now);
         var step = SwapTracker.Next(chosenId, inHandId, now, WeaponName, forKey: activeTargetId);
         if (SwapTracker.Notice != null)
@@ -5046,9 +5055,9 @@ public partial class CombatManager : IDisposable
                 NoteSkillTooLow(gaveUp, "it never reached your hand (the client refused the wield)");
         }
         SwapTracker.GaveUpId = null;
-        if (step == WeaponSwapTracker.Step.Hold && (DateTime.Now - _lastSwapHoldLogAt).TotalSeconds > 10)
+        if (step == WeaponSwapTracker.Step.Hold && (RynthClock.Now - _lastSwapHoldLogAt).TotalSeconds > 10)
         {
-            _lastSwapHoldLogAt = DateTime.Now;
+            _lastSwapHoldLogAt = RynthClock.Now;
             _host.Log($"[EquipDiag] keeping 0x{(uint)inHandId:X8} '{WeaponName(inHandId)}' instead of 0x{(uint)chosenId:X8} '{WeaponName(chosenId)}' ({SwapTracker.HoldReason})");
         }
         return step;
@@ -5075,7 +5084,7 @@ public partial class CombatManager : IDisposable
         int settleMs = _settings.WeaponSwapSettleMs;
         if (settleMs > 0 && _lockWasSwitch && _lockedTargetId == target.Id && _targetLockedAt != DateTime.MinValue)
         {
-            double lockedMs = (DateTime.Now - _targetLockedAt).TotalMilliseconds;
+            double lockedMs = (RynthClock.Now - _targetLockedAt).TotalMilliseconds;
             if (lockedMs >= 0 && lockedMs < settleMs)
             {
                 settling = true;
@@ -5115,7 +5124,7 @@ public partial class CombatManager : IDisposable
     private void LogSwapDefer(int chosenId, int inHand, string why)
     {
         var key = (chosenId, inHand, why.StartsWith("target switched", StringComparison.Ordinal));
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (key == _lastSwapDeferLogged && (now - _lastSwapDeferLogAt).TotalSeconds < 10) return;
         _lastSwapDeferLogged = key;
         _lastSwapDeferLogAt = now;
@@ -5136,7 +5145,7 @@ public partial class CombatManager : IDisposable
     /// holds further swaps until it lands, is refused, or times out.</summary>
     private void MarkWieldSent(int weaponId, int inHandId)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (_host.HasGetLastUseDone && _host.TryGetLastUseDone(out int uSeq, out _)) _swapUseDoneSeq = uSeq;
         if (_host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out int wSeq, out _, out _, out _)) _swapWeenieSeq = wSeq;
         SwapTracker.Sent(weaponId, inHandId, now);
@@ -5247,7 +5256,7 @@ public partial class CombatManager : IDisposable
                 default: return false;
             }
         }
-        if (inHand == 0 || inHand == weaponId) { SwapTracker.Confirmed(weaponId, DateTime.Now); if (inHand == weaponId) _equippedWeaponId = weaponId; return false; }
+        if (inHand == 0 || inHand == weaponId) { SwapTracker.Confirmed(weaponId, RynthClock.Now); if (inHand == weaponId) _equippedWeaponId = weaponId; return false; }
         if (WeaponKind(inHand) != desiredMode) return false;   // a cross-kind case; the branches below handle it
 
         _equippedWeaponId = inHand;
@@ -5286,10 +5295,10 @@ public partial class CombatManager : IDisposable
             ResetStanceFlipBackoff();
             return true;
         }
-        if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+        if ((RynthClock.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
             && _host.ChangeCombatModeFor(CombatMode.Melee, "Combat", "stance"))
         {
-            lastStanceAttempt = DateTime.Now;
+            lastStanceAttempt = RynthClock.Now;
             NoteStanceFlipSent();
         }
         return false;
@@ -5318,9 +5327,9 @@ public partial class CombatManager : IDisposable
         }
         if (targetWeaponId == 0)
         {
-            if ((DateTime.Now - _lastEquipDiagAt).TotalSeconds > 5)
+            if ((RynthClock.Now - _lastEquipDiagAt).TotalSeconds > 5)
             {
-                _lastEquipDiagAt = DateTime.Now;
+                _lastEquipDiagAt = RynthClock.Now;
                 _host.Log($"[EquipDiag] no weapon found (source=none, desired='{desired}', ItemRules={_settings.ItemRules.Count}, MonsterRule='{rule?.Name ?? "null"}', {CanMagicDiag()}) - proceeding unarmed");
             }
             return EnsureUnarmedStance();
@@ -5329,9 +5338,9 @@ public partial class CombatManager : IDisposable
         var weaponObj = _worldFilter[targetWeaponId];
         if (weaponObj == null)
         {
-            if ((DateTime.Now - _lastEquipDiagAt).TotalSeconds > 5)
+            if ((RynthClock.Now - _lastEquipDiagAt).TotalSeconds > 5)
             {
-                _lastEquipDiagAt = DateTime.Now;
+                _lastEquipDiagAt = RynthClock.Now;
                 _host.Log($"[EquipDiag] weapon 0x{targetWeaponId:X8} not in WorldFilter (source={weaponSource}) — proceeding unarmed");
             }
             return EnsureUnarmedStance();
@@ -5417,7 +5426,7 @@ public partial class CombatManager : IDisposable
                         : CombatMode.Melee;
         _chosenWeaponMode = desiredMode;
 
-        bool diagNow = (DateTime.Now - _lastEquipDiagAt).TotalSeconds > 5;
+        bool diagNow = (RynthClock.Now - _lastEquipDiagAt).TotalSeconds > 5;
 
         // Use CurrentWieldedLocation (stype=10) — has an InqInt fallback that works even
         // when the phys-obj offset probe hasn't fired yet (unlike TryGetObjectWielderInfo).
@@ -5450,7 +5459,7 @@ public partial class CombatManager : IDisposable
                 // diagnostic history that was needed to investigate other issues.
                 if (diagNow)
                 {
-                    _lastEquipDiagAt = DateTime.Now;
+                    _lastEquipDiagAt = RynthClock.Now;
                     _host.Log($"[EquipDiag] wielded via wielder-info fallback (CurrentWieldedLocation read 0) 0x{targetWeaponId:X8} '{weaponObj.Name}'");
                 }
             }
@@ -5461,7 +5470,7 @@ public partial class CombatManager : IDisposable
             // Just swapped to this launcher: wield its ammo (one in flight, confirmed, capped).
             if (desiredMode == CombatMode.Missile && AmmoFollowUp(targetWeaponId, target, rule))
             {
-                _lastMissileNoAmmoAt = DateTime.Now;   // waiting on ammo is not a stall
+                _lastMissileNoAmmoAt = RynthClock.Now;   // waiting on ammo is not a stall
                 LastCombatSkipReason = "no-ammo";
                 return false;
             }
@@ -5472,7 +5481,7 @@ public partial class CombatManager : IDisposable
                 // Waiting on ammo is not a stall. The attack block's stamp is never reached
                 // from here (Think returns on false), so the stall watchdog's no-ammo
                 // exemption never applied and it ran its whole ladder on an empty quiver.
-                _lastMissileNoAmmoAt = DateTime.Now;
+                _lastMissileNoAmmoAt = RynthClock.Now;
                 LastCombatSkipReason = "no-ammo";   // D4 record-only
                 return false;
             }
@@ -5481,7 +5490,7 @@ public partial class CombatManager : IDisposable
             // Clear the gate here (not only on reaching the stance) so a slow stance
             // flip doesn't leave a stale pending-wield behind it.
             ResetCombatWandWieldGate();
-            SwapTracker.Confirmed(targetWeaponId, DateTime.Now);
+            SwapTracker.Confirmed(targetWeaponId, RynthClock.Now);
 
             if (CurrentCombatMode == desiredMode)
             {
@@ -5502,28 +5511,28 @@ public partial class CombatManager : IDisposable
             // A refusal newer than the clock's start: the request that started it was dropped (a teleport), so restart the clock.
             if (_stanceStuckSince != DateTime.MinValue && ActionPacer.LastEngineRefusalMs > _stanceStuckStartMs)
             {
-                _stanceStuckSince = DateTime.Now;
+                _stanceStuckSince = RynthClock.Now;
                 _stanceStuckStartMs = ActionPacer.NowMs();
             }
-            double stuckMs = _stanceStuckSince == DateTime.MinValue ? 0 : (DateTime.Now - _stanceStuckSince).TotalMilliseconds;
+            double stuckMs = _stanceStuckSince == DateTime.MinValue ? 0 : (RynthClock.Now - _stanceStuckSince).TotalMilliseconds;
             // RE-EQUIP recovery — only for the first couple of attempts in an
             // episode (handles a stale "wielded reads true" on a wand that
             // actually isn't wielded). Capped: UseObject on a genuinely wielded
             // wand is a MOVE to AC, and unbounded re-equip jams the item queue.
             if (_stanceReEquipAttempts < StanceReEquipMaxAttempts
                 && stuckMs > StanceStuckRecoverMs
-                && (DateTime.Now - _lastStanceRecoverAt).TotalMilliseconds > StanceStuckRecoverMs
+                && (RynthClock.Now - _lastStanceRecoverAt).TotalMilliseconds > StanceStuckRecoverMs
                 // Recovery equips like any other path — must hold the swap gate or
                 // it can collide with a buff wand-equip inside the ±3s window.
                 // On refusal the && short-circuits: fall through to the throttled
                 // ChangeCombatMode below and retry next tick.
                 && (_weaponSwapGate == null || _weaponSwapGate.TryBeginSwap("stance-recovery")))
             {
-                _lastStanceRecoverAt = DateTime.Now;
+                _lastStanceRecoverAt = RynthClock.Now;
                 _stanceReEquipAttempts++;
                 _host.Log($"[EquipDiag] STANCE STUCK {stuckMs:0}ms mode={CurrentCombatMode}≠{desiredMode} (wielded reads true) — re-equip attempt {_stanceReEquipAttempts}/{StanceReEquipMaxAttempts} 0x{targetWeaponId:X8}");
                 _host.UseFor((uint)targetWeaponId, "Combat", "stance stuck: equip again");
-                _lastEquipTime = DateTime.Now;
+                _lastEquipTime = RynthClock.Now;
                 lastStanceAttempt = DateTime.MinValue; // let ChangeCombatMode re-fire next tick
                 return false;
             }
@@ -5538,17 +5547,17 @@ public partial class CombatManager : IDisposable
                 _host.WriteToChat($"[RynthAi] Stance wedged: wand wielded but AC won't enter {(desiredMode == CombatMode.Magic ? "Magic" : "combat")} mode after {stuckMs / 1000:0}s. Re-equip stopped (was jamming item actions). Try /ra clearbusy, or relog if it persists.", 2);
             }
 
-            if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+            if ((RynthClock.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
                 && _host.ChangeCombatModeFor(desiredMode, "Combat", "stance"))
             {
-                if (_stanceStuckSince == DateTime.MinValue) { _stanceStuckSince = DateTime.Now; _stanceStuckStartMs = ActionPacer.NowMs(); }
-                if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=true mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource}) — sending ChangeCombatMode"); }
-                lastStanceAttempt = DateTime.Now;
+                if (_stanceStuckSince == DateTime.MinValue) { _stanceStuckSince = RynthClock.Now; _stanceStuckStartMs = ActionPacer.NowMs(); }
+                if (diagNow) { _lastEquipDiagAt = RynthClock.Now; _host.Log($"[EquipDiag] wielded=true mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource}) — sending ChangeCombatMode"); }
+                lastStanceAttempt = RynthClock.Now;
                 NoteStanceFlipSent();
             }
             else if (diagNow)
             {
-                _lastEquipDiagAt = DateTime.Now;
+                _lastEquipDiagAt = RynthClock.Now;
                 _host.Log($"[EquipDiag] wielded=true mode={CurrentCombatMode}≠{desiredMode} throttled (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}') — waiting for mode change");
             }
             return false;
@@ -5589,10 +5598,10 @@ public partial class CombatManager : IDisposable
             // mode bare-handed (throttled) and send no wield.
             if (!allowWield)
             {
-                if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+                if ((RynthClock.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
                     && _host.ChangeCombatModeFor(desiredMode, "Combat", "stance"))
                 {
-                    lastStanceAttempt = DateTime.Now;
+                    lastStanceAttempt = RynthClock.Now;
                     NoteStanceFlipSent();
                 }
                 return false;
@@ -5628,11 +5637,11 @@ public partial class CombatManager : IDisposable
             // which has always sent both.
             // A weapon still in hand: the wand's use swaps it and the server then puts us in Magic.
             if (FindWieldedNonWandWeapon(targetWeaponId) == 0
-                && (DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+                && (RynthClock.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
                 && _host.ChangeCombatModeFor(desiredMode, "Combat", "stance"))
             {
                 if (diagNow) _host.Log($"[EquipDiag] hand clear — ChangeCombatMode({desiredMode}) alongside wand equip (mode={CurrentCombatMode})");
-                lastStanceAttempt = DateTime.Now;
+                lastStanceAttempt = RynthClock.Now;
                 NoteStanceFlipSent();
             }
 
@@ -5642,7 +5651,7 @@ public partial class CombatManager : IDisposable
             // item MOVE to AC, and a continuous stream of them keeps the item-action
             // queue jammed so the wield never resolves. Issue one, wait for it,
             // cool down, cap.
-            DateTime wnow = DateTime.Now;
+            DateTime wnow = RynthClock.Now;
 
             if (wnow < _wandWieldCooldownUntil)
                 return false;
@@ -5671,7 +5680,7 @@ public partial class CombatManager : IDisposable
                 return false;
             }
 
-            if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] hand clear — UseObject(0x{targetWeaponId:X8} '{weaponObj.Name}') wand equip"); }
+            if (diagNow) { _lastEquipDiagAt = RynthClock.Now; _host.Log($"[EquipDiag] hand clear — UseObject(0x{targetWeaponId:X8} '{weaponObj.Name}') wand equip"); }
             _host.UseFor((uint)targetWeaponId, "Combat", "equip the wand");
             MarkWieldSent(targetWeaponId, inHand);
             _wandPendingWieldId = targetWeaponId;
@@ -5689,28 +5698,28 @@ public partial class CombatManager : IDisposable
         //    mode change on top of an unanswered action. With the pacing on, the mode change waits
         //    for the wield's answer (and once the weapon reads wielded, the wielded branch above
         //    sends it); off, both still go in this tick, as before.
-        if (allowWield && (DateTime.Now - _lastEquipTime).TotalMilliseconds > 2000
+        if (allowWield && (RynthClock.Now - _lastEquipTime).TotalMilliseconds > 2000
             && ClearOffhandFor(targetWeaponId, _curOffhandMode) == OffPrep.Ready   // a shield off before a two-hander / launcher
             && (desiredMode != CombatMode.Missile || PrepareAmmoFor(targetWeaponId) == AmmoPrep.Ready)
             && (_weaponSwapGate == null || _weaponSwapGate.TryBeginSwap("combat-equip")))
         {
-            if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=FALSE UseObject(0x{targetWeaponId:X8} '{weaponObj.Name}') — equip attempt"); }
+            if (diagNow) { _lastEquipDiagAt = RynthClock.Now; _host.Log($"[EquipDiag] wielded=FALSE UseObject(0x{targetWeaponId:X8} '{weaponObj.Name}') — equip attempt"); }
             _host.UseFor((uint)targetWeaponId, "Combat", "equip the weapon");
             MarkWieldSent(targetWeaponId, inHand);
-            _lastEquipTime = DateTime.Now;
+            _lastEquipTime = RynthClock.Now;
         }
-        if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
+        if ((RynthClock.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs())
         {
             // A launcher swap: no Missile request until the launcher and its ammo are on (the
             // wielded branch above sends it then). See LauncherSwapHoldsStance.
             if (desiredMode == CombatMode.Missile && LauncherSwapHoldsStance(targetWeaponId))
             {
-                if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] stance held: 0x{targetWeaponId:X8} '{weaponObj.Name}' or its ammo isn't on yet (mode={CurrentCombatMode})"); }
+                if (diagNow) { _lastEquipDiagAt = RynthClock.Now; _host.Log($"[EquipDiag] stance held: 0x{targetWeaponId:X8} '{weaponObj.Name}' or its ammo isn't on yet (mode={CurrentCombatMode})"); }
             }
             else if (_host.ChangeCombatModeFor(desiredMode, "Combat", "stance"))
             {
-                if (diagNow) { _lastEquipDiagAt = DateTime.Now; _host.Log($"[EquipDiag] wielded=FALSE mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource} class={weaponObj.ObjectClass}) — ChangeCombatMode"); }
-                lastStanceAttempt = DateTime.Now;
+                if (diagNow) { _lastEquipDiagAt = RynthClock.Now; _host.Log($"[EquipDiag] wielded=FALSE mode={CurrentCombatMode}→{desiredMode} (weapon=0x{targetWeaponId:X8} '{weaponObj.Name}' src={weaponSource} class={weaponObj.ObjectClass}) — ChangeCombatMode"); }
+                lastStanceAttempt = RynthClock.Now;
                 NoteStanceFlipSent();
             }
         }
@@ -5724,7 +5733,7 @@ public partial class CombatManager : IDisposable
     private bool EnsureHandClearForWand(int wandId, bool diagNow)
     {
         int bowId = FindWieldedNonWandWeapon(wandId);
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (bowId != 0 && !_combatDirectWandSwapFailed && IsWieldedLive(bowId))
         {
             if (_combatDirectSwapSince == DateTime.MinValue) _combatDirectSwapSince = now;
@@ -5827,7 +5836,7 @@ public partial class CombatManager : IDisposable
 
     public bool EnsureMagicReady()
     {
-        _navMagicWantedUntil = DateTime.Now.AddMilliseconds(2000);
+        _navMagicWantedUntil = RynthClock.Now.AddMilliseconds(2000);
         int wandId = FindWandInItems();
         // No target here: the global off-hand setting. With Offhand None and a shield on, the
         // wand can't be wielded (the server refuses a caster beside it): cast bare-handed.
@@ -5841,10 +5850,10 @@ public partial class CombatManager : IDisposable
             // for good, even in Magic mode, so a Recall waypoint never cast and sat
             // out the whole portal timeout.
             if (CurrentCombatMode == CombatMode.Magic) { ResetStanceFlipBackoff(); return true; }
-            if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+            if ((RynthClock.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
                 && _host.ChangeCombatModeFor(CombatMode.Magic, "Combat", "stance"))
             {
-                lastStanceAttempt = DateTime.Now;
+                lastStanceAttempt = RynthClock.Now;
                 NoteStanceFlipSent();
             }
             return false;
@@ -5860,10 +5869,10 @@ public partial class CombatManager : IDisposable
         if (alreadyWielded)
         {
             if (CurrentCombatMode == CombatMode.Magic) { ResetWandSwapState(); ResetStanceFlipBackoff(); return true; }
-            if ((DateTime.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
+            if ((RynthClock.Now - lastStanceAttempt).TotalMilliseconds > StanceRetryDelayMs()
                 && _host.ChangeCombatModeFor(CombatMode.Magic, "Combat", "stance"))
             {
-                lastStanceAttempt = DateTime.Now;
+                lastStanceAttempt = RynthClock.Now;
                 NoteStanceFlipSent();
             }
             return false;
@@ -5886,10 +5895,10 @@ public partial class CombatManager : IDisposable
         }
         if (!EnsureHandClearForWand(wandId, diagNow: true))
             return false;
-        if ((DateTime.Now - _lastEquipTime).TotalMilliseconds > 2000)
+        if ((RynthClock.Now - _lastEquipTime).TotalMilliseconds > 2000)
         {
             _host.UseFor((uint)wandId, "Combat", "equip the wand");
-            _lastEquipTime = DateTime.Now;
+            _lastEquipTime = RynthClock.Now;
         }
         return false;
     }
@@ -5964,7 +5973,7 @@ public partial class CombatManager : IDisposable
 
     private void LogLosDebug(WorldObject wo, bool blocked, in TargetingFSM.LosDetail det)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (_losDebugLast.TryGetValue(wo.Id, out var last))
         {
             double ms = (now - last.At).TotalMilliseconds;
@@ -6084,7 +6093,7 @@ public partial class CombatManager : IDisposable
     private bool HoldForPointBlankFacing(double currentDist, bool force = false)
     {
         if (CurrentCombatMode != CombatMode.Missile || !_host.HasTurnToHeading) return false;
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         int tid = activeTargetId;
         if (_pointBlankFacing.Settling(now, tid)) return true;
         if (!TryGetHeadingTo(tid, out double desiredDeg, out double error)) return false;
@@ -6154,7 +6163,7 @@ public partial class CombatManager : IDisposable
             _awaitingCastResolution = false;
             return false;
         }
-        if (DateTime.Now >= _castResolutionDeadline)
+        if (RynthClock.Now >= _castResolutionDeadline)
         {
             _awaitingCastResolution = false;
             return false;
@@ -6174,7 +6183,7 @@ public partial class CombatManager : IDisposable
     {
         _attackedThisTick = true;   // [CombatLatency]: a debuff or attack cast went out
         _awaitingCastResolution = true;
-        _castResolutionDeadline = DateTime.Now.AddMilliseconds(CAST_RESOLUTION_TIMEOUT_MS);
+        _castResolutionDeadline = RynthClock.Now.AddMilliseconds(CAST_RESOLUTION_TIMEOUT_MS);
         _useDoneSeqAtCast = _host.HasUseDoneSeq ? _host.GetUseDoneSeq() : 0;
     }
 
@@ -6442,9 +6451,9 @@ public partial class CombatManager : IDisposable
 
         // Don't cast while a weapon equip is in progress — the wand may not be registered
         // as wielded yet. _lastEquipTime is set whenever UseObject is called for a wand swap.
-        if ((DateTime.Now - _lastEquipTime).TotalMilliseconds < 3000)
+        if ((RynthClock.Now - _lastEquipTime).TotalMilliseconds < 3000)
         {
-            _host.Log($"[CombatCast] equip-gate: wand equip in progress ({(DateTime.Now - _lastEquipTime).TotalMilliseconds:0}ms < 3000ms), skipping cast");
+            _host.Log($"[CombatCast] equip-gate: wand equip in progress ({(RynthClock.Now - _lastEquipTime).TotalMilliseconds:0}ms < 3000ms), skipping cast");
             LastCombatSkipReason = "equip-gate"; // D4 record-only
             return;
         }
@@ -6455,7 +6464,7 @@ public partial class CombatManager : IDisposable
 
         if (_waitingForDebuffResult)
         {
-            if ((DateTime.Now - _pendingDebuffCastTime).TotalMilliseconds > DEBUFF_RESULT_TIMEOUT_MS)
+            if ((RynthClock.Now - _pendingDebuffCastTime).TotalMilliseconds > DEBUFF_RESULT_TIMEOUT_MS)
             {
                 NoteDebuffLanded();
                 _waitingForDebuffResult = false;
@@ -6469,7 +6478,7 @@ public partial class CombatManager : IDisposable
 
         if (activeTargetId != _lastDebuffTargetId)
         {
-            _debuffs.NewTarget(DateTime.Now);
+            _debuffs.NewTarget(RynthClock.Now);
             _lastDebuffTargetId = activeTargetId;
         }
 
@@ -6479,7 +6488,7 @@ public partial class CombatManager : IDisposable
         if (rule != null)
         {
             var pendingDebuffs = BuildDebuffList(rule, element);
-            DateTime now = DateTime.Now;
+            DateTime now = RynthClock.Now;
             foreach (var debuffKey in pendingDebuffs)
             {
                 if (_debuffs.IsOn(activeTargetId, debuffKey, now)) continue;
@@ -6502,14 +6511,14 @@ public partial class CombatManager : IDisposable
                     _host.CastSpellFor((uint)activeTargetId, spellId, "Combat", SpellTableStub.GetById(spellId)?.Name ?? $"spell {spellId}");
                     MarkCombatCastIssued();
                     StartCastChatTrace(spellId, activeTargetId);
-                    _lastSpellCast = DateTime.Now;
+                    _lastSpellCast = RynthClock.Now;
                     _lastCastWasRing = false;
                     _pendingDebuffKey = debuffKey;
                     _pendingDebuffTargetId = activeTargetId;
                     _pendingDebuffSpellId = spellId;
                     _pendingDebuffTier = castTier;
                     _waitingForDebuffResult = true;
-                    _pendingDebuffCastTime = DateTime.Now;
+                    _pendingDebuffCastTime = RynthClock.Now;
                     _host.WriteToChat($"[RynthAi] {(renewal ? "Renewing" : "Casting")}: {debuffKey} (T{castTier}) on {target.Name}", 5);
                 }
                 catch { }
@@ -6578,7 +6587,7 @@ public partial class CombatManager : IDisposable
                 StartCastChatTrace(offensiveSpellId, activeTargetId);
                 SessionAttackCasts++;      // D6: offensive attack-cast tally for the casts-per-kill signal
                 CastsSinceLastKill++;      //     reset in OnKillNotification when a kill lands
-                _lastSpellCast = DateTime.Now;
+                _lastSpellCast = RynthClock.Now;
                 _lastCastWasRing = multiTarget;   // walls too: area casts (2026-10-08)
                 _wallFaceAt = DateTime.MinValue;  // the next wall checks its facing afresh
                 // _offensiveCastThisCycle is NOT set here anymore — a cast
@@ -6587,7 +6596,7 @@ public partial class CombatManager : IDisposable
                 // RecordOffensiveCast trigger moved to the chat-confirmation
                 // path so only chat-confirmed casts queue a judgement.
                 _pendingOffensiveSpellId   = offensiveSpellId;
-                _pendingOffensiveCastAt    = DateTime.Now;
+                _pendingOffensiveCastAt    = RynthClock.Now;
                 _pendingOffensiveTargetId  = activeTargetId;
                 NoteOffensiveSeq();
                 // Environment-impact throttle: follow this cast's projectiles (rings and walls
@@ -6643,15 +6652,15 @@ public partial class CombatManager : IDisposable
             bool snapWarm = _spellManager?.IsKnownSnapshotWarm == true;
             // Chat at most every 30 s (it used to go out every attack cycle; sustained chat is
             // the AddTextToScroll crash path). The file log keeps every occurrence.
-            if ((DateTime.Now - _lastNoSpellChatAt).TotalMilliseconds >= NoSpellChatIntervalMs)
+            if ((RynthClock.Now - _lastNoSpellChatAt).TotalMilliseconds >= NoSpellChatIntervalMs)
             {
-                _lastNoSpellChatAt = DateTime.Now;
+                _lastNoSpellChatAt = RynthClock.Now;
                 _host.WriteToChat($"[RynthAi] No spell found: elem={element} warTier={warTier} voidTier={voidTier} snapshotWarm={snapWarm} pid={_playerId}", 2);
             }
             _host.Log($"[CombatCast] no offensive spell: elem={element} warTier={warTier} voidTier={voidTier} snapshotWarm={snapWarm} rule={rule?.Name ?? "null"} target='{target.Name}'" +
                       (_lastShapeArcGaveWay ? " (arc blocked, and no other shape or bolt known: no arc cast into the obstacle)" : ""));
             LastCombatSkipReason = "no-offensive-spell"; // D4 record-only (FindBestShapedSpell==0)
-            _lastSpellCast = DateTime.Now;
+            _lastSpellCast = RynthClock.Now;
         }
     }
 
@@ -6704,7 +6713,7 @@ public partial class CombatManager : IDisposable
     private bool HasPendingDebuffs(MonsterRule rule, string element)
     {
         if (rule == null) return false;
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         foreach (var debuffKey in BuildDebuffList(rule, element))
             if (!_debuffs.IsOn(activeTargetId, debuffKey, now)) return true;
         return false;
@@ -6897,8 +6906,8 @@ public partial class CombatManager : IDisposable
 
     private void EnsureInventoryNameCache()
     {
-        if ((DateTime.Now - _invNamesBuiltAt).TotalMilliseconds < InvNameCacheMs) return;
-        _invNamesBuiltAt = DateTime.Now;
+        if ((RynthClock.Now - _invNamesBuiltAt).TotalMilliseconds < InvNameCacheMs) return;
+        _invNamesBuiltAt = RynthClock.Now;
         _invNamesLower.Clear();
         _compSkipLogged.Clear();
         foreach (var wo in _worldFilter.GetInventory())
@@ -7379,7 +7388,7 @@ public partial class CombatManager : IDisposable
         // Reached from every element probe (CanCastElement inside GetPreferredElement) as well
         // as the cast itself, several times per attack cycle while a pack stands in ring range:
         // say it (chat + file log) once per element per NoSpellChatIntervalMs.
-        DateTime nowRing = DateTime.Now;
+        DateTime nowRing = RynthClock.Now;
         if (!_ringMissingChatAt.TryGetValue(element, out DateTime lastRing)
             || (nowRing - lastRing).TotalMilliseconds >= NoSpellChatIntervalMs)
         {

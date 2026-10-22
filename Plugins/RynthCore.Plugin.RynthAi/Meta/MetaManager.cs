@@ -31,16 +31,16 @@ internal sealed class MetaManager
 
     // ── State tracking ───────────────────────────────────────────────────────
     private string _lastState = "";
-    private DateTime _stateStartTime = DateTime.Now;
+    private DateTime _stateStartTime = RynthClock.Now;
 
     /// <summary>Wall clock for seconds-in-state, the watchdog and the chat window. Tests swap it
     /// for a fake clock; the plugin never changes it.</summary>
-    internal Func<DateTime> Clock { get; set; } = static () => DateTime.Now;
+    internal Func<DateTime> Clock { get; set; } = static () => RynthClock.Now;
     private bool _lastMacroRunning;
     // PSecsInStateGE's clock: seconds spent in the current state. Restarts when the meta moves to
     // a different state or a meta is loaded; keeps running over a macro stop/start and a SetState
     // to the same state; pauses while the state has Called another and resumes on the Return.
-    private DateTime _statePStartTime = DateTime.Now;
+    private DateTime _statePStartTime = RynthClock.Now;
     // Seconds the calling state had on its P clock, one entry per _stateStack entry (null when the
     // Return goes to a different state than the one that called).
     private readonly Stack<double?> _statePPaused = new();

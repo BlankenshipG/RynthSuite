@@ -3455,7 +3455,7 @@ internal sealed partial class LegacyDashboardRenderer
         sb.Append("\"actionChildren\":"); AppendMetaRuleArray(sb, r.ActionChildren ?? new List<MetaRule>()); sb.Append(',');
         sb.Append("\"enabled\":").Append(r.Enabled ? "true" : "false").Append(',');
         if (!string.IsNullOrEmpty(r.Name)) { sb.Append("\"name\":\""); AppendEscaped(sb, r.Name); sb.Append("\","); }
-        long ms = r.LastFiredAt == DateTime.MinValue ? 99999L : (long)(DateTime.Now - r.LastFiredAt).TotalMilliseconds;
+        long ms = r.LastFiredAt == DateTime.MinValue ? 99999L : (long)(RynthClock.Now - r.LastFiredAt).TotalMilliseconds;
         sb.Append("\"lastFiredMs\":").Append(ms.ToString(System.Globalization.CultureInfo.InvariantCulture));
         sb.Append('}');
     }

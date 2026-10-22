@@ -242,7 +242,7 @@ internal static class TargetingTests
         public readonly CombatManager Combat;
         public readonly LegacyUiSettings S;
         private readonly WorldObjectCache _cache;
-        private DateTime _now = DateTime.Now;
+        private DateTime _now = RynthClock.Now;   // the clock RynthAi times with
 
         public Rig(int scheme, bool targetLock, Dictionary<uint, float>? health = null, int monsterRange = 20)
         {

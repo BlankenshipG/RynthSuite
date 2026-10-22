@@ -174,6 +174,23 @@ internal static class VTankHotkeyTests
         Check.True(bot.LastChat.Contains("can't be attacked"), "an NPC: refused (" + bot.LastChat + ")");
         Check.Eq(t.Combat.ForcedTargetId, 0, "no lock");
 
+        // A corpse selected mid-fight (R-20261021-191720-c788): never a target, and the fight goes on.
+        const uint Corpse = 0x80000505;
+        FakeHost.Names[Corpse] = "Corpse of Mob A";
+        FakeHost.ItemTypes[Corpse] = ItemTypeContainer;
+        FakeHost.Positions[Corpse] = (Lb | 0x1C, 96f, 97f, 0f);
+        FakeHost.Bitfields[Corpse] = 0x00002000;   // the corpse flag
+        FakeHost.NotAttackable.Add(Corpse);
+        t.Cache.OnCreateObject(Corpse);
+        t.Cache.Tick();
+        Check.Eq(t.Pick((B, 3)), B, "fighting B");
+        FakeHost.SelectedItem = Corpse;
+        bot.P.OnSelectedTargetChange(Corpse, B);
+        bot.Ra("/ra targetlock");
+        Check.True(bot.LastChat.Contains("isn't a monster"), "a corpse: refused (" + bot.LastChat + ")");
+        Check.Eq(t.Combat.ForcedTargetId, 0, "no lock on the corpse");
+        Check.Eq(t.Pick((B, 3)), B, "the corpse selected: still fighting B");
+
         t.Cache.OnUpdateHealth(A, 0f);
         FakeHost.SelectedItem = A;
         bot.Ra("/ra targetlock");

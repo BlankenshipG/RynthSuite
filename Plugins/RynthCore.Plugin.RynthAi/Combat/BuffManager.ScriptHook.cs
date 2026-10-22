@@ -17,9 +17,9 @@ public partial class BuffManager
     private bool TryScriptHeal(int healLine, bool inCombat)
     {
         // AC just said "You're too busy!": the same pacing as a Heal Self (AttemptVitalCast).
-        if (DateTime.Now < _busyBackoffUntil && (DateTime.Now - _lastCastAttempt).TotalMilliseconds < BusyHealRetryMs)
+        if (RynthClock.Now < _busyBackoffUntil && (RynthClock.Now - _lastCastAttempt).TotalMilliseconds < BusyHealRetryMs)
         {
-            _vitalWhy = $"AC too busy, waiting {(_busyBackoffUntil - DateTime.Now).TotalMilliseconds:0} ms";
+            _vitalWhy = $"AC too busy, waiting {(_busyBackoffUntil - RynthClock.Now).TotalMilliseconds:0} ms";
             _healWaitKind = "too-busy backoff";
             return true;
         }

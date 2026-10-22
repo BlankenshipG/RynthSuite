@@ -169,7 +169,7 @@ public sealed partial class RynthAiPlugin
         try
         {
             string folder = PropertyDump.Folder;
-            string path = Path.Combine(folder, PropertyDump.FileName(data.Name.Length > 0 ? data.Name : $"0x{data.Id:X8}", DateTime.Now));
+            string path = Path.Combine(folder, PropertyDump.FileName(data.Name.Length > 0 ? data.Name : $"0x{data.Id:X8}", RynthClock.Now));
             if (DataWriteGuard.TrySave("Property dump", path, () =>
                 {
                     Directory.CreateDirectory(folder);

@@ -57,7 +57,7 @@ public partial class CombatManager
     /// one being wielded). Ammo crafting waits: it would otherwise equip ammo for the launcher
     /// being swapped away from, or start a craft in the middle of the swap.
     /// </summary>
-    public bool AmmoSwapInProgress => _ammoFollowUpFor != 0 && DateTime.Now < _ammoFollowUpUntil;
+    public bool AmmoSwapInProgress => _ammoFollowUpFor != 0 && RynthClock.Now < _ammoFollowUpUntil;
 
     private void ResetAmmoState()
     {
@@ -192,7 +192,7 @@ public partial class CombatManager
         int lt = LauncherTypeOf(_worldFilter[launcherId]);
         if (lt == 0) return AmmoPrep.Ready;
 
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         var pack = PackAmmo();
         var wielded = pack.FirstOrDefault(a => a.Wielded);
         if (wielded != null && MissileAmmo.Fits(lt, wielded.AmmoType))
@@ -287,7 +287,7 @@ public partial class CombatManager
     private bool AmmoFollowUp(int launcherId, WorldObject target, MonsterRule? rule)
     {
         if (_ammoFollowUpFor == 0) return false;
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (_ammoFollowUpFor != launcherId || now >= _ammoFollowUpUntil) { EndAmmoFollowUp(); return false; }
         var wo = _worldFilter[launcherId];
         int lt = LauncherTypeOf(wo);

@@ -63,7 +63,7 @@ internal sealed class CastTracker
 
     public CastTracker(Action<string> log) => _log = log;
 
-    public Func<DateTime> Clock = () => DateTime.Now;
+    public Func<DateTime> Clock = () => RynthClock.Now;
     public DateTime Now => Clock();
 
     /// <summary>The last cast sent.</summary>

@@ -38,8 +38,7 @@ public sealed partial class RynthAiPlugin
     {
         if (!s.IsMacroRunning) return false;
         if (_activity is BotActivity.Combat or BotActivity.Buffing or BotActivity.Looting or BotActivity.Salvaging) return false;
-        var combat = _combatManager;
-        if (combat != null && (combat.HasEngageableTarget || combat.IsUnderCloseAttack)) return false;
+        if (FightIsOn(s)) return false;
         if (_openedContainerId != 0 || _targetCorpseId != 0) return false;
         if (_buffManager != null && _buffManager.PendingSpellId != 0) return false;
         if (_salvageManager?.IsBusy == true) return false;

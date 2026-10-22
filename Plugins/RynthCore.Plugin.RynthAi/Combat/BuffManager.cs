@@ -190,7 +190,7 @@ public partial class BuffManager : IDisposable
     private readonly Dictionary<int, DateTime> _noComponentsUntil = new();
     private const double NoComponentsLevelSec = 600.0;
     private bool LevelLacksComponents(int spellId)
-        => _noComponentsUntil.TryGetValue(spellId, out DateTime until) && DateTime.Now < until;
+        => _noComponentsUntil.TryGetValue(spellId, out DateTime until) && RynthClock.Now < until;
 
     // Per-family SILENT no-show counter. Distinct from _buffFailCooldownUntil
     // (which catches chat-explicit hard rejects). This catches the /god case:
@@ -283,7 +283,7 @@ public partial class BuffManager : IDisposable
     private readonly CastTracker _cast;
 
     /// <summary>Clock for the cast-safety timing (give-up, server wait, held-cast nudge, stance
-    /// settle). The host tests replace it; everything else here reads DateTime.Now.</summary>
+    /// settle). The host tests replace it; everything else here reads RynthClock.Now.</summary>
     internal Func<DateTime> Clock { get => _cast.Clock; set => _cast.Clock = value; }
     private DateTime Now => _cast.Now;
 
@@ -380,8 +380,8 @@ public partial class BuffManager : IDisposable
     /// not usable). Cached for a second: the arbiter asks every tick.</summary>
     private int TopStaminaToManaId()
     {
-        if ((DateTime.Now - _topS2MAt).TotalMilliseconds < 1000) return _topS2MId;
-        _topS2MAt = DateTime.Now;
+        if ((RynthClock.Now - _topS2MAt).TotalMilliseconds < 1000) return _topS2MId;
+        _topS2MAt = RynthClock.Now;
         _topS2MId = IsSkillUsable(AcSkillType.LifeMagic)
             ? _spellManager.GetDynamicSelfBuffId("Stamina to Mana Self", AcSkillType.LifeMagic, LevelLacksComponents)
             : 0;
@@ -432,7 +432,7 @@ public partial class BuffManager : IDisposable
         if (id == 0 || !StaminaAllowsStaminaToMana()) return false;
         int family = SpellTableStub.GetById(id)?.Family ?? 0;
         return !(family != 0 && _buffFailCooldownUntil.TryGetValue(family, out DateTime until)
-                 && (until - DateTime.Now).TotalSeconds > LowManaHealRestSec);
+                 && (until - RynthClock.Now).TotalSeconds > LowManaHealRestSec);
     }
 
     /// <summary>Stamina lets Stamina to Mana go: over 15%, or a stamina kit or listed stamina potion
@@ -461,7 +461,7 @@ public partial class BuffManager : IDisposable
         spellName = id != 0 ? SpellTableStub.GetById(id)?.Name ?? "Stamina to Mana" : "Stamina to Mana";
         if (id == 0 || _vitals.MaxMana == 0) return false;
         if (cost > 0) return _vitals.CurrentMana < cost && AffordableVitalId("Stamina to Mana Self") == 0;
-        return (DateTime.Now - _lastManaRefusalAt).TotalMilliseconds < ManaRefusalMemoryMs;
+        return (RynthClock.Now - _lastManaRefusalAt).TotalMilliseconds < ManaRefusalMemoryMs;
     }
 
     /// <summary>The highest level of a vital spell whose known cost current mana can pay (a level
@@ -483,7 +483,7 @@ public partial class BuffManager : IDisposable
     internal bool WantsManaNow()
     {
         if (!_settings.IsMacroRunning || _vitals.MaxMana == 0) return false;
-        if (DateTime.Now < _manaUnavailableUntil) return false;
+        if (RynthClock.Now < _manaUnavailableUntil) return false;
         if (!InCombatNow() || !FightsWithMagic()) return false;
         return ManaUnderLine(true, out _) && ManaRefillPossible();
     }
@@ -549,7 +549,7 @@ public partial class BuffManager : IDisposable
             _sameManaCasts++;
             if (_sameManaCasts == StuckManaCasts)
             {
-                _stuckManaSince = DateTime.Now;
+                _stuckManaSince = RynthClock.Now;
                 _host.Log($"[RynthAi] Vitals: the mana reading has not moved over {StuckManaCasts + 1} buff casts ({cur}/{_vitals.MaxMana}); buffs wait for a fresh reading (up to {StuckManaHoldSec:0} s).");
             }
         }
@@ -563,7 +563,7 @@ public partial class BuffManager : IDisposable
     {
         if (_sameManaCasts < StuckManaCasts) return false;
         if (_vitals.CurrentMana != _lastBuffCastMana
-            || (DateTime.Now - _stuckManaSince).TotalSeconds >= StuckManaHoldSec)
+            || (RynthClock.Now - _stuckManaSince).TotalSeconds >= StuckManaHoldSec)
         {
             _host.Log($"[RynthAi] Vitals: mana reading {(_vitals.CurrentMana != _lastBuffCastMana ? "moved" : "still the same after " + StuckManaHoldSec.ToString("0") + " s")}: {_lastBuffCastMana} -> {_vitals.CurrentMana}/{_vitals.MaxMana}; buffs go on.");
             _sameManaCasts = 0;
@@ -598,28 +598,28 @@ public partial class BuffManager : IDisposable
             // rebuff ran mana under Stamina to Mana's own cost (2026-10-15): wait for it instead, up to
             // ReserveWaitMaxSec. With no Stamina to Mana at all nothing refills: the buff goes.
             if (TopStaminaToManaId() == 0) return false;
-            if (_reserveWaitSince == DateTime.MinValue) _reserveWaitSince = DateTime.Now;
-            if ((DateTime.Now - _reserveWaitSince).TotalSeconds >= ReserveWaitMaxSec)
+            if (_reserveWaitSince == DateTime.MinValue) _reserveWaitSince = RynthClock.Now;
+            if ((RynthClock.Now - _reserveWaitSince).TotalSeconds >= ReserveWaitMaxSec)
             {
-                if ((DateTime.Now - _reserveOverLoggedAt).TotalSeconds >= 30)
+                if ((RynthClock.Now - _reserveOverLoggedAt).TotalSeconds >= 30)
                 {
-                    _reserveOverLoggedAt = DateTime.Now;
+                    _reserveOverLoggedAt = RynthClock.Now;
                     _host.Log($"[RynthAi] Vitals: {buffName} goes under the mana reserve ({cur}/{_vitals.MaxMana}, reserve {ManaReserve()}): Stamina to Mana could not go for {ReserveWaitMaxSec:0} s ({Why(_vitalWhy)}).");
                 }
                 return false;
             }
             LastBuffSkipReason = $"mana {cur}/{_vitals.MaxMana}: {buffName} would leave it under the reserve ({ManaReserve()}); waiting for Stamina to Mana";
-            if ((DateTime.Now - _buffManaWaitLoggedAt).TotalSeconds >= 30)
+            if ((RynthClock.Now - _buffManaWaitLoggedAt).TotalSeconds >= 30)
             {
-                _buffManaWaitLoggedAt = DateTime.Now;
+                _buffManaWaitLoggedAt = RynthClock.Now;
                 _host.Log($"[RynthAi] Vitals: buffing waits: {LastBuffSkipReason} (Stamina to Mana: {Why(_vitalWhy)})");
             }
             return true;
         }
         LastBuffSkipReason = $"mana {cur}/{_vitals.MaxMana} is under {buffName}'s cost ({cost}); waiting for regen";
-        if ((DateTime.Now - _buffManaWaitLoggedAt).TotalSeconds >= 30)
+        if ((RynthClock.Now - _buffManaWaitLoggedAt).TotalSeconds >= 30)
         {
-            _buffManaWaitLoggedAt = DateTime.Now;
+            _buffManaWaitLoggedAt = RynthClock.Now;
             _host.Log($"[RynthAi] Vitals: buffing waits: {LastBuffSkipReason} (Stamina to Mana: {Why(_vitalWhy)})");
         }
         return true;
@@ -940,7 +940,7 @@ public partial class BuffManager : IDisposable
                     DateTime expiresAt = new DateTime(long.Parse(p[3]));
                     int level = int.Parse(p[4]);
                     string name = p[5];
-                    if (expiresAt > DateTime.Now)
+                    if (expiresAt > RynthClock.Now)
                     {
                         int family = new SpellInfo(0, name).Family;
                         _itemSpellTimers[family] = new ItemSpellRecord
@@ -965,7 +965,7 @@ public partial class BuffManager : IDisposable
                     int level = int.Parse(p[offset + 2]);
                     string name = p[offset + 3];
                     int family = new SpellInfo(0, name).Family;
-                    if (expiration > DateTime.Now)
+                    if (expiration > RynthClock.Now)
                         _ramBuffTimers[family] = new RamTimerInfo { Expiration = expiration, SpellLevel = level, SpellName = name };
                 }
             }
@@ -1070,7 +1070,7 @@ public partial class BuffManager : IDisposable
     internal bool WantsHealNow()
     {
         if (!_settings.IsMacroRunning || _vitals.MaxHealth == 0) return false;
-        if (DateTime.Now < _healUnavailableUntil) return false;
+        if (RynthClock.Now < _healUnavailableUntil) return false;
         return HealthUnderAnyLine(_vitals.HealthPct, _vitals.StaminaPct);
     }
 
@@ -1133,7 +1133,7 @@ public partial class BuffManager : IDisposable
         {
             if (_pendingSpellId != 0 && _pendingSpellId == _pendingVitalSpellId && _pendingVitalLabel.Length > 0)
                 return _pendingVitalLabel;
-            if (_kitUsedAt != DateTime.MinValue && (DateTime.Now - _kitUsedAt).TotalMilliseconds < KitResultTimeoutMs)
+            if (_kitUsedAt != DateTime.MinValue && (RynthClock.Now - _kitUsedAt).TotalMilliseconds < KitResultTimeoutMs)
                 return _kitIsStamina ? LabelStamina : LabelHealing;
             if (_isHealingSelf || WantsHealNow()) return LabelHealing;
             if (_pendingSpellId != 0) return LabelBuffing;
@@ -1235,7 +1235,7 @@ public partial class BuffManager : IDisposable
     /// <summary>A heal (kit or spell) sent earlier hasn't resolved yet.</summary>
     private bool HealInFlight() =>
         (_pendingSpellId != 0 && _pendingSpellId == _pendingVitalSpellId && _pendingVitalLabel == LabelHealing)
-        || (_kitUsedAt != DateTime.MinValue && !_kitIsStamina && (DateTime.Now - _kitUsedAt).TotalMilliseconds < KitResultTimeoutMs);
+        || (_kitUsedAt != DateTime.MinValue && !_kitIsStamina && (RynthClock.Now - _kitUsedAt).TotalMilliseconds < KitResultTimeoutMs);
 
     public void OnHeartbeat()
     {
@@ -1255,7 +1255,7 @@ public partial class BuffManager : IDisposable
             if (track)
             {
                 string hold = _healHold;
-                if (hold.Length == 0 && DateTime.Now < _healUnavailableUntil) hold = "heal backoff (nothing could heal)";
+                if (hold.Length == 0 && RynthClock.Now < _healUnavailableUntil) hold = "heal backoff (nothing could heal)";
                 _healLatency.EndTick(Now, hold, _healHoldDetail, ArbiterActivity);
             }
         }
@@ -1276,7 +1276,7 @@ public partial class BuffManager : IDisposable
         // user toggled the macro off mid-experiment, we still want to capture and log them.
         // Drain any pending diagnostics whose 2s post-cast window has elapsed.
         while (_pendingDiagnostics.Count > 0 &&
-               (DateTime.Now - _pendingDiagnostics.Peek().CastedAt).TotalSeconds >= 2.0)
+               (RynthClock.Now - _pendingDiagnostics.Peek().CastedAt).TotalSeconds >= 2.0)
         {
             var diag = _pendingDiagnostics.Dequeue();
             LogPostCastDiff(diag);
@@ -1315,13 +1315,13 @@ public partial class BuffManager : IDisposable
         bool buffsHeldForRefresh = false;
         if (!_liveBuffsRefreshed)
         {
-            if ((DateTime.Now - _lastLiveRefreshAttempt).TotalMilliseconds > 1000)
+            if ((RynthClock.Now - _lastLiveRefreshAttempt).TotalMilliseconds > 1000)
             {
-                _lastLiveRefreshAttempt = DateTime.Now;
+                _lastLiveRefreshAttempt = RynthClock.Now;
                 int n = RefreshFromLiveMemory();
                 if (n >= 0)
                 {
-                    if (_loginRefreshStartAt == DateTime.MinValue) _loginRefreshStartAt = DateTime.Now;
+                    if (_loginRefreshStartAt == DateTime.MinValue) _loginRefreshStartAt = RynthClock.Now;
                     // Only trust the snapshot once the registry stops growing
                     // (two equal 1s reads), so we don't open the gate on a
                     // half-streamed set and rebuff buffs that are still landing.
@@ -1329,7 +1329,7 @@ public partial class BuffManager : IDisposable
                     // its registry is complete: the first read is trusted (CarriedOverSession), unless
                     // it is empty (a read that found nothing yet must not wipe every timer).
                     bool stable    = (n == _lastLoginRefreshCount);
-                    bool timedOut  = (DateTime.Now - _loginRefreshStartAt).TotalMilliseconds > LoginRefreshMaxWaitMs;
+                    bool timedOut  = (RynthClock.Now - _loginRefreshStartAt).TotalMilliseconds > LoginRefreshMaxWaitMs;
                     bool carried   = CarriedOverSession && n > 0;
                     _lastLoginRefreshCount = n;
                     if (stable || timedOut || carried)
@@ -1358,9 +1358,9 @@ public partial class BuffManager : IDisposable
         // expire normally — causing NeedsAnyBuff() to return false while the char
         // is completely unbuffed. Re-read from live AC memory every 30s to detect
         // this gap and clear stale timers so rebuffing resumes promptly.
-        if ((DateTime.Now - _lastPeriodicRefreshAt).TotalMilliseconds > PeriodicRefreshIntervalMs)
+        if ((RynthClock.Now - _lastPeriodicRefreshAt).TotalMilliseconds > PeriodicRefreshIntervalMs)
         {
-            _lastPeriodicRefreshAt = DateTime.Now;
+            _lastPeriodicRefreshAt = RynthClock.Now;
             int n = RefreshFromLiveMemory();
             if (n >= 0)
                 _host.Log($"[BuffDiag] periodic sync: {n} active enchantment(s) in RAM timers.");
@@ -1377,7 +1377,7 @@ public partial class BuffManager : IDisposable
         // CheckVitals heal now. A late confirmation still lands through the enchantment events;
         // at worst a buff is recast later (2026-10-04).
         if (_pendingSpellId != 0 && _pendingSpellId != _pendingVitalSpellId && WantsHealNow()
-            && (DateTime.Now - _lastCastAttempt).TotalMilliseconds >= HealInterruptMinMs
+            && (RynthClock.Now - _lastCastAttempt).TotalMilliseconds >= HealInterruptMinMs
             && CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s)) && !BusyHoldsHeal())
         {
             _host.Log($"[BuffDiag] health {_vitals.HealthPct}% under a heal line: released pending buff id={_pendingSpellId} to heal first.");
@@ -1421,14 +1421,14 @@ public partial class BuffManager : IDisposable
                 // SELF-BUFF: confirm against the live registry once the cast has
                 // settled. (OnEnchantmentAdded usually clears pending faster; this
                 // poll is the authoritative fallback when the hook doesn't fire.)
-                double sinceCastMs = (DateTime.Now - _lastCastAttempt).TotalMilliseconds;
+                double sinceCastMs = (RynthClock.Now - _lastCastAttempt).TotalMilliseconds;
                 if (sinceCastMs > SelfBuffConfirmMs
-                    && (DateTime.Now - _lastSelfBuffPollAt).TotalMilliseconds > 250)
+                    && (RynthClock.Now - _lastSelfBuffPollAt).TotalMilliseconds > 250)
                 {
-                    _lastSelfBuffPollAt = DateTime.Now;
+                    _lastSelfBuffPollAt = RynthClock.Now;
                     RefreshFromLiveMemory();
                     bool active = _ramBuffTimers.TryGetValue(pendingSpell.Family, out RamTimerInfo? st)
-                                  && st.Expiration > DateTime.Now;
+                                  && st.Expiration > RynthClock.Now;
                     // A top-off (auto batch), Force Rebuff or tier upgrade casts over a
                     // buff that is still on, so "active" is true at the first poll
                     // whatever happened: a fizzle counted as landed, the buff wasn't
@@ -1495,7 +1495,7 @@ public partial class BuffManager : IDisposable
                             bool parked = false;
                             if (noShowCount >= SilentNoShowThreshold)
                             {
-                                _buffFailCooldownUntil[fam] = DateTime.Now + SilentNoShowCooldown;
+                                _buffFailCooldownUntil[fam] = RynthClock.Now + SilentNoShowCooldown;
                                 parked = true;
                             }
 
@@ -1561,7 +1561,7 @@ public partial class BuffManager : IDisposable
                         _silentNoShowCounts[fam] = noShowCount;
                         if (noShowCount >= SilentNoShowThreshold)
                         {
-                            _buffFailCooldownUntil[fam] = DateTime.Now + SilentNoShowCooldown;
+                            _buffFailCooldownUntil[fam] = RynthClock.Now + SilentNoShowCooldown;
                             parked = true;
                         }
                     }
@@ -1583,7 +1583,7 @@ public partial class BuffManager : IDisposable
         // A due recovery retry (BuffManager.RecoveryRetry.cs) gets past Spell Interval, for the vitals
         // step only: the buffs after it still wait (intervalHeld below). A stale episode ends first.
         ExpireRecoveryEpisode();
-        bool intervalHeld = (DateTime.Now - _lastCastAttempt).TotalMilliseconds < _settings.SpellCastIntervalMs;
+        bool intervalHeld = (RynthClock.Now - _lastCastAttempt).TotalMilliseconds < _settings.SpellCastIntervalMs;
         if (intervalHeld && !RecoveryRetryDue())
         {
             Hold("cast interval");
@@ -1698,9 +1698,9 @@ public partial class BuffManager : IDisposable
                 return;
             }
             LastBuffSkipReason = $"mana {_vitals.ManaPct}% under Get Mana At {manaFloor}%";
-            if ((DateTime.Now - _lastManaFloorLogAt).TotalSeconds >= 30)
+            if ((RynthClock.Now - _lastManaFloorLogAt).TotalSeconds >= 30)
             {
-                _lastManaFloorLogAt = DateTime.Now;
+                _lastManaFloorLogAt = RynthClock.Now;
                 _host.Log($"[RynthAi] Vitals: buffing waits: mana {_vitals.ManaPct}% is under Get Mana At {manaFloor}%, stamina {_vitals.StaminaPct}%, and nothing refilled it (Stamina to Mana / stamina / potion: {Why(_vitalWhy)})");
             }
             return;
@@ -1720,15 +1720,15 @@ public partial class BuffManager : IDisposable
             return;
         }
 
-        if (DateTime.Now < _busyBackoffUntil)
+        if (RynthClock.Now < _busyBackoffUntil)
         {
-            LastBuffSkipReason = $"too-busy backoff ({(_busyBackoffUntil - DateTime.Now).TotalMilliseconds:0}ms left, streak={_busyRefusalStreak})";
+            LastBuffSkipReason = $"too-busy backoff ({(_busyBackoffUntil - RynthClock.Now).TotalMilliseconds:0}ms left, streak={_busyRefusalStreak})";
             return;
         }
 
-        if (DateTime.Now < _lowManaPauseUntil)
+        if (RynthClock.Now < _lowManaPauseUntil)
         {
-            LastBuffSkipReason = $"not enough mana ({(_lowManaPauseUntil - DateTime.Now).TotalMilliseconds:0}ms left)";
+            LastBuffSkipReason = $"not enough mana ({(_lowManaPauseUntil - RynthClock.Now).TotalMilliseconds:0}ms left)";
             return;
         }
 
@@ -1816,7 +1816,7 @@ public partial class BuffManager : IDisposable
             // Give the refresh time to reach the registry before judging. A cast
             // issued seconds ago legitimately still reads its old timer.
             if (!_castIssuedAtByFamily.TryGetValue(family, out DateTime castAt)
-                || (DateTime.Now - castAt).TotalMilliseconds < AuditSettleMs)
+                || (RynthClock.Now - castAt).TotalMilliseconds < AuditSettleMs)
                 continue;
 
             // The expiry moved forward, so the cast DID land — this family is
@@ -1842,7 +1842,7 @@ public partial class BuffManager : IDisposable
             }
 
             _unsatisfiedStrikes.Remove(family);
-            _buffFailCooldownUntil[family] = DateTime.Now + SilentNoShowCooldown;
+            _buffFailCooldownUntil[family] = RynthClock.Now + SilentNoShowCooldown;
 
             // Spell out the stored timer: the two causes that produce this look
             // identical from the outside. Either a lower-tier enchantment is
@@ -1851,7 +1851,7 @@ public partial class BuffManager : IDisposable
             // it is "due for recast" the instant it lands. The numbers below
             // separate them at a glance.
             string stored = _ramBuffTimers.TryGetValue(family, out RamTimerInfo? t)
-                ? $"stored='{t.SpellName}' lvl={t.SpellLevel} remainSec={(t.IsPermanent ? "permanent" : (t.Expiration - DateTime.Now).TotalSeconds.ToString("F0"))}"
+                ? $"stored='{t.SpellName}' lvl={t.SpellLevel} remainSec={(t.IsPermanent ? "permanent" : (t.Expiration - RynthClock.Now).TotalSeconds.ToString("F0"))}"
                 : "no timer entry";
             _host.Log($"[BuffDiag] batch audit: '{name}' (id={spellId}, fam={family}) lands but never reads active after {UnsatisfiedStrikeThreshold} batches — " +
                       $"parking {SilentNoShowCooldown.TotalMinutes:0}min so it can't drive continuous rebuff cycles. " +
@@ -1935,7 +1935,7 @@ public partial class BuffManager : IDisposable
                 _isHealingSelf = true;
                 return true;
             }
-            _healUnavailableUntil = DateTime.Now.AddMilliseconds(HealUnavailableMs);
+            _healUnavailableUntil = RynthClock.Now.AddMilliseconds(HealUnavailableMs);
             Hold("nothing could heal", $"kit: {Why(kitWhy)}; Heal Self: {Why(spellWhy)}; potion: {Why(potionWhy)}");
             LogNoHeal($"health {curHealthPct}% < {(inCombat ? "Heal At" : "Top Off HP")} {hpThreshold}% but nothing healed: " +
                       $"kit: {Why(kitWhy)}; Heal Self: {Why(spellWhy)}; potion: {Why(potionWhy)}");
@@ -1949,7 +1949,7 @@ public partial class BuffManager : IDisposable
         // (e.g. an emergency line above Heal At whose kit failed), back off so WantsHealNow
         // doesn't hold the tick for a heal that can't happen.
         if (HealthUnderAnyLine(curHealthPct, curStamPct))
-            _healUnavailableUntil = DateTime.Now.AddMilliseconds(HealUnavailableMs);
+            _healUnavailableUntil = RynthClock.Now.AddMilliseconds(HealUnavailableMs);
 
         // Mana: under Get Mana At / Top Off Mana, or (a caster) under the reserve kept for Stamina
         // to Mana (ManaUnderLine; see "Mana reserve" at the top).
@@ -1978,7 +1978,7 @@ public partial class BuffManager : IDisposable
                 return true;
             }
             // Nothing can refill it (no Stamina to Mana, parked, no potion): don't hold the bot for it.
-            if (inCombat) _manaUnavailableUntil = DateTime.Now.AddMilliseconds(ManaUnavailableMs);
+            if (inCombat) _manaUnavailableUntil = RynthClock.Now.AddMilliseconds(ManaUnavailableMs);
         }
         else _manaStarvedLogged = false;
         // Stamina kits first, like healing kits for health: Lucy carried Greater Stamina Kits
@@ -2067,7 +2067,7 @@ public partial class BuffManager : IDisposable
     {
         bool potionFirst = CurrentCombatMode != CombatMode.Magic;
         bool potionJustDrunk = potionFirst && _settings.UsePotions
-            && (DateTime.Now - _lastPotionAt).TotalMilliseconds < 2500
+            && (RynthClock.Now - _lastPotionAt).TotalMilliseconds < 2500
             && HasListedPotion("StaminaPotion", "Stamina");
         return !potionJustDrunk
             && (AttemptStaminaKitUse()
@@ -2147,13 +2147,13 @@ public partial class BuffManager : IDisposable
     {
         int emergencyAt = _settings.EmergencyHealAt;
         if (emergencyAt <= 0 || _vitals.HealthPct > emergencyAt) return;
-        if ((DateTime.Now - _lastPendingEmergencyHealAt).TotalMilliseconds < 2500) return;
+        if ((RynthClock.Now - _lastPendingEmergencyHealAt).TotalMilliseconds < 2500) return;
         if (IsAwaitingCastResolution() || BusyHoldsHeal() || KitPending()) return;
         if (!CastGateWatchdog.CanCastNow(_host.CanCastNow, s => _host.Log(s))) return;
         if (!ActionPacer.MayStart(_host, "Buff", HealNeed.Emergency, out _)) return;
         if (AttemptHealthKitUse() || AttemptPotion("HealthPotion"))
         {
-            _lastPendingEmergencyHealAt = DateTime.Now;
+            _lastPendingEmergencyHealAt = RynthClock.Now;
             _isHealingSelf = true;
         }
     }
@@ -2176,8 +2176,8 @@ public partial class BuffManager : IDisposable
     /// </summary>
     private void LogNoHeal(string line)
     {
-        if ((DateTime.Now - _lastNoHealLogAt).TotalSeconds < 10) return;
-        _lastNoHealLogAt = DateTime.Now;
+        if ((RynthClock.Now - _lastNoHealLogAt).TotalSeconds < 10) return;
+        _lastNoHealLogAt = RynthClock.Now;
         _host.Log("[RynthAi] Vitals: " + line);
     }
 
@@ -2188,12 +2188,12 @@ public partial class BuffManager : IDisposable
         // gesture from finishing (Drakkon, 2026-10-05: Stamina to Mana every 0.4 s until he was
         // moved). Mana and stamina wait out the backoff; a heal still retries, but no faster
         // than BusyHealRetryMs. Waiting counts as handled, so no potion is drunk meanwhile.
-        if (DateTime.Now < _busyBackoffUntil)
+        if (RynthClock.Now < _busyBackoffUntil)
         {
             bool healthSpell = baseName is "Heal Self" or "Stamina to Health Self";
-            if (!healthSpell || (DateTime.Now - _lastCastAttempt).TotalMilliseconds < BusyHealRetryMs)
+            if (!healthSpell || (RynthClock.Now - _lastCastAttempt).TotalMilliseconds < BusyHealRetryMs)
             {
-                _vitalWhy = $"AC too busy, waiting {(_busyBackoffUntil - DateTime.Now).TotalMilliseconds:0} ms";
+                _vitalWhy = $"AC too busy, waiting {(_busyBackoffUntil - RynthClock.Now).TotalMilliseconds:0} ms";
                 _healWaitKind = "too-busy backoff";
                 return true;
             }
@@ -2212,9 +2212,9 @@ public partial class BuffManager : IDisposable
         if (spellId == 0 && baseName is "Heal Self" or "Stamina to Health Self")
         {
             spellId = _spellManager.GetSelfSpellIdAboveAllowedTier(baseName, AcSkillType.LifeMagic);
-            if (spellId != 0 && (DateTime.Now - _lastAboveTierLog).TotalSeconds >= 30)
+            if (spellId != 0 && (RynthClock.Now - _lastAboveTierLog).TotalSeconds >= 30)
             {
-                _lastAboveTierLog = DateTime.Now;
+                _lastAboveTierLog = RynthClock.Now;
                 _host.Log($"[RynthAi] Vitals: no '{baseName}' at the tiers Life Magic allows now; " +
                           $"trying {SpellTableStub.GetById(spellId)?.Name ?? spellId.ToString()} (may fizzle).");
             }
@@ -2255,12 +2255,12 @@ public partial class BuffManager : IDisposable
         int family = SpellTableStub.GetById(spellId)?.Family ?? 0;
         if (family != 0
             && _buffFailCooldownUntil.TryGetValue(family, out DateTime coolUntil)
-            && DateTime.Now < coolUntil)
-            return VitalNo($"parked for {(coolUntil - DateTime.Now).TotalSeconds:0} s more after a refusal or no-show");
+            && RynthClock.Now < coolUntil)
+            return VitalNo($"parked for {(coolUntil - RynthClock.Now).TotalSeconds:0} s more after a refusal or no-show");
         // A recovery vital retried after a mana refusal: its retry gap and the per-second ceiling.
         if (IsRecoveryVital(what) && RecoveryRetryHolds(family) is { Length: > 0 } recoveryWhy)
             return VitalNo(recoveryWhy);
-        if (CurrentCombatMode != CombatMode.Magic && DateTime.Now < _vitalSwapBlockedUntil)
+        if (CurrentCombatMode != CombatMode.Magic && RynthClock.Now < _vitalSwapBlockedUntil)
             return VitalNo("wand swap blocked, retrying shortly");
         bool urgentHeal = label == LabelHealing && (_oneTouchHealthScope || HealIsUrgent(_vitals.HealthPct, _vitals.StaminaPct));
         if (!EnsureMagicMode(urgentHeal: urgentHeal))
@@ -2268,7 +2268,7 @@ public partial class BuffManager : IDisposable
             if (!_magicModeBlocked) { _healWaitKind = "wand swap / Magic stance"; return true; }   // a swap step is in flight: yield the tick
             // The switch can't complete now (no room to put the bow away, the wand won't
             // wield): not handled, so the kit/potion after this gets its turn.
-            _vitalSwapBlockedUntil = DateTime.Now.AddSeconds(VitalSwapBlockedRetrySec);
+            _vitalSwapBlockedUntil = RynthClock.Now.AddSeconds(VitalSwapBlockedRetrySec);
             return VitalNo("couldn't switch to Magic mode");
         }
         // A locally rejected cast sends nothing, so no chat or registry change will
@@ -2280,7 +2280,7 @@ public partial class BuffManager : IDisposable
         _pendingVitalBase = what;
         bool castOk = _host.CastSpellFor(targetId, spellId, "Buff",
             SpellTableStub.GetById(spellId)?.Name ?? what);
-        _lastCastAttempt = DateTime.Now;
+        _lastCastAttempt = RynthClock.Now;
         if (!castOk)
         {
             _pendingSpellId = 0;
@@ -2288,7 +2288,7 @@ public partial class BuffManager : IDisposable
         }
         sent = true;
         _vitalActionsSent++;
-        _lastVitalCastAt = DateTime.Now;
+        _lastVitalCastAt = RynthClock.Now;
         if (IsRecoveryVital(what)) NoteRecoveryAttempt();
         NoteCastIssued(spellId);
         if (_pendingVitalLabel == LabelMana) _manaStarvedLogged = false;   // the next starved spell logs again
@@ -2334,7 +2334,7 @@ public partial class BuffManager : IDisposable
     private bool AttemptPotion(bool listedOnly, params string[] types)
     {
         if (!_settings.UsePotions || _worldObjectCache == null) return VitalNo("Use Potions is off");
-        if ((DateTime.Now - _lastPotionAt).TotalMilliseconds < 2500) return VitalNo("one drunk under 2.5 s ago");
+        if ((RynthClock.Now - _lastPotionAt).TotalMilliseconds < 2500) return VitalNo("one drunk under 2.5 s ago");
         foreach (var rule in _settings.ConsumableRules)
         {
             if (Array.FindIndex(types, t => t.Equals(rule.Type, StringComparison.OrdinalIgnoreCase)) < 0) continue;
@@ -2344,9 +2344,9 @@ public partial class BuffManager : IDisposable
             if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
             _host.Log($"[RynthAi] Vitals: drinking {rule.Name} ({rule.Type})" + (potion.Id != rule.Id ? " from a new stack." : "."));
             _host.UseFor(unchecked((uint)potion.Id), "Buff", $"vitals: drink {rule.Name} ({rule.Type}) from the Items list");
-            _lastPotionAt = DateTime.Now;
+            _lastPotionAt = RynthClock.Now;
             _vitalActionsSent++;
-            _lastCastAttempt = DateTime.Now;
+            _lastCastAttempt = RynthClock.Now;
             if (IsHealthPotionType(types)) NoteHealSent(rule.Name);
             return true;
         }
@@ -2361,9 +2361,9 @@ public partial class BuffManager : IDisposable
             if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
             _host.Log($"[RynthAi] Vitals: using {wo.Name} from the pack ({kind}).");
             _host.UseFor(unchecked((uint)wo.Id), "Buff", $"vitals: {kind} potion from the pack");
-            _lastPotionAt = DateTime.Now;
+            _lastPotionAt = RynthClock.Now;
             _vitalActionsSent++;
-            _lastCastAttempt = DateTime.Now;
+            _lastCastAttempt = RynthClock.Now;
             if (IsHealthPotionType(types)) NoteHealSent(wo.Name ?? "health potion");
             return true;
         }
@@ -2390,8 +2390,8 @@ public partial class BuffManager : IDisposable
     private void TryUseBuffItems()
     {
         if (!_settings.UseBuffItems || _worldObjectCache == null || !_host.HasReadPlayerEnchantments) return;
-        if ((DateTime.Now - _lastBuffItemCheck).TotalMilliseconds < 3000) return;
-        _lastBuffItemCheck = DateTime.Now;
+        if ((RynthClock.Now - _lastBuffItemCheck).TotalMilliseconds < 3000) return;
+        _lastBuffItemCheck = RynthClock.Now;
         if (!_host.CanCastNow) return;
 
         var active = new HashSet<uint>();
@@ -2408,13 +2408,13 @@ public partial class BuffManager : IDisposable
                 bool on = false;
                 foreach (uint s in spells) if (active.Contains(s)) { on = true; break; }
                 if (on) break;
-                if (_buffItemUsedAt.TryGetValue(name, out DateTime at) && (DateTime.Now - at).TotalSeconds < 15) break;
-                _buffItemUsedAt[name] = DateTime.Now;
+                if (_buffItemUsedAt.TryGetValue(name, out DateTime at) && (RynthClock.Now - at).TotalSeconds < 15) break;
+                _buffItemUsedAt[name] = RynthClock.Now;
                 // The same buff from the other Benediction counts as done too.
-                foreach (var (other, os) in BuffItems) if (os == spells || os[0] == spells[0]) _buffItemUsedAt[other] = DateTime.Now;
+                foreach (var (other, os) in BuffItems) if (os == spells || os[0] == spells[0]) _buffItemUsedAt[other] = RynthClock.Now;
                 _host.Log($"[RynthAi] Buff item: using {wo.Name} (its buff isn't on).");
                 _host.UseFor(unchecked((uint)wo.Id), "Buff", $"buff item: the buff of {wo.Name} is not on");
-                _lastCastAttempt = DateTime.Now;
+                _lastCastAttempt = RynthClock.Now;
                 return;
             }
         }
@@ -2433,8 +2433,8 @@ public partial class BuffManager : IDisposable
     {
         int want = _settings.MakeRationsBelow;
         if (want <= 0 || _worldObjectCache == null || !_host.HasUseObjectOn) return;
-        if (DateTime.Now < _rationRestUntil) return;
-        if ((DateTime.Now - _lastRationAttempt).TotalSeconds < 6) return;
+        if (RynthClock.Now < _rationRestUntil) return;
+        if ((RynthClock.Now - _lastRationAttempt).TotalSeconds < 6) return;
         if (_combatManager?.HasCloseThreat(Math.Max(1, _settings.MonsterRange)) == true) return;
         if (!_host.CanCastNow) return;
 
@@ -2462,13 +2462,13 @@ public partial class BuffManager : IDisposable
         {
             _rationTries = 0;
             _rationCountBefore = -1;
-            _rationRestUntil = DateTime.Now.AddMinutes(10);
+            _rationRestUntil = RynthClock.Now.AddMinutes(10);
             _host.WriteToChat("[RynthAi] Couldn't cook field rations (3 tries). Is your Cooking high enough? Trying again in 10 minutes.", 2);
             return;
         }
         _rationCountBefore = have;
-        _lastRationAttempt = DateTime.Now;
-        _lastCastAttempt = DateTime.Now;
+        _lastRationAttempt = RynthClock.Now;
+        _lastCastAttempt = RynthClock.Now;
         _host.Log($"[RynthAi] Rations: {have} left (< {want}), cooking with the Cooking Pot.");
         _host.UseOnFor(unchecked((uint)pot), unchecked((uint)dried), "Buff", $"rations: {have} left, cooking more");
     }
@@ -2504,7 +2504,7 @@ public partial class BuffManager : IDisposable
             // around a teleport) leaves no pacing state, so the next tick asks again.
             if (_host.ChangeCombatModeFor(CombatMode.NonCombat, "Buff", "peace mode for the healing kit"))
             {
-                _lastCastAttempt = DateTime.Now;
+                _lastCastAttempt = RynthClock.Now;
                 _healWaitKind = "peace mode for the kit";
             }
             return true;   // use the kit next tick, once in peace mode
@@ -2515,7 +2515,7 @@ public partial class BuffManager : IDisposable
         if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
         if (fromPack) _host.Log($"[RynthAi] Vitals: using {kit.Name} from the pack.");
         _host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: healing kit on yourself");
-        _lastCastAttempt = DateTime.Now;
+        _lastCastAttempt = RynthClock.Now;
         MarkKitUsed();
         NoteHealSent(kit.Name ?? "healing kit");
         return true;
@@ -2538,7 +2538,7 @@ public partial class BuffManager : IDisposable
         if (_settings.PeaceModeForKits && mode != CombatMode.NonCombat && _host.HasChangeCombatMode)
         {
             if (_host.ChangeCombatModeFor(CombatMode.NonCombat, "Buff", "peace mode for the stamina kit"))
-                _lastCastAttempt = DateTime.Now;
+                _lastCastAttempt = RynthClock.Now;
             return true;   // use the kit next tick, once in peace mode
         }
         uint playerId = _host.GetPlayerId();
@@ -2547,7 +2547,7 @@ public partial class BuffManager : IDisposable
         _host.Log($"[RynthAi] Vitals: using {kit.Name} from the pack.");
         _host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: stamina kit on yourself");
         _vitalActionsSent++;
-        _lastCastAttempt = DateTime.Now;
+        _lastCastAttempt = RynthClock.Now;
         MarkKitUsed(stamina: true);
         return true;
     }
@@ -2580,7 +2580,7 @@ public partial class BuffManager : IDisposable
 
     internal void MarkKitUsed(bool stamina = false)   // internal for the host tests (VitalsTests)
     {
-        _kitUsedAt = DateTime.Now;
+        _kitUsedAt = RynthClock.Now;
         _kitLandedAt = DateTime.MinValue;
         _kitIsStamina = stamina;
         _kitSeqAtUse = UseDoneSeqNow();
@@ -2596,7 +2596,7 @@ public partial class BuffManager : IDisposable
             KitRefused($"UseDone error 0x{err:X}");
             return false;
         }
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         bool done = _kitLandedAt != DateTime.MinValue
             ? (now - _kitLandedAt).TotalMilliseconds >= KitLandGraceMs
             : (now - _kitUsedAt).TotalMilliseconds >= KitResultTimeoutMs;
@@ -2608,9 +2608,9 @@ public partial class BuffManager : IDisposable
     private void KitRefused(string why)
     {
         if (_kitUsedAt == DateTime.MinValue || _kitLandedAt != DateTime.MinValue) return;
-        double ms = (DateTime.Now - _kitUsedAt).TotalMilliseconds;
+        double ms = (RynthClock.Now - _kitUsedAt).TotalMilliseconds;
         _kitUsedAt = DateTime.MinValue;
-        _kitRefusedAt = DateTime.Now;
+        _kitRefusedAt = RynthClock.Now;
         KitRefusals++;
         _host.Log($"[RynthAi] Vitals: the {(_kitIsStamina ? "stamina" : "healing")} kit was refused {ms:0} ms after use ({why}): " +
                   $"no result will come, vitals carry on (next kit in {KitRetryAfterRefusalMs:0} ms).");
@@ -2619,7 +2619,7 @@ public partial class BuffManager : IDisposable
     /// <summary>True (with why) while a kit must wait after its last refusal.</summary>
     private bool KitRetryWait(out string why)
     {
-        double since = (DateTime.Now - _kitRefusedAt).TotalMilliseconds;
+        double since = (RynthClock.Now - _kitRefusedAt).TotalMilliseconds;
         if (since < KitRetryAfterRefusalMs)
         {
             why = $"kit refused {since:0} ms ago, retrying shortly";
@@ -2685,9 +2685,9 @@ public partial class BuffManager : IDisposable
         double chance = 1.0 - 1.0 / (1.0 + Math.Exp(0.03 * (skill - difficulty)));
         int pct = (int)Math.Floor(Math.Clamp(chance, 0, 1) * 100);
         bool ok = pct >= minPct;
-        if (!ok && (DateTime.Now - _lastKitChanceLog).TotalSeconds >= 10)
+        if (!ok && (RynthClock.Now - _lastKitChanceLog).TotalSeconds >= 10)
         {
-            _lastKitChanceLog = DateTime.Now;
+            _lastKitChanceLog = RynthClock.Now;
             _host.Log($"[RynthAi] Vitals: {kitName} would work {pct}% of the time on {missing} missing (skill {skill} vs {difficulty}), under {minPct}%: using the spell.");
         }
         return ok;
@@ -2747,7 +2747,7 @@ public partial class BuffManager : IDisposable
     // batch starts → clears cooldown → cast again → silent no-show → re-park).
     private bool AnyBuffBelowThreshold(List<string> desiredBuffs, int thresholdSec)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         foreach (string buffBaseName in desiredBuffs)
         {
             AcSkillType castSkill = SkillFor(buffBaseName);
@@ -2773,7 +2773,7 @@ public partial class BuffManager : IDisposable
         int cut = line.IndexOf(" — ", StringComparison.Ordinal);
         string reason = cut >= 0 ? line.Substring(cut, Math.Min(18, line.Length - cut)) : line;
         string key = buff + "|" + reason;
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (_diagSkipLoggedAt.TryGetValue(key, out DateTime at) && (now - at).TotalSeconds < 60) return;
         _diagSkipLoggedAt[key] = now;
         _host.Log(line);
@@ -2838,10 +2838,10 @@ public partial class BuffManager : IDisposable
             int buffFamily = SpellTableStub.GetById(spellId)?.Family ?? 0;
             if (buffFamily != 0
                 && _buffFailCooldownUntil.TryGetValue(buffFamily, out DateTime coolUntil)
-                && DateTime.Now < coolUntil)
+                && RynthClock.Now < coolUntil)
             {
-                LastBuffSkipReason = $"fail-cooldown: {buffBaseName} (fam={buffFamily}, {(coolUntil - DateTime.Now).TotalSeconds:0}s)";
-                if (diagnose) DiagSkip(buffBaseName, $"[FR] skip '{buffBaseName}' (id={spellId}) — hard-fail cooldown {(coolUntil - DateTime.Now).TotalSeconds:0}s");
+                LastBuffSkipReason = $"fail-cooldown: {buffBaseName} (fam={buffFamily}, {(coolUntil - RynthClock.Now).TotalSeconds:0}s)";
+                if (diagnose) DiagSkip(buffBaseName, $"[FR] skip '{buffBaseName}' (id={spellId}) — hard-fail cooldown {(coolUntil - RynthClock.Now).TotalSeconds:0}s");
                 continue;
             }
 
@@ -2856,7 +2856,7 @@ public partial class BuffManager : IDisposable
                     // -> combat runs. Buffing stays top priority; only the impossible
                     // family is shelved, time-boxed, and auto-retried.
                     if (buffFamily != 0)
-                        _buffFailCooldownUntil[buffFamily] = DateTime.Now.AddSeconds(BuffFailCooldownSec);
+                        _buffFailCooldownUntil[buffFamily] = RynthClock.Now.AddSeconds(BuffFailCooldownSec);
                     LastBuffSkipReason = $"wand-swap exhausted: {buffBaseName} (fam={buffFamily})";
                     _host.Log($"[WieldGate] wand-swap exhausted for '{buffBaseName}' (fam={buffFamily}) — parking {BuffFailCooldownSec:0}s, fighting unbuffed");
                     continue;
@@ -2891,7 +2891,7 @@ public partial class BuffManager : IDisposable
             if (buffFamily != 0)
             {
                 _lastCastSpellIdByFamily[buffFamily] = spellId;
-                _castIssuedAtByFamily[buffFamily]    = DateTime.Now;
+                _castIssuedAtByFamily[buffFamily]    = RynthClock.Now;
                 _expiryAtCastByFamily[buffFamily]    = CurrentExpiryFor(buffFamily);
             }
 
@@ -2917,7 +2917,7 @@ public partial class BuffManager : IDisposable
                 _host.Log($"[BuffChain] '{spellInfo?.Name ?? buffBaseName}' goes without waiting for the animation: {_fastChainWhy}");
             int seqAtSend = UseDoneSeqNow();
             bool castOk = _host.CastSpellFor((uint)_host.GetPlayerId(), spellId, "Buff", spellInfo?.Name ?? buffBaseName);
-            _lastCastAttempt = DateTime.Now;
+            _lastCastAttempt = RynthClock.Now;
             if (castOk)
             {
                 NoteCastIssued(spellId);
@@ -2992,7 +2992,7 @@ public partial class BuffManager : IDisposable
     {
         int level = GetSpellLevel(spellInfo);
         double duration = GetCustomSpellDuration(level);
-        var now = DateTime.Now;
+        var now = RynthClock.Now;
         _itemSpellTimers[spellInfo.Family] = new ItemSpellRecord
         {
             CastAt    = now,
@@ -3015,7 +3015,7 @@ public partial class BuffManager : IDisposable
         {
             var diag = new CastDiagnostic
             {
-                CastedAt    = DateTime.Now,
+                CastedAt    = RynthClock.Now,
                 SpellName   = spellInfo.Name,
                 SpellId     = spellInfo.Id,
                 SpellFamily = spellInfo.Family,
@@ -3205,12 +3205,12 @@ public partial class BuffManager : IDisposable
                     LogArmorRecast(targetSpell, $"tier-upgrade recordedLvl={itemTimer.SpellLevel} < targetLvl={targetLevel} (recorded='{itemTimer.SpellName}')");
                     return false;
                 }
-                if (DateTime.Now < itemTimer.ExpiresAt.AddSeconds(-rebufferSec))
+                if (RynthClock.Now < itemTimer.ExpiresAt.AddSeconds(-rebufferSec))
                 {
                     _lastArmorRecastReason.Remove(targetSpell.Family); // clear so next recast re-logs
                     return true;
                 }
-                double remainSec = (itemTimer.ExpiresAt - DateTime.Now).TotalSeconds;
+                double remainSec = (itemTimer.ExpiresAt - RynthClock.Now).TotalSeconds;
                 LogArmorRecast(targetSpell, $"expiry-window remainSec={remainSec:F0} threshold={rebufferSec} (recorded='{itemTimer.SpellName}' lvl={itemTimer.SpellLevel} expiresAt={itemTimer.ExpiresAt:HH:mm:ss})");
             }
             else
@@ -3247,7 +3247,7 @@ public partial class BuffManager : IDisposable
                 LogPlayerRecast(targetSpell, $"tier-upgrade storedLvl={timer.SpellLevel} < effTarget={effectiveTarget} (nominal={targetLevel}, achievedCap={(_familyAchievedTier.TryGetValue(targetSpell.Family, out int a2) ? a2 : -1)}, stored='{timer.SpellName}')");
                 return false;
             }
-            if (DateTime.Now < timer.Expiration.AddSeconds(-rebufferSec))
+            if (RynthClock.Now < timer.Expiration.AddSeconds(-rebufferSec))
             {
                 _lastArmorRecastReason.Remove(targetSpell.Family);
                 return true;
@@ -3261,7 +3261,7 @@ public partial class BuffManager : IDisposable
                 _lastArmorRecastReason.Remove(targetSpell.Family);
                 return true;
             }
-            double remainSec = (timer.Expiration - DateTime.Now).TotalSeconds;
+            double remainSec = (timer.Expiration - RynthClock.Now).TotalSeconds;
             LogPlayerRecast(targetSpell, $"expiry-window remainSec={remainSec:F0} threshold={rebufferSec} storedLvl={timer.SpellLevel} exp={timer.Expiration:HH:mm:ss} (stored='{timer.SpellName}')");
         }
         else if (timer != null)
@@ -3326,7 +3326,7 @@ public partial class BuffManager : IDisposable
 
     /// <summary>True while upgrades of <paramref name="family"/> are parked after repeated silent no-shows.</summary>
     private bool UpgradeParked(int family)
-        => family != 0 && _upgradeParkedUntil.TryGetValue(family, out DateTime until) && DateTime.Now < until;
+        => family != 0 && _upgradeParkedUntil.TryGetValue(family, out DateTime until) && RynthClock.Now < until;
 
     /// <summary>
     /// The pending upgrade <paramref name="spellId"/> was a silent no-show (nothing showed in the
@@ -3342,7 +3342,7 @@ public partial class BuffManager : IDisposable
         if (count >= UpgradeNoShowThreshold)
         {
             _upgradeNoShowCounts.Remove(family);
-            _upgradeParkedUntil[family] = DateTime.Now + UpgradeParkCooldown;
+            _upgradeParkedUntil[family] = RynthClock.Now + UpgradeParkCooldown;
             _host.Log($"[Buff] upgrade of family {family} ({SpellTableStub.GetById(spellId)?.Name}) never showed {count} times in a row: upgrades of it parked {UpgradeParkCooldown.TotalMinutes:0}min " +
                       "(the level it was cast over still refreshes as a normal cast; the family is not blacklisted).");
         }
@@ -3386,9 +3386,9 @@ public partial class BuffManager : IDisposable
         if (_isForceRebuffing && _forceRebuffCastFamilies.Contains(family)) on = CastLevelThisRun(family);
         else if (_ramBuffTimers.TryGetValue(family, out RamTimerInfo? t)
                  && !(t.IsPermanent && _settings.CastBuffsOverItemBuffs)
-                 && (t.IsPermanent || t.Expiration > DateTime.Now))
+                 && (t.IsPermanent || t.Expiration > RynthClock.Now))
             on = t.SpellLevel;
-        else if (_itemSpellTimers.TryGetValue(family, out ItemSpellRecord? it) && it.ExpiresAt > DateTime.Now)
+        else if (_itemSpellTimers.TryGetValue(family, out ItemSpellRecord? it) && it.ExpiresAt > RynthClock.Now)
             on = it.SpellLevel;
         return on > 0 && on < newLevel ? on : 0;
     }
@@ -3401,7 +3401,7 @@ public partial class BuffManager : IDisposable
     {
         if (!_familyLiveEntries.TryGetValue(family, out var entries)) return false;
         bool ignorePermanent = _settings.CastBuffsOverItemBuffs;
-        DateTime due = DateTime.Now.AddSeconds(rebufferSec);
+        DateTime due = RynthClock.Now.AddSeconds(rebufferSec);
         foreach (var (level, expiration, permanent) in entries)
             if (level >= minLevel && expiration > due && !(permanent && ignorePermanent))
                 return true;
@@ -3561,7 +3561,7 @@ public partial class BuffManager : IDisposable
         var preservedItemTimers = new Dictionary<int, RamTimerInfo>();
         foreach (var kvp in _ramBuffTimers)
         {
-            if (kvp.Value.Expiration > DateTime.Now && IsItemEnchantment(kvp.Value.SpellName))
+            if (kvp.Value.Expiration > RynthClock.Now && IsItemEnchantment(kvp.Value.SpellName))
                 preservedItemTimers[kvp.Key] = kvp.Value;
         }
 
@@ -3597,7 +3597,7 @@ public partial class BuffManager : IDisposable
             int level = GetSpellLevel(spellInfo);
             var candidate = new RamTimerInfo
             {
-                Expiration  = isPermanent ? PermanentSentinel : DateTime.Now.AddSeconds(remainingSeconds),
+                Expiration  = isPermanent ? PermanentSentinel : RynthClock.Now.AddSeconds(remainingSeconds),
                 SpellLevel  = level,
                 SpellName   = spellInfo.Name,
                 IsPermanent = isPermanent,
@@ -3733,7 +3733,7 @@ public partial class BuffManager : IDisposable
                     {
                         ObjectId = objectId,
                         ObjectName = item.Name,
-                        Expiration = DateTime.Now.AddSeconds(remainingSeconds),
+                        Expiration = RynthClock.Now.AddSeconds(remainingSeconds),
                         SpellLevel = GetSpellLevel(spellInfo),
                         SpellName  = spellInfo.Name,
                     };
@@ -3760,7 +3760,7 @@ public partial class BuffManager : IDisposable
     {
         int family = new SpellInfo(0, spellBaseName).Family;
         long key = ((long)objectId << 32) | (uint)family;
-        return _itemBuffTimers.TryGetValue(key, out var info) && info.Expiration > DateTime.Now;
+        return _itemBuffTimers.TryGetValue(key, out var info) && info.Expiration > RynthClock.Now;
     }
 
     public void PrintBuffDebug()
@@ -3803,7 +3803,7 @@ public partial class BuffManager : IDisposable
             {
                 var info = kvp.Value;
                 double total = GetCustomSpellDuration(info.SpellLevel);
-                TimeSpan left = info.Expiration - DateTime.Now;
+                TimeSpan left = info.Expiration - RynthClock.Now;
                 double passed = total - left.TotalSeconds;
                 _host.WriteToChat(
                     $"[RynthAi]   {info.SpellName} (Lvl {info.SpellLevel}): {Math.Round(passed / 60, 1)}m passed, " +
@@ -3848,9 +3848,9 @@ public partial class BuffManager : IDisposable
             int level = info != null ? GetSpellLevel(info) : 0;
             string activeTimer = "no timer";
             if (info != null && _ramBuffTimers.TryGetValue(info.Family, out RamTimerInfo? timer))
-                activeTimer = $"timer T{timer.SpellLevel}, {Math.Round((timer.Expiration - DateTime.Now).TotalMinutes, 1)}m left";
+                activeTimer = $"timer T{timer.SpellLevel}, {Math.Round((timer.Expiration - RynthClock.Now).TotalMinutes, 1)}m left";
             else if (info != null && _itemSpellTimers.TryGetValue(info.Family, out ItemSpellRecord? itemTimer))
-                activeTimer = $"item T{itemTimer.SpellLevel}, {Math.Round((itemTimer.ExpiresAt - DateTime.Now).TotalMinutes, 1)}m left";
+                activeTimer = $"item T{itemTimer.SpellLevel}, {Math.Round((itemTimer.ExpiresAt - RynthClock.Now).TotalMinutes, 1)}m left";
 
             _host.WriteToChat($"[RynthAi]   {baseName} → {info?.Name ?? "?"} (T{level}, {activeTimer})", 1);
         }
@@ -3872,8 +3872,8 @@ public partial class BuffManager : IDisposable
         foreach (var kvp in _itemSpellTimers)
         {
             var info = kvp.Value;
-            TimeSpan left  = info.ExpiresAt - DateTime.Now;
-            TimeSpan spent = DateTime.Now - info.CastAt;
+            TimeSpan left  = info.ExpiresAt - RynthClock.Now;
+            TimeSpan spent = RynthClock.Now - info.CastAt;
             double totalMin = (info.ExpiresAt - info.CastAt).TotalMinutes;
             if (left.TotalSeconds <= 0)
                 _host.WriteToChat($"[RynthAi]   {info.SpellName} (Lvl {info.SpellLevel}): EXPIRED", 1);
@@ -4062,7 +4062,7 @@ public partial class BuffManager : IDisposable
     // pass the caller just made.
     private void LogFilterSkips()
     {
-        var now = DateTime.Now;
+        var now = RynthClock.Now;
         string summary = _filterSummary;
         if (summary.Length == 0) return;
         if (summary != _filterSkipLoggedSummary || (now - _filterSkipLoggedAt).TotalSeconds >= FilterSkipLogMinSec)
@@ -4238,7 +4238,7 @@ public partial class BuffManager : IDisposable
         // But only trust it if the just-added buff actually shows up there yet.
         if (RefreshFromLiveMemory() >= 0 &&
             _ramBuffTimers.TryGetValue(spellInfo.Family, out RamTimerInfo? liveTimer) &&
-            liveTimer.Expiration > DateTime.Now)
+            liveTimer.Expiration > RynthClock.Now)
         {
             return;
         }
@@ -4304,7 +4304,7 @@ public partial class BuffManager : IDisposable
 
         // A kit on yourself finished (see KitPending). After the speech filter: "heal yourself" in a tell is not one.
         if (_kitUsedAt != DateTime.MinValue && _kitLandedAt == DateTime.MinValue && IsKitResultLine(lower))
-            _kitLandedAt = DateTime.Now;
+            _kitLandedAt = RynthClock.Now;
 
         // Real failure phrases. Note: bare "component" was removed — it false-matches
         // the "consumed the following components" line, which fires for both success
@@ -4327,7 +4327,7 @@ public partial class BuffManager : IDisposable
             // A kit in flight with no result yet: this is its refusal (see KitRefused). Our bot
             // sends nothing else while a kit is pending (CheckVitals returns at KitPending).
             if (_kitUsedAt != DateTime.MinValue && _kitLandedAt == DateTime.MinValue
-                && (DateTime.Now - _kitUsedAt).TotalMilliseconds <= KitRefusalWindowMs)
+                && (RynthClock.Now - _kitUsedAt).TotalMilliseconds <= KitRefusalWindowMs)
                 KitRefused("You're too busy!");
             // A refusal, never "done" (2026-10-05). When the pending cast's incantation has come,
             // the server is running it and this refused something else (a loot use, a kit): the
@@ -4360,7 +4360,7 @@ public partial class BuffManager : IDisposable
             // on the 400ms tick. Cleared by NoteCastAccepted on the next success.
             _busyRefusalStreak++;
             double backoffMs = Math.Min(BusyBackoffBaseMs * Math.Pow(2, _busyRefusalStreak - 1), BusyBackoffMaxMs);
-            _busyBackoffUntil = DateTime.Now.AddMilliseconds(backoffMs);
+            _busyBackoffUntil = RynthClock.Now.AddMilliseconds(backoffMs);
             if (_busyRefusalStreak == 1 || _busyRefusalStreak % 5 == 0)
                 _host.Log($"[BuffChat] too-busy streak={_busyRefusalStreak} — backing off {backoffMs:0}ms before the next cast attempt.");
 
@@ -4406,7 +4406,7 @@ public partial class BuffManager : IDisposable
                 if (pendingSpell != null && noCompsVital)
                 {
                     // A vital spell: pass over this level only; the next lower one goes next.
-                    _noComponentsUntil[_pendingSpellId] = DateTime.Now.AddSeconds(NoComponentsLevelSec);
+                    _noComponentsUntil[_pendingSpellId] = RynthClock.Now.AddSeconds(NoComponentsLevelSec);
                     _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: using a lower level for {NoComponentsLevelSec / 60:0} min.", 2);
                 }
                 else if (pendingSpell != null)
@@ -4417,7 +4417,7 @@ public partial class BuffManager : IDisposable
                         SaveBuffTimers();
                     }
                     _buffFailCooldownUntil[pendingSpell.Family] =
-                        DateTime.Now.AddSeconds(BuffFailCooldownSec);
+                        RynthClock.Now.AddSeconds(BuffFailCooldownSec);
                     // AC's refusal doesn't name the spell and vital casts print no
                     // "Casting:" line, so say which one. The server's text is not
                     // echoed: this line comes back through this handler, and it must
@@ -4445,7 +4445,7 @@ public partial class BuffManager : IDisposable
         if (lower.Contains("enough mana"))
         {
             _cast.Result(null, "not enough mana", atStart: true);
-            _lastManaRefusalAt = DateTime.Now;   // a combat cast's refusal too: ManaStarved with costs unknown
+            _lastManaRefusalAt = RynthClock.Now;   // a combat cast's refusal too: ManaStarved with costs unknown
             if (_pendingSpellId == 0) return;
             var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
             // A recovery vital tries again soon for a better Mana Conversion roll (RecoveryRetry).
@@ -4453,7 +4453,7 @@ public partial class BuffManager : IDisposable
             {
                 _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId} - not enough mana; retrying in {RecoveryRetryMs} ms, buffs {LowManaBuffPauseMs / 1000:0}s.");
                 _pendingSpellId = 0;
-                _lowManaPauseUntil = DateTime.Now.AddMilliseconds(LowManaBuffPauseMs);
+                _lowManaPauseUntil = RynthClock.Now.AddMilliseconds(LowManaBuffPauseMs);
                 _onCastResolved?.Invoke("not enough mana");
                 return;
             }
@@ -4472,12 +4472,12 @@ public partial class BuffManager : IDisposable
                 // mana regenerates to its cost while attacks wait (the mana reserve), then it goes.
                 bool vitalSpell = _pendingSpellId == _pendingVitalSpellId;
                 restSec = vitalSpell ? LowManaHealRestSec : LowManaFamilyRestSec;
-                _buffFailCooldownUntil[pendingSpell.Family] = DateTime.Now.AddSeconds(restSec);
+                _buffFailCooldownUntil[pendingSpell.Family] = RynthClock.Now.AddSeconds(restSec);
             }
             _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId} - not enough mana; resting the family {restSec:0}s, buffs {LowManaBuffPauseMs / 1000:0}s.");
             EndPendingUpgrade(_pendingSpellId, "not enough mana");
             _pendingSpellId = 0;
-            _lowManaPauseUntil = DateTime.Now.AddMilliseconds(LowManaBuffPauseMs);
+            _lowManaPauseUntil = RynthClock.Now.AddMilliseconds(LowManaBuffPauseMs);
             _onCastResolved?.Invoke("not enough mana");
             return;
         }
@@ -4828,7 +4828,7 @@ public partial class BuffManager : IDisposable
     /// (CastTracker.GiveUpAt), else <paramref name="fallbackMs"/> from the send.</summary>
     private bool PendingGiveUpReached(double fallbackMs) =>
         _cast.GiveUpReached(_pendingSpellId, fallbackMs)
-        ?? (DateTime.Now - _lastCastAttempt).TotalMilliseconds > fallbackMs;
+        ?? (RynthClock.Now - _lastCastAttempt).TotalMilliseconds > fallbackMs;
 
     private string GiveUpWhy(double fallbackMs)
     {
@@ -4867,7 +4867,7 @@ public partial class BuffManager : IDisposable
         _host.SetAutoRunBy("Buff/Nudge", false);
         CastNudges++;
         if (urgent) UrgentNudges++;
-        DateTime hold = DateTime.Now.AddMilliseconds(NudgeHoldMs);
+        DateTime hold = RynthClock.Now.AddMilliseconds(NudgeHoldMs);
         if (_busyBackoffUntil < hold) _busyBackoffUntil = hold;
         string why = urgent
             ? (held != null && IsHealCast(held.SpellId) ? "it is a heal" : $"health {_vitals.HealthPct}% is under a heal line") +
@@ -4902,7 +4902,7 @@ public partial class BuffManager : IDisposable
         int level = GetSpellLevel(spellInfo);
         _ramBuffTimers[spellInfo.Family] = new RamTimerInfo
         {
-            Expiration = DateTime.Now.AddSeconds(durationSeconds),
+            Expiration = RynthClock.Now.AddSeconds(durationSeconds),
             SpellLevel = level,
             SpellName = spellInfo.Name,
         };
@@ -5114,12 +5114,12 @@ public partial class BuffManager : IDisposable
             // _lastBuffStanceAttempt), while buffing held the bot.
             int noWandShift = Math.Min(_buffStanceConsecutiveFails, 5);
             int noWandGateMs = Math.Min(1000 << noWandShift, 30000);
-            if ((DateTime.Now - _lastBuffStanceAttempt).TotalMilliseconds > noWandGateMs
+            if ((RynthClock.Now - _lastBuffStanceAttempt).TotalMilliseconds > noWandGateMs
                 && _host.ChangeCombatModeFor(CombatMode.Magic, "Buff", "no wand: Magic mode bare-handed"))
             {
                 NoteStanceRequest();
-                _lastBuffStanceAttempt = DateTime.Now;
-                _lastCastAttempt = DateTime.Now;
+                _lastBuffStanceAttempt = RynthClock.Now;
+                _lastCastAttempt = RynthClock.Now;
                 if (_buffStanceConsecutiveFails < 6) _buffStanceConsecutiveFails++;
                 if (_buffStanceConsecutiveFails > 1)
                     _host.Log($"[BuffStance] no wand: ChangeCombatMode(Magic) retry #{_buffStanceConsecutiveFails} (next retry in {noWandGateMs / 1000}s)");
@@ -5167,7 +5167,7 @@ public partial class BuffManager : IDisposable
             // before retrying. Mirrors the no-chat-timeout pattern used for
             // spell casts at the top of OnHeartbeat. Checked BEFORE the shared
             // swap gate so a denied attempt never claims the cross-subsystem slot.
-            DateTime now = DateTime.Now;
+            DateTime now = RynthClock.Now;
             if (now < _wieldCooldownUntil)
                 return false;
 
@@ -5302,10 +5302,10 @@ public partial class BuffManager : IDisposable
         // the clock restarts, so the refusals that follow are not counted as a wedged stance.
         if (_buffStanceStuckSince != DateTime.MinValue && ActionPacer.LastEngineRefusalMs > _buffStanceStuckStartMs)
         {
-            _buffStanceStuckSince = DateTime.Now;
+            _buffStanceStuckSince = RynthClock.Now;
             _buffStanceStuckStartMs = ActionPacer.NowMs();
         }
-        double stuckMs = _buffStanceStuckSince == DateTime.MinValue ? 0 : (DateTime.Now - _buffStanceStuckSince).TotalMilliseconds;
+        double stuckMs = _buffStanceStuckSince == DateTime.MinValue ? 0 : (RynthClock.Now - _buffStanceStuckSince).TotalMilliseconds;
 
         // Capped re-equip recovery (mirrors CombatManager): handles the rare
         // stale "wielded reads true" by resyncing the wield once or twice.
@@ -5313,15 +5313,15 @@ public partial class BuffManager : IDisposable
         // and unbounded re-equip jams the item-action queue permanently.
         if (_buffStanceReEquips < BuffStanceReEquipMax
             && stuckMs > BuffStanceStuckRecoverMs
-            && (DateTime.Now - _buffStanceLastRecoverAt).TotalMilliseconds > BuffStanceStuckRecoverMs
+            && (RynthClock.Now - _buffStanceLastRecoverAt).TotalMilliseconds > BuffStanceStuckRecoverMs
             && (_weaponSwapGate == null || _weaponSwapGate.TryBeginSwap("buff-stance-recovery")))
         {
-            _buffStanceLastRecoverAt = DateTime.Now;
+            _buffStanceLastRecoverAt = RynthClock.Now;
             _buffStanceReEquips++;
             _host.Log($"[BuffStance] STUCK {stuckMs:0}ms (wielded, mode={CurrentCombatMode}≠Magic) — re-equip attempt {_buffStanceReEquips}/{BuffStanceReEquipMax} 0x{(uint)wandId:X8}");
             _host.UseFor((uint)wandId, "Buff", "buffing: stance stuck, wield the wand again");
             NoteStanceRequest();
-            _lastCastAttempt = DateTime.Now;
+            _lastCastAttempt = RynthClock.Now;
             return false;
         }
         // Past the cap and clearly wedged: warn ONCE so a multi-hour silent
@@ -5341,13 +5341,13 @@ public partial class BuffManager : IDisposable
         if (shift > 5) shift = 5;
         int gateMs = 1000 << shift;        // 1s, 2s, 4s, 8s, 16s, 32s
         if (gateMs > 30000) gateMs = 30000; // cap at 30s
-        if ((DateTime.Now - _lastBuffStanceAttempt).TotalMilliseconds > gateMs
+        if ((RynthClock.Now - _lastBuffStanceAttempt).TotalMilliseconds > gateMs
             && _host.ChangeCombatModeFor(CombatMode.Magic, "Buff", "wand wielded: Magic mode"))
         {
-            if (_buffStanceStuckSince == DateTime.MinValue) { _buffStanceStuckSince = DateTime.Now; _buffStanceStuckStartMs = ActionPacer.NowMs(); }
+            if (_buffStanceStuckSince == DateTime.MinValue) { _buffStanceStuckSince = RynthClock.Now; _buffStanceStuckStartMs = ActionPacer.NowMs(); }
             NoteStanceRequest();
-            _lastBuffStanceAttempt = DateTime.Now;
-            _lastCastAttempt = DateTime.Now;
+            _lastBuffStanceAttempt = RynthClock.Now;
+            _lastCastAttempt = RynthClock.Now;
             if (_buffStanceConsecutiveFails < 6) _buffStanceConsecutiveFails++;
             // Visible retry line (throttled by the backoff itself): the
             // 2026-06-12 coma produced ZERO log output from this path.
@@ -5490,7 +5490,7 @@ public partial class BuffManager : IDisposable
     {
         if (_wandSkipUntil.TryGetValue(wo.Id, out DateTime until))
         {
-            if (DateTime.Now < until) return true;
+            if (RynthClock.Now < until) return true;
             _wandSkipUntil.Remove(wo.Id);
             _wandWieldFails.Remove(wo.Id);
         }
@@ -5503,13 +5503,13 @@ public partial class BuffManager : IDisposable
             _wandIdAsked.TryGetValue(wo.Id, out var asked);
             if (asked.Count < WandIdMaxAsks)
             {
-                if ((DateTime.Now - asked.At).TotalSeconds >= WandIdRetrySec)
+                if ((RynthClock.Now - asked.At).TotalSeconds >= WandIdRetrySec)
                 {
                     // Counted only when the engine took it: a refused ask (a death or a portal) is not one of the
                     // WandIdMaxAsks, and the wand is held back and asked about again.
                     if (_host.RequestId(uid))
                     {
-                        _wandIdAsked[wo.Id] = (asked.Count + 1, DateTime.Now);
+                        _wandIdAsked[wo.Id] = (asked.Count + 1, RynthClock.Now);
                         _host.Log($"[WieldGate] identifying 0x{uid:X8} '{wo.Name}' before using it to buff (its wield requirement isn't known yet)");
                     }
                 }
@@ -5543,7 +5543,7 @@ public partial class BuffManager : IDisposable
         bool tooLow = _host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out _, out uint wErr, out _, out uint wObj)
                       && wObj == unchecked((uint)wandId) && wErr != 0 && wErr != 0x1D;
         if (n < WandWieldFailMax && !tooLow) return;
-        _wandSkipUntil[wandId] = DateTime.Now.AddMinutes(WandSkipMin);
+        _wandSkipUntil[wandId] = RynthClock.Now.AddMinutes(WandSkipMin);
         _wandWieldFails.Remove(wandId);
         string name = _worldObjectCache?[wandId]?.Name ?? "?";
         _host.Log($"[WieldGate] 0x{(uint)wandId:X8} '{name}' didn't wield after {n} tries: left out of buffing for {WandSkipMin:0} min");

@@ -37,6 +37,19 @@ public class MissileCraftingManager
     /// could equip ammo for the launcher being swapped away from, or start a craft mid-swap.
     /// </summary>
     public Func<bool>? HoldWhile { get; set; }
+
+    /// <summary>
+    /// Set by the plugin (RynthAiPlugin.FightIsOn): true while a fight is on. Crafting holds combat
+    /// (Peace mode, up to CRAFT_TIMEOUT_MS a step), so in a fight it does only what the fight needs:
+    /// with ammo in the pack, that ammo is wielded at once and better ammo is not crafted, and a
+    /// craft under way stops as soon as there is ammo to shoot (carried before it, or one combine
+    /// made) and wields it. With no ammo at all it still makes the first combine: combat keeps an
+    /// empty launcher (it doesn't swap to melee or a wand for want of ammo), so without the craft
+    /// the bot could not fight back at all.
+    /// </summary>
+    public Func<bool>? FightIsOn { get; set; }
+    // The craft under way is better ammo than ammo already carried (an upgrade, not a need).
+    private bool _craftIsUpgrade;
     public void SetCharacterSkills(CharacterSkills skills) => _charSkills = skills;
 
     public enum CraftState { Idle, Evaluating, Combining, EquippingAmmo }
@@ -114,7 +127,7 @@ public class MissileCraftingManager
             string reason = $"Stopped by an error ({ex.GetType().Name}: {ex.Message}); trying again in a minute";
             if (State == CraftState.Idle) ChatLog(reason);   // Reset only speaks for a craft in progress
             Reset(reason);
-            _lastAmmoCheck = DateTime.Now.AddMilliseconds(ERROR_BACKOFF_MS - AMMO_CHECK_INTERVAL_MS);
+            _lastAmmoCheck = RynthClock.Now.AddMilliseconds(ERROR_BACKOFF_MS - AMMO_CHECK_INTERVAL_MS);
         }
     }
 
@@ -151,9 +164,9 @@ public class MissileCraftingManager
 
     private void ProcessIdle()
     {
-        if ((DateTime.Now - _lastAmmoCheck).TotalMilliseconds < AMMO_CHECK_INTERVAL_MS) return;
+        if ((RynthClock.Now - _lastAmmoCheck).TotalMilliseconds < AMMO_CHECK_INTERVAL_MS) return;
         if (HoldWhile?.Invoke() == true) return;
-        _lastAmmoCheck = DateTime.Now;
+        _lastAmmoCheck = RynthClock.Now;
 
         var inv = GetInventory(forceRefresh: true);
         if (!TryGetWieldedMissileCategory(inv, out WeaponCategory category, out WorldObject? launcher))
@@ -196,7 +209,19 @@ public class MissileCraftingManager
         }
 
         if (bestCraftable != null && bestCraftable.Rank > bestExistingPriority)
-        { StartCrafting(bestCraftable, inv); return; }
+        {
+            // In a fight, better ammo waits: the carried ammo goes on now (no Peace mode, no combine).
+            if (bestExistingAmmo != null && InFight())
+            {
+                _host.Log($"[RynthAi] MissileCraft: a fight is on - wielding '{bestExistingAmmo.Name}' now instead of crafting {bestCraftable.OutputName}.");
+                ChatLog($"In a fight: wielding {bestExistingAmmo.Name} now instead of crafting {bestCraftable.OutputName}");
+            }
+            else
+            {
+                StartCrafting(bestCraftable, inv, upgrade: bestExistingAmmo != null);
+                return;
+            }
+        }
 
         if (bestExistingAmmo != null)
         {
@@ -229,15 +254,16 @@ public class MissileCraftingManager
             Reset("No ammo and no bundles available");
     }
 
-    private void StartCrafting(AmmoRecipe recipe, List<WorldObject> inv)
+    private void StartCrafting(AmmoRecipe recipe, List<WorldObject> inv, bool upgrade = false)
     {
+        _craftIsUpgrade = upgrade;
         _currentRecipe = recipe;
         _pendingBundlePairs.Clear();
         _combinesCompleted = 0;
         _allCombinesDone = false;
 
         _peaceSent = false;
-        _peaceAskedAt = DateTime.Now;   // the wait for the stance counts from the first ask
+        _peaceAskedAt = RynthClock.Now;   // the wait for the stance counts from the first ask
         TryPeaceForCrafting();
 
         var headItems  = inv.Where(i => recipe.IsHead(i.Name)).ToList();
@@ -291,6 +317,21 @@ public class MissileCraftingManager
 
     private void ProcessCombining()
     {
+        // In a fight, with ammo to shoot (carried before the craft, or a combine already made):
+        // stop holding combat and wield the best ammo carried now.
+        if (!_allCombinesDone && (_craftIsUpgrade || _combinesCompleted > 0) && InFight())
+        {
+            string making = _currentRecipe?.OutputName ?? "ammo";
+            _host.Log($"[RynthAi] MissileCraft: a fight is on - {making} stopped after {_combinesCompleted} combine(s); wielding the ammo carried.");
+            ChatLog($"In a fight: stopped crafting {making} after {_combinesCompleted} combine(s), wielding the ammo carried");
+            _pendingBundlePairs.Clear();
+            _currentRecipe = null;
+            _craftIsUpgrade = false;
+            _equipTargetId = 0;   // the best carried
+            SetState(CraftState.EquippingAmmo);
+            return;
+        }
+
         if (_allCombinesDone)
         {
             StatusMessage = $"Equipping {_currentRecipe!.OutputName}...";
@@ -299,7 +340,7 @@ public class MissileCraftingManager
             return;
         }
 
-        if ((DateTime.Now - _phaseStart).TotalMilliseconds > CRAFT_TIMEOUT_MS)
+        if ((RynthClock.Now - _phaseStart).TotalMilliseconds > CRAFT_TIMEOUT_MS)
         {
             if (_combinesCompleted > 0)
             {
@@ -317,21 +358,21 @@ public class MissileCraftingManager
         if (!_peaceSent)
         {
             TryPeaceForCrafting();
-            if (!_peaceSent && (DateTime.Now - _peaceAskedAt).TotalMilliseconds < PeaceWaitMaxMs) return;   // still asking, inside the ceiling
+            if (!_peaceSent && (RynthClock.Now - _peaceAskedAt).TotalMilliseconds < PeaceWaitMaxMs) return;   // still asking, inside the ceiling
         }
 
-        if ((DateTime.Now - _lastApplyAttempt).TotalMilliseconds >= APPLY_RETRY_MS)
+        if ((RynthClock.Now - _lastApplyAttempt).TotalMilliseconds >= APPLY_RETRY_MS)
         {
             try
             {
                 if (!_host.UseOnFor((uint)_headBundleId, (uint)_shaftBundleId, "Crafting", "missile crafting: heads on shafts"))
                 {
                     ChatLog($"UseObjectOn returned false for 0x{_headBundleId:X8} -> 0x{_shaftBundleId:X8}");
-                    _lastApplyAttempt = DateTime.Now;
+                    _lastApplyAttempt = RynthClock.Now;
                     return;
                 }
 
-                _lastApplyAttempt = DateTime.Now;
+                _lastApplyAttempt = RynthClock.Now;
                 StatusMessage = $"Combining -> {_currentRecipe!.OutputName} ({_combinesCompleted + 1}/{_totalCombines})...";
             }
             catch (Exception ex)
@@ -347,7 +388,7 @@ public class MissileCraftingManager
 
     private void ProcessEquippingAmmo()
     {
-        if ((DateTime.Now - _phaseStart).TotalMilliseconds < EQUIP_DELAY_MS) return;
+        if ((RynthClock.Now - _phaseStart).TotalMilliseconds < EQUIP_DELAY_MS) return;
 
         try
         {
@@ -371,7 +412,7 @@ public class MissileCraftingManager
                     _host.Log($"[RynthAi] MissileCraft: {why} (0x{targetId:X8})");
                     Reset(why);
                     _equipRepeats = 0;
-                    _lastAmmoCheck = DateTime.Now.AddMilliseconds(EQUIP_IGNORED_BACKOFF_MS - AMMO_CHECK_INTERVAL_MS);
+                    _lastAmmoCheck = RynthClock.Now.AddMilliseconds(EQUIP_IGNORED_BACKOFF_MS - AMMO_CHECK_INTERVAL_MS);
                     return;
                 }
 
@@ -381,7 +422,7 @@ public class MissileCraftingManager
             }
             else
             {
-                if ((DateTime.Now - _phaseStart).TotalMilliseconds < CRAFT_TIMEOUT_MS)
+                if ((RynthClock.Now - _phaseStart).TotalMilliseconds < CRAFT_TIMEOUT_MS)
                 {
                     StatusMessage = $"Waiting for {_currentRecipe?.OutputName ?? GetCategoryLabel(_lastWeaponCategory)} to appear...";
                     return;
@@ -473,15 +514,27 @@ public class MissileCraftingManager
 
     private bool IsPlayerWielded(WorldObject item)
     {
-        // Found inside a pack by the direct scan: AC's container lists never hold worn gear. A
-        // launcher put away after a swap keeps its old wielder and slot in the client's object
-        // description, so the slot alone said a stowed bow was in hand while a crossbow was, and
-        // arrows were wielded at it every 5 s (Silentkelpie, 2026-10-15).
-        if (item.DirectContainerId != 0)
-            return false;
+        // The server's word (the engine's EquipmentTracker, API v87) when the engine has it. The
+        // client's own fields go stale both ways: a launcher put away after a swap keeps its old
+        // wielder and slot, so the slot alone said a stowed bow was in hand while a crossbow was, and
+        // arrows were wielded at it every 5 s (Silentkelpie, 2026-10-15); gear wielded after login
+        // reads slot 0.
+        if (EquippedState.IsWielded(_host, item.Id) is bool tracked)
+            return tracked;
 
         uint playerId = _host.GetPlayerId();
         if (playerId == 0)
+            return false;
+
+        // Found inside a side pack by the direct scan (or in the main pack with its container field
+        // set and no wielder): not in hand, whatever the stale record says. A parent of the player
+        // says nothing: the engine lists what the player wields in the player's own contents too
+        // (ScanByContainerId matches the wielder as well as the container). Taking every item the
+        // scan filed under a container as "not in hand" (2026-10-19) hid the bow in hand as well,
+        // so crafting saw no launcher and never started, with nothing in chat (2026-10-21).
+        if (item.DirectContainerId != 0 && item.DirectContainerId != unchecked((int)playerId))
+            return false;
+        if (_objectCache?.InPackWalk(item.Id) == true)
             return false;
 
         if (item.WieldedLocation > 0)
@@ -499,7 +552,7 @@ public class MissileCraftingManager
     /// </summary>
     private bool NoteEquipSent(int targetId)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (targetId == _lastEquipSentId && (now - _lastEquipSentAt).TotalMilliseconds < EQUIP_REPEAT_WINDOW_MS)
             _equipRepeats++;
         else
@@ -561,7 +614,7 @@ public class MissileCraftingManager
     private void SetState(CraftState newState)
     {
         State = newState;
-        _phaseStart = DateTime.Now;
+        _phaseStart = RynthClock.Now;
     }
 
     private void Reset(string reason)
@@ -578,7 +631,15 @@ public class MissileCraftingManager
         _allCombinesDone = false;
         _combinesCompleted = 0;
         _totalCombines = 0;
+        _craftIsUpgrade = false;
         _pendingBundlePairs.Clear();
+    }
+
+    /// <summary>The plugin says a fight is on (<see cref="FightIsOn"/>); a throwing check is no fight.</summary>
+    private bool InFight()
+    {
+        try { return FightIsOn?.Invoke() == true; }
+        catch { return false; }
     }
 
     private void ChatLog(string msg)

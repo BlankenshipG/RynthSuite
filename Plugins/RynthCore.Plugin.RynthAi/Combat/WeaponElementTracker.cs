@@ -29,7 +29,7 @@ internal sealed class WeaponElementTracker
     public WeaponElementTracker(RynthCoreHost host, Func<DateTime>? now = null)
     {
         _host = host;
-        _now = now ?? (() => DateTime.Now);
+        _now = now ?? (() => RynthClock.Now);
     }
 
     /// <summary>What is known about <paramref name="id"/>'s element right now.</summary>

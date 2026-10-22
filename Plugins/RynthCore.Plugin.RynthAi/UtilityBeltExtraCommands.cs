@@ -189,7 +189,7 @@ public sealed partial class RynthAiPlugin
     // /ub date[utc] [format]
     private void UbDate(string format, bool utc)
     {
-        DateTime t = utc ? DateTime.UtcNow : DateTime.Now;
+        DateTime t = utc ? DateTime.UtcNow : RynthClock.Now;
         string s;
         try { s = format.Length > 0 ? t.ToString(format, CultureInfo.InvariantCulture) : t.ToString(CultureInfo.InvariantCulture); }
         catch (FormatException) { ChatLine($"[RynthAi] Bad date format: {format}"); return; }

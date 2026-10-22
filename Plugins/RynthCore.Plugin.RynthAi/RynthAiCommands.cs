@@ -1807,7 +1807,7 @@ public sealed partial class RynthAiPlugin
                 ChatLine("[RynthAi] /ra ghost: select the monster that never takes a swing first.");
                 return;
             }
-            double silent = _combatManager.ServerSilentMs((int)sel, DateTime.Now);
+            double silent = _combatManager.ServerSilentMs((int)sel, RynthClock.Now);
             _combatManager.MarkGhost((int)sel, wo.Name, silent, "marked by /ra ghost");
             ChatLine($"[RynthAi] 0x{sel:X8} '{wo.Name}' marked as a ghost" + (canRemove ? " and sent for removal from the client (see the log)." : " (this engine can't remove it from the client; it is skipped)."));
             return;
@@ -1842,7 +1842,7 @@ public sealed partial class RynthAiPlugin
             return;
         }
         ChatLine($"[RynthAi] {ghosts.Count} ghost(s) skipped by combat (the client draws them, the server doesn't have them):");
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         foreach (var g in ghosts.All)
         {
             double silent = _combatManager.ServerSilentMs(g.Id, now);
@@ -1858,7 +1858,7 @@ public sealed partial class RynthAiPlugin
         if (_combatManager == null) { ChatLine("[RynthAi] Combat manager not ready."); return; }
 
         var s = _combatManager.GetStateSnapshot();
-        var now = DateTime.Now;
+        var now = RynthClock.Now;
         double sinceAttackS = s.LastAttackCmd      == DateTime.MinValue ? -1 : (now - s.LastAttackCmd).TotalSeconds;
         double sinceLostS   = s.TargetLostScanTime == DateTime.MinValue ? -1 : (now - s.TargetLostScanTime).TotalSeconds;
         double sinceStanceS = s.LastStanceAttempt  == DateTime.MinValue ? -1 : (now - s.LastStanceAttempt).TotalSeconds;

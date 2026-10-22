@@ -126,6 +126,16 @@ internal sealed class ManaStoneManager
     /// </summary>
     public Func<WorldObject, bool>? IsLootKept { get; set; }
 
+    /// <summary>
+    /// Set by the plugin (RynthAiPlugin.FightIsOn): true while a fight is on. Draining loot into an
+    /// empty stone is optional work and waits for it to end: every UseObjectOn cancels the move-to
+    /// chains and bumps the busy count, and between melee swings it held the next swing (a swing
+    /// repeat is not a paced action). Refilling worn gear that runs low still goes ahead: armor
+    /// with no mana drops its spells mid-fight.
+    /// </summary>
+    public Func<bool>? FightIsOn { get; set; }
+    private bool _drainHeldForFight;
+
     // Items the looter picked up as "ManaTap" (looted only to be drained), with the
     // time each was recorded. Draining destroys the item, so these are the ONLY tap
     // targets: gear, quest items, bought items and loot kept by a rule are never in
@@ -538,7 +548,9 @@ internal sealed class ManaStoneManager
         //     can loop forever on items like wielded weapons that AC won't
         //     refill via stone — that loop blacklists stones one by one and
         //     starves the drain path entirely.
-        int stoneId  = _settings.EnableManaTapping ? FindEmptyStone() : 0;
+        // Not in a fight (FightIsOn): the drain waits for it to end.
+        bool drainWaits = DrainWaitsForFight();
+        int stoneId  = _settings.EnableManaTapping && !drainWaits ? FindEmptyStone() : 0;
         int targetId = stoneId != 0 ? FindTapTarget(threshold) : 0;
 
         if (stoneId != 0 && targetId != 0)
@@ -569,6 +581,28 @@ internal sealed class ManaStoneManager
                 _host.Log($"[RynthAi] ManaStone: worn gear needs mana but no charged stone is known ({_stoneKnownCharged.Count} known charged, {_stoneKnownEmpty.Count} known empty).");
             }
         }
+    }
+
+    /// <summary>
+    /// <see cref="FightIsOn"/> says a fight is on: drains wait. One log line per fight while an
+    /// item looted to tap is waiting.
+    /// </summary>
+    private bool DrainWaitsForFight()
+    {
+        bool fight;
+        try { fight = FightIsOn?.Invoke() == true; }
+        catch { fight = false; }
+        if (!fight)
+        {
+            _drainHeldForFight = false;
+            return false;
+        }
+        if (!_drainHeldForFight && _lootedForTap.Count > 0)
+        {
+            _drainHeldForFight = true;
+            _host.Log("[RynthAi] ManaStone: a fight is on - draining loot into a stone waits for it to end.");
+        }
+        return true;
     }
 
     private void IssueTapItem(int stoneId, int itemId)
@@ -683,6 +717,9 @@ internal sealed class ManaStoneManager
         if (_state == TapState.TappingItem) return true;
         if (_lootedForTap.Count == 0) return false;
         if (!_settings.EnableManaTapping || !_settings.IsMacroRunning || !_host.HasUseObjectOn) return false;
+        // The drain waits for the fight to end, so it holds nothing meanwhile. No second item is
+        // looted to tap: FreeEmptyStoneSlots is 0 while this one waits.
+        if (DrainWaitsForFight()) return false;
         long now = NowMs;
         if (now - _holdLootAt < HoldCheckMs) return _holdLoot;
         _holdLootAt = now;

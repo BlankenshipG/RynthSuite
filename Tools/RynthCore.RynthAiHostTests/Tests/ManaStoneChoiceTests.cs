@@ -36,6 +36,8 @@ internal static class ManaStoneChoiceTests
         r.Add("mana tapping: a drain that never completes keeps the item's place, tries the next stone, then gives up", FailedDrainKeepsPlace);
         r.Add("mana tapping: only a stone in the client's pack is used or counted (not one on a corpse, not a stale id)", StoneMustBeInPack);
         r.Add("mana tapping: a stone that failed two drains stays parked though it reads empty", FailedStoneStaysParked);
+        r.Add("mana tapping: in a fight the drain waits (holding no loot, taking no second item); after it, the drain goes", DrainWaitsForFight);
+        r.Add("mana stones: in a fight, worn gear that runs low is still refilled (armor without mana drops its spells)", RefillInFight);
     }
 
     private const uint ChargeA = 0x80400031, ChargeB = 0x80400032, ChargeC = 0x80400033;
@@ -355,6 +357,33 @@ internal static class ManaStoneChoiceTests
     // 2026-10-15: the pack filled with items looted to tap. A drain that never completed shelved
     // its item for 5 minutes and the item stopped counting against the empty stones, so the looter
     // took another in its place; and the looter went on opening corpses over the drain.
+    // Structural audit 2026-10-21, finding 3: a drain is optional work, and each UseObjectOn went out
+    // between melee swings (only the busy count gated it). It waits for the fight now.
+    private static void DrainWaitsForFight()
+    {
+        using var rig = new Rig(tapping: true, new (uint, int?)[] { (StoneA, null) }, ringToDrain: true, maceMana: 5000);
+        bool fight = true;
+        rig.M.FightIsOn = () => fight;
+        rig.Run(3000);
+        Check.Eq(rig.OnRing.Count, 0, "a fight is on: no drain");
+        Check.False(rig.M.HoldsLootForDrain(), "the waiting drain doesn't hold the looter");
+        Check.Eq(rig.M.FreeEmptyStoneSlots(), 0, "and no second item is looted to tap meanwhile");
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("ManaStone: a fight is on")), 1, "one log line for the fight");
+        fight = false;
+        rig.Run(1000);
+        Check.Eq(rig.OnRing.Count, 1, "the fight is over: the ring is drained");
+        Check.True(rig.M.HoldsLootForDrain(), "and the drain out holds the looter, as before");
+    }
+
+    private static void RefillInFight()
+    {
+        using var rig = new Rig(tapping: true, new (uint, int?)[] { (StoneA, 3000) });   // the mace reads 0 of 5000
+        rig.M.FightIsOn = () => true;
+        rig.Run(1000);
+        Check.Eq(rig.OnPlayer.Count, 1, "the charged stone goes on the player in the fight");
+        Check.Eq(rig.OnPlayer[0], StoneA, "stone A");
+    }
+
     private static void OneTapItemAtATime()
     {
         using var rig = new Rig(tapping: true, new (uint, int?)[] { (StoneA, null), (StoneB, null), (StoneC, null) }, maceMana: 5000);

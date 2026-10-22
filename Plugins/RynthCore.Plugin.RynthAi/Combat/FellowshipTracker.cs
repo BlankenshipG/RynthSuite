@@ -314,8 +314,8 @@ public class FellowshipTracker : IDisposable
 
     private void RefreshIfNeeded()
     {
-        if ((DateTime.Now - _lastRefresh).TotalMilliseconds < REFRESH_INTERVAL_MS) return;
-        _lastRefresh = DateTime.Now;
+        if ((RynthClock.Now - _lastRefresh).TotalMilliseconds < REFRESH_INTERVAL_MS) return;
+        _lastRefresh = RynthClock.Now;
         var members = new Dictionary<int, string>();
         var levels = new Dictionary<int, int>();
         try

@@ -42,7 +42,7 @@ internal sealed class RynthChatUi
 
         lock (_lock)
         {
-            _lines.Add(new ChatLine(text, chatType, DateTime.Now));
+            _lines.Add(new ChatLine(text, chatType, RynthClock.Now));
 
             int max = Math.Max(50, _settings.ChatMaxLines);
             int overflow = _lines.Count - max;

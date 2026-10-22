@@ -63,7 +63,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         /// </summary>
         private void BlacklistTarget(int targetId)
         {
-            DateTime expirationTime = DateTime.Now.AddSeconds(TimeoutSeconds);
+            DateTime expirationTime = RynthClock.Now.AddSeconds(TimeoutSeconds);
             _blacklistExpirations[targetId] = expirationTime;
 
             int fc = _failureCounts.TryGetValue(targetId, out var c) ? c : 0;
@@ -82,7 +82,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 return false; // Target not in blacklist
 
             // Check if blacklist timeout has expired
-            if (DateTime.Now >= expiration)
+            if (RynthClock.Now >= expiration)
             {
                 // Timeout expired - remove from blacklist and allow re-evaluation
                 _blacklistExpirations.Remove(targetId);
@@ -138,7 +138,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
 
             foreach (var kvp in _blacklistExpirations)
             {
-                if (DateTime.Now < kvp.Value)
+                if (RynthClock.Now < kvp.Value)
                 {
                     count++;
                 }

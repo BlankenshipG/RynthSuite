@@ -48,10 +48,41 @@ internal static class Program
         SharedCodeNamesNoServer(root);
         NoServerCommands(root);
         NoServerOnlyLinks(root);
+        RynthAiTimesWithItsClock(root);
         Console.WriteLine();
         Console.WriteLine($"{_checks - _failed}/{_checks} checks passed.");
         Console.WriteLine(_failed == 0 ? "ALL BOUNDARY CHECKS PASSED." : $"{_failed} FAILED.");
         return _failed == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// RynthAi times intervals with RynthClock, never DateTime.Now: the wall clock jumps an hour when
+    /// daylight saving ends, and every "now - last &lt; interval" check stalled for that hour (no target
+    /// scans or attacks; structural audit 2026-10-21). DateTime.Now stays only where the time of day is
+    /// shown: RynthLog's timestamps and file names, a backup file's name, a meta's getdatetimelocal.
+    /// </summary>
+    private static void RynthAiTimesWithItsClock(string root)
+    {
+        string dir = Path.Combine(root, "Plugins", "RynthCore.Plugin.RynthAi");
+        var found = new List<string>();
+        int files = 0;
+        foreach (string file in Directory.EnumerateFiles(dir, "*.cs", SearchOption.AllDirectories).Where(NotBuildOutput))
+        {
+            files++;
+            string rel = Rel(root, file);
+            if (rel.EndsWith("/Diagnostics/RynthLog.cs", StringComparison.Ordinal) || rel.EndsWith("/RynthClock.cs", StringComparison.Ordinal)) continue;   // the log and the clock's own anchor
+            string[] lines = File.ReadAllLines(file);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (!line.Contains("DateTime.Now", StringComparison.Ordinal) || line.StartsWith("//", StringComparison.Ordinal)) continue;
+                if (line.Contains("\"getdatetimelocal\"", StringComparison.Ordinal) || line.Contains("\".unreadable-\"", StringComparison.Ordinal)) continue;
+                found.Add($"{rel}:{i + 1}");
+            }
+        }
+        Check(files > 100, $"RynthAi's sources were found ({files})");
+        Check(found.Count == 0, "RynthAi times with RynthClock.Now, not DateTime.Now" +
+                                (found.Count > 0 ? ": " + string.Join(", ", found.Take(10)) : ""));
     }
 
     /// <summary>No project here is a server plugin: they are RynthServers' (2026-10-21).</summary>

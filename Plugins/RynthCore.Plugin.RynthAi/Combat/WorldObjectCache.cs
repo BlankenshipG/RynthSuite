@@ -169,7 +169,7 @@ public class WorldObjectCache
         lock (_gate)
         {
             _playerId = playerId;
-            _loginTime = DateTime.Now;
+            _loginTime = RynthClock.Now;
             _deletedWhilePending.Clear();
             // Remove self if mistakenly added as creature before login completed
             if (playerId == 0) return;
@@ -402,9 +402,9 @@ public class WorldObjectCache
         // Same cadence also re-queues uids parked in _slowRetry (their fast-retry burst
         // exhausted in <10 ms before AC could populate their weenie), giving them a
         // fresh 8-tick attempt each pass.
-        if ((DateTime.Now - _lastReclassifyTime).TotalSeconds >= ReclassifyIntervalSec)
+        if ((RynthClock.Now - _lastReclassifyTime).TotalSeconds >= ReclassifyIntervalSec)
         {
-            _lastReclassifyTime = DateTime.Now;
+            _lastReclassifyTime = RynthClock.Now;
             FlushSlowRetry();
             ReclassifyUnknownDynamics();
             lock (_gate) _diag.Flush("2 s");
@@ -413,10 +413,10 @@ public class WorldObjectCache
         // Full container scan disabled — causes delayed crash when 160+ items in cache
         // trigger bulk property queries. MissileCraftingManager does its own lightweight scan.
         if (false && _inventoryDirty && _playerId != 0 && _host.HasGetContainerContents
-            && (DateTime.Now - _loginTime).TotalMilliseconds >= 5000
-            && (DateTime.Now - _lastScanAttempt).TotalMilliseconds >= ScanCooldownMs)
+            && (RynthClock.Now - _loginTime).TotalMilliseconds >= 5000
+            && (RynthClock.Now - _lastScanAttempt).TotalMilliseconds >= ScanCooldownMs)
         {
-            _lastScanAttempt = DateTime.Now;
+            _lastScanAttempt = RynthClock.Now;
             int found = ScanFullInventory();
             // Only clear dirty once scan actually discovers items (hooks ready)
             if (found > 0 || _initialScanDone)
@@ -1390,7 +1390,7 @@ public class WorldObjectCache
         // snapshot copy so the caller never iterates the live list a later call will clear.
         lock (_gate)
         {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
 
         if (!_host.HasGetContainerContents)
         {
@@ -1601,8 +1601,8 @@ public class WorldObjectCache
     /// <summary>A chat warning that a full pack blocks something, at most once every 5 minutes.</summary>
     public static void WarnPackFull(RynthCoreHost host, string what)
     {
-        if ((DateTime.Now - _packFullWarnedAt).TotalMinutes < 5) return;
-        _packFullWarnedAt = DateTime.Now;
+        if ((RynthClock.Now - _packFullWarnedAt).TotalMinutes < 5) return;
+        _packFullWarnedAt = RynthClock.Now;
         host.WriteToChat($"[RynthAi] Pack full: {what}. Free a slot (salvage, sell or drop); looting keeps {LootReserveFreeSlots} slots free.", 2);
     }
 
