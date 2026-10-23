@@ -220,6 +220,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         InitSessionStats();
         // The overlay windows (OnRenderOverlay) must draw through the engine's cimgui module.
         RynthCore.Plugin.Shared.ImGuiNativeBinding.Ensure(msg => RynthLog.Write(LogCat.UI, msg));
+        // RynthAi's own dashboard window (RynthAiPlugin.Dashboard.cs): the engine's look, and its prefs.
+        RynthCore.Plugin.Shared.RynthUi.RynthUi.Init(Host);
+        _dashPrefs = RynthCore.Plugin.RynthAi.Dashboard.DashboardPrefs.Load();
         _dashboard = new LegacyDashboardRenderer(Host);
         _killClock.MacroRunning = () => _dashboard?.Settings.IsMacroRunning == true;
         _dashboard.KillClock = _killClock;
@@ -737,6 +740,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager.Vitals = _vitals;   // the script hook's request carries the player's vitals
         _combatManager.HoldIdlePeace = LootHoldsIdlePeace;
         _combatManager.LastVitalCastAt = () => _buffManager?.LastVitalCastAt ?? DateTime.MinValue;
+        _combatManager.SwapBurstEnabled = () => _buffManager?.SwapBurst == true;
+        _combatManager.LastModeChangeAt = () => _buffManager?.LastModeChangeAt ?? DateTime.MinValue;
         _combatManager.BuffingWantsTick = () => _buffManager != null
             && (_buffManager.PendingSpellId != 0 || _buffManager.WantsVitalRecharge
                 || (_dashboard?.Settings?.EnableBuffing == true && _buffManager.NeedsAnyBuff()));
@@ -1454,6 +1459,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             Guard(TickStep.CombatHook, CombatHook.ObserveUseDone);        // ctx.last.err: the answer to the hook's last cast
             Guard(TickStep.DelayedCommands, TickDelayedCommands);         // /ub delay
             Guard(TickStep.GameInput, GameInput.Pump);                    // release keys held for /mt movement | jump | strafe
+            Guard(TickStep.Dashboard, TickDashboard);                     // the dashboard window's clicks, vitals and prefs
             Guard(TickStep.EngineCommands, DrainEngineCommands);          // fellowship command buttons (RynthCore's Fellowship section)
             Guard(TickStep.PropertyDump, () => TickPropertyDump());       // /ub propertydump: waits for the ID, chat in chunks
             if (_loginComplete) Guard(TickStep.PackSetup, () => _dashboard?.TickPackSetup(_objectCache, _playerId));   // new/copied profile items
@@ -3996,6 +4002,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "forcebuff":        HandleForceBuff(); break;
             case "cancelforcebuff":  HandleCancelForceBuff(); break;
             case "buff":             HandleBuffCommand(parts); break;
+            case "swaptest":
+                if (_buffManager == null) { ChatLine("[RynthAi] BuffManager not ready (not logged in yet)."); break; }
+                _buffManager.RequestSwapTest(parts.Length > 2 ? string.Join(" ", parts, 2, parts.Length - 2) : "");
+                break;
             case "bufftest":
                 if (_buffManager == null) { ChatLine("[RynthAi] BuffManager not ready (not logged in yet)."); break; }
                 _buffManager.EnableCastRegistryDiagnostic = !_buffManager.EnableCastRegistryDiagnostic;

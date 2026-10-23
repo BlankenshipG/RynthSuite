@@ -66,9 +66,12 @@ internal static class DamageStyles
 /// other way round, except for a slayer (owner's rule, 2026-10-05: a monster is always
 /// attacked with a slayer of it before an element choice, even when another weapon's element
 /// meets a lower resistance; only a weapon the player set for that monster trumps it):
-///   1. The weapon set on THIS monster's own Damage tab row is used as set, slayer or not; it
-///      must be in the Items list. Its element is the rule's, else its own, else the weakest
-///      the character can cast.
+///   1. The weapon set on THIS monster's own Damage tab row, else on the Monsters rule that
+///      matched it (not the Default row), is used as set, slayer or not (2026-10-22: the
+///      rule's weapon used to be ignored, report R-20261022-193411-fb72). A Damage tab pick
+///      must be in the Items list; a Monsters tab weapon need not be (CombatManager adds it to
+///      the candidates). Its element is the rule's, else its own, else the weakest the
+///      character can cast.
 ///   2. A slayer: a listed weapon of the character's main kind whose SlayerCreatureType is
 ///      the monster's CreatureType and whose SlayerDamageBonus is above 1 or not known (ACE
 ///      multiplies the whole hit by it, so it beats any element choice, and never sends the
@@ -78,7 +81,8 @@ internal static class DamageStyles
 ///      is the wand's own, else a melee/missile weapon's own, else the rule's, else the
 ///      weakest the character can cast. Creature type unknown: no slayer step.
 ///      A slayer of another kind (a melee slayer for a mage) is not a candidate.
-///   3. The Damage tab DEFAULT row's weapon (listed only): above the element steps, below a slayer.
+///   3. The Damage tab DEFAULT row's weapon (listed only), else the Monsters tab Default row's:
+///      above the element steps, below a slayer.
 ///   4. A Monsters rule damage type (not Auto) is the element; wield the listed weapon of that
 ///      element (a matching rending first, then the one in hand, then list order).
 ///   Whatever is chosen, a wand casts its own element when it has one (owner's rule,
@@ -100,8 +104,11 @@ internal static class DamageStyles
 /// Void Magic) replaces that: the pool is the listed weapons of that style, for a character
 /// who uses two kinds and wants to choose. With none listed (or none the character can use,
 /// e.g. Void without Void Magic) it falls back to Auto, the main kind, rather than not fighting.
-/// The monster's own Damage tab weapon (step 1) still wins; the DEFAULT row's weapon only when
-/// it is of the preferred style; War Magic never casts Nether and Void Magic nothing else.
+/// The monster's own Damage tab or Monsters rule weapon (step 1) still wins; the DEFAULT row's
+/// weapon only when it is of the preferred style; War Magic never casts Nether and Void Magic nothing else.
+/// Which fixed weapon is passed in (and whether it is a step-1 pick or a DEFAULT one) is
+/// CombatManager.ComputePlan's: this monster's Damage tab pick, its Monsters rule's weapon, the
+/// Damage tab DEFAULT row's, the Monsters Default row's, the first one usable and listed.
 /// </summary>
 internal static class WeaponPlanner
 {
@@ -154,10 +161,11 @@ internal static class WeaponPlanner
         bool ruleSet = rule.Length > 0;
         WeaponCandidate? fixedPick = fixedWeaponId != 0 ? Find(listed, fixedWeaponId) : null;
 
-        // 1. The weapon the player set on this monster's own Damage tab row (listed only): honoured,
-        //    slayer or not (owner, 2026-10-05: "the only time a slayer property gets trumped is if
-        //    the player manually inputs a weapon without it"). The DEFAULT row's weapon is not a
-        //    pick for this monster: a slayer of it beats that one (step 3).
+        // 1. The weapon the player set on this monster's own Damage tab row, or on the Monsters
+        //    rule that matched it (a candidate; see the class note): honoured, slayer or not (owner, 2026-10-05: "the
+        //    only time a slayer property gets trumped is if the player manually inputs a weapon
+        //    without it"). A DEFAULT row's weapon (Damage tab or Monsters tab) is not a pick for
+        //    this monster: a slayer of it beats that one (step 3).
         if (fixedPick != null && !fixedIsDefault)
             return FixedPlan(fixedPick, Slays(fixedPick, creatureType)
                 ? fixedSource + ", " + SlayerSource(creatureType, fixedPick.SlayerBonus) : fixedSource, rule, weak, canCast);
@@ -202,7 +210,8 @@ internal static class WeaponPlanner
             }
         }
 
-        // 3. The Damage tab DEFAULT row's weapon (listed only): no slayer of this monster is listed.
+        // 3. The Damage tab DEFAULT row's weapon, else the Monsters Default row's:
+        //    no slayer of this monster is listed.
         if (fixedPick != null && (!styled || pool.Contains(fixedPick)))
             return FixedPlan(fixedPick, fixedSource, rule, weak, canCast);
 

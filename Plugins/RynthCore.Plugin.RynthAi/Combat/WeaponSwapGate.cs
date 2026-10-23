@@ -26,6 +26,8 @@ public sealed class WeaponSwapGate
     private string _lastSwapBy = "";
     private int _movingId;
     private long _claims;
+    private string _heldBy = "";
+    private long _heldUntilMs;
 
     /// <summary>Swaps claimed so far: a caller can tell whether another swap went out after its own.</summary>
     public long Claims { get { lock (_lock) { return _claims; } } }
@@ -62,6 +64,7 @@ public sealed class WeaponSwapGate
         long now = NowMs();
         lock (_lock)
         {
+            if (_heldBy.Length > 0 && now < _heldUntilMs) return false;   // a multi-step swap is running (Hold)
             long since = now - _lastSwapTickMs;
             if (since < MinIntervalMs && !LastSwapDone(since))
                 return false;
@@ -72,6 +75,38 @@ public sealed class WeaponSwapGate
             return true;
         }
     }
+
+    /// <summary>
+    /// A multi-step swap (HandSwapSequence, 2026-10-22) that has claimed the gate keeps it for its
+    /// steps: no other swap goes until <see cref="Release"/>, or <paramref name="maxMs"/> as a backstop.
+    /// Its own steps are paced on the server's answers, not by this gate.
+    /// </summary>
+    public void Hold(string by, long maxMs)
+    {
+        lock (_lock)
+        {
+            _heldBy = by ?? "?";
+            _heldUntilMs = NowMs() + maxMs;
+        }
+    }
+
+    /// <summary>
+    /// The held swap is over. <paramref name="lastMovedId"/> (its last pack move or slot wield, 0 =
+    /// none) holds the next swap the full <see cref="MinIntervalMs"/> from now, as a noted move does.
+    /// </summary>
+    public void Release(string by, int lastMovedId)
+    {
+        lock (_lock)
+        {
+            if (_heldBy != (by ?? "?")) return;
+            _heldBy = "";
+            _lastSwapTickMs = NowMs();
+            _movingId = lastMovedId;
+        }
+    }
+
+    /// <summary>Who holds the gate for a multi-step swap ("" = no one; diagnostics).</summary>
+    public string HeldBy { get { lock (_lock) { return _heldBy.Length > 0 && NowMs() < _heldUntilMs ? _heldBy : ""; } } }
 
     /// <summary>
     /// The claimed swap moved <paramref name="itemId"/> into or out of a hand without a use (a

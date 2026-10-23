@@ -68,14 +68,45 @@ internal static class SectionsManifest
         return views;
     }
 
-    /// <summary>The manifest JSON for <paramref name="views"/> (UTF-8 text, schema version 1).</summary>
-    public static string Build(IReadOnlyList<View> views, IReadOnlyList<Section> sections)
+    /// <summary>
+    /// RynthAi's dashboard window (RynthAiPlugin.Dashboard.cs, 2026-10-21): the engine's "RynthAi" panel's
+    /// place ("takeOver": its saved spot, bar button, hotkeys and /rc commands), drawn whole by RynthAi
+    /// ("chrome": "none") and as tall as it draws ("fitHeight"), plugin API v90. The Robot icon is the
+    /// engine bar's for RynthAi.
+    /// </summary>
+    public const string DashboardTitle = "RynthAi", DashboardSurface = "window:dashboard";
+
+    /// <summary>
+    /// The manifest JSON for <paramref name="views"/> (UTF-8 text, schema version 1), with the dashboard
+    /// window when <paramref name="dashboard"/>.
+    /// </summary>
+    public static string Build(IReadOnlyList<View> views, IReadOnlyList<Section> sections, bool dashboard = false)
     {
         using var stream = new MemoryStream(4096);
         using (var w = new Utf8JsonWriter(stream))
         {
             w.WriteStartObject();
             w.WriteNumber("version", 1);
+            if (dashboard)
+            {
+                w.WriteStartArray("windows");
+                w.WriteStartObject();
+                w.WriteString("id", "dashboard");
+                w.WriteString("title", DashboardTitle);
+                w.WriteString("surface", DashboardSurface);
+                w.WriteString("icon", "");
+                w.WriteNumber("width", 296);
+                w.WriteNumber("height", 240);
+                w.WriteNumber("minWidth", 280);
+                w.WriteNumber("minHeight", 54);
+                w.WriteBoolean("bar", true);
+                w.WriteBoolean("edgeToEdge", true);
+                w.WriteBoolean("takeOver", true);
+                w.WriteString("chrome", "none");
+                w.WriteBoolean("fitHeight", true);
+                w.WriteEndObject();
+                w.WriteEndArray();
+            }
             w.WriteStartArray("sections");
             foreach (Section s in sections)
             {

@@ -340,6 +340,9 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Weapons Back After Heals", ref _settings.RearmAfterVitals);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("After a heal, restam or remana spell with nothing to fight, put the last fight's weapons (main hand and off hand) back on.");
+                ImGui.Checkbox("Fast Weapon Swap", ref _settings.FastWeaponSwap);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Switch weapons through peace mode, every step the moment the server allows:\nthe wand is in hand about 0.2 s after the switch begins (4-7 s without),\nand the weapons go back as fast, also when a monster comes while the wand\nis out (swinging again in about 1 s). On by default. Peace mode costs your weapon's defense\nfor about half a second; the slow way goes without a weapon for about 3 s.");
                 ImGui.Checkbox("Start Macro On Login", ref _settings.StartMacroOnLogin);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Automatically starts the macro when RynthAi loads.");

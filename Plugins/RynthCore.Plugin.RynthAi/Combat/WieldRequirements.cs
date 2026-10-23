@@ -10,7 +10,8 @@ namespace RynthCore.Plugin.RynthAi;
 /// server, so a refused wield never got an answer and was retried: Drakkon's Tetsubo (Two Handed
 /// Combat, untrained) took the off-hand weapon off for every fight (2026-10-18), his Electric Baton
 /// and Acid Staff (War Magic) held up buffing. Read from the item's appraisal; unknown = not known
-/// (the caller decides), never "met".
+/// (the caller decides), never "met". A Skill requirement is checked against the buffed skill (vitae
+/// lowers it, as on the server); a RawSkill one against the base skill (vitae doesn't).
 /// </summary>
 internal static class WieldRequirements
 {
@@ -30,7 +31,7 @@ internal static class WieldRequirements
             host.TryGetObjectIntProperty(itemId, pDiff, out int diff);
             switch (req)
             {
-                case 1: case 2: case 8:   // Skill (buffed), RawSkill (base: only the buffed one is read), Training
+                case 1: case 2: case 8:   // Skill (buffed), RawSkill (base), Training
                 {
                     if (skills == null || !host.TryGetObjectIntProperty(itemId, pSkill, out int stype)) continue;
                     AcSkillType? skill = SkillOf((uint)stype);
@@ -38,8 +39,23 @@ internal static class WieldRequirements
                     var s = skills[skill.Value];
                     string name = Name(skill.Value);
                     if (s.Training < 2) return $"needs {name}, untrained";
-                    if (req == 8) continue;
-                    if (diff > 0 && s.Buffed > 0 && s.Buffed < diff) return $"needs {name} {diff}, you have {s.Buffed}";
+                    if (req == 8 || diff <= 0) continue;
+                    if (req == 2)
+                    {
+                        // RawSkill: the base skill, without buffs and without vitae (ACE CreatureSkill.Base;
+                        // the client's own raw read, which is what the client checks before it sends the
+                        // wield). The buffed read carries the vitae penalty: at 40% vitae a Shashqa
+                        // (base Two Handed Combat 420) read as 371 and was left out of the weapon choice,
+                        // though it wields fine (2026-10-23). Base not readable: not known.
+                        uint pid = host.GetPlayerId();
+                        if (pid != 0 && host.HasGetObjectSkillBuffed
+                            && host.TryGetObjectSkillLevel(pid, (uint)stype, raw: 1, out int baseLevel) && baseLevel > 0
+                            && baseLevel < diff)
+                            return $"needs base {name} {diff}, you have {baseLevel}";
+                        continue;
+                    }
+                    // Skill: the buffed skill, vitae included (ACE CreatureSkill.Current), as read.
+                    if (s.Buffed > 0 && s.Buffed < diff) return $"needs {name} {diff}, you have {s.Buffed}";
                     continue;
                 }
                 case 7:   // Level

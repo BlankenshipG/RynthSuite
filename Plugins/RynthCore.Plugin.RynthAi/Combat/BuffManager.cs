@@ -692,30 +692,34 @@ public partial class BuffManager : IDisposable
     // stow the bow into a capacity-verified open pack FIRST (AutoCram pattern), then wield
     // the wand. All paths are bounded so a stale/no-op dequip or unwieldable wand can never
     // loop forever; on exhaustion the buff family is parked and the bot fights unbuffed.
-    // Switch like a player (2026-10-06): a use of the wand goes through ClientUISystem::UseObject,
-    // the client's double-click, which puts the weapon in hand away by itself (ACE's
-    // DoHandleActionGetAndWieldItem: "the client handles dequipping a lot of conflicting items
-    // automatically"). Drakkon's axe -> wand took 4.2 s with the pack move first (1.2 s for it,
-    // then the swap gate's flat 3 s). The pack move stays as the fallback: once a use hasn't
-    // got the wand into the hand in WieldResolveTimeoutMs, the weapon goes into a pack first.
-    // Not for the rest of the session on one miss (2026-10-14): a swap the server never finished
-    // because Drakkon died (13:40) set it, and every later heal from melee took the pack route, the
-    // move plus the swap gate's flat 3 s, 4+ s with nothing healing; he died twice more. Now one miss
-    // sends the next swap through the pack and the one after tries the use again; two misses in a
-    // row keep the pack route. A swap a death or a portal cut short counts for nothing
-    // (ForgetPendingWield).
-    private int _directSwapMisses;      // direct swaps in a row that didn't get the wand into the hand
-    private bool _packFirstNext;        // the next swap goes through the pack (one miss)
-    private bool _pendingWieldDirect;   // the wand's use in flight was a direct swap (a weapon in hand)
-    internal const int DirectSwapMissesToStick = 2;
-    private bool PackFirst => _packFirstNext || _directSwapMisses >= DirectSwapMissesToStick;
-    // The swap gate's claim count when the wand's use went out: a later claim means another swap
-    // (combat putting the axe back, 12:39 on 10-06) changed the hands, so the result says nothing.
-    private long _pendingWieldClaim;
-    private int _bowDequipPendingId;
-    private DateTime _bowDequipAt = DateTime.MinValue;
-    private int _bowDequipAttempts;
-    private const int BowDequipMaxAttempts = 3;
+    // The wand swap, as fast as the server allows (2026-10-22, HandSwapSequence): the off hand into
+    // a pack, then the main hand, then the wand wielded into the Held slot, each the moment the
+    // server's wielded list says the last step landed. One claim of the swap gate is held for all
+    // of it. Before, Drakkon's two Hand Wraps -> Sceptre took 7.2 s to the first cast: each pack
+    // move held the next step the gate's flat 3 s, and the client's own use of the wand (the route
+    // tried first) takes the main hand first, which costs the off hand a second stance change.
+    // The why, step by step, is at the top of HandSwapSequence.
+    private readonly HandSwapSequence _wandSwap = new();
+    private bool _wandSwapOpen;            // started and not yet finished (its log line and the gate's release are owed)
+    private int _wandSwapWandId;
+    private bool _wandSwapForBuff;
+    private int _wandSwapMainAtStart;      // the main hand's weapon when it began (put back if the swap fails)
+    private int _wandSwapLastMoved;        // its last pack move or wield: the gate holds the next swap after it
+    private DateTime _wandSwapTouchedAt = DateTime.MinValue;   // EnsureMagicMode last asked for it
+    // Not asked for this long (the heal or buff no longer needs it): the swap stops, not a failure.
+    // Longer than the pacer holds the vitals step for our own peace request (ModeMaxMs 2 s).
+    private const double WandSwapAbandonMs = 3000;
+    // The wand went on in a combat mode: the server switches to Magic itself (ACE TryShuffleStance),
+    // after the stance change of the last unwield. Our own ChangeCombatMode(Magic) waits this long for
+    // it: a second stance change queued behind the server's is how a cast gets held open.
+    private DateTime _serverMagicDueUntil = DateTime.MinValue;
+    private const double ServerMagicWaitMs = 2500;
+    // A swap that went through peace just put the wand in hand: Magic is asked for at once (see the request).
+    private DateTime _magicAfterPeaceUntil = DateTime.MinValue;
+    private const double MagicAfterPeaceMs = 2500;
+    /// <summary>The last wand swap: how long it took and its steps with the server's answer times.</summary>
+    internal double LastWandSwapMs { get; private set; }
+    internal string LastWandSwapTrail { get; private set; } = "";
     private int _wieldGateFailCount;
     private const int WieldGateFailMax = 3;
     private bool _wandSwapExhausted;   // per-EnsureMagicMode(forBuff) signal: swap can't succeed now
@@ -1104,7 +1108,7 @@ public partial class BuffManager : IDisposable
     /// </summary>
     private string ActiveHealLine(int hp, int stamPct, out int value, out bool inCombat)
     {
-        inCombat = _combatManager?.HasCloseThreat(System.Math.Max(1, _settings.MonsterRange)) == true;
+        inCombat = InCombatNow();
         value = 0;
         if (_settings.EmergencyHealAt > 0 && hp <= _settings.EmergencyHealAt) { value = _settings.EmergencyHealAt; return "Emergency Heal At"; }
         if (StaminaToHealthAllowed(_settings, hp, stamPct)) { value = _settings.StaminaToHealthAt; return "Stamina To Health At"; }
@@ -1287,7 +1291,11 @@ public partial class BuffManager : IDisposable
         TickRechargeRequest();   // /ra recharge: one vitals pass, macro on or off (BuffManager.Recharge.cs)
         TickOneTouchRequest();   // /ra heal, /ra stam, /ra mana: one-touch recharge, macro on or off (BuffManager.OneTouch.cs)
 
-        if (!_settings.IsMacroRunning) return;
+        if (!_settings.IsMacroRunning) { DropWandSwap("the macro stopped"); return; }
+
+        // A wand swap's next step goes as soon as the server has answered the last (before the cast gates).
+        NoteModeChange();
+        TickWandSwap();
 
         // Close casts the server reports finished, and say once when one is being held open.
         PollCastTracker();
@@ -1637,6 +1645,13 @@ public partial class BuffManager : IDisposable
         if (CheckVitals())
         {
             if (_healHold.Length == 0) Hold(_healWaitKind.Length > 0 ? _healWaitKind : "vitals step busy", _vitalWhy);
+            return;
+        }
+
+        // /ra swaptest: the wand swap and one cast, timed (BuffManager.SwapTest.cs). After the vitals.
+        if (TickSwapTest())
+        {
+            Hold("swap test");
             return;
         }
 
@@ -5099,6 +5114,9 @@ public partial class BuffManager : IDisposable
             _bowDequipAttempts = 0;
             _wieldGateFailCount = 0;
             _wandWieldFails.Clear();
+            _serverMagicDueUntil = DateTime.MinValue;
+            if (_wandSwap.Active) FinishWandSwap(Now, done: true);   // the wand went on and Magic came: the swap is over
+            _magicAfterPeaceUntil = DateTime.MinValue;
             // In Magic, but the stance we asked for may still be settling: yield the tick.
             return StanceSettled(urgentHeal);
         }
@@ -5113,12 +5131,12 @@ public partial class BuffManager : IDisposable
             // _lastBuffStanceAttempt), while buffing held the bot.
             int noWandShift = Math.Min(_buffStanceConsecutiveFails, 5);
             int noWandGateMs = Math.Min(1000 << noWandShift, 30000);
-            if ((RynthClock.Now - _lastBuffStanceAttempt).TotalMilliseconds > noWandGateMs
+            if ((Now - _lastBuffStanceAttempt).TotalMilliseconds > noWandGateMs
                 && _host.ChangeCombatModeFor(CombatMode.Magic, "Buff", "no wand: Magic mode bare-handed"))
             {
                 NoteStanceRequest();
-                _lastBuffStanceAttempt = RynthClock.Now;
-                _lastCastAttempt = RynthClock.Now;
+                _lastBuffStanceAttempt = Now;
+                _lastCastAttempt = Now;
                 if (_buffStanceConsecutiveFails < 6) _buffStanceConsecutiveFails++;
                 if (_buffStanceConsecutiveFails > 1)
                     _host.Log($"[BuffStance] no wand: ChangeCombatMode(Magic) retry #{_buffStanceConsecutiveFails} (next retry in {noWandGateMs / 1000}s)");
@@ -5158,130 +5176,22 @@ public partial class BuffManager : IDisposable
                 alreadyWielded = true;
         }
 
-        if (!alreadyWielded)
+        if (!_settings.FastWeaponSwap)
         {
-            // Wield gate: don't spam UseObject. Hold off after the first issue
-            // until either the wielded check confirms (cleared on the Magic-mode
-            // branch above) or the resolve timeout elapses, then cool down
-            // before retrying. Mirrors the no-chat-timeout pattern used for
-            // spell casts at the top of OnHeartbeat. Checked BEFORE the shared
-            // swap gate so a denied attempt never claims the cross-subsystem slot.
-            DateTime now = RynthClock.Now;
-            if (now < _wieldCooldownUntil)
+            // Fast Weapon Swap off: the swap as before 2026-10-22 (BuffManager.LegacySwap.cs).
+            if (!alreadyWielded) return LegacyWandSwap(wandId, forBuff);
+            LegacyWandWielded(wandId);
+        }
+        else if (_wandSwap.Active || !alreadyWielded)
+        {
+            // A cooldown after a swap that didn't finish: no new swap until it ends.
+            if (!_wandSwap.Active && Now < _wieldCooldownUntil)
                 return false;
-
-            if (_pendingWieldId != 0)
-            {
-                if ((now - _pendingWieldAt).TotalMilliseconds < WieldResolveTimeoutMs)
-                    return false;
-
-                if (_weaponSwapGate != null && _weaponSwapGate.Claims != _pendingWieldClaim)
-                {
-                    _pendingWieldId = 0;   // another swap since ours: not a failed wield
-                    return false;
-                }
-                int stillInHand = _pendingWieldDirect ? FindWieldedNonWandWeapon(wandId) : 0;
-                if (stillInHand != 0 && IsWieldedLive(stillInHand))
-                {
-                    _directSwapMisses++;
-                    _packFirstNext = true;
-                    _pendingWieldId = 0;
-                    _host.Log($"[WieldGate] using the wand didn't put 0x{(uint)stillInHand:X8} away in {WieldResolveTimeoutMs:0} ms; " +
-                              (_directSwapMisses >= DirectSwapMissesToStick
-                                  ? $"{_directSwapMisses} in a row: from now on the weapon goes into a pack first"
-                                  : "the next swap puts the weapon into a pack first, then the use is tried again"));
-                    return false;
-                }
-                _host.Log($"[WieldGate] UseObject(0x{(uint)_pendingWieldId:X8}) not confirmed in " +
-                          $"{WieldResolveTimeoutMs:0}ms — cooling down {WieldCooldownMs:0}ms");
-                NoteWandWieldFailed(_pendingWieldId);
-                _pendingWieldId = 0;
-                _wieldCooldownUntil = now.AddMilliseconds(WieldCooldownMs);
-                // FIX: bound the previously-infinite wield loop. If the wand still won't
-                // wield after a few cooldowns (e.g. no pack to free the bow, or an
-                // unresolvable collision), degrade so buffing yields and combat runs.
-                if (++_wieldGateFailCount >= WieldGateFailMax)
-                    return SignalSwapFailure(forBuff, FindWieldedNonWandWeapon(wandId), wandId);
+            // The wand swap's next step (HandSwapSequence): the off hand, the main hand, then the
+            // wand, each as soon as the server answers the last. True once the wand is in hand.
+            _wandSwapTouchedAt = Now;
+            if (!WandSwapStep(wandId, forBuff, Now))
                 return false;
-            }
-
-            // Shared weapon-swap gate: if CombatManager (or anything else) swapped
-            // a weapon within the last few seconds, wait — two equips in flight
-            // collide ("you can only move or use one item at a time" / AV).
-            if (_weaponSwapGate != null && !_weaponSwapGate.TryBeginSwap("buff-wand"))
-                return false;
-
-            // Tear down any in-flight physical combat BEFORE the UseObject. The
-            // transition Melee/Missile → Magic-via-wand must explicitly cancel the
-            // pending attack, or AC gets a UseObject while m_bAttacking is still
-            // set and wedges the item-action gate. Done only after we've claimed
-            // the swap slot above, so we don't cancel an attack then fail to swap.
-            if (!_combatTeardownDoneForCurrentBuffCycle &&
-                (CurrentCombatMode == CombatMode.Melee || CurrentCombatMode == CombatMode.Missile))
-            {
-                if (_host.HasCancelAttack)   _host.CancelAttack();
-                if (_host.HasStopCompletely) _host.StopCompletelyBy("Buff/WandSwap");
-                _combatTeardownDoneForCurrentBuffCycle = true;
-                _host.Log($"[BuffPre] CancelAttack+StopCompletely before wand equip (mode was {CurrentCombatMode})");
-            }
-
-            // FIX: stock ACE will NOT auto-dequip the bow for a Held-slot wand
-            // (CheckWeaponCollision refuses while mainhand != null). Stow the wielded
-            // non-wand weapon into a capacity-verified open pack FIRST (AutoCram pattern,
-            // AV-safe), then UseObject(wand) once the hand is free. Fully bounded.
-            int bowId = FindWieldedNonWandWeapon(wandId);
-            if (bowId != 0 && (PackFirst || !IsWieldedLive(bowId)))   // else the use swaps (see _directSwapMisses)
-            {
-                if (_bowDequipPendingId == bowId
-                    && (now - _bowDequipAt).TotalMilliseconds < WieldResolveTimeoutMs
-                    && IsWieldedLive(bowId))
-                    return false; // dequip still resolving
-
-                if (IsWieldedLive(bowId))
-                {
-                    int openPack = WorldObjectCache.FindPackFor(_host, _worldObjectCache, includeMainPack: true, requireFree: 1);
-                    if (openPack == 0 || _bowDequipAttempts >= BowDequipMaxAttempts)
-                    {
-                        // No verified-open pack to receive the bow, or repeated dequip
-                        // failures -> the swap provably can't complete now. Degrade.
-                        _host.Log($"[WieldGate] bow 0x{(uint)bowId:X8} dequip blocked (openPack=0x{(uint)openPack:X8}, attempts={_bowDequipAttempts}/{BowDequipMaxAttempts}) — degrading");
-                        if (openPack == 0)
-                            WorldObjectCache.WarnPackFull(_host, "can't put the weapon away to switch to the wand, so buffs and spell heals can't cast");
-                        return SignalSwapFailure(forBuff, bowId, wandId);
-                    }
-                    _bowDequipAttempts++;
-                    if (_worldObjectCache?[bowId] is WorldObject blocker && IsInOffhandSlot(blocker))
-                        OffhandStowed?.Invoke(bowId);   // a shield: combat puts it back after
-                    _host.MoveItemInternal((uint)bowId, (uint)openPack, 0, 1); // amount>=1 (engine rejects 0)
-                    _weaponSwapGate?.NoteMove(bowId, wieldedNow: true);
-                    _bowDequipPendingId = bowId;
-                    _bowDequipAt = now;
-                    _lastCastAttempt = now;
-                    _host.Log($"[WieldGate] dequip bow 0x{(uint)bowId:X8} -> pack 0x{(uint)openPack:X8} (attempt {_bowDequipAttempts}/{BowDequipMaxAttempts}) before wand equip");
-                    return false; // yield until the bow is out of hand
-                }
-                _bowDequipPendingId = 0; // bow confirmed unwielded — fall through to wield the wand
-            }
-
-            _pendingWieldDirect = bowId != 0 && !PackFirst;
-            // Hands free: wield the caster into the Held slot (GetAndWieldItem, the paperdoll drag),
-            // as the off hand does. A use only wields a plain caster: a caster with a spell of its own
-            // (Electric Baton, Acid Staff) takes the use as "cast it" and the client says it must be
-            // wielded first (Drakkon, 2026-10-18 14:00). With a weapon still in hand the use stays
-            // (the client swaps); when that misses, the next swap empties the hands first.
-            if (!_pendingWieldDirect && _host.HasWieldItem)
-            {
-                _host.WieldItem((uint)wandId, HeldSlot);
-                _host.Log($"[WieldGate] wielding 0x{(uint)wandId:X8} '{_worldObjectCache?[wandId]?.Name}' into the Held slot");
-            }
-            else
-                _host.UseFor((uint)wandId, "Buff", _pendingWieldDirect ? "buffing: switch to the wand" : "buffing: wield the wand");
-            NoteStanceRequest();
-            _pendingWieldClaim = _weaponSwapGate?.Claims ?? 0;
-            _pendingWieldId = wandId;
-            _pendingWieldAt = now;
-            _lastCastAttempt = now;
-            return false; // Yield — let the server equip the wand
         }
 
         // Wand is wielded — clear the gate and switch stance.
@@ -5289,8 +5199,15 @@ public partial class BuffManager : IDisposable
         {
             _pendingWieldId = 0;
             _wieldCooldownUntil = DateTime.MinValue;
-            if (_pendingWieldDirect) _directSwapMisses = 0;   // the use swapped: back to direct swaps
-            _packFirstNext = false;                           // a pack-route swap done: the next one tries the use
+        }
+
+        // The wand went on in a combat mode: the server switches to Magic by itself once the stance
+        // change of the last unwield is done (TryShuffleStance). Wait for that rather than queue a
+        // second stance change behind it.
+        if (Now < _serverMagicDueUntil)
+        {
+            LastBuffSkipReason = "the server is switching to Magic";
+            return false;
         }
 
         // Deadlock episode tracking: wand wielded but mode refuses to flip.
@@ -5301,10 +5218,10 @@ public partial class BuffManager : IDisposable
         // the clock restarts, so the refusals that follow are not counted as a wedged stance.
         if (_buffStanceStuckSince != DateTime.MinValue && ActionPacer.LastEngineRefusalMs > _buffStanceStuckStartMs)
         {
-            _buffStanceStuckSince = RynthClock.Now;
+            _buffStanceStuckSince = Now;
             _buffStanceStuckStartMs = ActionPacer.NowMs();
         }
-        double stuckMs = _buffStanceStuckSince == DateTime.MinValue ? 0 : (RynthClock.Now - _buffStanceStuckSince).TotalMilliseconds;
+        double stuckMs = _buffStanceStuckSince == DateTime.MinValue ? 0 : (Now - _buffStanceStuckSince).TotalMilliseconds;
 
         // Capped re-equip recovery (mirrors CombatManager): handles the rare
         // stale "wielded reads true" by resyncing the wield once or twice.
@@ -5312,15 +5229,15 @@ public partial class BuffManager : IDisposable
         // and unbounded re-equip jams the item-action queue permanently.
         if (_buffStanceReEquips < BuffStanceReEquipMax
             && stuckMs > BuffStanceStuckRecoverMs
-            && (RynthClock.Now - _buffStanceLastRecoverAt).TotalMilliseconds > BuffStanceStuckRecoverMs
+            && (Now - _buffStanceLastRecoverAt).TotalMilliseconds > BuffStanceStuckRecoverMs
             && (_weaponSwapGate == null || _weaponSwapGate.TryBeginSwap("buff-stance-recovery")))
         {
-            _buffStanceLastRecoverAt = RynthClock.Now;
+            _buffStanceLastRecoverAt = Now;
             _buffStanceReEquips++;
             _host.Log($"[BuffStance] STUCK {stuckMs:0}ms (wielded, mode={CurrentCombatMode}≠Magic) — re-equip attempt {_buffStanceReEquips}/{BuffStanceReEquipMax} 0x{(uint)wandId:X8}");
             _host.UseFor((uint)wandId, "Buff", "buffing: stance stuck, wield the wand again");
             NoteStanceRequest();
-            _lastCastAttempt = RynthClock.Now;
+            _lastCastAttempt = Now;
             return false;
         }
         // Past the cap and clearly wedged: warn ONCE so a multi-hour silent
@@ -5340,13 +5257,17 @@ public partial class BuffManager : IDisposable
         if (shift > 5) shift = 5;
         int gateMs = 1000 << shift;        // 1s, 2s, 4s, 8s, 16s, 32s
         if (gateMs > 30000) gateMs = 30000; // cap at 30s
-        if ((RynthClock.Now - _lastBuffStanceAttempt).TotalMilliseconds > gateMs
-            && _host.ChangeCombatModeFor(CombatMode.Magic, "Buff", "wand wielded: Magic mode"))
+        // Right after a swap through peace, Magic goes as soon as the wand is in hand: the server holds a
+        // Magic change until its peace animation ends by itself (NextUseTime), and on that route no
+        // other stance change can be queued. Only past our own peace request, never past anything else.
+        bool magicAfterPeace = Now < _magicAfterPeaceUntil && OnlyOurPeaceRequestPending();
+        if ((Now - _lastBuffStanceAttempt).TotalMilliseconds > gateMs
+            && _host.ChangeCombatModeFor(CombatMode.Magic, "Buff", "wand wielded: Magic mode", force: magicAfterPeace))
         {
-            if (_buffStanceStuckSince == DateTime.MinValue) { _buffStanceStuckSince = RynthClock.Now; _buffStanceStuckStartMs = ActionPacer.NowMs(); }
+            if (_buffStanceStuckSince == DateTime.MinValue) { _buffStanceStuckSince = Now; _buffStanceStuckStartMs = ActionPacer.NowMs(); }
             NoteStanceRequest();
-            _lastBuffStanceAttempt = RynthClock.Now;
-            _lastCastAttempt = RynthClock.Now;
+            _lastBuffStanceAttempt = Now;
+            _lastCastAttempt = Now;
             if (_buffStanceConsecutiveFails < 6) _buffStanceConsecutiveFails++;
             // Visible retry line (throttled by the backoff itself): the
             // 2026-06-12 coma produced ZERO log output from this path.
@@ -5359,40 +5280,6 @@ public partial class BuffManager : IDisposable
     /// so combat puts it back on (CombatManager.NoteOffhandStowed).</summary>
     public Action<int>? OffhandStowed { get; set; }
     private bool _offhandNoneNoted;
-
-    // The currently-wielded non-wand weapon (the bow) that blocks the Held-slot wand; else
-    // what is in the off hand (a shield, or an off-hand weapon): ACE refuses a Held-slot caster
-    // beside either. With the global Offhand setting None the off hand is never touched (the
-    // wand then can't be wielded; logged once).
-    private int FindWieldedNonWandWeapon(int wandId)
-    {
-        if (_worldObjectCache == null) return 0;
-        int offhand = 0;
-        foreach (var wo in _worldObjectCache.GetDirectInventory(forceRefresh: true))
-        {
-            if (wo.Id == wandId) continue;
-            if (IsWandObject(wo)) continue;
-            if (WorldObjectCache.IsAmmo(wo)) continue;   // arrows stay on; only the bow blocks the wand
-            if (IsInOffhandSlot(wo)) { offhand = wo.Id; continue; }
-            if ((wo.ObjectClass == AcObjectClass.MeleeWeapon
-                 || wo.ObjectClass == AcObjectClass.MissileWeapon)
-                && WorldObjectCache.IsWieldedByPlayer(_host, wo))
-                return wo.Id;
-        }
-        if (offhand != 0 && OffhandRules.Parse(_settings.OffhandDefault, OffhandMode.Auto) == OffhandMode.None)
-        {
-            if (!_offhandNoneNoted)
-            {
-                _offhandNoneNoted = true;
-                _host.Log($"[WieldGate] 0x{(uint)offhand:X8} '{_worldObjectCache[offhand]?.Name}' is in the off hand and Offhand is None — leaving it; the server won't wield the wand beside it");
-            }
-            return 0;
-        }
-        return offhand;
-    }
-
-    private static bool IsInOffhandSlot(WorldObject wo) =>
-        (wo.Values(LongValueKey.CurrentWieldedLocation, 0) & OffhandRules.ShieldSlot) != 0;
 
     // Live (forceRefresh) wielded check — never trusts a stale cache snapshot.
     private bool IsWieldedLive(int id)
@@ -5444,6 +5331,306 @@ public partial class BuffManager : IDisposable
         if (forBuff) _wandSwapExhausted = true;
         return false;
     }
+
+    // ── The wand swap's steps (HandSwapSequence) ────────────────────────────
+
+    /// <summary>
+    /// The wand swap's next step. True once the wand is in hand (the caller then sees to the Magic
+    /// stance); false while a step is on its way, or when the swap stopped (_magicModeBlocked then
+    /// lets a vital's kit or potion go, and _wandSwapExhausted parks a buff).
+    /// </summary>
+    private bool WandSwapStep(int wandId, bool forBuff, DateTime now)
+    {
+        if (_wandSwap.Active && _wandSwapWandId != wandId)
+            FinishWandSwap(now, done: false, why: "another wand was chosen");
+        if (!_wandSwap.Active)
+        {
+            // Shared weapon-swap gate: one claim for the whole swap, held until it ends, so combat
+            // can't put a weapon back between its steps (two item actions in flight collide).
+            if (_weaponSwapGate != null && !_weaponSwapGate.TryBeginSwap("buff-wand"))
+                return false;
+            var start = ReadHands();
+            int off = HandAt(start, HandSwapSequence.ShieldSlot);
+            // With the global Offhand setting None the off hand is never touched, and the server won't
+            // wield a caster beside it: no swap, said once (the kit or potion gets its turn).
+            if (off != 0 && OffhandRules.Parse(_settings.OffhandDefault, OffhandMode.Auto) == OffhandMode.None)
+            {
+                if (!_offhandNoneNoted)
+                {
+                    _offhandNoneNoted = true;
+                    _host.Log($"[WieldGate] 0x{(uint)off:X8} '{ItemName(off)}' is in the off hand and Offhand is None — leaving it; the server won't wield the wand beside it");
+                }
+                return SignalSwapFailure(forBuff, 0, wandId);
+            }
+            // Tear down any in-flight physical combat BEFORE the first step: an item action while
+            // m_bAttacking is still set wedges the client's item-action gate.
+            if (!_combatTeardownDoneForCurrentBuffCycle &&
+                (CurrentCombatMode == CombatMode.Melee || CurrentCombatMode == CombatMode.Missile))
+            {
+                if (_host.HasCancelAttack)   _host.CancelAttack();
+                if (_host.HasStopCompletely) _host.StopCompletelyBy("Buff/WandSwap");
+                _combatTeardownDoneForCurrentBuffCycle = true;
+                _host.Log($"[BuffPre] CancelAttack+StopCompletely before wand equip (mode was {CurrentCombatMode})");
+            }
+            // From a combat mode, peace first (HandSwapSequence: one stance leg, then every move is
+            // answered at once, and no stance change is ever queued behind another).
+            int mode0 = CurrentCombatMode;
+            _wandSwap.Start("wand", now, new[] { (wandId, (int)HeldSlot) },
+                peaceFirst: mode0 == CombatMode.Melee || mode0 == CombatMode.Missile);
+            _weaponSwapGate?.Hold("buff-wand", (long)_wandSwap.GiveUpMs + 1000);
+            _wandSwapOpen = true;
+            _wandSwapWandId = wandId;
+            _wandSwapForBuff = forBuff;
+            _wandSwapMainAtStart = MainHandIn(start, wandId);
+            _wandSwapLastMoved = 0;
+            _host.Log($"[WieldGate] switching to 0x{(uint)wandId:X8} '{ItemName(wandId)}' ({DescribeHands(start)}, mode {CurrentCombatMode})");
+        }
+
+        var hands = ReadHands();
+        var step = _wandSwap.Next(hands, CurrentCombatMode, now);
+        switch (step.Act)
+        {
+            case HandSwapSequence.Act.Wait:
+                return false;
+
+            case HandSwapSequence.Act.Stance:
+            {
+                // The burst (test toggle /ra swaptest burst on): peace, both hands and the wand in one frame.
+                int burst = SwapBurst ? TryWandBurst(hands, wandId, now) : 0;
+                if (burst != 0) return false;
+                // Refused while the server owes an answer or the character animates (ActionPacer): next tick.
+                if (_host.ChangeCombatModeFor(step.Slot, "Buff", "wand swap: peace first, then the hands"))
+                {
+                    _wandSwap.Sent(step, now);
+                    _host.Log($"[WieldGate] peace first {(now - _wandSwap.StartedAt).TotalMilliseconds:0} ms into the switch (the moves are then answered at once)");
+                }
+                return false;
+            }
+
+            case HandSwapSequence.Act.MoveToPack:
+            {
+                int pack = WorldObjectCache.FindPackFor(_host, _worldObjectCache, includeMainPack: true, requireFree: 1);
+                if (pack == 0)
+                {
+                    WorldObjectCache.WarnPackFull(_host, "can't put the weapon away to switch to the wand, so buffs and spell heals can't cast");
+                    return WandSwapFailed(_wandSwap.Abandon("no pack with room"), forBuff, wandId, now);
+                }
+                bool offhand = hands.TryGetValue(step.Id, out int slot) && (slot & HandSwapSequence.ShieldSlot) != 0;
+                if (offhand) OffhandStowed?.Invoke(step.Id);   // combat puts it back after
+                _host.MoveItemInternal((uint)step.Id, (uint)pack, 0, 1);   // amount>=1 (engine rejects 0)
+                _wandSwap.Sent(step, now);
+                _wandSwapLastMoved = step.Id;
+                _host.Log($"[WieldGate] 0x{(uint)step.Id:X8} '{ItemName(step.Id)}' ({(offhand ? "off hand" : "main hand")}) -> pack 0x{(uint)pack:X8} " +
+                          $"{(now - _wandSwap.StartedAt).TotalMilliseconds:0} ms into the switch");
+                return false;
+            }
+
+            case HandSwapSequence.Act.Wield:
+            {
+                // GetAndWieldItem into the Held slot (the paperdoll drag). A use only wields a plain
+                // caster: one with a spell of its own (Electric Baton, Acid Staff) takes the use as
+                // "cast it" (Drakkon, 2026-10-18 14:00).
+                if (_host.HasWieldItem) _host.WieldItem((uint)step.Id, (uint)step.Slot);
+                else _host.UseFor((uint)step.Id, "Buff", "buffing: wield the wand");
+                _wandSwap.Sent(step, now);
+                _wandSwapLastMoved = step.Id;
+                NoteStanceRequest();
+                _pendingWieldId = step.Id;
+                _pendingWieldAt = now;
+                // No _lastCastAttempt here: the cast interval would hold the Magic request 400 ms (seen on
+                // Freya, 10-22 22:36); the first cast waits for the stance to settle anyway.
+                int mode = CurrentCombatMode;
+                _serverMagicDueUntil = mode == CombatMode.Melee || mode == CombatMode.Missile
+                    ? now.AddMilliseconds(ServerMagicWaitMs) : DateTime.MinValue;
+                _host.Log($"[WieldGate] wielding 0x{(uint)step.Id:X8} '{ItemName(step.Id)}' into the Held slot " +
+                          $"{(now - _wandSwap.StartedAt).TotalMilliseconds:0} ms into the switch");
+                return false;
+            }
+
+            case HandSwapSequence.Act.Done:
+                FinishWandSwap(now, done: true);
+                MagicAfterPeace(now);
+                return true;
+
+            default:
+                return WandSwapFailed(step, forBuff, wandId, now);
+        }
+    }
+
+    /// <summary>The swap stopped short: bounded retries, then the degrade (kits and potions for vitals, parked buffs).</summary>
+    private bool WandSwapFailed(HandSwapSequence.Step step, bool forBuff, int wandId, DateTime now)
+    {
+        int mainAtStart = _wandSwapMainAtStart;
+        bool wandUnanswered = _wandSwap.FailedId == wandId;
+        FinishWandSwap(now, done: false, why: step.Why);
+        if (step.Why == "no pack with room") return SignalSwapFailure(forBuff, mainAtStart, wandId);
+        if (wandUnanswered) NoteWandWieldFailed(wandId);
+        _pendingWieldId = 0;
+        _serverMagicDueUntil = DateTime.MinValue;
+        _wieldCooldownUntil = now.AddMilliseconds(WieldCooldownMs);
+        // A vital's kit or potion gets its turn now, not after the retries.
+        _magicModeBlocked = true;
+        if (++_wieldGateFailCount >= WieldGateFailMax)
+            return SignalSwapFailure(forBuff, mainAtStart, wandId);
+        return false;
+    }
+
+    /// <summary>The swap is over (<paramref name="done"/>: the wand is in hand): the gate is free again, and the log says how long it took.</summary>
+    private void FinishWandSwap(DateTime now, bool done, string why = "")
+    {
+        if (!_wandSwapOpen) return;   // once per swap (a failed sequence has already stopped itself)
+        _wandSwapOpen = false;
+        double ms = (now - _wandSwap.StartedAt).TotalMilliseconds;
+        string trail = _wandSwap.Trail;
+        _magicAfterPeaceUntil = done && _wandSwap.WentThroughPeace ? now.AddMilliseconds(MagicAfterPeaceMs) : DateTime.MinValue;
+        _wandSwap.Cancel();
+        _weaponSwapGate?.Release("buff-wand", _wandSwapLastMoved);
+        LastWandSwapMs = ms;
+        LastWandSwapTrail = trail;
+        _host.Log(done
+            ? $"[WieldGate] wand in hand {ms:0} ms after the switch began ({trail})"
+            : $"[WieldGate] the switch to the wand stopped after {ms:0} ms: {why} ({trail})");
+    }
+
+    /// <summary>
+    /// Each heartbeat, before the cast gates: a swap step the server has answered is followed at once
+    /// (the cast interval, a gesture or a busy count hold casts, not item moves), and a swap nothing
+    /// asks for any more (the heal or buff went away) stops, without counting as a failure.
+    /// </summary>
+    private void TickWandSwap()
+    {
+        if (!_wandSwap.Active) return;
+        DateTime now = Now;
+        if ((now - _wandSwapTouchedAt).TotalMilliseconds > WandSwapAbandonMs)
+        {
+            FinishWandSwap(now, done: false, why: "nothing needs the wand now");
+            return;
+        }
+        WandSwapStep(_wandSwapWandId, _wandSwapForBuff, now);
+    }
+
+    /// <summary>A death, a portal or the macro stopping ended the swap: not a failed swap.</summary>
+    private void DropWandSwap(string why)
+    {
+        if (!_wandSwap.Active) return;
+        FinishWandSwap(Now, done: false, why: why);
+        _pendingWieldId = 0;
+        _serverMagicDueUntil = DateTime.MinValue;
+    }
+
+    /// <summary>What the server says is wielded (item id -> EquipMask), read fresh.</summary>
+    private Dictionary<int, int> ReadHands() => EquippedState.ReadFresh(_host, _worldObjectCache);
+
+    /// <summary>
+    /// The burst: peace, the moves out of the hands (raw PutItemInContainer, which the client doesn't
+    /// gate on a pending item request) and the wand's wield, queued in one tick so they go out in one
+    /// frame, before the client starts the peace animation that holds item actions (0.6 s a step on
+    /// the step route). In peace the server answers every one at once. Only when the server can't be
+    /// mid-animation: no combat-mode change for BurstQuietMs (ACE NextUseTime is set by stance changes,
+    /// uses and kits; the pacer refuses the peace request while a use is unanswered). Anything that
+    /// hasn't landed in HandSwapSequence.BurstResolveMs goes on one step at a time.
+    /// 0 = not tried (the step route), 1 = held this tick, 2 = sent.
+    /// </summary>
+    private int TryWandBurst(IReadOnlyDictionary<int, int> hands, int wandId, DateTime now)
+    {
+        if (!_host.HasPutItemInContainer || !_host.HasWieldItem) return 0;
+        if ((now - _modeChangedAt).TotalMilliseconds < BurstQuietMs) return 0;
+        var moves = _wandSwap.Blockers(hands);
+        if (moves.Count == 0 || moves.Count > 2) return 0;
+        int pack = WorldObjectCache.FindPackFor(_host, _worldObjectCache, includeMainPack: true, requireFree: moves.Count);
+        if (pack == 0) return 0;
+        if (!_host.ChangeCombatModeFor(CombatMode.NonCombat, "Buff", "wand swap burst: peace, the hands and the wand at once")) return 1;
+        foreach (int id in moves)
+        {
+            if (hands.TryGetValue(id, out int slot) && (slot & HandSwapSequence.ShieldSlot) != 0) OffhandStowed?.Invoke(id);
+            _host.PutItemInContainer(unchecked((uint)id), unchecked((uint)pack), 0);
+        }
+        _host.WieldItem(unchecked((uint)wandId), HeldSlot);
+        _wandSwap.SentBurst(moves, now);
+        _wandSwapLastMoved = wandId;
+        NoteStanceRequest();
+        _pendingWieldId = wandId;
+        _pendingWieldAt = now;
+        _host.Log($"[WieldGate] burst {(now - _wandSwap.StartedAt).TotalMilliseconds:0} ms into the switch: peace, " +
+                  string.Join(", ", moves.ConvertAll(id => $"0x{(uint)id:X8} '{ItemName(id)}'")) +
+                  $" -> pack 0x{(uint)pack:X8}, 0x{(uint)wandId:X8} '{ItemName(wandId)}' -> Held, in one frame");
+        return 2;
+    }
+
+    /// <summary>
+    /// The burst goes with Fast Weapon Swap (when the server is quiet; else the step route). /ra swaptest
+    /// burst on|off overrides it until the next reload, to compare the two routes.
+    /// </summary>
+    internal bool SwapBurst { get => _swapBurstOverride ?? _settings.FastWeaponSwap; set => _swapBurstOverride = value; }
+    private bool? _swapBurstOverride;
+    private const double BurstQuietMs = 1300;
+    private int _lastSeenMode = -1;
+    private DateTime _modeChangedAt = DateTime.MinValue;
+    /// <summary>When the combat mode last changed, read every heartbeat (combat's tick doesn't run while buffing has it).</summary>
+    internal DateTime LastModeChangeAt => _modeChangedAt;
+
+    /// <summary>Each heartbeat: when the combat mode last changed (the burst waits out a stance change's animation).</summary>
+    private void NoteModeChange()
+    {
+        int m = CurrentCombatMode;
+        if (m == _lastSeenMode) return;
+        bool first = _lastSeenMode == -1;   // the first read after a load is not a change
+        _lastSeenMode = m;
+        if (!first) _modeChangedAt = Now;
+    }
+
+    /// <summary>
+    /// The wand is in hand after a swap through peace: Magic is asked for now, from the swap itself (it
+    /// can run before the cast gates, which the pacer holds while our own peace request settles: 0.75 s
+    /// on Freya, 10-22 22:49). The server holds the change until the peace animation ends by itself.
+    /// The same bookkeeping as the Magic request in EnsureMagicMode, which won't send it twice.
+    /// </summary>
+    private void MagicAfterPeace(DateTime now)
+    {
+        if (now >= _magicAfterPeaceUntil || CurrentCombatMode != CombatMode.NonCombat || !OnlyOurPeaceRequestPending()) return;
+        if (!_host.ChangeCombatModeFor(CombatMode.Magic, "Buff", "wand in hand after peace: Magic mode", force: true)) return;
+        if (_buffStanceStuckSince == DateTime.MinValue) { _buffStanceStuckSince = now; _buffStanceStuckStartMs = ActionPacer.NowMs(); }
+        NoteStanceRequest();
+        _lastBuffStanceAttempt = now;
+        _lastCastAttempt = now;
+        if (_buffStanceConsecutiveFails < 6) _buffStanceConsecutiveFails++;
+        _host.Log($"[WieldGate] Magic asked for {(now - _wandSwap.StartedAt).TotalMilliseconds:0} ms into the switch (the server starts it when the peace animation ends)");
+    }
+
+    /// <summary>Nothing the pacer waits on but our own request for peace (or nothing at all).</summary>
+    private bool OnlyOurPeaceRequestPending()
+    {
+        var a = ActionPacer.Current(_host);
+        return a == null || (a.Kind == PacedKind.CombatMode && a.ModeTarget == CombatMode.NonCombat && a.Who == "Buff");
+    }
+
+    private static int HandAt(IReadOnlyDictionary<int, int> hands, int slot)
+    {
+        foreach (var kv in hands) if ((kv.Value & slot) != 0) return kv.Key;
+        return 0;
+    }
+
+    /// <summary>The weapon in the main hand (not the wand being wielded, not the off hand); 0 = none.</summary>
+    private static int MainHandIn(IReadOnlyDictionary<int, int> hands, int wandId)
+    {
+        const int main = HandSwapSequence.MeleeSlot | HandSwapSequence.MissileSlot | HandSwapSequence.TwoHandedSlot | HandSwapSequence.HeldSlot;
+        foreach (var kv in hands) if (kv.Key != wandId && (kv.Value & main) != 0) return kv.Key;
+        return 0;
+    }
+
+    private string DescribeHands(IReadOnlyDictionary<int, int> hands)
+    {
+        var parts = new List<string>();
+        foreach (var kv in hands)
+        {
+            if ((kv.Value & HandSwapSequence.HandSlots) == 0) continue;
+            string where = (kv.Value & HandSwapSequence.ShieldSlot) != 0 ? "off hand" : "main hand";
+            parts.Add($"{where} 0x{(uint)kv.Key:X8} '{ItemName(kv.Key)}'");
+        }
+        return parts.Count == 0 ? "hands empty" : string.Join(", ", parts);
+    }
+
+    private string ItemName(int id) => _worldObjectCache?[id]?.Name ?? "?";
 
     /// <summary>
     /// Locates a wand to equip: a listed wand, the one already in hand first (so buffing

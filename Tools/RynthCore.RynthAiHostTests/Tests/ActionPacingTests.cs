@@ -727,21 +727,22 @@ internal static class ActionPacingTests
             Check.Eq(string.Join(",", FakeHost.CombatModeRequests), "8", "set-up: the first request is accepted and starts the stuck clock");
             Check.True((DateTime)since.GetValue(r.B)! != DateTime.MinValue, "set-up: the clock is running");
 
-            // The request was dropped by a teleport; the engine now refuses. The backoff gate (real clock) is opened by back-dating.
-            lastTry.SetValue(r.B, DateTime.Now.AddSeconds(-3));
+            // The request was dropped by a teleport; the engine now refuses. The backoff gate (BuffManager's clock) is opened by back-dating.
+            lastTry.SetValue(r.B, r.T0.AddSeconds(-1));
             FakeHost.CombatModeRefuse = true;
             r.At(2); r.B.OnHeartbeat();
             Check.True(FakeHost.CombatModeRefusals >= 1, "set-up: a later request was refused");
 
-            // 9 s of that: back-date the clock as if the real time had passed (the re-equip rule reads the real clock).
-            since.SetValue(r.B, DateTime.Now.AddSeconds(-9));
+            // 9 s of that: back-date the stuck clock 9 s.
+            since.SetValue(r.B, r.T0);
             r.At(9); r.B.OnHeartbeat();
             r.At(9.3); r.B.OnHeartbeat();
             Check.Eq((int)reEquips.GetValue(r.B)!, 0, "a refusal newer than the clock's start restarted it: _buffStanceReEquips stays 0");
             Check.False(FakeHost.Uses.Contains(Wand), "and no UseObject(wand) - a MOVE on a wielded wand - went out");
-            Check.True((DateTime.Now - (DateTime)since.GetValue(r.B)!).TotalSeconds < 3, "the clock was restarted at now");
+            Check.True((r.NowAt - (DateTime)since.GetValue(r.B)!).TotalSeconds < 3, "the clock was restarted at now");
 
             FakeHost.CombatModeRefuse = false;
+            lastTry.SetValue(r.B, r.T0.AddSeconds(7));   // the backoff after the restarted clock's request is over
             r.At(9.6); r.B.OnHeartbeat();
             Check.Eq(string.Join(",", FakeHost.CombatModeRequests), "8,8", "accepted again");
             Check.Eq((int)reEquips.GetValue(r.B)!, 0, "still no re-equip");

@@ -2025,6 +2025,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.EnableGroundLoot         = tmp.EnableGroundLoot;
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
         dst.RearmAfterVitals         = tmp.RearmAfterVitals;
+        dst.FastWeaponSwap           = tmp.FastWeaponSwap;
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;
         dst.RebuffTopOffSecondsRemaining = tmp.RebuffTopOffSecondsRemaining;

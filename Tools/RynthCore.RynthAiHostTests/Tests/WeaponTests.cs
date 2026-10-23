@@ -54,6 +54,7 @@ internal static class WeaponTests
         r.Add("slayer: read through the host (int 166, float 138, monster int 2), cached by wcid", SlayerFromHost);
         r.Add("refusal: a refused stance change in combat's equip pass sets no backoff and starts no stuck clock", StanceRefusedKeepsBackoff);
         r.Add("weapon choice: an unlisted wand is never picked (Damage tab, learned, pack, name)", UnlistedNeverPicked);
+        r.Add("weapon choice: the Monsters rule's weapon is used (R-20261022-193411-fb72), below this monster's Damage tab pick; the Default row's like the Damage tab default", MonsterRuleWeapon);
         r.Add("Items list: a listed item no longer carried is reported missing (pack, hand, unknown)", MissingFromPack);
         r.Add("weapon choice: a listed weapon someone else now has (sold) is skipped, even as this monster's Damage tab pick", SoldWeaponSkipped);
         r.Add("weapon swap: one in flight, confirmed, retry cap, then what's in hand", SwapOneInFlight);
@@ -880,6 +881,110 @@ internal static class WeaponTests
         Check.Eq(string.Join(",", FakeHost.CombatModeRequests), CombatMode.Magic.ToString(), "accepted: the request goes out");
         Check.True((DateTime)last.GetValue(rig.C)! != DateTime.MinValue, "and only now lastStanceAttempt is stamped");
     }
+    /// <summary>
+    /// Problem report R-20261022-193411-fb72 (2026-10-22): "ignoring monster rules, specifically
+    /// which weapon is set for the mob type". The rule's WeaponId was imported and shown but never
+    /// read; the weakness picked the weapon ("src=weak to Cold"). Ethereal Wisp's weakness picks the
+    /// Lightning wand; the rule says the fire wand. Each step uses a new rule object, so PlanFor's
+    /// cache (keyed on the rule by reference) doesn't hand back the previous answer.
+    /// </summary>
+    private static void MonsterRuleWeapon()
+    {
+        var rig = new Rig(1535, "Ethereal Wisp");
+        rig.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+        rig.S.EnsureDefaultRule();
+        var defRow = rig.S.MonsterRules[0];
+        MonsterRule Own(uint weapon) => new() { Name = "Ethereal", WeaponId = unchecked((int)weapon) };
+
+        var auto = rig.C.PlanFor(rig.Target, Own(0));
+        Check.Eq(unchecked((uint)auto.WeaponId), ListedWand, "no weapon on the rule: the weakness picks the Lightning wand");
+
+        var p = rig.C.PlanFor(rig.Target, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "the rule's weapon, not the weakness pick");
+        Check.Eq(p.Source, "Monsters rule weapon", "source");
+        Check.Eq(p.Element, "Fire", "it casts its own element");
+
+        // This monster's own Damage tab pick beats the rule's weapon.
+        rig.Store.SetManualWeapon(1535, ListedWand);
+        p = rig.C.PlanFor(rig.Target, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "the Damage tab pick for this monster wins over the rule's");
+        Check.Eq(p.Source, "Damage tab", "source");
+        rig.Store.SetManualWeapon(1535, 0);
+
+        // The rule's weapon beats the Damage tab DEFAULT row's.
+        rig.Store.SetDefaultWeapon(ListedWand);
+        p = rig.C.PlanFor(rig.Target, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "the rule's weapon wins over the Damage tab default");
+        p = rig.C.PlanFor(rig.Target, Own(0));
+        Check.Eq(p.Source, "Damage tab default", "no weapon on the rule: the Damage tab default");
+
+        // The Monsters Default row's weapon comes after the Damage tab default.
+        defRow.WeaponId = unchecked((int)FireWand);
+        p = rig.C.PlanFor(rig.Target, defRow);
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "Default row matched: the Damage tab default beats its weapon");
+        Check.Eq(p.Source, "Damage tab default", "source");
+        rig.Store.SetDefaultWeapon(0);
+        p = rig.C.PlanFor(rig.Target, Own(0));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "no Damage tab weapons: the Monsters Default row's weapon");
+        Check.Eq(p.Source, "Monsters Default weapon", "source");
+
+        // A slayer beats the Default row's weapon (a DEFAULT pick, step 3), not the rule's own (step 1).
+        FakeHost.Ints[(ListedWand, 166)] = Olthoi;
+        var olthoi = new WorldObject(unchecked((int)Monster) + 7, "Ethereal Wisp", AcObjectClass.Monster);
+        FakeHost.Wcids[Monster + 7] = 990007;
+        FakeHost.Ints[(Monster + 7, 2)] = Olthoi;
+        p = rig.C.PlanFor(olthoi, defRow);
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "the Default row's fire wand loses to an Olthoi slayer");
+        Check.True(p.Source.StartsWith("slayer"), "source: " + p.Source);
+        p = rig.C.PlanFor(olthoi, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "the rule's own fire wand beats the slayer, like a Damage tab pick");
+        FakeHost.Ints.Remove((ListedWand, 166));
+        defRow.WeaponId = 0;
+
+        // The monster's wcid isn't known: the rule's weapon still applies.
+        var noWcid = new WorldObject(unchecked((int)Monster) + 9, "Ethereal Wisp", AcObjectClass.Monster);
+        p = rig.C.PlanFor(noWcid, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "wcid unknown: the rule's weapon");
+
+        // Not in the Items list: still used, the Monsters tab pick is the player's (owner, 2026-10-22).
+        rig.S.ItemRules.RemoveAll(r => r.Id == unchecked((int)FireWand));
+        p = rig.C.PlanFor(rig.Target, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "an unlisted rule weapon is still used");
+        Check.Eq(p.Source, "Monsters rule weapon", "source");
+        Check.Eq(p.Element, "Fire", "it casts its own element (read from the weapon, not the list)");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Monsters rule 'Ethereal' weapon") && l.Contains("isn't in the Items list") && l.Contains("using it")),
+            "logged once: " + string.Join(" | ", FakeHost.Logs.Where(l => l.Contains("EquipDiag")).Take(6)));
+        defRow.WeaponId = unchecked((int)FireWand);
+        p = rig.C.PlanFor(rig.Target, Own(0));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "the Default row's unlisted weapon too");
+        defRow.WeaponId = 0;
+        // ...but a Damage tab pick still must be listed.
+        rig.Store.SetManualWeapon(1535, FireWand);
+        p = rig.C.PlanFor(rig.Target, Own(0));
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "an unlisted Damage tab pick is still skipped");
+        rig.Store.SetManualWeapon(1535, 0);
+        // A rule weapon the client doesn't know (not carried, never seen): skipped, the weakness pick.
+        const uint Unknown = 0x6000006F;
+        p = rig.C.PlanFor(rig.Target, Own(Unknown));
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "an unknown rule weapon is skipped: the weakness pick");
+        rig.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+
+        // Through combat's equip pass: the rule matched by name drives the wield.
+        rig.S.MonsterRules.Add(Own(FireWand));
+        rig.C.InHandOverride = () => unchecked((int)ListedWand);   // the weakness pick is in hand
+        var equip = typeof(CombatManager).GetMethod("EquipWeaponAndSetStance", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        equip.Invoke(rig.C, new object[] { rig.Target, "Auto" });
+        Check.Eq(FakeHost.Uses.FirstOrDefault(), FireWand, "combat wields the rule's fire wand");
+
+        // The same with the fire wand not in the Items list (a fresh rig: the first wield is in flight).
+        var bare = new Rig(1535, "Ethereal Wisp");
+        bare.S.EnsureDefaultRule();
+        bare.S.MonsterRules.Add(Own(FireWand));
+        bare.C.InHandOverride = () => unchecked((int)ListedWand);
+        equip.Invoke(bare.C, new object[] { bare.Target, "Auto" });
+        Check.Eq(FakeHost.Uses.FirstOrDefault(), FireWand, "combat wields the rule's unlisted fire wand");
+    }
+
     private static void UnlistedNeverPicked()
     {
         var rig = new Rig(1535, "Ethereal Wisp");

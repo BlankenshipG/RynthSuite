@@ -47,6 +47,7 @@ internal static class OffhandTests
         r.Add("tracker (v87): the main hand and the off hand come from the server's slots", TrackerHands);
         r.Add("tracker (v87): not ready yet (-1): the old reads answer", TrackerNotReadyFallsBack);
         r.Add("weapons: a two-hander needing untrained Two Handed Combat is never chosen, so the off hand stays", UnmetRequirementNotChosen);
+        r.Add("weapons: vitae doesn't leave out a weapon whose requirement is the base skill (the Shashqa at 40% vitae)", VitaeAndBaseSkillRequirement);
         r.Add("offhand: no Dual Wield skill -> the shield", NoSkillShield);
         r.Add("offhand: None -> hands off (a worn shield is never taken off)", NoneHandsOff);
         r.Add("offhand: an unlisted shield is never wielded", UnlistedNeverUsed);
@@ -599,6 +600,34 @@ internal static class OffhandTests
         FakeHost.Skills[(Player, 41)] = (300, 2);
         System.Threading.Thread.Sleep(1100);   // skill reads are cached for up to a second
         Check.True(rig.C.ListedCandidates().Any(c => c.Id == unchecked((int)Great)), "after training it: a candidate again, nothing to re-list");
+    }
+
+    // 2026-10-23: at 40% vitae, "Shashqa can't be wielded (needs Two Handed Combat 420, you have 371)",
+    // though it wields fine. Its requirement is RawSkill (the base skill: no buffs, no vitae), and the
+    // check read the buffed skill, which vitae lowers.
+    private static void VitaeAndBaseSkillRequirement()
+    {
+        var rig = new Rig();
+        rig.List(Sword, Great);
+        FakeHost.Ints[(Great, 158)] = 2;               // WieldRequirements: RawSkill
+        FakeHost.Ints[(Great, 159)] = 41;              // Two Handed Combat
+        FakeHost.Ints[(Great, 160)] = 420;
+        FakeHost.Skills[(Player, 41)] = (371, 2);      // buffed read, with the vitae penalty
+        FakeHost.SkillLevels[(Player, 41, 1)] = 430;   // base
+        var skills = new CharacterSkills(FakeHost.Create(Player));
+        skills.SetPlayerId(Player);
+        Check.Eq(WieldRequirements.Unmet(FakeHost.Create(Player), skills, Great), null, "base 430 meets base 420, whatever vitae does to the buffed 371");
+        Check.True(rig.C.ListedCandidates().Any(c => c.Id == unchecked((int)Great)), "a candidate");
+        Check.False(FakeHost.Chat.Any(c => c.Contains("can't be wielded")), "no 'can't be wielded' message: " + string.Join(" | ", FakeHost.Chat));
+
+        FakeHost.SkillLevels[(Player, 41, 1)] = 400;
+        Check.Eq(WieldRequirements.Unmet(FakeHost.Create(Player), skills, Great), "needs base Two Handed Combat 420, you have 400", "a base under the requirement is unmet");
+        FakeHost.SkillLevels.Remove((Player, 41, 1));
+        Check.Eq(WieldRequirements.Unmet(FakeHost.Create(Player), skills, Great), null, "the base can't be read: not known (the server's answer decides)");
+
+        // A Skill requirement (the buffed skill) is lowered by vitae on the server too: unmet.
+        FakeHost.Ints[(Great, 158)] = 1;
+        Check.Eq(WieldRequirements.Unmet(FakeHost.Create(Player), skills, Great), "needs Two Handed Combat 420, you have 371", "a buffed-skill requirement reads the buffed skill");
     }
 
     private static void TrackerNotReadyFallsBack()

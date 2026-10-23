@@ -480,7 +480,8 @@ public sealed partial class RynthAiPlugin
     public string? BuildSectionsJson()
     {
         if (!_initialized || !_loginComplete) return null;
-        return Huds.SectionsManifest.Build(Huds.SectionsManifest.Views(), Huds.SectionsManifest.OwnSections);
+        return Huds.SectionsManifest.Build(Huds.SectionsManifest.Views(), Huds.SectionsManifest.OwnSections,
+            dashboard: DashboardWindowWanted);
     }
     /// <summary>Chat Translate window in the dashboard colours (no-op while hidden).</summary>
     private void RenderTranslateWindow()

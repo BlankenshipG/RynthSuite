@@ -140,7 +140,8 @@ public static unsafe class PluginExports
         {
             if (surface == null) return 0;
             ReadOnlySpan<byte> name = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(surface);
-            if (name.EndsWith(":popout"u8)) name = name[..^":popout"u8.Length];
+            bool popped = name.EndsWith(":popout"u8);
+            if (popped) name = name[..^":popout"u8.Length];
             var plugin = Runtime.Plugin;
             if (plugin == null) return 0;
             System.Numerics.Vector2 want;
@@ -148,6 +149,12 @@ public static unsafe class PluginExports
             if (name.SequenceEqual("miniremote-host"u8))
             {
                 return plugin.MarkEngineMiniRemote() ? 1 : 0;
+            }
+            else if (name.SequenceEqual("window:dashboard"u8))
+            {
+                // RynthAi's own dashboard window (RynthAiPlugin.Dashboard.cs): 1 drawn, 0 not ready, -2 failed.
+                int drawn = plugin.RenderDashboard(popped, out want);
+                if (drawn != 1) return drawn;
             }
             else if (name.StartsWith("section:"u8))
             {

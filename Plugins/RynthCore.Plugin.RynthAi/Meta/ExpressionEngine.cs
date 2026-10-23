@@ -3618,6 +3618,7 @@ internal sealed partial class ExpressionEngine
             ["SalvageWithoutPanel"] = (() => B(s.SalvageWithoutPanel), v => s.SalvageWithoutPanel = ToDouble(v) != 0),
             ["PeaceModeWhenIdle"]   = (() => B(s.PeaceModeWhenIdle),   v => s.PeaceModeWhenIdle   = ToDouble(v) != 0),
             ["RearmAfterVitals"]    = (() => B(s.RearmAfterVitals),    v => s.RearmAfterVitals    = ToDouble(v) != 0),
+            ["FastWeaponSwap"]      = (() => B(s.FastWeaponSwap),      v => s.FastWeaponSwap      = ToDouble(v) != 0),
             ["RebuffWhenIdle"]      = (() => B(s.RebuffWhenIdle),      v => s.RebuffWhenIdle      = ToDouble(v) != 0),
             ["UsePotions"] = (() => B(s.UsePotions), v => s.UsePotions = ToDouble(v) != 0),
             ["UseBuffItems"] = (() => B(s.UseBuffItems), v => s.UseBuffItems = ToDouble(v) != 0),

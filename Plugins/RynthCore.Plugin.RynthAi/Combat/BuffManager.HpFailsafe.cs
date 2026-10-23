@@ -370,14 +370,14 @@ public partial class BuffManager
     /// </summary>
     /// <summary>
     /// A death or a portal dropped whatever the server had open: a wand use in flight is forgotten,
-    /// not judged a failed swap (see _directSwapMisses). RynthAiPlugin calls it with the death hold
-    /// and on entering portal space.
+    /// not judged a failed swap. RynthAiPlugin calls it with the death hold and on entering portal space.
     /// </summary>
     internal void ForgetPendingWield(string why)
     {
+        DropWandSwap(why);
         if (_pendingWieldId == 0) return;
         _pendingWieldId = 0;
-        _host.Log($"[WieldGate] the wand's use in flight was cut short ({why}): not counted as a failed swap");
+        _host.Log($"[WieldGate] the wand's wield in flight was cut short ({why}): not counted as a failed swap");
     }
 
     internal void CancelPendingRecall(string why)

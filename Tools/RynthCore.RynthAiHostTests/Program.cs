@@ -72,6 +72,7 @@ internal static class Program
         AmmoTests.Register(runner);
         VTankYieldTests.Register(runner);
         OffhandTests.Register(runner);
+        HandSwapTests.Register(runner);
         FloodPerfTests.Register(runner);
         LootSalvageTests.Register(runner);
         LootCorpseTests.Register(runner);

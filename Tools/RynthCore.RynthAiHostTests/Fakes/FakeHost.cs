@@ -192,6 +192,10 @@ internal static unsafe class FakeHost
     /// <summary>Opt-in (set before Create): WieldItem (a wield into a named slot, API v70+). The
     /// host then reports API version 73, so only tests that ask for it see the newer calls.</summary>
     public static bool WieldCalls;
+    /// <summary>Opt-in (set before Create): v80 PutItemInContainer (the raw move packet), recorded in <see cref="Puts"/>.</summary>
+    public static bool PutCalls;
+    /// <summary>Every PutItemInContainer (item, container, placement), in order (opt-in with <see cref="PutCalls"/>).</summary>
+    public static readonly List<(uint Id, uint Container, int Placement)> Puts = new();
     /// <summary>Every WieldItem (item, EquipMask slot), in order (opt-in with <see cref="WieldCalls"/>).</summary>
     public static readonly List<(uint Id, uint Mask)> Wields = new();
     /// <summary>Opt-in (set before Create): UseObject, MoveItemExternal, the salvage panel
@@ -310,7 +314,7 @@ internal static unsafe class FakeHost
         // the PC doesn't change results; the mana reserve tests set their own costs.
         RynthCore.Plugin.RynthAi.BuffManager.ManaCostOverride = _ => 0;
 #endif
-        WieldCalls = false; Wields.Clear();
+        WieldCalls = false; Wields.Clear(); PutCalls = false; Puts.Clear();
         SalvageCalls = false; ExternalMoves.Clear(); SalvageAdds.Clear(); SalvageExecutes.Clear();
         RefuseSalvageAdd.Clear(); OnSalvageExecute = null; Wielded.Clear(); _panelItems.Clear();
         SalvageDirectCalls = false; SalvageDirects.Clear(); SalvageDirectAnswer = null; OnSalvageDirect = null;
@@ -458,6 +462,11 @@ internal static unsafe class FakeHost
         {
             api.Version     = 73;
             api.WieldItemFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint, int>)&WieldItem;
+        }
+        if (PutCalls)
+        {
+            api.Version = Math.Max(api.Version, 80u);
+            api.PutItemInContainerFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint, int, int>)&PutItemInContainer;
         }
         api.GetObjectWcidFn         = (IntPtr)(delegate* unmanaged[Cdecl]<uint, uint>)&GetObjectWcid;
         api.GetSelectedItemIdFn     = (IntPtr)(delegate* unmanaged[Cdecl]<uint>)&GetSelectedItemId;
@@ -972,6 +981,9 @@ internal static unsafe class FakeHost
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int WieldItem(uint id, uint mask) { Wields.Add((id, mask)); return 1; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int PutItemInContainer(uint id, uint container, int placement) { Puts.Add((id, container, placement)); return 1; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int CloseContainer(uint id) { Closes.Add(id); return 1; }

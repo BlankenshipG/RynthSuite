@@ -1,0 +1,120 @@
+// ============================================================================
+//  RynthDefective - RynthDefectivePlugin.Selection.cs
+//  The Selection window (2026-10-22): what is selected, how far and which way,
+//  and a creature's health, as the retail toolbar showed it
+//  (ShortcutBar/SelectionWindow.cs draws it).
+//
+//  The tick builds the view 10 times a second: the selected object
+//  (GetSelectedItemId), its name, where it is from the player (positions in
+//  landblock coordinates: 192 units a landblock; the facing from the player's
+//  pose, as RynthAi's combat turns), and its health from AC's health updates
+//  (OnUpdateHealth), asked for when a creature is selected and every 2 s after.
+// ============================================================================
+
+using System;
+using System.Globalization;
+using RynthCore.Plugin.RynthDefective.ShortcutBar;
+using RynthCore.PluginSdk;
+
+namespace RynthCore.Plugin.RynthDefective;
+
+public sealed partial class RynthDefectivePlugin
+{
+    internal const string SelectionSurface = "window:selection";
+
+    private SelectionWindow? _selectionWindow;                     // render thread
+    private volatile SelectionView _selectionView = SelectionView.NotReady;
+    private long _selectionDrawnMs = long.MinValue / 2, _nextSelectionMs, _nextHealthQueryMs;
+    private uint _selectionId;
+    private int _selectionFailures;
+
+    // The last health AC sent for the selected object (game thread writes, tick reads).
+    private volatile HealthSeen? _health;
+    private sealed record HealthSeen(uint Id, float Ratio, uint Current, uint Max);
+
+    private const uint CreatureType = 0x10;   // ItemType.Creature
+
+    public override void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth)
+    {
+        if (targetId != 0 && targetId == _selectionId)
+            _health = new HealthSeen(targetId, healthRatio, currentHealth, maxHealth);
+    }
+
+    /// <summary>RynthPluginRenderEmbed "window:selection". 1 drawn, 0 not ready, -2 failed (three in a row). Render thread.</summary>
+    internal int RenderSelection(out float wantHeight)
+    {
+        wantHeight = 0;
+        if (!UsesShortcutBar) return 0;
+        System.Threading.Volatile.Write(ref _selectionDrawnMs, Environment.TickCount64);
+        try
+        {
+            _selectionWindow ??= new SelectionWindow(Host, id => QueueBar(() => { if (!Host.UseObject(id)) Print("That can't be used now."); }));
+            wantHeight = _selectionWindow.Draw(_selectionView);
+            _selectionFailures = 0;
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            Host.Log($"[RynthDefective] selection draw failed: {ex.GetType().Name}: {ex.Message}");
+            return ++_selectionFailures >= 3 ? -2 : 0;
+        }
+    }
+
+    /// <summary>Plugin tick: the selection's view while its window shows.</summary>
+    private void TickSelection(long now)
+    {
+        if (!UsesShortcutBar || !_identityKnown) return;
+        if (now - System.Threading.Volatile.Read(ref _selectionDrawnMs) > 2000 || now < _nextSelectionMs) return;
+        _nextSelectionMs = now + 100;
+        try { _selectionView = BuildSelection(now); }
+        catch (Exception ex) { Host.Log($"[RynthDefective] selection read failed: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    private SelectionView BuildSelection(long now)
+    {
+        uint sel = Host.HasGetSelectedItemId ? Host.GetSelectedItemId() : 0;
+        bool changed = sel != _selectionId;
+        _selectionId = sel;
+        if (changed) _health = null;
+        if (sel == 0) return new SelectionView(true, 0, string.Empty, string.Empty, float.NaN, -1f, 0, 0);
+
+        string name = Host.TryGetObjectName(sel, out string n) && n.Length > 0 ? n : $"0x{sel:X8}";
+        bool creature = Host.TryGetItemType(sel, out uint type) && (type & CreatureType) != 0;
+        if (creature && (changed || now >= _nextHealthQueryMs))
+        {
+            _nextHealthQueryMs = now + 2000;
+            Host.QueryHealth(sel);
+        }
+
+        string where = string.Empty;
+        float relative = float.NaN;
+        bool carried = false;
+        foreach (var it in _session.Items()) if (it.Id == sel) { carried = true; break; }
+        if (carried) where = "in your pack";
+        else if (Host.TryGetObjectPosition(sel, out uint oc, out float ox, out float oy, out float oz) && oc != 0
+                 && Host.TryGetPlayerPose(out uint pc, out float px, out float py, out float pz, out float qw, out _, out _, out float qz) && pc != 0)
+        {
+            double dx = Global(oc, ox, true) - Global(pc, px, true), dy = Global(oc, oy, false) - Global(pc, py, false), dz = oz - pz;
+            double dist = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+            double bearing = Math.Atan2(dx, dy) * 180.0 / Math.PI;
+            if (bearing < 0) bearing += 360.0;
+            double facing = ((-2.0 * Math.Atan2(qz, qw) * 180.0 / Math.PI) % 360.0 + 720.0) % 360.0;
+            double rel = bearing - facing;
+            while (rel > 180) rel -= 360;
+            while (rel < -180) rel += 360;
+            if (dist >= 0.5) relative = (float)rel;
+            where = $"{dist.ToString(dist < 10 ? "0.0" : "0", CultureInfo.InvariantCulture)} yd {Compass(bearing)}";
+        }
+
+        HealthSeen? h = _health;
+        float health = h != null && h.Id == sel ? h.Ratio : -1f;
+        return new SelectionView(true, sel, name, where, relative, health, h?.Current ?? 0, h?.Max ?? 0);
+    }
+
+    /// <summary>A landblock coordinate as a world one: 192 units a landblock (the cell's high bytes).</summary>
+    private static double Global(uint cell, float local, bool x) =>
+        ((x ? cell >> 24 : cell >> 16) & 0xFF) * 192.0 + local;
+
+    private static readonly string[] Points = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+    private static string Compass(double bearing) => Points[(int)Math.Round(bearing / 45.0) % 8];
+}

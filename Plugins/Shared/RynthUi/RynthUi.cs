@@ -100,6 +100,12 @@ internal static unsafe class RynthUi
         RynthUiColor.Red => 0xFFE05A5A,
         RynthUiColor.TitleBar => 0xFF1A1A28,
         RynthUiColor.WindowBorder => 0xFF008080,
+        // v90: the default theme's muted text and instrument shades (ThemePalette.DeriveInstrument).
+        RynthUiColor.Muted => 0xFFB8C8D8,
+        RynthUiColor.KeyFace => 0xFF111E2B,
+        RynthUiColor.Hairline => 0xFF1D3042,
+        RynthUiColor.Inset => 0xFF06080B,
+        RynthUiColor.Faint => 0xFF8794A1,
         _ => 0xFFFFFFFF,
     });
 

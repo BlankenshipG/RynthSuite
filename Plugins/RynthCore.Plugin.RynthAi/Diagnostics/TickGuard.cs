@@ -26,6 +26,7 @@ internal enum TickStep
     LocalFeatures,
     GiveQueue,
     Jumper,
+    Dashboard,
     // In world.
     VTankYield,
     VitalsRead,
@@ -112,6 +113,7 @@ internal sealed class TickGuard
         Add(TickStep.LocalFeatures,     "HUDs and panels",          LogCat.Huds);
         Add(TickStep.GiveQueue,         "give queue",               LogCat.Inventory);
         Add(TickStep.Jumper,            "jumper",                   LogCat.Jumper, essential: true);
+        Add(TickStep.Dashboard,         "dashboard window",         LogCat.UI);
 
         Add(TickStep.VTankYield,        "VTank yield",              LogCat.General, essential: true);
         Add(TickStep.VitalsRead,        "vitals read",              LogCat.Buffing, essential: true);

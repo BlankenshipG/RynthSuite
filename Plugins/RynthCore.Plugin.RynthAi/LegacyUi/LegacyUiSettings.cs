@@ -308,6 +308,17 @@ public sealed class LegacyUiSettings
     /// <summary>After a heal, restam or remana spell with no monster to fight, put the last fight's
     /// weapons (main hand and off hand) back on instead of waiting for the next target.</summary>
     public bool RearmAfterVitals;
+    /// <summary>
+    /// Weapon swaps (to the wand for a heal or a buff, and Weapons Back After Heals) through peace
+    /// mode (2026-10-22, HandSwapSequence): with the server quiet, peace, the moves out of the hands and
+    /// the wields go in one frame (the burst: the wand in hand 0.1-0.26 s after the swap begins on
+    /// Drakkon); else each step the moment the server answers the last (about 1 s). Before: 4-7 s.
+    /// Also combat's own equip when a monster comes with the wand in hand (2026-10-23).
+    /// On by default since 2026-10-23, saved under a new name: the opt-in build saved "FastWeaponSwap":
+    /// false into every profile it touched, and that no longer loads. Off: the swap as before (*.LegacySwap.cs).
+    /// </summary>
+    [JsonPropertyName("FastWeaponSwapOn")]
+    public bool FastWeaponSwap = true;
     public bool RebuffWhenIdle;
     /// <summary>
     /// Re-cast a self buff when its remaining duration drops below this many seconds.

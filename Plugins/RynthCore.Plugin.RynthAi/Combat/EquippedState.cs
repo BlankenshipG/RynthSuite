@@ -53,4 +53,28 @@ internal static class EquippedState
 
     /// <summary>Drop the cached read (a wield or move was just sent, or tests).</summary>
     public static void Invalidate() { lock (Gate) _fresh = false; }
+
+    /// <summary>
+    /// What is wielded and where (item id -> EquipMask), read fresh: the tracker's list, or without
+    /// it (an engine before v87) the client's own fields, a slot read 0 guessed from the item's kind.
+    /// A copy, safe to hold across ticks (the hand swaps, HandSwapSequence).
+    /// </summary>
+    public static Dictionary<int, int> ReadFresh(RynthCoreHost host, WorldObjectCache? cache)
+    {
+        Invalidate();
+        if (TryGet(host, out var map)) return new Dictionary<int, int>(map);
+        var m = new Dictionary<int, int>();
+        if (cache == null) return m;
+        foreach (var wo in cache.GetDirectInventory(forceRefresh: true))
+        {
+            if (!WorldObjectCache.IsWieldedByPlayer(host, wo)) continue;
+            int slot = wo.Values(LongValueKey.CurrentWieldedLocation, 0);
+            if (slot == 0)
+                slot = WeaponList.IsWand(wo) ? HandSwapSequence.HeldSlot
+                     : wo.ObjectClass == AcObjectClass.MissileWeapon ? HandSwapSequence.MissileSlot
+                     : wo.ObjectClass == AcObjectClass.MeleeWeapon ? HandSwapSequence.MeleeSlot : 0;
+            if (slot != 0) m[wo.Id] = slot;
+        }
+        return m;
+    }
 }

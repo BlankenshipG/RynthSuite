@@ -99,6 +99,7 @@ internal static class RynthIcons
     public const string Ruler = "\uE6B8";
     public const string Scales = "\uE750";
     public const string Scissors = "\uEAE0";
+    public const string Scroll = "\uEB7A";
     public const string Shield = "\uE40A";
     public const string ShieldSlash = "\uE410";
     public const string ShieldWarning = "\uE412";

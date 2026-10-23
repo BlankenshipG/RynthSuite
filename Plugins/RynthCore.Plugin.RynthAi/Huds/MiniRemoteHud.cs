@@ -719,7 +719,10 @@ internal sealed class MiniRemoteHud
         // Ctrl+wheel over the grid: bigger / smaller boxes (the window / drawer refits to them).
         var io = ImGui.GetIO();
         if (io.KeyCtrl && io.MouseWheel != 0f && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem))
+        {
             ResizeSlots(s, io.MouseWheel > 0f ? SlotSizeStep : -SlotSizeStep);
+            io.MouseWheel = 0f;   // the boxes took it: not the panel's size too
+        }
     }
 
     /// <summary>

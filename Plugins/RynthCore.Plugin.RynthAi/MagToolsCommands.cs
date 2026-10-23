@@ -183,6 +183,7 @@ public sealed partial class RynthAiPlugin
         ["enablemeta"]                = "EnableMeta",
         ["opendoors"]                 = "OpenDoors",
         ["idlepeacemode"]             = "PeaceModeWhenIdle",
+        ["fastweaponswap"]            = "FastWeaponSwap",
         ["idlebufftopoff"]            = "RebuffWhenIdle",
         ["summonpets"]                = "SummonPets",
         ["combinesalvage"]            = "EnableCombineSalvage",

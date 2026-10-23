@@ -4097,6 +4097,8 @@ public partial class CombatManager : IDisposable
     public void OnHeartbeat()
     {
         NoteSwapPortal();
+        // The hands swap's steps (weapons back, or the fight's weapons) go before the gates; the macro stopping ends it (freeing the gate).
+        TickRearmSwap();
 
         if (!_settings.IsMacroRunning)
         {
@@ -4481,7 +4483,8 @@ public partial class CombatManager : IDisposable
     /// <summary>
     /// The weapon to fight <paramref name="target"/> with (0 = none), and the element in
     /// <paramref name="desired"/>. See WeaponPlanner for the order: this monster's Damage tab
-    /// weapon (listed only), a slayer of the monster, the Damage tab DEFAULT row's weapon, the
+    /// weapon, else its Monsters rule's weapon (listed or not), a slayer of the monster, the Damage
+    /// tab DEFAULT row's weapon, else the Monsters Default row's, the
     /// Monsters rule's damage type, the weakness (weakest element a listed
     /// weapon of the main kind has), else the weapon in hand, the learned best, the first.
     /// Casters are skipped when the character has no War/Void Magic (IsUsableCombatWeapon).
@@ -4495,10 +4498,11 @@ public partial class CombatManager : IDisposable
     }
 
     /// <summary>
-    /// The weapon and element for <paramref name="target"/> (WeaponPlanner's rule). Only weapons
-    /// in the Items list are candidates: a Damage-tab pick or a learned "best" weapon that is no
+    /// The weapon and element for <paramref name="target"/> (WeaponPlanner's rule). The candidates
+    /// are the Items list's weapons: a Damage-tab pick or a learned "best" weapon that is no
     /// longer listed is ignored (logged once), which is how an unlisted fire wand used to be
-    /// wielded after the user removed it from the list (2026-09-30).
+    /// wielded after the user removed it from the list (2026-09-30). The one exception is a
+    /// weapon set on the Monsters tab, used listed or not (2026-10-22).
     /// </summary>
     internal WeaponPlan PlanFor(WorldObject target, MonsterRule? rule)
     {
@@ -4537,18 +4541,59 @@ public partial class CombatManager : IDisposable
         uint wcid = 0;
         if (_host.HasGetObjectWcid && _host.TryGetObjectWcid((uint)target.Id, out uint tw)) wcid = tw;
 
+        // The weapon the player fixed, the first usable of (owner's rule, 2026-10-22, problem report
+        // R-20261022-193411-fb72 "ignoring monster rules, specifically which weapon is set for the
+        // mob type": a Monsters rule's weapon was imported, shown and kept from trade/sell, but
+        // combat never read it, so the weakness pick wielded something else):
+        //   1. this monster's own Damage tab pick (by wcid)            - WeaponPlanner step 1
+        //   2. the matched Monsters rule's weapon (not the Default row) - step 1
+        //   3. the Damage tab DEFAULT row's weapon                      - step 3 (a slayer beats it)
+        //   4. the Monsters tab Default row's weapon                    - step 3
+        // Only 1 needs the wcid: a rule weapon still applies to a monster whose wcid isn't known.
+        // One the character can't wield now (a requirement, or refused) is left out quietly, it is
+        // logged where the list drops it. A Damage tab pick must be in the Items list (an unlisted
+        // fire wand was wielded that way, 2026-09-30); one that isn't is logged once. A Monsters tab
+        // weapon (2 and 4) need not be (owner, 2026-10-22: "if it is in the monsters tab but not
+        // item list it should still use it"): it joins the candidates when carried and usable.
+        // Either way, when one can't be used the next is tried. A listed weapon for another build
+        // stays listed.
         int fixedId = 0, learnedId = 0;
         string fixedSource = "Damage tab";
         bool fixedIsDefault = false;
+        var defaultRule = DefaultMonsterRule();
+        bool ownRule = rule != null && !ReferenceEquals(rule, defaultRule)
+                       && !rule.Name.Equals("Default", StringComparison.OrdinalIgnoreCase);
+        bool TryFixed(int id, string source, string noteAs, bool isDefault, bool listOnly)
+        {
+            if (fixedId != 0 || id == 0 || !CanWieldNow(id)) return false;
+            if (!listed.Any(c => c.Id == id))
+            {
+                if (listOnly) { NoteUnlisted(id, noteAs); return false; }
+                var extra = CandidateFor(id, null, InHandWeaponId(), admitCasters: false, noteAs + " weapon", out bool caster);
+                if (extra == null)
+                {
+                    if (caster && _unlistedNoted.Add(id))
+                        _host.Log($"[EquipDiag] {noteAs} weapon 0x{(uint)id:X8} '{WeaponName(id)}' is a caster and the character can't fight with magic: {CanMagicDiag()}");
+                    return false;
+                }
+                if (_unlistedNoted.Add(id))
+                    _host.Log($"[EquipDiag] {noteAs} weapon 0x{(uint)id:X8} '{extra.Name}' isn't in the Items list — using it (set on the Monsters tab)");
+                listed.Add(extra);
+            }
+            fixedId = id; fixedSource = source; fixedIsDefault = isDefault;
+            return true;
+        }
+        if (wcid != 0 && _damageStore != null)
+            TryFixed((int)_damageStore.GetManualWeapon(wcid), "Damage tab", "Damage tab", false, listOnly: true);
+        if (ownRule)
+            TryFixed(rule!.WeaponId, "Monsters rule weapon", $"Monsters rule '{rule.Name}'", false, listOnly: false);
+        if (_damageStore != null)
+            TryFixed((int)_damageStore.GetDefaultWeapon(), "Damage tab default", "Damage tab default", true, listOnly: true);
+        if (defaultRule != null)
+            TryFixed(defaultRule.WeaponId, "Monsters Default weapon", "Monsters Default row", true, listOnly: false);
+
         if (wcid != 0 && _damageStore != null)
         {
-            uint pick = _damageStore.GetManualWeapon(wcid);
-            if (pick == 0) { pick = _damageStore.GetDefaultWeapon(); fixedSource = "Damage tab default"; fixedIsDefault = true; }
-            // Not usable by this character right now (a requirement, or refused): left out quietly, it
-            // is logged where the list drops it. A listed weapon for another build stays listed.
-            if (pick != 0 && !CanWieldNow((int)pick)) pick = 0;
-            if (pick != 0 && !listed.Any(c => c.Id == (int)pick)) { NoteUnlisted((int)pick, fixedSource); pick = 0; }
-            fixedId = (int)pick;
             uint best = _damageStore.GetBestWeapon(wcid);
             if (best != 0 && !CanWieldNow((int)best)) best = 0;
             if (best != 0 && !listed.Any(c => c.Id == (int)best)) { NoteUnlisted((int)best, "Damage tab learned"); best = 0; }
@@ -4684,48 +4729,68 @@ public partial class CombatManager : IDisposable
         var list = new List<WeaponCandidate>();
         foreach (var r in _settings.ItemRules)
         {
-            if (r.Id == 0) continue;
-            var wo = _worldFilter[r.Id];
-            if (wo == null) continue;
-            // Sold, dropped or traded: still known to the client, but not ours to wield (a sold
-            // Flaming Greataxe was tried three times, the character standing in the fight, 2026-10-14).
-            if (r.Id != inHand && _worldFilter.PlayerHas(r.Id) == false)
-            {
-                // Not within NotCarriedGraceMs of a wield or move of ours: mid-swap a weapon is
-                // briefly in neither hand nor the pack walk. Drakkon's Acid Hand Wraps were dropped
-                // from the choice that way on 2026-10-17 and he fought bare-handed.
-                if ((RynthClock.Now - _lastEquipTime).TotalMilliseconds >= NotCarriedGraceMs)
-                {
-                    if (_notCarriedNoted.Add(r.Id))
-                        _host.Log($"[EquipDiag] listed weapon 0x{(uint)r.Id:X8} '{wo.Name}' isn't in your pack (sold, dropped or traded?): skipped");
-                    continue;
-                }
-            }
-            else _notCarriedNoted.Remove(r.Id);
-            if (!admitCasters && !IsUsableCombatWeapon(r.Id)) { (leftOut ??= new List<int>()).Add(r.Id); continue; }
-            if (r.Id != inHand && SkillTooLowFor(r.Id)) continue;
-            // A wield requirement the character doesn't meet: the client refuses the wield without
-            // asking the server, so no "skill too low" answer ever comes (the Tetsubo, 2026-10-18).
-            if (r.Id != inHand && WieldRequirements.Unmet(_host, _charSkills, unchecked((uint)r.Id)) is string unmet)
-            {
-                if (_wieldReqNoted.Add(r.Id))
-                {
-                    _host.Log($"[EquipDiag] listed weapon 0x{(uint)r.Id:X8} '{wo.Name}' can't be wielded ({unmet}): left out of the weapon choice");
-                    _host.WriteToChat($"[RynthAi] {wo.Name} can't be wielded ({unmet}), so combat doesn't use it.", 1);
-                }
-                continue;
-            }
-            if (list.Any(c => c.Id == r.Id)) continue;
-            if (wo.ObjectClass == AcObjectClass.MissileWeapon && IsAmmoItem(wo)) continue;   // listed arrows are the ammo choice, never a weapon to wield
-            if (IsShieldItem(wo)) continue;                                                  // listed shields are the off hand's (CombatManager.Offhand.cs)
-            var info = ElementTracker.Read(r.Id, wo.Name);
-            string elem = WeaponElements.Normalize(r.Element);
-            if (elem.Length == 0) elem = info.Element;
-            var (slayType, slayBonus) = SlayerOf(r.Id);
-            list.Add(new WeaponCandidate(r.Id, wo.Name, WeaponKind(r.Id), elem, info.Rending, r.Id == inHand, slayType, slayBonus));
+            if (r.Id == 0 || list.Any(c => c.Id == r.Id)) continue;
+            var c = CandidateFor(r.Id, r.Element, inHand, admitCasters, "listed weapon", out bool casterLeftOut);
+            if (casterLeftOut) (leftOut ??= new List<int>()).Add(r.Id);
+            if (c != null) list.Add(c);
         }
         return list;
     }
+
+    /// <summary>
+    /// One weapon as a candidate for the weapon choice, or null when it isn't one now: not known,
+    /// not carried, a caster the character can't fight with (<paramref name="casterLeftOut"/>),
+    /// a requirement not met, ammo or a shield. <paramref name="what"/> names it in the log
+    /// ("listed weapon", "Monsters rule 'X' weapon").
+    /// </summary>
+    private WeaponCandidate? CandidateFor(int id, string? setElement, int inHand, bool admitCasters, string what, out bool casterLeftOut)
+    {
+        casterLeftOut = false;
+        var wo = _worldFilter[id];
+        if (wo == null) return null;
+        // Sold, dropped or traded: still known to the client, but not ours to wield (a sold
+        // Flaming Greataxe was tried three times, the character standing in the fight, 2026-10-14).
+        if (id != inHand && _worldFilter.PlayerHas(id) == false)
+        {
+            // Not within NotCarriedGraceMs of a wield or move of ours: mid-swap a weapon is
+            // briefly in neither hand nor the pack walk. Drakkon's Acid Hand Wraps were dropped
+            // from the choice that way on 2026-10-17 and he fought bare-handed.
+            if ((RynthClock.Now - _lastEquipTime).TotalMilliseconds >= NotCarriedGraceMs)
+            {
+                if (_notCarriedNoted.Add(id))
+                    _host.Log($"[EquipDiag] {what} 0x{(uint)id:X8} '{wo.Name}' isn't in your pack (sold, dropped or traded?): skipped");
+                return null;
+            }
+        }
+        else _notCarriedNoted.Remove(id);
+        if (!admitCasters && !IsUsableCombatWeapon(id)) { casterLeftOut = true; return null; }
+        if (id != inHand && SkillTooLowFor(id)) return null;
+        // A wield requirement the character doesn't meet: the client refuses the wield without
+        // asking the server, so no "skill too low" answer ever comes (the Tetsubo, 2026-10-18).
+        if (id != inHand && WieldRequirements.Unmet(_host, _charSkills, unchecked((uint)id)) is string unmet)
+        {
+            if (_wieldReqNoted.Add(id))
+            {
+                _host.Log($"[EquipDiag] {what} 0x{(uint)id:X8} '{wo.Name}' can't be wielded ({unmet}): left out of the weapon choice");
+                _host.WriteToChat($"[RynthAi] {wo.Name} can't be wielded ({unmet}), so combat doesn't use it.", 1);
+            }
+            return null;
+        }
+        if (wo.ObjectClass == AcObjectClass.MissileWeapon && IsAmmoItem(wo)) return null;   // listed arrows are the ammo choice, never a weapon to wield
+        if (IsShieldItem(wo)) return null;                                                  // listed shields are the off hand's (CombatManager.Offhand.cs)
+        var info = ElementTracker.Read(id, wo.Name);
+        string elem = WeaponElements.Normalize(setElement);
+        if (elem.Length == 0) elem = info.Element;
+        var (slayType, slayBonus) = SlayerOf(id);
+        return new WeaponCandidate(id, wo.Name, WeaponKind(id), elem, info.Rending, id == inHand, slayType, slayBonus);
+    }
+
+    /// <summary>
+    /// A weapon the player picked on the Monsters tab (any rule's, the Default row's included).
+    /// It is theirs to fight with even when it isn't in the Items list (owner, 2026-10-22).
+    /// </summary>
+    internal bool IsMonstersTabWeapon(int id) =>
+        id != 0 && _settings.MonsterRules.Exists(m => m.WeaponId == id);
 
     // The weapon in hand, read live at most every InHandReadMs (the read walks the inventory).
     private int _inHandId;
@@ -4835,61 +4900,285 @@ public partial class CombatManager : IDisposable
             _host.Log($"[EquipDiag] weapons back after heals: gave up after {RearmGiveUpMs / 1000:0} s (main 0x{(uint)_fightMainId:X8} '{WeaponName(_fightMainId)}', off hand 0x{(uint)_fightOffId:X8} '{WeaponName(_fightOffId)}')");
             return false;
         }
-        // Still ours to wield: listed, carried, not refused for skill.
-        if (!_settings.ItemRules.Any(r => r.Id == _fightMainId) || _worldFilter.PlayerHas(_fightMainId) == false || SkillTooLowFor(_fightMainId))
+        // Still ours to wield: listed (or set on the Monsters tab), carried, not refused for skill.
+        if (!(_settings.ItemRules.Any(r => r.Id == _fightMainId) || IsMonstersTabWeapon(_fightMainId))
+            || _worldFilter.PlayerHas(_fightMainId) == false || SkillTooLowFor(_fightMainId))
         {
             _rearmedFor = vital;
             return false;
         }
 
-        int inHand = InHandWeaponId();
-        if (inHand != _fightMainId)
-        {
-            if (SwapTracker.PendingId != 0) { FoldServerAnswer(SwapTracker, now); return true; }   // our wield is on its way
-            var step = SwapStep(_fightMainId, inHand);
-            if (step == WeaponSwapTracker.Step.Wait) return true;
-            if (step != WeaponSwapTracker.Step.Swap) { _rearmedFor = vital; return false; }
-            if (_weaponSwapGate != null && !_weaponSwapGate.TryBeginSwap("rearm-after-vitals")) return true;
-            var prep = ClearOffhandFor(_fightMainId, OffhandMode.Auto, gateHeld: true);
-            if (prep == OffPrep.Busy) return true;
-            if (prep == OffPrep.Blocked) { _rearmedFor = vital; return false; }
-            SendWield(_fightMainId, inHand, "weapons back after heals");
-            return true;
-        }
+        // Fast Weapon Swap off: as before 2026-10-22 (CombatManager.LegacySwap.cs).
+        if (!_settings.FastWeaponSwap) return LegacyRearmSwap(now, vital);
+        var hands = EquippedState.ReadFresh(_host, _worldFilter);
+        bool offWanted = _fightOffId != 0 && _fightOffId != _fightMainId
+            && _worldFilter.PlayerHas(_fightOffId) != false && _settings.ItemRules.Any(r => r.Id == _fightOffId);
+        const int mainHand = HandSwapSequence.HandSlots & ~HandSwapSequence.ShieldSlot;
+        bool mainIn = hands.TryGetValue(_fightMainId, out int mainAt) && (mainAt & mainHand) != 0;
+        bool offIn = !offWanted || (hands.TryGetValue(_fightOffId, out int offAt) && (offAt & HandSwapSequence.ShieldSlot) != 0);
 
-        int off = OffhandInSlot();
-        if (_fightOffId != 0 && off != _fightOffId && _fightOffId != _fightMainId
-            && _worldFilter.PlayerHas(_fightOffId) != false && _settings.ItemRules.Any(r => r.Id == _fightOffId))
+        // The weapons are back: the fight's stance, once, when the swap went through peace (a weapon
+        // wielded in a combat mode is put into its stance by the server itself; in peace it isn't).
+        if (!_rearmSwap.Active && mainIn && offIn)
         {
-            FoldServerAnswer(OffhandTracker, now);
-            if (OffhandTracker.PendingId != 0) return true;
-            if (off != 0) { DequipOffhand(off, $"to put 0x{(uint)_fightOffId:X8} '{WeaponName(_fightOffId)}' back"); return true; }
-            var wo = _worldFilter[_fightOffId];
-            if (wo != null && _host.HasWieldItem && (_weaponSwapGate == null || _weaponSwapGate.TryBeginSwap("rearm-after-vitals-offhand")))
-            {
-                var stepOff = OffhandTracker.Next(_fightOffId, off, now, WeaponName);
-                if (stepOff == WeaponSwapTracker.Step.Swap && _host.WieldItem(unchecked((uint)_fightOffId), OffhandRules.ShieldSlot))
-                {
-                    if (_host.HasGetLastUseDone && _host.TryGetLastUseDone(out int uSeq, out _)) _swapUseDoneSeq = uSeq;
-                    if (_host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out int wSeq, out _, out _, out _)) _swapWeenieSeq = wSeq;
-                    OffhandTracker.Sent(_fightOffId, 0, now);
-                    _weaponSwapGate?.NoteMove(_fightOffId, wieldedNow: false);
-                    _offhandSentId = _fightOffId;
-                    _lastEquipTime = now;
-                    _host.Log($"[EquipDiag] weapons back after heals: off hand 0x{(uint)_fightOffId:X8} '{wo.Name}'");
-                    return true;
-                }
-                if (stepOff == WeaponSwapTracker.Step.Wait) return true;
-            }
-            _rearmedFor = vital;   // the off hand can't go on now: the main hand is back, that will do
+            if (_rearmStanceWanted != 0 && !RearmStanceStep(now)) return true;   // held a moment (the pacer): next tick
+            _rearmedFor = vital;
+            _host.Log($"[EquipDiag] weapons back after heals: 0x{(uint)_fightMainId:X8} '{WeaponName(_fightMainId)}'" +
+                      (offWanted ? $" and 0x{(uint)_fightOffId:X8} '{WeaponName(_fightOffId)}'" : "") + " in hand");
             return false;
         }
 
-        _rearmedFor = vital;
-        _host.Log($"[EquipDiag] weapons back after heals: 0x{(uint)_fightMainId:X8} '{WeaponName(_fightMainId)}'" +
-                  (_fightOffId != 0 ? $" and 0x{(uint)_fightOffId:X8} '{WeaponName(_fightOffId)}'" : "") + " in hand");
-        return false;
+        // Weapons back as fast as the server allows (2026-10-22, HandSwapSequence): from Magic, peace
+        // first (one stance leg), the wand into a pack, the main weapon and the off hand, each the moment
+        // the server answers the last, then the fight's stance. Drakkon's Sceptre -> two Hand Wraps took
+        // 2.3 s: the use of the main weapon (the client puts the wand away after a forced stance change,
+        // 1.2 s), then the off hand once the gate let it go (a corpse open went first). The gate is held
+        // for the whole swap, so nothing else swaps between its steps.
+        if (!_rearmSwap.Active)
+        {
+            if (_weaponSwapGate != null && !_weaponSwapGate.TryBeginSwap("rearm-after-vitals")) return true;
+            var wants = new List<(int Id, int Slot)> { (_fightMainId, MainSlotFor(_fightMainId)) };
+            if (offWanted) wants.Add((_fightOffId, HandSwapSequence.ShieldSlot));
+            _rearmWants = wants;
+            int mode = CurrentCombatMode;
+            _rearmSwap.Start("weapons back", now, wants, peaceFirst: mode != CombatMode.NonCombat);
+            _handsSwapForFight = false;
+            _handsGateBy = "rearm-after-vitals";
+            _weaponSwapGate?.Hold(_handsGateBy, (long)_rearmSwap.GiveUpMs + 1000);
+            _rearmSwapOpen = true;
+            _rearmLastMoved = 0;
+            _host.Log($"[EquipDiag] weapons back after heals: 0x{(uint)_fightMainId:X8} '{WeaponName(_fightMainId)}'" +
+                      (offWanted ? $" + off hand 0x{(uint)_fightOffId:X8} '{WeaponName(_fightOffId)}'" : "") + $" (mode {mode})");
+        }
+
+        _rearmVital = vital;
+        return RearmSwapAdvance(now);
     }
+
+    /// <summary>
+    /// The weapons-back swap's next step. Called from RearmAfterVitalsStep and, so the steps don't wait
+    /// on the combat tick's gates (the pacer holds them while our own peace request settles, and a
+    /// corpse open slipped in between on Drakkon, 10-22 22:45), from the top of each heartbeat.
+    /// True while it is under way.
+    /// </summary>
+    private bool RearmSwapAdvance(DateTime now)
+    {
+        var hands = EquippedState.ReadFresh(_host, _worldFilter);
+        var step = _rearmSwap.Next(hands, CurrentCombatMode, now);
+        switch (step.Act)
+        {
+            case HandSwapSequence.Act.Wait:
+                return true;
+
+            case HandSwapSequence.Act.Stance:
+            {
+                int burst = SwapBurstEnabled?.Invoke() == true ? TryRearmBurst(hands, now) : 0;
+                if (burst != 0) return true;
+                if (_host.ChangeCombatModeFor(step.Slot, "Combat", "weapons back: peace first, then the hands"))
+                    _rearmSwap.Sent(step, now);
+                return true;
+            }
+
+            case HandSwapSequence.Act.MoveToPack:
+            {
+                int pack = OpenPackOverride?.Invoke() ?? WorldObjectCache.FindPackFor(_host, _worldFilter, includeMainPack: true, requireFree: 1);
+                if (pack == 0)
+                {
+                    WorldObjectCache.WarnPackFull(_host, "can't put the wand away to put the weapons back");
+                    bool fight = _handsSwapForFight;
+                    FinishRearmSwap(now, done: false, why: "no pack with room");
+                    if (fight) NoteFightSwapFailed(now); else _rearmedFor = _rearmVital;
+                    return false;
+                }
+                _host.MoveItemInternal((uint)step.Id, (uint)pack, 0, 1);   // amount>=1 (engine rejects 0)
+                _rearmSwap.Sent(step, now);
+                _rearmLastMoved = step.Id;
+                EquippedState.Invalidate();
+                _host.Log($"[EquipDiag] {HandsSwapLabel}: 0x{(uint)step.Id:X8} '{WeaponName(step.Id)}' -> pack 0x{(uint)pack:X8} {(now - _rearmSwap.StartedAt).TotalMilliseconds:0} ms in");
+                return true;
+            }
+
+            case HandSwapSequence.Act.Wield:
+            {
+                bool off = step.Slot == HandSwapSequence.ShieldSlot;
+                if (_host.HasWieldItem) _host.WieldItem((uint)step.Id, (uint)step.Slot);
+                else _host.UseFor((uint)step.Id, "Combat", $"wield: {HandsSwapLabel}");
+                _rearmSwap.Sent(step, now);
+                _rearmLastMoved = step.Id;
+                NoteRearmWield(step.Id, off, now);
+                _host.Log($"[EquipDiag] {HandsSwapLabel}: wielding 0x{(uint)step.Id:X8} '{WeaponName(step.Id)}' ({(off ? "off hand" : "main hand")}) {(now - _rearmSwap.StartedAt).TotalMilliseconds:0} ms in");
+                return true;
+            }
+
+            case HandSwapSequence.Act.Done:
+                if (_handsSwapForFight)
+                {
+                    FightSwapDone(now);
+                    return true;
+                }
+                _rearmStanceWanted = _rearmSwap.WentThroughPeace ? WeaponKind(_fightMainId) : 0;
+                if (_rearmStanceWanted == CombatMode.Magic) _rearmStanceWanted = 0;
+                _rearmStanceSince = now;
+                _rearmStanceForFight = false;
+                FinishRearmSwap(now, done: true);
+                RearmStanceStep(now);   // at once: the server starts it when the peace animation ends
+                return true;
+
+            default:
+            {
+                bool fight = _handsSwapForFight;
+                FinishRearmSwap(now, done: false, why: step.Why);
+                if (fight) NoteFightSwapFailed(now);
+                else _rearmedFor = _rearmVital;   // combat's own equip step takes it from here
+                return false;
+            }
+        }
+    }
+
+    private void NoteRearmWield(int id, bool off, DateTime now)
+    {
+        if (off) { _offhandSentId = id; _lastEquipTime = now; EquippedState.Invalidate(); }
+        else MarkWieldSent(id, InHandWeaponId());
+    }
+
+    /// <summary>
+    /// The fight's stance after a weapons-back swap through peace, once (past our own peace request
+    /// only: the server holds it until the peace animation ends). True when it went or isn't wanted.
+    /// </summary>
+    private bool RearmStanceStep(DateTime now)
+    {
+        if (_rearmStanceWanted == 0 || (_settings.PeaceModeWhenIdle && !_rearmStanceForFight) || CurrentCombatMode != CombatMode.NonCombat
+            || (now - _rearmStanceSince).TotalMilliseconds >= RearmStanceWaitMs)
+        {
+            _rearmStanceWanted = 0;
+            return true;
+        }
+        var a = ActionPacer.Current(_host);
+        bool onlyOurPeace = a == null || (a.Kind == PacedKind.CombatMode && a.ModeTarget == CombatMode.NonCombat && a.Who == "Combat");
+        if (!_host.ChangeCombatModeFor(_rearmStanceWanted, "Combat", "weapons back: the fight's stance", force: onlyOurPeace))
+            return false;
+        _host.Log($"[EquipDiag] {(_rearmStanceForFight ? "weapons for the fight" : "weapons back after heals")}: {(_rearmStanceWanted == CombatMode.Missile ? "Missile" : "Melee")} mode");
+        if (_rearmStanceForFight)
+        {
+            // Combat's own stance request (the wielded branch) waits its retry delay behind this one.
+            lastStanceAttempt = RynthClock.Now;
+            NoteStanceFlipSent();
+        }
+        _rearmStanceWanted = 0;
+        return true;
+    }
+
+    /// <summary>
+    /// The weapons-back burst (test toggle, /ra swaptest burst on): peace, the wand out (raw
+    /// PutItemInContainer) and the main hand and the off hand wielded, queued in one tick so they go
+    /// out in one frame. Only with no combat-mode change for BurstQuietMs. 0 = not tried, 1 = held this
+    /// tick, 2 = sent. See BuffManager.TryWandBurst.
+    /// </summary>
+    private int TryRearmBurst(IReadOnlyDictionary<int, int> hands, DateTime now)
+    {
+        if (!_host.HasPutItemInContainer || !_host.HasWieldItem) return 0;
+        // BuffManager's read when the plugin wired it (every heartbeat); this manager's own tick doesn't run
+        // while buffing has the tick, so its read saw the switch to Magic only at the weapons-back tick
+        // and held every burst (Drakkon, 10-22 23:06-23:21).
+        DateTime changed = LastModeChangeAt?.Invoke() ?? _cmModeChangedAt;
+        if ((now - changed).TotalMilliseconds < RearmBurstQuietMs) return 0;
+        var moves = _rearmSwap.Blockers(hands);
+        if (moves.Count > 2) return 0;
+        int pack = 0;
+        if (moves.Count > 0)
+        {
+            pack = OpenPackOverride?.Invoke() ?? WorldObjectCache.FindPackFor(_host, _worldFilter, includeMainPack: true, requireFree: moves.Count);
+            if (pack == 0) return 0;
+        }
+        if (!_host.ChangeCombatModeFor(CombatMode.NonCombat, "Combat", $"{HandsSwapLabel} burst: peace, the wand out and the weapons on at once")) return 1;
+        foreach (int id in moves) _host.PutItemInContainer(unchecked((uint)id), unchecked((uint)pack), 0);
+        var wants = _rearmWants;
+        foreach (var (id, slot) in wants)
+        {
+            _host.WieldItem(unchecked((uint)id), unchecked((uint)slot));
+            NoteRearmWield(id, slot == HandSwapSequence.ShieldSlot, now);
+        }
+        _rearmSwap.SentBurst(moves, now);
+        _rearmLastMoved = wants.Count > 0 ? wants[^1].Id : 0;
+        _host.Log($"[EquipDiag] {HandsSwapLabel} burst {(now - _rearmSwap.StartedAt).TotalMilliseconds:0} ms in: peace, " +
+                  (moves.Count > 0 ? string.Join(", ", moves.ConvertAll(id => $"0x{(uint)id:X8} '{WeaponName(id)}'")) + $" -> pack 0x{(uint)pack:X8}, " : "") +
+                  string.Join(", ", wants.ConvertAll(w => $"0x{(uint)w.Id:X8} '{WeaponName(w.Id)}' on")) + ", in one frame");
+        return 2;
+    }
+
+    /// <summary>The test toggle for the burst (/ra swaptest burst on), from BuffManager; set by the plugin.</summary>
+    public Func<bool>? SwapBurstEnabled { get; set; }
+    /// <summary>When the combat mode last changed (BuffManager's every-heartbeat read); set by the plugin.</summary>
+    public Func<DateTime>? LastModeChangeAt { get; set; }
+    private const double RearmBurstQuietMs = 1300;
+    private int _cmLastSeenMode = -1;
+    private DateTime _cmModeChangedAt = DateTime.MinValue;
+    private DateTime _rearmVital = DateTime.MinValue;
+    private List<(int Id, int Slot)> _rearmWants = new();
+
+    /// <summary>Each heartbeat: the weapons-back swap's steps, and when the combat mode last changed.</summary>
+    private void TickRearmSwap()
+    {
+        DateTime now = RynthClock.Now;
+        int m = CurrentCombatMode;
+        if (m != _cmLastSeenMode)
+        {
+            if (_cmLastSeenMode != -1) _cmModeChangedAt = now;
+            _cmLastSeenMode = m;
+        }
+        if (_rearmSwap.Active)
+        {
+            if (!_settings.IsMacroRunning)
+            {
+                bool fight = _handsSwapForFight;
+                FinishRearmSwap(now, done: false, why: "the macro stopped");
+                if (fight) NoteFightSwapFailed(now, counted: false);
+            }
+            // A target arriving doesn't end it: combat's equip points it at the fight's weapons, or ends
+            // it for a wand (FightJoinsHandsSwap). Ending it freed the gate only after the full 3 s.
+            else RearmSwapAdvance(now);
+        }
+        else if (_rearmStanceWanted != 0 && (_activeTargetId == 0 || _rearmStanceForFight) && _settings.IsMacroRunning)
+            RearmStanceStep(now);
+    }
+
+    // The weapons-back swap (HandSwapSequence) and what it owes once it ends.
+    private readonly HandSwapSequence _rearmSwap = new();
+    private bool _rearmSwapOpen;
+    private int _rearmLastMoved;
+    private int _rearmStanceWanted;
+    private DateTime _rearmStanceSince = DateTime.MinValue;
+    private const double RearmStanceWaitMs = 3000;
+
+    /// <summary>The slot a weapon goes back into: its own (two-handed, missile, held), else the main hand.</summary>
+    private int MainSlotFor(int id)
+    {
+        int valid = _worldFilter[id]?.Values(LongValueKey.Locations, 0) ?? 0;
+        if ((valid & HandSwapSequence.TwoHandedSlot) != 0) return HandSwapSequence.TwoHandedSlot;
+        if ((valid & HandSwapSequence.MissileSlot) != 0) return HandSwapSequence.MissileSlot;
+        if ((valid & HandSwapSequence.MeleeSlot) != 0) return HandSwapSequence.MeleeSlot;
+        if ((valid & HandSwapSequence.HeldSlot) != 0) return HandSwapSequence.HeldSlot;
+        return HandSwapSequence.MeleeSlot;
+    }
+
+    private void FinishRearmSwap(DateTime now, bool done, string why = "")
+    {
+        if (!_rearmSwapOpen) return;
+        _rearmSwapOpen = false;
+        double ms = (now - _rearmSwap.StartedAt).TotalMilliseconds;
+        string trail = _rearmSwap.Trail;
+        string what = HandsSwapLabel;
+        _rearmSwap.Cancel();
+        _handsSwapForFight = false;
+        _weaponSwapGate?.Release(_handsGateBy, _rearmLastMoved);
+        LastRearmSwapMs = ms;
+        _host.Log(done
+            ? $"[EquipDiag] {what} in hand {ms:0} ms after the swap began ({trail})"
+            : $"[EquipDiag] {what} stopped after {ms:0} ms: {why} ({trail})");
+    }
+
+    /// <summary>The last weapons-back swap's length (ms).</summary>
+    internal double LastRearmSwapMs { get; private set; }
 
     // Logged once per pair: what the slot reads say for two wielded weapons (the off-hand diagnosis).
     private readonly HashSet<string> _twoInHandNoted = new();
@@ -5346,6 +5635,14 @@ public partial class CombatManager : IDisposable
             return EnsureUnarmedStance();
         }
 
+        // Fast Weapon Swap: a hands swap is under way (weapons back after heals, or this one): it goes on
+        // with this fight's weapons, or ends for a wand. True = wait for it.
+        if (_settings.FastWeaponSwap && _rearmSwap.Active && FightJoinsHandsSwap(target, rule, targetWeaponId, weaponObj))
+        {
+            LastCombatSkipReason = "hand-swap";
+            return false;
+        }
+
         // Another weapon in hand: one swap at a time, capped, no flip-flop. When the tracker
         // says hold (the chosen one failed its tries, or it is the weapon just swapped away
         // from), carry on with the one in hand.
@@ -5425,6 +5722,16 @@ public partial class CombatManager : IDisposable
                         : weaponObj.ObjectClass == AcObjectClass.MissileWeapon ? CombatMode.Missile
                         : CombatMode.Melee;
         _chosenWeaponMode = desiredMode;
+
+        // Fast Weapon Swap: a caster in hand and a melee weapon or launcher wanted (a monster came while
+        // healing): peace, the wand out, the weapons on (one frame when the server is quiet), then the
+        // fight's stance. The client's own use took 1.4-1.7 s and paid a forced stance change.
+        if (_settings.FastWeaponSwap && allowWield && desiredMode != CombatMode.Magic && inHand != 0 && inHand != targetWeaponId
+            && WeaponKind(inHand) == CombatMode.Magic && TryStartFightHandsSwap(target, rule, targetWeaponId, desiredMode))
+        {
+            LastCombatSkipReason = "hand-swap";
+            return false;
+        }
 
         bool diagNow = (RynthClock.Now - _lastEquipDiagAt).TotalSeconds > 5;
 
