@@ -241,6 +241,16 @@ internal sealed class QuestFlagStore
 
     public bool TryGet(string flag, out QuestFlag q) => Flags.TryGetValue(flag, out q!);
 
+    /// <summary>
+    /// Whether RynthOracle should read /myquests again by itself: auto refresh is on, nothing
+    /// happened for <paramref name="minutes"/> since <paramref name="sinceUtc"/> (the later of the
+    /// last reply, the login and RynthOracle's own last try), no reply is on its way, the server
+    /// has /myquests on and its once-a-minute limit is up. Pure: the tests drive it.
+    /// </summary>
+    internal static bool AutoRefreshDue(int minutes, DateTime sinceUtc, DateTime utcNow, bool loading, bool serverDisabled, int throttleSecondsLeft)
+        => minutes > 0 && !loading && !serverDisabled && throttleSecondsLeft == 0
+           && utcNow - sinceUtc >= TimeSpan.FromMinutes(minutes);
+
     internal static QuestFlag? Parse(string line)
     {
         Match m = LineRegex.Match(line);

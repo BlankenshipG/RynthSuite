@@ -17,6 +17,14 @@ internal sealed class OracleSettings
     public bool ReadQuestsAtLogin = true;
     /// <summary>Hide the server's reply to RynthOracle's own /myquests (a typed /myquests always shows).</summary>
     public bool HideOwnQuestReplies = true;
+    /// <summary>
+    /// Read /myquests again when the flags are this many minutes old (0 = only at login and on
+    /// Refresh). Any reply counts, RynthAi's meta polls too, so this only fills the gaps: before it,
+    /// a character running for days showed flags frozen at whenever something last asked.
+    /// </summary>
+    public int QuestRefreshMinutes = 10;
+    /// <summary>The choices the About tab offers for <see cref="QuestRefreshMinutes"/>.</summary>
+    public static readonly int[] QuestRefreshChoices = { 0, 5, 10, 15, 30 };
     /// <summary>Check once a day for a newer master quest list at upstream's address.</summary>
     public bool CheckQuestListDaily;
     public DateTime LastQuestListCheckUtc = DateTime.MinValue;
@@ -55,6 +63,8 @@ internal sealed class OracleSettings
             if (r.ValueKind != JsonValueKind.Object) return;
             ReadQuestsAtLogin = Bool(r, "readQuestsAtLogin", ReadQuestsAtLogin);
             HideOwnQuestReplies = Bool(r, "hideOwnQuestReplies", HideOwnQuestReplies);
+            if (r.TryGetProperty("questRefreshMinutes", out JsonElement qr) && qr.ValueKind == JsonValueKind.Number && qr.TryGetInt32(out int qrm))
+                QuestRefreshMinutes = Math.Clamp(qrm, 0, 240);
             CheckQuestListDaily = Bool(r, "checkQuestListDaily", CheckQuestListDaily);
             AutoShowVoidWindow = Bool(r, "autoShowVoidWindow", AutoShowVoidWindow);
             MainWindowOpen = Bool(r, "mainWindowOpen", MainWindowOpen);
@@ -85,6 +95,7 @@ internal sealed class OracleSettings
             sb.Append("{\n");
             sb.Append("  \"readQuestsAtLogin\": ").Append(ReadQuestsAtLogin ? "true" : "false").Append(",\n");
             sb.Append("  \"hideOwnQuestReplies\": ").Append(HideOwnQuestReplies ? "true" : "false").Append(",\n");
+            sb.Append("  \"questRefreshMinutes\": ").Append(QuestRefreshMinutes.ToString(CultureInfo.InvariantCulture)).Append(",\n");
             sb.Append("  \"checkQuestListDaily\": ").Append(CheckQuestListDaily ? "true" : "false").Append(",\n");
             sb.Append("  \"lastQuestListCheck\": \"").Append(LastQuestListCheckUtc.ToString("o", CultureInfo.InvariantCulture)).Append("\",\n");
             sb.Append("  \"autoShowVoidWindow\": ").Append(AutoShowVoidWindow ? "true" : "false").Append(",\n");

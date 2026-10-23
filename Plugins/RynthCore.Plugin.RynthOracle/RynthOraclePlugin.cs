@@ -21,7 +21,7 @@ namespace RynthCore.Plugin.RynthOracle;
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
     // Previous release: 0.6.2.
-    public const string Version = "0.7.1";
+    public const string Version = "0.7.2";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -49,7 +49,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private long _nextGuardianMs;
     private string _guardianJson = "";
     private bool _voidAutoDecided;
-    private bool _dailyCheckStarted;
+    // Auto refresh (Settings QuestRefreshMinutes): the later of the login and RynthOracle's own last
+    // automatic /myquests; the flags' last reply counts too (TickData).
+    private DateTime _autoQuestSinceUtc = DateTime.MinValue;
     private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1, _seenIltRevision = -1;
     // The Dynamic stamp sources last logged (LogStampSources), and the revisions they were read at.
     private (int InMyQuests, int InQb, int Matched) _loggedStamps = (-1, -1, -1);
@@ -175,7 +177,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _nextCharacterExtrasMs = now;
         ClearCharacterExtras();
         _voidAutoDecided = false;
-        _dailyCheckStarted = false;
+        _autoQuestSinceUtc = DateTime.UtcNow;
         if (_main != null) { _main.Visible = _c.Settings.MainWindowOpen; _main.NeedsPass = true; }
         if (_void != null) { _void.Visible = false; _void.NeedsPass = true; }
         // The quest book loads once the character's name (and world) are known (TickData).
@@ -725,10 +727,24 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             if (_c.Flags.LastReadUtc == DateTime.MinValue && !_c.Flags.Loading) RequestQuests();
         }
 
-        if (!_dailyCheckStarted && _c.Settings.CheckQuestListDaily
+        // Keep the flags fresh on a long session: /myquests again once nothing has read it for the
+        // chosen minutes (the login read first; any reply, RynthAi's meta polls too, resets it).
+        if (_questReadAtMs < 0)
+        {
+            DateTime since = _c.Flags.LastReadUtc > _autoQuestSinceUtc ? _c.Flags.LastReadUtc : _autoQuestSinceUtc;
+            if (QuestFlagStore.AutoRefreshDue(_c.Settings.QuestRefreshMinutes, since, _c.UtcNow, _c.Flags.Loading,
+                    _c.Flags.ServerDisabled, _c.Flags.ThrottleSecondsLeft(now)))
+            {
+                _autoQuestSinceUtc = _c.UtcNow;   // a lost reply tries again after the same wait, not every tick
+                if (_c.Flags.Request(cmd => Host.InvokeChatParser(cmd), now))
+                    Host.Log($"[RynthOracle] Quest flags are {(int)(_c.UtcNow - since).TotalMinutes} min old: reading /myquests again.");
+            }
+        }
+
+        // Once a day, however long the session (it used to run once per login only).
+        if (_c.Settings.CheckQuestListDaily && !_c.Updater.Running
             && _c.UtcNow - _c.Settings.LastQuestListCheckUtc >= QuestCatalogUpdater.Interval)
         {
-            _dailyCheckStarted = true;
             _c.Settings.LastQuestListCheckUtc = _c.UtcNow;
             _c.Settings.Save();
             _c.Updater.Start();

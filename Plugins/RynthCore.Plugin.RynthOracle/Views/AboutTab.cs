@@ -8,6 +8,9 @@ namespace RynthCore.Plugin.RynthOracle.Views;
 /// <summary>About: the credit to Oracle of Dereth's author, the settings and the quest list's source.</summary>
 internal sealed partial class OracleView
 {
+    // The labels for OracleSettings.QuestRefreshChoices, in the same order.
+    private static readonly string[] QuestRefreshLabels = { "Off (login and Refresh only)", "5 minutes", "10 minutes", "15 minutes", "30 minutes" };
+
     private void DrawAbout(UiWindow w)
     {
         w.TextColored(UiColors.Gold, "Based on Oracle of Dereth by Advis Eveldan - thank you!");
@@ -18,6 +21,11 @@ internal sealed partial class OracleView
         w.SeparatorText("Settings");
         w.Checkbox("Read quest flags when you log in", "o.readlogin", s.ReadQuestsAtLogin, v => { s.ReadQuestsAtLogin = v; s.Save(); });
         w.Tooltip("Sends /myquests once after login so the quest pages have data.");
+        int refreshIndex = Math.Max(0, Array.IndexOf(OracleSettings.QuestRefreshChoices, s.QuestRefreshMinutes));
+        w.Combo("Read quest flags again when older than", "o.refresh", refreshIndex, QuestRefreshLabels,
+            i => { s.QuestRefreshMinutes = OracleSettings.QuestRefreshChoices[i]; s.Save(); });
+        w.Tooltip("Keeps the quest pages current on a long session: /myquests again (its reply hidden) once nothing\n"
+                  + "has read it for this long. Any reply resets the clock, RynthAi's meta polls too. The server allows one a minute.");
         w.Checkbox("Hide the replies to RynthOracle's own requests", "o.hide", s.HideOwnQuestReplies, v => { s.HideOwnQuestReplies = v; s.Save(); });
         w.Tooltip("/myquests, and on their servers /b, /augs, /top and the like. A command you type yourself always shows its reply.");
         w.Checkbox("Show the Void window for characters with Void Magic", "o.void", s.AutoShowVoidWindow, v => { s.AutoShowVoidWindow = v; s.Save(); });

@@ -60,8 +60,27 @@ namespace RynthOracle.Tests
             Refreshes();
             SkillsTabs();
             Gear();
+            AutoRefresh();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;
+        }
+
+        // Silentkelpie 2026-10-23, two days in: the quest pages showed flags frozen at whenever
+        // something last sent /myquests (RynthOracle only read it at login). Now it reads again once
+        // the flags are QuestRefreshMinutes old, whoever asked last.
+        private static void AutoRefresh()
+        {
+            var t0 = new DateTime(2026, 10, 23, 7, 49, 0, DateTimeKind.Utc);
+            Check(new OracleSettings().QuestRefreshMinutes == 10, "auto refresh: on by default, every 10 minutes");
+            Check(Array.IndexOf(OracleSettings.QuestRefreshChoices, 10) >= 0 && OracleSettings.QuestRefreshChoices[0] == 0,
+                "auto refresh: the About tab's choices hold the default, and Off first");
+            Check(!QuestFlagStore.AutoRefreshDue(10, t0, t0.AddMinutes(9), false, false, 0), "auto refresh: 9 minutes old, not yet");
+            Check(QuestFlagStore.AutoRefreshDue(10, t0, t0.AddMinutes(10), false, false, 0), "auto refresh: 10 minutes old, due");
+            Check(QuestFlagStore.AutoRefreshDue(10, t0, t0.AddMinutes(16), false, false, 0), "auto refresh: Kelpie's 16 minutes, due");
+            Check(!QuestFlagStore.AutoRefreshDue(0, t0, t0.AddHours(48), false, false, 0), "auto refresh: Off never sends");
+            Check(!QuestFlagStore.AutoRefreshDue(10, t0, t0.AddMinutes(30), true, false, 0), "auto refresh: not while a reply is coming");
+            Check(!QuestFlagStore.AutoRefreshDue(10, t0, t0.AddMinutes(30), false, true, 0), "auto refresh: not where the server has /myquests off");
+            Check(!QuestFlagStore.AutoRefreshDue(10, t0, t0.AddMinutes(30), false, false, 20), "auto refresh: not inside the server's minute");
         }
 
         private static void Check(bool ok, string what)
