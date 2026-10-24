@@ -54,6 +54,18 @@ internal sealed class ItemRecord
     /// <summary>The client had appraisal data for it when scanned (spells, workmanship, set are then known).</summary>
     public bool Identified;
 
+    // "Find like this in Global Inventory" (2026-10-24): what a loot rule from the Inventory
+    // panel's checklist tests, so it can be judged on this saved copy. Written by RynthInventory
+    // 0.1.5 and later; an older file's items have HasFacts false (only the fields above).
+    /// <summary>The facts below were read (the scanner is new enough).</summary>
+    public bool HasFacts;
+    /// <summary>AcObjectClass, as RynthAi classifies it (LootSdk AcItemClassifier).</summary>
+    public int ObjectClass;
+    /// <summary>Int properties a rule can test (LootItemAttributes.IntKeys, T11's virtual keys), non-zero only.</summary>
+    public Dictionary<int, int>? Ints;
+    /// <summary>Float properties a rule can test (LootItemAttributes.DoubleKeys), non-zero only.</summary>
+    public Dictionary<int, double>? Doubles;
+
     public string PathText => Path.Length == 0 ? string.Empty : string.Join(" > ", Path);
 }
 
@@ -134,6 +146,25 @@ internal sealed class CharacterSnapshot
         h.Add((uint)i.Spells.Length);
         foreach (uint s in i.Spells) h.Add(s);
         h.Add(i.Identified ? 1u : 0u);
+        if (!i.HasFacts) return;
+        h.Add((uint)i.ObjectClass);
+        if (i.Ints != null)
+        {
+            var keys = new List<int>(i.Ints.Keys);
+            keys.Sort();
+            foreach (int k in keys) { h.Add((uint)k); h.Add((uint)i.Ints[k]); }
+        }
+        h.Add(0xFACEu);
+        if (i.Doubles != null)
+        {
+            var keys = new List<int>(i.Doubles.Keys);
+            keys.Sort();
+            foreach (int k in keys)
+            {
+                long bits = BitConverter.DoubleToInt64Bits(i.Doubles[k]);
+                h.Add((uint)k); h.Add((uint)bits); h.Add((uint)(bits >> 32));
+            }
+        }
     }
 }
 

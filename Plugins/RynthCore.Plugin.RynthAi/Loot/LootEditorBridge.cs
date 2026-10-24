@@ -39,6 +39,18 @@ internal sealed class LootEditorBridge
     private long _draftRevision;
     private LootEditSession? _other;
 
+    // "Filter like this" (2026-10-24): the last result the state shows (either scope), and the
+    // Inventory panel's filter (its rule and last result). find_refresh judges the panel's items
+    // again with that rule, so it outlives the item it was made from; a Global Inventory find
+    // in between doesn't disturb it.
+    private LootEditItemFind? _find;
+    private VTankLootRule? _findRule;
+    private LootEditItemFind? _findMeta;
+    private long _findRevision;
+
+    /// <summary>The most items one find judges (a full character carries a few hundred).</summary>
+    private const int MaxFindCandidates = 4096;
+
     /// <summary>RynthAi's item lookups for "Add to loot profile". Set once by the plugin.</summary>
     public LootItemHooks Items { get; set; } = new();
 
@@ -72,8 +84,8 @@ internal sealed class LootEditorBridge
         }
     }
 
-    // The session's revision plus the popup draft's: both only grow, so the sum moves when either does.
-    private long StateRevision => _session.Revision + _draftRevision;
+    // The session's revision plus the popup draft's and the filter's: all only grow, so the sum moves when any does.
+    private long StateRevision => _session.Revision + _draftRevision + _findRevision;
 
     public string StateJson()
     {
@@ -84,6 +96,7 @@ internal sealed class LootEditorBridge
             LootEditState state = _session.BuildState(inUse, ListFiles());
             state.Revision = StateRevision;
             state.ItemDraft = _draft;
+            state.ItemFind = _find;
             return JsonSerializer.Serialize(state, LootEditJsonContext.Default.LootEditState);
         }
     }
@@ -107,6 +120,11 @@ internal sealed class LootEditorBridge
         if (cmd.Op is "item_preview" or "item_add" or "item_close")
         {
             ItemCommand(cmd);
+            return;
+        }
+        if (cmd.Op is "item_find" or "find_refresh" or "find_close")
+        {
+            FindCommand(cmd);
             return;
         }
         string? saved = null;
@@ -192,6 +210,14 @@ internal sealed class LootEditorBridge
         d.ItemName = facts.Name;
         d.ClassName = LootItemRules.ClassName(facts.ObjectClass);
         d.Stackable = facts.Stackable;
+        if (req.Find)
+        {
+            // A filter: the checklist and the conditions in words; no profile, action or place.
+            d.Find = true;
+            if (BuildFindRule(d, facts, req, match) == null) return d;
+            d.Ok = true;
+            return d;
+        }
         d.BuiltInReason = BuiltInSentence(Items.BuiltInKeep(id));
 
         string inUse = InUse;
@@ -269,6 +295,160 @@ internal sealed class LootEditorBridge
         d.Added = true;
         d.Message = $"Added loot rule '{draft.Rule.Name}' to {d.TargetFile}";
         return d;
+    }
+
+    // =====================================================================
+    //  Filter like this (the Inventory panel's right-click, 2026-10-24)
+    // =====================================================================
+
+    /// <summary>
+    /// The checklist's rule for a filter, into <paramref name="d"/> (rows, match, the conditions
+    /// as Preview, notes); null (and d's Error) when the item can't make one. Under the lock.
+    /// </summary>
+    private static VTankLootRule? BuildFindRule(LootEditItemDraft d, LootItemFacts facts, LootEditItemRequest req, LootItemMatch match)
+    {
+        var options = new LootItemRuleOptions
+        {
+            Match = match,
+            Action = VTankLootAction.Keep,   // not used: a filter only has conditions
+            IncludeT11 = req.IncludeT11,
+            Choices = req.Choices,
+        };
+        LootItemRuleDraft? draft = LootItemRules.Build(facts, options, out string error);
+        if (draft == null)
+        {
+            d.Ok = false;
+            d.Error = error;
+            return null;
+        }
+        foreach (LootItemAttribute row in draft.Attributes) d.Attributes.Add(row.ToWire());
+        d.Match = (int)draft.Match;
+        d.Action = (int)draft.Action;
+        d.Preview = FindLines(draft.Rule);
+        d.Notes.AddRange(draft.Notes);
+        d.RuleName = FindLabel(facts, draft.Match);
+        d.DefaultRuleName = d.RuleName;
+        return draft.Rule;
+    }
+
+    /// <summary>"like Gold Ring", "named Gold Ring", "Gold Ring (Jewelry)".</summary>
+    private static string FindLabel(LootItemFacts facts, LootItemMatch match)
+    {
+        string name = (facts.Name ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (name.Length == 0) name = LootItemRules.ClassName(facts.ObjectClass);
+        return match switch
+        {
+            LootItemMatch.Like => "like " + name,
+            LootItemMatch.Name => "named " + name,
+            _ => name + " (" + LootItemRules.ClassName(facts.ObjectClass) + ")",
+        };
+    }
+
+    /// <summary>The rule's conditions in words: "Where: Class is Jewelry", "and Workmanship >= 7".</summary>
+    private static List<string> FindLines(VTankLootRule rule)
+    {
+        var lines = new List<string>();
+        foreach (VTankLootCondition c in rule.Conditions)
+        {
+            if (c.NodeType == VTankNodeTypes.DisabledRule) continue;
+            lines.Add((lines.Count == 0 ? "Where: " : "and ") + LootRuleText.Condition(c));
+        }
+        if (lines.Count == 0) lines.Add("Where: (every item)");
+        return lines;
+    }
+
+    private void FindCommand(LootEditCommand cmd)
+    {
+        lock (_sync)
+        {
+            LootEditItemRequest req = cmd.Item ?? new LootEditItemRequest();
+            if (cmd.Op == "find_close")
+            {
+                if (_find == null && _findRule == null) return;
+                _find = null;
+                _findRule = null;
+                _findMeta = null;
+                _findRevision++;
+                return;
+            }
+
+            LootEditItemFind f;
+            if (cmd.Op == "find_refresh")
+            {
+                if (_findRule == null || _findMeta == null)
+                {
+                    f = new LootEditItemFind { Seq = req.Seq, Scope = LootFindScopes.Inventory, Error = "The filter was lost (RynthAi reloaded). Right-click the item again." };
+                }
+                else
+                {
+                    f = new LootEditItemFind
+                    {
+                        Seq = req.Seq, Ok = true, Scope = LootFindScopes.Inventory, ItemId = _findMeta.ItemId, ItemName = _findMeta.ItemName,
+                        Label = _findMeta.Label, Lines = _findMeta.Lines, NeedsIdentify = _findMeta.NeedsIdentify,
+                    };
+                    Judge(f, _findRule, req.Candidates);
+                    // Nothing new: leave the state alone (the engine re-reads every rule on a change).
+                    if (ReferenceEquals(_find, _findMeta) && SameResult(f, _findMeta)) return;
+                    _findMeta = f;
+                }
+            }
+            else
+                f = BuildFind(req);
+            _find = f;
+            _findRevision++;
+        }
+    }
+
+    /// <summary>item_find: the rule from the item and the checklist, then the panel's items judged, or the spec for Global Inventory.</summary>
+    private LootEditItemFind BuildFind(LootEditItemRequest req)
+    {
+        string scope = req.Scope == LootFindScopes.Global ? LootFindScopes.Global : LootFindScopes.Inventory;
+        var f = new LootEditItemFind { Seq = req.Seq, Scope = scope };
+        uint id = req.ItemId != 0 ? req.ItemId : Items.SelectedItemId();
+        if (id == 0) { f.Error = "No item selected. Click an item first."; return f; }
+        f.ItemId = id;
+        LootItemFacts? facts = Items.Facts(id, true, true);
+        if (facts == null) { f.Error = $"RynthAi doesn't know item 0x{id:X8} yet. Try again in a moment."; return f; }
+        f.ItemName = facts.Name;
+        var d = new LootEditItemDraft { Seq = req.Seq, Find = true };
+        var match = (LootItemMatch)Math.Clamp(req.Match, 0, 2);
+        VTankLootRule? rule = BuildFindRule(d, facts, req, match);
+        if (rule == null) { f.Error = d.Error; return f; }
+        f.Label = d.RuleName;
+        f.Lines = d.Preview;
+        f.NeedsIdentify = LootFactsMatcher.NeedsIdentify(rule.Conditions);
+        f.Ok = true;
+        if (scope == LootFindScopes.Global)
+        {
+            // Global Inventory keeps its own copy (the spec); the panel's filter stays as it is.
+            f.Spec = LootFindSpec.Encode(f.Label, rule.Conditions);
+            return f;
+        }
+        Judge(f, rule, req.Candidates);
+        _findRule = rule;
+        _findMeta = f;
+        return f;
+    }
+
+    /// <summary>The candidates the rule takes (Ids) and the ones it can't judge yet (Unknown).</summary>
+    private void Judge(LootEditItemFind f, VTankLootRule rule, List<uint>? candidates)
+    {
+        f.Ids = new List<uint>();
+        f.Unknown = new List<uint>();
+        if (candidates == null || candidates.Count == 0) return;
+        List<uint> list = candidates.Count > MaxFindCandidates ? candidates.GetRange(0, MaxFindCandidates) : candidates;
+        Items.Judge(rule, list, f.NeedsIdentify, f.Ids, f.Unknown);
+        f.Checked = list.Count;
+    }
+
+    private static bool SameResult(LootEditItemFind a, LootEditItemFind b) =>
+        a.Ok == b.Ok && a.Error == b.Error && a.Checked == b.Checked && Same(a.Ids, b.Ids) && Same(a.Unknown, b.Unknown);
+
+    private static bool Same(List<uint> a, List<uint> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++) if (a[i] != b[i]) return false;
+        return true;
     }
 
     /// <summary>
@@ -376,6 +556,12 @@ internal sealed class LootItemHooks
     /// (the looter's own classification, run as a preview), or null.
     /// </summary>
     public Func<uint, LootBuiltInKeep?> BuiltInKeep { get; set; } = _ => null;
+    /// <summary>
+    /// "Filter like this": judges the items (in order) with the rule as the looter would, adding
+    /// the ones it takes to the first list and, when the rule needs an identify (the bool), the
+    /// unidentified or unknown ones it doesn't take to the second.
+    /// </summary>
+    public Action<VTankLootRule, IReadOnlyList<uint>, bool, List<uint>, List<uint>> Judge { get; set; } = (_, _, _, _, _) => { };
 }
 
 /// <summary>

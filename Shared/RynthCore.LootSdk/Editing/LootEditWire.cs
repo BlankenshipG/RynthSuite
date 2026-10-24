@@ -47,6 +47,12 @@ public sealed class LootEditState
     /// Added 2026-10; an older engine ignores it.
     /// </summary>
     public LootEditItemDraft? ItemDraft { get; set; }
+
+    /// <summary>
+    /// The Inventory panel's "Filter like this" result (item_find / find_refresh), or null.
+    /// Added 2026-10-24; an older engine ignores it.
+    /// </summary>
+    public LootEditItemFind? ItemFind { get; set; }
 }
 
 public sealed class LootEditFile
@@ -97,7 +103,11 @@ public sealed class LootEditCondition
 /// <summary>An edit from the face. Commands that target a rule carry the name the face saw (Expect).</summary>
 public sealed class LootEditCommand
 {
-    /// <summary>open, reload, save, set_enabled, move, add, duplicate, delete, rename, update_rule.</summary>
+    /// <summary>
+    /// open, reload, save, set_enabled, move, add, duplicate, delete, rename, update_rule;
+    /// item_preview, item_add, item_close (Add to loot profile); item_find, find_refresh,
+    /// find_close (Filter like this, 2026-10-24).
+    /// </summary>
     public string Op { get; set; } = string.Empty;
     public int Index { get; set; } = -1;
     /// <summary>move: the index the rule ends up at.</summary>
@@ -146,6 +156,24 @@ public sealed class LootEditItemRequest
     public List<LootEditItemChoice>? Choices { get; set; }
     /// <summary>Echoed in the draft so the popup knows the answer is to its latest ask.</summary>
     public int Seq { get; set; }
+    /// <summary>
+    /// A filter, not a rule to add (added 2026-10-24): item_preview builds the draft without a
+    /// loot profile (no action, name or place in a list); item_find filters with it.
+    /// </summary>
+    public bool Find { get; set; }
+    /// <summary>item_find: <see cref="LootFindScopes"/> (the items in <see cref="Candidates"/>, or Global Inventory).</summary>
+    public string Scope { get; set; } = string.Empty;
+    /// <summary>item_find / find_refresh, scope inventory: the items to judge (what the panel lists).</summary>
+    public List<uint>? Candidates { get; set; }
+}
+
+/// <summary>Where "Filter like this" looks (LootEditItemRequest.Scope).</summary>
+public static class LootFindScopes
+{
+    /// <summary>The items the request lists (the Inventory panel's).</summary>
+    public const string Inventory = "inventory";
+    /// <summary>RynthInventory's Global Inventory: the result carries the spec for "/ginv like".</summary>
+    public const string Global = "global";
 }
 
 /// <summary>One checklist row as the player set it (LootEditItemAttribute.Id).</summary>
@@ -235,6 +263,42 @@ public sealed class LootEditItemDraft
     /// <summary>item_add went through; Message says what was added where.</summary>
     public bool Added { get; set; }
     public string Message { get; set; } = string.Empty;
+    /// <summary>A filter's draft (the request's Find; added 2026-10-24): no profile, action or place.</summary>
+    public bool Find { get; set; }
+}
+
+/// <summary>
+/// "Filter like this" (added 2026-10-24): the rule the checklist made and, for the panel's
+/// items, which match. item_find builds it from the item; find_refresh judges the panel's
+/// items again with the same rule (new loot, identifies that came in); find_close drops it.
+/// </summary>
+public sealed class LootEditItemFind
+{
+    /// <summary>The request's Seq (item_find or find_refresh).</summary>
+    public int Seq { get; set; }
+    public bool Ok { get; set; }
+    public string Error { get; set; } = string.Empty;
+    /// <summary><see cref="LootFindScopes"/>.</summary>
+    public string Scope { get; set; } = string.Empty;
+    public uint ItemId { get; set; }
+    public string ItemName { get; set; } = string.Empty;
+    /// <summary>What the filter is called ("like Gold Ring").</summary>
+    public string Label { get; set; } = string.Empty;
+    /// <summary>The rule's conditions in words, one per line (ASCII).</summary>
+    public List<string> Lines { get; set; } = new();
+    /// <summary>Scope inventory: the candidates the rule takes.</summary>
+    public List<uint> Ids { get; set; } = new();
+    /// <summary>
+    /// Scope inventory: candidates that failed only on something an identify would tell
+    /// (not identified yet), or that RynthAi doesn't know yet.
+    /// </summary>
+    public List<uint> Unknown { get; set; } = new();
+    /// <summary>How many candidates were judged.</summary>
+    public int Checked { get; set; }
+    /// <summary>Scope global: the "/ginv like" argument (LootFindSpec).</summary>
+    public string Spec { get; set; } = string.Empty;
+    /// <summary>Some condition needs an identify to judge (so unidentified items can be Unknown).</summary>
+    public bool NeedsIdentify { get; set; }
 }
 
 /// <summary>Names for the face's pickers. Sent once per plugin load.</summary>

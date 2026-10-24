@@ -1471,8 +1471,32 @@ public sealed partial class RynthAiPlugin
             FirstMatchNative = FirstLootRuleFor,
             Added = OnLootRuleAdded,
             BuiltInKeep = LootBuiltInKeepFor,
+            Judge = JudgeLootFindItems,
         },
     };
+
+    /// <summary>
+    /// "Filter like this" (the Inventory panel's right-click, 2026-10-24): the items the rule
+    /// takes, judged by the looter's own evaluator; with <paramref name="needsId"/>, the ones it
+    /// doesn't take that aren't identified yet (or that the object cache doesn't know) are unknown.
+    /// </summary>
+    private void JudgeLootFindItems(VTankLootRule rule, IReadOnlyList<uint> ids, bool needsId, List<uint> match, List<uint> unknown)
+    {
+        if (_objectCache == null) return;
+        var ctx = new VTankLootContext(Host, _playerId) { Cache = _objectCache };
+        bool canAsk = Host.HasHasAppraisalData;
+        foreach (uint id in ids)
+        {
+            WorldObject? wo = _objectCache[unchecked((int)id)];
+            if (wo == null)
+            {
+                unknown.Add(id);
+                continue;
+            }
+            if (VTankLootEvaluator.Match(rule, wo, ctx)) match.Add(id);
+            else if (needsId && canAsk && !Host.HasAppraisalData(id)) unknown.Add(id);
+        }
+    }
 
     /// <summary>
     /// Why RynthAi's looting takes the item without a loot profile rule, for the "Add to

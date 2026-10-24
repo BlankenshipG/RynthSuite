@@ -56,6 +56,11 @@ internal sealed class InventoryQuery
     public bool SearchSpells;
     public InventorySort Sort = InventorySort.Name;
     public bool Descending;
+    /// <summary>
+    /// "Find like this" (/ginv like, 2026-10-24): 1 keeps the item, 0 drops it, -1 drops it as
+    /// unknown (counted in <see cref="InventoryResult.LikeUnknown"/>). Null: no such filter.
+    /// </summary>
+    public Func<ItemRecord, int>? Like;
 }
 
 /// <summary>A total for one item name over the results: "Pyreal: 12,345 across 4 characters".</summary>
@@ -76,6 +81,8 @@ internal sealed class InventoryResult
     public readonly List<InventoryTotal> Totals = new();
     public long TotalCount;
     public int CharacterCount;
+    /// <summary>Items the like filter couldn't judge (not identified, or saved by an older RynthInventory).</summary>
+    public int LikeUnknown;
 }
 
 /// <summary>
@@ -255,6 +262,12 @@ internal sealed class InventoryIndex
                 foreach (string term in terms)
                     if (!hay.Contains(term, StringComparison.Ordinal)) { all = false; break; }
                 if (!all) continue;
+            }
+            if (q.Like != null)
+            {
+                int v = q.Like(r.Item);
+                if (v < 0) result.LikeUnknown++;
+                if (v <= 0) continue;
             }
             result.Rows.Add(r);
         }

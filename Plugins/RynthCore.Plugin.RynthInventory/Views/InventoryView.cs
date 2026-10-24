@@ -34,6 +34,8 @@ internal sealed partial class InventoryView
     private InventoryResult? _result;
     private int _resultRevision = -1;
     private bool _resultDirty = true;
+    /// <summary>"Find like this" from the Inventory panel (/ginv like), or null.</summary>
+    private LikeFilter? _like;
 
     public InventoryView(InventoryContext c) => _c = c;
 
@@ -44,6 +46,15 @@ internal sealed partial class InventoryView
         Tab = TabSearch;
         _page = 0;
         _resultDirty = true;
+    }
+
+    /// <summary>Opens on the search page showing only the items <paramref name="like"/> takes (null clears it).</summary>
+    public void SetLike(LikeFilter? like)
+    {
+        _like = like;
+        Tab = TabSearch;
+        _selectedKey = null;
+        Invalidate();
     }
 
     private void Invalidate()
@@ -97,6 +108,7 @@ internal sealed partial class InventoryView
     private void DrawSearch(UiWindow w, InventoryIndex index)
     {
         InventorySettings s = _c.Settings;
+        if (_like != null) DrawLikeBar(w);
         w.InputText("Search", "q", _search, 128, v => { _search = v; Invalidate(); }, UiFormat.InputAutoSelectAll);
 
         // Servers: the one you're on first, the others labelled.
@@ -146,6 +158,11 @@ internal sealed partial class InventoryView
 
         InventoryResult result = Result(index);
         w.Separator();
+        if (_like != null && result.LikeUnknown > 0)
+        {
+            w.TextColored(UiColors.Stale, $"{result.LikeUnknown.ToString("N0", CultureInfo.InvariantCulture)} more item(s) can't be judged: not identified when saved, or saved by an older RynthInventory.");
+            w.Tooltip("The filter needs what an identify tells (workmanship, ratings, spells...). Log that character in (identify the items if needed) and it is saved again with them.");
+        }
         if (result.Rows.Count == 0)
         {
             w.TextDisabled(index.Rows.Count == 0 ? "No items recorded yet. Each character is scanned when it logs in with RynthInventory loaded." : "Nothing found.");
@@ -208,10 +225,22 @@ internal sealed partial class InventoryView
             SearchSpells = s.SearchSpells,
             Sort = (InventorySort)Math.Clamp(s.Sort, 0, SortNames.Length - 1),
             Descending = s.Descending,
+            Like = _like == null ? null : _like.Judge,
         });
         _resultRevision = _c.IndexRevision;
         _resultDirty = false;
         return _result;
+    }
+
+    /// <summary>The like filter's bar: what it is (its conditions on hover) and Clear.</summary>
+    private void DrawLikeBar(UiWindow w)
+    {
+        LikeFilter like = _like!;
+        w.TextColored(UiColors.Green, "Filter: " + like.Label);
+        w.Tooltip(string.Join("\n", like.Lines));
+        w.SameLine();
+        w.SmallButton("Clear filter", "like.clear", () => SetLike(null));
+        w.TextDisabled(string.Join("  ", like.Lines));
     }
 
     private static string RowKey(InventoryRow r) => r.Owner.Key + "|" + (r.Storage?.Id ?? 0).ToString(CultureInfo.InvariantCulture) + "|" + r.Item.Id.ToString(CultureInfo.InvariantCulture);

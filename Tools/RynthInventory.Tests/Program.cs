@@ -67,6 +67,7 @@ namespace RynthInventory.Tests
                 Run("banking: roster, totals and amounts", BankRosterTests);
                 Run("banking: the tab draws and sends RynthILT's verbs", BankingTab);
                 Run("vault feed (/mule-data)", VaultTests);
+                Run("like filter: spec, facts, matcher, query", LikeFilterTests);
             }
             finally
             {

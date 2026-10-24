@@ -27,7 +27,7 @@ namespace RynthCore.Plugin.RynthInventory;
 public sealed class RynthInventoryPlugin : RynthPluginBase
 {
     // Previous release: 0.1.3. Keep in step with PluginExports.GetVersion.
-    public const string Version = "0.1.4";
+    public const string Version = "0.1.5";
 
     // RynthILT's bank JSON: every BankTabReadMs on the Banking tab, every BankIdleReadMs with the
     // window on another tab (so the Banking button appears on ILT worlds), never with it closed.
@@ -255,6 +255,25 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
 
     private void RunCommand(string arg)
     {
+        // "Find like this in Global Inventory" (the Inventory panel's right-click): the rule as a spec.
+        if (arg.StartsWith("like ", StringComparison.OrdinalIgnoreCase) || arg.Equals("like", StringComparison.OrdinalIgnoreCase))
+        {
+            string spec = arg.Length > 4 ? arg.Substring(4).Trim() : string.Empty;
+            if (spec.Length == 0 || spec.Equals("clear", StringComparison.OrdinalIgnoreCase) || spec.Equals("off", StringComparison.OrdinalIgnoreCase))
+            {
+                _view?.SetLike(null);
+                return;
+            }
+            Views.LikeFilter? like = Views.LikeFilter.Parse(spec, out string error);
+            if (like == null)
+            {
+                _c.Print(error + " (Right-click an item in the Inventory panel: Find like this in Global Inventory.)");
+                return;
+            }
+            _view?.SetLike(like);
+            if (_window != null) { _window.Visible = true; _window.NeedsPass = true; }
+            return;
+        }
         string lower = arg.ToLowerInvariant();
         switch (lower)
         {
@@ -293,7 +312,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
                 break;
             case "help":
             case "?":
-                _c.Print("/ginv (window), /ginv <text> (search), /ginv bank (every character's Infinite Leaftide bank), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv vault (read the Aelrynth account vault now), /ginv reload, /ginv status");
+                _c.Print("/ginv (window), /ginv <text> (search), /ginv bank (every character's Infinite Leaftide bank), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv vault (read the Aelrynth account vault now), /ginv reload, /ginv status. To find items like one you carry, right-click it in the Inventory panel: Find like this in Global Inventory (/ginv like clear removes that filter).");
                 break;
             default:
                 _view?.SetSearch(arg);

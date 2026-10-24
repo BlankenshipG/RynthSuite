@@ -31,6 +31,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+    <!-- "Find like this in Global Inventory" (/ginv like): the filter spec, its matcher and T11 parsing (2026-10-24). -->
+    <ProjectReference Include="..\..\Shared\RynthCore.LootSdk\RynthCore.LootSdk.csproj" />
   </ItemGroup>
 
   <ItemGroup>
