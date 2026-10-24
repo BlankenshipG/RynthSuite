@@ -34,8 +34,12 @@ internal sealed partial class InventoryView
     private InventoryResult? _result;
     private int _resultRevision = -1;
     private bool _resultDirty = true;
-    /// <summary>"Find like this" from the Inventory panel (/ginv like), or null.</summary>
+    /// <summary>"Find like this" from the Inventory panel (/ginv like), or this window's checklist's, or null.</summary>
     private LikeFilter? _like;
+    // The window's own attribute checklist (2026-10-24) and whether _like is its.
+    private readonly ChecklistFilter _checklist = new();
+    private bool _showChecklist, _likeIsChecklist;
+    private int _checklistVersion;
 
     public InventoryView(InventoryContext c) => _c = c;
 
@@ -52,6 +56,7 @@ internal sealed partial class InventoryView
     public void SetLike(LikeFilter? like)
     {
         _like = like;
+        _likeIsChecklist = false;
         Tab = TabSearch;
         _selectedKey = null;
         Invalidate();
@@ -108,8 +113,20 @@ internal sealed partial class InventoryView
     private void DrawSearch(UiWindow w, InventoryIndex index)
     {
         InventorySettings s = _c.Settings;
+        TakeChecklist();
         if (_like != null) DrawLikeBar(w);
         w.InputText("Search", "q", _search, 128, v => { _search = v; Invalidate(); }, UiFormat.InputAutoSelectAll);
+        w.SameLine();
+        w.ToggleButton(_showChecklist ? "Attribute filter -" : "Attribute filter +", "cl.show", _showChecklist,
+            () => _showChecklist = !_showChecklist, small: true);
+        w.Tooltip("Filter every character's items by their attributes: the same checklist as the Inventory panel's (class, material, ratings, spells and cantrips from the standard lists...).");
+        if (_showChecklist)
+        {
+            w.BeginChild("checklist", 0f, 260f, border: true);
+            _checklist.Draw(w);
+            w.EndChild();
+            w.SmallButton("Clear checklist", "cl.clear", () => _checklist.Clear());
+        }
 
         // Servers: the one you're on first, the others labelled.
         w.ToggleButton("All servers", "srv.all", _server == null, () => { _server = null; _characterKey = null; Invalidate(); }, small: true);
@@ -232,6 +249,26 @@ internal sealed partial class InventoryView
         return _result;
     }
 
+    /// <summary>The checklist changed: filter with its rule (nothing ticked drops its filter).</summary>
+    private void TakeChecklist()
+    {
+        if (_checklistVersion == 0) _checklistVersion = 1;   // the empty checklist built at start
+        if (_checklist.Version == _checklistVersion) return;
+        _checklistVersion = _checklist.Version;
+        if (_checklist.Conditions.Count > 0)
+        {
+            _like = LikeFilter.From("attribute filter", _checklist.Conditions);
+            _likeIsChecklist = true;
+        }
+        else if (_likeIsChecklist)
+        {
+            _like = null;
+            _likeIsChecklist = false;
+        }
+        _selectedKey = null;
+        Invalidate();
+    }
+
     /// <summary>The like filter's bar: what it is (its conditions on hover) and Clear.</summary>
     private void DrawLikeBar(UiWindow w)
     {
@@ -239,7 +276,7 @@ internal sealed partial class InventoryView
         w.TextColored(UiColors.Green, "Filter: " + like.Label);
         w.Tooltip(string.Join("\n", like.Lines));
         w.SameLine();
-        w.SmallButton("Clear filter", "like.clear", () => SetLike(null));
+        w.SmallButton("Clear filter", "like.clear", () => { if (_likeIsChecklist) _checklist.Clear(); SetLike(null); });
         w.TextDisabled(string.Join("  ", like.Lines));
     }
 

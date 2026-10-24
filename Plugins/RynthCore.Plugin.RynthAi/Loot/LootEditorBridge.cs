@@ -110,8 +110,15 @@ internal sealed class LootEditorBridge
         }
     }
 
-    public string VocabJson() =>
-        _vocabJson ??= JsonSerializer.Serialize(LootRuleText.BuildVocab(), LootEditJsonContext.Default.LootEditVocab);
+    public string VocabJson()
+    {
+        if (_vocabJson != null) return _vocabJson;
+        // Kept once the spell table is in (the popups' spell lists come with it).
+        LootSpellCatalog? spells = Items.Spells();
+        string json = JsonSerializer.Serialize(LootRuleText.BuildVocab(spells), LootEditJsonContext.Default.LootEditVocab);
+        if (spells != null) _vocabJson = json;
+        return json;
+    }
 
     public void Command(string json)
     {
@@ -197,6 +204,16 @@ internal sealed class LootEditorBridge
     private LootEditItemDraft BuildDraft(LootEditItemRequest req, bool add)
     {
         var d = new LootEditItemDraft { Seq = req.Seq };
+        if (req.Find && req.Blank)
+        {
+            // The panel's own filter: every attribute, no item.
+            d.Find = true;
+            d.AttributesSupported = true;
+            d.ItemName = "any item";
+            BuildFindRule(d, null, req, LootItemMatch.Like);
+            d.Ok = true;
+            return d;
+        }
         uint id = req.ItemId != 0 ? req.ItemId : Items.SelectedItemId();
         if (id == 0) return Refuse(d, "No item selected. Click an item first.");
         d.ItemId = id;
@@ -240,6 +257,8 @@ internal sealed class LootEditorBridge
             RuleName = req.RuleName,
             IncludeT11 = req.IncludeT11,
             Choices = req.Choices,
+            Extras = req.Extras,
+            Spells = Items.Spells(),
         };
         LootItemRuleDraft? draft = LootItemRules.Build(facts, options, out string error);
         if (draft == null) return Refuse(d, error);
@@ -305,7 +324,7 @@ internal sealed class LootEditorBridge
     /// The checklist's rule for a filter, into <paramref name="d"/> (rows, match, the conditions
     /// as Preview, notes); null (and d's Error) when the item can't make one. Under the lock.
     /// </summary>
-    private static VTankLootRule? BuildFindRule(LootEditItemDraft d, LootItemFacts facts, LootEditItemRequest req, LootItemMatch match)
+    private VTankLootRule? BuildFindRule(LootEditItemDraft d, LootItemFacts? facts, LootEditItemRequest req, LootItemMatch match)
     {
         var options = new LootItemRuleOptions
         {
@@ -313,8 +332,11 @@ internal sealed class LootEditorBridge
             Action = VTankLootAction.Keep,   // not used: a filter only has conditions
             IncludeT11 = req.IncludeT11,
             Choices = req.Choices,
+            Extras = req.Extras,
+            Spells = Items.Spells(),
         };
-        LootItemRuleDraft? draft = LootItemRules.Build(facts, options, out string error);
+        string error = string.Empty;
+        LootItemRuleDraft? draft = facts == null ? LootItemRules.BuildBlank(options) : LootItemRules.Build(facts, options, out error);
         if (draft == null)
         {
             d.Ok = false;
@@ -326,7 +348,7 @@ internal sealed class LootEditorBridge
         d.Action = (int)draft.Action;
         d.Preview = FindLines(draft.Rule);
         d.Notes.AddRange(draft.Notes);
-        d.RuleName = FindLabel(facts, draft.Match);
+        d.RuleName = facts == null ? "attribute filter" : FindLabel(facts, draft.Match);
         d.DefaultRuleName = d.RuleName;
         return draft.Rule;
     }
@@ -404,12 +426,16 @@ internal sealed class LootEditorBridge
     {
         string scope = req.Scope == LootFindScopes.Global ? LootFindScopes.Global : LootFindScopes.Inventory;
         var f = new LootEditItemFind { Seq = req.Seq, Scope = scope };
-        uint id = req.ItemId != 0 ? req.ItemId : Items.SelectedItemId();
-        if (id == 0) { f.Error = "No item selected. Click an item first."; return f; }
-        f.ItemId = id;
-        LootItemFacts? facts = Items.Facts(id, true, true);
-        if (facts == null) { f.Error = $"RynthAi doesn't know item 0x{id:X8} yet. Try again in a moment."; return f; }
-        f.ItemName = facts.Name;
+        LootItemFacts? facts = null;
+        if (!req.Blank)
+        {
+            uint id = req.ItemId != 0 ? req.ItemId : Items.SelectedItemId();
+            if (id == 0) { f.Error = "No item selected. Click an item first."; return f; }
+            f.ItemId = id;
+            facts = Items.Facts(id, true, true);
+            if (facts == null) { f.Error = $"RynthAi doesn't know item 0x{id:X8} yet. Try again in a moment."; return f; }
+            f.ItemName = facts.Name;
+        }
         var d = new LootEditItemDraft { Seq = req.Seq, Find = true };
         var match = (LootItemMatch)Math.Clamp(req.Match, 0, 2);
         VTankLootRule? rule = BuildFindRule(d, facts, req, match);
@@ -562,6 +588,8 @@ internal sealed class LootItemHooks
     /// unidentified or unknown ones it doesn't take to the second.
     /// </summary>
     public Action<VTankLootRule, IReadOnlyList<uint>, bool, List<uint>, List<uint>> Judge { get; set; } = (_, _, _, _, _) => { };
+    /// <summary>The standard spell lists from RynthAi's spell table, or null until it is read.</summary>
+    public Func<LootSpellCatalog?> Spells { get; set; } = () => null;
 }
 
 /// <summary>

@@ -35,3 +35,22 @@ in Global Inventory...", which reuse the Add to loot profile checklist to build 
 ## Tests
 
 - RynthInventory.Tests: "like filter: spec, facts, matcher, query".
+
+## Follow-up: checklist filters and spell lists
+
+- **The Inventory panel's filter button** (the list-check icon in the tools row) now opens the
+  same checklist popup with no item: every attribute a loot rule can test, unticked, with a
+  value to fill in (named values such as material, skill, slayer, class pick from a list).
+  Filter judges your items the same way as "Filter inventory like this". The old rule list
+  editor no longer hides items (its saved rules are left in the settings file).
+- **Global Inventory** gets the same checklist ("Attribute filter +" next to the search box):
+  one group open at a time, a ticked row shows its comparison and value; the search filters
+  every character's saved items as you tick.
+- **Spell lists** in every checklist (Add to loot profile, both filters, Global Inventory):
+  - Add spell: Creature, Life or Item, a family from the spell table (buffs only: no debuffs,
+    war or void), a level I to VIII; "or better" by default (exact / any tier in its row).
+    Levels VII and VIII have their own names ("Might of the Lugians", "Incantation of Strength
+    Self"), so the rule lists the family's spells by name; Self and Other both count.
+  - Add cantrip: Minor, Major, Epic, Legendary or Paragon and a cantrip name.
+  - Cantrip "or better" and the tier counts now include Paragon ("Paragon" or "Paragon's").
+- Named values on an item's rows (material, wield skill...) can be changed from a list.

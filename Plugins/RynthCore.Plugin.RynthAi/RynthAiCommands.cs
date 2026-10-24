@@ -1472,8 +1472,19 @@ public sealed partial class RynthAiPlugin
             Added = OnLootRuleAdded,
             BuiltInKeep = LootBuiltInKeepFor,
             Judge = JudgeLootFindItems,
+            Spells = LootSpellCatalogOnce,
         },
     };
+
+    private RynthCore.Loot.Editing.LootSpellCatalog? _lootSpellCatalog;
+
+    /// <summary>The loot popups' standard spell lists, built once the spell table is read.</summary>
+    private RynthCore.Loot.Editing.LootSpellCatalog? LootSpellCatalogOnce()
+    {
+        if (_lootSpellCatalog != null) return _lootSpellCatalog;
+        if (!SpellDatabase.IsLoaded) return null;
+        return _lootSpellCatalog = RynthCore.Loot.Editing.LootSpellCatalog.Build(SpellDatabase.AllSpells());
+    }
 
     /// <summary>
     /// "Filter like this" (the Inventory panel's right-click, 2026-10-24): the items the rule

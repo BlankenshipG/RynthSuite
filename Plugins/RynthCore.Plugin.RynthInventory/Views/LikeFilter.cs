@@ -34,6 +34,14 @@ internal sealed class LikeFilter
         NeedsIdentify = LootFactsMatcher.NeedsIdentify(spec.Conditions);
     }
 
+    /// <summary>A filter from conditions made here (Global Inventory's own checklist).</summary>
+    public static LikeFilter From(string label, IEnumerable<RynthCore.Loot.VTank.VTankLootCondition> conditions)
+    {
+        var spec = new LootFindSpec { Label = label };
+        spec.Conditions.AddRange(conditions);
+        return new LikeFilter(spec);
+    }
+
     public static LikeFilter? Parse(string text, out string error)
     {
         if (!LootFindSpec.TryDecode(text, out LootFindSpec spec, out error)) return null;

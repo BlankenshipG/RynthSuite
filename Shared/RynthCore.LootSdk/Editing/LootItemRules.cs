@@ -71,6 +71,10 @@ public sealed class LootItemRuleOptions
     /// default, which is the rule "items like this" and IncludeT11 always made.
     /// </summary>
     public IReadOnlyList<LootEditItemChoice>? Choices { get; set; }
+    /// <summary>Spells and cantrips added from the standard lists (2026-10-24).</summary>
+    public IReadOnlyList<LootEditItemExtra>? Extras { get; set; }
+    /// <summary>The spell table's families, so an added spell lists its level VII / VIII names (null: a name pattern).</summary>
+    public LootSpellCatalog? Spells { get; set; }
 }
 
 /// <summary>A built rule, ready to preview and insert.</summary>
@@ -204,6 +208,7 @@ public static class LootItemRules
 
         // The attribute checklist: defaults for this match, then the popup's choices.
         List<LootItemAttribute> rows = LootItemAttributes.For(f, match == LootItemMatch.Like, o.IncludeT11);
+        LootItemAttributes.AddExtras(rows, o.Extras, o.Spells);
         LootItemAttributes.Apply(rows, o.Choices, notes);
         int added = LootItemAttributes.AddConditions(rule, rows);
         AddRowNotes(f, o, rows, match, notes);
@@ -217,6 +222,27 @@ public static class LootItemRules
         return new LootItemRuleDraft
         {
             Rule = rule, Match = match, Action = action, KeepCount = keep, DefaultName = defaultName, Notes = notes, Attributes = rows,
+        };
+    }
+
+    /// <summary>
+    /// A filter rule without an item (2026-10-24): the blank checklist (every attribute,
+    /// <see cref="LootItemAttributes.ForBlank"/>) with the player's choices and added spells.
+    /// Only the ticked rows become conditions; nothing ticked matches every item.
+    /// </summary>
+    public static LootItemRuleDraft BuildBlank(LootItemRuleOptions o)
+    {
+        var notes = new List<string>();
+        List<LootItemAttribute> rows = LootItemAttributes.ForBlank();
+        LootItemAttributes.AddExtras(rows, o.Extras, o.Spells);
+        LootItemAttributes.Apply(rows, o.Choices, notes);
+        var rule = new VTankLootRule { CustomExpression = string.Empty, Action = o.Action ?? VTankLootAction.Keep };
+        int added = LootItemAttributes.AddConditions(rule, rows);
+        if (added == 0) notes.Add("Nothing ticked yet: tick what the items must have.");
+        rule.Name = OneLine(o.RuleName).Trim().Length > 0 ? OneLine(o.RuleName).Trim() : "Filter";
+        return new LootItemRuleDraft
+        {
+            Rule = rule, Match = LootItemMatch.Like, Action = rule.Action, DefaultName = "Filter", Notes = notes, Attributes = rows,
         };
     }
 

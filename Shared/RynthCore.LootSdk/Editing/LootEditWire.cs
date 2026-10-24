@@ -165,6 +165,27 @@ public sealed class LootEditItemRequest
     public string Scope { get; set; } = string.Empty;
     /// <summary>item_find / find_refresh, scope inventory: the items to judge (what the panel lists).</summary>
     public List<uint>? Candidates { get; set; }
+    /// <summary>
+    /// No item (added 2026-10-24): the checklist lists every attribute (LootItemAttributes.ForBlank),
+    /// for the Inventory panel's own filter. ItemId is ignored.
+    /// </summary>
+    public bool Blank { get; set; }
+    /// <summary>Spells and cantrips the player added from the standard lists (added 2026-10-24).</summary>
+    public List<LootEditItemExtra>? Extras { get; set; }
+}
+
+/// <summary>A spell picked from the standard lists (LootSpellCatalog), required by the rule.</summary>
+public sealed class LootEditItemExtra
+{
+    public const string Spell = "spell", Cantrip = "cantrip";
+    /// <summary><see cref="Spell"/> (a leveled family) or <see cref="Cantrip"/>.</summary>
+    public string Kind { get; set; } = Spell;
+    /// <summary>The family ("Strength", "Aura of Defender") or the cantrip without its tier ("Coordination").</summary>
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Spell: the level, 1-8. Cantrip: the tier, 0 Minor ... 4 Paragon.</summary>
+    public int Level { get; set; }
+    /// <summary>A LootItemAttributeOp (or better, exact, any tier); -1 = or better.</summary>
+    public int Op { get; set; } = -1;
 }
 
 /// <summary>Where "Filter like this" looks (LootEditItemRequest.Scope).</summary>
@@ -208,6 +229,11 @@ public sealed class LootEditItemAttribute
     public List<int> Ops { get; set; } = new();
     /// <summary>The value can be typed (a number); named values and spells can't.</summary>
     public bool Editable { get; set; }
+    /// <summary>
+    /// The values a named row can take (added 2026-10-24): the popup offers them in a list and
+    /// sends the picked Id as the choice's Value. Null for typed and fixed rows.
+    /// </summary>
+    public List<LootEditName>? Choices { get; set; }
     /// <summary>The rule requires this row now.</summary>
     public bool On { get; set; }
     public string Tip { get; set; } = string.Empty;
@@ -317,6 +343,21 @@ public sealed class LootEditVocab
     /// with an older RynthAi gets it empty and keeps the value a text box.
     /// </summary>
     public List<LootEditValueTable> LongValueTables { get; set; } = new();
+    /// <summary>The standard spell lists (LootSpellCatalog, added 2026-10-24): leveled families by school.</summary>
+    public List<LootEditSpellFamily> SpellFamilies { get; set; } = new();
+    /// <summary>Cantrip names without their tier ("Coordination").</summary>
+    public List<string> Cantrips { get; set; } = new();
+    /// <summary>The cantrip tiers, lowest first (Minor ... Paragon).</summary>
+    public List<string> CantripTiers { get; set; } = new();
+}
+
+/// <summary>One leveled spell family the popup offers (LootSpellFamily).</summary>
+public sealed class LootEditSpellFamily
+{
+    public string Name { get; set; } = string.Empty;
+    public string School { get; set; } = string.Empty;
+    public int MinLevel { get; set; } = 1;
+    public int MaxLevel { get; set; } = 8;
 }
 
 public sealed class LootEditName

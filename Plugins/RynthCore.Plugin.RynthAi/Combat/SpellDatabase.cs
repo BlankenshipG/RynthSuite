@@ -40,6 +40,18 @@ public static class SpellDatabase
 
     public static bool IsLoaded => _loaded;
 
+    /// <summary>Every spell in SpellData.txt with its family and power (a copy), for the loot popups' spell lists.</summary>
+    public static List<RynthCore.Loot.Editing.LootSpellEntry> AllSpells()
+    {
+        var list = new List<RynthCore.Loot.Editing.LootSpellEntry>(_spellNames.Count);
+        foreach (KeyValuePair<int, string> kv in _spellNames)
+        {
+            _spellMeta.TryGetValue(kv.Key, out var meta);
+            list.Add(new RynthCore.Loot.Editing.LootSpellEntry(kv.Value, meta.Category, meta.Power));
+        }
+        return list;
+    }
+
     public static void Load(Action<string>? log = null)
     {
         _spellNames.Clear();
