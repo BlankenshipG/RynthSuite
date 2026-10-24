@@ -15,7 +15,7 @@ internal sealed partial class InventoryView
 {
     public const int TabSearch = 0, TabCharacters = 1, TabBanking = 2;
     private const int PageSize = 100;
-    private const float RowIcon = 18f, DetailIcon = 32f, DetailsHeight = 190f;
+    private const float RowIcon = 18f, DetailIcon = 32f, DetailsHeight = 260f;
 
     private static readonly string[] SortNames = { "Name", "Character", "Count", "Value", "Burden", "Category", "Last seen" };
 
@@ -394,7 +394,53 @@ internal sealed partial class InventoryView
         else if (it.Spells.Length > 0) w.TextWrapped("Spells: " + string.Join(", ", Array.ConvertAll(it.Spells, x => "#" + x.ToString(CultureInfo.InvariantCulture))));
         if (!it.Identified && it.Category is ItemCategory.Weapon or ItemCategory.Armor or ItemCategory.Clothing or ItemCategory.Jewelry or ItemCategory.Caster)
             w.TextDisabled("Not identified when scanned: spells, workmanship and set may be missing.");
+        DrawAttributes(w, it);
         w.TextDisabled($"Item 0x{it.Id:X8}" + (it.Wcid != 0 ? $", class {it.Wcid}" : ""));
+    }
+
+    /// <summary>
+    /// Every attribute the item was saved with (2026-10-24), grouped as the loot checklists show
+    /// them: class, item (material, workmanship, value, set, imbue, slayer...), weapon / armor
+    /// (skills, damage, modifiers, slots, armor level), ratings, pet essence, T11 and requirements.
+    /// </summary>
+    private static void DrawAttributes(UiWindow w, ItemRecord it)
+    {
+        if (!it.HasFacts)
+        {
+            w.TextDisabled("Full attributes: saved by an older RynthInventory. Log that character in to save them.");
+            return;
+        }
+        RynthCore.Loot.Editing.LootItemFacts f = LikeFilter.Facts(it);
+        var groups = new List<(string Group, List<string> Parts)>();
+        void Add(string group, string part)
+        {
+            int i = groups.FindIndex(g => g.Group == group);
+            if (i < 0) { groups.Add((group, new List<string>())); i = groups.Count - 1; }
+            groups[i].Parts.Add(part);
+        }
+        Add(RynthCore.Loot.Editing.LootItemAttributes.GroupItem, "class " + RynthCore.Loot.Editing.LootItemRules.ClassName(f.ObjectClass));
+        foreach (RynthCore.Loot.Editing.LootItemAttribute r in RynthCore.Loot.Editing.LootItemAttributes.For(f, like: false, includeT11: false))
+        {
+            if (r.Group == RynthCore.Loot.Editing.LootItemAttributes.GroupSpells) continue;   // the spells are listed above
+            Add(r.Group, r.Label.ToLowerInvariant() + " " + r.ItemText);
+        }
+        // T11: the virtual keys saved with the item.
+        foreach (var (key, name) in RynthCore.Loot.T11.T11Keys.Names())
+        {
+            if (!f.Ints.TryGetValue(key, out int v) || v == 0 || key == RynthCore.Loot.T11.T11Keys.IsT11) continue;
+            string label = name.StartsWith("T11: ", StringComparison.Ordinal) ? name.Substring(5)
+                : name.StartsWith("T11 Mod: ", StringComparison.Ordinal) ? name.Substring(9) : name;
+            string value = RynthCore.Loot.Editing.LootRuleText.ValueName(key, v.ToString(CultureInfo.InvariantCulture)) ?? v.ToString(CultureInfo.InvariantCulture);
+            Add(RynthCore.Loot.Editing.LootItemAttributes.GroupT11, label.ToLowerInvariant() + " " + value);
+        }
+        foreach (var (group, parts) in groups)
+        {
+            w.TextColored(UiColors.Gold, group + ":");
+            w.SameLine();
+            w.TextWrapped(string.Join(", ", parts));
+        }
+        if (!it.Identified)
+            w.TextDisabled("Not identified when saved: appraisal attributes (workmanship, ratings, damage...) may be missing.");
     }
 
     private void DrawGroupDetails(UiWindow w, InventoryTotal t)

@@ -54,3 +54,12 @@ in Global Inventory...", which reuse the Add to loot profile checklist to build 
   - Add cantrip: Minor, Major, Epic, Legendary or Paragon and a cantrip name.
   - Cantrip "or better" and the tier counts now include Paragon ("Paragon" or "Paragon's").
 - Named values on an item's rows (material, wield skill...) can be changed from a list.
+
+## Follow-up: full attributes in Global Inventory's details
+
+- Selecting an item in Global Inventory now also lists every attribute it was saved with,
+  grouped like the checklists: class; item (material, workmanship, value, burden, spellcraft,
+  mana, set, imbue, slayer...); weapon / armor (skills, damage, variance, modifiers, slots,
+  armor level); ratings (and their total); pet essence; T11 (tier, grades, damage %, every
+  modifier, Cast on Strike); requirements. The details pane is a little taller.
+- Items saved by RynthInventory 0.1.4 or older say so; their character's next scan saves them.

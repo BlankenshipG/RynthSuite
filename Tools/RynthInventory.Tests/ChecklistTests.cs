@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using RynthCore.Loot.Editing;
 using RynthCore.Plugin.RynthInventory;
+using RynthCore.Plugin.RynthInventory.Data;
 using RynthCore.Plugin.RynthInventory.Ui;
 using RynthCore.Plugin.RynthInventory.Views;
 
@@ -83,6 +84,28 @@ namespace RynthInventory.Tests
             Check(like != null && like.Lines.Any(l => l.Contains("Jewelry")) && like.Lines.Count == cl.Conditions.Count, "ticking makes the window's filter");
             Check(cl.Conditions.Any(cd => cd.NodeType == RynthCore.Loot.VTank.VTankNodeTypes.SpellNameMatch && cd.DataLines[0].StartsWith("^(Legendary|Paragon")), "the cantrip from the list, or better");
             w.MarkSubmitted(true);
+
+            // The details of a selected item list its full saved attributes.
+            InventoryContext c2 = Context(false);
+            var view2 = new InventoryView(c2);
+            var host2 = new UiHost();
+            UiWindow w2 = host2.Add(new UiWindow("RynthInventory/Main", "Global Inventory") { Visible = true });
+            view2.Tab = InventoryView.TabSearch;
+            string key = RowKeyOfFirst(c2);
+            InventoryRow first = c2.Index!.Rows.First(r => key.EndsWith("|" + r.Item.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)) && key.StartsWith(r.Owner.Key));
+            first.Item.HasFacts = true;
+            first.Item.Identified = true;
+            first.Item.ObjectClass = (int)RynthCore.Loot.AcObjectClass.Jewelry;
+            first.Item.Ints = new Dictionary<int, int> { [105] = 8, [131] = 1, [370] = 3, [158] = 2, [160] = 150 };
+            first.Item.Doubles = new Dictionary<int, double> { [144] = 1.05 };
+            Draw(w2, view2);
+            Apply(host2, Event(1, 10, w2.Hash, w2.KeyOf("r." + key), new byte[] { 1, 0 }));
+            Draw(w2, view2);
+            ParseAll(host2, "details with attributes", out int dops);
+            string body = BodyText(w2);
+            Check(body.Contains("class Jewelry") && body.Contains("workmanship 8") && body.Contains("Ratings:") && body.Contains("damage rating 3"),
+                "details list the full attributes");
+            Check(dops <= 1500, $"details with attributes: {dops} ops");
         }
     }
 }

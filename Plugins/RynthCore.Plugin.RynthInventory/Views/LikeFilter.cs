@@ -62,7 +62,7 @@ internal sealed class LikeFilter
     }
 
     /// <summary>The saved item as a loot rule sees it. An item saved without facts gets what its record has.</summary>
-    private static LootItemFacts Facts(ItemRecord it)
+    internal static LootItemFacts Facts(ItemRecord it)
     {
         var f = new LootItemFacts
         {
