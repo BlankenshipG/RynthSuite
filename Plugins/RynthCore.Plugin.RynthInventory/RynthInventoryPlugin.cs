@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Threading.Tasks;
 using RynthCore.Plugin.RynthInventory.Data;
@@ -150,9 +151,8 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         ClearBank();
         _nextServerStateMs = 0;
         if (_window != null) { _window.Visible = _c.Settings.MainWindowOpen; _window.NeedsPass = true; }
-        // Trade: auto-resume when the character the trade is waiting for logs in.
+        // Trade: this character's part of a running trade is picked up by TickTrade.
         if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
-        _tradeResumeChecked = false;
     }
 
     /// <summary>Forgets the last bank read (login, logout, off Infinite Leaftide): the next comes fresh.</summary>
@@ -856,15 +856,33 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     private int _lastDrawnRevision = -1;
 
     // ── Trade execution ────────────────────────────────────────────────
+    // A started trade is a shared job (Data/TradeJobs.cs), because every account plays in its
+    // own client: the client that built the list writes the job; every client (that one too)
+    // gives the items of the account it is logged into, logging that account onto the
+    // character that holds them (/rc switchchar, RynthCore 2026.10.25+), and writes how each
+    // went. The client that started the trade reads every account's status back into its list.
 
-    /// <summary>
-    /// Trade give throttle: at most one give every TradeGiveIntervalMs (avoids flooding the server
-    /// and lets us detect success/failure before the next give).
-    /// </summary>
+    private const long TradeTickMs = 1000;
     private const long TradeGiveIntervalMs = 1500;
+    /// <summary>After a login the pack scan has to land before items can be found.</summary>
+    private const long TradeLoginSettleMs = 5000;
+    private const long TradeRecipientRetryMs = 5000;
+    /// <summary>A switch that didn't happen (old engine, char-select trouble) is asked for again after this.</summary>
+    private const long TradeSwitchRetryMs = 60_000;
+    private const long TradeHeartbeatMs = 10_000;
+    private static readonly TimeSpan TradeStaleStatus = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan TradeNoClientGrace = TimeSpan.FromSeconds(15);
+
+    private long _nextTradeTickMs;
     private long _nextTradeGiveMs;
-    /// <summary>Whether we've checked for auto-resume on this login (once per login).</summary>
-    private bool _tradeResumeChecked;
+    private long _lastSwitchRequestMs;
+    private string _lastSwitchTarget = string.Empty;
+    private long _lastTradeStatusWriteMs;
+    // The job this client is giving for and its own report on it (this client is its only writer).
+    private string _givingJobId = string.Empty;
+    private TradeAccountStatus? _givingStatus;
+
+    private string TradeFolder => TradeJobs.Folder(_c.Store.Root);
 
     private void RunTradeCommand(string cmd)
     {
@@ -877,10 +895,9 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
                 CancelTrade();
                 break;
             case "clear":
-                _c.Trade = new TradeList();
-                if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
-                break;
             case "new":
+                if (_c.Trade != null && _c.Trade.JobId.Length > 0 && _c.Trade.Phase != TradePhase.Executing)
+                    TradeJobs.Delete(TradeFolder, _c.Trade.JobId);
                 _c.Trade = new TradeList();
                 if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
                 break;
@@ -896,7 +913,8 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     {
         TradeList? trade = _c.Trade;
         if (trade == null || trade.Items.Count == 0) return;
-        if (trade.Recipient.Trim().Length == 0)
+        string recipient = trade.Recipient.Trim();
+        if (recipient.Length == 0)
         {
             trade.Message = "Enter a player name to send items to.";
             if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
@@ -909,18 +927,50 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
             return;
         }
 
+        var job = new TradeJob
+        {
+            Id = TradeJobs.NewId(),
+            Server = trade.Server,
+            Recipient = recipient,
+            StartedBy = _c.Character.Length > 0 ? $"{_c.Character} ({_c.Account})" : _c.Account,
+            StartedUtc = DateTime.UtcNow,
+        };
+        foreach (TradeItem item in trade.Items)
+        {
+            item.Status = TradeItemStatus.Pending;
+            item.StatusText = string.Empty;
+            job.Items.Add(item);
+        }
+        try { TradeJobs.WriteJob(TradeFolder, job); }
+        catch (Exception ex)
+        {
+            trade.Message = "Couldn't write the trade file: " + ex.Message;
+            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+            return;
+        }
+
+        trade.JobId = job.Id;
+        trade.StartedUtc = job.StartedUtc;
         trade.Phase = TradePhase.Executing;
-        trade.TargetPlayerId = 0; // resolved per-give
-        trade.Message = "Trade started. Giving items...";
-        _nextTradeGiveMs = Environment.TickCount64;
+        trade.Message = $"Trade started. Each account's client logs onto the character holding the items and gives them to {recipient}: {recipient} has to stand next to where each of those characters logs in.";
+        _nextTradeTickMs = 0;
         if (_tradeWindow != null) { _tradeWindow.Visible = true; _tradeWindow.NeedsPass = true; }
-        _c.Print($"Trade started: giving {trade.Items.Count} item(s) to {trade.Recipient}.");
+        _c.Print($"Trade started: {trade.Items.Count} item(s) to {recipient}.");
     }
 
     private void CancelTrade()
     {
         TradeList? trade = _c.Trade;
         if (trade == null) return;
+        if (trade.JobId.Length > 0)
+        {
+            TradeJob? job = TradeJobs.ReadJob(TradeFolder, trade.JobId);
+            if (job != null && !job.Cancelled)
+            {
+                job.Cancelled = true;
+                try { TradeJobs.WriteJob(TradeFolder, job); } catch { }
+            }
+        }
         trade.Phase = TradePhase.Cancelled;
         trade.Message = "Trade cancelled.";
         if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
@@ -928,110 +978,190 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
 
     private void TickTrade(long now)
     {
-        TradeList? trade = _c.Trade;
-        if (trade == null) return;
+        if (now < _nextTradeTickMs) return;
+        _nextTradeTickMs = now + TradeTickMs;
+        try { TickTradeGiver(now); }
+        catch (Exception ex) { Host.Log($"[RynthInventory] trade giver failed: {ex.GetType().Name}: {ex.Message}"); }
+        try { MergeTradeStatus(); }
+        catch (Exception ex) { Host.Log($"[RynthInventory] trade status read failed: {ex.GetType().Name}: {ex.Message}"); }
+    }
 
-        // Auto-resume: when the player switches to a character the trade is waiting for.
-        if (_identityKnown && !_tradeResumeChecked && trade.Phase == TradePhase.WaitSwitch)
+    /// <summary>The client that started the trade: every account's status file into its list.</summary>
+    private void MergeTradeStatus()
+    {
+        TradeList? trade = _c.Trade;
+        if (trade == null || trade.JobId.Length == 0 || trade.Phase == TradePhase.Building) return;
+
+        List<TradeAccountStatus> statuses = TradeJobs.ReadStatuses(TradeFolder, trade.JobId);
+        for (int i = 0; i < trade.Items.Count; i++)
         {
-            _tradeResumeChecked = true;
-            string currentKey = CharacterSnapshot.MakeKey(_c.Server, _c.Character);
-            if (string.Equals(currentKey, trade.WaitForCharacterKey, StringComparison.Ordinal))
+            TradeItem item = trade.Items[i];
+            foreach (TradeAccountStatus st in statuses)
             {
-                trade.Phase = TradePhase.Executing;
-                trade.TargetPlayerId = 0;
-                trade.Message = $"Resumed on {_c.Character}. Giving items...";
-                _nextTradeGiveMs = now + 3000; // brief delay after login
-                _c.Print($"Trade resumed: giving items to {trade.Recipient} from {_c.Character}.");
-                if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+                if (!TradeJobs.SameAccount(st.Account, item.Account)) continue;
+                if (st.Items.TryGetValue(i, out var v)) { item.Status = v.Status; item.StatusText = v.Text; }
+                break;
             }
         }
 
-        if (trade.Phase != TradePhase.Executing || !_c.InWorld || !_identityKnown) return;
-        if (now < _nextTradeGiveMs) return;
-
-        // Find pending items for the current character.
-        string charKey = CharacterSnapshot.MakeKey(_c.Server, _c.Character);
-        List<TradeItem> pending = trade.PendingForCharacter(charKey);
-
-        if (pending.Count > 0)
+        trade.AccountLines.Clear();
+        var accounts = new List<string>();
+        foreach (TradeItem item in trade.Items)
+            if (!accounts.Exists(a => TradeJobs.SameAccount(a, item.Account))) accounts.Add(item.Account);
+        foreach (string account in accounts)
         {
-            // Resolve target player id if not yet done.
-            if (trade.TargetPlayerId == 0)
-            {
-                trade.TargetPlayerId = ResolvePlayerByName(trade.Recipient);
-                if (trade.TargetPlayerId == 0)
-                {
-                    trade.Message = $"Can't find {trade.Recipient} nearby. Make sure they are close to you.";
-                    _nextTradeGiveMs = now + 5000; // retry in 5 seconds
-                    if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
-                    return;
-                }
-            }
-
-            TradeItem item = pending[0];
-            item.Status = TradeItemStatus.Giving;
-            item.StatusText = "giving...";
-            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
-
-            // Try to find the actual item on the character.
-            uint objId = FindItemOnCharacter(item);
-            if (objId == 0)
-            {
-                item.Status = TradeItemStatus.NotFound;
-                item.StatusText = "not found on this character";
-                // Tell the recipient what we couldn't find.
-                NotifyRecipient(trade, $"Could not find {item.ItemName} - it may have been moved or consumed.");
-                _nextTradeGiveMs = now + 500;
-                if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
-                return;
-            }
-
-            bool ok = _c.Host.GiveObjectTo(objId, trade.TargetPlayerId, item.Quantity);
-            if (ok)
-            {
-                item.Status = TradeItemStatus.Given;
-                item.StatusText = "given";
-                _c.Print($"Gave {item.ItemName} to {trade.Recipient}.");
-            }
+            bool accountDone = trade.Items.TrueForAll(it => !TradeJobs.SameAccount(it.Account, account)
+                || it.Status is not (TradeItemStatus.Pending or TradeItemStatus.Giving));
+            TradeAccountStatus? st = statuses.Find(s => TradeJobs.SameAccount(s.Account, account));
+            string line;
+            if (st == null)
+                line = DateTime.UtcNow - trade.StartedUtc > TradeNoClientGrace
+                    ? $"{account}: no client logged into this account has picked it up (is one running with RynthInventory?)"
+                    : $"{account}: waiting for its client...";
             else
             {
-                item.Status = TradeItemStatus.Failed;
-                item.StatusText = "give failed";
-                NotifyRecipient(trade, $"Failed to give {item.ItemName} - give command rejected.");
+                line = $"{account}: " + (st.Character.Length > 0 ? st.Character + " - " : "") + st.Message;
+                if (!accountDone && DateTime.UtcNow - st.UpdatedUtc > TradeStaleStatus)
+                    line += " (its client has gone quiet - logging in, or closed?)";
             }
-            _nextTradeGiveMs = now + TradeGiveIntervalMs;
-            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
-            return;
+            trade.AccountLines.Add(line);
         }
 
-        // No more pending items on this character. Are there items on other characters?
-        var remaining = trade.PendingCharacters();
-        if (remaining.Count == 0)
+        if (trade.Phase == TradePhase.Executing && trade.AllDone())
         {
-            // All done.
             trade.Phase = TradePhase.Complete;
             var (given, notFound, failed, _) = trade.Counts();
             trade.Message = $"Trade complete: {given} given" +
                             (notFound > 0 ? $", {notFound} not found" : "") +
                             (failed > 0 ? $", {failed} failed" : "") + ".";
             _c.Print(trade.Message);
-            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
         }
-        else
+        if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+    }
+
+    /// <summary>Every client: gives the items of the account it is logged into.</summary>
+    private void TickTradeGiver(long now)
+    {
+        if (!_c.InWorld || !_identityKnown || _c.Account.Length == 0 || _c.Account == "unknown") return;
+        if (now - _loginMs < TradeLoginSettleMs) return;
+
+        List<TradeJob> jobs = TradeJobs.ReadJobs(TradeFolder, _c.Server);
+        foreach (TradeJob job in jobs)
         {
-            // Need to switch characters — log out automatically so the player can pick the next one.
-            var (key, name, account) = remaining[0];
-            trade.Phase = TradePhase.WaitSwitch;
-            trade.WaitForCharacterKey = key;
-            trade.WaitForCharacterName = name;
-            trade.WaitForAccount = account;
-            trade.Message = $"Log in as {name} (account {account}) to continue. The trade resumes automatically.";
-            _c.Print(trade.Message);
-            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
-            // Auto-logout: send the player back to character select.
-            if (Host.HasInvokeChatParser)
-                Host.InvokeChatParser("/logout");
+            var mine = new List<int>();
+            for (int i = 0; i < job.Items.Count; i++)
+                if (TradeJobs.SameAccount(job.Items[i].Account, _c.Account)) mine.Add(i);
+            if (mine.Count == 0) continue;
+
+            TradeAccountStatus st = GivingStatusFor(job.Id);
+            var pending = mine.FindAll(i => !st.Items.TryGetValue(i, out var v) || v.Status is TradeItemStatus.Pending or TradeItemStatus.Giving);
+            if (pending.Count == 0)
+            {
+                int given = mine.FindAll(i => st.Items[i].Status == TradeItemStatus.Given).Count;
+                string done = $"done: {given} of {mine.Count} given.";
+                if (!string.Equals(st.Message, done, StringComparison.Ordinal)) SetTradeStatus(job.Id, st, done, now, force: true);
+                continue;
+            }
+            if (job.Cancelled)
+            {
+                if (!string.Equals(st.Message, "trade cancelled.", StringComparison.Ordinal)) SetTradeStatus(job.Id, st, "trade cancelled.", now, force: true);
+                continue;
+            }
+            GiveForJob(job, st, pending, now);
+            return;   // one job at a time, oldest first
+        }
+    }
+
+    private TradeAccountStatus GivingStatusFor(string jobId)
+    {
+        if (_givingStatus != null && string.Equals(_givingJobId, jobId, StringComparison.Ordinal))
+            return _givingStatus;
+        _givingJobId = jobId;
+        _givingStatus = TradeJobs.ReadStatus(TradeFolder, jobId, _c.Account) ?? new TradeAccountStatus { Account = _c.Account };
+        _givingStatus.Account = _c.Account;
+        _lastTradeStatusWriteMs = 0;
+        return _givingStatus;
+    }
+
+    private void GiveForJob(TradeJob job, TradeAccountStatus st, List<int> pending, long now)
+    {
+        // This account's only character online can't be someone else at the same time: when it is
+        // the recipient, the items on its other characters can't be given from here.
+        if (InventoryIndex.SameName(job.Recipient, _c.Character))
+        {
+            foreach (int i in pending)
+                st.Items[i] = (TradeItemStatus.Failed, $"on {job.Items[i].CharacterName}, the recipient's own account (only one of its characters can be online)");
+            SetTradeStatus(job.Id, st, "the recipient's account: these items can't be given while it is logged in.", now, force: true);
+            return;
+        }
+
+        string myKey = CharacterSnapshot.MakeKey(_c.Server, _c.Character);
+        List<int> here = pending.FindAll(i => string.Equals(job.Items[i].CharacterKey, myKey, StringComparison.Ordinal));
+        if (here.Count > 0)
+        {
+            if (now < _nextTradeGiveMs) { SetTradeStatus(job.Id, st, st.Message, now, force: false); return; }
+
+            uint target = ResolvePlayerByName(job.Recipient);
+            if (target == 0)
+            {
+                _nextTradeGiveMs = now + TradeRecipientRetryMs;
+                SetTradeStatus(job.Id, st, $"waiting for {job.Recipient} to come near {_c.Character} ({here.Count} item(s) to give).", now, force: false);
+                return;
+            }
+
+            int idx = here[0];
+            TradeItem item = job.Items[idx];
+            uint objId = FindItemOnCharacter(item);
+            if (objId == 0)
+                st.Items[idx] = (TradeItemStatus.NotFound, $"not found on {_c.Character}");
+            else if (_c.Host.GiveObjectTo(objId, target, item.Quantity))
+            {
+                st.Items[idx] = (TradeItemStatus.Given, "given");
+                _c.Print($"Trade: gave {item.ItemName}{(item.Quantity > 0 ? " x" + item.Quantity.ToString(CultureInfo.InvariantCulture) : "")} to {job.Recipient}.");
+            }
+            else
+                st.Items[idx] = (TradeItemStatus.Failed, "the give was refused");
+            _nextTradeGiveMs = now + TradeGiveIntervalMs;
+            SetTradeStatus(job.Id, st, $"giving to {job.Recipient} ({here.Count - 1} left on {_c.Character}).", now, force: true);
+            return;
+        }
+
+        // The rest are on another character of this account: log onto it.
+        TradeItem next = job.Items[pending[0]];
+        bool sameTarget = InventoryIndex.SameName(_lastSwitchTarget, next.CharacterName);
+        if (sameTarget && now - _lastSwitchRequestMs < TradeSwitchRetryMs)
+        {
+            SetTradeStatus(job.Id, st, st.Message, now, force: false);
+            return;
+        }
+        if (sameTarget && _lastSwitchRequestMs != 0)
+            Host.Log($"[RynthInventory] trade: still not on {next.CharacterName} {TradeSwitchRetryMs / 1000}s after asking; asking again.");
+        _lastSwitchTarget = next.CharacterName;
+        _lastSwitchRequestMs = now;
+        SetTradeStatus(job.Id, st, $"logging onto {next.CharacterName} to give its items.", now, force: true);
+        _c.Print($"Trade: logging {_c.Account} onto {next.CharacterName} to give its items to {job.Recipient}.");
+        if (_c.Host.HasInvokeChatParser)
+            _c.Host.InvokeChatParser("/rc switchchar " + next.CharacterName);
+    }
+
+    /// <summary>Writes this account's status file when something changed (or as a heartbeat).</summary>
+    private void SetTradeStatus(string jobId, TradeAccountStatus st, string message, long now, bool force)
+    {
+        bool changed = force || !string.Equals(st.Message, message, StringComparison.Ordinal)
+                       || !string.Equals(st.Character, _c.Character, StringComparison.Ordinal);
+        if (!changed && now - _lastTradeStatusWriteMs < TradeHeartbeatMs) return;
+        st.Message = message;
+        st.Character = _c.Character;
+        st.UpdatedUtc = DateTime.UtcNow;
+        try
+        {
+            TradeJobs.WriteStatus(TradeFolder, jobId, st);
+            _lastTradeStatusWriteMs = now;
+        }
+        catch (Exception ex)
+        {
+            Host.Log($"[RynthInventory] trade status write failed: {ex.Message}");
+            _lastTradeStatusWriteMs = now;   // try again at the next heartbeat, not every tick
         }
     }
 
@@ -1098,13 +1228,5 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
                 return id;
         }
         return 0;
-    }
-
-    /// <summary>Tells the recipient player (via chat) about items that couldn't be given.</summary>
-    private void NotifyRecipient(TradeList trade, string message)
-    {
-        // Use InvokeChatParser to send a /tell to the recipient.
-        if (_c.Host.HasInvokeChatParser && trade.Recipient.Length > 0)
-            _c.Host.InvokeChatParser($"/tell {trade.Recipient}, [RynthInventory Trade] {message}");
     }
 }

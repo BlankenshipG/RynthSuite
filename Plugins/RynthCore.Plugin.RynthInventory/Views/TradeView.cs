@@ -43,8 +43,13 @@ internal sealed class TradeView
                 TradePhase.WaitSwitch => UiColors.Yellow,
                 _ => UiColors.White,
             };
-            w.TextColored(msgColor, trade.Message);
+            // The running message is long (who has to stand where): wrap it; the end states are short.
+            if (trade.Phase == TradePhase.Executing) w.TextWrapped(trade.Message);
+            else w.TextColored(msgColor, trade.Message);
         }
+        // Each giving account's client: which character it is on and what it is doing.
+        foreach (string line in trade.AccountLines)
+            w.TextDisabled(line);
 
         // ── Recipient ───────────────────────────────────────────────────
         if (building)

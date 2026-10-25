@@ -50,7 +50,7 @@ internal enum TradePhase
     Building,
     /// <summary>Trade is running: giving items on the current character.</summary>
     Executing,
-    /// <summary>Current character's items are done; waiting for the player to switch characters.</summary>
+    /// <summary>Unused since the shared trade jobs (2026-10-25): each account's client switches itself.</summary>
     WaitSwitch,
     /// <summary>All items processed (some may have failed).</summary>
     Complete,
@@ -75,14 +75,11 @@ internal sealed class TradeList
     public TradePhase Phase = TradePhase.Building;
     /// <summary>Status message shown at the top of the trade window.</summary>
     public string Message = string.Empty;
-    /// <summary>The character key we're waiting for the player to switch to (WaitSwitch phase).</summary>
-    public string WaitForCharacterKey = string.Empty;
-    /// <summary>Display name of the character we're waiting for.</summary>
-    public string WaitForCharacterName = string.Empty;
-    /// <summary>Account of the character we're waiting for.</summary>
-    public string WaitForAccount = string.Empty;
-    /// <summary>The resolved target player id for GiveObjectTo (0 until resolved).</summary>
-    public uint TargetPlayerId;
+    /// <summary>The shared job this list was started as (TradeJobs); empty while building.</summary>
+    public string JobId = string.Empty;
+    public DateTime StartedUtc;
+    /// <summary>One line per giving account (where its client is, what it is doing), from the status files.</summary>
+    public readonly List<string> AccountLines = new();
 
     /// <summary>Adds an item from an inventory row. Returns null on success, an error message on failure.</summary>
     public string? Add(InventoryRow row, int quantity)
