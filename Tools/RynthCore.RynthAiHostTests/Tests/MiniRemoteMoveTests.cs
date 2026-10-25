@@ -3,8 +3,10 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using RynthCore.Plugin.RynthAi;
+using RynthCore.Plugin.RynthAi.Huds;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.RynthAi.MiniRemote;
+using RynthCore.Plugin.RynthAi.MiniRemote.Crafting;
 using RynthCore.Plugin.Shared;
 using RynthCore.PluginSdk;
 using RynthCore.RynthAiHostTests.Fakes;
@@ -136,6 +138,39 @@ internal static class MiniRemoteMoveTests
         Check.Eq(ilt.Text(RynthServerHub.TextServerId), string.Empty, "no server of a plugin's in the menu");
         Check.Eq(ilt.Setting(RynthServerHub.SettingVaultedDungeons), -1, "no server setting offered");
         Check.False(c.SkipLoginQuestRefresh, "the login /myquests refresh isn't skipped");
+    }
+
+    /// <summary>
+    /// Owner, 2026-10-20: the ILT pieces of RynthAi's universal tabs (Pets > Breeding, Crafting > Rings
+    /// and Trinkets) and the remote's Bank / Guardian sections show on Infinite Leaftide only.
+    /// </summary>
+    private static void IltOnlyGates()
+    {
+        // Pets > Breeding: RynthILT loaded, an ILT world, and the server not reporting breeding off.
+        Check.True(MiniRemoteGates.ShowBreeding(iltLoaded: true, iltWorld: true, breedingFeature: -1), "ILT, breeding not reported yet: shown");
+        Check.True(MiniRemoteGates.ShowBreeding(true, true, 1), "ILT, breeding on: shown");
+        Check.False(MiniRemoteGates.ShowBreeding(true, true, 0), "ILT, server has breeding off: hidden");
+        Check.False(MiniRemoteGates.ShowBreeding(true, false, -1), "another world: hidden");
+        Check.False(MiniRemoteGates.ShowBreeding(false, false, -1), "no RynthILT: hidden");
+
+        // Crafting > Rings (ring spells) and Trinkets.
+        Check.True(MiniRemoteGates.ShowRings(true), "Rings on ILT");
+        Check.False(MiniRemoteGates.ShowRings(false), "no Rings elsewhere");
+        Check.True(MiniRemoteGates.ShowTrinkets(true, 0), "Trinkets on ILT");
+        Check.False(MiniRemoteGates.ShowTrinkets(false, 0), "no Trinkets elsewhere (retail has no trinket tinkering)");
+        Check.True(MiniRemoteGates.ShowTrinkets(false, 2), "unless the server plugin or custom rows add some");
+        Check.Eq(TinkerCatalog.RetailFor(TinkerBench.Trinkets).Count, 0, "retail trinket rows are indeed empty");
+
+        // The remote's Bank and Guardian sections: ILT and switched on.
+        Check.True(MiniRemoteGates.ShowIltSection(iltWorld: true, enabled: true), "ILT, on: shown");
+        Check.False(MiniRemoteGates.ShowIltSection(true, false), "ILT, switched off: hidden");
+        Check.False(MiniRemoteGates.ShowIltSection(false, true), "another world: hidden, whatever the switch");
+
+        // Without RynthILT the controller's client never reports ILT, so all of the above stay hidden.
+        var c = NewController("gates", out _, out _);
+        c.Ilt.Tick();
+        Check.False(MiniRemoteGates.ShowBreeding(c.Ilt.Loaded, c.Ilt.IsIltWorld, c.Ilt.Feature(RynthIltHub.FeaturePetBreeding)), "no RynthILT: no Breeding");
+        Check.False(MiniRemoteGates.ShowRings(c.Ilt.IsIltWorld), "no RynthILT: no Rings");
     }
 
     private static void Commands()

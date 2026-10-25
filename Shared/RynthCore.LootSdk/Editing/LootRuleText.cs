@@ -488,6 +488,17 @@ public static class LootRuleText
 
     // ── Vocabulary for the face ──────────────────────────────────────────
 
+    /// <summary>The vocabulary with the standard spell lists (<paramref name="spells"/>, from a spell table).</summary>
+    public static LootEditVocab BuildVocab(LootSpellCatalog? spells)
+    {
+        LootEditVocab v = BuildVocab();
+        if (spells == null) return v;
+        foreach (LootSpellFamily f in spells.Families)
+            v.SpellFamilies.Add(new LootEditSpellFamily { Name = f.Name, School = f.School, MinLevel = f.MinLevel, MaxLevel = f.MaxLevel });
+        v.Cantrips.AddRange(spells.Cantrips);
+        return v;
+    }
+
     public static LootEditVocab BuildVocab()
     {
         var v = new LootEditVocab();
@@ -513,6 +524,7 @@ public static class LootRuleText
             Fill(vt.Values, ValueTableFor(key)!);
             v.LongValueTables.Add(vt);
         }
+        v.CantripTiers.AddRange(LootItemAttributes.CantripTiers);
         return v;
 
         static void Fill(List<LootEditName> into, (int Id, string Name)[] from)

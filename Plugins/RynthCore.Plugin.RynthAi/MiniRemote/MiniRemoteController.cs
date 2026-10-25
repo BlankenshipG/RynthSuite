@@ -35,7 +35,7 @@ internal sealed class MiniRemoteController
 
     /// <summary>Where the quest UI went (chat reply for the retired "/ra quests" verbs and tab names).</summary>
     public const string QuestsMovedText =
-        "[Mini Remote] Quests moved to RynthOracle: /ro (Quests tab: timers, tracking, rewards), /ro timers (Quest Timers window).";
+        "[Mini Remote] Quests moved to RynthOracle: /ro (Quests tab: timers, tracking, rewards, /qb), /ro timers (Quest Timers window).";
 
     private readonly MiniRemoteContext _ctx;
     private readonly Func<QuestTracker?> _quests;
@@ -45,7 +45,7 @@ internal sealed class MiniRemoteController
     private bool _confirmOpened;
 
     public PetsTab Pets { get; }
-    /// <summary>The Crafting tab (tinker benches and server salvage; any world). SilentKelpie's.</summary>
+    /// <summary>The Crafting tab (tinker benches and the Rings chain; any world).</summary>
     public CraftingTab Crafting { get; }
     public VTankUsdImporter Usd { get; }
 
@@ -67,6 +67,7 @@ internal sealed class MiniRemoteController
 
     /// <summary>The server plugin's hub (its world check, tabs, sections, verbs; RynthILT on Infinite Leaftide).</summary>
     public ServerHubClient ServerHub => _ctx.ServerHub;
+    public IltHubView Ilt => _ctx.Ilt;
 
     /// <summary>Shows / hides / toggles the Mini Remote ("show", "hide", "toggle"). Set by RynthAiPlugin; returns the chat reply.</summary>
     public Func<string, string>? MiniRemoteCommand { get; set; }
@@ -113,13 +114,14 @@ internal sealed class MiniRemoteController
         }
     }
 
-    /// <summary>Pump-thread chat line (the heal pet's heal). Never eats.</summary>
+    /// <summary>Pump-thread chat line (the heal pet's heal, a tinker run's results). Never eats.</summary>
     public void OnChat(string text)
     {
         if (string.IsNullOrEmpty(text)) return;
-        try { Pets.OnChat(text.TrimEnd('\r', '\n')); }
+        string line = text.TrimEnd('\r', '\n');
+        try { Pets.OnChat(line); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Pets, ex, "PetsTab.OnChat"); }
-        try { Crafting.OnChat(text.TrimEnd('\r', '\n')); }
+        try { Crafting.OnChat(line); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Crafting, ex, "CraftingTab.OnChat"); }
     }
 
@@ -254,12 +256,27 @@ internal sealed class MiniRemoteController
                 _ctx.Chat(QuestsMovedText);
                 return true;
             }
-            // "/ra hub open|tab character": the Character tab left the Mini Remote (2026-10-13);
-            // HudController.HandleTabCommand opens RynthOracle's Character tab.
+            // "/ra hub open|tab character|charms|banking": those left the Mini Remote (2026-10-13);
+            // HudController.HandleTabCommand opens RynthOracle's Character tab or Global Inventory > Banking.
             if (cmd is "open" or "tab" && args.Length > 1 && Huds.MovedTabs.CommandFor(args[1]) != null)
             {
                 string? reply = MiniRemoteTabCommand?.Invoke(args[1].Trim().ToLowerInvariant(), "show");
                 if (cmd == "open" && reply != null) _ctx.Chat("[Mini Remote] " + reply);
+                return true;
+            }
+            // "/ra hub open|tab breeding": the Pets tab on its Breeding sub-tab (RynthOracle's Pet Breeding tab links here).
+            if (cmd is "open" or "tab" && args.Length > 1 && args[1].Trim().ToLowerInvariant() is "breeding" or "breed")
+            {
+                // Infinite Leaftide only (MiniRemoteGates): elsewhere there is no Breeding sub-tab to open.
+                if (!MiniRemoteGates.ShowBreeding(Ilt.Loaded, Ilt.IsIltWorld, Ilt.Feature(RynthIltHub.FeaturePetBreeding)))
+                {
+                    _ctx.Chat(Ilt.Loaded ? "[Mini Remote] Pet breeding is an Infinite Leaftide feature (not on this world, or the server has it off)."
+                                         : "[Mini Remote] " + IltHubView.NotLoaded);
+                    return true;
+                }
+                Pets.SelectSubTab(RynthIltHub.SectionPetBreeding);
+                if (cmd == "open") OpenTab(MiniRemoteTabs.Pets, "show");
+                else MiniRemoteTabCommand?.Invoke(MiniRemoteTabs.Pets, "select");
                 return true;
             }
             switch (cmd)

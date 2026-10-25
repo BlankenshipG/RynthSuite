@@ -22,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+    <ProjectReference Include="..\..\Shared\RynthCore.LootSdk\RynthCore.LootSdk.csproj" />
     <!-- The engine parser's whitelists use ImGui.NET's enums. -->
     <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
   </ItemGroup>
@@ -31,6 +32,8 @@
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
     <!-- The plugin links this one from Plugins/Shared (the glob above only covers the plugin's folder). -->
     <Compile Include="..\..\Plugins\Shared\StorageFeed.cs" Link="Shared\StorageFeed.cs" />
+    <!-- RynthILT's "RynthILT.Data" reader: the Banking tab's bank view and verbs. -->
+    <Compile Include="..\..\Plugins\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
   </ItemGroup>
 
   <ItemGroup>

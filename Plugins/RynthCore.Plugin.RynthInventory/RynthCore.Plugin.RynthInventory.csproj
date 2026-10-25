@@ -31,6 +31,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+    <!-- "Find like this in Global Inventory" (/ginv like): the filter spec, its matcher and T11 parsing (2026-10-24). -->
+    <ProjectReference Include="..\..\Shared\RynthCore.LootSdk\RynthCore.LootSdk.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -41,6 +43,8 @@
   <ItemGroup>
     <!-- Storage another plugin reads for us ("storage" commands: Aelrynth's vault from RynthAelrynth). Also linked by RynthInventory.Tests. -->
     <Compile Include="..\Shared\StorageFeed.cs" Link="Shared\StorageFeed.cs" />
+    <!-- RynthILT's "RynthILT.Data" interface: the Banking tab's balances for every character on the server. -->
+    <Compile Include="..\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
   </ItemGroup>
 
 </Project>

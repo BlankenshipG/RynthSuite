@@ -184,13 +184,11 @@ public partial class BuffManager : IDisposable
     private const double BuffFailCooldownSec = 120.0;
 
     // A vital spell LEVEL the server refused for missing components (Revitalize, Heal, Stamina
-    // to Mana...): that level is passed over for NoComponentsLevelSec and the next lower level
-    // with components is cast instead. It used to park the whole family, then retry the same
-    // top level the character had no components for (2026-10-08).
-    private readonly Dictionary<int, DateTime> _noComponentsUntil = new();
-    private const double NoComponentsLevelSec = 600.0;
-    private bool LevelLacksComponents(int spellId)
-        => _noComponentsUntil.TryGetValue(spellId, out DateTime until) && RynthClock.Now < until;
+    // to Mana...): that level is passed over for SpellManager.NoComponentsSec and the next lower
+    // level with components is cast instead. It used to park the whole family, then retry the
+    // same top level the character had no components for (2026-10-08). The memory is
+    // SpellManager's since 2026-10-18, shared with combat's spell choice.
+    private bool LevelLacksComponents(int spellId) => _spellManager.LacksComponents(spellId);
 
     // Per-family SILENT no-show counter. Distinct from _buffFailCooldownUntil
     // (which catches chat-explicit hard rejects). This catches the /god case:
@@ -2179,6 +2177,31 @@ public partial class BuffManager : IDisposable
 
     private bool VitalNo(string why) { _vitalWhy = why; return false; }
 
+    // The last time a refused vital use was logged (one line per RefusedUseLogMs, not per tick).
+    private DateTime _lastRefusedUseLog = DateTime.MinValue;
+    private const double RefusedUseLogMs = 5000;
+    /// <summary>Vital item uses the engine refused to send (tests, status).</summary>
+    internal int VitalUsesRefused { get; private set; }
+
+    /// <summary>
+    /// The engine didn't send a kit or potion use: it refuses new game actions while it holds
+    /// them, for 5 s after a portal, a teleport or a respawn (WorldTransitionState), and when its
+    /// action queue is full. Nothing is marked as used, so the vitals keep trying on the next ticks
+    /// (and the other heals keep their turn) instead of waiting up to 8 s for a kit result that
+    /// can't come: Silentkelpie respawned into a fight, his kit 3.5 s after the portal was refused,
+    /// and he died 3.4 s later with every heal still waiting for it (2026-10-19 18:21).
+    /// </summary>
+    private bool VitalUseRefused(string what)
+    {
+        VitalUsesRefused++;
+        if ((RynthClock.Now - _lastRefusedUseLog).TotalMilliseconds >= RefusedUseLogMs)
+        {
+            _lastRefusedUseLog = RynthClock.Now;
+            _host.Log($"[RynthAi] Vitals: the engine didn't send {what} (it holds game actions for 5 s after a portal, teleport or respawn): trying again next tick.");
+        }
+        return VitalNo($"the engine didn't send {what}");
+    }
+
     // The pending cast is a vital one when _pendingSpellId equals this (set by AttemptVitalCast).
     private int _pendingVitalSpellId;
     private DateTime _lastManaFloorLogAt = DateTime.MinValue;
@@ -2358,7 +2381,8 @@ public partial class BuffManager : IDisposable
             if (IsKitName(potion.Name)) continue;
             if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
             _host.Log($"[RynthAi] Vitals: drinking {rule.Name} ({rule.Type})" + (potion.Id != rule.Id ? " from a new stack." : "."));
-            _host.UseFor(unchecked((uint)potion.Id), "Buff", $"vitals: drink {rule.Name} ({rule.Type}) from the Items list");
+            if (!_host.UseFor(unchecked((uint)potion.Id), "Buff", $"vitals: drink {rule.Name} ({rule.Type}) from the Items list"))
+                return VitalUseRefused(rule.Name);
             _lastPotionAt = RynthClock.Now;
             _vitalActionsSent++;
             _lastCastAttempt = RynthClock.Now;
@@ -2375,7 +2399,8 @@ public partial class BuffManager : IDisposable
             if (IsKitName(wo.Name)) continue;
             if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
             _host.Log($"[RynthAi] Vitals: using {wo.Name} from the pack ({kind}).");
-            _host.UseFor(unchecked((uint)wo.Id), "Buff", $"vitals: {kind} potion from the pack");
+            if (!_host.UseFor(unchecked((uint)wo.Id), "Buff", $"vitals: {kind} potion from the pack"))
+                return VitalUseRefused(wo.Name ?? kind + " potion");
             _lastPotionAt = RynthClock.Now;
             _vitalActionsSent++;
             _lastCastAttempt = RynthClock.Now;
@@ -2529,7 +2554,8 @@ public partial class BuffManager : IDisposable
         if (playerId == 0) return false;
         if (HeldCastBlocksItemUse(out string heldWhy)) return VitalNo(heldWhy);
         if (fromPack) _host.Log($"[RynthAi] Vitals: using {kit.Name} from the pack.");
-        _host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: healing kit on yourself");
+        if (!_host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: healing kit on yourself"))
+            return VitalUseRefused(kit.Name ?? "the healing kit");
         _lastCastAttempt = RynthClock.Now;
         MarkKitUsed();
         NoteHealSent(kit.Name ?? "healing kit");
@@ -2560,7 +2586,8 @@ public partial class BuffManager : IDisposable
         if (playerId == 0) return false;
         if (HeldCastBlocksItemUse(out _)) return false;
         _host.Log($"[RynthAi] Vitals: using {kit.Name} from the pack.");
-        _host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: stamina kit on yourself");
+        if (!_host.UseOnFor(unchecked((uint)kit.Id), playerId, "Buff", "vitals: stamina kit on yourself"))
+            return VitalUseRefused(kit.Name ?? "the stamina kit");
         _vitalActionsSent++;
         _lastCastAttempt = RynthClock.Now;
         MarkKitUsed(stamina: true);
@@ -2964,11 +2991,105 @@ public partial class BuffManager : IDisposable
     /// <summary>Casts that replaced an active buff of the same family at a lower level (tests, status).</summary>
     internal int BuffUpgrades { get; private set; }
 
+    /// <summary>
+    /// The spell a buff casts now: the highest level the skill allows (the Buffing tier lines) that
+    /// the character knows and can cast, else the next lower one; 0 when no level is castable. A
+    /// level the server refused for components is passed over (<see cref="LevelUnusable"/>), so the
+    /// buff drops to the next lower level. With Use Fellowship Buffs on and in a fellowship,
+    /// the buff's fellowship version replaces it (<see cref="FellowshipVersion"/>).
+    /// </summary>
     internal int FindBestSpellId(string baseName, AcSkillType skill)
     {
-        int id = _spellManager.GetDynamicSelfBuffId(baseName, skill);
-        return id != 0 ? id : ResolveProfileFallback(baseName, skill);
+        int id = _spellManager.GetDynamicSelfBuffId(baseName, skill, LevelUnusable);
+        if (id == 0) id = ResolveProfileFallback(baseName, skill);
+        if (id == 0 || !IsLastingBuff(id)) return 0;
+        return FellowshipVersion(id, skill);
     }
+
+    /// <summary>
+    /// Buffing casts only buffs that stay on (owner, 2026-10-19): never a heal for health, stamina
+    /// or mana (Heal Self, Revitalize, Mana Boost, Stamina to Mana: the vitals do those, at Heal At
+    /// and the like) and never a dispel. Those have no duration (the spell catalog's -1), and
+    /// dispels are refused by family too. A spell the catalog doesn't know is judged by name only.
+    /// </summary>
+    internal static bool IsLastingBuff(int spellId)
+    {
+        SpellCatalog.EnsureLoaded();
+        SpellCatalogEntry? c = SpellCatalog.Get(spellId);
+        if (c != null)
+            return c.DurationSec > 0 && !c.FamilyName.Contains("Dispel", StringComparison.OrdinalIgnoreCase);
+        string name = SpellTableStub.GetById(spellId)?.Name ?? "";
+        return !IsVitalOrDispelName(name);
+    }
+
+    // The instant spell families by name: dispels (Evaporate / Extinguish / ... All Magic), the
+    // vital heals and the transfers (Stamina to Mana, Mana to Health, ...).
+    private static bool IsVitalOrDispelName(string name) =>
+        name.Contains("All Magic", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Dispel", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Heal Self", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Revitalize", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Mana Boost", StringComparison.OrdinalIgnoreCase)
+        || System.Text.RegularExpressions.Regex.IsMatch(name, @"\b(Health|Stamina|Mana) to (Health|Stamina|Mana)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>True while the character is in a fellowship (set by the plugin; null = never).</summary>
+    internal Func<bool>? InFellowship { get; set; }
+
+    // The fellowship answer, kept a second: the picker asks per buff per tick, and the tracker
+    // reads client memory.
+    private bool _inFellowshipCached;
+    private long _inFellowshipAt = long.MinValue / 2;
+
+    private bool InFellowshipNow()
+    {
+        long now = Environment.TickCount64;
+        if (now - _inFellowshipAt >= 1000)
+        {
+            _inFellowshipAt = now;
+            try { _inFellowshipCached = InFellowship?.Invoke() == true; }
+            catch { _inFellowshipCached = false; }
+        }
+        return _inFellowshipCached;
+    }
+
+    /// <summary>
+    /// A level the buff picker passes over: the server refused it for components ("You don't have
+    /// all the components for this spell."), for SpellManager.NoComponentsSec or until more scarabs
+    /// or tapers are picked up. It goes on the server's answer, not a prediction: portal.dat's
+    /// scarab names don't match ACE's inventory names, and the same check in combat rejected every
+    /// level of spells the character had the scarab for (CombatManager.EnablePredictiveComponentGate).
+    /// </summary>
+    private bool LevelUnusable(int spellId) => LevelLacksComponents(spellId);
+
+    /// <summary>
+    /// With Use Fellowship Buffs on and in a fellowship: the fellowship version of
+    /// <paramref name="selfId"/>'s family (Empowering the Conclave for Strength, the Wards for the
+    /// protections, ...), at the highest level the skill allows that the character knows and can
+    /// cast, and never a lower level than <paramref name="selfId"/> (it would weaken your own buff).
+    /// Same family, so it replaces the self buff rather than stacking. Otherwise <paramref name="selfId"/>.
+    /// </summary>
+    private int FellowshipVersion(int selfId, AcSkillType skill)
+    {
+        if (!_settings.UseFellowshipBuffs || !_spellManager.IsKnownSnapshotWarm || !InFellowshipNow()) return selfId;
+        SpellCatalog.EnsureLoaded(m => _host.Log(m));   // the built-in list never loads it otherwise
+        SpellCatalogEntry? self = SpellCatalog.Get(selfId);
+        if (self == null || self.IsItemTarget) return selfId;
+        int maxTier = _spellManager.GetHighestBuffSpellTier(skill);
+        SpellCatalogEntry? best = null;
+        foreach (SpellCatalogEntry c in SpellCatalog.Family(self.FamilyId))
+        {
+            if (!IsFellowshipSpell(c) || !c.IsBuff || c.DurationSec <= 0 || c.Level > maxTier || c.Level < self.Level) continue;
+            if (!_spellManager.IsKnownSpellId(c.Id) || LevelUnusable(c.Id)) continue;
+            if (best == null || c.Level > best.Level || (c.Level == best.Level && c.Power > best.Power)) best = c;
+        }
+        return best?.Id ?? selfId;
+    }
+
+    /// <summary>A spell cast on the whole fellowship ("... all Fellowship members ..." in ACE's catalog).</summary>
+    internal static bool IsFellowshipSpell(SpellCatalogEntry c) =>
+        c.Target.Equals("Fellowship", StringComparison.OrdinalIgnoreCase)
+        || c.Description.Contains("fellowship member", StringComparison.OrdinalIgnoreCase);
 
     // True for enchantments that live on an ITEM (armor or weapon), NOT on the
     // player. These do NOT appear in ReadPlayerEnchantments, so they must be
@@ -4411,17 +4532,46 @@ public partial class BuffManager : IDisposable
             lower.Contains("you must specify") ||
             lower.Contains("have all the components for this spell"))
         {
+            // The refusal names no spell: it answers the LAST cast sent. With a combat cast sent
+            // after this one (an attack spell while a heal was pending), it is that cast's
+            // (CombatManager takes it) and this one is still in flight. Blaming the pending heal
+            // parked Sk's only castable Heal Self I for a Flame Arc II refusal (2026-10-18).
+            int lastSent = ActionPacer.LastCastSpellId;
+            if (_pendingSpellId != 0 && lastSent != 0 && lastSent != _pendingSpellId)
+            {
+                _host.Log($"[BuffChat] refusal is for the last cast sent ({SpellTableStub.GetById(lastSent)?.Name ?? lastSent.ToString()}), " +
+                          $"not pending {SpellTableStub.GetById(_pendingSpellId)?.Name ?? _pendingSpellId.ToString()}: pending kept.");
+                return;
+            }
             _cast.Result(null, "refused by the server", atStart: true);
             if (_pendingSpellId != 0)
             {
                 var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
-                bool noCompsVital = _pendingSpellId == _pendingVitalSpellId
-                    && (lower.Contains("components") || lower.Contains("missing some required"));
+                bool noComps = lower.Contains("components") || lower.Contains("missing some required");
+                bool noCompsVital = _pendingSpellId == _pendingVitalSpellId && noComps;
+                // Every spell refused for components is remembered (combat skips it too).
+                if (noComps) _spellManager.MarkNoComponents(_pendingSpellId);
+                if (noComps && pendingSpell != null)
+                    Huds.CastWarningHud.Post(pendingSpell.Name, noCompsVital
+                        ? $"RynthAi casts a lower level of it instead, or a kit or potion ({SpellManager.NoComponentsSec / 60:0} min)."
+                        : $"RynthAi buffs with a lower level of it instead ({SpellManager.NoComponentsSec / 60:0} min).");
                 if (pendingSpell != null && noCompsVital)
                 {
                     // A vital spell: pass over this level only; the next lower one goes next.
-                    _noComponentsUntil[_pendingSpellId] = RynthClock.Now.AddSeconds(NoComponentsLevelSec);
-                    _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: using a lower level for {NoComponentsLevelSec / 60:0} min.", 2);
+                    _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: using a lower level for {SpellManager.NoComponentsSec / 60:0} min.", 2);
+                }
+                else if (pendingSpell != null && noComps)
+                {
+                    // A buff: the same. The picker (FindBestSpellId) passes over a level marked
+                    // above, so the next lower level of this buff goes next; with none left the buff
+                    // is left out. Parking the whole family here skipped the buff for the cooldown
+                    // although a lower level was castable.
+                    if (IsItemEnchantment(pendingSpell.Name))
+                    {
+                        _itemSpellTimers.Remove(pendingSpell.Family);
+                        SaveBuffTimers();
+                    }
+                    _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: buffing with a lower level for {SpellManager.NoComponentsSec / 60:0} min.", 2);
                 }
                 else if (pendingSpell != null)
                 {
@@ -4436,9 +4586,7 @@ public partial class BuffManager : IDisposable
                     // "Casting:" line, so say which one. The server's text is not
                     // echoed: this line comes back through this handler, and it must
                     // not match the refusal phrases above.
-                    bool noComps = lower.Contains("components") || lower.Contains("missing some required");
-                    _host.WriteToChat($"[RynthAi] Skipping {pendingSpell.Name} for {BuffFailCooldownSec / 60:0} min " +
-                                      $"({(noComps ? "no components for it" : "the server refused it")}).", 2);
+                    _host.WriteToChat($"[RynthAi] Skipping {pendingSpell.Name} for {BuffFailCooldownSec / 60:0} min (the server refused it).", 2);
                 }
                 _host.Log($"[BuffChat] CLEARED+COOLED pending={_pendingSpellId} ({BuffFailCooldownSec:0}s) — hard rejection in '{text}'");
             }

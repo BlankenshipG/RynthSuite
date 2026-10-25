@@ -88,6 +88,22 @@ public static unsafe class PluginExports
         catch { return 0; }
     }
 
+    /// <summary>
+    /// The engine, after every plugin has seen a chat line (0.3.4): a plugin ate it, so it is
+    /// automated text (a reply to a plugin's own command). Marks the newest scrollback line
+    /// when its text matches; returns 1 when marked. Engines before 2026.10.18.30 never call it.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthChatNoteEaten", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static int NoteEaten(IntPtr textUtf16)
+    {
+        try
+        {
+            if (textUtf16 == IntPtr.Zero) return 0;
+            return Runtime.Plugin?.NoteEaten(Marshal.PtrToStringUni(textUtf16)) == true ? 1 : 0;
+        }
+        catch { return 0; }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthChatSendLine", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void SendLine(IntPtr ansiText)
     {

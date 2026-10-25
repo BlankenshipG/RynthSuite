@@ -17,6 +17,14 @@ internal sealed class OracleSettings
     public bool ReadQuestsAtLogin = true;
     /// <summary>Hide the server's reply to RynthOracle's own /myquests (a typed /myquests always shows).</summary>
     public bool HideOwnQuestReplies = true;
+    /// <summary>
+    /// Read /myquests again when the flags are this many minutes old (0 = only at login and on
+    /// Refresh). Any reply counts, RynthAi's meta polls too, so this only fills the gaps: before it,
+    /// a character running for days showed flags frozen at whenever something last asked.
+    /// </summary>
+    public int QuestRefreshMinutes = 10;
+    /// <summary>The choices the About tab offers for <see cref="QuestRefreshMinutes"/>.</summary>
+    public static readonly int[] QuestRefreshChoices = { 0, 5, 10, 15, 30 };
     /// <summary>Check once a day for a newer master quest list at upstream's address.</summary>
     public bool CheckQuestListDaily;
     public DateTime LastQuestListCheckUtc = DateTime.MinValue;
@@ -31,6 +39,14 @@ internal sealed class OracleSettings
     public bool AlertTimers = true;
     /// <summary>false: only tracked quests are watched; true: every quest the character holds.</summary>
     public bool AlertAllTimers;
+    /// <summary>The Gear tab's view: "Overlap" or "Ratings".</summary>
+    public string GearView = "Overlap";
+    /// <summary>Gear, Overlap: hide the families where spells compete.</summary>
+    public bool GearHideOverlap;
+    /// <summary>Gear, Ratings: list the packs' gear as well as what is worn.</summary>
+    public bool GearIncludePack;
+    /// <summary>Gear, Ratings: each item as a Mag-Tools ItemInfo line (true) or in columns (false).</summary>
+    public bool GearRatingsMag = true;
 
     /// <summary>Where the tests keep the settings file (a scratch path); null means the rynthoracle.json in RynthCore's %APPDATA% folder.</summary>
     internal static string? PathOverride;
@@ -66,13 +82,19 @@ internal sealed class OracleSettings
                 if (Array.IndexOf(KnownNames, p.Name) < 0 && !_kept.Exists(k => k.Name == p.Name)) _kept.Add((p.Name, p.Value.GetRawText()));
             ReadQuestsAtLogin = Bool(r, "readQuestsAtLogin", ReadQuestsAtLogin);
             HideOwnQuestReplies = Bool(r, "hideOwnQuestReplies", HideOwnQuestReplies);
+            if (r.TryGetProperty("questRefreshMinutes", out JsonElement qr) && qr.ValueKind == JsonValueKind.Number && qr.TryGetInt32(out int qrm))
+                QuestRefreshMinutes = Math.Clamp(qrm, 0, 240);
             CheckQuestListDaily = Bool(r, "checkQuestListDaily", CheckQuestListDaily);
             AutoShowVoidWindow = Bool(r, "autoShowVoidWindow", AutoShowVoidWindow);
             MainWindowOpen = Bool(r, "mainWindowOpen", MainWindowOpen);
             QuestTimersOpen = Bool(r, "questTimersOpen", QuestTimersOpen);
             AlertTimers = Bool(r, "alertTimers", AlertTimers);
             AlertAllTimers = Bool(r, "alertAllTimers", AlertAllTimers);
+            GearHideOverlap = Bool(r, "gearHideOverlap", GearHideOverlap);
+            GearIncludePack = Bool(r, "gearIncludePack", GearIncludePack);
+            GearRatingsMag = Bool(r, "gearRatingsMag", GearRatingsMag);
             if (r.TryGetProperty("tabName", out JsonElement t) && t.ValueKind == JsonValueKind.String) TabName = t.GetString() ?? TabName;
+            if (r.TryGetProperty("gearView", out JsonElement gv) && gv.ValueKind == JsonValueKind.String) GearView = gv.GetString() ?? GearView;
             if (r.TryGetProperty("lastQuestListCheck", out JsonElement c) && c.ValueKind == JsonValueKind.String
                 && DateTime.TryParse(c.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime when))
                 LastQuestListCheckUtc = when.ToUniversalTime();
@@ -91,6 +113,7 @@ internal sealed class OracleSettings
             sb.Append("{\n");
             sb.Append("  \"readQuestsAtLogin\": ").Append(ReadQuestsAtLogin ? "true" : "false").Append(",\n");
             sb.Append("  \"hideOwnQuestReplies\": ").Append(HideOwnQuestReplies ? "true" : "false").Append(",\n");
+            sb.Append("  \"questRefreshMinutes\": ").Append(QuestRefreshMinutes.ToString(CultureInfo.InvariantCulture)).Append(",\n");
             sb.Append("  \"checkQuestListDaily\": ").Append(CheckQuestListDaily ? "true" : "false").Append(",\n");
             sb.Append("  \"lastQuestListCheck\": \"").Append(LastQuestListCheckUtc.ToString("o", CultureInfo.InvariantCulture)).Append("\",\n");
             sb.Append("  \"autoShowVoidWindow\": ").Append(AutoShowVoidWindow ? "true" : "false").Append(",\n");
@@ -98,6 +121,10 @@ internal sealed class OracleSettings
             sb.Append("  \"questTimersOpen\": ").Append(QuestTimersOpen ? "true" : "false").Append(",\n");
             sb.Append("  \"alertTimers\": ").Append(AlertTimers ? "true" : "false").Append(",\n");
             sb.Append("  \"alertAllTimers\": ").Append(AlertAllTimers ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearHideOverlap\": ").Append(GearHideOverlap ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearIncludePack\": ").Append(GearIncludePack ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearRatingsMag\": ").Append(GearRatingsMag ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearView\": \"").Append(JsonEncodedText.Encode(GearView).ToString()).Append("\",\n");
             sb.Append("  \"tabName\": \"").Append(JsonEncodedText.Encode(TabName).ToString()).Append('"');
             foreach ((string name, string raw) in _kept)
                 sb.Append(",\n  \"").Append(JsonEncodedText.Encode(name).ToString()).Append("\": ").Append(raw);

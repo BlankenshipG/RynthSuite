@@ -118,7 +118,43 @@ internal static class InventoryJson
             }
         }
         if (it.Identified) sb.Append(", \"identified\": true");
+        if (it.HasFacts)
+        {
+            sb.Append(", \"class\": ").Append(it.ObjectClass.ToString(Inv));
+            if (it.Ints != null && it.Ints.Count > 0)
+            {
+                sb.Append(", \"ints\": {");
+                bool first = true;
+                foreach (KeyValuePair<int, int> kv in Sorted(it.Ints))
+                {
+                    if (!first) sb.Append(", ");
+                    first = false;
+                    sb.Append('"').Append(kv.Key.ToString(Inv)).Append("\": ").Append(kv.Value.ToString(Inv));
+                }
+                sb.Append('}');
+            }
+            if (it.Doubles != null && it.Doubles.Count > 0)
+            {
+                sb.Append(", \"floats\": {");
+                bool first = true;
+                foreach (KeyValuePair<int, double> kv in Sorted(it.Doubles))
+                {
+                    if (!first) sb.Append(", ");
+                    first = false;
+                    double v = double.IsFinite(kv.Value) ? kv.Value : 0;
+                    sb.Append('"').Append(kv.Key.ToString(Inv)).Append("\": ").Append(v.ToString("R", Inv));
+                }
+                sb.Append('}');
+            }
+        }
         sb.Append('}');
+    }
+
+    private static List<KeyValuePair<int, T>> Sorted<T>(Dictionary<int, T> d)
+    {
+        var list = new List<KeyValuePair<int, T>>(d);
+        list.Sort((a, b) => a.Key.CompareTo(b.Key));
+        return list;
     }
 
     private static void Time(StringBuilder sb, DateTime utc)
@@ -258,6 +294,25 @@ internal static class InventoryJson
         }
         string[] names = GetStrings(e, "spellNames");
         it.SpellNames = names.Length == it.Spells.Length ? names : Array.Empty<string>();
+        if (e.TryGetProperty("class", out JsonElement cls) && cls.ValueKind == JsonValueKind.Number && cls.TryGetInt32(out int oc))
+        {
+            it.HasFacts = true;
+            it.ObjectClass = oc;
+            if (e.TryGetProperty("ints", out JsonElement ints) && ints.ValueKind == JsonValueKind.Object)
+            {
+                it.Ints = new Dictionary<int, int>();
+                foreach (JsonProperty p in ints.EnumerateObject())
+                    if (int.TryParse(p.Name, NumberStyles.Integer, Inv, out int k) && p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetInt32(out int v))
+                        it.Ints[k] = v;
+            }
+            if (e.TryGetProperty("floats", out JsonElement dbl) && dbl.ValueKind == JsonValueKind.Object)
+            {
+                it.Doubles = new Dictionary<int, double>();
+                foreach (JsonProperty p in dbl.EnumerateObject())
+                    if (int.TryParse(p.Name, NumberStyles.Integer, Inv, out int k) && p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetDouble(out double v))
+                        it.Doubles[k] = v;
+            }
+        }
         return it;
     }
 

@@ -23,12 +23,14 @@
     <!-- Plugin manifest (embedded in the DLL; Plugins\Directory.Build.targets). minEngineApi is the
          highest API use NOT behind a Has*/version check. Script windows (v71, HasUi) draw its window and titles/server info (v75) are guarded with fallbacks; below v71 it runs without a window (/ro status), as on an engine with ImGui off. -->
     <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
-    <RynthPluginDescription>Quests (with the Legendary and exploration marker trackers, and the active server plugin's quest pack), character and titles.</RynthPluginDescription>
+    <RynthPluginDescription>Quests (with the Legendary and exploration marker trackers, and the active server plugin's quest pack), character, skills/attributes/progress and titles.</RynthPluginDescription>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+    <!-- The dat reader: the Gear tab reads the client's spell table (portal.dat 0x0E00000E). -->
+    <ProjectReference Include="..\..\Shared\RynthCore.TerrainData\RynthCore.TerrainData.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -43,6 +45,14 @@
     <EmbeddedResource Include="Resources\markers.csv" LogicalName="RynthOracle.markers.csv" />
     <!-- Legendary Key quests, rows of the Quests tab (list and notes: the "Arwic John Route" sheet). -->
     <EmbeddedResource Include="Resources\legendary.csv" LogicalName="RynthOracle.legendary.csv" />
+    <!-- Infinite Leaftide Dynamic Stamps (the players' ExtraDyn sheet, 10.13.2026): Data\DynamicStamps.cs. -->
+    <EmbeddedResource Include="Resources\dynstamps.csv" LogicalName="RynthOracle.dynstamps.csv" />
+    <!-- The Gear tab's spell family and equipment set names (ACE's enums: Tools\RynthOracle.QuestPackGen\Make-GearNames.ps1). -->
+    <EmbeddedResource Include="Resources\spellcategories.csv" LogicalName="RynthOracle.spellcategories.csv" />
+    <EmbeddedResource Include="Resources\equipmentsets.csv" LogicalName="RynthOracle.equipmentsets.csv" />
+    <EmbeddedResource Include="Resources\materials.csv" LogicalName="RynthOracle.materials.csv" />
+    <EmbeddedResource Include="Resources\masteries.csv" LogicalName="RynthOracle.masteries.csv" />
+    <EmbeddedResource Include="Resources\skills.csv" LogicalName="RynthOracle.skills.csv" />
     <!-- Spell names and durations: RynthAi's spell table, shared rather than copied. -->
     <EmbeddedResource Include="..\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthOracle.SpellData.txt" Link="Shared\SpellData.txt" />
   </ItemGroup>
@@ -52,18 +62,25 @@
     <Compile Include="..\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="Shared\FellowshipTracker.cs" />
     <!-- Its timing clock (RynthClock: intervals that don't jump when the clocks change, 2026-10-21). -->
     <Compile Include="..\RynthCore.Plugin.RynthAi\RynthClock.cs" Link="Shared\RynthClock.cs" />
+    <!-- RynthILT's "RynthILT.Server" interface (server profile: Leaftide features, fellowship rules). -->
+    <Compile Include="..\Shared\RynthIltServerApi.cs" Link="Shared\RynthIltServerApi.cs" />
+    <Compile Include="..\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
     <!-- RynthAi's session stats ("RynthAi.Hub" SessionStats): the Character tab's session rates
          count the same session as the Mini Remote's Session Stats. -->
     <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />
     <Compile Include="..\Shared\RynthAiSessionClient.cs" Link="Shared\RynthAiSessionClient.cs" />
     <!-- RynthCore's server list (API v86) and the active server's settings from its plugin
-         ("RynthServer.Profile"): which server this is, overrides included. -->
+         ("RynthServer.Profile" / "RynthILT.Server"): which server this is, overrides included. -->
     <Compile Include="..\Shared\RynthServerProfileApi.cs" Link="Shared\RynthServerProfileApi.cs" />
     <Compile Include="..\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
     <Compile Include="..\Shared\ServerStateClient.cs" Link="Shared\ServerStateClient.cs" />
     <!-- "RynthServer.QuestPack": the active server plugin's quest pack, merged into the Quests list. -->
     <Compile Include="..\Shared\RynthServerQuestPackApi.cs" Link="Shared\RynthServerQuestPackApi.cs" />
     <Compile Include="..\Shared\ServerQuestPackClient.cs" Link="Shared\ServerQuestPackClient.cs" />
+    <!-- Infinite Leaftide's /fship commands for the Fellowship tab: RynthILT's list and the shared
+         argument rules (quoting, required names), shared source rather than copied. Both are pure. -->
+    <Compile Include="..\Shared\ServerCommandShare.cs" Link="Shared\ServerCommandShare.cs" />
+    <Compile Include="..\RynthCore.Plugin.RynthILT\IltFellowship\IltFellowshipCommands.cs" Link="Shared\IltFellowshipCommands.cs" />
   </ItemGroup>
 
   <ItemGroup>

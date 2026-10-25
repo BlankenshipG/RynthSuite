@@ -304,6 +304,9 @@ public sealed class InventoryManager
             {
                 for (int si = parts.Count - 1; si > ti; si--)
                 {
+                    // Server rejects merges that would overflow MaxStackSize.
+                    if (parts[ti].Count + parts[si].Count > max)
+                        continue;
                     string key = parts[ti].Item.Id + "_" + parts[si].Item.Id;
                     // Confirm-via-snapshot: a prior merge of this pair either consumed
                     // the source (id vanished from inv) or grew the target. Either =>

@@ -28,6 +28,12 @@ internal sealed class Augmentation
     private static readonly int[] InnateAttributeIds = { 218, 219, 220, 221, 222, 223 };
     private static readonly int[] InnateResistanceIds = { 240, 241, 242, 243, 244, 245, 246 };
 
+    /// <summary>
+    /// Permanent flag set when Asheron's Lesser Benediction is granted (Donatello Linante /
+    /// Blackmoor's Page). ACE / wiki "lesserbenedictionaug".
+    /// </summary>
+    public const string LesserBenedictionFlag = "lesserbenedictionaug";
+
     public bool IsHeading => Id == 0;
     public bool IsXp => Category == "XP";
     public bool IsLuminance => Category == "Luminance";
@@ -49,14 +55,16 @@ internal sealed class Augmentation
         if (Flag.Length > 0 && !IsQuestComplete(flags)) return 0;
         if (IsInnateAttributes) return InnateAttributeIds.Sum(id => prop((uint)id));
         if (IsInnateResistances) return InnateResistanceIds.Sum(id => prop((uint)id));
-        if (IsBenediction) return 0; // upstream counts the item in inventory; not ported (see IsUnknown)
+        // Lesser Benediction: permanent quest flag (not a PropertyInt).
+        if (IsBenediction)
+            return flags.TryGet(LesserBenedictionFlag, out QuestFlag b) && b.Solves > 0 ? 1 : 0;
         if (IsLumSpecialization) return Math.Max(prop((uint)Math.Abs(Id)) - 5, 0);
         if (Id <= 0) return 0;
         return Math.Min(prop((uint)Id), TimesTotal);
     }
 
-    /// <summary>Rows RynthOracle can't read (Asheron's Lesser Benediction is an item, not a property).</summary>
-    public bool IsUnknown => IsBenediction;
+    /// <summary>True only for rows with no readable source (none today; Benediction uses the quest flag).</summary>
+    public bool IsUnknown => false;
 
     public bool IsComplete(Func<uint, int> prop, QuestFlagStore flags)
     {
@@ -64,6 +72,7 @@ internal sealed class Augmentation
         if (IsInnateAttribute) return InnateAttributeIds.Sum(id => prop((uint)id)) >= 10;
         if (IsInnateResistance) return InnateResistanceIds.Sum(id => prop((uint)id)) >= 2;
         if (IsSeer) return IsQuestComplete(flags);
+        if (IsBenediction) return Times(prop, flags) >= 1;
         return Times(prop, flags) >= TimesTotal;
     }
 

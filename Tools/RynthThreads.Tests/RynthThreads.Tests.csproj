@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Offline tests for the RynthThreads plugin (DreamWeave Fragment Press results): the chat parser
+    (the real sample with an interleaved line, several / no components, incomplete presses, odd
+    text), the inference rules on made-up presses (a forced modifier at n = 3 but not n = 1, n = 2,
+    the 90% rule, base rates, several components in one press), the shared presses.jsonl (JSON
+    round trip, following the file's growth, two writers appending at once) and that the window's
+    display list is accepted by the engine's own parser (RynthCore
+    src/RynthCore.Engine/UI/ScriptWindows/DisplayListParser.cs, from the sibling checkout).
+    The plugin is a NativeAOT x86 library, so its sources are compiled in here. Files go to a
+    scratch folder next to the exe, never %LOCALAPPDATA%.
+    Run: dotnet run -c Release   (exit 0 = pass, 1 = fail; an argument filters by test name)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>RynthThreads.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
+    <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+    <!-- The engine parser's whitelists use ImGui.NET's enums. -->
+    <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthThreads\**\*.cs" Exclude="..\..\Plugins\RynthCore.Plugin.RynthThreads\obj\**;..\..\Plugins\RynthCore.Plugin.RynthThreads\bin\**" Link="RynthThreads\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
+    <!-- The RynthAi test tools' check/runner harness (no plugin code in it). -->
+    <Compile Include="..\RynthCore.RynthAiTests\Harness\Check.cs" Link="Harness\Check.cs" />
+    <Compile Include="..\RynthCore.RynthAiTests\Harness\Runner.cs" Link="Harness\Runner.cs" />
+  </ItemGroup>
+
+</Project>

@@ -192,6 +192,10 @@ internal sealed class NavigationEngine
 
     private INavRecoveryPlanner? _planner;
     private Detour? _detour;
+    // Steep ground ahead (CheckSteepAhead): the waypoint and spot the leg was last checked from.
+    private const double SteepRecheckYards = 10.0;
+    private int    _steepCheckIdx = -1;
+    private double _steepCheckNs, _steepCheckEw;
     private int    _detourAttempts;          // detours tried (or failed to plan) for the current waypoint
     private bool   _detourGaveUpNotified;
     private int    _recoveryNumber;
@@ -611,6 +615,8 @@ internal sealed class NavigationEngine
             if (AreaMismatchHold(route, idx, pt)) return;
             if (_detour != null) { TickDetour(route, ns, ew); return; }
             CheckOffTrack(route, idx, ns, ew);
+            if (_detour != null) return;
+            CheckSteepAhead(route, idx, pt, ns, ew);
             if (_detour != null) return;
         }
         else if (_detour != null || _areaMismatch)
@@ -2571,6 +2577,27 @@ internal sealed class NavigationEngine
         TryStartDetour(route, idx, $"off track, {off:F0}yd from the route for {OffTrackGraceMs / 1000:F0}s");
     }
 
+    // ── Steep ground ahead ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Before the character runs into it: when the straight way to the waypoint climbs ground
+    /// too steep to walk (RynthVision's red slopes, on land or under water), walk a RynthNav
+    /// navmesh way round instead (a detour from the same budget as the stuck ones). Checked for
+    /// each new waypoint and again every <see cref="SteepRecheckYards"/> walked toward it.
+    /// </summary>
+    private void CheckSteepAhead(NavRouteParser route, int idx, NavPoint pt, double ns, double ew)
+    {
+        if (_planner == null || !IsWalkTarget(pt.Type)) return;
+        if (idx == _steepCheckIdx && NavYd(ns - _steepCheckNs, ew - _steepCheckEw) < SteepRecheckYards) return;
+        _steepCheckIdx = idx;
+        _steepCheckNs = ns;
+        _steepCheckEw = ew;
+        // Out of tries for this waypoint: walk straight as before (the stuck escapes still apply).
+        if (_detourAttempts >= MaxDetourAttempts) return;
+        if (!_planner.CrossesSteepGround(ns, ew, pt.NS, pt.EW, out double atYd)) return;
+        TryStartDetour(route, idx, $"steep ground {atYd:F0}yd ahead on the way to waypoint {idx + 1}");
+    }
+
     /// <summary>Yards from the character to the leg that ends at waypoint <paramref name="idx"/>.</summary>
     private double DistanceToSegmentYd(NavRouteParser route, int idx, double ns, double ew)
     {
@@ -2724,6 +2751,15 @@ internal sealed class NavigationEngine
         string skipNote = skipped > 0 ? $" (passes over {skipped} waypoint(s))" : "";
 
         var plan = _planner.TryPlan(route.Points[rejoin], out string why);
+        // The navmesh path starts where the character's spot snaps onto the mesh, which can be
+        // on the far side of the slope it stands against: a first leg up that slope gets stuck
+        // again at once (Silentkelpie 2026-10-19, "reached 2/9 ... stuck on the detour").
+        if (plan != null && plan.Points.Count > 0
+            && _planner.CrossesSteepGround(ns, ew, plan.Points[0].NS, plan.Points[0].EW, out double firstAt))
+        {
+            why = $"its first leg climbs steep ground {firstAt:F0}yd ahead";
+            plan = null;
+        }
         if (plan == null)
         {
             _host.Log($"Nav: recovery #{number} ({reason}) rejoin=[{rejoin}]{skipNote} planner=none - result: no plan ({why}); attempt {_detourAttempts}/{MaxDetourAttempts}, using the stuck escapes");

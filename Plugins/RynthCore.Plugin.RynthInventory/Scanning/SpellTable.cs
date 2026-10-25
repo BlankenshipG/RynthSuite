@@ -6,7 +6,7 @@ using System.Reflection;
 
 namespace RynthCore.Plugin.RynthInventory.Scanning;
 
-internal readonly record struct SpellInfo(string Name, double Duration, bool IsDebuff);
+internal readonly record struct SpellInfo(string Name, double Duration, bool IsDebuff, int Family = 0, int Power = 0);
 
 /// <summary>
 /// Spell names and base durations from RynthAi's embedded spell table (SpellData.txt, linked
@@ -24,6 +24,15 @@ internal static class SpellTable
     }
 
     public static string Name(uint id) => TryGet(id, out SpellInfo s) ? s.Name : $"Spell {id}";
+
+    /// <summary>Every spell in the table with its family and power (Global Inventory's filter spell lists).</summary>
+    public static List<RynthCore.Loot.Editing.LootSpellEntry> AllSpells()
+    {
+        EnsureLoaded();
+        var list = new List<RynthCore.Loot.Editing.LootSpellEntry>(_spells!.Count);
+        foreach (SpellInfo s in _spells.Values) list.Add(new RynthCore.Loot.Editing.LootSpellEntry(s.Name, s.Family, s.Power));
+        return list;
+    }
 
     public static int Count
     {
@@ -46,7 +55,9 @@ internal static class SpellTable
                     if (c.Length < 2 || !uint.TryParse(c[0].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out uint id)) continue;
                     double duration = c.Length > 5 && double.TryParse(c[5].Trim(), NumberStyles.Float | NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out double d) ? d : -1;
                     bool debuff = c.Length > 8 && c[8].Trim().Equals("True", StringComparison.OrdinalIgnoreCase);
-                    map[id] = new SpellInfo(c[1].Trim(), duration, debuff);
+                    int family = c.Length > 2 && int.TryParse(c[2].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int fam) ? fam : 0;
+                    int power = c.Length > 6 && int.TryParse(c[6].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int pw) ? pw : 0;
+                    map[id] = new SpellInfo(c[1].Trim(), duration, debuff, family, power);
                 }
             }
         }

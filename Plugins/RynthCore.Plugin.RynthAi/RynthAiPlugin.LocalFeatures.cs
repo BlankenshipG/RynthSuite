@@ -274,6 +274,7 @@ public sealed partial class RynthAiPlugin
             _spellsUi?.Render();
             _miniRemote?.Render();
             _huds?.Render();
+            Huds.CastWarningHud.Render();   // "Out of components" pop-up
             RenderTranslateWindow();
         }
         catch (Exception ex)
@@ -318,6 +319,7 @@ public sealed partial class RynthAiPlugin
             try { _miniRemote?.Render(); }
             finally { ImGui.PopStyleColor(pushedColors); }
             _huds?.Render();
+            Huds.CastWarningHud.Render();   // "Out of components" pop-up
             RenderTranslateWindow();
             _navOverlay?.Render();
             _itemInfoUi?.Render();
@@ -346,13 +348,15 @@ public sealed partial class RynthAiPlugin
     }
 
     /// <summary>
+    /// <summary>
     /// RynthPluginRenderEmbed "miniremote" / "miniremote-window": the Mini Remote inside the
     /// engine's RynthAi dashboard drawer, or (<paramref name="window"/>) inside the engine's Mini
     /// Remote window, docked or popped out, drawn into the engine's current ImGui window (and
-    /// context, see <see cref="EmbedContext"/>). False (nothing drawn) until login and the HUDs
+    /// context, see <see cref="EmbedContext"/>). <paramref name="popped"/> is true when the
+    /// engine tagged the surface with ":popout". False (nothing drawn) until login and the HUDs
     /// exist. Render thread.
     /// </summary>
-    public bool RenderEmbeddedMiniRemote(bool window, out System.Numerics.Vector2 want, bool tabs = true)
+    public bool RenderEmbeddedMiniRemote(bool window, out System.Numerics.Vector2 want, bool tabs = true, bool popped = false)
     {
         want = default;
         var huds = _huds;
@@ -363,7 +367,7 @@ public sealed partial class RynthAiPlugin
         ImGui.SetCurrentContext(EmbedContext());
         try
         {
-            want = huds.RenderEmbedded(window, tabs);
+            want = huds.RenderEmbedded(window, tabs, popped);
             return true;
         }
         catch (Exception ex)
@@ -480,7 +484,17 @@ public sealed partial class RynthAiPlugin
     public string? BuildSectionsJson()
     {
         if (!_initialized || !_loginComplete) return null;
-        return Huds.SectionsManifest.Build(Huds.SectionsManifest.Views(), Huds.SectionsManifest.OwnSections,
+        var remote = _miniRemote;
+        IReadOnlyList<MiniRemote.ServerTabInfo> raw = remote != null ? remote.ServerHub.Tabs() : Array.Empty<MiniRemote.ServerTabInfo>();
+        // Options > Navigation > Vaulted Dungeons: hide the section contribution until enabled.
+        bool vaultedOn = _dashboard?.Settings.EnableVaultedDungeons == true;
+        var serverTabs = new List<MiniRemote.ServerTabInfo>(raw.Count);
+        foreach (MiniRemote.ServerTabInfo t in raw)
+        {
+            if (string.Equals(t.Id, "vaulted", StringComparison.OrdinalIgnoreCase) && !vaultedOn) continue;
+            serverTabs.Add(t);
+        }
+        return Huds.SectionsManifest.Build(Huds.SectionsManifest.Views(serverTabs), Huds.SectionsManifest.OwnSections,
             dashboard: DashboardWindowWanted);
     }
     /// <summary>Chat Translate window in the dashboard colours (no-op while hidden).</summary>

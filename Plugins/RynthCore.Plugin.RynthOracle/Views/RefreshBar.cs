@@ -33,8 +33,8 @@ internal sealed partial class OracleView
     private DateTime _refreshAtUtc, _refreshDoneUtc;
     private readonly Dictionary<string, long> _refreshSent = new();
 
-    /// <summary>The page a status line belongs to (each tab is one page).</summary>
-    private static string RefreshScope(string tab) => tab;
+    /// <summary>The page a status line belongs to (each tab is one page; the Gear tab, one per view).</summary>
+    private string RefreshScope(string tab) => tab == TabGear ? tab + GearView : tab;
 
     private void DrawRefreshRow(UiWindow w, TabDef def)
     {
@@ -123,6 +123,10 @@ internal sealed partial class OracleView
         _c.RereadCharacter();
         return new RefreshResult("Re-read your buffs and dropped the spell timers that ran out. Timers on targets are learned from your casts.");
     }
+
+    /// <summary>Pet Breeding: RynthILT's list is read again every few seconds while the tab shows, so nothing to send.</summary>
+    private RefreshResult RefreshBreeding() =>
+        new("The breeding list is read from RynthILT every few seconds while this tab is open.");
 
     private RefreshResult RefreshFellowship()
     {

@@ -4,11 +4,9 @@
 //  plugin-command broker (Host.SendPluginCommand, action "servercommands").
 //
 //  A server plugin (RynthILT for Infinite Leaftide's /fship) knows its server's extra
-//  commands and keeps them as a ServerCommandSet; it draws them itself (ServerCommandPanel.cs).
-//  For another plugin's view of that section (SilentKelpie's RynthAi Fellowship tab, not in
-//  this tree yet) the sender re-sends every few seconds while its server is active and sends
-//  an empty list when it isn't, so the receiver drops a list that stops arriving (the sender
-//  unloaded).
+//  commands; RynthAi draws them in its own view of that section (the Fellowship tab). The
+//  sender re-sends every few seconds while its server is active and sends an empty list when
+//  it isn't, so the receiver drops a list that stops arriving (the sender unloaded).
 //
 //  Payload: ANSI text, one record per line, fields split by tabs:
 //    S <tab> section <tab> serverId <tab> serverName

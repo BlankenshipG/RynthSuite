@@ -15,8 +15,30 @@ namespace RynthCore.Plugin.RynthOracle.Data;
 /// had its own server tags, detection and packs for three servers; they moved into those servers'
 /// plugins. Without RynthCore's server list (an engine older than v86) no server is active here.
 /// </summary>
+/// <summary>
+/// The servers RynthOracle's own Infinite Leaftide screens test for (Pet Breeding, Dynamic Stamps,
+/// guardians, the /fship Fellowship rules): RynthILT ships from RynthSuite on this branch
+/// (test merge onto rynth main, 2026-10-25), so these keep their server check here.
+/// </summary>
+internal static class ServerTags
+{
+    /// <summary>RynthCore's server id for Infinite Leaftide (EngineServerState.IltId).</summary>
+    public const string InfiniteLeaftide = EngineServerState.IltId;
+}
+
 internal sealed class ServerIdentity
 {
+    /// <summary>
+    /// On the server RynthCore names <paramref name="id"/> (ServerTags). Without RynthCore's server list,
+    /// Infinite Leaftide still counts from a world name containing "Leaftide" (RynthILT's own world rule).
+    /// </summary>
+    public bool Is(string id)
+    {
+        if (ServerId.Length > 0) return string.Equals(ServerId, id, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(id, ServerTags.InfiniteLeaftide, StringComparison.OrdinalIgnoreCase)
+            && WorldName.IndexOf("Leaftide", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     /// <summary>RynthCore's id of the active server ("" = none: retail quests only).</summary>
     public string ServerId { get; private set; } = "";
     /// <summary>Its name as RynthCore lists it ("" with none).</summary>

@@ -74,6 +74,7 @@ internal sealed class MiniRemoteHud
     private bool _columnOpen; // horizontal layout: a column was already started this frame (next one goes SameLine)
     private bool _embedded;   // true only inside RenderEmbedded (an engine surface)
     private bool _inWindow;   // with _embedded: the engine's Mini Remote window, not the dashboard drawer
+    private bool _popped;     // engine Mini Remote is in its own floating window (:popout)
     // A tab switch asked for by a command or the engine (any thread), applied by the next tab bar;
     // null = none. Starts as the saved tab so the first tab bar restores it.
     private string? _pendingTab;
@@ -144,12 +145,13 @@ internal sealed class MiniRemoteHud
     /// themselves from the result) instead of a window of their own. Returns the content size it
     /// wants: the selected tab's width, and the height drawn.
     /// </summary>
-    public Vector2 RenderEmbedded(bool window = false, bool tabs = true)
+    public Vector2 RenderEmbedded(bool window = false, bool tabs = true, bool popped = false)
     {
         var s = _hud.State;
         _slotMenuIndex = -1;
         _embedded = true;
         _inWindow = window;
+        _popped = popped;
         float startY = ImGui.GetCursorPosY();
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
         try
@@ -171,6 +173,7 @@ internal sealed class MiniRemoteHud
             _slotMenuIndex = -1;
             _embedded = false;
             _inWindow = false;
+            _popped = false;
         }
     }
 
@@ -190,8 +193,14 @@ internal sealed class MiniRemoteHud
         {
             foreach (string id in MiniRemoteTabs.Universal)
                 _tabs.Add(new TabEntry(id, MiniRemoteTabs.Label(id), MiniRemoteTabs.Size(id), FromServer: false));
+            bool vaultedOn = _hud.Dashboard.Settings.EnableVaultedDungeons;
             foreach (ServerTabInfo t in remote.ServerHub.Tabs())
-                if (t.Shown) _tabs.Add(new TabEntry(t.Id, t.Label, new Vector2(t.Width, t.Height), FromServer: true));
+            {
+                if (!t.Shown) continue;
+                // Vaulted Dungeons (RynthILT's tab): gated by Options > Navigation > Vaulted Dungeons.
+                if (string.Equals(t.Id, "vaulted", StringComparison.OrdinalIgnoreCase) && !vaultedOn) continue;
+                _tabs.Add(new TabEntry(t.Id, t.Label, new Vector2(t.Width, t.Height), FromServer: true));
+            }
         }
         if (_tabs.Count == 0)
         {
@@ -299,6 +308,14 @@ internal sealed class MiniRemoteHud
     /// <summary>The Toggles section is drawn: chosen in Options, and never in the dashboard drawer.</summary>
     private bool ShowToggles(HudState s) => s.MiniShowToggles && !InDrawer;
 
+    // Bank and Guardian are RynthILT's, Infinite Leaftide only (MiniRemoteGates): off ILT they take no
+    // column in the horizontal layout and their Options checkboxes aren't offered.
+    /// <summary>On Infinite Leaftide with RynthILT answering (IltHubView).</summary>
+    private static bool IltActive(MiniRemoteController? remote) => remote != null && remote.Ilt.IsIltWorld;
+
+    private bool ShowBank(HudState s) => MiniRemoteGates.ShowIltSection(IltActive(_hud.Remote()), s.MiniShowBank);
+    private bool ShowGuardian(HudState s) => MiniRemoteGates.ShowIltSection(IltActive(_hud.Remote()), s.MiniShowGuardian);
+
     /// <summary>
     /// The width the sections need: one column stacked, else one per non-empty column side by side.
     /// Never measured from what was drawn, since widgets fill the width they are given.
@@ -308,7 +325,7 @@ internal sealed class MiniRemoteHud
         float colW = ColumnWidth(s);
         if (!s.MiniRemoteHorizontal) return colW;
         int cols = 0;
-        if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet) cols++;
+        if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet || s.MiniShowCapture) cols++;
         if (s.MiniShowGems || ShowToggles(s)) cols++;
         if (s.MiniShowRebuff || s.MiniShowTranslate || _serverEconomyDrawn) cols++;
         cols = Math.Max(1, cols);
@@ -384,7 +401,7 @@ internal sealed class MiniRemoteHud
     {
         float colW = ColumnWidth(s);
         _columnOpen = false;
-        if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet)
+        if (s.MiniShowStats || s.MiniShowTarget || s.MiniShowPet || s.MiniShowCapture)
         {
             BeginColumn("##mrcolstatus", colW);
             RenderStatusSections(s, remote);
@@ -440,6 +457,7 @@ internal sealed class MiniRemoteHud
         if (s.MiniShowStats) RenderStats(remote);
         if (s.MiniShowTarget) RenderTarget(combat);
         if (s.MiniShowPet) RenderPet(remote, combat);
+        if (s.MiniShowCapture) RenderCapture(remote);
         if (s.MiniShowStats) RenderStatButtons(remote);
     }
 
@@ -578,6 +596,42 @@ internal sealed class MiniRemoteHud
         ImGui.TextUnformatted(name);
         var col = status switch { "Ready" => ColReady, "Out" => ColOut, "Healing" => ColBusy, _ => ColEmpty };
         SafeImGui.TextColored(col, status);
+    }
+
+    /// <summary>
+    /// ILT siphon-lens auto-capture: same enable / lens as Pets > Monster capture, on the Remote
+    /// so Options > Pet capture can show it without opening the Pets tab.
+    /// </summary>
+    private static void RenderCapture(MiniRemoteController? remote)
+    {
+        if (!IltActive(remote))
+        {
+            ImGui.TextDisabled("Capture: ILT only");
+            return;
+        }
+        var pets = remote!.Pets;
+        bool captureOff = remote.Ilt.IsOff(RynthIltHub.FeatureMonsterCapture);
+        ImGui.BeginDisabled(captureOff);
+        bool en = pets.AutoCaptureEnabled;
+        if (ImGui.Checkbox("Auto-capture##mrcapture", ref en))
+            pets.AutoCaptureEnabled = en;
+        if (ImGui.IsItemHovered())
+        {
+            SafeImGui.SetTooltip(
+                "Uses the selected siphon lens on the nearest attackable creature within 5 m once it is\n" +
+                "at or below 20% health or under 20 HP (ACECustom MonsterCapture). Asheron's Lens skips\n" +
+                "the health gate. Same setting as Mini Remote > Pets > Monster capture.");
+        }
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(110);
+        int lens = Math.Clamp(pets.CaptureLensIndex, 0, PetCaptureRules.LensNames.Length - 1);
+        if (ImGui.Combo("##mrcapturelens", ref lens, PetCaptureRules.LensNames, PetCaptureRules.LensNames.Length))
+            pets.CaptureLensIndex = lens;
+        ImGui.EndDisabled();
+        if (captureOff)
+            SafeImGui.TextDisabled("Capture disabled on this server");
+        else
+            SafeImGui.TextDisabled(pets.CaptureStatus);
     }
 
     private static void RenderSummon(MiniRemoteController? remote, CombatHudSnapshot c)
@@ -829,6 +883,7 @@ internal sealed class MiniRemoteHud
         Flag("Session stats", ref s.MiniShowStats);
         Flag("Attack target", ref s.MiniShowTarget);
         Flag("Pet / summon", ref s.MiniShowPet);
+        Flag("Pet capture", ref s.MiniShowCapture);
         Flag("Item slots", ref s.MiniShowGems);
         // The drawer's dashboard has these switches already; the setting is for the windows.
         if (!InDrawer) Flag("Toggles", ref s.MiniShowToggles);
@@ -841,6 +896,21 @@ internal sealed class MiniRemoteHud
         RenderSlotSizeSlider(s);
         if (embedded && _inWindow)
         {
+            // Docked Options used to jump straight to Settings; undocked left-click opens this
+            // popup, so keep a Settings entry here.
+            if (_popped && _hud.Host.HasInvokeChatParser
+                && ImGui.MenuItem("RynthAi Settings...", MovedTabs.Settings))
+                _hud.RunEngineCommand(MovedTabs.Settings);
+            if (_hud.Host.HasInvokeChatParser)
+            {
+                if (ImGui.MenuItem(_popped ? "Dock Mini Remote" : "Undock Mini Remote",
+                        _popped ? "/rc miniremote dock" : "/rc miniremote undock"))
+                    _hud.RunEngineCommand(_popped ? "/rc miniremote dock" : "/rc miniremote undock");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(_popped
+                        ? "Dock back into the game window."
+                        : "Pop out so this Options menu has more room.");
+            }
             if (ImGui.MenuItem("Inventory HUDs setup...")) s.ShowSetup = true;
         }
         else if (embedded)
@@ -915,18 +985,41 @@ internal sealed class MiniRemoteHud
             // The character overview and its session are RynthOracle's Character tab (2026-10-13); a
             // server's own screens are its plugin's (the server section below).
             if (ImGui.MenuItem("Character##mrcharacter", MovedTabs.OracleCharacter)) _hud.RunEngineCommand(MovedTabs.OracleCharacter);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Character tab: the character and this session.");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Character tab: the character, this session and the ILT charms list.");
+            // Every character's saved packs / storage: RynthInventory's Global Inventory.
+            // On ILT the old "Banking" label still opens the same window (/ginv bank).
+            if (ImGui.MenuItem("Global Inventory##mrginv", MovedTabs.GlobalInventory))
+                _hud.RunEngineCommand(MovedTabs.GlobalInventory);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Global Inventory (/ginv): every character's saved packs and storage.");
+            if (IltActive(_hud.Remote()))
+            {
+                if (ImGui.MenuItem("Banking##mrbanking", MovedTabs.GlobalBank)) _hud.RunEngineCommand(MovedTabs.GlobalBank);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Global Inventory (/ginv bank): every character's saved packs and storage (banks when Include Storage is on).");
+                // ILT pet breeding: RynthOracle's tab, fed by RynthILT (the Pets tab's Breeding sub-tab is the same tracker).
+                if (ImGui.MenuItem("Pet Breeding##mrbreeding", MovedTabs.OracleBreeding)) _hud.RunEngineCommand(MovedTabs.OracleBreeding);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Pet Breeding tab: essences ready to breed, rest and charge timers, growth, boosters, supplies and this server's breeding rules.");
+            }
             if (ImGui.MenuItem("Quests##mrquests", "/ro")) _hud.RunEngineCommand("/ro");
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle: quest timers, tracking and rewards.");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle: quest timers, tracking, rewards and the /qb list.");
             if (ImGui.MenuItem("Quest Timers##mrqtimers", "/ro timers")) _hud.RunEngineCommand("/ro timers");
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Quest Timers window: your tracked quests and the time left on each.");
             if (ImGui.MenuItem("Fellowship##mrfellow", "/ro fellowship")) _hud.RunEngineCommand("/ro fellowship");
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Fellowship tab: members, levels and XP sharing.");
-            if (ImGui.MenuItem("Skills##mrskills", "/rc skills")) _hud.RunEngineCommand("/rc skills toggle");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Fellowship tab: members, levels, XP sharing, and ILT's /fship buttons on Infinite Leaftide.");
+            // Skills live under RynthOracle (Skills / Attributes / Progress tabs).
+            if (ImGui.MenuItem("Skills##mrskills", "/ro skills")) _hud.RunEngineCommand("/ro skills");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Skills tab: raise and train skills.");
+            if (ImGui.MenuItem("Attributes##mrattrs", "/ro attrs")) _hud.RunEngineCommand("/ro attrs");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Attributes tab: attributes and vitals.");
+            if (ImGui.MenuItem("Progress##mrprogress", "/ro progress")) _hud.RunEngineCommand("/ro progress");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("RynthOracle's Progress tab: ILT progression planners.");
             if (ImGui.MenuItem("Inventory##mrinv", "/rc inventory")) _hud.RunEngineCommand("/rc inventory");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("This character's packs (Inventory panel). Count / GInv buttons there open Item Count and Global Inventory.");
             if (ImGui.MenuItem("Item Count##mritemcount", "/rc itemcount")) _hud.RunEngineCommand("/rc itemcount");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Item Count panel (/rc itemcount): how many of each named item you carry. Distinct from the floating pack item count HUD.");
         }
         if (ImGui.MenuItem("Inventory HUDs setup...##mrsetup")) s.ShowSetup = true;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Show / hide the floating pack item count HUD and the Mini Remote (/ra huds).");
     }
 
     /// <summary>
@@ -962,8 +1055,8 @@ internal sealed class MiniRemoteHud
                 // Universal tabs are under Character; RynthCore 2026.10.5.30 and older list them here too
                 // (with the retired Quests tab, now RynthOracle's).
                 if (tab != null && (MiniRemoteTabs.Parse(tab) != null || tab.Equals("quests", StringComparison.OrdinalIgnoreCase))) continue;
-                // Character (an older RynthCore still lists it) moved out: it is under Character above
-                // (RynthOracle's Character tab).
+                // Character / Charms / Banking (an older RynthCore still lists them) moved out: they are
+                // under Character above (RynthOracle's Character tab, Global Inventory).
                 if (tab != null && MovedTabs.CommandFor(tab) != null) continue;
                 bool enabled = tab == null || TabAvailable(remote, tab);
                 if (ImGui.MenuItem(item.Label + "##mrsrv_" + g.Id, item.Command, false, enabled))

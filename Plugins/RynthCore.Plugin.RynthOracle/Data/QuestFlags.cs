@@ -59,6 +59,13 @@ internal sealed class QuestFlagStore
     public const string ThrottledText = "[MyQuests] This command may only be run once every";
 
     private const int QuietMs = 1500;          // a reply is complete once no line came for this long
+    /// <summary>
+    /// A long reply (ACECustom characters hold 15,000-25,000+ flags) reaches the client in pieces
+    /// with pauses between them; past this many lines a reply waits <see cref="LongReplyQuietMs"/>
+    /// of silence instead, so one reply isn't split into a short "full" one and a merged tail.
+    /// </summary>
+    private const int LongReplyLines = 500;
+    private const int LongReplyQuietMs = 5000;
     private const int RequestTimeoutMs = 10_000;
     private const int MinRequestGapMs = 5_000;
     /// <summary>ACECustom answers one /myquests a minute per session (whoever sent the last one).</summary>
@@ -86,6 +93,12 @@ internal sealed class QuestFlagStore
     /// reply, flags held before it). The plugin logs it once and clears it.
     /// </summary>
     public (int Got, int Had)? LastPartialReply { get; set; }
+    /// <summary>
+    /// Set when a long reply (<see cref="LongReplyLines"/>+ lines) completes: its line count and
+    /// how long it took from first to last line. The plugin logs it once and clears it.
+    /// </summary>
+    public (int Lines, long Ms)? LastLongReply { get; set; }
+    private long _firstLineMs;
     /// <summary>Bumps whenever the flags change (views rebuild their caches on it).</summary>
     public int Revision { get; private set; }
 
@@ -160,7 +173,11 @@ internal sealed class QuestFlagStore
 
         QuestFlag? flag = Parse(line);
         if (flag == null) return MyQuestsLine.None;
-        _pending ??= new Dictionary<string, QuestFlag>(StringComparer.OrdinalIgnoreCase);
+        if (_pending == null)
+        {
+            _pending = new Dictionary<string, QuestFlag>(StringComparer.OrdinalIgnoreCase);
+            _firstLineMs = nowMs;
+        }
         _pending[flag.Key] = flag;
         _lastLineMs = nowMs;
         ServerDisabled = false;
@@ -173,10 +190,13 @@ internal sealed class QuestFlagStore
         if (Interlocked.Exchange(ref _typedByPlayer, 0) != 0)
             AwaitingOurs = false; // the player asked too: their reply shows in chat
 
-        if (_pending != null && nowMs - _lastLineMs >= QuietMs)
+        int quietMs = _pending != null && _pending.Count >= LongReplyLines ? LongReplyQuietMs : QuietMs;
+        if (_pending != null && nowMs - _lastLineMs >= quietMs)
         {
             Dictionary<string, QuestFlag> reply = _pending;
             _pending = null;
+            if (reply.Count >= LongReplyLines)
+                LastLongReply = (reply.Count, _lastLineMs - _firstLineMs);
             int had = Flags.Count;
             // A full reply replaces the list (a flag the server dropped goes away). One much
             // smaller than what is held lost lines on the way (the engine's chat queue drops the
@@ -215,10 +235,21 @@ internal sealed class QuestFlagStore
         ThrottledUntilMs = long.MinValue / 2;
         _serverThrottles = false;
         LastPartialReply = null;
+        LastLongReply = null;
         Revision++;
     }
 
     public bool TryGet(string flag, out QuestFlag q) => Flags.TryGetValue(flag, out q!);
+
+    /// <summary>
+    /// Whether RynthOracle should read /myquests again by itself: auto refresh is on, nothing
+    /// happened for <paramref name="minutes"/> since <paramref name="sinceUtc"/> (the later of the
+    /// last reply, the login and RynthOracle's own last try), no reply is on its way, the server
+    /// has /myquests on and its once-a-minute limit is up. Pure: the tests drive it.
+    /// </summary>
+    internal static bool AutoRefreshDue(int minutes, DateTime sinceUtc, DateTime utcNow, bool loading, bool serverDisabled, int throttleSecondsLeft)
+        => minutes > 0 && !loading && !serverDisabled && throttleSecondsLeft == 0
+           && utcNow - sinceUtc >= TimeSpan.FromMinutes(minutes);
 
     internal static QuestFlag? Parse(string line)
     {

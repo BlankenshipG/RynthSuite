@@ -36,6 +36,114 @@ internal static class SpellCatalogTests
         r.Add("buff profile: a profile spell casts the best level known", ProfileResolvesTier);
         r.Add("buff profile: a name with no tier ladder falls back to its spell family", ProfileFamilyFallback);
         r.Add("buff profile: Loaded Files lists profiles, picks one by index, and the snapshot reports it", LoadedFilesPicker);
+        r.Add("buffing: a level refused for components drops to the next lower level (built-in and profile)", NoComponentsDropsALevel);
+        r.Add("buffing: Use Fellowship Buffs casts the fellowship version only in a fellowship, never a lower level", FellowshipVersions);
+        r.Add("buff profile: a spell with no duration (Mana Boost) is left out; the built-in list never had it", InstantSpellsLeftOut);
+        r.Add("buffing: never a heal for health, stamina or mana, nor a dispel; buffs that stay on are fine", NoHealsOrDispels);
+    }
+
+    // Empowering the Conclave (Strength, every fellowship member): levels 4, 5 and 6.
+    private const int LesserEmpoweringConclave = 3175, EmpoweringConclave = 3176, GreaterEmpoweringConclave = 3177;
+
+    // 2026-10-19 (owner): a buff the character lacks the components for skips that level, not the buff.
+    private static void NoComponentsDropsALevel()
+    {
+        var buffs = NewBuffs(500, out SpellManager spells, StrengthSelfI, StrengthSelfIII, StrengthSelfVI);
+        AcSkillType skill = buffs.SkillFor("Strength Self");
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), StrengthSelfVI, "the highest known level the skill allows");
+        spells.MarkNoComponents(StrengthSelfVI);
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), StrengthSelfIII, "VI refused for components: the next lower known level");
+        spells.MarkNoComponents(StrengthSelfIII);
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), StrengthSelfI, "and the next");
+        spells.MarkNoComponents(StrengthSelfI);
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), 0, "no castable level left: the buff is left out");
+        spells.NoteComponentCounts(10, 10);
+        spells.NoteComponentCounts(11, 10);   // more scarabs picked up
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), StrengthSelfVI, "more scarabs: every level is tried again");
+
+        // A profile line without a tier ladder (the family fallback) follows the same rule.
+        var custom = new BuffProfileEntry
+        {
+            SpellId = StrengthSelfI, Name = "Custom Strength", Key = "Custom Strength",
+            FamilyId = StrengthFamily, School = "Creature Enchantment", Target = "Self", Level = 1,
+        };
+        var profile = new BuffProfile { Name = "custom" };
+        profile.Entries.Add(custom);
+        buffs = NewBuffs(500, out spells, StrengthSelfIII, MightOfTheLugians);
+        buffs.ApplyBuffProfile(profile);
+        spells.MarkNoComponents(MightOfTheLugians);
+        Check.Eq(buffs.FindBestSpellId("Custom Strength", AcSkillType.CreatureEnchantment), StrengthSelfIII,
+            "profile: the level refused for components is passed over");
+    }
+
+    private static void FellowshipVersions()
+    {
+        Check.True(BuffManager.IsFellowshipSpell(Spell(GreaterEmpoweringConclave)) && !BuffManager.IsFellowshipSpell(Spell(StrengthSelfVI)),
+            "Empowering the Conclave is a fellowship spell, Strength Self isn't");
+
+        var buffs = NewBuffs(500, out _, out LegacyUiSettings s, StrengthSelfVI, GreaterEmpoweringConclave);
+        AcSkillType skill = buffs.SkillFor("Strength Self");
+        buffs.InFellowship = () => false;
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), StrengthSelfVI, "setting off: the self buff");
+        s.UseFellowshipBuffs = true;
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), StrengthSelfVI, "setting on, solo: the self buff");
+
+        buffs = NewBuffs(500, out _, out s, StrengthSelfVI, GreaterEmpoweringConclave);
+        s.UseFellowshipBuffs = true;
+        buffs.InFellowship = () => true;
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), GreaterEmpoweringConclave, "in a fellowship: the fellowship version at the same level");
+
+        buffs = NewBuffs(500, out _, out s, StrengthSelfVI, EmpoweringConclave);
+        s.UseFellowshipBuffs = true;
+        buffs.InFellowship = () => true;
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), StrengthSelfVI, "a lower fellowship level never replaces a higher self buff");
+
+        buffs = NewBuffs(250, out _, out s, StrengthSelfIII, EmpoweringConclave, GreaterEmpoweringConclave);   // tier 5
+        s.UseFellowshipBuffs = true;
+        buffs.InFellowship = () => true;
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), EmpoweringConclave, "the skill's tier caps the fellowship level too (5, not 6)");
+
+        buffs = NewBuffs(500, out SpellManager spells, out s, StrengthSelfVI, GreaterEmpoweringConclave);
+        s.UseFellowshipBuffs = true;
+        buffs.InFellowship = () => true;
+        spells.MarkNoComponents(GreaterEmpoweringConclave);
+        Check.Eq(buffs.FindBestSpellId("Strength Self", skill), StrengthSelfVI, "a fellowship level refused for components: the self buff");
+    }
+
+    // Kelpie's default.json has Incantation of Mana Boost Self: it restores mana at once (duration -1),
+    // so as a "buff" it was never active and would be cast on every pass.
+    private const int IncantationOfManaBoostSelf = 4315;
+
+    // 2026-10-19 (owner): buffing casts no self heals (health, stamina, mana) and no dispels.
+    private static void NoHealsOrDispels()
+    {
+        foreach (string name in new[] { "Heal Self VI", "Revitalize Self VI", "Mana Boost Self VI", "Stamina to Mana Self VI", "Incantation of Heal Self" })
+        {
+            SpellCatalogEntry? s = SpellCatalog.GetByName(name);
+            Check.True(s != null && !BuffManager.IsLastingBuff(s.Id), $"{name}: not a buff to keep up");
+        }
+        var dispels = SpellCatalog.All.Where(s => s.FamilyName.Contains("Dispel", StringComparison.OrdinalIgnoreCase)).ToList();
+        Check.True(dispels.Count > 10, $"the catalog has the dispels ({dispels.Count})");
+        Check.True(dispels.All(s => !BuffManager.IsLastingBuff(s.Id)), "no dispel (Evaporate / Extinguish ... All Magic) is ever a buff");
+        foreach (int id in new[] { StrengthSelfVI, IncantationOfBladeBane, AuraOfBloodDrinkerSelfIII })
+            Check.True(BuffManager.IsLastingBuff(id), $"{Spell(id).Name}: a buff, fine");
+
+        // In a list or a profile, a heal resolves to nothing: the cast loop skips it.
+        var buffs = NewBuffs(500, out _, SpellCatalog.GetByName("Heal Self VI")!.Id, StrengthSelfVI);
+        Check.Eq(buffs.FindBestSpellId("Heal Self", AcSkillType.LifeMagic), 0, "Heal Self known: still not cast as a buff");
+        Check.Eq(buffs.FindBestSpellId("Strength Self", buffs.SkillFor("Strength Self")), StrengthSelfVI, "Strength Self still is");
+    }
+
+    private static void InstantSpellsLeftOut()
+    {
+        var buffs = NewBuffs(500, StrengthSelfVI);
+        Check.False(buffs.BuildBuiltInBuffList().Contains("Mana Boost Self"), "the built-in list has no Mana Boost");
+        var profile = new BuffProfile { Name = "with boost" };
+        profile.Entries.Add(BuffProfileStore.EntryFor(Spell(IncantationOfManaBoostSelf)));
+        profile.Entries.Add(BuffProfileStore.EntryFor(Spell(StrengthSelfVI)));
+        buffs.ApplyBuffProfile(profile);
+        Check.Eq(buffs.ActiveBuffProfileCount, 1, "only the buff with a duration is used");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("left out") && l.Contains("Mana Boost")), "and the one left out is logged");
     }
 
     // ── Rig ─────────────────────────────────────────────────────────────────
@@ -44,7 +152,13 @@ internal static class SpellCatalogTests
         SpellCatalog.Get(id) ?? throw new InvalidOperationException($"spell {id} missing from the catalog");
 
     /// <summary>A buff manager over FakeHost with the given buffed Creature skill and known spells.</summary>
-    private static BuffManager NewBuffs(int buffedCreature, params int[] known)
+    private static BuffManager NewBuffs(int buffedCreature, params int[] known) => NewBuffs(buffedCreature, out _, out _, known);
+
+    private static BuffManager NewBuffs(int buffedCreature, out SpellManager spellManager, params int[] known) =>
+        NewBuffs(buffedCreature, out spellManager, out _, known);
+
+    /// <summary>The same, handing back the spell manager (component refusals are marked on it) and the settings.</summary>
+    private static BuffManager NewBuffs(int buffedCreature, out SpellManager spellManager, out LegacyUiSettings settingsOut, params int[] known)
     {
         FakeHost.Reset();
         foreach (int id in known) FakeHost.Spellbook.Add((uint)id);
@@ -58,6 +172,8 @@ internal static class SpellCatalogTests
         spells.SetCharacterSkills(skills);
         var buffs = new BuffManager(host, settings, spells, new PlayerVitalsCache());
         buffs.SetCharacterSkills(skills);
+        spellManager = spells;
+        settingsOut = settings;
         return buffs;
     }
 

@@ -361,6 +361,15 @@ public sealed class LegacyUiSettings
     /// </summary>
     public bool SkipUnusableBuffs = true;
     /// <summary>
+    /// While in a fellowship, a buff with a fellowship version (Empowering the Conclave for
+    /// Strength, the Clutch defenses, the Chants, the Wards, the Winds) casts that one instead: the
+    /// same family, so it replaces the self buff on you and buffs every member too. Same rules as
+    /// any buff: the highest level the skill allows that the character knows and the server hasn't
+    /// refused for components; without a usable fellowship level the self buff is cast. Off by
+    /// default; solo it never applies.
+    /// </summary>
+    public bool UseFellowshipBuffs;
+    /// <summary>
     /// Buff base names the player unticked in Buffing settings (the Protections and Banes grid,
     /// e.g. "Fire Protection Self", "Flame Bane"): left out of the buff list, so never cast and
     /// never waited on. Empty = every buff on, which is also what a profile saved before this
@@ -1251,6 +1260,7 @@ public sealed class SettingsBridgePayload
     // Settings face must leave the setting alone rather than force it either way.
     public bool? CastBuffsOverItemBuffs { get; set; }
     public bool? SkipUnusableBuffs { get; set; }
+    public bool? UseFellowshipBuffs { get; set; }
     // Null (absent) likewise leaves the unticked prots/banes alone; an empty list ticks them all.
     public List<string>? DisabledBuffs { get; set; }
     public int BuffMinSkillLevelTier1 { get; set; }

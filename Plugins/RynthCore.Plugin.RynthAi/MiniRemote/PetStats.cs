@@ -152,9 +152,9 @@ internal static class PetStatsReader
             _ => string.Empty,
         };
 
-        int dmg = inv.Int(wo, IntCapturedDamageType);
-        if (dmg <= 0) dmg = inv.Int(wo, IntDamageType);
-        s.DamageType = DamageTypeName(dmg);
+        // Most essences carry neither property; the name then gives the school (UB-ILT v2.0.1119).
+        s.DamageType = PetDamageTint.Name(PetDamageTint.PickPetFlag(
+            inv.Int(wo, IntCapturedDamageType), inv.Int(wo, IntDamageType), wo.Name));
 
         // Gear ratings first (what Mag ItemInfo shows), else the base rating ids.
         s.D   = inv.Int(wo, IntGearDamage);
@@ -289,20 +289,6 @@ internal static class PetStatsReader
         Add("D", s.D); Add("DR", s.DR); Add("C", s.C); Add("CD", s.CD); Add("CR", s.CR); Add("CDR", s.CDR);
         return sb.Length > 0 ? "[" + sb + "]" : string.Empty;
     }
-
-    /// <summary>Single AC DamageType flag → name (combined flags return empty).</summary>
-    private static string DamageTypeName(int flags) => flags switch
-    {
-        1    => "Slash",
-        2    => "Pierce",
-        4    => "Bludgeon",
-        8    => "Cold",
-        16   => "Fire",
-        32   => "Acid",
-        64   => "Lightning",
-        1024 => "Nether",
-        _    => string.Empty,
-    };
 
     private static bool TryBool(RynthCoreHost host, uint id, uint stype, out bool v)
     {

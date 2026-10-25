@@ -32,7 +32,7 @@ public enum LootItemAttributeOp
 /// <summary>One checklist row while a rule is built (the wire form is LootEditItemAttribute).</summary>
 public sealed class LootItemAttribute
 {
-    internal enum Shape { Long, Double, TotalRatings, Spell, CantripTier, SpellCount }
+    internal enum Shape { Long, Double, TotalRatings, Spell, CantripTier, SpellCount, SpellFamily, ObjectClass }
 
     public string Id { get; init; } = string.Empty;
     public string Group { get; init; } = string.Empty;
@@ -46,8 +46,12 @@ public sealed class LootItemAttribute
     public LootItemAttributeOp[] Ops { get; init; } = Array.Empty<LootItemAttributeOp>();
     /// <summary>The item's value can be replaced by a typed number.</summary>
     public bool Editable { get; init; }
-    /// <summary>Spell rows: the spell's name.</summary>
+    /// <summary>Spell rows: the spell's name (SpellFamily rows: the family, Key its level).</summary>
     internal string Spell { get; init; } = string.Empty;
+    /// <summary>The values a named row can take (material names, skills, classes...), or null: the value is typed or fixed.</summary>
+    internal (int Id, string Name)[]? Choices { get; init; }
+    /// <summary>SpellFamily rows: the family's spells by level (the catalog's), or null: a name pattern.</summary>
+    internal LootSpellFamily? Family { get; init; }
 
     // Where the row stands now (defaults, then the player's choice).
     public bool On { get; set; }
@@ -60,7 +64,8 @@ public sealed class LootItemAttribute
     {
         Id = Id, Group = Group, Label = Label, ItemValue = ItemText, Tip = Tip, Editable = Editable, On = On,
         Op = (int)Op, Ops = new List<int>(Array.ConvertAll(Ops, o => (int)o)),
-        Value = Editable ? LootItemAttributes.Number(Value) : ItemText,
+        Value = Editable || Choices != null ? LootItemAttributes.Number(Value) : ItemText,
+        Choices = Choices == null ? null : new List<LootEditName>(Array.ConvertAll(Choices, c => new LootEditName { Id = c.Id, Name = c.Name })),
     };
 }
 
@@ -70,7 +75,19 @@ public static class LootItemAttributes
         GroupPet = "Pet essence", GroupT11 = "T11", GroupRequirements = "Requirements";
 
     /// <summary>Cantrip tiers, lowest first: "Major Strength" is tier 2.</summary>
-    public static readonly string[] CantripTiers = { "Minor", "Major", "Epic", "Legendary" };
+    public static readonly string[] CantripTiers = { "Minor", "Major", "Epic", "Legendary", "Paragon" };
+
+    /// <summary>
+    /// The regex alternation for cantrip tiers <paramref name="from"/> and up. Paragon is also
+    /// written "Paragon's" by some servers, so it takes an optional "'s".
+    /// </summary>
+    public static string TierAlternation(int from)
+    {
+        var parts = new List<string>();
+        for (int i = Math.Max(0, from); i < CantripTiers.Length; i++)
+            parts.Add(CantripTiers[i] == "Paragon" ? "Paragon(?:'s)?" : CantripTiers[i]);
+        return string.Join("|", parts);
+    }
     private static readonly string[] Roman = { "I", "II", "III", "IV", "V", "VI", "VII", "VIII" };
 
     // Pet essence property ids (ACECustom; the Mini Remote's PetStats reads the same).
@@ -249,13 +266,14 @@ public static class LootItemAttributes
             _ => new[] { LootItemAttributeOp.AtLeast, LootItemAttributeOp.Exactly, LootItemAttributeOp.AtMost },
         };
         string text = s.IsDouble ? Number(v) : NamedOrNumber(s.Key, (int)v);
+        (int Id, string Name)[]? choices = s.Cmp == Cmp.Named && !s.IsDouble ? LootRuleText.ValueTableFor(s.Key) : null;
         return new LootItemAttribute
         {
             Id = (s.IsDouble ? "D:" : "L:") + s.Key.ToString(CultureInfo.InvariantCulture),
             Group = s.Group, Label = s.Label, Tip = s.Tip,
             Kind = s.IsDouble ? LootItemAttribute.Shape.Double : LootItemAttribute.Shape.Long,
             Key = s.Key, ItemValue = v, ItemText = text, Ops = ops, Editable = s.Cmp != Cmp.Named,
-            On = on, Op = ops[0], Value = v,
+            On = on, Op = ops[0], Value = v, Choices = choices,
         };
     }
 
@@ -321,7 +339,7 @@ public static class LootItemAttributes
             if (TryCantrip(spell, out int tier, out string rest))
             {
                 from = op == LootItemAttributeOp.SpellAnyTier ? 0 : tier;
-                return "^(" + string.Join("|", CantripTiers, from, CantripTiers.Length - from) + ") " + LootItemRules.EscapeText(rest) + "$";
+                return "^(" + TierAlternation(from) + ") " + LootItemRules.EscapeText(rest) + "$";
             }
             if (TryLevel(spell, out int level, out rest))
             {
@@ -362,7 +380,7 @@ public static class LootItemAttributes
             {
                 Id = "spell:" + s, Group = GroupSpells, Label = s, Kind = LootItemAttribute.Shape.Spell, Spell = s,
                 ItemText = cantrip ? CantripTiers[tier] + " cantrip" : leveled ? "level " + Roman[level - 1] : "spell",
-                Tip = cantrip ? "Or better: this cantrip at this tier or higher. Any tier: Minor to Legendary."
+                Tip = cantrip ? "Or better: this cantrip at this tier or higher. Any tier: Minor to Paragon."
                     : leveled ? "Or better: this spell at this level or higher. Any tier: any level."
                     : "The item has this spell.",
                 Ops = ops, On = on, Op = ops[0],
@@ -471,7 +489,19 @@ public static class LootItemAttributes
             r.On = c.On;
             if (c.Op >= 0 && Array.IndexOf(r.Ops, (LootItemAttributeOp)c.Op) >= 0) r.Op = (LootItemAttributeOp)c.Op;
             string typed = (c.Value ?? string.Empty).Trim();
-            if (!r.Editable || typed.Length == 0) continue;
+            if (typed.Length == 0) continue;
+            if (r.Choices != null)
+            {
+                // A named value picked from the row's list (another material, skill, class...).
+                if (int.TryParse(typed, NumberStyles.Integer, CultureInfo.InvariantCulture, out int pick)
+                    && Array.Exists(r.Choices, x => x.Id == pick))
+                {
+                    r.Value = pick;
+                    r.Typed = typed;
+                }
+                continue;
+            }
+            if (!r.Editable) continue;
             bool whole = r.Kind != LootItemAttribute.Shape.Double;
             if (double.TryParse(typed, NumberStyles.Float, CultureInfo.InvariantCulture, out double v) && v >= 0 && (!whole || v == Math.Floor(v)))
             {
@@ -517,8 +547,14 @@ public static class LootItemAttributes
                     rule.Conditions.Add(Cond(VTankNodeTypes.SpellNameMatch, SpellPattern(r.Spell, r.Op)));
                     break;
                 case LootItemAttribute.Shape.CantripTier:
-                    string tiers = string.Join("|", CantripTiers, r.Key, CantripTiers.Length - r.Key);
-                    rule.Conditions.Add(Cond(VTankNodeTypes.SpellMatch, "^(" + tiers + ") ", string.Empty, Number(r.Value)));
+                    rule.Conditions.Add(Cond(VTankNodeTypes.SpellMatch, "^(" + TierAlternation(r.Key) + ") ", string.Empty, Number(r.Value)));
+                    break;
+                case LootItemAttribute.Shape.SpellFamily:
+                    rule.Conditions.Add(Cond(VTankNodeTypes.SpellNameMatch,
+                        r.Family != null ? r.Family.Pattern(r.Key, r.Op) : FamilyPattern(r.Spell, r.Key, r.Op)));
+                    break;
+                case LootItemAttribute.Shape.ObjectClass:
+                    rule.Conditions.Add(Cond(VTankNodeTypes.ObjectClass, ((long)r.Value).ToString(CultureInfo.InvariantCulture)));
                     break;
                 case LootItemAttribute.Shape.SpellCount:
                     rule.Conditions.Add(Cond(VTankNodeTypes.SpellCountGE, Number(r.Value)));
@@ -529,6 +565,162 @@ public static class LootItemAttributes
     }
 
     private static VTankLootCondition Cond(int type, params string[] lines) => new(type, "0", lines);
+
+    // ── Spells picked from the standard lists (2026-10-24) ──────────────────
+
+    /// <summary>
+    /// The spell condition for a family at a level: "Strength" level 6, or better: the Self or
+    /// Other spell at VI, VII or VIII (exact: VI only; any tier: I to VIII).
+    /// </summary>
+    public static string FamilyPattern(string family, int level, LootItemAttributeOp op)
+    {
+        int from = op == LootItemAttributeOp.SpellAnyTier ? 0 : Math.Clamp(level, 1, Roman.Length) - 1;
+        string levels = op == LootItemAttributeOp.SpellExact ? Roman[from] : string.Join("|", Roman, from, Roman.Length - from);
+        return "^" + LootItemRules.EscapeText(family) + "( Self| Other)? (" + levels + ")$";
+    }
+
+    /// <summary>The roman numeral for a spell level (1-8).</summary>
+    public static string RomanLevel(int level) => Roman[Math.Clamp(level, 1, Roman.Length) - 1];
+
+    /// <summary>
+    /// Rows for the spells the player added from the lists: a leveled family ("spell", Name the
+    /// family, Level 1-8) or a cantrip ("cantrip", Name without tier, Level the tier index).
+    /// Ticked; "or better" unless the extra says otherwise. They go after the item's spells.
+    /// </summary>
+    public static void AddExtras(List<LootItemAttribute> rows, IReadOnlyList<LootEditItemExtra>? extras, LootSpellCatalog? spells = null)
+    {
+        if (extras == null || extras.Count == 0) return;
+        int at = rows.FindIndex(r => r.Group == GroupPet || r.Group == GroupT11 || r.Group == GroupRequirements);
+        if (at < 0) at = rows.Count;
+        var ops = new[] { LootItemAttributeOp.SpellOrBetter, LootItemAttributeOp.SpellExact, LootItemAttributeOp.SpellAnyTier };
+        var add = new List<LootItemAttribute>();
+        foreach (LootEditItemExtra x in extras)
+        {
+            string name = LootItemRules.OneLine(x.Name).Trim();
+            if (name.Length == 0) continue;
+            string id = ExtraId(x);
+            if (rows.Exists(r => r.Id == id) || add.Exists(r => r.Id == id)) continue;
+            LootItemAttributeOp op = Array.IndexOf(ops, (LootItemAttributeOp)x.Op) >= 0 ? (LootItemAttributeOp)x.Op : ops[0];
+            if (x.Kind == LootEditItemExtra.Cantrip)
+            {
+                string spell = CantripTiers[Math.Clamp(x.Level, 0, CantripTiers.Length - 1)] + " " + name;
+                add.Add(new LootItemAttribute
+                {
+                    Id = id, Group = GroupSpells, Label = spell, Kind = LootItemAttribute.Shape.Spell, Spell = spell,
+                    ItemText = "added", Tip = "Added from the cantrip list. Or better: this tier or higher; any tier: Minor to Paragon.",
+                    Ops = ops, On = true, Op = op,
+                });
+            }
+            else
+            {
+                int level = Math.Clamp(x.Level, 1, Roman.Length);
+                add.Add(new LootItemAttribute
+                {
+                    Id = id, Group = GroupSpells, Label = name + " " + Roman[level - 1], Kind = LootItemAttribute.Shape.SpellFamily,
+                    Spell = name, Key = level, ItemText = "added", Family = spells?.Find(name),
+                    Tip = "Added from the spell list (the Self or Other spell). Or better: this level or higher; any tier: any level.",
+                    Ops = ops, On = true, Op = op,
+                });
+            }
+        }
+        rows.InsertRange(at, add);
+    }
+
+    /// <summary>The row id an extra spell gets ("x:spell:Strength:6", "x:cantrip:3:Strength").</summary>
+    public static string ExtraId(LootEditItemExtra x) =>
+        x.Kind == LootEditItemExtra.Cantrip
+            ? "x:cantrip:" + x.Level.ToString(CultureInfo.InvariantCulture) + ":" + LootItemRules.OneLine(x.Name).Trim()
+            : "x:spell:" + LootItemRules.OneLine(x.Name).Trim() + ":" + x.Level.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The checklist without an item (the Inventory panel's and Global Inventory's own filter,
+    /// 2026-10-24): every attribute a rule can test, unticked and with a value to fill in; a
+    /// Class row first; named values pick from their lists; a row per cantrip tier; T11's
+    /// summary keys. The spells come from the lists (<see cref="AddExtras"/>).
+    /// </summary>
+    public static List<LootItemAttribute> ForBlank()
+    {
+        var rows = new List<LootItemAttribute>();
+        var classes = Array.FindAll(LootRuleText.ObjectClasses, c => c.Id != (int)AcObjectClass.Unknown && !NotAnItem((AcObjectClass)c.Id));
+        Array.Sort(classes, (a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+        rows.Add(new LootItemAttribute
+        {
+            Id = "class", Group = GroupItem, Label = "Class", Kind = LootItemAttribute.Shape.ObjectClass,
+            Tip = "The kind of item (Decal / VTank object class).", ItemText = "any",
+            Ops = new[] { LootItemAttributeOp.Exactly }, Op = LootItemAttributeOp.Exactly, Choices = classes,
+            Value = classes.Length > 0 ? classes[0].Id : 0,
+        });
+        foreach (Spec s in Specs)
+        {
+            if (s.Group == GroupRatings && s.Key == 370)
+                rows.Add(new LootItemAttribute
+                {
+                    Id = "ratings", Group = GroupRatings, Label = "Total ratings", Kind = LootItemAttribute.Shape.TotalRatings,
+                    Tip = "Damage, damage resist, crit, crit resist, crit damage, crit damage resist, heal boost and vitality ratings added up.",
+                    ItemText = "any", Ops = new[] { LootItemAttributeOp.AtLeast }, Editable = true, Op = LootItemAttributeOp.AtLeast,
+                });
+            if (s.Group == GroupRequirements && !rows.Exists(r => r.Group == GroupSpells)) AddBlankSpellRows(rows);
+            LootItemAttribute r = PropertyRow(s, 0, false);
+            (int Id, string Name)[]? table = r.Choices;
+            rows.Add(new LootItemAttribute
+            {
+                Id = r.Id, Group = r.Group, Label = r.Label, Tip = r.Tip, Kind = r.Kind, Key = r.Key, Ops = r.Ops, Op = r.Op,
+                // A named value without a list (equip slots, armor set) is typed as its number here.
+                Editable = r.Editable || table == null, Choices = table, ItemText = "any",
+                Value = table != null && table.Length > 0 ? table[0].Id : 0,
+            });
+        }
+        if (!rows.Exists(r => r.Group == GroupSpells)) AddBlankSpellRows(rows);
+
+        // T11: the keys that need no particular item, before Requirements.
+        int t11At = rows.FindIndex(r => r.Group == GroupRequirements);
+        if (t11At < 0) t11At = rows.Count;
+        var t11 = new List<LootItemAttribute>();
+        void T11Row(string id, string label, int key, bool named, bool equal = false)
+        {
+            LootItemAttributeOp[] ops = equal ? new[] { LootItemAttributeOp.Exactly }
+                : new[] { LootItemAttributeOp.AtLeast, LootItemAttributeOp.Exactly, LootItemAttributeOp.AtMost };
+            (int Id, string Name)[]? choices = named ? LootRuleText.ValueTableFor(key) : null;
+            t11.Add(new LootItemAttribute
+            {
+                Id = "t11:" + id, Group = GroupT11, Label = label, Kind = LootItemAttribute.Shape.Long, Key = key,
+                ItemText = equal ? "yes" : "any", Ops = ops, Op = ops[0], Editable = !named && !equal, Choices = choices,
+                Value = equal ? 1 : choices != null && choices.Length > 0 ? choices[0].Id : 0,
+            });
+        }
+        T11Row("is", "Is T11", T11Keys.IsT11, named: false, equal: true);
+        T11Row("tier", "Tier", T11Keys.EstimatedTier, named: false);
+        T11Row("grade", "Weapon grade", T11Keys.WeaponGrade, named: true);
+        T11Row("dmgpct", "Damage %", T11Keys.DamagePercent, named: false);
+        T11Row("geargrade", "Gear grade", T11Keys.GearGrade, named: true);
+        T11Row("cos", "Cast on Strike count", T11Keys.CastOnStrikeCount, named: false);
+        T11Row("sum:" + T11Keys.ModifierCount.ToString(CultureInfo.InvariantCulture), "Modifier count", T11Keys.ModifierCount, named: false);
+        T11Row("sum:" + T11Keys.ModifierRatingTotal.ToString(CultureInfo.InvariantCulture), "Modifier rating total", T11Keys.ModifierRatingTotal, named: false);
+        rows.InsertRange(t11At, t11);
+        return rows;
+    }
+
+    /// <summary>The blank checklist's spell group: a cantrip count per tier and the spell count.</summary>
+    private static void AddBlankSpellRows(List<LootItemAttribute> rows)
+    {
+        for (int t = 0; t < CantripTiers.Length; t++)
+            rows.Add(new LootItemAttribute
+            {
+                Id = "cantrips:" + CantripTiers[t], Group = GroupSpells,
+                Label = t == CantripTiers.Length - 1 ? CantripTiers[t] + " cantrips" : CantripTiers[t] + "-or-better cantrips",
+                Kind = LootItemAttribute.Shape.CantripTier, Key = t, ItemText = "any", Ops = new[] { LootItemAttributeOp.AtLeast },
+                Editable = true, Op = LootItemAttributeOp.AtLeast, Value = 1, Tip = "How many cantrips of this tier or higher.",
+            });
+        rows.Add(new LootItemAttribute
+        {
+            Id = "spellcount", Group = GroupSpells, Label = "Spell count", Kind = LootItemAttribute.Shape.SpellCount,
+            ItemText = "any", Ops = new[] { LootItemAttributeOp.AtLeast }, Editable = true, Op = LootItemAttributeOp.AtLeast, Value = 1,
+        });
+    }
+
+    private static bool NotAnItem(AcObjectClass c) => c is AcObjectClass.Monster or AcObjectClass.Player or AcObjectClass.Vendor
+        or AcObjectClass.Door or AcObjectClass.Corpse or AcObjectClass.Lifestone or AcObjectClass.Portal or AcObjectClass.Npc
+        or AcObjectClass.Sign or AcObjectClass.Housing;
 
     /// <summary>A number as rules write it: whole numbers plain, decimals to 4 places.</summary>
     public static string Number(double v) => v.ToString("0.####", CultureInfo.InvariantCulture);

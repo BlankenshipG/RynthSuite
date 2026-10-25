@@ -1,9 +1,7 @@
 // Ported from Oracle of Dereth by Advis Eveldan (advis61), MIT. See THIRD_PARTY_NOTICES.md.
 // Tracking, kill tasks, rewards and the quest bonus list merged in from RynthAi's Mini Remote
 // Quests tab and UtilityBelt ILT's quest tracker (2026-10-13). The Legendary, Markers and Dynamic
-// Stamps tabs and RynthILT's Temple guardians merged in as tracker rows (SilentKelpie's PR 12,
-// RynthOracle 0.6.0, ported by hand onto this lineage). The Dynamic Stamps, the Temple guardians and the
-// /qb list are one server's (Infinite Leaftide's) and moved to that server's plugin, RynthILT, on 2026-10-21.
+// Stamps tabs and RynthILT's Temple guardians merged in as tracker rows (2026-10-18).
 using System;
 using System.Collections.Generic;
 using RynthCore.Plugin.RynthOracle.Data;
@@ -13,27 +11,30 @@ using RynthCore.Plugin.Shared;
 namespace RynthCore.Plugin.RynthOracle.Views;
 
 /// <summary>
-/// What a row of the merged Quests list is. Every kind but Quest is a tracker: the Legendary Key
-/// quests and the exploration markers (retail, every server).
+/// What a row of the merged Quests list is. Every kind but Quest is a tracker: Legendary Key quests
+/// and exploration markers everywhere, Dynamic Stamps and the Temple guardians on Infinite Leaftide.
 /// </summary>
-internal enum QuestKind { Quest, Legendary, Marker }
+internal enum QuestKind { Quest, Legendary, Marker, Dynamic, Guardian }
 
 /// <summary>
-/// Quests: every flag the character holds, cross-referenced with the master quest list (and the
-/// active server plugin's quest pack), plus the trackers (Legendary Key quests, exploration markers),
-/// in one searchable, sortable, paged list. "Trackers only" narrows the list to the trackers with
-/// their status above it. The * column tracks a quest in the Quest Timers window (a favourite);
-/// clicking a row opens it below the list: a quest's notes and rewards editor, a tracker's details,
-/// and RynthNav's Go / Route / Arrow for any coordinates in its notes. A click on a quest or a marker
-/// also prints its texts in chat.
+/// Quests: every flag the character holds, cross-referenced with the master quest list, plus the
+/// trackers (Legendary Key quests, exploration markers, Dynamic Stamps, Temple guardians), in one
+/// searchable, sortable, paged list. Each kind shows only on the servers it belongs to, and
+/// "Trackers only" narrows the list to the trackers with their status above it. The * column tracks
+/// a quest in the Quest Timers window; clicking a row opens it below the list: a quest's notes and
+/// rewards editor, a tracker's details, and RynthNav's Go / Route / Arrow for any coordinates in
+/// its notes. On Infinite Leaftide the quest bonus list (/qb, read by RynthILT) follows.
 /// </summary>
 internal sealed partial class OracleView
 {
     private const int QuestPageSize = 40;
+    private const int QbShownMax = 150;          // per /qb list on one pass (the rest: narrow with Search)
     private const float QuestListHeightWithPanel = 300f;
     private static readonly string[] QuestSorts = { "Flag", "Name", "Done first", "Not done first", "Ready soonest", "Most solves" };
     /// <summary>The kinds' names in <see cref="QuestKind"/> order (the Show filter).</summary>
-    private static readonly string[] KindNames = { "Quests", "Legendary", "Markers" };
+    private static readonly string[] KindNames = { "Quests", "Legendary", "Markers", "Dynamic Stamps", "Guardians" };
+    /// <summary>The guardians' last answer is offered for this long (RynthILT's Mini Remote line does the same).</summary>
+    private const long GuardianAnswerShownSec = 600;
 
     // The reward editor's fields, in QuestReward order (two percentages, then counts).
     private static readonly string[] RewardLabels =
@@ -47,12 +48,13 @@ internal sealed partial class OracleView
     private QuestKind? _qKind;
     private int _questSort;
     private int _questPage;
+    private int _dynArea;   // 0 = all areas, else DynamicStampList.Areas[n - 1] (Show: Dynamic Stamps)
 
     private readonly List<QuestRow> _questRows = new();
     private string _questKey = "";
     private long _questBuiltMs;
 
-    // The row opened below the list: a quest (_questSel) or a tracker (_selKey).
+    // The row opened below the list: a quest (_questSel), a Dynamic Stamp (_dynNav) or another tracker (_selKey).
     private QuestKind _selKind;
     private string _selKey = "";
     private string _questSel = "";
@@ -63,10 +65,10 @@ internal sealed partial class OracleView
     private sealed class QuestRow
     {
         public QuestKind Kind;
-        /// <summary>Unique across kinds: the quest flag, or "lg:", "mk:" and the tracker's own key.</summary>
+        /// <summary>Unique across kinds: the quest flag, or "lg:", "mk:", "dy:", "gd:" and the tracker's own key.</summary>
         public string Key = "";
         public string Label = "";
-        /// <summary>The tracker's group: a Legendary area or a marker's location.</summary>
+        /// <summary>The tracker's group: a Legendary area, a marker's location, a stamp's area, a guardian's NPC.</summary>
         public string Group = "";
         /// <summary>Its place in its own list (the default order of tracker rows).</summary>
         public int Order;
@@ -74,18 +76,32 @@ internal sealed partial class OracleView
         public Quest? Q;
         public LegendaryQuest? L;
         public Marker? M;
+        public DynamicStamp? D;
+        public IltGuardianRow? G;
     }
 
-    /// <summary>The kinds the list shows: quests, Legendary quests and markers, on every server. Internal for the tests.</summary>
-    internal List<QuestKind> AvailableKinds() => new() { QuestKind.Quest, QuestKind.Legendary, QuestKind.Marker };
+    /// <summary>
+    /// The kinds this server shows: quests, Legendary quests and markers everywhere; Dynamic Stamps
+    /// and the Temple guardians only on Infinite Leaftide. Internal for the tests.
+    /// </summary>
+    internal List<QuestKind> AvailableKinds()
+    {
+        var kinds = new List<QuestKind> { QuestKind.Quest, QuestKind.Legendary, QuestKind.Marker };
+        if (_c.Server.Is(ServerTags.InfiniteLeaftide))
+        {
+            kinds.Add(QuestKind.Dynamic);
+            kinds.Add(QuestKind.Guardian);
+        }
+        return kinds;
+    }
 
     /// <summary>A kind is listed: this server has it, the Show filter allows it, and Trackers only doesn't hide it.</summary>
     private bool KindListed(QuestKind k, List<QuestKind> kinds)
         => kinds.Contains(k) && (_qKind == null || _qKind == k) && !(_qTrackers && k == QuestKind.Quest);
 
     /// <summary>
-    /// Opens the Quests tab on the trackers: one kind (/ro legendary, /ro markers) or all of them
-    /// (null). The old tabs' commands land here.
+    /// Opens the Quests tab on the trackers: one kind (/ro legendary, /ro dynamic, /ro markers,
+    /// /ro guardians) or all of them (null). The old tabs' commands land here.
     /// </summary>
     public void ShowTrackers(QuestKind? kind)
     {
@@ -98,6 +114,7 @@ internal sealed partial class OracleView
     private void DrawQuests(UiWindow w)
     {
         QuestFlagStore flags = _c.Flags;
+        RefreshAfterHandIn(flags);
         if (flags.ServerDisabled)
             w.TextColored(UiColors.Red, "This server has /myquests turned off, so quest flags can't be read.");
         else if (flags.Loading)
@@ -119,14 +136,15 @@ internal sealed partial class OracleView
             ? $"{cat.RetailCount} retail quests + {cat.ServerCount} {cat.PackServer} quests"
             : $"{cat.RetailCount} retail quests");
 
-        // A Show filter left on a kind the list doesn't have: all kinds.
+        // A Show filter left on a kind this server doesn't have (another server's character): all kinds.
         List<QuestKind> kinds = AvailableKinds();
         if (_qKind is QuestKind chosen && !kinds.Contains(chosen)) _qKind = null;
+        bool ilt = kinds.Contains(QuestKind.Dynamic);
 
         w.InputText("Search", "q.search", _questSearch, 64, s => { _questSearch = s; _questPage = 0; });
-        w.Tooltip("Words to find in a row: a quest's flag or name; a tracker's place, area or notes.");
+        w.Tooltip("Words to find in a row: a quest's flag or name; a tracker's NPC, place, area, reward or notes. Also filters the quest bonus list.");
         w.Checkbox("Done", "q.done", _qDone, v => { _qDone = v; _questPage = 0; });
-        w.Tooltip("Done quests; Legendary quests you have, markers found.");
+        w.Tooltip("Done quests; Legendary quests and stamps you have, markers found, guardians on cooldown.");
         w.SameLine();
         w.Checkbox("Not done", "q.notdone", _qNotDone, v => { _qNotDone = v; _questPage = 0; });
         w.SameLine();
@@ -154,7 +172,9 @@ internal sealed partial class OracleView
             if (v && _qKind == QuestKind.Quest) _qKind = null;
             _questPage = 0;
         });
-        w.Tooltip("Only the trackers, with their status above the list: Legendary Key quests and exploration markers.");
+        w.Tooltip("Only the trackers, with their status above the list: Legendary Key quests, exploration markers"
+                  + (ilt ? ", Dynamic Stamps and the Temple guardians." : ".")
+                  + (ilt ? "" : "\nDynamic Stamps and the Temple guardians show on Infinite Leaftide."));
         w.SameLine();
         var kindItems = new List<string>(kinds.Count + 1) { "Everything" };
         foreach (QuestKind k in kinds) kindItems.Add(KindNames[(int)k]);
@@ -165,7 +185,14 @@ internal sealed partial class OracleView
             if (_qKind == QuestKind.Quest) _qTrackers = false;
             _questPage = 0;
         });
-        w.Tooltip("One kind of row, or everything.");
+        w.Tooltip("One kind of row, or everything this server has.");
+        if (_qKind == QuestKind.Dynamic)
+        {
+            w.SameLine();
+            var areaItems = new List<string>(DynamicStampList.Areas.Count + 1) { "All areas" };
+            areaItems.AddRange(DynamicStampList.Areas);
+            w.Combo("##dyarea", "dy.area", Math.Clamp(_dynArea, 0, areaItems.Count - 1), areaItems, v => { _dynArea = v; _questPage = 0; });
+        }
         w.Combo("Sort", "q.sort", _questSort, QuestSorts, i => { _questSort = Math.Clamp(i, 0, QuestSorts.Length - 1); _questPage = 0; });
 
         if (_qTrackers || _qKind is QuestKind k2 && k2 != QuestKind.Quest) DrawTrackerSummary(w, kinds);
@@ -175,11 +202,12 @@ internal sealed partial class OracleView
         w.SameLine(160f);
         _questPage = Pager(w, "q.page", _questPage, rows.Count, QuestPageSize, p => _questPage = p);
 
-        // A fixed-height list when the opened row follows it; else it fills the page.
+        // A fixed-height list when something follows it (the opened row, the /qb list); else it fills the page.
+        IltQuestBonusList? qb = ilt && !_qTrackers ? _c.Ilt.QuestBonus : null;
         bool selected = HasSelection();
-        w.BeginChild("q.list", 0f, selected ? QuestListHeightWithPanel : 0f, border: true);
+        w.BeginChild("q.list", 0f, selected || qb != null ? QuestListHeightWithPanel : 0f, border: true);
         w.TextDisabled("*");
-        w.Tooltip("Track: list the quest in the Quest Timers window. Trackers show their kind here instead (LEG, MRK).");
+        w.Tooltip("Track: list the quest in the Quest Timers window. Trackers show their kind here instead (LEG, MRK, DYN, GRD).");
         w.SameLine(28f);
         w.TextDisabled("Done");
         w.SameLine(72f);
@@ -191,7 +219,7 @@ internal sealed partial class OracleView
         w.SameLine(530f);
         w.TextDisabled("Rewards");
         w.Tooltip("What you recorded for a quest (click it to edit): %XP, %Lum, Coins, Trinkets, Medallions, Yellow/Red/Blue powder, MMDs (D), at Level.\n"
-                  + "Trackers: a Legendary quest's luminance, a marker's location.");
+                  + "Trackers: a Legendary quest's luminance, a marker's location, a stamp's area, a guardian's next turn-in.");
 
         DateTime now = _c.UtcNow;
         bool canTrack = _c.Book.Loaded;
@@ -203,6 +231,7 @@ internal sealed partial class OracleView
         w.EndChild();
 
         if (selected) DrawSelection(w);
+        if (qb != null) DrawQuestBonus(w, qb);
     }
 
     /// <summary>One list row: a quest (track, done, timer, solves, rewards) or a tracker (kind, status, its own columns).</summary>
@@ -218,7 +247,7 @@ internal sealed partial class OracleView
             DoneMark(w, r.Done);
             w.SameLine(72f);
             w.Selectable(Cut(q.Label, 44), "q.r." + flag, IsSelected(r), () => SelectRow(r), 290f);
-            w.Tooltip(flag + "\nClick: opens it below and prints its texts in chat.");
+            w.Tooltip(flag);
             w.SameLine(370f);
             TimerText(w, q, flags, now, r.Done);
             string solves = q.SolvesText(flags);
@@ -238,7 +267,13 @@ internal sealed partial class OracleView
         }
 
         // A tracker: its kind tag where the * is, then its mark, label and columns.
-        w.TextColored(UiColors.Gold, r.Kind == QuestKind.Legendary ? "LEG" : "MRK");
+        w.TextColored(UiColors.Gold, r.Kind switch
+        {
+            QuestKind.Legendary => "LEG",
+            QuestKind.Marker => "MRK",
+            QuestKind.Dynamic => "DYN",
+            _ => "GRD",
+        });
         w.SameLine(28f);
         TrackerMark(w, r);
         w.SameLine(72f);
@@ -262,8 +297,22 @@ internal sealed partial class OracleView
                 }
                 break;
             }
+            case QuestKind.Guardian:
+            {
+                IltGuardianRow g = r.G!;
+                w.SameLine(370f);
+                w.TextColored(g.Ready ? UiColors.Green : g.Status == "Unknown" ? UiColors.Grey : UiColors.Yellow, Cut(g.Status, 14));
+                w.SameLine(470f);
+                w.Text("#" + g.Count);
+                if (g.Eta.Length > 0)
+                {
+                    w.SameLine(530f);
+                    w.TextDisabled(Cut(g.Eta, 18));
+                }
+                break;
+            }
             default:
-                // Markers: where they are.
+                // Markers and stamps: where they are.
                 if (r.Group.Length > 0)
                 {
                     w.SameLine(530f);
@@ -273,20 +322,41 @@ internal sealed partial class OracleView
         }
     }
 
-    /// <summary>A tracker's done column: have / need (Legendary) or found / -- (markers).</summary>
+    /// <summary>A tracker's done column: have / need, found / --, or a guardian's ready / wait.</summary>
     private static void TrackerMark(UiWindow w, QuestRow r)
     {
-        if (r.Kind == QuestKind.Marker) DoneMark(w, r.Done);
-        else w.TextColored(r.Done ? UiColors.Green : UiColors.Red, r.Done ? "have" : "need");
+        switch (r.Kind)
+        {
+            case QuestKind.Marker:
+                DoneMark(w, r.Done);
+                break;
+            case QuestKind.Guardian:
+                // Done = turned in and on cooldown; not done = a turn-in is ready (or unknown).
+                w.TextColored(r.Done ? UiColors.Yellow : UiColors.Green, r.Done ? "wait" : "ready");
+                break;
+            default:
+                w.TextColored(r.Done ? UiColors.Green : UiColors.Red, r.Done ? "have" : "need");
+                break;
+        }
     }
 
-    /// <summary>A tracker row's hover text: its notes or hint.</summary>
+    /// <summary>A tracker row's hover text: its notes, hint or where it comes from.</summary>
     private static string TrackerTooltip(QuestRow r) => r.Kind switch
     {
         QuestKind.Legendary => r.L!.Note.Length > 0 ? $"{r.Group}: {r.L.Note}" : r.Group,
         QuestKind.Marker => r.M!.Hint,
+        QuestKind.Dynamic => string.Join("  -  ", Parts(r.D!.Area, r.D.Place, r.D.Reward.Length > 0 ? "gives " + r.D.Reward : "", r.D.Note)),
+        QuestKind.Guardian => $"{r.G!.Npc}: {(r.G.Exact ? "from /myquests (exact)" : "from /qb wait stamps (count and timer are estimates)")}",
         _ => "",
     };
+
+    /// <summary>The non-empty strings, in order.</summary>
+    private static List<string> Parts(params string[] items)
+    {
+        var list = new List<string>(items.Length);
+        foreach (string s in items) if (!string.IsNullOrWhiteSpace(s)) list.Add(s);
+        return list;
+    }
 
     /// <summary>The timer column: "ready" (green once done), a countdown, "N left" (yellow) or done (grey).</summary>
     private static void TimerText(UiWindow w, Quest q, QuestFlagStore flags, DateTime now, bool done)
@@ -305,7 +375,8 @@ internal sealed partial class OracleView
 
     /// <summary>
     /// The trackers' status (what each old tab showed at its top), for the kinds the Show filter
-    /// lists: John's Legendary counter, and the markers found and the next one.
+    /// lists: John's Legendary counter, markers found and the next one, stamps had, and the Temple
+    /// guardians' switches, last answer and hand-in.
     /// </summary>
     private void DrawTrackerSummary(UiWindow w, List<QuestKind> kinds)
     {
@@ -350,9 +421,102 @@ internal sealed partial class OracleView
                 w.TextDisabled("Next marker:");
                 w.SameLine();
                 w.Selectable($"#{next.Number} {next.Name} ({next.Location})", "m.next", false, () => SelectRow(MarkerRow(n, flags, 0)));
-                w.Tooltip("Opens it below the list (directions, RynthNav) and prints the directions in chat.");
+                w.Tooltip("Opens it below the list (directions, RynthNav).");
             }
         }
+
+        if (Shows(QuestKind.Dynamic))
+        {
+            List<DynamicStamp> all = DynamicStampList.All;
+            IReadOnlySet<string> qbStamps = _c.Ilt.QbStampSet;
+            int have = 0;
+            foreach (DynamicStamp s in all) if (s.Have(flags, qbStamps)) have++;
+            int unlisted = DynamicStampList.Unlisted(flags, qbStamps).Count;
+            w.ProgressBar(all.Count == 0 ? 0f : (float)have / all.Count, -1f, 0f,
+                $"{have} / {all.Count} listed Dynamic stamps" + (unlisted > 0 ? $" (+{unlisted} not in the list)" : ""));
+            w.Tooltip("Dynamic stamps are one-time quest flags (Dynamic_1_...) from handing items to NPCs on Infinite Leaftide.\n"
+                      + "Done: in /myquests, or in the /qb list (/myquests leaves out flags the server has no quest text for).\n"
+                      + "List: the players' ExtraDyn sheet. Click a stamp for RynthNav's route to it and the Parchment hand-in."
+                      + (unlisted > 0 ? "\nStamps not in the sheet show as quests with Not in list." : ""));
+            DrawStampQbSource(w);
+        }
+
+        if (Shows(QuestKind.Guardian)) DrawGuardianControls(w);
+    }
+
+    // The /qb list was asked for this session on the stamps' behalf (once: the server allows one a minute).
+    private bool _qbAskedForStamps;
+
+    /// <summary>
+    /// Under the Dynamic stamps bar: whether the completed /qb list is in, which can mark stamps
+    /// done that /myquests leaves out. Asks RynthILT for it once per session while it hasn't been
+    /// read, and offers a button to read it again.
+    /// </summary>
+    private void DrawStampQbSource(UiWindow w)
+    {
+        if (!_c.InWorld) { _qbAskedForStamps = false; return; }
+        IltQuestBonusList? qb = _c.Ilt.QuestBonus;
+        if (qb == null || qb.Disabled) return;   // no RynthILT, or /qb is off on this server
+        bool loaded = qb.Generation > 0 && !qb.ListsElsewhere;
+        if (!loaded && !_qbAskedForStamps && qb.Generation == 0)
+        {
+            _qbAskedForStamps = true;
+            _c.Send("/ilt qb");
+        }
+        w.TextDisabled(loaded
+            ? $"Also counted from the /qb list ({TimeText.Number(_c.Ilt.QbStampSet.Count)} Dynamic flag(s) in it)."
+            : "Reading the /qb list for stamps /myquests leaves out...");
+        w.SameLine();
+        w.SmallButton("Read /qb", "dy.qb", () => { if (!_c.Send("/ilt qb")) _c.Print("Log in first."); });
+        w.Tooltip("RynthILT reads your quest bonus list (/qb list; the server allows once a minute).");
+    }
+
+    /// <summary>
+    /// The Temple guardians' controls (RynthILT's Guardian window): chat detection, auto hand-in and
+    /// buy-if-missing, which run inside RynthILT; the last answer with Hand in / Stop; and a refresh.
+    /// </summary>
+    private void DrawGuardianControls(UiWindow w)
+    {
+        IltGuardianView g = _c.Guardian;
+        if (!g.Loaded)
+        {
+            w.TextDisabled(_c.IltData.Connected
+                ? "Temple guardians: this RynthILT is older than 0.2.20 (no guardian data for Oracle)."
+                : "Temple guardians: RynthILT isn't loaded (it runs the riddles, hand-ins and turn-in tracker).");
+            return;
+        }
+        int ready = 0;
+        foreach (IltGuardianRow r in g.Rows) if (r.Ready) ready++;
+        w.TextColored(UiColors.Gold, "Temple guardians");
+        w.SameLine();
+        w.TextDisabled($"{ready} of {g.Rows.Count} attribute turn-ins ready"
+                       + (g.SyncedUtc == DateTime.MinValue ? ", /qb not read this session" : $", /qb read {g.SyncedUtc.ToLocalTime():HH:mm}"));
+        w.SameLine();
+        w.SmallButton("Refresh", "gd.refresh", () => _c.GuardianCommand(IltGuardianView.RefreshVerb()));
+        w.Tooltip("RynthILT re-reads /myquests and /qb list for the turn-ins (the server allows each once a minute).");
+
+        w.Checkbox("Detect from chat", "gd.chat", g.Chat, v => _c.GuardianCommand(IltGuardianView.SwitchVerb("chat", v)));
+        w.Tooltip("Translate the guardians' tells as they arrive and show the answer here.");
+        w.SameLine();
+        w.Checkbox("Auto hand-in", "gd.auto", g.Auto, v => _c.GuardianCommand(IltGuardianView.SwitchVerb("auto", v)));
+        w.Tooltip("After a chat answer, RynthILT gives one of the item to the guardian automatically.");
+        w.SameLine();
+        w.Checkbox("Buy if missing", "gd.buy", g.Buy, v => _c.GuardianCommand(IltGuardianView.SwitchVerb("buy", v)));
+        w.Tooltip("Temple guardian: when you carry none, RynthILT buys one from the open or nearest vendor first.");
+
+        bool recent = g.Answer.Length > 0 && g.AnswerAgeSec >= 0 && g.AnswerAgeSec < GuardianAnswerShownSec;
+        if (recent || g.Running)
+        {
+            w.TextColored(UiColors.Green, g.Answer);
+            if (g.Heard.Length > 0) w.Tooltip("Heard: " + Cut(g.Heard, 300));
+            w.SameLine();
+            w.TextDisabled("-> " + g.Npc);
+            w.SameLine();
+            if (g.Running) w.SmallButton("Stop", "gd.stop", () => _c.GuardianCommand(IltGuardianView.StopVerb()));
+            else w.SmallButton("Hand in", "gd.handin", () => _c.GuardianCommand(IltGuardianView.HandInVerb()));
+        }
+        else w.TextDisabled("No guardian answer yet.");
+        w.TextDisabled("Hand-in: " + g.Status + (_c.GuardianMessage.Length > 0 ? "  -  " + _c.GuardianMessage : ""));
     }
 
     // ── The opened row ──────────────────────────────────────────────────────
@@ -361,27 +525,28 @@ internal sealed partial class OracleView
     private bool HasSelection() => _selKind switch
     {
         QuestKind.Quest => _questSel.Length > 0,
+        QuestKind.Dynamic => _dynNav != null,
         _ => _selKey.Length > 0,
     };
 
     private bool IsSelected(QuestRow r) => r.Kind switch
     {
         QuestKind.Quest => _selKind == QuestKind.Quest && r.Q!.Flag == _questSel,
+        QuestKind.Dynamic => _selKind == QuestKind.Dynamic && ReferenceEquals(r.D, _dynNav),
         _ => _selKind == r.Kind && _selKey == r.Key,
     };
 
     /// <summary>
-    /// Clicking a row opens it below the list (a second click closes it). As before, a click on a
-    /// quest prints its texts in chat (the info and hint, the wiki link and the flag's history) and
-    /// a click on a marker prints its directions.
+    /// Clicking a row opens it below the list (a second click closes it). A Dynamic Stamp also asks
+    /// RynthNav for the route at once, as its tab did.
     /// </summary>
     private void SelectRow(QuestRow r)
     {
-        if (r.Kind == QuestKind.Quest) _c.PrintQuest(r.Q!);
-        else if (r.Kind == QuestKind.Marker) PrintMarker(r.M!);
-
+        // A quest's texts print in chat on every click, the closing one too (as upstream's list did).
+        if (r.Kind == QuestKind.Quest && r.Q != null) _c.PrintQuest(r.Q);
         bool same = IsSelected(r);
         _questSel = "";
+        _dynNav = null;
         _selKey = "";
         _questStopIdx = 0;
         _questNavStatus = "";
@@ -390,7 +555,11 @@ internal sealed partial class OracleView
         switch (r.Kind)
         {
             case QuestKind.Quest:
-                OpenQuest(r.Q!);
+                SelectQuest(r.Q!);
+                break;
+            case QuestKind.Dynamic:
+                _selKey = r.Key;
+                SelectDynamicStamp(r.D!, r.Done);
                 break;
             default:
                 _selKey = r.Key;
@@ -398,21 +567,27 @@ internal sealed partial class OracleView
         }
     }
 
-    /// <summary>Opens a quest below the list with its reward editor.</summary>
-    private void OpenQuest(Quest q)
+    /// <summary>
+    /// A click opens the quest below the list (a second click closes it) and, as upstream's list
+    /// does, prints its texts in chat: the info and hint, the wiki link and the flag's history.
+    /// </summary>
+    private void SelectQuest(Quest q)
     {
         _questSel = q.Flag;
         _rewardMsg = "";
         LoadRewardEdit(q.Flag);
     }
 
-    /// <summary>The opened row's panel: a quest, a Legendary quest or a marker.</summary>
+    /// <summary>The opened row's panel: a quest, a Dynamic Stamp's nav box, a Legendary quest, a marker or a guardian.</summary>
     private void DrawSelection(UiWindow w)
     {
         switch (_selKind)
         {
             case QuestKind.Quest:
                 DrawSelectedQuest(w);
+                break;
+            case QuestKind.Dynamic:
+                DrawDynamicNavBox(w);
                 break;
             case QuestKind.Legendary:
                 LegendaryQuest? l = LegendaryList.All.Find(x => "lg:" + x.Name == _selKey);
@@ -421,6 +596,12 @@ internal sealed partial class OracleView
             case QuestKind.Marker:
                 Marker? m = MarkerList.All.Find(x => "mk:" + x.Number == _selKey);
                 if (m != null) DrawSelectedMarker(w, m);
+                break;
+            case QuestKind.Guardian:
+                IltGuardianRow? g = null;
+                foreach (IltGuardianRow r in _c.Guardian.Rows)
+                    if ("gd:" + r.Attribute == _selKey) { g = r; break; }
+                DrawSelectedGuardian(w, g);
                 break;
         }
     }
@@ -475,6 +656,32 @@ internal sealed partial class OracleView
         w.Button("Close", "m.sel.close", () => _selKey = "");
     }
 
+    private void DrawSelectedGuardian(UiWindow w, IltGuardianRow? g)
+    {
+        if (g != null)
+        {
+            w.SeparatorText("Temple guardian: " + g.Attribute);
+            w.TextDisabled("NPC");
+            w.SameLine(90f);
+            w.Text(g.Npc);
+            w.TextDisabled("Turn-ins");
+            w.SameLine(90f);
+            w.Text(g.Count.ToString());
+            w.TextDisabled("Status");
+            w.SameLine(90f);
+            w.TextColored(g.Ready ? UiColors.Green : g.Status == "Unknown" ? UiColors.Grey : UiColors.Yellow, g.Status);
+            if (g.Eta.Length > 0)
+            {
+                w.SameLine(260f);
+                w.TextDisabled("Next: " + g.Eta);
+            }
+            w.TextDisabled(g.Exact ? "From /myquests (exact)." : $"From /qb wait stamps: the count and timer are estimates (cooldown taken as {_c.Guardian.CooldownHours} h).");
+        }
+        else w.SeparatorText("Temple guardians");
+        DrawGuardianControls(w);
+        w.Button("Close", "gd.sel.close", () => _selKey = "");
+    }
+
     // ── Go to: the coordinates in the opened row's text, through RynthNav ──
 
     private string _questStopsFor = "";
@@ -495,7 +702,7 @@ internal sealed partial class OracleView
 
     /// <summary>
     /// Go to: one place is shown with Go / Route / Arrow; several get a picker first (picking one
-    /// plans its route). Nothing without any.
+    /// plans its route, as clicking a Dynamic Stamp does). Nothing without any.
     /// </summary>
     private void DrawGoTo(UiWindow w, List<NavTargets.Stop> stops)
     {
@@ -525,22 +732,6 @@ internal sealed partial class OracleView
         w.Button("Arrow", "q.nav.arrow", () => _questNavStatus = SendRynthNav("arrow", new[] { stop.Target }));
         w.Tooltip("Only point RynthNav's arrow at it.");
         if (_questNavStatus.Length > 0) w.TextDisabled(_questNavStatus);
-    }
-
-    /// <summary>
-    /// "/rnav &lt;verb&gt; a || b || c" to RynthNav (go walks the route, route plans it in chat, arrow
-    /// points at it; RynthNav takes the first candidate on its map). What to tell the player.
-    /// Shared by every row kind of the Quests tab.
-    /// </summary>
-    private string SendRynthNav(string verb, IReadOnlyList<string> targets)
-    {
-        if (targets.Count == 0) return "";
-        if (!_c.InWorld) return "Log in first.";
-        bool sent = _c.SendNav(verb + " " + string.Join(" || ", targets));
-        return !sent ? "RynthNav isn't loaded (it plans and walks the route)."
-            : verb == "go" ? "RynthNav is planning the route and walking it (its chat lines say how)."
-            : verb == "arrow" ? "RynthNav's arrow points at it."
-            : "RynthNav's route is in chat. Go walks it.";
     }
 
     // ── The opened quest and its rewards ──────────────────────────────────
@@ -647,6 +838,57 @@ internal sealed partial class OracleView
         _rewardMsg = r.IsEmpty ? "Cleared." : "Saved: " + r.ShortSummary();
     }
 
+    // ── Quest bonus (/qb, Infinite Leaftide through RynthILT) ──────────────
+
+    private void DrawQuestBonus(UiWindow w, IltQuestBonusList qb)
+    {
+        string count = qb.Count >= 0 ? $" - count {TimeText.Number(qb.Count)}" : "";
+        if (!w.CollapsingHeader($"Quest bonus (/qb){count}", "q.qb")) return;
+        if (qb.Disabled)
+        {
+            w.TextDisabled("/qb is turned off on this server.");
+            return;
+        }
+        w.Button("Load /qb list", "q.qb.load", () =>
+        {
+            if (!_c.Send("/ilt qb")) _c.Print("Log in first.");
+        });
+        w.Tooltip("RynthILT asks the server for your quest bonus list (the server allows once a minute).");
+        w.SameLine();
+        w.TextDisabled(qb.Generation == 0 && qb.Status == "not loaded" ? "Not loaded yet this session." : qb.Status);
+
+        if (qb.ListsElsewhere)
+        {
+            w.TextDisabled($"Reading the list from RynthILT ({TimeText.Number(qb.CompletedCount + qb.IncompleteCount)} flags)...");
+            return;
+        }
+        QbList(w, "Incomplete", "q.qb.todo", qb.Incomplete, UiColors.Yellow);
+        QbList(w, "Completed", "q.qb.done", qb.Completed, UiColors.Green);
+    }
+
+    // The filtered /qb lists, per list id: re-filtered only when the list or the search changes
+    // (a character can hold 25,000+ flags, too many to filter on every draw).
+    private readonly Dictionary<string, (IReadOnlyList<string> Items, string Search, List<string> Shown)> _qbShown = new();
+
+    private void QbList(UiWindow w, string label, string id, IReadOnlyList<string> items, uint color)
+    {
+        if (!_qbShown.TryGetValue(id, out var cached) || !ReferenceEquals(cached.Items, items) || cached.Search != _questSearch)
+        {
+            string[] terms = _questSearch.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var filtered = new List<string>();
+            foreach (string s in items)
+                if (MatchesAll(s, terms)) filtered.Add(s);
+            cached = (items, _questSearch, filtered);
+            _qbShown[id] = cached;
+        }
+        List<string> shown = cached.Shown;
+        string counts = shown.Count != items.Count ? $"{shown.Count} of {items.Count}" : items.Count.ToString();
+        if (!w.CollapsingHeader($"{label} ({counts})", id)) return;
+        for (int i = 0; i < shown.Count && i < QbShownMax; i++) w.TextColored(color, shown[i]);
+        if (shown.Count > QbShownMax) w.TextDisabled($"... and {shown.Count - QbShownMax} more. Narrow them with Search.");
+        if (shown.Count == 0) w.TextDisabled(items.Count == 0 ? "None." : "None match the search.");
+    }
+
     /// <summary>Every search word is in <paramref name="hay"/> (any case); no words = everything matches.</summary>
     private static bool MatchesAll(string hay, string[] terms)
     {
@@ -664,21 +906,35 @@ internal sealed partial class OracleView
     private List<QuestRow> QuestRows(List<QuestKind> kinds)
     {
         string key = $"{_questSearch}|{_qDone}{_qNotDone}{_qRepeatable}{_qOneTime}{_qNew}{_qServer}{_qTracked}{_qKill}|{_questSort}"
-                     + $"|{_qTrackers}|{_qKind}|{string.Join(",", kinds)}"
-                     + $"|{_c.Flags.Revision}|{_c.Catalog.Revision}|{(_qTracked ? _c.Book.Revision : 0)}";
+                     + $"|{_qTrackers}|{_qKind}|{_dynArea}|{string.Join(",", kinds)}"
+                     + $"|{_c.Flags.Revision}|{_c.Catalog.Revision}|{(_qTracked ? _c.Book.Revision : 0)}|{_c.GuardianRevision}"
+                     + $"|{_c.Ilt.Revision}";   // a new /qb list can mark Dynamic stamps done
         bool timeSorted = _questSort == 4;
         if (key == _questKey && (!timeSorted || _c.NowMs - _questBuiltMs < 5000)) return _questRows;
         _questKey = key;
         _questBuiltMs = _c.NowMs;
 
         QuestFlagStore flags = _c.Flags;
+        IReadOnlySet<string> qbStamps = _c.Ilt.QbStampSet;
         string[] terms = _questSearch.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         _questRows.Clear();
+
+        // The Dynamic stamps the list matched: shown as stamp rows, not again as unknown quest flags.
+        var stampFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (kinds.Contains(QuestKind.Dynamic))
+            foreach (DynamicStamp s in DynamicStampList.All)
+                if (s.MatchedFlag(flags, qbStamps) is string f)
+                {
+                    // The errand's flag and its "_d" delivery flag are both this stamp's row.
+                    stampFlags.Add(f);
+                    stampFlags.Add(DynamicStampList.ErrandOf(f) + DynamicStampList.DeliverySuffix);
+                }
 
         if (KindListed(QuestKind.Quest, kinds))
         {
             foreach (Quest q in _c.Catalog.Quests)
             {
+                if (q.IsNew && stampFlags.Contains(q.Flag)) continue;
                 if (_qNew && !q.IsNew) continue;
                 if (_qServer && q.Server.Length == 0) continue;
                 if (_qTracked && !_c.Book.IsTracked(q.Flag)) continue;
@@ -708,6 +964,23 @@ internal sealed partial class OracleView
                 {
                     QuestRow r = MarkerRow(MarkerList.All[i], flags, i);
                     if (KeepTracker(r, repeatable: false, tracked: false, $"{r.Label} {r.M!.Location} {r.M.Hint}", terms)) _questRows.Add(r);
+                }
+
+            if (KindListed(QuestKind.Dynamic, kinds))
+                for (int i = 0; i < DynamicStampList.All.Count; i++)
+                {
+                    DynamicStamp s = DynamicStampList.All[i];
+                    if (_dynArea > 0 && (_dynArea > DynamicStampList.Areas.Count || DynamicStampList.Areas[_dynArea - 1] != s.Area)) continue;
+                    var r = new QuestRow { Kind = QuestKind.Dynamic, Key = "dy:" + s.Stamp, Label = s.Label, Group = s.Area, Order = i, Done = s.Have(flags, qbStamps), D = s };
+                    if (KeepTracker(r, repeatable: false, tracked: false, $"{s.Npc} {s.Place} {s.Reward} {s.Area} {s.Stamp} {s.Note}", terms)) _questRows.Add(r);
+                }
+
+            if (KindListed(QuestKind.Guardian, kinds))
+                for (int i = 0; i < _c.Guardian.Rows.Count; i++)
+                {
+                    IltGuardianRow g = _c.Guardian.Rows[i];
+                    var r = new QuestRow { Kind = QuestKind.Guardian, Key = "gd:" + g.Attribute, Label = g.Attribute + " (" + g.Npc + ")", Group = g.Npc, Order = i, Done = !g.Ready, G = g };
+                    if (KeepTracker(r, repeatable: true, tracked: false, $"{g.Attribute} {g.Npc} {g.Status}", terms)) _questRows.Add(r);
                 }
         }
 
@@ -757,7 +1030,7 @@ internal sealed partial class OracleView
         return MatchesAll(hay, terms);
     }
 
-    /// <summary>Ready soonest: held repeatable quests and Legendary quests by time left; the rest after.</summary>
+    /// <summary>Ready soonest: held repeatable quests and Legendary quests by time left, ready guardians first; the rest after.</summary>
     private static double RowReadyKey(QuestRow r, QuestFlagStore flags, DateTime now)
     {
         switch (r.Kind)
@@ -767,13 +1040,20 @@ internal sealed partial class OracleView
             case QuestKind.Legendary:
                 TimeSpan? left = r.L!.TimeLeft(flags, now);
                 return left == null ? double.MaxValue : Math.Max(0, left.Value.TotalSeconds);
+            case QuestKind.Guardian:
+                return r.G!.Ready ? 0 : double.MaxValue;
             default:
                 return double.MaxValue;
         }
     }
 
-    /// <summary>Most solves: a repeatable quest's solves.</summary>
-    private static int RowSolves(QuestRow r, QuestFlagStore flags) => r.Kind == QuestKind.Quest ? Solves(r.Q!, flags) : 0;
+    /// <summary>Most solves: a repeatable quest's solves, a guardian's turn-ins.</summary>
+    private static int RowSolves(QuestRow r, QuestFlagStore flags) => r.Kind switch
+    {
+        QuestKind.Quest => Solves(r.Q!, flags),
+        QuestKind.Guardian => r.G!.Count,
+        _ => 0,
+    };
 
     /// <summary>Held repeatables by time left (ready ones first); everything else after them.</summary>
     private static double ReadyKey(Quest q, QuestFlagStore flags, DateTime now) =>

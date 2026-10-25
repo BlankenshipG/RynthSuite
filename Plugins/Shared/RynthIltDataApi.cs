@@ -1,0 +1,719 @@
+// ============================================================================
+//  RynthSuite - Plugins/Shared/RynthIltDataApi.cs
+//  The "RynthILT.Data" interface: the Infinite Leaftide data other plugins draw now that
+//  the Mini Remote's Charms and Banking tabs are gone (2026-10-13):
+//    - RynthOracle's Character tab lists the registry charms (GetCharmsJson, ToggleCharm);
+//    - RynthInventory's Global Inventory "Banking" tab lists the bank balances of every
+//      character RynthILT has seen on this server, and sends deposits, withdrawals,
+//      transfers and balance reads (GetBankJson, BankCommand).
+//  Separate from "RynthILT.Server" (the feature profile) and "RynthILT.Hub" (RynthAi's
+//  exact-version table) so neither has to change for this.
+//  Compiled into RynthILT and its readers (linked source), so the layout can't drift.
+//
+//  Rules (as the other shared interfaces):
+//  - Append-only: new functions go at the end, and Version goes up.
+//  - Strings are UTF-8, NUL-terminated. The JSON itself is plain ASCII.
+//  - Every function returns safely (no exception crosses the boundary).
+//  - The table is allocated once per loaded copy of RynthILT and never freed; shutdown
+//    sets Version to 0, and a reader re-queries (host GetPluginInterface) when it sees that.
+//  - Reading a JSON says "someone is looking": RynthILT rebuilds that snapshot on its pump
+//    (every couple of seconds) only while it is being read, so an idle reader costs nothing.
+//
+//  GetCharmsJson payload (IltCharms.BuildReaderJson; read leniently):
+//  { "available": true, "world": "InfiniteLeaftide", "total": 28, "acquiredCount": 5, "activeCount": 3,
+//    "charms": [ { "name": "Mana Barrier", "effect": "...", "acquired": "carried"|"seen"|"no",
+//                  "count": 1, "tier": 3, "maxTier": 5, "active": "on"|"off"|"unknown",
+//                  "server": "on"|"off"|"unknown", "lastSeen": "2026-10-13", "toggleId": 1234567 } ],
+//    "hands": [ { "id": 1234568, "name": "Guardian Hand", "active": "on"|"off"|"unknown",
+//                 "server": "on"|"off"|"unknown" } ] }
+//  "hands" are the Guardian Hands carried now (not a registry charm); "id" is their Toggle id.
+//
+//  GetBankJson payload (IltBankExport.Build; read leniently):
+//  { "available": true, "enabled": 1, "world": "InfiniteLeaftide", "character": "Name",
+//    "characters": [ { "name": "Name", "current": true, "pyreals": 0, "luminance": 0,
+//                      "legendaryKeys": 0, "mythicalKeys": 0, "enlightenedCoins": 0,
+//                      "weaklyEnlightenedCoins": 0, "prestigeCoins": 0, "updated": "2026-10-13T21:25:37Z" } ],
+//    "deposits": ["Everything", ...], "withdrawals": [ { "label": "Pyreals", "notes": false } ],
+//    "transfers": [ { "label": "Pyreals", "notes": false } ], "notes": [ { "label": "MMD", "value": 250000 } ],
+//    "result": "Deposited ...", "transactions": [ { "when": "...", "type": "Sent", "amount": 1,
+//                                                 "currency": "Pyreals", "player": "Who" } ] }
+//  "enabled": 1 the server has /bank, 0 it doesn't, -1 not known yet.
+//
+//  BankCommand verbs (ASCII, space separated; the reply lands in "result"):
+//    refresh                                         quiet /bank balance read
+//    deposit <depositIndex>
+//    withdraw <withdrawIndex> <amount> <noteIndex>   (amount = note count for trade notes)
+//    transfer <currencyIndex> <amount> <noteIndex> <recipient name...>
+//  The reader confirms a transfer with the player before sending it (RynthILT doesn't ask again).
+//
+//  Version 2 (RynthILT 0.2.7) appends GetPetBreedingJson and PetBreedingCommand (RynthOracle's
+//  Pet Breeding tab). Readers still query version 1 and accept a version-1 table, so charms and
+//  the bank keep working with an older RynthILT; they use the breeding functions only when the
+//  table says Version >= 2 and is that big (HasPetBreeding).
+//
+//  GetPetBreedingJson payload (IltPetBreeding.BuildJson; read leniently):
+//  { "available": true, "world": "...", "enabled": "on"|"off"|"unknown", "maturity": "...", "bond": "...",
+//    "room": "landblock 0x0106 variant 2", "freeSlots": 12, "message": "...",
+//    "essences": [ { "id": 1234, "name": "...", "sex": "M"|"F", "tier": 150, "bond": 120, "ready": true,
+//                    "status": "Ready (9/10)", "readyIn": 0, "charges": 9, "chargesMax": 10, "juvenile": false,
+//                    "stage": "Adult", "kills": 300, "killsRequired": 300, "mutations": 2, "potencyMutations": 1,
+//                    "problems": ["..."], "boosters": ["..."] } ],
+//    "pairs": [ { "stud": "...", "dam": "...", "chanceBest": 0.05, "chanceWorst": 0.04, "inheritMin": 0, "inheritMax": 2 } ],
+//    "supplies": [ { "key": "incense2", "name": "...", "effect": "...", "count": 1, "price": 2500000, "apply": true,
+//                    "targets": [1234] } ],
+//    "rules": [ { "label": "...", "value": "10", "source": "seen on server", "help": "..." } ],
+//    "events": [ { "when": "2026-10-15 20:15", "kind": "birth", "text": "..." } ],   newest first
+//    "debug": { "when": "...", "enabled": "on", "location": "...", "match": "valid"|"invalid"|"", "pet": "...",
+//               "sex": "...", "partners": 1 } }
+//  PetBreedingCommand verbs (ASCII): refresh | debug | dance | apply <supplyKey> <essenceId>
+//  The reader confirms "apply" and "dance" with the player first (RynthILT doesn't ask again).
+//
+//  Version 3 (RynthILT 0.2.20) appends GetGuardianJson and GuardianCommand (the Temple guardians
+//  on RynthOracle's Quests tab). Readers use them only when Version >= 3 and the table is that big
+//  (HasGuardian); a version-2 table still answers charms, the bank and breeding (V2Size).
+//
+//  GetGuardianJson payload (IltGuardian.BuildJson; read leniently):
+//  { "available": true, "world": "...", "chat": true, "auto": false, "buy": true, "cooldownHours": 20,
+//    "answer": "Pyreal", "npc": "Guardian of ...", "answerAgeSec": 42 (-1 none yet), "heard": "...",
+//    "running": false, "status": "idle", "synced": "2026-10-18T19:05:00Z" ("" /qb not read),
+//    "rows": [ { "attribute": "Strength", "npc": "...", "count": 3, "status": "Ready", "eta": "",
+//                "ready": true, "exact": true } ] }       exact = from /myquests (else /qb estimates)
+//  GuardianCommand verbs (ASCII): handin | stop | refresh | chat on|off | auto on|off | buy on|off
+//  Auto hand-in and buying a missing Temple item run inside RynthILT whatever the reader shows.
+// ============================================================================
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
+using RynthCore.PluginSdk;
+
+namespace RynthCore.Plugin.Shared;
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct RynthIltDataApiV1
+{
+    public const string InterfaceName = "RynthILT.Data";
+    public const uint InterfaceVersion = 3;
+
+    /// <summary>The size of a version-1 table (everything before GetPetBreedingJson) on this platform.</summary>
+    public static uint V1Size
+    {
+        get
+        {
+            RynthIltDataApiV1 t = default;
+            return (uint)((byte*)&t.GetPetBreedingJson - (byte*)&t);
+        }
+    }
+
+    /// <summary>The size of a version-2 table (everything before GetGuardianJson) on this platform.</summary>
+    public static uint V2Size
+    {
+        get
+        {
+            RynthIltDataApiV1 t = default;
+            return (uint)((byte*)&t.GetGuardianJson - (byte*)&t);
+        }
+    }
+
+    public uint Version;      // InterfaceVersion of the table RynthILT filled; 0 once it has shut down
+    public uint StructSize;   // sizeof(RynthIltDataApiV1) as RynthILT built it
+
+    /// <summary>
+    /// GetCharmsJson(buffer, capacity): the charms JSON (UTF-8, NUL-terminated) when it fits; returns
+    /// its length without the NUL (capacity or more = too small, nothing written; 0 = nothing to report).
+    /// </summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, int> GetCharmsJson;
+
+    /// <summary>GetBankJson(buffer, capacity): the bank JSON, same contract as GetCharmsJson.</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, int> GetBankJson;
+
+    /// <summary>
+    /// ToggleCharm(objectId): uses the carried charm with that id (a "toggleId" from the charms JSON).
+    /// RynthILT checks it is one of the player's charms before using it. 1 = queued, 0 = refused.
+    /// </summary>
+    public delegate* unmanaged[Cdecl]<uint, int> ToggleCharm;
+
+    /// <summary>BankCommand(utf8 verb line): queues a bank verb (header above). 1 = queued, 0 = refused.</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int> BankCommand;
+
+    // ── Version 2 ───────────────────────────────────────────────────────────
+
+    /// <summary>GetPetBreedingJson(buffer, capacity): the pet breeding JSON, same contract as GetCharmsJson.</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, int> GetPetBreedingJson;
+
+    /// <summary>PetBreedingCommand(utf8 verb line): queues a breeding verb (header above). 1 = queued, 0 = refused.</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int> PetBreedingCommand;
+
+    // ── Version 3 ───────────────────────────────────────────────────────────
+
+    /// <summary>GetGuardianJson(buffer, capacity): the Temple guardian JSON, same contract as GetCharmsJson.</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, int> GetGuardianJson;
+
+    /// <summary>GuardianCommand(utf8 verb line): queues a guardian verb (header above). 1 = queued, 0 = refused.</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int> GuardianCommand;
+}
+
+/// <summary>
+/// A reader of "RynthILT.Data" (RynthOracle, RynthInventory). Looks the table up through the host,
+/// re-queried while RynthILT is missing or after it unloads (Version 0), and copies a JSON out on
+/// request. Pump thread only.
+/// </summary>
+public sealed unsafe class RynthIltDataClient
+{
+    private const long RequeryMs = 10_000;
+    private const int MaxBuffer = 256 * 1024;
+    private const string PluginName = "RynthILT";
+
+    private RynthIltDataApiV1* _table;
+    private long _nextQueryAt;
+    private byte[] _buffer = new byte[8192];
+
+    /// <summary>RynthILT answered with the table (last lookup).</summary>
+    public bool Connected => _table != null && _table->Version >= 1;
+
+    /// <summary>The charms JSON now ("" without RynthILT).</summary>
+    public string ReadCharms(RynthCoreHost host, long now)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        return t == null || t->GetCharmsJson == null ? "" : Read(t->GetCharmsJson);
+    }
+
+    /// <summary>The bank JSON now ("" without RynthILT).</summary>
+    public string ReadBank(RynthCoreHost host, long now)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        return t == null || t->GetBankJson == null ? "" : Read(t->GetBankJson);
+    }
+
+    /// <summary>The pet breeding JSON now ("" without a RynthILT that has the tracker).</summary>
+    public string ReadPetBreeding(RynthCoreHost host, long now)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        return !HasPetBreeding(t) || t->GetPetBreedingJson == null ? "" : Read(t->GetPetBreedingJson);
+    }
+
+    /// <summary>The loaded RynthILT has the breeding tracker (table version 2 or later).</summary>
+    public bool PetBreedingSupported => HasPetBreeding(_table);
+
+    /// <summary>Queues a breeding verb line (see the header). False without RynthILT or when it refused.</summary>
+    public bool PetBreedingCommand(RynthCoreHost host, long now, string verbLine)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        if (!HasPetBreeding(t) || t->PetBreedingCommand == null || string.IsNullOrWhiteSpace(verbLine)) return false;
+        byte[] bytes = Encoding.UTF8.GetBytes(verbLine + "\0");
+        try
+        {
+            fixed (byte* p = bytes) return t->PetBreedingCommand(p) == 1;
+        }
+        catch { return false; }
+    }
+
+    private static bool HasPetBreeding(RynthIltDataApiV1* t)
+        => t != null && t->Version >= 2 && t->StructSize >= RynthIltDataApiV1.V2Size;
+
+    /// <summary>The Temple guardian JSON now ("" without a RynthILT that has it, version 3).</summary>
+    public string ReadGuardian(RynthCoreHost host, long now)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        return !HasGuardian(t) || t->GetGuardianJson == null ? "" : Read(t->GetGuardianJson);
+    }
+
+    /// <summary>The loaded RynthILT has the guardian functions (table version 3 or later).</summary>
+    public bool GuardianSupported => HasGuardian(_table);
+
+    /// <summary>Queues a guardian verb line (see the header). False without RynthILT or when it refused.</summary>
+    public bool GuardianCommand(RynthCoreHost host, long now, string verbLine)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        if (!HasGuardian(t) || t->GuardianCommand == null || string.IsNullOrWhiteSpace(verbLine)) return false;
+        byte[] bytes = Encoding.UTF8.GetBytes(verbLine + "\0");
+        try
+        {
+            fixed (byte* p = bytes) return t->GuardianCommand(p) == 1;
+        }
+        catch { return false; }
+    }
+
+    private static bool HasGuardian(RynthIltDataApiV1* t)
+        => t != null && t->Version >= 3 && t->StructSize >= (uint)sizeof(RynthIltDataApiV1);
+
+    /// <summary>Asks RynthILT to use a carried charm. False without RynthILT or when it refused.</summary>
+    public bool ToggleCharm(RynthCoreHost host, long now, uint objectId)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        if (t == null || t->ToggleCharm == null || objectId == 0) return false;
+        try { return t->ToggleCharm(objectId) == 1; }
+        catch { return false; }
+    }
+
+    /// <summary>Queues a bank verb line (see the header). False without RynthILT or when it refused.</summary>
+    public bool BankCommand(RynthCoreHost host, long now, string verbLine)
+    {
+        RynthIltDataApiV1* t = Table(host, now);
+        if (t == null || t->BankCommand == null || string.IsNullOrWhiteSpace(verbLine)) return false;
+        byte[] bytes = Encoding.UTF8.GetBytes(verbLine + "\0");
+        try
+        {
+            fixed (byte* p = bytes) return t->BankCommand(p) == 1;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>The table, re-queried when it is missing or RynthILT has shut down (Version 0).</summary>
+    private RynthIltDataApiV1* Table(RynthCoreHost host, long now)
+    {
+        if (_table != null && _table->Version >= 1) return _table;
+        _table = null;
+        if (now < _nextQueryAt || !host.HasGetPluginInterface) return null;
+        _nextQueryAt = now + RequeryMs;
+        // Version 1 is asked for and a version-1-sized table taken, so an older RynthILT still answers.
+        var p = (RynthIltDataApiV1*)host.GetPluginInterface(PluginName, RynthIltDataApiV1.InterfaceName, 1);
+        if (p != null && p->Version >= 1 && p->StructSize >= RynthIltDataApiV1.V1Size)
+            _table = p;
+        return _table;
+    }
+
+    /// <summary>Copies a JSON out, growing the buffer once when RynthILT says it didn't fit.</summary>
+    private string Read(delegate* unmanaged[Cdecl]<byte*, int, int> get)
+    {
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            int len;
+            try
+            {
+                fixed (byte* b = _buffer) len = get(b, _buffer.Length);
+            }
+            catch { return ""; }
+            if (len <= 0) return "";
+            if (len < _buffer.Length) return Encoding.UTF8.GetString(_buffer, 0, len);
+            if (len + 1 > MaxBuffer) return "";
+            _buffer = new byte[len + 1024];
+        }
+        return "";
+    }
+}
+
+/// <summary>One registry charm from the charms JSON.</summary>
+public sealed record IltCharmRow(string Name, string Effect, string Acquired, int Count, int Tier, int MaxTier,
+                                 string Active, string Server, string LastSeen, uint ToggleId)
+{
+    /// <summary>Carried now (in the pack or equipped).</summary>
+    public bool Carried => Acquired == "carried";
+}
+
+/// <summary>A Guardian Hand carried now: its object id (the Toggle's id), name, status and the server's switch.</summary>
+public sealed record IltHandRow(uint Id, string Name, string Active, string Server);
+
+/// <summary>The charms JSON parsed. <see cref="None"/> without RynthILT; every field read leniently.</summary>
+public sealed class IltCharmsView
+{
+    public static readonly IltCharmsView None = new();
+
+    /// <summary>RynthILT answered.</summary>
+    public bool Loaded { get; private init; }
+    /// <summary>An Infinite Leaftide world (charms exist).</summary>
+    public bool Available { get; private init; }
+    public string World { get; private init; } = "";
+    public int Acquired { get; private init; }
+    public int Active { get; private init; }
+    public IReadOnlyList<IltCharmRow> Charms { get; private init; } = Array.Empty<IltCharmRow>();
+    /// <summary>The Guardian Hands carried now (none from an older RynthILT).</summary>
+    public IReadOnlyList<IltHandRow> Hands { get; private init; } = Array.Empty<IltHandRow>();
+
+    public static IltCharmsView Parse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return None;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return None;
+            var rows = new List<IltCharmRow>();
+            if (root.TryGetProperty("charms", out JsonElement cs) && cs.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement c in cs.EnumerateArray())
+                {
+                    if (c.ValueKind != JsonValueKind.Object) continue;
+                    string name = IltJson.Str(c, "name");
+                    if (name.Length == 0) continue;
+                    rows.Add(new IltCharmRow(name, IltJson.Str(c, "effect"), IltJson.Str(c, "acquired", "no"),
+                        (int)IltJson.Long(c, "count"), (int)IltJson.Long(c, "tier"), (int)IltJson.Long(c, "maxTier"),
+                        IltJson.Str(c, "active", "unknown"), IltJson.Str(c, "server", "unknown"), IltJson.Str(c, "lastSeen"),
+                        (uint)Math.Clamp(IltJson.Long(c, "toggleId"), 0, uint.MaxValue)));
+                }
+            }
+            var hands = new List<IltHandRow>();
+            foreach (JsonElement h in IltJson.Array(root, "hands"))
+            {
+                uint id = (uint)Math.Clamp(IltJson.Long(h, "id"), 0, uint.MaxValue);
+                if (id == 0) continue;   // no id = nothing a Toggle could use
+                hands.Add(new IltHandRow(id, IltJson.Str(h, "name", "Guardian Hand"), IltJson.Str(h, "active", "unknown"),
+                                         IltJson.Str(h, "server", "unknown")));
+            }
+            return new IltCharmsView
+            {
+                Loaded = true,
+                Available = IltJson.Bool(root, "available"),
+                World = IltJson.Str(root, "world"),
+                Acquired = (int)IltJson.Long(root, "acquiredCount"),
+                Active = (int)IltJson.Long(root, "activeCount"),
+                Charms = rows,
+                Hands = hands,
+            };
+        }
+        catch (JsonException) { return None; }
+    }
+}
+
+/// <summary>One character's saved bank balances from the bank JSON.</summary>
+public sealed record IltBankRow(string Name, bool Current, long Pyreals, long Luminance, long LegendaryKeys, long MythicalKeys,
+                                long EnlightenedCoins, long WeaklyEnlightenedCoins, long PrestigeCoins, DateTime UpdatedUtc);
+
+/// <summary>A bank form choice: its label and whether the amount is a trade-note count.</summary>
+public sealed record IltBankChoice(string Label, bool Notes);
+
+/// <summary>A trade-note denomination: label and pyreal value.</summary>
+public sealed record IltBankNote(string Label, long Value);
+
+/// <summary>One logged transfer.</summary>
+public sealed record IltBankTx(string When, string Type, long Amount, string Currency, string Player);
+
+/// <summary>The bank JSON parsed. <see cref="None"/> without RynthILT; every field read leniently.</summary>
+public sealed class IltBankView
+{
+    public static readonly IltBankView None = new();
+
+    /// <summary>RynthILT answered.</summary>
+    public bool Loaded { get; private init; }
+    /// <summary>An Infinite Leaftide world (bank commands exist).</summary>
+    public bool Available { get; private init; }
+    /// <summary>1 the server has /bank, 0 not, -1 not known yet.</summary>
+    public int Enabled { get; private init; } = -1;
+    public string World { get; private init; } = "";
+    public string Character { get; private init; } = "";
+    public string Result { get; private init; } = "";
+    public IReadOnlyList<IltBankRow> Characters { get; private init; } = Array.Empty<IltBankRow>();
+    public IReadOnlyList<string> Deposits { get; private init; } = Array.Empty<string>();
+    public IReadOnlyList<IltBankChoice> Withdrawals { get; private init; } = Array.Empty<IltBankChoice>();
+    public IReadOnlyList<IltBankChoice> Transfers { get; private init; } = Array.Empty<IltBankChoice>();
+    public IReadOnlyList<IltBankNote> Notes { get; private init; } = Array.Empty<IltBankNote>();
+    public IReadOnlyList<IltBankTx> Transactions { get; private init; } = Array.Empty<IltBankTx>();
+
+    public static IltBankView Parse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return None;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return None;
+
+            var chars = new List<IltBankRow>();
+            foreach (JsonElement c in IltJson.Array(root, "characters"))
+            {
+                string name = IltJson.Str(c, "name");
+                if (name.Length == 0) continue;
+                DateTime updated = DateTime.MinValue;
+                string when = IltJson.Str(c, "updated");
+                if (when.Length > 0
+                    && DateTime.TryParse(when, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out DateTime t))
+                    updated = t;
+                chars.Add(new IltBankRow(name, IltJson.Bool(c, "current"), IltJson.Long(c, "pyreals"), IltJson.Long(c, "luminance"),
+                    IltJson.Long(c, "legendaryKeys"), IltJson.Long(c, "mythicalKeys"), IltJson.Long(c, "enlightenedCoins"),
+                    IltJson.Long(c, "weaklyEnlightenedCoins"), IltJson.Long(c, "prestigeCoins"), updated));
+            }
+
+            var deposits = new List<string>();
+            if (root.TryGetProperty("deposits", out JsonElement ds) && ds.ValueKind == JsonValueKind.Array)
+                foreach (JsonElement d in ds.EnumerateArray())
+                    if (d.ValueKind == JsonValueKind.String) deposits.Add(d.GetString() ?? "");
+
+            var notes = new List<IltBankNote>();
+            foreach (JsonElement n in IltJson.Array(root, "notes"))
+                notes.Add(new IltBankNote(IltJson.Str(n, "label"), IltJson.Long(n, "value")));
+
+            var tx = new List<IltBankTx>();
+            foreach (JsonElement x in IltJson.Array(root, "transactions"))
+                tx.Add(new IltBankTx(IltJson.Str(x, "when"), IltJson.Str(x, "type"), IltJson.Long(x, "amount"),
+                                     IltJson.Str(x, "currency"), IltJson.Str(x, "player")));
+
+            return new IltBankView
+            {
+                Loaded = true,
+                Available = IltJson.Bool(root, "available"),
+                Enabled = (int)Math.Clamp(IltJson.Long(root, "enabled", -1), -1, 1),
+                World = IltJson.Str(root, "world"),
+                Character = IltJson.Str(root, "character"),
+                Result = IltJson.Str(root, "result"),
+                Characters = chars,
+                Deposits = deposits,
+                Withdrawals = Choices(root, "withdrawals"),
+                Transfers = Choices(root, "transfers"),
+                Notes = notes,
+                Transactions = tx,
+            };
+        }
+        catch (JsonException) { return None; }
+    }
+
+    private static List<IltBankChoice> Choices(JsonElement root, string name)
+    {
+        var list = new List<IltBankChoice>();
+        foreach (JsonElement c in IltJson.Array(root, name))
+            list.Add(new IltBankChoice(IltJson.Str(c, "label"), IltJson.Bool(c, "notes")));
+        return list;
+    }
+
+    /// <summary>The bank verb lines (header of this file); pure so the tests check them.</summary>
+    public static string RefreshVerb() => "refresh";
+    public static string DepositVerb(int index) => "deposit " + index.ToString(CultureInfo.InvariantCulture);
+    public static string WithdrawVerb(int index, long amount, int note)
+        => string.Join(' ', "withdraw", index.ToString(CultureInfo.InvariantCulture), amount.ToString(CultureInfo.InvariantCulture),
+                       note.ToString(CultureInfo.InvariantCulture));
+    public static string TransferVerb(int currency, long amount, int note, string recipient)
+        => string.Join(' ', "transfer", currency.ToString(CultureInfo.InvariantCulture), amount.ToString(CultureInfo.InvariantCulture),
+                       note.ToString(CultureInfo.InvariantCulture), (recipient ?? "").Trim());
+}
+
+/// <summary>One carried combat essence from the pet breeding JSON.</summary>
+public sealed record IltBreedEssenceRow(int Id, string Name, bool Male, int Tier, int Bond, bool Ready, string Status, long ReadyIn,
+                                        int Charges, int ChargesMax, bool Juvenile, string Stage, int Kills, int KillsRequired,
+                                        int Mutations, int PotencyMutations, IReadOnlyList<string> Problems, IReadOnlyList<string> Boosters);
+
+/// <summary>A ready stud + dam pairing and its stat mutation odds (0..1).</summary>
+public sealed record IltBreedPairRow(string Stud, string Dam, double ChanceBest, double ChanceWorst, int InheritMin, int InheritMax);
+
+/// <summary>A breeding supply: count carried, Ivo's price, and the essence ids the server would take it on now.</summary>
+public sealed record IltBreedSupplyRow(string Key, string Name, string Effect, long Count, long Price, bool Apply, IReadOnlyList<int> Targets);
+
+/// <summary>One breeding rule: its value and where it came from ("seen on server", "ILT profile", "ACE default").</summary>
+public sealed record IltBreedRuleRow(string Label, string Value, string Source, string Help);
+
+/// <summary>One breeding event (newest first in the view).</summary>
+public sealed record IltBreedEventRow(string When, string Kind, string Text);
+
+/// <summary>The last "@breed-debug" reply: when, the switch, where you were, the room check, your pet, partners nearby.</summary>
+public sealed record IltBreedDebugRow(string When, string Enabled, string Location, string Match, string Pet, string Sex, int Partners);
+
+/// <summary>The pet breeding JSON parsed. <see cref="None"/> without RynthILT; every field read leniently.</summary>
+public sealed class IltBreedingView
+{
+    public static readonly IltBreedingView None = new();
+
+    /// <summary>RynthILT answered.</summary>
+    public bool Loaded { get; private init; }
+    public bool Available { get; private init; }
+    public string World { get; private init; } = "";
+    /// <summary>"on", "off" or "unknown": the server's pet breeding switch as RynthILT knows it.</summary>
+    public string Enabled { get; private init; } = "unknown";
+    public string Maturity { get; private init; } = "unknown";
+    public string Bond { get; private init; } = "unknown";
+    public string Room { get; private init; } = "";
+    /// <summary>Free main-pack slots (-1 unknown).</summary>
+    public int FreeSlots { get; private init; } = -1;
+    public string Message { get; private init; } = "";
+    public IReadOnlyList<IltBreedEssenceRow> Essences { get; private init; } = Array.Empty<IltBreedEssenceRow>();
+    public IReadOnlyList<IltBreedPairRow> Pairs { get; private init; } = Array.Empty<IltBreedPairRow>();
+    public IReadOnlyList<IltBreedSupplyRow> Supplies { get; private init; } = Array.Empty<IltBreedSupplyRow>();
+    public IReadOnlyList<IltBreedRuleRow> Rules { get; private init; } = Array.Empty<IltBreedRuleRow>();
+    public IReadOnlyList<IltBreedEventRow> Events { get; private init; } = Array.Empty<IltBreedEventRow>();
+    public IltBreedDebugRow? Debug { get; private init; }
+
+    public static IltBreedingView Parse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return None;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return None;
+
+            var essences = new List<IltBreedEssenceRow>();
+            foreach (JsonElement e in IltJson.Array(root, "essences"))
+            {
+                string name = IltJson.Str(e, "name");
+                if (name.Length == 0) continue;
+                essences.Add(new IltBreedEssenceRow((int)IltJson.Long(e, "id"), name, IltJson.Str(e, "sex") == "M",
+                    (int)IltJson.Long(e, "tier"), (int)IltJson.Long(e, "bond"), IltJson.Bool(e, "ready"), IltJson.Str(e, "status"),
+                    IltJson.Long(e, "readyIn"), (int)IltJson.Long(e, "charges"), (int)IltJson.Long(e, "chargesMax"),
+                    IltJson.Bool(e, "juvenile"), IltJson.Str(e, "stage"), (int)IltJson.Long(e, "kills"), (int)IltJson.Long(e, "killsRequired"),
+                    (int)IltJson.Long(e, "mutations"), (int)IltJson.Long(e, "potencyMutations"),
+                    IltJson.Strings(e, "problems"), IltJson.Strings(e, "boosters")));
+            }
+
+            var pairs = new List<IltBreedPairRow>();
+            foreach (JsonElement p in IltJson.Array(root, "pairs"))
+                pairs.Add(new IltBreedPairRow(IltJson.Str(p, "stud"), IltJson.Str(p, "dam"), IltJson.Double(p, "chanceBest"),
+                    IltJson.Double(p, "chanceWorst"), (int)IltJson.Long(p, "inheritMin"), (int)IltJson.Long(p, "inheritMax")));
+
+            var supplies = new List<IltBreedSupplyRow>();
+            foreach (JsonElement s in IltJson.Array(root, "supplies"))
+            {
+                var targets = new List<int>();
+                if (s.TryGetProperty("targets", out JsonElement ts) && ts.ValueKind == JsonValueKind.Array)
+                    foreach (JsonElement t in ts.EnumerateArray())
+                        if (t.ValueKind == JsonValueKind.Number && t.TryGetInt32(out int id)) targets.Add(id);
+                supplies.Add(new IltBreedSupplyRow(IltJson.Str(s, "key"), IltJson.Str(s, "name"), IltJson.Str(s, "effect"),
+                    IltJson.Long(s, "count"), IltJson.Long(s, "price"), IltJson.Bool(s, "apply"), targets));
+            }
+
+            var rules = new List<IltBreedRuleRow>();
+            foreach (JsonElement r in IltJson.Array(root, "rules"))
+                rules.Add(new IltBreedRuleRow(IltJson.Str(r, "label"), IltJson.Str(r, "value"), IltJson.Str(r, "source"), IltJson.Str(r, "help")));
+
+            var events = new List<IltBreedEventRow>();
+            foreach (JsonElement ev in IltJson.Array(root, "events"))
+                events.Add(new IltBreedEventRow(IltJson.Str(ev, "when"), IltJson.Str(ev, "kind"), IltJson.Str(ev, "text")));
+
+            IltBreedDebugRow? debug = null;
+            if (root.TryGetProperty("debug", out JsonElement d) && d.ValueKind == JsonValueKind.Object)
+                debug = new IltBreedDebugRow(IltJson.Str(d, "when"), IltJson.Str(d, "enabled", "unknown"), IltJson.Str(d, "location"),
+                    IltJson.Str(d, "match"), IltJson.Str(d, "pet"), IltJson.Str(d, "sex"), (int)IltJson.Long(d, "partners", -1));
+
+            return new IltBreedingView
+            {
+                Loaded = true,
+                Available = IltJson.Bool(root, "available"),
+                World = IltJson.Str(root, "world"),
+                Enabled = IltJson.Str(root, "enabled", "unknown"),
+                Maturity = IltJson.Str(root, "maturity", "unknown"),
+                Bond = IltJson.Str(root, "bond", "unknown"),
+                Room = IltJson.Str(root, "room"),
+                FreeSlots = (int)IltJson.Long(root, "freeSlots", -1),
+                Message = IltJson.Str(root, "message"),
+                Essences = essences,
+                Pairs = pairs,
+                Supplies = supplies,
+                Rules = rules,
+                Events = events,
+                Debug = debug,
+            };
+        }
+        catch (JsonException) { return None; }
+    }
+
+    /// <summary>The breeding verb lines (header of this file); pure so the tests check them.</summary>
+    public static string RefreshVerb() => "refresh";
+    public static string DebugVerb() => "debug";
+    public static string DanceVerb() => "dance";
+    public static string ApplyVerb(string supplyKey, int essenceId)
+        => string.Join(' ', "apply", (supplyKey ?? "").Trim(), essenceId.ToString(CultureInfo.InvariantCulture));
+}
+
+/// <summary>One Temple attribute turn-in from the guardian JSON.</summary>
+public sealed record IltGuardianRow(string Attribute, string Npc, int Count, string Status, string Eta, bool Ready, bool Exact);
+
+/// <summary>The Temple guardian JSON parsed. <see cref="None"/> without RynthILT; every field read leniently.</summary>
+public sealed class IltGuardianView
+{
+    public static readonly IltGuardianView None = new();
+
+    /// <summary>RynthILT answered.</summary>
+    public bool Loaded { get; private init; }
+    public bool Available { get; private init; }
+    public string World { get; private init; } = "";
+    /// <summary>Translate the guardians' tells as they arrive.</summary>
+    public bool Chat { get; private init; }
+    /// <summary>Give the answer item to the guardian automatically after a chat answer.</summary>
+    public bool Auto { get; private init; }
+    /// <summary>Buy a missing Temple item from the nearest vendor first.</summary>
+    public bool Buy { get; private init; }
+    public int CooldownHours { get; private init; }
+    public string Answer { get; private init; } = "";
+    public string Npc { get; private init; } = "";
+    /// <summary>Seconds since the last answer (-1 none yet).</summary>
+    public long AnswerAgeSec { get; private init; } = -1;
+    public string Heard { get; private init; } = "";
+    /// <summary>A hand-in is running.</summary>
+    public bool Running { get; private init; }
+    public string Status { get; private init; } = "";
+    /// <summary>When /qb was last read (MinValue never).</summary>
+    public DateTime SyncedUtc { get; private init; } = DateTime.MinValue;
+    public IReadOnlyList<IltGuardianRow> Rows { get; private init; } = Array.Empty<IltGuardianRow>();
+
+    public static IltGuardianView Parse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return None;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return None;
+            var rows = new List<IltGuardianRow>();
+            foreach (JsonElement r in IltJson.Array(root, "rows"))
+            {
+                string attr = IltJson.Str(r, "attribute");
+                if (attr.Length == 0) continue;
+                rows.Add(new IltGuardianRow(attr, IltJson.Str(r, "npc"), (int)IltJson.Long(r, "count"), IltJson.Str(r, "status"),
+                    IltJson.Str(r, "eta"), IltJson.Bool(r, "ready"), IltJson.Bool(r, "exact")));
+            }
+            DateTime synced = DateTime.MinValue;
+            string when = IltJson.Str(root, "synced");
+            if (when.Length > 0
+                && DateTime.TryParse(when, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out DateTime t))
+                synced = t;
+            return new IltGuardianView
+            {
+                Loaded = true,
+                Available = IltJson.Bool(root, "available"),
+                World = IltJson.Str(root, "world"),
+                Chat = IltJson.Bool(root, "chat"),
+                Auto = IltJson.Bool(root, "auto"),
+                Buy = IltJson.Bool(root, "buy"),
+                CooldownHours = (int)IltJson.Long(root, "cooldownHours"),
+                Answer = IltJson.Str(root, "answer"),
+                Npc = IltJson.Str(root, "npc"),
+                AnswerAgeSec = IltJson.Long(root, "answerAgeSec", -1),
+                Heard = IltJson.Str(root, "heard"),
+                Running = IltJson.Bool(root, "running"),
+                Status = IltJson.Str(root, "status"),
+                SyncedUtc = synced,
+                Rows = rows,
+            };
+        }
+        catch (JsonException) { return None; }
+    }
+
+    /// <summary>The guardian verb lines (header of this file); pure so the tests check them.</summary>
+    public static string HandInVerb() => "handin";
+    public static string StopVerb() => "stop";
+    public static string RefreshVerb() => "refresh";
+    /// <summary>"chat on", "auto off", "buy on": <paramref name="name"/> is chat, auto or buy.</summary>
+    public static string SwitchVerb(string name, bool on) => (name ?? "").Trim().ToLowerInvariant() + (on ? " on" : " off");
+}
+
+/// <summary>Lenient JSON field reads shared by the views above.</summary>
+internal static class IltJson
+{
+    public static string Str(JsonElement o, string name, string fallback = "") =>
+        o.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? fallback : fallback;
+
+    public static bool Bool(JsonElement o, string name) =>
+        o.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.True;
+
+    public static long Long(JsonElement o, string name, long fallback = 0) =>
+        o.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out long l) ? l : fallback;
+
+    public static double Double(JsonElement o, string name, double fallback = 0) =>
+        o.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out double d) ? d : fallback;
+
+    /// <summary>The string items of an array field (other kinds skipped).</summary>
+    public static List<string> Strings(JsonElement o, string name)
+    {
+        var list = new List<string>();
+        if (!o.TryGetProperty(name, out JsonElement a) || a.ValueKind != JsonValueKind.Array) return list;
+        foreach (JsonElement e in a.EnumerateArray())
+            if (e.ValueKind == JsonValueKind.String) list.Add(e.GetString() ?? "");
+        return list;
+    }
+
+    public static IEnumerable<JsonElement> Array(JsonElement o, string name)
+    {
+        if (!o.TryGetProperty(name, out JsonElement a) || a.ValueKind != JsonValueKind.Array) yield break;
+        foreach (JsonElement e in a.EnumerateArray())
+            if (e.ValueKind == JsonValueKind.Object) yield return e;
+    }
+}

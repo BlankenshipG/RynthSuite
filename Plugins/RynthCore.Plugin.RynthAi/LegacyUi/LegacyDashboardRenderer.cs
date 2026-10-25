@@ -1283,6 +1283,7 @@ internal sealed partial class LegacyDashboardRenderer
                 RebuffTopOffSecondsRemaining = s.RebuffTopOffSecondsRemaining,
                 CastBuffsOverItemBuffs     = s.CastBuffsOverItemBuffs,
                 SkipUnusableBuffs          = s.SkipUnusableBuffs,
+                UseFellowshipBuffs         = s.UseFellowshipBuffs,
                 DisabledBuffs              = new List<string>(s.DisabledBuffs),
                 BuffMinSkillLevelTier1     = s.BuffMinSkillLevelTier1,
                 BuffMinSkillLevelTier2     = s.BuffMinSkillLevelTier2,
@@ -1545,6 +1546,7 @@ internal sealed partial class LegacyDashboardRenderer
             if (p.RebuffTopOffSecondsRemaining > 0) s.RebuffTopOffSecondsRemaining = p.RebuffTopOffSecondsRemaining;
             if (p.CastBuffsOverItemBuffs is bool castOverItems) s.CastBuffsOverItemBuffs = castOverItems;   // absent = unchanged
             if (p.SkipUnusableBuffs is bool skipUnusable) s.SkipUnusableBuffs = skipUnusable;   // absent = unchanged
+            if (p.UseFellowshipBuffs is bool fellowBuffs) s.UseFellowshipBuffs = fellowBuffs;    // absent = unchanged
             if (p.DisabledBuffs is { } disabledBuffs) s.DisabledBuffs = new List<string>(disabledBuffs);  // absent = unchanged
             s.BuffMinSkillLevelTier1     = p.BuffMinSkillLevelTier1;
             s.BuffMinSkillLevelTier2     = p.BuffMinSkillLevelTier2;
@@ -1654,6 +1656,7 @@ internal sealed partial class LegacyDashboardRenderer
     }
 
     public void AddSelectedWeapon()     { _weaponsUi.AddSelectedWeapon();     SaveSettings(); }
+    public void AddWeapon(uint id)      { _weaponsUi.AddWeapon(id);           SaveSettings(); }
     public void AddSelectedConsumable() { _weaponsUi.AddSelectedConsumable(); SaveSettings(); }
 
     /// <summary>Launches the standalone Monster Rules editor for the current char folder.</summary>
@@ -2032,6 +2035,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.CastBuffsOverItemBuffs   = tmp.CastBuffsOverItemBuffs;
         dst.FastBuffChain            = tmp.FastBuffChain;
         dst.SkipUnusableBuffs        = tmp.SkipUnusableBuffs;
+        dst.UseFellowshipBuffs       = tmp.UseFellowshipBuffs;
         dst.DisabledBuffs            = tmp.DisabledBuffs;
         dst.BlacklistAttempts             = tmp.BlacklistAttempts;
         dst.BlacklistTimeoutSec           = tmp.BlacklistTimeoutSec;

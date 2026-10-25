@@ -1470,8 +1470,43 @@ public sealed partial class RynthAiPlugin
             FirstMatchNative = FirstLootRuleFor,
             Added = OnLootRuleAdded,
             BuiltInKeep = LootBuiltInKeepFor,
+            Judge = JudgeLootFindItems,
+            Spells = LootSpellCatalogOnce,
         },
     };
+
+    private RynthCore.Loot.Editing.LootSpellCatalog? _lootSpellCatalog;
+
+    /// <summary>The loot popups' standard spell lists, built once the spell table is read.</summary>
+    private RynthCore.Loot.Editing.LootSpellCatalog? LootSpellCatalogOnce()
+    {
+        if (_lootSpellCatalog != null) return _lootSpellCatalog;
+        if (!SpellDatabase.IsLoaded) return null;
+        return _lootSpellCatalog = RynthCore.Loot.Editing.LootSpellCatalog.Build(SpellDatabase.AllSpells());
+    }
+
+    /// <summary>
+    /// "Filter like this" (the Inventory panel's right-click, 2026-10-24): the items the rule
+    /// takes, judged by the looter's own evaluator; with <paramref name="needsId"/>, the ones it
+    /// doesn't take that aren't identified yet (or that the object cache doesn't know) are unknown.
+    /// </summary>
+    private void JudgeLootFindItems(VTankLootRule rule, IReadOnlyList<uint> ids, bool needsId, List<uint> match, List<uint> unknown)
+    {
+        if (_objectCache == null) return;
+        var ctx = new VTankLootContext(Host, _playerId) { Cache = _objectCache };
+        bool canAsk = Host.HasHasAppraisalData;
+        foreach (uint id in ids)
+        {
+            WorldObject? wo = _objectCache[unchecked((int)id)];
+            if (wo == null)
+            {
+                unknown.Add(id);
+                continue;
+            }
+            if (VTankLootEvaluator.Match(rule, wo, ctx)) match.Add(id);
+            else if (needsId && canAsk && !Host.HasAppraisalData(id)) unknown.Add(id);
+        }
+    }
 
     /// <summary>
     /// Why RynthAi's looting takes the item without a loot profile rule, for the "Add to
@@ -1552,8 +1587,9 @@ public sealed partial class RynthAiPlugin
     }
 
     /// <summary>
-    /// What a loot rule can be built from: the item's name, class, stack, key properties and
-    /// T11 reading, from the object cache. <paramref name="like"/> adds its spells;
+    /// What a loot rule can be built from: the item's name, class, stack, every property the
+    /// attribute checklist offers (LootItemAttributes) and T11 reading, from the object cache.
+    /// <paramref name="like"/> adds its spells (the popup always asks: its checklist lists them);
     /// <paramref name="t11"/> asks for an ID when a T11 item's text hasn't arrived.
     /// </summary>
     private RynthCore.Loot.Editing.LootItemFacts? BuildLootItemFacts(uint itemId, bool like, bool t11)
@@ -1567,6 +1603,8 @@ public sealed partial class RynthAiPlugin
             ObjectClass = (int)wo.ObjectClass,
             StackSize = Math.Max(1, wo.Values(LongValueKey.StackCount, 1)),
             MaxStackSize = Math.Max(1, wo.Values(LongValueKey.MaxStackSize, 1)),
+            // The Pets tab's test (WCID block, summoning-gem icon, Summoning use requirement): the essence group.
+            IsPetEssence = _miniRemote?.Pets.IsPetDevice(wo) == true,
         };
         foreach (int key in RynthCore.Loot.Editing.LootItemRules.IntKeys)
         {

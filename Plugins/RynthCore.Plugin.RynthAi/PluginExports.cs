@@ -140,6 +140,8 @@ public static unsafe class PluginExports
         {
             if (surface == null) return 0;
             ReadOnlySpan<byte> name = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(surface);
+            // Engine tags popped-out embeds with ":popout" so the Mini Remote can show Dock
+            // and open expanded Options in the floating window.
             bool popped = name.EndsWith(":popout"u8);
             if (popped) name = name[..^":popout"u8.Length];
             var plugin = Runtime.Plugin;
@@ -168,7 +170,7 @@ public static unsafe class PluginExports
                 bool remote = name.SequenceEqual("miniremote-remote"u8);
                 bool window = remote || name.SequenceEqual("miniremote-window"u8);
                 if (!window && !name.SequenceEqual("miniremote"u8)) return 0;
-                if (!plugin.RenderEmbeddedMiniRemote(window, out want, tabs: !remote)) return 0;
+                if (!plugin.RenderEmbeddedMiniRemote(window, out want, tabs: !remote, popped: popped)) return 0;
             }
             if (wantWidth != null) *wantWidth = want.X;
             if (wantHeight != null) *wantHeight = want.Y;
@@ -928,6 +930,15 @@ public static unsafe class PluginExports
     public static void AddSelectedWeapon()
     {
         try { Runtime.Plugin?.DashboardRenderer?.AddSelectedWeapon(); }
+        catch { }
+    }
+
+    // The Inventory panel's right-click "Add to Damage panel weapons" (2026-10-25): a weapon,
+    // wand or shield by id, without selecting it first. Shields go in as off-hand items.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginAddWeaponById", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void AddWeaponById(uint id)
+    {
+        try { Runtime.Plugin?.DashboardRenderer?.AddWeapon(id); }
         catch { }
     }
 

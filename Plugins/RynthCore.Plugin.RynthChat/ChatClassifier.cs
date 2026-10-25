@@ -32,6 +32,50 @@ internal static class ChatClassifier
     internal static bool IsItemInfo(string text) =>
         text.StartsWith("[RynthAi Item] ", StringComparison.Ordinal);
 
+    // ── Automated system text (0.3.4) ──────────────────────────────────────
+    // Lines the engine shows in the System tab only, not under All: replies to the
+    // commands plugins send by themselves (/myquests, /qb list), the server's login
+    // burst, and anything a plugin ate (the engine reports those, RynthChatNoteEaten).
+
+    /// <summary>AdminTell: a person typed it, so it is never automated text.</summary>
+    internal const int AdminTellType = 0x1F;
+
+    // A /myquests flag line: "key - N solves (unixtime)"description" max repeat". Its own timeout:
+    // static fields initialise in file order, and the shared Timeout below isn't set yet here.
+    private static readonly Regex _questFlagRe = new(@"^\S+ - \d+ solves \(\d*\)",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(20));
+
+    /// <summary>
+    /// True for the fixed formats of automated replies, whoever sent the command:
+    /// /myquests flag lines and their end lines, the /qb list headers and end lines,
+    /// and ACE's login welcome. Only for system-type lines, so player speech that
+    /// quotes them is untouched.
+    /// </summary>
+    internal static bool IsAutomatedText(string text, int chatType)
+    {
+        if (string.IsNullOrEmpty(text) || ChannelForType(chatType) != System || chatType == AdminTellType) return false;
+        if (text.IndexOf(" solves (", StringComparison.Ordinal) > 0)
+        {
+            try { if (_questFlagRe.IsMatch(text)) return true; }
+            catch (RegexMatchTimeoutException) { }
+        }
+        return text.StartsWith("Quest list is empty", StringComparison.Ordinal)
+            || text.StartsWith("[MyQuests] ", StringComparison.Ordinal)
+            || text.StartsWith("Your completed quest bonus list", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("Your incomplete quest bonus list", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("Your current quest bonus count", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("Quest bonus list is empty", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[QB] ", StringComparison.Ordinal)
+            || text.StartsWith("Welcome to Asheron's Call", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// True when a line counts as the login burst: system text (not an admin's tell) that
+    /// arrives while the character is entering the world (<paramref name="loginBurst"/>).
+    /// </summary>
+    internal static bool IsLoginBurst(string channel, int chatType, bool loginBurst) =>
+        loginBurst && channel == System && chatType != AdminTellType;
+
     // ── Channel classification ─────────────────────────────────────────────
 
     /// <summary>

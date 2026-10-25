@@ -4,7 +4,7 @@
 //  GetServerStateJson), parsed: every server the engine knows (built-in ILT and
 //  Aelrynth, plus each loaded server plugin's declaration), whether it is
 //  active, this character's override, and which plugin owns it (the one to ask
-//  for its settings through "RynthServer.Profile"; RynthILT answers it for "ilt").
+//  for its settings: "RynthServer.Profile", or RynthILT's "RynthILT.Server").
 //  The same verdict the Mini Remote, the menus and the Diagnostics server
 //  picker use, so every plugin follows one choice, overrides included.
 //
@@ -25,6 +25,50 @@ internal sealed record EngineServer(string Id, string Name, bool Active, bool De
 /// <summary>The engine's server list at one moment (GetServerStateJson, schema 1).</summary>
 internal sealed class EngineServerState
 {
+    /// <summary>Engine server ids with a meaning across RynthSuite.</summary>
+    public const string IltId = "ilt";
+    public const string AelrynthId = "aelrynth";
+    /// <summary>RynthILT serves "RynthILT.Server" for the "ilt" server, not "RynthServer.Profile".</summary>
+    public const string IltPlugin = "RynthILT";
+
+    /// <summary>
+    /// Whether this world is one of <paramref name="names"/> (a user's server list, "InfiniteLeaftide,
+    /// Conquest"): names compare case- and space-insensitively against server ids, names and the world.
+    /// Without the engine (<paramref name="engine"/> null) the world name decides. With it, an active
+    /// server decides ("ilt" counts as any Leaftide name); with none active the world name still counts,
+    /// unless it names a server the engine lists, which is then off on purpose (not detected, or this
+    /// character's override).
+    /// </summary>
+    public static bool MatchesNameList(EngineServerState? engine, string? world, IReadOnlyList<string> names)
+    {
+        bool Named(string? s)
+        {
+            string n = Norm(s);
+            if (n.Length == 0) return false;
+            foreach (string name in names)
+                if (Norm(name) == n) return true;
+            return false;
+        }
+        bool anyLeaftide = false;
+        foreach (string name in names)
+            if (Norm(name).Contains("leaftide", StringComparison.Ordinal)) anyLeaftide = true;
+
+        if (engine == null) return Named(world);
+        if (engine.HasActive)
+            return Named(engine.Active) || Named(engine.ActiveName) || (anyLeaftide && engine.IsActive(IltId));
+        if (!Named(world)) return false;
+        string w = Norm(world);
+        foreach (EngineServer s in engine.Servers)
+        {
+            if (Norm(s.Id) == w || Norm(s.Name) == w) return false;
+            // ILT's world names ("InfiniteLeaftide") are the engine's own ILT detection.
+            if (s.Id.Equals(IltId, StringComparison.OrdinalIgnoreCase) && w.Contains("leaftide", StringComparison.Ordinal)) return false;
+        }
+        return true;
+    }
+
+    private static string Norm(string? s) => (s ?? string.Empty).Replace(" ", string.Empty).Trim().ToLowerInvariant();
+
     public int Revision { get; private init; }
     /// <summary>The connect host the client was launched with ("" when not known).</summary>
     public string Host { get; private init; } = string.Empty;
@@ -112,8 +156,8 @@ internal sealed class EngineServerState
 }
 
 /// <summary>
-/// The headline facts of a server owner's profile JSON ("RynthServer.Profile" from the plugin that
-/// owns the server), read leniently: a field the owner doesn't send stays "".
+/// The headline facts of a server owner's profile JSON ("RynthServer.Profile" from a server plugin,
+/// or RynthILT's "RynthILT.Server"), read leniently: a field the owner doesn't send stays "".
 /// </summary>
 internal sealed record ServerProfileView(string Id, string Name, string Plugin, string Ruleset, string Emulator,
                                          string Botting, string BottingNote, string AccountLimit)
@@ -178,8 +222,7 @@ internal sealed record ServerProfileView(string Id, string Name, string Plugin, 
 
 /// <summary>
 /// One salvage from a server plugin's profile "salvage" list (ServerPackInfo.Salvage): a tinkering
-/// recipe the server adds, for the Mini Remote's Crafting tab. The fields after
-/// <paramref name="NameMatch"/> are optional in the JSON; absent, a row behaves as before them.
+/// recipe the server adds, for the Mini Remote's Crafting tab.
 /// </summary>
 /// <param name="AppliedInt">"applied": an int property of the item that reads 2 once the row is on it (0 = none).</param>
 /// <param name="Prepared">"prepared": the bag must first be prepared on the chosen tier's Ammunition.</param>
@@ -241,9 +284,8 @@ internal sealed record ServerSalvageView(string Bench, int Material, string Kind
                                          string StackGroup = "", int StackCap = 0)
 {
     /// <summary>
-    /// The profile's salvage rows, read leniently: a missing list (an older plugin) is empty; a row
-    /// without a bench or a material id is skipped; "slot" defaults to true, the optional fields to
-    /// none (a stack group without a positive cap is no group).
+    /// The profile's salvage rows, read leniently: a missing list (an older plugin, or RynthILT's
+    /// profile) is empty; a row without a bench or a material id is skipped; "slot" defaults to true.
     /// </summary>
     public static IReadOnlyList<ServerSalvageView> ParseList(string? json)
     {
@@ -264,16 +306,8 @@ internal sealed record ServerSalvageView(string Bench, int Material, string Kind
                 if (bench.Length == 0 || material <= 0) continue;
                 string kind = EngineServerState.Str(e, "kind").Trim().ToLowerInvariant();
                 bool slot = !(e.TryGetProperty("slot", out JsonElement s) && s.ValueKind == JsonValueKind.False);
-                string group = EngineServerState.Str(e, "stackGroup").Trim();
-                int cap = EngineServerState.Int(e, "stackCap");
-                if (cap <= 0) group = string.Empty;
                 rows.Add(new ServerSalvageView(bench, material, kind.Length > 0 ? kind : "tink",
-                                               EngineServerState.Str(e, "effect"), slot, EngineServerState.Str(e, "nameMatch"),
-                                               AppliedInt: EngineServerState.Int(e, "applied"),
-                                               Prepared: EngineServerState.Bool(e, "prepared"),
-                                               Order: EngineServerState.Int(e, "order"),
-                                               AfterCap: EngineServerState.Bool(e, "afterCap"),
-                                               StackGroup: group, StackCap: group.Length > 0 ? cap : 0));
+                                               EngineServerState.Str(e, "effect"), slot, EngineServerState.Str(e, "nameMatch")));
             }
         }
         catch (JsonException)

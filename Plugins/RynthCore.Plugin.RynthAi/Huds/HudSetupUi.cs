@@ -60,7 +60,7 @@ internal sealed class HudSetupUi
 
     private void RenderItemLists(HudState s)
     {
-        ImGui.TextWrapped("Left = shown on the HUD. Right = in your pack but not on the HUD. "
+        SafeImGui.TextWrapped("Left = shown on the HUD. Right = in your pack but not on the HUD. "
                           + "< pins the highlighted right row; > removes the highlighted left row. "
                           + "Add from inventory uses the item selected in the game.");
 

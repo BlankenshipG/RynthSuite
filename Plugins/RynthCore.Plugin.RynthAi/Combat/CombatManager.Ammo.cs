@@ -52,6 +52,13 @@ public partial class CombatManager
 
     private readonly HashSet<int> _noAmmoNoted = new();
 
+    // Reloading a launcher already in hand from the pack (see ReloadFromPack): the earliest the
+    // next reload may be armed. Pushed out after a give-up so a resting stack isn't retried each tick.
+    private DateTime _reloadArmNextAt = DateTime.MinValue;
+
+    /// <summary>How long after a failed or held ammo wield before the in-hand reload tries again. Settable for tests.</summary>
+    internal double ReloadArmEveryMs { get; set; } = 10_000;
+
     /// <summary>
     /// A launcher swap's ammo step is under way (the old stack going into the pack, or the new
     /// one being wielded). Ammo crafting waits: it would otherwise equip ammo for the launcher
@@ -67,6 +74,7 @@ public partial class CombatManager
         _ammoDequipPendingId = _ammoDequipTries = 0;
         _ammoDequipRestUntil = DateTime.MinValue;
         _ammoOffSeenAt = DateTime.MinValue;
+        _reloadArmNextAt = DateTime.MinValue;
         _noAmmoNoted.Clear();
     }
 
@@ -101,9 +109,11 @@ public partial class CombatManager
             uint uid = unchecked((uint)wo.Id);
             int? dt = _host.HasGetObjectIntProperty && _host.TryGetObjectIntProperty(uid, WeaponElements.PropDamageType, out int d) ? d : null;
             int? fx = _host.HasGetObjectIntProperty && _host.TryGetObjectIntProperty(uid, WeaponElements.PropUiEffects, out int f) ? f : null;
-            bool prismatic = MissileAmmo.IsPrismatic(dt, wo.Name);
-            string elem = prismatic ? "" : WeaponElements.Detect(dt, null, fx, wo.Name).Element;
             int listIdx = rules.FindIndex(r => r.Id == wo.Id);
+            // Prismatic: its properties or name say so, or the Items panel marks this ammo Prismatic.
+            bool prismatic = MissileAmmo.IsPrismatic(dt, wo.Name)
+                             || (listIdx >= 0 && MissileAmmo.IsUniversal(rules[listIdx].Element));
+            string elem = prismatic ? "" : WeaponElements.Detect(dt, null, fx, wo.Name).Element;
             int quality = AmmoRecipes.OutputRank(wo.Name, MissileAmmo.CategoryOf(type));
             bool wielded = WorldObjectCache.IsWieldedByPlayer(_host, wo);
             list.Add(new AmmoCandidate(wo.Id, wo.Name, type, elem, prismatic, quality, listIdx, wielded));
@@ -136,35 +146,44 @@ public partial class CombatManager
 
         List<AmmoCandidate>? pack = null;
         var rank = AmmoRank(ruleElement, weak);
+        // Universal damage (prismatic ammo, or a launcher set to Prismatic in the Items panel) does
+        // whatever this target is weakest to: the Monsters rule's damage type, else the weakest element.
+        string best = MissileAmmo.BestElement(WeaponElements.Normalize(ruleElement),
+            weak != null && weak.Order.Count > 0 ? WeaponPlanner.TieGroups(weak) : null);
+        WeaponCandidate Resolve(WeaponCandidate c) => MissileAmmo.IsUniversal(c.Element) ? c with { Element = best } : c;
+
         var result = new List<WeaponCandidate>(listed.Count);
         var dropped = new List<(WeaponCandidate C, int Type)>();
         foreach (var c in listed)
         {
             if (c.Kind != CombatMode.Missile) { result.Add(c); continue; }
             int lt = LauncherTypeOf(_worldFilter[c.Id]);
-            if (lt == 0) { result.Add(c); continue; }        // thrown, or a type not known: as before
+            if (lt == 0) { result.Add(Resolve(c)); continue; }        // thrown, or a type not known: as before
 
+            string launcherElement = MissileAmmo.IsUniversal(c.Element) ? "" : c.Element;
             pack ??= PackAmmo();
             var wielded = pack.FirstOrDefault(a => a.Wielded);
             var use = wielded != null && MissileAmmo.Fits(lt, wielded.AmmoType)
                 ? wielded
-                : MissileAmmo.Choose(lt, c.Element, pack, rank);
+                : MissileAmmo.Choose(lt, launcherElement, pack, rank, best);
             if (use == null)
             {
-                if (c.InHand) { result.Add(c); continue; }   // ran out in hand: crafting's job, as before
+                if (c.InHand) { result.Add(Resolve(c)); continue; }   // ran out in hand: crafting's job, as before
                 dropped.Add((c, lt));
                 continue;
             }
             _noAmmoNoted.Remove(c.Id);
             // An element the user picked in the Items panel wins over the ammo's (owner's call,
-            // 2026-10-01), although the server uses the ammo's element for the damage.
+            // 2026-10-01), although the server uses the ammo's element for the damage. Prismatic
+            // there means universal: the best element for this target.
             if (_settings.ItemRules.FirstOrDefault(x => x.Id == c.Id)?.ElementSource == WeaponList.SourceSet)
             {
-                result.Add(c);
+                result.Add(Resolve(c));
                 continue;
             }
-            string e = MissileAmmo.EffectiveElement(use, c.Element);
-            result.Add(e.Length > 0 && e != c.Element ? c with { Element = e } : c);
+            string e = MissileAmmo.EffectiveElement(use, launcherElement, best);
+            WeaponCandidate r = Resolve(c);
+            result.Add(e.Length > 0 && e != r.Element ? r with { Element = e } : r);
         }
 
         if (dropped.Count == 0) return result;
@@ -172,7 +191,7 @@ public partial class CombatManager
         // still wielded and ammo crafting makes ammo for it), rather than turning an archer into a
         // swordsman or a mage because the pack ran dry.
         if (listed[0].Kind == CombatMode.Missile && !result.Any(c => c.Kind == CombatMode.Missile))
-            return listed;
+            return listed.Select(Resolve).ToList();
         foreach (var (c, lt) in dropped)
             if (_noAmmoNoted.Add(c.Id))
                 _host.Log($"[EquipDiag] 0x{(uint)c.Id:X8} '{c.Name}' has no {MissileAmmo.Label(lt)} in the pack — not swapping to it");
@@ -281,8 +300,8 @@ public partial class CombatManager
 
     /// <summary>
     /// Step 3, with <paramref name="launcherId"/> confirmed in hand. True while the attack should
-    /// wait for the ammo wield. Only after combat's own launcher swap: an empty quiver otherwise is
-    /// left to ammo crafting (which may craft better ammo first), as before.
+    /// wait for the ammo wield. Armed by combat's own launcher swap, or by <see cref="ReloadFromPack"/>
+    /// when the launcher in hand has an empty ammunition slot and a fitting stack is in the pack.
     /// </summary>
     private bool AmmoFollowUp(int launcherId, WorldObject target, MonsterRule? rule)
     {
@@ -306,11 +325,16 @@ public partial class CombatManager
             return false;
         }
 
-        var pick = MissileAmmo.Choose(lt, LauncherElement(launcherId, wo), pack, AmmoRank(RuleElementOf(rule), WeaknessFor(target)));
+        var weakFor = WeaknessFor(target);
+        string ruleElem = RuleElementOf(rule);
+        // Prismatic (universal) ammo does the target's best element: it ranks as that element here too.
+        string bestElem = MissileAmmo.BestElement(ruleElem, weakFor != null && weakFor.Order.Count > 0 ? WeaponPlanner.TieGroups(weakFor) : null);
+        var pick = MissileAmmo.Choose(lt, LauncherElement(launcherId, wo), pack, AmmoRank(ruleElem, weakFor), bestElem);
         if (pick == null)
         {
             _host.Log($"[EquipDiag] no {MissileAmmo.Label(lt)} left for 0x{(uint)launcherId:X8} '{wo.Name}' — leaving it to ammo crafting");
             EndAmmoFollowUp();
+            _reloadArmNextAt = now.AddMilliseconds(ReloadArmEveryMs);
             return false;
         }
 
@@ -336,10 +360,44 @@ public partial class CombatManager
             case WeaponSwapTracker.Step.Hold:
                 _host.Log($"[EquipDiag] ammo: not wielding 0x{(uint)pick.Id:X8} '{pick.Name}' ({AmmoTracker.HoldReason}) — leaving it to ammo crafting");
                 EndAmmoFollowUp();
+                _reloadArmNextAt = now.AddMilliseconds(ReloadArmEveryMs);
                 return false;
             default:
                 EndAmmoFollowUp();
                 return false;
         }
+    }
+
+    /// <summary>
+    /// The chosen launcher is in hand with nothing in the ammunition slot, and a stack that fits
+    /// it is in the pack: arm step 3 so the next tick wields that stack. Step 3 used to run only
+    /// right after combat's own launcher swap; any other empty quiver waited for an ammo crafting
+    /// pass that RynthAi no longer has. A swap abandoned halfway (the old ammo already in the pack
+    /// when the next target wanted the launcher still in hand) left the character in peace mode
+    /// with a target and no attack for 90 minutes (Silentkelpie, 2026-10-19 15:24-16:55). After a
+    /// give-up, waits <see cref="ReloadArmEveryMs"/> before arming again.
+    /// </summary>
+    private void ReloadFromPack(int launcherId)
+    {
+        DateTime now = RynthClock.Now;
+        if (now < _reloadArmNextAt) return;
+        if (_ammoFollowUpFor == launcherId && now < _ammoFollowUpUntil) return;   // already armed
+        var wo = _worldFilter[launcherId];
+        int lt = LauncherTypeOf(wo);
+        if (wo == null || lt == 0) return;                   // thrown, or a launcher type not known
+
+        var pack = PackAmmo();
+        if (pack.Any(a => a.Wielded)) return;                // something is on: the swap path deals with it
+        if (!pack.Any(a => MissileAmmo.Fits(lt, a.AmmoType))) return;   // nothing fits: crafting's job, as before
+
+        // The launcher this swap was for is the one in hand, so an old-ammo dequip that is still
+        // recorded has landed; left set, it would also hold the stance (LauncherSwapHoldsStance).
+        if (_ammoDequipPendingId != 0)
+        {
+            _weaponSwapGate?.MoveDone(_ammoDequipPendingId);
+            _ammoDequipPendingId = 0; _ammoDequipTries = 0; _ammoOffSeenAt = DateTime.MinValue;
+        }
+        ArmAmmoFollowUp(launcherId, now);
+        _host.Log($"[EquipDiag] reload: 0x{(uint)launcherId:X8} '{wo.Name}' is in hand with no {MissileAmmo.Label(lt)} on — wielding a stack from the pack");
     }
 }

@@ -3064,7 +3064,7 @@ internal sealed partial class ExpressionEngine
 
         DateTime mtime = File.GetLastWriteTime(profilePath);
 
-        // Each pulse: fire MoveItemExternal for the first matching item still in inventory.
+        // Each pulse: give (whole object) the first matching item still in inventory.
         // We retry the same item until it vanishes from the cache (server confirmed).
         // Once gone, the next iteration naturally picks up the next item.
         // Returns 1 while matching items remain, 0 when inventory is clear.
@@ -3701,6 +3701,7 @@ internal sealed partial class ExpressionEngine
             ["CastBuffsOverItemBuffs"]       = (() => B(s.CastBuffsOverItemBuffs),       v => s.CastBuffsOverItemBuffs       = ToDouble(v) != 0),
             ["FastBuffChain"]                = (() => B(s.FastBuffChain),                v => s.FastBuffChain                = ToDouble(v) != 0),
             ["SkipUnusableBuffs"]            = (() => B(s.SkipUnusableBuffs),            v => s.SkipUnusableBuffs            = ToDouble(v) != 0),
+            ["UseFellowshipBuffs"]           = (() => B(s.UseFellowshipBuffs),           v => s.UseFellowshipBuffs           = ToDouble(v) != 0),
             // AutoVendor (UB names map here through /ub opt: AutoVendor.Enabled -> AutoVendorEnabled, ...)
             ["AutoVendorEnabled"]          = (() => B(s.AutoVendorEnabled),          v => s.AutoVendorEnabled          = ToDouble(v) != 0),
             ["AutoVendorEnableBuying"]     = (() => B(s.AutoVendorEnableBuying),     v => s.AutoVendorEnableBuying     = ToDouble(v) != 0),

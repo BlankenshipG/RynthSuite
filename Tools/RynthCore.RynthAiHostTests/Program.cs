@@ -54,7 +54,10 @@ internal static class Program
         PropertyDumpTests.Register(runner);
         T11LootTests.Register(runner);
         MagItemDescriberTests.Register(runner);
+SelfRatingsTests.Register(runner);
+IltClientLookupTests.Register(runner);
         ExpressionTests.Register(runner);
+        GiveProfileTests.Register(runner);
         MetaTests.Register(runner);
         SelfTestMetaTests.Register(runner);
         NoKillTests.Register(runner);
@@ -72,7 +75,6 @@ internal static class Program
         AmmoTests.Register(runner);
         VTankYieldTests.Register(runner);
         OffhandTests.Register(runner);
-        HandSwapTests.Register(runner);
         FloodPerfTests.Register(runner);
         LootSalvageTests.Register(runner);
         LootCorpseTests.Register(runner);
@@ -91,6 +93,7 @@ internal static class Program
         UseAtLoginTests.Register(runner);
         LearnSpellsTests.Register(runner);
         AttackLatencyTests.Register(runner);
+        RingEscapeTests.Register(runner);
         TargetingTests.Register(runner);
         LootAddItemTests.Register(runner);
         GiveTests.Register(runner);
@@ -139,6 +142,8 @@ internal static class Program
         OneTouchHealTests.Register(runner);
         SaveFailureTests.Register(runner);
         EnvironmentImpactTests.Register(runner);
+        PetDamageTintTests.Register(runner);
+        TinkerTests.Register(runner);
         SkCombatAddonTests.Register(runner);
         DoorTests.Register(runner);
         ServerPolicyTests.Register(runner);
@@ -147,6 +152,7 @@ internal static class Program
         TinkerTests.Register(runner);
         LauncherSwapTests.Register(runner);
         MissileCraftingTests.Register(runner);
+        HandSwapTests.Register(runner);
         SelfRatingsTests.Register(runner);
         ServerHubClientLookupTests.Register(runner);
         UbMtSafetyTests.Register(runner);

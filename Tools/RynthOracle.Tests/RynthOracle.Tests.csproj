@@ -23,12 +23,16 @@
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
     <!-- The engine parser's whitelists use ImGui.NET's enums. -->
     <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
+    <!-- The Gear tab's dat reader (portal.dat spell table). -->
+    <ProjectReference Include="..\..\Shared\RynthCore.TerrainData\RynthCore.TerrainData.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\**\*.cs" Exclude="..\..\Plugins\RynthCore.Plugin.RynthOracle\obj\**;..\..\Plugins\RynthCore.Plugin.RynthOracle\bin\**" Link="RynthOracle\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\FellowshipTracker.cs" Link="RynthOracle\Shared\FellowshipTracker.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\RynthClock.cs" Link="RynthOracle\Shared\RynthClock.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthIltServerApi.cs" Link="RynthOracle\Shared\RynthIltServerApi.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthIltDataApi.cs" Link="RynthOracle\Shared\RynthIltDataApi.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthAiHubApi.cs" Link="RynthOracle\Shared\RynthAiHubApi.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthAiSessionClient.cs" Link="RynthOracle\Shared\RynthAiSessionClient.cs" />
     <!-- RynthCore's server list and the owner plugin's profile (as in the plugin's csproj). -->
@@ -38,6 +42,9 @@
     <!-- "RynthServer.QuestPack": the active server plugin's quest pack (as in the plugin's csproj). -->
     <Compile Include="..\..\Plugins\Shared\RynthServerQuestPackApi.cs" Link="RynthOracle\Shared\RynthServerQuestPackApi.cs" />
     <Compile Include="..\..\Plugins\Shared\ServerQuestPackClient.cs" Link="RynthOracle\Shared\ServerQuestPackClient.cs" />
+    <!-- The Fellowship tab's /fship buttons (as in the plugin's csproj). -->
+    <Compile Include="..\..\Plugins\Shared\ServerCommandShare.cs" Link="RynthOracle\Shared\ServerCommandShare.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthILT\IltFellowship\IltFellowshipCommands.cs" Link="RynthOracle\Shared\IltFellowshipCommands.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
   </ItemGroup>
 
@@ -55,6 +62,12 @@
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\titles.csv" LogicalName="RynthOracle.titles.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\markers.csv" LogicalName="RynthOracle.markers.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\legendary.csv" LogicalName="RynthOracle.legendary.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\dynstamps.csv" LogicalName="RynthOracle.dynstamps.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\spellcategories.csv" LogicalName="RynthOracle.spellcategories.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\equipmentsets.csv" LogicalName="RynthOracle.equipmentsets.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\materials.csv" LogicalName="RynthOracle.materials.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\masteries.csv" LogicalName="RynthOracle.masteries.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\skills.csv" LogicalName="RynthOracle.skills.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthOracle.SpellData.txt" />
   </ItemGroup>
 

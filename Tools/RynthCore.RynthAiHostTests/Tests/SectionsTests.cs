@@ -23,18 +23,22 @@ internal static class SectionsTests
         r.Add("sections: RynthAi's manifest passes the engine parser unchanged", ManifestRoundTrip);
         r.Add("sections: the engine catalog places RynthAi's views by server", CatalogPlacement);
         r.Add("sections: tab surfaces map back to their tabs; foreign ids are refused", SurfaceRoundTrip);
-        r.Add("sections: Character redirects to RynthOracle; Charms and Banking stay RynthILT's tabs", MovedTabRedirects);
+        r.Add("sections: Character / Charms / Banking redirect to RynthOracle and Global Inventory", MovedTabRedirects);
         r.Add("mini remote: Options left-click runs the Settings command with a chat parser, else the popup", OptionsClickRouting);
         r.Add("mini remote: the header row (V/H, Options, gear) fits the narrowest remote", HeaderRowFits);
     }
 
     private static void MovedTabRedirects()
     {
-        foreach (string tab in new[] { "character", "Char", " rates " })
+        foreach (string tab in new[] { "character", "Char", " rates ", "charms", "CHARM" })
             Check.Eq(MovedTabs.CommandFor(tab), MovedTabs.OracleCharacter, tab + " -> RynthOracle's Character tab");
-        foreach (string tab in new[] { "charms", "banking", "gear", "games", "pets", "crafting", "", null })
+        foreach (string tab in new[] { "banking", "Bank" })
+            Check.Eq(MovedTabs.CommandFor(tab), MovedTabs.GlobalBank, tab + " -> Global Inventory > Banking");
+        foreach (string tab in new[] { "gear", "games", "pets", "crafting", "", null })
             Check.True(MovedTabs.CommandFor(tab) == null, (tab ?? "null") + " is still a Mini Remote tab (or none)");
         Check.Eq(MovedTabs.OracleCharacter, "/ro character", "the Oracle command");
+        Check.Eq(MovedTabs.GlobalBank, "/ginv bank", "the Global Inventory command");
+        Check.Eq(MovedTabs.GlobalInventory, "/ginv", "the Global Inventory window command");
         Check.Eq(MovedTabs.Diagnostics, "/rc diagnostics", "the engine's Diagnostics command");
     }
 
@@ -158,7 +162,7 @@ internal static class SectionsTests
         List<SectionView> on = SectionCatalog.Build(new[] { m }, _ => false, new[] { iltOn });
         SectionView charOn = on.Single(v => v.Id == "char");
         Check.True(charOn.Panes.Length == 1 && charOn.Panes[0].Contribution?.Surface == SectionsManifest.SessionSurface,
-            "Session Stats on ILT: session stats only (no ILT Character tab)");
+            "Session Stats on ILT: session stats only (no ILT Character / Charms)");
         SectionView inventoryOn = on.Single(v => v.Id == "inventory");
         Check.False(inventoryOn.Panes.Any(p => p.Contribution?.Plugin == "RynthAi" && p.Title is "Gear" or "Charms" or "Banking"),
             "Inventory on ILT: none of RynthILT's tabs come from RynthAi");

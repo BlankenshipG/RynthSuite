@@ -86,12 +86,26 @@ internal static class MissileAmmo
         || (name ?? "").IndexOf("Prismatic", StringComparison.OrdinalIgnoreCase) >= 0;
 
     /// <summary>
-    /// The element the launcher does with this ammo: prismatic takes the launcher's (Pierce
-    /// when it has none); other ammo its own ("" when not known).
+    /// The Items panel's element for universal damage (missile weapons and ammo only, 2026-10-19):
+    /// on Infinite Leaftide prismatic ammo deals every damage type, so it is always the element the
+    /// target is weakest to. Not an element of its own: <see cref="WeaponElements.Normalize"/> drops it.
     /// </summary>
-    public static string EffectiveElement(AmmoCandidate ammo, string launcherElement)
+    public const string Universal = "Prismatic";
+
+    /// <summary>True for the Items panel's universal-damage element (any case).</summary>
+    public static bool IsUniversal(string? element) =>
+        string.Equals(element?.Trim(), Universal, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The element the launcher does with this ammo: prismatic is universal, so it takes
+    /// <paramref name="bestElement"/> (what the target is weakest to, or the Monsters rule's) when
+    /// that is known, else the launcher's (Pierce when it has none); other ammo its own ("" when
+    /// not known).
+    /// </summary>
+    public static string EffectiveElement(AmmoCandidate ammo, string launcherElement, string bestElement = "")
     {
-        if (ammo.Prismatic) return launcherElement.Length > 0 ? launcherElement : "Pierce";
+        if (ammo.Prismatic)
+            return bestElement.Length > 0 ? bestElement : launcherElement.Length > 0 ? launcherElement : "Pierce";
         return ammo.Element;
     }
 
@@ -103,8 +117,10 @@ internal static class MissileAmmo
     ///      launcher would do with it; ammo of no known element counts as Pierce;
     ///   3. quality (Deadly > Greater > plain), then the stack already wielded, then list / pack order.
     /// </summary>
+    /// <param name="bestElement">What the target is weakest to (or the Monsters rule's), "" when not known:
+    /// prismatic ammo does that element, so it ranks as the best match.</param>
     public static AmmoCandidate? Choose(int launcherType, string launcherElement, IReadOnlyList<AmmoCandidate> pack,
-        Func<string, int> elementRank)
+        Func<string, int> elementRank, string bestElement = "")
     {
         AmmoCandidate? best = null;
         (int, int, int, int, int) bestKey = default;
@@ -112,7 +128,7 @@ internal static class MissileAmmo
         {
             var a = pack[i];
             if (!Fits(launcherType, a.AmmoType)) continue;
-            string e = EffectiveElement(a, launcherElement);
+            string e = EffectiveElement(a, launcherElement, bestElement);
             var key = (a.Listed ? 0 : 1,
                        elementRank(e.Length > 0 ? e : "Pierce"),
                        -a.Quality,
@@ -121,6 +137,19 @@ internal static class MissileAmmo
             if (best == null || key.CompareTo(bestKey) < 0) { best = a; bestKey = key; }
         }
         return best;
+    }
+
+    /// <summary>
+    /// The element a universal (prismatic) launcher or ammo does against a target: the Monsters
+    /// rule's damage type when set, else the first of the weakest tie group; "" when neither is known.
+    /// </summary>
+    public static string BestElement(string ruleElement, IReadOnlyList<List<string>>? weakGroups)
+    {
+        if (ruleElement.Length > 0) return ruleElement;
+        if (weakGroups != null)
+            foreach (List<string> g in weakGroups)
+                if (g.Count > 0) return g[0];
+        return "";
     }
 
     /// <summary>

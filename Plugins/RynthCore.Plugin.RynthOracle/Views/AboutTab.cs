@@ -8,6 +8,9 @@ namespace RynthCore.Plugin.RynthOracle.Views;
 /// <summary>About: the credit to Oracle of Dereth's author, the settings and the quest list's source.</summary>
 internal sealed partial class OracleView
 {
+    // The labels for OracleSettings.QuestRefreshChoices, in the same order.
+    private static readonly string[] QuestRefreshLabels = { "Off (login and Refresh only)", "5 minutes", "10 minutes", "15 minutes", "30 minutes" };
+
     private void DrawAbout(UiWindow w)
     {
         w.TextColored(UiColors.Gold, "Based on Oracle of Dereth by Advis Eveldan - thank you!");
@@ -18,6 +21,11 @@ internal sealed partial class OracleView
         w.SeparatorText("Settings");
         w.Checkbox("Read quest flags when you log in", "o.readlogin", s.ReadQuestsAtLogin, v => { s.ReadQuestsAtLogin = v; s.Save(); });
         w.Tooltip("Sends /myquests once after login so the quest pages have data.");
+        int refreshIndex = Math.Max(0, Array.IndexOf(OracleSettings.QuestRefreshChoices, s.QuestRefreshMinutes));
+        w.Combo("Read quest flags again when older than", "o.refresh", refreshIndex, QuestRefreshLabels,
+            i => { s.QuestRefreshMinutes = OracleSettings.QuestRefreshChoices[i]; s.Save(); });
+        w.Tooltip("Keeps the quest pages current on a long session: /myquests again (its reply hidden) once nothing\n"
+                  + "has read it for this long. Any reply resets the clock, RynthAi's meta polls too. The server allows one a minute.");
         w.Checkbox("Hide the replies to RynthOracle's own requests", "o.hide", s.HideOwnQuestReplies, v => { s.HideOwnQuestReplies = v; s.Save(); });
         w.Tooltip("/myquests. A command you type yourself always shows its reply.");
         w.Checkbox("Show the Void window for characters with Void Magic", "o.void", s.AutoShowVoidWindow, v => { s.AutoShowVoidWindow = v; s.Save(); });
@@ -43,7 +51,7 @@ internal sealed partial class OracleView
                 ? $"RynthCore: {es.ActiveName} ({es.Active}){(es.Picked ? ", picked by hand" : "")}; settings from {(es.ActivePlugin.Length > 0 ? es.ActivePlugin : "no plugin")}"
                 : "RynthCore: no server active" + (es.Picked ? " (picked by hand)" : ""));
             if (RynthCore.Plugin.Shared.ServerProfileView.Parse(st.ProfileJson) is { } prof)
-                w.TextDisabled($"{st.ProfilePlugin} ({RynthCore.Plugin.Shared.RynthServerProfileApiV1.InterfaceName}): {prof.Summary()}");
+                w.TextDisabled($"{st.ProfilePlugin} ({st.ProfileInterface}): {prof.Summary()}");
             else if (es.ActivePlugin.Length > 0)
                 w.TextDisabled($"{es.ActivePlugin} hasn't sent its server settings (an older plugin?).");
             w.TextDisabled("Change the server: RynthCore Options > Diagnostics > Server, or /rc server pick <id>|auto.");
@@ -51,6 +59,8 @@ internal sealed partial class OracleView
         else if (_c.Host.Version > 0 && _c.Host.Version < 86)
             w.TextDisabled($"This engine is API v{_c.Host.Version}; server quest packs need v86 (RynthCore's server list).");
         if (_c.Host.Version > 0 && _c.Host.Version < 75) w.TextDisabled($"This engine is API v{_c.Host.Version}; v75 adds the titles you hold.");
+
+        DrawServerFeatures(w);
 
         w.SeparatorText("Quest list");
         QuestCatalog cat = _c.Catalog;
@@ -70,18 +80,79 @@ internal sealed partial class OracleView
 
         w.SeparatorText("Commands");
         w.BulletText("/ro  open or close this window");
-        w.BulletText("/ro character  the Character tab (status, session)");
-        w.BulletText("/ro skills  the Skills tab (raise and train); /ro attributes, /ro progress likewise");
+        w.BulletText("/ro character  the Character tab (status, session, charms)");
+        w.BulletText("/ro skills  raise and train skills");
+        w.BulletText("/ro attrs  attributes and vitals");
+        w.BulletText("/ro progress  ILT progression planners");
         w.BulletText("/ro timers  open or close the Quest Timers window");
         w.BulletText("/ro fellowship  the Fellowship tab");
-        w.BulletText("/ro trackers  the Quests tab, trackers only (Legendary, markers)");
+        w.BulletText("/ro trackers  the Quests tab, trackers only (Legendary, markers, and on ILT stamps and guardians)");
         w.BulletText("/ro legendary  John's Legendary Key quests: have, missing, repeat timers");
         w.BulletText("/ro markers  the 100 exploration markers: found and still to find");
-        w.BulletText("/ro about  this tab (settings, server, quest list)");
+        if (_c.Server.Is(Data.ServerTags.InfiniteLeaftide))
+        {
+            w.BulletText("/ro dynamic  Infinite Leaftide Dynamic Stamps: NPC stamps you have and are missing");
+            w.BulletText("/ro guardians  the Temple guardians: riddle answers, auto hand-in, buy if missing, turn-ins");
+        }
+        w.BulletText("/ro about  this tab (settings, server features)");
         w.BulletText("/ro void  open or close the Void window");
         w.BulletText("/ro quests  read your quest flags now");
         w.BulletText("/ro help  list the commands in chat");
         w.TextDisabled("A server quest pack can be replaced without a rebuild: put quests.<server id>.csv in %APPDATA%\\RynthCore\\RynthOracle\\packs.");
+    }
+
+    /// <summary>
+    /// "Server features": the Leaftide feature list RynthILT keeps (saved per character in its hub
+    /// state and sent in its "RynthILT.Server" profile), drawn group by group in RynthILT's order
+    /// with each feature's state and where it lives. Nothing here is hard-coded: a newer RynthILT
+    /// adds features without an Oracle update.
+    /// </summary>
+    private void DrawServerFeatures(UiWindow w)
+    {
+        IltServerProfile p = _c.Ilt.Profile;
+        if (!p.Available)
+        {
+            if (_c.Server.Is(ServerTags.InfiniteLeaftide))
+            {
+                w.SeparatorText("Server features");
+                w.TextDisabled("Load RynthILT to list the Infinite Leaftide features here.");
+            }
+            return;
+        }
+        if (p.Features.Count == 0) return;
+
+        w.SeparatorText("Server features");
+        string checkedText = p.CheckedUtc == DateTime.MinValue ? "not checked yet" : $"checked {p.CheckedUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
+        w.TextDisabled(p.Ilt
+            ? $"From RynthILT ({(p.World.Length > 0 ? p.World : "this world")}, {checkedText}{(p.Forced ? ", forced on" : "")})."
+            : "From RynthILT: this isn't an Infinite Leaftide world, so no Leaftide feature is claimed.");
+
+        // Groups in the order RynthILT lists them; one table per group.
+        var groups = new System.Collections.Generic.List<string>();
+        foreach (IltFeature f in p.Features)
+            if (!groups.Exists(g => string.Equals(g, f.Group, StringComparison.OrdinalIgnoreCase))) groups.Add(f.Group);
+
+        int on = 0;
+        foreach (IltFeature f in p.Features) if (f.State == RynthCore.Plugin.Shared.RynthIltServer.StateOn) on++;
+        w.TextDisabled($"{on} of {p.Features.Count} on.");
+
+        foreach (string group in groups)
+        {
+            if (!w.CollapsingHeader(group.Length > 0 ? group : "Other", "o.feat.h." + group)) continue;
+            foreach (IltFeature f in p.InGroup(group))
+            {
+                uint color = f.State switch
+                {
+                    RynthCore.Plugin.Shared.RynthIltServer.StateOn => UiColors.Green,
+                    RynthCore.Plugin.Shared.RynthIltServer.StateOff => UiColors.Red,
+                    _ => UiColors.Yellow,
+                };
+                w.TextColored(color, $"[{IltServerProfile.StateText(f.State)}]");
+                w.SameLine();
+                w.Text(f.Label);
+                if (f.Where.Length > 0) w.Tooltip("Where: " + f.Where);
+            }
+        }
     }
 
     private void StartQuestListCheck()

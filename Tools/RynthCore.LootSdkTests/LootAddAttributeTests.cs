@@ -93,13 +93,13 @@ internal static partial class Program
 
     private static void TestAttrSpellTiers()
     {
-        Eq(LootItemAttributes.SpellPattern("Major Strength", LootItemAttributeOp.SpellOrBetter), "^(Major|Epic|Legendary) Strength$", "spell: cantrip or better");
-        Eq(LootItemAttributes.SpellPattern("Major Strength", LootItemAttributeOp.SpellAnyTier), "^(Minor|Major|Epic|Legendary) Strength$", "spell: cantrip any tier");
+        Eq(LootItemAttributes.SpellPattern("Major Strength", LootItemAttributeOp.SpellOrBetter), "^(Major|Epic|Legendary|Paragon(?:'s)?) Strength$", "spell: cantrip or better");
+        Eq(LootItemAttributes.SpellPattern("Major Strength", LootItemAttributeOp.SpellAnyTier), "^(Minor|Major|Epic|Legendary|Paragon(?:'s)?) Strength$", "spell: cantrip any tier");
         Eq(LootItemAttributes.SpellPattern("Major Strength", LootItemAttributeOp.SpellExact), "^Major Strength$", "spell: exact");
         Eq(LootItemAttributes.SpellPattern("Blood Drinker Self VI", LootItemAttributeOp.SpellOrBetter), "^Blood Drinker Self (VI|VII|VIII)$", "spell: level or better");
-        Eq(LootItemAttributes.SpellPattern("Legendary Blood Thirst", LootItemAttributeOp.SpellOrBetter), "^(Legendary) Blood Thirst$", "spell: Legendary or better is Legendary");
+        Eq(LootItemAttributes.SpellPattern("Legendary Blood Thirst", LootItemAttributeOp.SpellOrBetter), "^(Legendary|Paragon(?:'s)?) Blood Thirst$", "spell: Legendary or better is Legendary");
         Eq(LootItemAttributes.SpellPattern("Aura of Defender", LootItemAttributeOp.SpellOrBetter), "^Aura of Defender$", "spell: no tier: exact");
-        Eq(LootItemAttributes.SpellPattern("Major Strength (II)", LootItemAttributeOp.SpellOrBetter), "^(Major|Epic|Legendary) Strength \\(II\\)$", "spell: the rest is escaped");
+        Eq(LootItemAttributes.SpellPattern("Major Strength (II)", LootItemAttributeOp.SpellOrBetter), "^(Major|Epic|Legendary|Paragon(?:'s)?) Strength \\(II\\)$", "spell: the rest is escaped");
 
         string orBetter = LootItemAttributes.SpellPattern("Epic Heart Thirst", LootItemAttributeOp.SpellOrBetter);
         Check(Regex.IsMatch("Legendary Heart Thirst", orBetter, RegexOptions.IgnoreCase), "spell: Legendary is better than Epic");
@@ -115,18 +115,18 @@ internal static partial class Program
         var many = new LootItemFacts { Name = "Robe", ObjectClass = (int)AcObjectClass.Clothing, Spells = { "Minor Focus", "Major Willpower", "Epic Strength", "Legendary Endurance", "Major Coordination" } };
         LootItemRuleDraft d = BuildOk(many, new() { Match = LootItemMatch.Like, Choices = Pick(("spell:Major Coordination", true, LootItemAttributeOp.SpellAnyTier, "")) });
         Eq(d.Rule.Conditions.Count(x => x.NodeType == VTankNodeTypes.SpellNameMatch), 5, "spell: a fifth spell can be ticked");
-        Check(d.Rule.Conditions.Any(x => Lines(x) == "0:^(Minor|Major|Epic|Legendary) Coordination$"), "spell: any tier pattern in the rule");
+        Check(d.Rule.Conditions.Any(x => Lines(x) == "0:^(Minor|Major|Epic|Legendary|Paragon(?:'s)?) Coordination$"), "spell: any tier pattern in the rule");
     }
 
     private static void TestAttrCantripCounts()
     {
         List<LootItemAttribute> rows = BuildOk(Sword()).Attributes;
         Eq(string.Join(",", rows.Where(r => r.Id.StartsWith("cantrips:")).Select(r => r.Label + "=" + r.ItemText)),
-            "Legendary cantrips=1,Epic-or-better cantrips=2,Major-or-better cantrips=3", "cantrips: a row per tier the item has, highest first");
+            "Legendary-or-better cantrips=1,Epic-or-better cantrips=2,Major-or-better cantrips=3", "cantrips: a row per tier the item has, highest first");
         Check(rows.Any(r => r.Id == "spellcount" && r.ItemText == "4"), "cantrips: spell count");
 
         LootItemRuleDraft d = BuildOk(Sword(), new() { Choices = Pick(("cantrips:Epic", true, LootItemAttributeOp.AtLeast, "2"), ("spellcount", true, LootItemAttributeOp.AtLeast, "3")) });
-        Check(d.Rule.Conditions.Any(x => Lines(x) == "9:^(Epic|Legendary) ||2"), "cantrips: Spell Match, Epic or Legendary, at least 2");
+        Check(d.Rule.Conditions.Any(x => Lines(x) == "9:^(Epic|Legendary|Paragon(?:'s)?) ||2"), "cantrips: Spell Match, Epic or Legendary, at least 2");
         Check(d.Rule.Conditions.Any(x => Lines(x) == "8:3"), "cantrips: spell count >= 3");
         Check(LootItemRules.PreviewLines(d.Rule).Any(l => l.Contains(">= 2 spells matching")), "cantrips: preview in words");
     }

@@ -57,6 +57,10 @@ internal sealed class QuestTracker
     private bool _quietRefresh;
     private DateTime _lastLineTime;
     private DateTime _refreshStarted;
+    private int _linesThisRefresh;
+    // Past this many lines a reply waits LongReplyQuietSec of silence before it counts as done.
+    private const int LongReplyLines = 500;
+    private const double LongReplyQuietSec = 5.0;
 
     public bool IsRefreshing => _refreshing;
 
@@ -112,6 +116,7 @@ internal sealed class QuestTracker
     {
         _refreshing = true;
         _gotFirstQuest = false;
+        _linesThisRefresh = 0;
         _lastLineTime = DateTime.UtcNow;
         _refreshStarted = DateTime.UtcNow;
     }
@@ -153,6 +158,7 @@ internal sealed class QuestTracker
 
         _gotFirstQuest = true;
         _lastLineTime = DateTime.UtcNow;
+        _linesThisRefresh++;
 
         var rec = new QuestRecord();
         rec.Key = m.Groups["key"].Value.ToLowerInvariant();
@@ -189,7 +195,10 @@ internal sealed class QuestTracker
         var now = DateTime.UtcNow;
         if (_gotFirstQuest)
         {
-            if ((now - _lastLineTime).TotalSeconds >= 1.0)
+            // A long reply (15,000-25,000+ flags on ACECustom) reaches the client in pieces with
+            // pauses between them: wait longer once it is big, so one reply isn't ended mid-way.
+            double quietSec = _linesThisRefresh >= LongReplyLines ? LongReplyQuietSec : 1.0;
+            if ((now - _lastLineTime).TotalSeconds >= quietSec)
                 Finish($"{Count} flags", gotData: true);
         }
         else
