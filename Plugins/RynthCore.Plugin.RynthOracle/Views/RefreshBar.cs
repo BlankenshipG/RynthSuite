@@ -124,10 +124,6 @@ internal sealed partial class OracleView
         return new RefreshResult("Re-read your buffs and dropped the spell timers that ran out. Timers on targets are learned from your casts.");
     }
 
-    /// <summary>Pet Breeding: RynthILT's list is read again every few seconds while the tab shows, so nothing to send.</summary>
-    private RefreshResult RefreshBreeding() =>
-        new("The breeding list is read from RynthILT every few seconds while this tab is open.");
-
     private RefreshResult RefreshFellowship()
     {
         _c.Fellowship.Invalidate();

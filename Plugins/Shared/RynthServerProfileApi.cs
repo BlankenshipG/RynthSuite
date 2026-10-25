@@ -5,10 +5,10 @@
 //  for any plugin that wants the server's settings without drawing the card.
 //  RynthCore says which server is active and which plugin owns it (plugin API
 //  v86, GetServerStateJson: "active", "activePlugin"); the reader then asks that
-//  plugin for this interface (host GetPluginInterface). RynthILT answers its own
-//  "RynthILT.Server" instead (RynthIltServerApi.cs).
-//  Compiled into the server plugins and their readers (linked source), so the
-//  layout can't drift.
+//  plugin for this interface (host GetPluginInterface). RynthILT answers it too,
+//  for "ilt" (RynthILT/ProfileInterface.cs).
+//  Compiled into the server plugins, RynthILT and their readers (linked source),
+//  so the layout can't drift.
 //
 //  Rules (as the other shared interfaces):
 //  - Append-only: new functions go at the end, and Version goes up.

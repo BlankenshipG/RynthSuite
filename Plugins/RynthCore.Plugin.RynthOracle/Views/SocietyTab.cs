@@ -31,7 +31,8 @@ internal sealed partial class OracleView
             Field(w, "Today", s.DailyLimit > 0
                 ? $"{s.RibbonsToday(flags, now)} / {s.DailyLimit} ribbons"
                 : "no daily limit at Master", 300f, 400f);
-            QuestFlagsBar(w, "so", "ribbons and society quest timers");
+            if (flags.LastReadUtc == DateTime.MinValue)
+                w.TextDisabled("Read your quest flags (Quests tab) for today's ribbons and quest timers.");
         }
 
         w.SeparatorText("Quests");

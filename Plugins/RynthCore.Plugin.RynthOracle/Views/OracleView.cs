@@ -1,5 +1,4 @@
 using System;
-using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 
 namespace RynthCore.Plugin.RynthOracle.Views;
@@ -14,7 +13,7 @@ internal sealed partial class OracleView
         TabSkills = "Skills", TabAttributes = "Attributes", TabProgress = "Progress",
         TabAugs = "Augs", TabSociety = "Society",
         TabTitles = "Titles", TabVoid = "Void", TabFellowship = "Fellowship",
-        TabBreeding = "Pet Breeding", TabAbout = "About";
+        TabAbout = "About";
     // The Markers tab (and the Legendary tracker) are rows of the Quests tab: QuestsTab.cs,
     // ShowTrackers, /ro markers. A saved tab name of an old tab falls back to Quests (see Tab).
     // A server's own pages are its server plugin's: Conquest's and Aelrynth's since 2026-10-20,
@@ -29,6 +28,7 @@ internal sealed partial class OracleView
 
     private readonly OracleContext _c;
     private readonly TabDef[] _tabs;
+
     /// <summary>Asks the plugin to show or hide the Void window (the Void tab's button).</summary>
     public Action<bool>? SetVoidWindow;
     public Func<bool>? VoidWindowVisible;
@@ -63,17 +63,13 @@ internal sealed partial class OracleView
                 () => "Re-reads your buffs from the game and drops the spell timers that ran out."),
             new(TabFellowship, DrawFellowship, false, RefreshFellowship,
                 () => "Re-reads the fellowship and its members from the game."),
-            // Infinite Leaftide's Pet Breeding (RynthILT's tracker; RynthILT ships from RynthSuite on this branch).
-            new(TabBreeding, DrawBreeding, false, RefreshBreeding,
-                () => "The pet breeding list comes from RynthILT, read again every few seconds while this tab is open."),
             new(TabAbout, DrawAbout, false, RefreshAbout,
                 () => "Loads the quest list and server pack from their files again and asks RynthCore which server this is."),
         };
     }
 
     /// <summary>Every tab shows on every server (a server's own pages are its server plugin's).</summary>
-    // Every tab shows everywhere but Pet Breeding, which is Infinite Leaftide's.
-    private bool Visible(TabDef t) => t.Name != TabBreeding || _c.Server.Is(Data.ServerTags.InfiniteLeaftide);
+    private static bool Visible(TabDef t) => true;
 
     /// <summary>The selected tab's name; a tab not available on this server falls back to Quests.</summary>
     public string Tab
@@ -164,28 +160,6 @@ internal sealed partial class OracleView
         _c.Print(flag.Length > 0 ? $"{name} ({flag}){(status.Length > 0 ? " - " + status : "")}" : name);
         if (details.Length > 0) _c.Print(details);
         if (url.Length > 0) _c.Print(url);
-    }
-
-    /// <summary>
-    /// The quest trackers' refresh row (Society, Augs, Conquest):
-    /// a small Refresh (the same /myquests read as the Quests tab's) and how fresh the flags are,
-    /// or why they can't be read. <paramref name="what"/> names what the flags show ("stamps").
-    /// </summary>
-    private void QuestFlagsBar(UiWindow w, string id, string what)
-    {
-        QuestFlagStore flags = _c.Flags;
-        w.SmallButton("Refresh", id + ".refresh", () => _c.RequestQuests());
-        w.Tooltip("Reads your quest flags again (/myquests), as the Quests tab's Refresh does.");
-        w.SameLine();
-        int wait = flags.ThrottleSecondsLeft(_c.NowMs);
-        if (flags.ServerDisabled)
-            w.TextColored(UiColors.Red, "This server has /myquests turned off, so " + what + " can't be read.");
-        else if (flags.Loading)
-            w.TextColored(UiColors.Yellow, "Reading your quest flags...");
-        else if (flags.LastReadUtc == DateTime.MinValue)
-            w.TextDisabled("Quest flags not read yet: Refresh to see your " + what + ".");
-        else
-            w.TextDisabled($"Flags read at {flags.LastReadUtc.ToLocalTime():HH:mm}" + (wait > 0 ? $" (Refresh again in {wait}s)" : ""));
     }
 
     /// <summary>Previous / page n of m / next, with the page kept in range.</summary>

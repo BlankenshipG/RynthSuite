@@ -484,17 +484,7 @@ public sealed partial class RynthAiPlugin
     public string? BuildSectionsJson()
     {
         if (!_initialized || !_loginComplete) return null;
-        var remote = _miniRemote;
-        IReadOnlyList<MiniRemote.ServerTabInfo> raw = remote != null ? remote.ServerHub.Tabs() : Array.Empty<MiniRemote.ServerTabInfo>();
-        // Options > Navigation > Vaulted Dungeons: hide the section contribution until enabled.
-        bool vaultedOn = _dashboard?.Settings.EnableVaultedDungeons == true;
-        var serverTabs = new List<MiniRemote.ServerTabInfo>(raw.Count);
-        foreach (MiniRemote.ServerTabInfo t in raw)
-        {
-            if (string.Equals(t.Id, "vaulted", StringComparison.OrdinalIgnoreCase) && !vaultedOn) continue;
-            serverTabs.Add(t);
-        }
-        return Huds.SectionsManifest.Build(Huds.SectionsManifest.Views(serverTabs), Huds.SectionsManifest.OwnSections,
+        return Huds.SectionsManifest.Build(Huds.SectionsManifest.Views(), Huds.SectionsManifest.OwnSections,
             dashboard: DashboardWindowWanted);
     }
     /// <summary>Chat Translate window in the dashboard colours (no-op while hidden).</summary>

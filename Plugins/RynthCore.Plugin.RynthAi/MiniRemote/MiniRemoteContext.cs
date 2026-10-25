@@ -41,7 +41,6 @@ internal sealed class MiniRemoteContext
         Store = store;
         Inventory = inventory;
         ServerHub = serverHub;
-        Ilt = new IltHubView(serverHub);
         _settings = settings;
     }
 
@@ -52,8 +51,6 @@ internal sealed class MiniRemoteContext
 
     /// <summary>RynthILT's view (ILT world, feature bits, ILT sections); "not ILT" without RynthILT.</summary>
     public ServerHubClient ServerHub { get; }
-    /// <summary>Infinite Leaftide questions through the server hub (RynthILT from RynthSuite; IltHubView.cs).</summary>
-    public IltHubView Ilt { get; }
 
     /// <summary>The live combat settings (rule lists the Pets tab / USD importer edit). Null before login.</summary>
     public LegacyUiSettings? Settings => _settings();

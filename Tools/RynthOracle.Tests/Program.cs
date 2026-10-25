@@ -9,7 +9,6 @@ using RynthCore.Plugin.RynthOracle;
 using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 using RynthCore.Plugin.RynthOracle.Views;
-using IltBreedingView = RynthCore.Plugin.Shared.IltBreedingView;
 
 // The engine parser's only outside dependency: the registry's limits (the engine's values).
 namespace RynthCore.Engine.UI.ScriptWindows
@@ -66,6 +65,8 @@ namespace RynthOracle.Tests
             Refreshes();
             SkillsTabs();
             ServerMove();
+            Gear();
+            AutoRefresh();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;
         }
@@ -94,188 +95,6 @@ namespace RynthOracle.Tests
             else { _fail++; Console.WriteLine("FAIL: " + what); }
         }
 
-        /// <summary>The Legendary tab's list (legendary.csv) and its have / missing / timer rules.</summary>
-        private static void Legendary()
-        {
-            Check(LegendaryList.All.Count == 40, $"legendary quests: {LegendaryList.All.Count} (40 expected)");
-            Check(LegendaryList.Groups.SequenceEqual(new[] { "Graveyard", "Rynthid", "Hoshino", "Frozen Valley", "Neftet", "Random Locations" }),
-                  "legendary groups: " + string.Join(",", LegendaryList.Groups));
-            Check(LegendaryList.All.All(q => q.Flags.Length > 0 && q.Luminance > 0), "every legendary quest has a flag and luminance");
-            var catalog = new QuestCatalog();
-            catalog.Load("", _ => { });
-            var unknown = LegendaryList.All.SelectMany(q => q.Flags).Where(f => !catalog.TryGet(f, out _)).ToList();
-            Check(unknown.Count == 0, "every legendary flag is a known quest flag: " + string.Join(",", unknown));
-            LegendaryQuest rtw = LegendaryList.All.First(q => q.CommonName == "RTW");
-            Check(rtw.Flags[0] == "rtwcompleted_1013" && rtw.Label == "Defeating the Curator of Torment (RTW)", "RTW row: " + rtw.Label);
-
-            var lf = new QuestFlagStore();
-            long t = 900_000;
-            long done = DateTimeOffset.UtcNow.AddHours(-2).ToUnixTimeSeconds();
-            long old = DateTimeOffset.UtcNow.AddDays(-3).ToUnixTimeSeconds();
-            // RTW done 2 h ago on a 20 h timer; End of Days done 3 days ago (ready); Lugian Assault never.
-            lf.OnChatLine($"rtwcompleted_1013 - 4 solves ({done})\"RTW\" -1 72000", t);
-            lf.OnChatLine($"eodcompleted_1013 - 1 solves ({old})\"EoD\" -1 72000", t + 1);
-            lf.OnChatLine($"legendaryquestcounter_0913 - 12 solves ({old})\"John\" -1 0", t + 2);
-            lf.Tick(t + 5_000);
-            DateTime now = DateTime.UtcNow;
-            TimeSpan? rtwLeft = rtw.TimeLeft(lf, now);
-            Check(rtw.Have(lf) && rtwLeft is { } l && l.TotalHours > 17.9 && l.TotalHours < 18.1, $"RTW: done, ~18 h left ({rtwLeft})");
-            LegendaryQuest eod = LegendaryList.All.First(q => q.CommonName == "EoD");
-            Check(eod.Have(lf) && eod.Status(lf, now) == "ready", "EoD: done, timer up -> ready: " + eod.Status(lf, now));
-            LegendaryQuest la = LegendaryList.All.First(q => q.CommonName == "LA");
-            Check(!la.Have(lf) && la.TimeLeft(lf, now) == null && la.Status(lf, now) == "missing", "Lugian Assault: missing");
-            Check(LegendaryList.JohnCount(lf) == 12, "John's counter read: " + LegendaryList.JohnCount(lf));
-            Check(LegendaryList.JohnCount(new QuestFlagStore()) == null, "no counter on a fresh character");
-
-            // A quest with a second timer flag: the longest wait of the two counts.
-            LegendaryQuest erq = LegendaryList.All.First(q => q.Name == "Empyrean Rescue Quest");
-            var ef = new QuestFlagStore();
-            ef.OnChatLine($"empyreanrescuecompleted_1010 - 1 solves ({old})\"ERQ\" -1 0", t);
-            ef.OnChatLine($"erqlegkeypickuptimer - 1 solves ({done})\"key\" -1 36000", t + 1);
-            ef.Tick(t + 5_000);
-            TimeSpan? erqLeft = erq.TimeLeft(ef, now);
-            Check(erqLeft is { } e && e.TotalHours > 7.9 && e.TotalHours < 8.1, $"ERQ: key pickup timer decides (~8 h): {erqLeft}");
-
-            // Since 2026-10-18 Legendary quests and markers are rows of the Quests tab, on every server.
-            var lc = new OracleContext { InWorld = true };
-            var lv = new OracleView(lc);
-            lc.Server.Force("", "Coldeve");
-            Check(lv.AvailableKinds().Contains(QuestKind.Legendary) && lv.AvailableKinds().Contains(QuestKind.Marker),
-                  "Legendary and marker rows on every server");
-            Check(!lv.VisibleTabs().Contains("Legendary") && !lv.VisibleTabs().Contains("Markers"), "no separate Legendary / Markers tabs");
-        }
-
-        /// <summary>The Dynamic Stamps tab's list (dynstamps.csv), its have / missing rules, and that the
-        /// tab is Infinite Leaftide only.</summary>
-        private static void DynamicStamps()
-        {
-            var all = DynamicStampList.All;
-            Check(all.Count == 243, $"dynamic stamps: {all.Count} (243 expected from the ExtraDyn sheet)");
-            Check(DynamicStampList.Areas.Count == 17 && DynamicStampList.Areas[0] == "Facility Hub" && DynamicStampList.Areas[^1] == "Candeth Keep",
-                  "dynamic areas: " + string.Join(",", DynamicStampList.Areas));
-            Check(all.All(s => s.Stamp.StartsWith("dynamic_") && s.Stamp == s.Stamp.ToLowerInvariant()), "every stamp is a lower-case dynamic_ flag");
-            Check(all.Select(s => s.Stamp).Distinct().Count() == all.Count, "no stamp listed twice");
-            Check(all.All(s => s.Label.Length > 0), "every row names an NPC or a place");
-
-            DynamicStamp felscuda = all.First(s => s.Npc == "Felscuda");
-            Check(felscuda.Stamp == "dynamic_1_&9jiytb!" && felscuda.Place == "Folthid Cellar" && felscuda.Reward == "Healing Rabbit Pie"
-                  && felscuda.Note == "8.8S, 53.1E", $"Felscuda row: {felscuda.Place} / {felscuda.Reward} / {felscuda.Note}");
-
-            // /myquests keys flags as \S+ lower case, so the stamps' ! & # ^ $ survive.
-            var f = new QuestFlagStore();
-            long t = 900_000, at = DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeSeconds();
-            f.OnChatLine($"Dynamic_1_&9jiyTB! - 1 solves ({at})\"Dynamic\" 1 0", t);
-            f.OnChatLine($"Dynamic_1_ANND! - 1 solves ({at})\"Dynamic\" 1 0", t + 1);        // the sheet lost the closing !
-            f.OnChatLine($"Dynamic_1_ZZZnewNPC! - 1 solves ({at})\"Dynamic\" 1 0", t + 2);   // not on the sheet
-            f.OnChatLine($"rtwcompleted_1013 - 1 solves ({at})\"RTW\" -1 72000", t + 3);
-            f.Tick(t + 5_000);
-            Check(felscuda.Have(f), "Felscuda's stamp read from /myquests");
-            DynamicStamp annd = all.First(s => s.Stamp == "dynamic_1_annd");
-            Check(annd.Have(f) && annd.MatchedFlag(f) == "dynamic_1_annd!", "a stamp the sheet lost its ! on still matches");
-            Check(!all.First(s => s.Npc == "Raxanza Folthid").Have(f), "an NPC not done is missing");
-            List<string> extra = DynamicStampList.Unlisted(f);
-            Check(extra.Count == 1 && extra[0] == "dynamic_1_zzznewnpc!", "unlisted: only the stamp the sheet doesn't have: " + string.Join(",", extra));
-            DynamicStamp shortStamp = all.First(s => s.Stamp == "dynamic_1_s");
-            var sf = new QuestFlagStore();
-            sf.OnChatLine($"Dynamic_1_SomethingElse! - 1 solves ({at})\"Dynamic\" 1 0", t);
-            sf.Tick(t + 5_000);
-            Check(!shortStamp.Have(sf), "a cut-short stem under 14 characters isn't matched by prefix");
-
-            // 2026-10-19: /myquests leaves out flags the server holds no quest text for; the completed
-            // /qb list (RynthILT) has them, in the server's case, and a stamp found there is done.
-            var none = new QuestFlagStore();
-            var qbDone = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Dynamic_1_&9jiyTB!", "Dynamic_1_ANND!", "Dynamic_1_QbOnlyNew!", "blankaug" };
-            Check(!felscuda.Have(none) && felscuda.Have(none, qbDone), "a stamp only in the /qb list is done");
-            Check(annd.MatchedFlag(none, qbDone) == "dynamic_1_annd!", "the /qb list takes the same rules (the lost ! added)");
-            Check(!all.First(s => s.Npc == "Raxanza Folthid").Have(none, qbDone), "a stamp in neither list is not done");
-            List<string> qbExtra = DynamicStampList.Unlisted(none, qbDone);
-            Check(qbExtra.Count == 1 && qbExtra[0].Equals("dynamic_1_qbonlynew!", StringComparison.OrdinalIgnoreCase),
-                  "unlisted from the /qb list too: " + string.Join(",", qbExtra));
-            var counts = DynamicStampList.Counts(f, qbDone);
-            Check(counts.InMyQuests == 3 && counts.InQb == 3 && counts.Matched == 2, $"stamp sources for the log: {counts}");
-
-            // 2026-10-19 (Silentkelpie: 3 Dynamic flags in /qb, 0 of 243 matched): the sheet copied the
-            // "!" closing the server's "You've stamped {flag}!" line. The server's flag has no "!", and a
-            // chain errand's delivery NPC stamps the flag with "_d" added (QuestManager.ComputeDynamicQuest).
-            DynamicStamp bq = all.First(s => s.Stamp == "dynamic_1_bq7brhg!");
-            Check(bq.Stem == "dynamic_1_bq7brhg", "the stem drops the copied !");
-            var real = new QuestFlagStore();
-            real.OnChatLine($"Dynamic_1_Bq7Brhg - 1 solves ({at})\"Dynamic\" 1 0", t);
-            real.Tick(t + 5_000);
-            Check(bq.MatchedFlag(real) == "dynamic_1_bq7brhg", "the server's flag (no !) matches the sheet's stamp (with !)");
-            Check(DynamicStampList.Unlisted(real).Count == 0, "and isn't also shown as not in the list");
-            DynamicStamp bang = all.First(s => s.Stamp.EndsWith("!!"));
-            Check(bang.MatchedFlag(none, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { bang.Stem }) == bang.Stem,
-                  "a flag that really ends in ! (the sheet shows !!) matches with one !: " + bang.Stamp);
-            var qbReal = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Dynamic_1_Bq7Brhg", "Dynamic_1_Bq7Brhg_d" };
-            Check(bq.MatchedFlag(none, qbReal)?.Equals("dynamic_1_bq7brhg", StringComparison.OrdinalIgnoreCase) == true,
-                  "the errand's own flag and its _d: the errand's flag");
-            Check(DynamicStampList.Unlisted(none, qbReal).Count == 0, "a listed stamp's _d is not shown as not in the list");
-            var qbDelivered = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Dynamic_1_Bq7Brhg_d" };
-            Check(bq.Have(none, qbDelivered), "only the _d delivery flag: the stamp is done");
-            var qbUnlisted = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Dynamic_1_NewErrand", "Dynamic_1_NewErrand_d" };
-            List<string> errands = DynamicStampList.Unlisted(none, qbUnlisted);
-            Check(errands.Count == 1 && errands[0].Equals("dynamic_1_newerrand", StringComparison.OrdinalIgnoreCase),
-                  "an unlisted errand shows once, by its own flag: " + string.Join(",", errands));
-            var cut = new DynamicStamp { Area = "Test", Npc = "Cut", Stamp = "dynamic_1_abcdefg!" };   // a row cut short, with the copied !
-            var qbCut = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Dynamic_1_abcdefgXY", "Dynamic_1_abcdefgXY_d" };
-            Check(cut.MatchedFlag(none, qbCut)?.Equals("dynamic_1_abcdefgxy", StringComparison.OrdinalIgnoreCase) == true,
-                  "a cut-short row matches by its stem; the errand and its _d are one");
-            qbCut.Add("Dynamic_1_abcdefgZZ");
-            Check(!cut.Have(none, qbCut), "two errands starting with the stem: can't tell which");
-
-            // Quest walkthroughs: every coordinate pair, labelled with its step, duplicates once.
-            var grael = NavTargets.Stops("Give Progenitor's Ichor to Hoshar. - Speak with Hoshar ibn Jalaq 59.6S 88.0W - Kill Mukkir Progenitor 86.5N 57.3E"
-                                         + " - Speak with Hoshar ibn Jalaq - Abyssal Totem Gateway 86.5N 57.3E - Abyssal Totem Temple 86.5N 57.3E");
-            Check(string.Join(" | ", grael.ConvertAll(s => s.Display)) == "Speak with Hoshar ibn Jalaq - 59.6S, 88.0W | Kill Mukkir Progenitor - 86.5N, 57.3E",
-                  "Splitting Grael stops: " + string.Join(" | ", grael.ConvertAll(s => s.Display)));
-            Check(grael[0].Target == "59.6S, 88.0W Speak with Hoshar ibn Jalaq", "a stop's RynthNav target is the coordinates, then its label");
-            var shadow = NavTargets.Stops("Xarabydun 41.8S 15.8E - Speak with Ciandra Arcanum Alchemist - Empyrean Workshop 66.9N 15.9E - Cragstone 26.0N 47.0E Speak with Bretself the Translator - Xarabydun - Shade of Farelaith 74.3N 58.6E");
-            Check(string.Join(" | ", shadow.ConvertAll(s => s.Label)) == "Xarabydun | Empyrean Workshop | Cragstone | Shade of Farelaith",
-                  "Shadowfire Stone labels: " + string.Join(" | ", shadow.ConvertAll(s => s.Label)));
-            Check(NavTargets.Stops("Kill 20 drudges near Holtburg.").Count == 0, "no coordinates: no stops");
-            Check(NavTargets.Stops("Meet at 42.6n 62.4e").Count == 1 && NavTargets.Stops("Meet at 42.6n 62.4e")[0].Display == "Meet - 42.6N, 62.4E",
-                  "lower-case letters; 'at' dropped from the label");
-
-            // RynthNav targets, best first (RynthNav takes the first on its map).
-            Check(string.Join(" | ", felscuda.NavCandidates()) == "8.8S, 53.1E | Folthid Cellar | Felscuda | Facility Hub",
-                  "Felscuda nav: " + string.Join(" | ", felscuda.NavCandidates()));
-            var gerent = new DynamicStamp { Area = "Graveyard", Place = "Gerent's Compound at 87.2S, 17.5W", Npc = "Gerent" };
-            Check(string.Join(" | ", gerent.NavCandidates()) == "87.2S, 17.5W | Gerent's Compound | Gerent | Graveyard",
-                  "coordinates inside the place, 'at' dropped: " + string.Join(" | ", gerent.NavCandidates()));
-            var lost = new DynamicStamp { Area = "Odd Stamps", Place = "Lost Wish Cottages (Arwic) 42.6n 62.4e", Npc = "Bob" };
-            Check(string.Join(" | ", lost.NavCandidates()) == "42.6N, 62.4E | Lost Wish Cottages (Arwic) | Lost Wish Cottages | Arwic",
-                  "lower-case n/e, a bracketed town, no grouping area, a 3-letter NPC left out: " + string.Join(" | ", lost.NavCandidates()));
-            var mhoire = new DynamicStamp { Area = "Looking Around", Place = "Mhoire Castle - Great Hall" };
-            Check(string.Join(" | ", mhoire.NavCandidates()) == "Mhoire Castle - Great Hall | Mhoire Castle | Great Hall",
-                  "a place's parts: " + string.Join(" | ", mhoire.NavCandidates()));
-            Check(all.Count(s => s.NavCandidates().Count > 0) >= 200, "most stamps have somewhere to go: " + all.Count(s => s.NavCandidates().Count > 0));
-
-            // Since 2026-10-18 the stamps are rows of the Quests tab, on Infinite Leaftide only (the guardians too).
-            var dc = new OracleContext { InWorld = true };
-            var dv = new OracleView(dc);
-            dc.Server.Force("", "Coldeve");
-            Check(!dv.AvailableKinds().Contains(QuestKind.Dynamic) && !dv.AvailableKinds().Contains(QuestKind.Guardian),
-                  "no stamp or guardian rows off Infinite Leaftide");
-            Check(!dv.VisibleTabs().Contains("Dynamic Stamps"), "no separate Dynamic Stamps tab");
-            dc.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
-            Check(dv.AvailableKinds().Contains(QuestKind.Dynamic) && dv.AvailableKinds().Contains(QuestKind.Guardian),
-                  "stamp and guardian rows on Infinite Leaftide");
-
-            // Show: Dynamic Stamps: all 243 listed and paged, so the page stays under the engine's ops limit.
-            var host = new UiHost();
-            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
-            dv.ShowTrackers(QuestKind.Dynamic);
-            main.Begin(); dv.Draw(main); main.End();
-            ParseAll(host, "Quests: Dynamic Stamps", out int ops);
-            string body = Encoding.UTF8.GetString(main.Body);
-            Check(ops > 40 && ops < 1400, $"Quests showing Dynamic Stamps: {ops} ops");
-            Check(body.Contains($"{all.Count} shown") && body.Contains("listed Dynamic stamps") && body.Contains("DYN")
-                  && body.Contains("Page 1 of 7") && !body.Contains("list cut short"),
-                  "every stamp listed, 40 a page, with the stamps' status above");
-            Console.WriteLine($"  InfiniteLeaftide/Quests showing Dynamic Stamps ({all.Count} rows, paged): {ops} ops, {main.Body.Length} bytes");
-        }
-
         private static void Lists()
         {
             Check(AugmentationList.All.Count == 88, $"augmentations: {AugmentationList.All.Count} rows (88 expected)");
@@ -287,8 +106,6 @@ namespace RynthOracle.Tests
             mf.OnChatLine("explorationmarkersfoundingroupa - 129 solves (1719432000)\"Markers\" 1023 0", 0);
             mf.Tick(5000);
             Check(MarkerList.All[0].IsFound(mf) && MarkerList.All[1].IsFound(mf) && !MarkerList.All[2].IsFound(mf), "marker bits 1 and 128 found, the rest not");
-            Legendary();
-            DynamicStamps();
             Check(SpellTable.Count > 6000, $"spell table: {SpellTable.Count} spells");
             Check(SpellTable.Name(5393) == "Corrosion VII", "spell 5393 is Corrosion VII: " + SpellTable.Name(5393));
             Check(SpellTable.TryGet(5395, out SpellInfo s) && s.IsDebuff && s.Duration == 31, "Corruption I is a 31 s debuff");
@@ -538,54 +355,6 @@ namespace RynthOracle.Tests
             }
         }
 
-        /// <summary>RynthILT's "RynthILT.Server" profile JSON as the Fellowship tab reads it.</summary>
-        private static void IltProfile()
-        {
-            const string json = "{\"ilt\":true,\"world\":\"InfiniteLeaftide\",\"forced\":false,\"source\":\"probe\",\"checked\":\"2026-10-13T21:25:37Z\","
-                + "\"features\":[{\"key\":\"bank\",\"label\":\"Banking\",\"group\":\"Character\",\"state\":1,\"where\":\"Mini Remote > Banking tab\"},"
-                + "{\"key\":\"zone_share\",\"label\":\"Zone Share\",\"group\":\"Fellowship\",\"state\":1,\"where\":\"server\"},"
-                + "{\"key\":\"fellowship_blackjack\",\"label\":\"Fellowship Blackjack\",\"group\":\"Fellowship\",\"state\":0,\"where\":\"/fblackjack\"}],"
-                + "\"fellowship\":{\"maxMembers\":29,\"zoneShare\":1,\"blackjack\":0,\"luminanceShare\":-1},\"later\":{\"x\":1}}";
-            IltServerProfile p = IltServerProfile.Parse(json);
-            Check(p.Available && p.Ilt && p.World == "InfiniteLeaftide" && p.Source == "probe", "ILT profile header");
-            Check(p.FellowshipMax == 29 && p.ZoneShare == 1 && p.Blackjack == 0 && p.LuminanceShare == -1, "ILT fellowship rules");
-            Check(p.Features.Count == 3 && p.InGroup("Fellowship").Count() == 2, $"ILT features: {p.Features.Count}");
-            Check(p.CheckedUtc == new DateTime(2026, 10, 13, 21, 25, 37, DateTimeKind.Utc), "checked time is UTC: " + p.CheckedUtc.ToString("o"));
-
-            IltServerProfile none = IltServerProfile.Parse("");
-            Check(!none.Available && none.FellowshipMax == 9, "no RynthILT: a retail fellowship");
-            Check(!IltServerProfile.Parse("not json").Available, "garbage is ignored");
-            Check(IltServerProfile.Parse("{\"ilt\":false}").FellowshipMax == 9, "an older profile without fellowship rules: retail size");
-            Check(IltServerProfile.Parse("{\"fellowship\":{\"maxMembers\":5000}}").FellowshipMax == 9, "an absurd size is not believed");
-            Check(IltServerProfile.StateText(1) == "on" && IltServerProfile.StateText(0) == "off" && IltServerProfile.StateText(-1) == "checking", "state words");
-
-            // The /qb list RynthILT 0.2.3 adds to the profile.
-            Check(p.QuestBonus == null, "no questBonus object: no /qb list");
-            IltServerProfile qb = IltServerProfile.Parse(QbProfileJson);
-            Check(qb.QuestBonus is { Disabled: false, Generation: 3, Count: 41 } b && b.Completed.Count == 2 && b.Incomplete.Count == 1
-                  && b.Incomplete[0] == "qbflagthree" && b.Status == "2 completed, 1 incomplete", "quest bonus list parsed");
-
-            // RynthILT 0.2.22+: the profile counts the lists; they arrive through GetQuestBonusJson.
-            var link = new IltServerLink();
-            link.SetJson(QbProfileCountsJson);
-            Check(link.QuestBonus is { ListsElsewhere: true, CompletedCount: 2, IncompleteCount: 1 }, "counts-only profile: lists still to read");
-            link.SetQuestBonusJson("{\"generation\":3,\"completed\":[\"qbflagone\",\"qbflagtwo\"],\"incomplete\":[\"qbflagthree\"]}");
-            Check(link.QuestBonus is { ListsElsewhere: false } l && l.Completed.Count == 2 && l.Incomplete[0] == "qbflagthree",
-                  "the lists read separately fill the /qb list in");
-            link.SetJson(QbProfileCountsJson.Replace("\"generation\":3", "\"generation\":4"));
-            Check(link.QuestBonus is { ListsElsewhere: true }, "a new generation waits for its own lists (no stale ones)");
-            link.SetQuestBonusJson("not json");
-            Check(link.QuestBonus is { ListsElsewhere: true }, "a broken list JSON is ignored");
-        }
-
-        private const string QbProfileCountsJson = "{\"ilt\":true,\"world\":\"InfiniteLeaftide\",\"fellowship\":{\"maxMembers\":29},"
-            + "\"questBonus\":{\"disabled\":false,\"generation\":3,\"count\":41,\"status\":\"2 completed, 1 incomplete\","
-            + "\"completedCount\":2,\"incompleteCount\":1}}";
-
-        private const string QbProfileJson = "{\"ilt\":true,\"world\":\"InfiniteLeaftide\",\"fellowship\":{\"maxMembers\":29},"
-            + "\"questBonus\":{\"disabled\":false,\"generation\":3,\"count\":41,\"status\":\"2 completed, 1 incomplete\","
-            + "\"completed\":[\"qbflagone\",\"qbflagtwo\"],\"incomplete\":[\"qbflagthree\"]}}";
-
         // Quest notes: tracking and rewards saved per character, UB's reward format and import, kill-task timers.
         private static void QuestNotes()
         {
@@ -737,26 +506,22 @@ namespace RynthOracle.Tests
                     main.MarkSubmitted(true);
                 }
             }
-            // Infinite Leaftide: the Quests tab with a quest opened (rewards editor) and the /qb list open.
-            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
-            c.Ilt.SetJson(QbProfileJson);
+            // The Quests tab with a quest opened (rewards editor) and the Tracked filter on.
+            c.Server.Force("", "Coldeve");
             c.Settings.TabName = OracleView.TabQuests;
             main.Begin(); view.Draw(main); main.End();
             Apply(host, Event(2, 89, main.Hash, main.KeyOf("q.tracked"), new byte[] { 1 }));
             main.Begin(); view.Draw(main); main.End();
             Check(Encoding.UTF8.GetString(main.Body).Contains("2 shown"), "the Tracked filter lists the two tracked quests");
             Apply(host, Event(1, 90, main.Hash, main.KeyOf("q.r.30minattributes"), new byte[] { 1, 0, 0 }));
-            Apply(host, Event(6, 91, main.Hash, main.KeyOf("q.qb"), new byte[] { 1 }));
-            main.Begin(); view.Draw(main); main.End();   // the inner header exists once the outer one is open
-            Apply(host, Event(6, 92, main.Hash, main.KeyOf("q.qb.todo"), new byte[] { 1 }));
             main.Begin(); view.Draw(main); main.End();
-            ParseAll(host, "ILT quests with a quest opened", out int iltOps);
-            string iltBody = Encoding.UTF8.GetString(main.Body);
-            Check(iltOps > 5 && iltOps < 1400, $"ILT quests page: {iltOps} ops");
-            Check(iltBody.Contains("Save rewards") && iltBody.Contains("Level: 126"), "the opened quest shows the rewards editor");
-            Check(iltBody.Contains("1.5%XP 2C L126"), "the Rewards column shows the recorded rewards");
-            Check(iltBody.Contains("Quest bonus (/qb) - count 41") && iltBody.Contains("qbflagthree"), "the /qb list from RynthILT");
-            Console.WriteLine($"  InfiniteLeaftide/Quests (opened, /qb): {iltOps} ops, {main.Body.Length} bytes");
+            ParseAll(host, "quests with a quest opened", out int openOps);
+            string openBody = Encoding.UTF8.GetString(main.Body);
+            Check(openOps > 5 && openOps < 1400, $"quests page with a quest opened: {openOps} ops");
+            Check(openBody.Contains("Save rewards") && openBody.Contains("Level: 126"), "the opened quest shows the rewards editor");
+            Check(openBody.Contains("1.5%XP 2C L126"), "the Rewards column shows the recorded rewards");
+            Check(!openBody.Contains("/qb"), "no quest bonus list here (Infinite Leaftide's /qb is RynthILT's)");
+            Console.WriteLine($"  Quests (opened): {openOps} ops, {main.Body.Length} bytes");
             main.MarkSubmitted(true);
 
             // A page that can't fit: everything in the catalog on one page is cut short, still valid.
@@ -788,34 +553,25 @@ namespace RynthOracle.Tests
         }
 
         /// <summary>
-        /// The Character tab's RynthAi session and RynthILT charms (the Mini Remote's Character and
-        /// Charms tabs moved here 2026-10-13): drawn from what the plugin read, Toggle routed to RynthILT.
+        /// The Character tab's RynthAi session (the generic part of the Mini Remote's old Character
+        /// tab, moved here 2026-10-13). Infinite Leaftide's charms are RynthILT's and never drawn here.
         /// </summary>
         private static void CharacterExtras()
         {
-            const string charmsJson = "{\"available\":true,\"world\":\"InfiniteLeaftide\",\"acquiredCount\":2,\"activeCount\":1,"
-                + "\"charms\":[{\"name\":\"Mana Barrier\",\"effect\":\"Absorbs damage\",\"acquired\":\"carried\",\"count\":1,\"tier\":3,\"maxTier\":5,"
-                + "\"active\":\"on\",\"server\":\"on\",\"toggleId\":5001},"
-                + "{\"name\":\"Swift Feet\",\"acquired\":\"seen\",\"lastSeen\":\"2026-10-12\",\"active\":\"unknown\",\"server\":\"off\"}],"
-                + "\"hands\":[{\"id\":7001,\"name\":\"Guardian Hand\",\"active\":\"off\",\"server\":\"on\"}]}";
-
             OracleContext c = Context();
-            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
+            c.Server.Force("", "InfiniteLeaftide");
             c.Settings.TabName = OracleView.TabCharacter;
             var view = new OracleView(c);
             var host = new UiHost();
             UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
 
-            // Nothing from RynthILT or RynthAi yet: the tab says what to load.
+            // Nothing from RynthAi yet: the tab says what to load.
             main.Begin(); view.Draw(main); main.End();
             string empty = Encoding.UTF8.GetString(main.Body);
-            Check(empty.Contains("Load RynthILT to list your Infinite Leaftide charms"), "ILT without RynthILT: says to load it");
             Check(empty.Contains("Load RynthAi for the session rates"), "without RynthAi: says to load it");
+            Check(!empty.Contains("Charms") && !empty.Contains("RynthILT"), "no charms section on any world (RynthILT's Charms tab)");
             main.MarkSubmitted(true);
 
-            uint toggled = 0;
-            c.ToggleCharm = id => { toggled = id; return true; };
-            c.Charms = RynthCore.Plugin.Shared.IltCharmsView.Parse(charmsJson);
             c.Session = new RynthCore.Plugin.Shared.SessionStatsV1
             {
                 StartUtcTicks = DateTime.UtcNow.AddHours(-1).Ticks, SessionSeconds = 3600, Xp = 1_234_567, XpPerHour = 1_234_567,
@@ -823,256 +579,12 @@ namespace RynthOracle.Tests
             };
             c.SessionKnown = true;
             main.Begin(); view.Draw(main); main.End();
-            ParseAll(host, "Character with charms and session", out int ops);
+            ParseAll(host, "Character with the session", out int ops);
             string body = Encoding.UTF8.GetString(main.Body);
-            Check(ops > 5 && ops < 1400, $"Character with charms: {ops} ops");
+            Check(ops > 5 && ops < 1400, $"Character with the session: {ops} ops");
             Check(body.Contains("1,234,567") && body.Contains("4,000") && body.Contains("42 (42/h)"), "the session shows RynthAi's XP, luminance and kills");
-            Check(body.Contains("Charms (2)") && body.Contains("Mana Barrier") && body.Contains("T3/5") && body.Contains("seen 2026-10-12"),
-                  "the charms RynthILT listed, with tier and acquired state");
-            Check(body.Contains("server off"), "a charm the server switched off is marked");
-            Check(body.Contains("Guardian Hands (1)"), "the Guardian Hands are listed");
-
-            Apply(host, Event(1, 10, main.Hash, main.KeyOf("c.charm.0"), new byte[] { 1, 0, 0 }));
-            Check(toggled == 5001, "the carried charm's Toggle goes to RynthILT with its id");
-            Check(body.Contains("###c.charm.0") && !body.Contains("###c.charm.1"), "an uncarried charm has no Toggle");
-            Apply(host, Event(1, 11, main.Hash, main.KeyOf("c.hand.0"), new byte[] { 1, 0, 0 }));
-            Check(toggled == 7001, "the Guardian Hand's Toggle goes to RynthILT with its id");
-            main.MarkSubmitted(true);
-
-            // Another world: RynthILT answers "not available", so no charms section at all.
-            c.Server.Force("", "");
-            c.Charms = RynthCore.Plugin.Shared.IltCharmsView.Parse("{\"available\":false,\"charms\":[]}");
-            main.Begin(); view.Draw(main); main.End();
-            Check(!Encoding.UTF8.GetString(main.Body).Contains("Charms ("), "off ILT: no charms section");
             Check(OracleView.SessionStatsCommand == "/rc miniremote section char", "Session Stats opens the section, not the moved tab");
-        }
-
-        /// <summary>RynthILT's breeding JSON with <paramref name="essences"/> essences (one ready stud and one ready dam first).</summary>
-        private static string BreedingJson(int essences)
-        {
-            var sb = new StringBuilder("{\"available\":true,\"world\":\"InfiniteLeaftide\",\"enabled\":\"on\",\"maturity\":\"on\",\"bond\":\"on\","
-                + "\"room\":\"landblock 0x0106 variant 2\",\"freeSlots\":12,\"message\":\"\",\"essences\":[");
-            for (int i = 0; i < essences; i++)
-            {
-                if (i > 0) sb.Append(',');
-                bool male = i % 2 == 0, ready = i < 2;
-                sb.Append("{\"id\":").Append(1000 + i).Append(",\"name\":\"Essence ").Append(i).Append("\",\"sex\":\"").Append(male ? 'M' : 'F')
-                  .Append("\",\"tier\":125,\"bond\":100,\"ready\":").Append(ready ? "true" : "false")
-                  .Append(",\"status\":\"").Append(ready ? "Ready" : "Rest 1h 05m").Append("\",\"readyIn\":").Append(ready ? 0 : 3900)
-                  .Append(",\"charges\":7,\"chargesMax\":10,\"juvenile\":false,\"stage\":\"\",\"kills\":0,\"killsRequired\":300,")
-                  .Append("\"mutations\":1,\"potencyMutations\":0,\"problems\":").Append(ready ? "[]" : "[\"resting after a breed\"]")
-                  .Append(",\"boosters\":").Append(i == 0 ? "[\"Incense +10%\"]" : "[]").Append('}');
-            }
-            sb.Append("],\"pairs\":[{\"stud\":\"Essence 0\",\"dam\":\"Essence 1\",\"chanceBest\":0.13636,\"chanceWorst\":0.05,\"inheritMin\":1,\"inheritMax\":2}],")
-              .Append("\"supplies\":[{\"key\":\"incense1\",\"name\":\"Breeding Incense\",\"effect\":\"+10% mutation chance\",\"count\":2,\"price\":250000,\"apply\":true,\"targets\":[1000,1001]},")
-              .Append("{\"key\":\"neuter\",\"name\":\"Neutering Kit\",\"effect\":\"Permanent\",\"count\":1,\"price\":0,\"apply\":false,\"targets\":[]}],")
-              .Append("\"rules\":[{\"label\":\"Stud charges\",\"value\":\"10/day\",\"source\":\"seen on server\",\"help\":\"Breeds per refill.\"},")
-              .Append("{\"label\":\"Mutation decay\",\"value\":\"0.1\",\"source\":\"ILT profile\",\"help\":\"\"}],")
-              .Append("\"events\":[{\"when\":\"10-15 12:00\",\"kind\":\"birth\",\"text\":\"Congratulations! A baby pet has been born: Pup\"}],")
-              .Append("\"debug\":{\"when\":\"10-15 12:01\",\"enabled\":\"on\",\"location\":\"0x0106 variant 2\",\"match\":\"valid\",\"pet\":\"Essence 0\",\"sex\":\"M\",\"partners\":1}}");
-            return sb.ToString();
-        }
-
-        /// <summary>
-        /// The Pet Breeding tab (Infinite Leaftide only): RynthILT's breeding JSON drawn within the op budget,
-        /// Dance and supply uses asked first, then sent to RynthILT as its verbs.
-        /// </summary>
-        private static void Breeding()
-        {
-            // The tab exists only on Infinite Leaftide.
-            OracleContext c = Context();
-            var view = new OracleView(c);
-            Check(!view.VisibleTabs().Contains(OracleView.TabBreeding), "Aelrynth: no Pet Breeding tab");
-            c.Server.Force("", "Coldeve");
-            Check(!view.VisibleTabs().Contains(OracleView.TabBreeding), "other servers: no Pet Breeding tab");
-            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
-            Check(view.VisibleTabs().Contains(OracleView.TabBreeding), "Infinite Leaftide: the Pet Breeding tab");
-
-            // The parser: fields, lists, the debug block, and bad input.
-            IltBreedingView v = IltBreedingView.Parse(BreedingJson(2));
-            Check(v.Loaded && v.Available && v.Enabled == "on" && v.Room == "landblock 0x0106 variant 2" && v.FreeSlots == 12, "breeding JSON header");
-            Check(v.Essences.Count == 2 && v.Essences[0].Male && !v.Essences[1].Male && v.Essences[0].Ready && v.Essences[0].Boosters.Count == 1,
-                  "breeding essences with sex, readiness and boosters");
-            Check(v.Pairs.Count == 1 && Math.Abs(v.Pairs[0].ChanceBest - 0.13636) < 1e-9 && v.Pairs[0].InheritMax == 2, "breeding pair odds");
-            Check(v.Supplies.Count == 2 && v.Supplies[0].Targets.Count == 2 && !v.Supplies[1].Apply, "breeding supplies and their targets");
-            Check(v.Debug is { Match: "valid", Partners: 1 }, "breeding diagnostics");
-            Check(!IltBreedingView.Parse("not json").Loaded && !IltBreedingView.Parse("").Loaded && !IltBreedingView.Parse("[1]").Loaded,
-                  "bad breeding JSON is not loaded");
-            Check(IltBreedingView.ApplyVerb(" incense1 ", 1000) == "apply incense1 1000" && IltBreedingView.DanceVerb() == "dance",
-                  "breeding verbs");
-
-            // Nothing from RynthILT yet: the tab says to load it.
-            var host = new UiHost();
-            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
-            c.Settings.TabName = OracleView.TabBreeding;
-            main.Begin(); view.Draw(main); main.End();
-            Check(Encoding.UTF8.GetString(main.Body).Contains("Load RynthILT (0.2.7 or later)"), "without RynthILT: says to load it");
             main.MarkSubmitted(true);
-
-            // 50 essences with every section open: rows cut at 40, the page still fits.
-            var sent = new List<string>();
-            string ran = "";
-            c.BreedingCommand = verb => { sent.Add(verb); return true; };
-            c.RunCommand = cmd => { ran = cmd; return true; };
-            c.Breeding = IltBreedingView.Parse(BreedingJson(50));
-            main.Begin(); view.Draw(main); main.End();
-            uint seq = 200;
-            foreach (string header in new[] { "br.sup", "br.rules", "br.events" })
-                Apply(host, Event(6, seq++, main.Hash, main.KeyOf(header), new byte[] { 1 }));
-            main.Begin(); view.Draw(main); main.End();
-            ParseAll(host, "Pet Breeding with 50 essences", out int ops);
-            string body = Encoding.UTF8.GetString(main.Body);
-            Check(ops > 5 && ops < 1400, $"Pet Breeding with 50 essences: {ops} ops");
-            Console.WriteLine($"  InfiniteLeaftide/Pet Breeding (50 essences, all open): {ops} ops, {main.Body.Length} bytes");
-            Check(body.Contains("Essences (2 ready of 50)") && body.Contains("... and 10 more"), "essence rows cut at 40 with a count");
-            Check(body.Contains("Essence 0 x Essence 1") && body.Contains("5%-13.6%"), "the ready pair with its odds");
-            Check(body.Contains("Supplies (3 carried)") && body.Contains("250,000 pyreals"), "supplies with Ivo's price");
-            Check(body.Contains("Stud charges") && body.Contains("seen on server") && body.Contains("In the breeding room"), "rules and diagnostics");
-            Check(body.Contains("A baby pet has been born"), "recent events");
-
-            // Dance asks first; No drops it, Yes sends it.
-            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.dance"), new byte[] { 1, 0, 0 }));
-            Check(sent.Count == 0, "Dance asks before sending");
-            main.Begin(); view.Draw(main); main.End();
-            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.no"), new byte[] { 1, 0, 0 }));
-            main.Begin(); view.Draw(main); main.End();
-            Check(sent.Count == 0 && !Encoding.UTF8.GetString(main.Body).Contains("###br.yes"), "No drops the question");
-            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.dance"), new byte[] { 1, 0, 0 }));
-            main.Begin(); view.Draw(main); main.End();
-            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.yes"), new byte[] { 1, 0, 0 }));
-            Check(sent.Count == 1 && sent[0] == "dance", "Yes sends the dance verb");
-
-            // A supply use on the selected essence (the first) goes the same way.
-            main.Begin(); view.Draw(main); main.End();
-            Check(Encoding.UTF8.GetString(main.Body).Contains("###br.use.0") && !Encoding.UTF8.GetString(main.Body).Contains("###br.use.1"),
-                  "only a usable, carried supply has Use");
-            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.use.0"), new byte[] { 1, 0, 0 }));
-            main.Begin(); view.Draw(main); main.End();
-            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.yes"), new byte[] { 1, 0, 0 }));
-            Check(sent.Count == 2 && sent[1] == "apply incense1 1000", "Use then Yes sends apply with the essence id: " + string.Join("|", sent));
-
-            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.refresh"), new byte[] { 1, 0, 0 }));
-            Check(sent.Count == 3 && sent[2] == "refresh", "Refresh is sent straight away");
-            Apply(host, Event(1, seq++, main.Hash, main.KeyOf("br.remote"), new byte[] { 1, 0, 0 }));
-            Check(ran == "/ra hub open breeding", "Mini Remote opens Pets > Breeding: " + ran);
-            main.MarkSubmitted(true);
-
-            // Breeding switched off on the server: said in red, page still drawn.
-            c.Breeding = IltBreedingView.Parse("{\"available\":true,\"enabled\":\"off\",\"essences\":[]}");
-            main.Begin(); view.Draw(main); main.End();
-            Check(Encoding.UTF8.GetString(main.Body).Contains("Pet breeding is off on this server."), "breeding off is shown");
-        }
-
-        /// <summary>RynthILT's Temple guardian JSON ("RynthILT.Data" version 3) as the Quests tab reads it.</summary>
-        private const string GuardianJson = "{\"available\":true,\"world\":\"InfiniteLeaftide\",\"chat\":true,\"auto\":false,\"buy\":true,"
-            + "\"cooldownHours\":20,\"answer\":\"Pyreal\",\"npc\":\"Guardian of Attribute Enlightenment\",\"answerAgeSec\":30,"
-            + "\"heard\":\"What is the coin of the realm?\",\"running\":false,\"status\":\"idle\",\"synced\":\"2026-10-18T19:05:00Z\","
-            + "\"rows\":[{\"attribute\":\"Strength\",\"npc\":\"Fiun Strongarm\",\"count\":3,\"status\":\"Ready\",\"eta\":\"\",\"ready\":true,\"exact\":true},"
-            + "{\"attribute\":\"Focus\",\"npc\":\"Fiun Thinker\",\"count\":1,\"status\":\"Cooldown\",\"eta\":\"in 5h 2m\",\"ready\":false,\"exact\":false}]}";
-
-        /// <summary>
-        /// The Quests tab's merged trackers (2026-10-18): Legendary quests, markers, and on Infinite
-        /// Leaftide Dynamic Stamps and the Temple guardians, as rows of the one list; Trackers only;
-        /// opening a tracker (RynthNav Go to); the guardian controls; the ops budget.
-        /// </summary>
-        private static void Trackers()
-        {
-            // The guardian JSON and its verbs.
-            var g = RynthCore.Plugin.Shared.IltGuardianView.Parse(GuardianJson);
-            Check(g.Loaded && g.Chat && !g.Auto && g.Buy && g.Answer == "Pyreal" && g.AnswerAgeSec == 30 && g.SyncedUtc.Year == 2026,
-                  "guardian JSON header");
-            Check(g.Rows.Count == 2 && g.Rows[0].Ready && g.Rows[0].Exact && g.Rows[1].Eta == "in 5h 2m" && !g.Rows[1].Exact, "guardian rows");
-            Check(!RynthCore.Plugin.Shared.IltGuardianView.Parse("nope").Loaded && !RynthCore.Plugin.Shared.IltGuardianView.Parse("").Loaded,
-                  "bad guardian JSON is not loaded");
-            Check(RynthCore.Plugin.Shared.IltGuardianView.SwitchVerb(" Auto ", true) == "auto on"
-                  && RynthCore.Plugin.Shared.IltGuardianView.SwitchVerb("buy", false) == "buy off"
-                  && RynthCore.Plugin.Shared.IltGuardianView.HandInVerb() == "handin", "guardian verbs");
-
-            // Any server: Trackers only lists the Legendary quests and markers with their status, no ILT kinds.
-            OracleContext c = Context();
-            c.Server.Force("", "Coldeve");
-            var view = new OracleView(c);
-            var host = new UiHost();
-            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
-            view.ShowTrackers(null);
-            main.Begin(); view.Draw(main); main.End();
-            string body = Encoding.UTF8.GetString(main.Body);
-            int trackerRows = LegendaryList.All.Count + MarkerList.All.Count;
-            Check(body.Contains($"{trackerRows} shown") && body.Contains("LEG") && body.Contains("toward John") && body.Contains("markers found"),
-                  "Trackers only: every Legendary quest and marker, with their status above");
-            Check(!body.Contains("###q.r.dy:") && !body.Contains("###q.r.gd:") && !body.Contains("###q.r.30minattributes")
-                  && !body.Contains("###gd.auto"),
-                  "no stamps, guardians or quests off Infinite Leaftide in Trackers only");
-            main.MarkSubmitted(true);
-
-            // Everything: quests and trackers in one list (the quests first in the default order).
-            view.ShowTrackers(QuestKind.Quest);
-            c.Settings.TabName = OracleView.TabQuests;
-            main.Begin(); view.Draw(main); main.End();
-            body = Encoding.UTF8.GetString(main.Body);
-            Check(body.Contains("Attribute and Skill Redistribution") && !body.Contains("###q.r.lg:") && !body.Contains("###q.r.mk:"),
-                  "Show: Quests lists only quests");
-            main.MarkSubmitted(true);
-
-            // A Legendary quest with coordinates in its notes opens with RynthNav's Go to.
-            LegendaryQuest? withCoords = LegendaryList.All.FirstOrDefault(q => NavTargets.Stops(q.Note).Count > 0);
-            view.ShowTrackers(QuestKind.Legendary);
-            main.Begin(); view.Draw(main); main.End();
-            LegendaryQuest pick = withCoords ?? LegendaryList.All[0];
-            Apply(host, Event(1, 700, main.Hash, main.KeyOf("q.r.lg:" + pick.Name), new byte[] { 1, 0, 0 }));
-            main.Begin(); view.Draw(main); main.End();
-            body = Encoding.UTF8.GetString(main.Body);
-            Check(body.Contains("###lg.sel.print") && body.Contains("###lg.sel.close"), "a clicked Legendary quest opens below the list");
-            if (withCoords != null) Check(body.Contains("###q.nav.go") && body.Contains("###q.nav.route"), "its coordinates offer RynthNav Go / Route / Arrow");
-            main.MarkSubmitted(true);
-
-            // A marker always has somewhere to go: its directions' coordinates or its location's name.
-            view.ShowTrackers(QuestKind.Marker);
-            main.Begin(); view.Draw(main); main.End();
-            Marker m0 = MarkerList.All[0];
-            Apply(host, Event(1, 701, main.Hash, main.KeyOf("q.r.mk:" + m0.Number), new byte[] { 1, 0, 0 }));
-            main.Begin(); view.Draw(main); main.End();
-            body = Encoding.UTF8.GetString(main.Body);
-            Check(body.Contains("Marker " + m0.Number) && body.Contains("###q.nav.go") && body.Contains("###m.sel.close"),
-                  "a clicked marker opens with Go to");
-            main.MarkSubmitted(true);
-
-            // Infinite Leaftide without RynthILT's guardian data: the guardians say so.
-            c.Server.Force(ServerTags.InfiniteLeaftide, "InfiniteLeaftide");
-            view.ShowTrackers(QuestKind.Guardian);
-            main.Begin(); view.Draw(main); main.End();
-            Check(Encoding.UTF8.GetString(main.Body).Contains("RynthILT isn't loaded"), "guardians without RynthILT: says to load it");
-            main.MarkSubmitted(true);
-
-            // With it: the switches, the answer with Hand in, and a row per attribute; each control sends its verb.
-            var sent = new List<string>();
-            c.GuardianCommand = verb => { sent.Add(verb); return true; };
-            c.Guardian = g;
-            c.GuardianRevision++;
-            main.Begin(); view.Draw(main); main.End();
-            body = Encoding.UTF8.GetString(main.Body);
-            Check(body.Contains("Temple guardians") && body.Contains("1 of 2 attribute turn-ins ready") && body.Contains("Pyreal")
-                  && body.Contains("###gd.handin") && body.Contains("GRD") && body.Contains("Strength (Fiun Strongarm)") && body.Contains("in 5h 2m"),
-                  "guardian controls, answer and rows");
-            Apply(host, Event(1, 702, main.Hash, main.KeyOf("gd.handin"), new byte[] { 1, 0, 0 }));
-            Apply(host, Event(2, 703, main.Hash, main.KeyOf("gd.auto"), new byte[] { 1 }));
-            Apply(host, Event(2, 704, main.Hash, main.KeyOf("gd.buy"), new byte[] { 0 }));
-            Apply(host, Event(1, 705, main.Hash, main.KeyOf("gd.refresh"), new byte[] { 1, 0, 0 }));
-            Check(string.Join("|", sent) == "handin|auto on|buy off|refresh", "guardian controls send their verbs: " + string.Join("|", sent));
-            main.MarkSubmitted(true);
-
-            // Every kind at once on Infinite Leaftide (trackers' status, a guardian opened): under the ops limit.
-            // The guardian is opened while Show lists guardians (they sort last), then Show goes back to everything.
-            Apply(host, Event(1, 706, main.Hash, main.KeyOf("q.r.gd:Strength"), new byte[] { 1, 0, 0 }));
-            view.ShowTrackers(null);
-            main.Begin(); view.Draw(main); main.End();
-            ParseAll(host, "ILT Quests, every tracker", out int ops);
-            body = Encoding.UTF8.GetString(main.Body);
-            int iltRows = trackerRows + DynamicStampList.All.Count + 2;
-            Check(body.Contains($"{iltRows} shown") && body.Contains("Temple guardian: Strength") && body.Contains("###gd.sel.close"),
-                  "every ILT tracker listed, a guardian opened below");
-            Check(ops > 40 && ops < 1400, $"ILT Quests with every tracker and a guardian opened: {ops} ops");
-            Console.WriteLine($"  InfiniteLeaftide/Quests, trackers only ({iltRows} rows, guardian opened): {ops} ops, {main.Body.Length} bytes");
         }
 
         private static void Events()
@@ -1160,8 +672,7 @@ namespace RynthOracle.Tests
         /// </summary>
         private static void SkillsTabs()
         {
-            // The tabs: after Character, on every server; every earlier tab is still there (markers are
-            // rows of the Quests tab since 2026-10-18, not a tab of their own).
+            // The tabs: after Character, on every server; every earlier tab is still there.
             string[] earlier = { OracleView.TabQuests, OracleView.TabCharacter, OracleView.TabAugs, OracleView.TabSociety,
                 OracleView.TabTitles, OracleView.TabVoid, OracleView.TabFellowship, OracleView.TabAbout };
             OracleContext c = Context();

@@ -4,18 +4,13 @@
 // Stats - id "char" -, Map, Skills, Combat, Nav, Inventory, Crafting, Spells, Chat, Friends,
 // Fellowship, Pets) and any a plugin adds. It reads each plugin's optional
 // RynthPluginGetSectionsJson export every couple of seconds (schema: UI/Sections/SectionManifest.cs
-// in RynthCore). RynthAi fills:
-//   every world   Session Stats (the one session: RynthTracker, RynthOracle and RynthILT read the
-//                 same numbers, and RynthCore drops its own overview for it), Pets, Crafting,
-//                 Spells and Fellowship (the views of those core sections)
-//   Infinite      RynthILT's tabs, hosted here as they are in RynthAi's own Mini Remote (RynthILT.Hub,
-//   Leaftide      MiniRemote/IltClient.cs): Gear in Inventory, and a Games section of RynthAi's own
-// Quests are RynthOracle's (since 2026-10-13), and RynthILT draws its ILT session extras and /fship
-// views itself (its own manifest), so neither is listed here. RynthILT's Character, Charms and
-// Banking tabs moved out on 2026-10-13 (MovedTabs.cs): RynthOracle's Character tab and
-// RynthInventory's Global Inventory (/ginv bank).
-// Each view is a surface "section:<name>" RynthCore draws through RynthPluginRenderEmbed. An ILT
-// view whose feature the server hasn't reported is listed but not enabled, with a note.
+// in RynthCore). RynthAi fills, on every world: Session Stats (the one session: RynthTracker,
+// RynthOracle and RynthILT read the same numbers, and RynthCore drops its own overview for it),
+// Pets, Crafting, Spells and Fellowship (the views of those core sections).
+// Nothing server-specific is listed here: a server plugin lists its own views (since 2026-10-20
+// RynthILT lists its Mini Remote tabs, Gear / Charms / Banking / Games / Vaulted Dungeons, and its
+// Games section itself; RynthAi hosted them until then). Quests are RynthOracle's (since 2026-10-13).
+// Each view is a surface "section:<name>" RynthCore draws through RynthPluginRenderEmbed.
 //
 // Pure, so the host tests build it offline.
 using System;
@@ -47,62 +42,13 @@ internal static class SectionsManifest
     /// <summary>A section of RynthAi's own (beyond RynthCore's core twelve).</summary>
     internal sealed record Section(string Id, string Label, int Order);
 
-    /// <summary>RynthAi's own sections: Games (ILT) after Pets.</summary>
-    public static readonly Section[] OwnSections =
-    {
-        new("games", "Games", 1150),
-    };
-
-    private const string NotReportedNote = "Shows once the server reports this ILT feature on (RynthILT's ILT settings can ask again).";
-
-    /// <summary>Where each of RynthILT's tabs goes: section, label, order, tooltip. Unknown ids aren't listed.</summary>
-    private static readonly Dictionary<string, (string Section, string Label, int Order, string Tooltip)> IltPlacement =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["gear"] = ("inventory", "Gear", 210, "ILT gear tools (RynthILT)."),
-            ["games"] = ("games", "Games", 100, "ILT games (RynthILT)."),
-            // Listed only while RynthILT shows the tab: the Vaulted Dungeons master switch (RynthAi
-            // Settings > Navigation) is on, on an ILT world.
-            ["vaulted"] = ("nav", "Vaulted Dungeons", 220,
-                "Keep the character in one Vaulted Dungeon (RynthILT; Settings > Navigation > Vaulted Dungeons)."),
-        };
+    /// <summary>RynthAi's own sections beyond the core ones: none (Games went with RynthILT's tabs, 2026-10-20).</summary>
+    public static readonly Section[] OwnSections = Array.Empty<Section>();
 
     /// <summary>The surface name of a tab's view ("section:pets").</summary>
     public static string SurfaceOf(string tabId) => SurfacePrefix + tabId;
 
     /// <summary>Every view RynthAi offers (the same on every world).</summary>
-    /// <summary>RynthCore's server id for RynthILT's tabs (they show on Infinite Leaftide only).</summary>
-    public const string IltServer = "ilt";
-
-    /// <summary>Longest tab id taken from RynthILT (its ids are short ASCII words).</summary>
-    public const int MaxTabIdLength = 32;
-
-    /// <summary>
-    /// The core views plus the server plugin's tabs (ServerHubClient.Tabs): RynthILT from RynthSuite
-    /// doesn't list its own Mini Remote views, so RynthAi places them (IltPlacement) as it did before
-    /// 2026-10-20 (test merge onto rynth main, 2026-10-25).
-    /// </summary>
-    public static List<View> Views(IReadOnlyList<MiniRemote.ServerTabInfo> serverTabs)
-    {
-        List<View> views = Views();
-        foreach (MiniRemote.ServerTabInfo tab in serverTabs)
-        {
-            if (!tab.Shown || !IsTabId(tab.Id) || !IltPlacement.TryGetValue(tab.Id, out var place)) continue;
-            var size = new Vector2(MathF.Max(0f, tab.Width), MathF.Max(0f, tab.Height));
-            views.Add(new View(place.Section, IltServer, place.Label, SurfaceOf(tab.Id.ToLowerInvariant()), true, size,
-                tab.Available, tab.Available ? string.Empty : NotReportedNote, place.Tooltip, place.Order));
-        }
-        return views;
-    }
-
-    private static bool IsTabId(string? id)
-    {
-        if (string.IsNullOrEmpty(id) || id.Length > MaxTabIdLength) return false;
-        foreach (char c in id)
-            if (!(c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-')) return false;
-        return true;
-    }
-
     public static List<View> Views()
     {
         var views = new List<View>

@@ -61,7 +61,6 @@ internal sealed unsafe class ServerHubClient
         if (_host.HasGetPluginInterface)
         {
             EngineServerState? st = EngineState();
-            ActiveServerId = st?.Active ?? string.Empty;
             IReadOnlyList<string> owners = OwnerOrder(st);
             bool activeFirst = st != null && st.ActivePlugin.Length > 0;
             IntPtr first = IntPtr.Zero;
@@ -84,9 +83,6 @@ internal sealed unsafe class ServerHubClient
     private IntPtr Look(string plugin)
     {
         var p = (RynthServerHubApiV1*)_host.GetPluginInterface(plugin, RynthServerHubApiV1.InterfaceName, RynthServerHubApiV1.InterfaceVersion);
-        // RynthILT from RynthSuite (test merge, 2026-10-25) serves the same table only under its older
-        // name "RynthILT.Hub" (the ids and layout are the same: RynthServerHubApi.cs).
-        if (p == null) p = (RynthServerHubApiV1*)_host.GetPluginInterface(plugin, "RynthILT.Hub", 1);
         // Any table at least as big as the first release's: newer functions are checked with Has.
         return p != null && p->Version >= 1 && p->StructSize >= RynthServerHubApiV1.BaseStructSize ? (IntPtr)p : IntPtr.Zero;
     }
@@ -152,9 +148,6 @@ internal sealed unsafe class ServerHubClient
 
     /// <summary>A server plugin answers (any thread).</summary>
     public bool Loaded => T != null;
-
-    /// <summary>RynthCore's active server id at the last lookup ("" = none or a pre-v86 engine).</summary>
-    public volatile string ActiveServerId = string.Empty;
 
     /// <summary>This world is the plugin's server (or forced there), as it sees it. Any thread.</summary>
     public bool ServerActive

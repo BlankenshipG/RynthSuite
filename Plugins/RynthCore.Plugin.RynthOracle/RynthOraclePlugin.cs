@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
 using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 using RynthCore.Plugin.RynthOracle.Views;
@@ -25,7 +23,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
-    // The Character tab's charms (RynthILT) and session (RynthAi): read only while that tab is on screen.
+    // The Character tab's session (RynthAi): read only while that tab is on screen.
     private const long CharacterExtrasReadMs = 2000;
     private const long BookWorldWaitMs = 15_000;  // how long the quest book waits for the world name
 
@@ -43,42 +41,11 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private long _loginMs;
     private long _nextCharacterReadMs;
     private long _nextCharacterExtrasMs;
-    private string _charmsJson = "";
-    private long _nextBreedingMs;
-    private string _breedingJson = "";
-    private long _nextGuardianMs;
-    private string _guardianJson = "";
     private bool _voidAutoDecided;
     // Auto refresh (Settings QuestRefreshMinutes): the later of the login and RynthOracle's own last
     // automatic /myquests; the flags' last reply counts too (TickData).
     private DateTime _autoQuestSinceUtc = DateTime.MinValue;
-    private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1, _seenIltRevision = -1;
-    // The Dynamic stamp sources last logged (LogStampSources), and the revisions they were read at.
-    private (int InMyQuests, int InQb, int Matched) _loggedStamps = (-1, -1, -1);
-    private int _stampFlagRevision = -1, _stampIltRevision = -1;
-
-    /// <summary>
-    /// Infinite Leaftide: logs where the Dynamic stamps come from whenever the flags or the /qb list
-    /// change and the counts move (Dynamic flags in /myquests, in the /qb list, and the listed
-    /// stamps matched), so a stamp shown as not done can be told apart from one never read. Names
-    /// the flags no listed stamp matched (up to 10), so a sheet row that doesn't fit is visible.
-    /// </summary>
-    private void LogStampSources()
-    {
-        if (!_c.Server.Is(ServerTags.InfiniteLeaftide)) return;
-        if (_c.Flags.Revision == _stampFlagRevision && _c.Ilt.Revision == _stampIltRevision) return;
-        _stampFlagRevision = _c.Flags.Revision;
-        _stampIltRevision = _c.Ilt.Revision;
-        if (_c.Flags.Flags.Count == 0) return;
-        IReadOnlySet<string> qbStamps = _c.Ilt.QbStampSet;
-        var counts = DynamicStampList.Counts(_c.Flags, qbStamps);
-        if (counts == _loggedStamps) return;
-        _loggedStamps = counts;
-        List<string> unlisted = DynamicStampList.Unlisted(_c.Flags, qbStamps);
-        Host.Log($"[RynthOracle] Dynamic stamps: {counts.InMyQuests} Dynamic flag(s) in /myquests, {counts.InQb} in the /qb list"
-                 + $" ({_c.Ilt.QbCompletedSet.Count} completed flags read); {counts.Matched} of {DynamicStampList.All.Count} listed stamps done"
-                 + (unlisted.Count == 0 ? "." : $"; not in the list: {string.Join(" ", unlisted.Take(10))}{(unlisted.Count > 10 ? " ..." : "")}."));
-    }
+    private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1;
     // RynthCore's server list (ServerStateClient.Revision) last applied to the server identity.
     private int _seenServerStateRevision = -1;
     private bool _noUiLogged;
@@ -98,9 +65,6 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Send = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
         _c.RunCommand = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
         _c.SendNav = line => Host.HasSendPluginCommand && Host.SendPluginCommand("RynthNav", "rnav", line);
-        _c.ToggleCharm = ToggleCharm;
-        _c.BreedingCommand = BreedingCommand;
-        _c.GuardianCommand = GuardianCommand;
         _ui.Log = msg => Host.Log(msg);
 
         _mainView = new OracleView(_c);
@@ -157,8 +121,6 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Void.Clear();
         _c.Gear.Clear();
         _c.Server.Reset();
-        _c.Ilt.Clear();
-        _c.Ilt.Poll(Host, Environment.TickCount64);
         _c.ServerState.Clear();
         _c.ServerState.Poll(Host, Environment.TickCount64, force: true);
         _seenServerStateRevision = _c.ServerState.Revision;
@@ -205,7 +167,6 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Void.Clear();
         _c.Server.Reset();
         _c.VoidDotScale = 1.0;
-        _c.Ilt.Clear();
         _c.ServerState.Clear();
         _c.QuestPacks.Clear();
         _c.TitlesKnown = false;
@@ -214,37 +175,17 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         ClearCharacterExtras();
     }
 
-    /// <summary>Forgets the Character tab's charms and session (login, logout): the next character's come fresh.</summary>
+    /// <summary>Forgets the Character tab's session (login, logout): the next character's comes fresh.</summary>
     private void ClearCharacterExtras()
     {
-        _c.Charms = Shared.IltCharmsView.None;
-        _charmsJson = "";
-        _c.CharmMessage = "";
-        _c.Breeding = Shared.IltBreedingView.None;
-        _breedingJson = "";
-        _c.BreedingMessage = "";
-        _c.Guardian = Shared.IltGuardianView.None;
-        _guardianJson = "";
-        _c.GuardianRevision++;
-        _c.GuardianMessage = "";
         _c.Session = default;
         _c.SessionKnown = false;
         _c.AiSession.Reset();
     }
 
-    /// <summary>The Character tab's Toggle: RynthILT checks the id is one of the player's charms and uses it.</summary>
-    private bool ToggleCharm(uint id)
-    {
-        bool ok = _c.InWorld && _c.IltData.ToggleCharm(Host, Environment.TickCount64, id);
-        _c.CharmMessage = ok ? "Toggled; the status updates in a moment." : "RynthILT didn't take that (not carried any more, or RynthILT isn't loaded).";
-        _nextCharacterExtrasMs = Environment.TickCount64 + 1000;   // re-read soon so the new state shows
-        if (_main != null) _main.NeedsPass = true;
-        return ok;
-    }
-
     /// <summary>
-    /// While the Character tab is on screen: RynthILT's charms JSON and RynthAi's session, every
-    /// <see cref="CharacterExtrasReadMs"/>. Nothing is read with the window closed or on another tab.
+    /// While the Character tab is on screen: RynthAi's session, every <see cref="CharacterExtrasReadMs"/>.
+    /// Nothing is read with the window closed or on another tab.
     /// </summary>
     private void ReadCharacterExtras(long now)
     {
@@ -252,13 +193,6 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         if (now < _nextCharacterExtrasMs) return;
         _nextCharacterExtrasMs = now + CharacterExtrasReadMs;
 
-        string json = _c.IltData.ReadCharms(Host, now);
-        if (!string.Equals(json, _charmsJson, StringComparison.Ordinal))
-        {
-            _charmsJson = json;
-            _c.Charms = Shared.IltCharmsView.Parse(json);
-            _main.NeedsPass = true;
-        }
         bool known = _c.AiSession.TryGet(Host, now, out Shared.SessionStatsV1 s);
         if (known != _c.SessionKnown || known && (s.Xp != _c.Session.Xp || s.Lum != _c.Session.Lum || s.Kills != _c.Session.Kills))
             _main.NeedsPass = true;
@@ -266,69 +200,11 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.Session = known ? s : default;
     }
 
-    /// <summary>The Pet Breeding tab's buttons: a verb for RynthILT's tracker, then a quick re-read.</summary>
-    private bool BreedingCommand(string verb)
-    {
-        long now = Environment.TickCount64;
-        bool ok = _c.InWorld && _c.IltData.PetBreedingCommand(Host, now, verb);
-        _c.BreedingMessage = ok ? "Sent to RynthILT; the tab updates in a moment." : "RynthILT didn't take that (not loaded, or older than 0.2.7).";
-        _nextBreedingMs = now + 800;
-        if (_main != null) _main.NeedsPass = true;
-        return ok;
-    }
-
-    /// <summary>
-    /// While the Pet Breeding tab is on screen: RynthILT's breeding JSON every <see cref="CharacterExtrasReadMs"/>
-    /// (reading it keeps RynthILT's tracker scanning). Nothing is read with the window closed or on another tab.
-    /// </summary>
-    private void ReadBreeding(long now)
-    {
-        if (_main == null || _mainView == null || !_main.Visible || _mainView.Tab != OracleView.TabBreeding) return;
-        if (now < _nextBreedingMs) return;
-        _nextBreedingMs = now + CharacterExtrasReadMs;
-        string json = _c.IltData.ReadPetBreeding(Host, now);
-        if (string.Equals(json, _breedingJson, StringComparison.Ordinal)) return;
-        _breedingJson = json;
-        _c.Breeding = Shared.IltBreedingView.Parse(json);
-        _main.NeedsPass = true;
-    }
-
-    /// <summary>The Quests tab's guardian controls: a verb for RynthILT's guardians, then a quick re-read.</summary>
-    private bool GuardianCommand(string verb)
-    {
-        long now = Environment.TickCount64;
-        bool ok = _c.InWorld && _c.IltData.GuardianCommand(Host, now, verb);
-        _c.GuardianMessage = ok ? "" : "RynthILT didn't take that (not loaded, or older than 0.2.20).";
-        _nextGuardianMs = now + 400;
-        if (_main != null) _main.NeedsPass = true;
-        return ok;
-    }
-
-    /// <summary>
-    /// While the Quests tab is on screen on Infinite Leaftide: RynthILT's Temple guardian JSON every
-    /// <see cref="CharacterExtrasReadMs"/> (the guardian rows, switches and last answer). Nothing is
-    /// read with the window closed, on another tab, or on another server.
-    /// </summary>
-    private void ReadGuardian(long now)
-    {
-        if (_main == null || _mainView == null || !_main.Visible || _mainView.Tab != OracleView.TabQuests) return;
-        if (!_c.Server.Is(ServerTags.InfiniteLeaftide)) return;
-        if (now < _nextGuardianMs) return;
-        _nextGuardianMs = now + CharacterExtrasReadMs;
-        string json = _c.IltData.ReadGuardian(Host, now);
-        if (string.Equals(json, _guardianJson, StringComparison.Ordinal)) return;
-        _guardianJson = json;
-        _c.Guardian = Shared.IltGuardianView.Parse(json);
-        _c.GuardianRevision++;
-        _main.NeedsPass = true;
-    }
-
-    /// <summary>The Quests tab filtered to the trackers (the old Legendary / Markers / Dynamic Stamps tabs' commands).</summary>
+    /// <summary>Opens the Quests tab on the trackers: one kind (/ro legendary, /ro markers) or all of them (null).</summary>
     private void ShowTrackers(QuestKind? kind)
     {
         _mainView?.ShowTrackers(kind);
         if (_main != null) { _main.Visible = true; _main.NeedsPass = true; }
-        _nextGuardianMs = 0;   // read at once
     }
 
     /// <summary>Shows the main window on a tab (another plugin's link, or a /ro tab command).</summary>
@@ -337,7 +213,6 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         if (_mainView != null) _mainView.Tab = tab;
         if (_main != null) { _main.Visible = true; _main.NeedsPass = true; }
         if (tab == OracleView.TabCharacter) _nextCharacterExtrasMs = 0;   // read at once
-        if (tab == OracleView.TabBreeding) _nextBreedingMs = 0;
     }
 
     /// <summary>
@@ -459,37 +334,14 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 break;
             case "character":
             case "char":
-            case "charms":
-            case "charm":
-                // The Character tab: where the Mini Remote's Character and Charms tabs moved (2026-10-13).
-                // RynthAi, RynthILT and RynthCore's menus link here; it shows, never toggles off.
+                // The Character tab: the character overview and RynthAi's session.
+                // RynthAi, the server plugins and RynthCore's menus link here; it shows, never toggles off.
                 ShowTab(OracleView.TabCharacter);
-                break;
-            case "gear":
-            case "overlap":
-                // The Gear tab: spell overlap on the worn gear, wards and banes, ratings (any server).
-                ShowTab(OracleView.TabGear);
-                break;
-            case "skills":
-            case "skill":
-                // Engine SkillsFace body (raise/train) embedded under Oracle.
-                ShowTab(OracleView.TabSkills);
-                break;
-            case "attrs":
-            case "attributes":
-            case "attribute":
-            case "vitals":
-                ShowTab(OracleView.TabAttributes);
-                break;
-            case "progress":
-            case "progression":
-                // ILT progression planners (was Skills → Progression).
-                ShowTab(OracleView.TabProgress);
                 break;
             case "legendary":
             case "legend":
             case "john":
-                // John's 30 Legendary Key quests: the Quests tab's Legendary rows (the old Legendary tab).
+                // John's 30 Legendary Key quests: the Quests tab's Legendary rows.
                 ShowTrackers(QuestKind.Legendary);
                 break;
             case "markers":
@@ -498,32 +350,29 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 ShowTrackers(QuestKind.Marker);
                 break;
             case "trackers":
-                // Every tracker this server has: Legendary, markers, and on Infinite Leaftide stamps and guardians.
+                // Every tracker: the Legendary Key quests and the exploration markers. A server's own
+                // trackers and tabs are its server plugin's pages (since 2026-10-21).
                 ShowTrackers(null);
                 break;
-            case "dynamic":
-            case "dyn":
-            case "dyno":
-            case "stamps":
-            case "guardian":
-            case "guardians":
-                // Infinite Leaftide's trackers: Dynamic Stamps (the old tab) and RynthILT's Temple guardians.
-                bool guardians = arg is "guardian" or "guardians";
-                if (!_c.Server.Is(ServerTags.InfiniteLeaftide))
-                {
-                    _c.Print((guardians ? "The Temple guardians are" : "Dynamic stamps are")
-                             + " an Infinite Leaftide quest line; this server isn't recognised as Infinite Leaftide.");
-                    ShowTrackers(null);
-                }
-                else ShowTrackers(guardians ? QuestKind.Guardian : QuestKind.Dynamic);
+            case "gear":
+            case "overlap":
+                // The Gear tab: spell overlap on the worn gear, wards and banes, ratings (any server).
+                ShowTab(OracleView.TabGear);
                 break;
-            case "breeding":
-            case "breed":
-            case "pets":
-                // The Pet Breeding tab (Infinite Leaftide): RynthAi's Character menu and its Pets > Breeding tab link here.
-                if (!_c.Server.Is(ServerTags.InfiniteLeaftide))
-                    _c.Print("Pet breeding is an Infinite Leaftide feature; this server isn't recognised as Infinite Leaftide.");
-                ShowTab(OracleView.TabBreeding);
+            case "skills":
+            case "skill":
+                // The Skills tab: RynthCore's skills panel (raise and train) inside this window.
+                ShowTab(OracleView.TabSkills);
+                break;
+            case "attributes":
+            case "attrs":
+            case "attribute":
+            case "vitals":
+                ShowTab(OracleView.TabAttributes);
+                break;
+            case "progress":
+            case "progression":
+                ShowTab(OracleView.TabProgress);
                 break;
             case "status":
                 string titles = _c.TitlesKnown ? $", {_c.EarnedTitles.Count} titles held" : "";
@@ -531,25 +380,22 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                          + $"{_c.Flags.Flags.Count} quest flags read, {_c.Catalog.RetailCount} retail quests{PackText()}, {_c.Void.Dots.Count} Void spells tracked{titles}.");
                 break;
             case "about":
-            case "features":
-                // The About tab (its "Server features" list is RynthILT's; RynthILT's settings link here).
+                // The About tab (settings, the server RynthCore says this is, the quest list).
                 _c.Print("Based on Oracle of Dereth by Advis Eveldan - thank you! github.com/advis61/OracleOfDereth (MIT)");
                 ShowTab(OracleView.TabAbout);
                 break;
             default:
-                _c.Print("Commands: /ro (window), /ro character (Character tab: status, session, charms), "
-                         + "/ro gear (Gear tab: spell overlap, wards and banes, ratings), /ro skills|attrs|progress (raise/train and ILT planners), /ro void (Void window), "
-                         + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), /ro breeding (Pet Breeding tab, Infinite Leaftide), "
+                _c.Print("Commands: /ro (window), /ro character (Character tab: status, session), "
+                         + "/ro gear (Gear tab: spell overlap, wards and banes, ratings), /ro skills|attributes|progress (those tabs), /ro void (Void window), "
+                         + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), "
                          + "/ro trackers (Quests tab, trackers only), /ro legendary (John's 30 key quests), /ro markers, "
-                         + "/ro dynamic and /ro guardians (Infinite Leaftide: NPC stamps, Temple guardians), "
                          + "/ro quests (read quest flags), /ro status, "
-                         + "/ro about (About tab: settings, server features)");
+                         + "/ro about (About tab: settings, server, quest list). A server's own pages are its server plugin's (/rserver).");
                 break;
         }
-        if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char" or "charms" or "charm"
-                or "gear" or "overlap" or "skills" or "skill" or "attrs" or "attributes" or "attribute" or "vitals" or "progress" or "progression"
-                or "breeding" or "breed" or "pets" or "legendary" or "legend" or "john" or "markers" or "marker" or "trackers"
-                or "dynamic" or "dyn" or "dyno" or "stamps" or "guardian" or "guardians" or "about" or "features" && !Host.HasUi && !_noUiLogged)
+        if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char"
+                or "gear" or "overlap" or "skills" or "skill" or "attributes" or "attrs" or "attribute" or "vitals" or "progress" or "progression"
+                or "legendary" or "legend" or "john" or "markers" or "marker" or "trackers" or "about" && !Host.HasUi && !_noUiLogged)
         {
             _noUiLogged = true;
             _c.Print("This RynthCore engine can't show plugin windows (it needs script windows, API v71, with ImGui on). /ro status still works.");
@@ -659,12 +505,6 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             _c.Flags.LastPartialReply = null;
             Host.Log($"[RynthOracle] /myquests reply looked cut short ({partial.Got} lines, {partial.Had} flags held): merged it instead of replacing the list.");
         }
-        if (_c.Flags.LastLongReply is { } longReply)
-        {
-            _c.Flags.LastLongReply = null;
-            Host.Log($"[RynthOracle] /myquests long reply: {longReply.Lines} flag line(s) over {longReply.Ms} ms; {_c.Flags.Flags.Count} flags held.");
-        }
-        LogStampSources();
         if (_c.Flags.Revision != _seenFlagRevision)
         {
             _seenFlagRevision = _c.Flags.Revision;
@@ -700,17 +540,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
         if (!_c.InWorld) return;
 
-        // RynthILT's profile (every 2 s): the Fellowship tab's size and Leaftide fellowship features.
-        _c.Ilt.Poll(Host, now);
-        if (_c.Ilt.Revision != _seenIltRevision)
-        {
-            _seenIltRevision = _c.Ilt.Revision;
-            if (_main != null) _main.NeedsPass = true;
-        }
-
         ReadCharacterExtras(now);
-        ReadBreeding(now);
-        ReadGuardian(now);
         // The Gear tab's Check runs on (appraisals spaced out) whichever tab is showing.
         if (_c.Gear.Tick(Host, now, _c.Character.Name) && _main != null) _main.NeedsPass = true;
 

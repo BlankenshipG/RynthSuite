@@ -46,7 +46,7 @@ namespace RynthOracle.Tests
             {
                 c.Server.Force(tag, world);
                 string[] tabs = view.VisibleTabs();
-                Check(Array.IndexOf(tabs, "Pet Breeding") < 0 && tabs.Length == 11, $"ilt: {world}: the same eleven tabs: " + string.Join(",", tabs));
+                Check(Array.IndexOf(tabs, "Pet Breeding") < 0 && tabs.Length == 12, $"ilt: {world}: the same twelve tabs (Gear included): " + string.Join(",", tabs));
             }
         }
 
