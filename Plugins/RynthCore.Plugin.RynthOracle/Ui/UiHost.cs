@@ -83,6 +83,17 @@ internal sealed class UiHost
                 case UiFormat.EvOpen when w != null && p.Length >= 1:
                     w.Dispatch(key, new UiEvent(type, b: p[0] != 0));
                     break;
+                case UiFormat.EvGeometry when w != null && p.Length >= 24:
+                {
+                    // Only the width matters (column layouts); a pass when it moved by a pixel or more.
+                    float avail = BinaryPrimitives.ReadSingleLittleEndian(p[16..]);
+                    if (float.IsFinite(avail) && avail >= 0f && Math.Abs(avail - w.ContentWidth) >= 1f)
+                    {
+                        w.ContentWidth = avail;
+                        w.NeedsPass = true;
+                    }
+                    break;
+                }
                 case UiFormat.EvVisibility when w != null && p.Length >= 1:
                     // The player closed it (X) or opened it (bar menu / command): theirs wins.
                     w.Visible = p[0] != 0;

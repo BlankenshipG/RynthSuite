@@ -265,9 +265,21 @@ namespace RynthOracle.Tests
                 Check(Shown(body) == leg + mrk, $"sort {sort} keeps every row ({Shown(body)})");
             }
 
-            // Infinite Leaftide's stamps and guardians are RynthILT's own page (2026-10-21): the list keeps the
-            // same three kinds on every server, and nothing of theirs is drawn.
-            Check(view.AvailableKinds().Count == 3 && Enum.GetValues<QuestKind>().Length == 3, "three kinds of row, on every server");
+            // Infinite Leaftide's stamps and guardians: rows only while RynthCore's active server is "ilt".
+            Check(view.AvailableKinds().Count == 3, "three kinds of row off Infinite Leaftide");
+            c.Server.Force("ilt", "InfiniteLeaftide", "RynthILT");
+            Check(view.AvailableKinds().SequenceEqual(new[] { QuestKind.Quest, QuestKind.Legendary, QuestKind.Marker, QuestKind.Dynamic, QuestKind.Guardian }),
+                  "ilt: quests, Legendary, markers, Dynamic Stamps and guardians");
+            Tick(host, main, "q.trackers", true);
+            body = Frame(host, main, view, "Quests, ilt trackers");
+            int dyn = DynamicStampList.All.Count;
+            Check(dyn > 200 && Shown(body) == leg + mrk + dyn, $"ilt: Trackers only lists the {dyn} stamps too ({Shown(body)} shown)");
+            Check(body.Contains("listed Dynamic stamps") && body.Contains("Temple guardians") && body.Contains("DYN"),
+                  "ilt: the stamps' progress, the guardians' status and DYN rows");
+            Tick(host, main, "q.trackers", false);
+            c.Server.Force("", "Coldeve");
+            body = Frame(host, main, view, "Quests, back off ilt");
+            Check(!body.Contains("Dynamic stamps") && !body.Contains("DYN") && Shown(body) == quests + leg + mrk, "off ilt again: no stamp rows or status");
 
             // A saved tab name of an old tab opens Quests; the Markers / Legendary / Dynamic Stamps / Pet Breeding tabs are gone.
             foreach (string old in new[] { "Markers", "Dynamic Stamps", "Pet Breeding" })
@@ -278,6 +290,39 @@ namespace RynthOracle.Tests
             string[] tabs = view.VisibleTabs();
             Check(!tabs.Contains("Markers") && !tabs.Contains("Legendary") && !tabs.Contains("Dynamic Stamps") && !tabs.Contains("Pet Breeding"),
                   "no separate tracker tabs, no Pet Breeding: " + string.Join(",", tabs));
+        }
+
+        /// <summary>The Quests list's columns follow the window's width (the engine's Geometry events).</summary>
+        private static void QuestColumnsFollowWidth()
+        {
+            Check(QuestColumns.For(0f) == QuestColumns.Fixed && QuestColumns.For(float.NaN) == QuestColumns.Fixed && QuestColumns.For(500f) == QuestColumns.Fixed,
+                  "columns: no width (or a narrow window) is the old fixed layout");
+            QuestColumns wide = QuestColumns.For(1200f);
+            Check(wide.LabelWidth > QuestColumns.Fixed.LabelWidth * 2 && wide.LabelChars > QuestColumns.Fixed.LabelChars * 2,
+                  $"columns: a wide window gives the name the room ({wide.LabelWidth}, {wide.LabelChars} chars)");
+            Check(wide.Label + wide.LabelWidth <= wide.Ready && wide.Ready < wide.Solves && wide.Solves < wide.Extra && wide.Extra < 1200f,
+                  "columns: in order, inside the window");
+            float last = 0f;
+            bool grows = true;
+            for (float w = 400f; w <= 2400f; w += 50f)
+            {
+                QuestColumns c = QuestColumns.For(w);
+                if (c.LabelWidth < last) grows = false;
+                last = c.LabelWidth;
+            }
+            Check(grows, "columns: the name column never shrinks as the window widens");
+
+            // A Geometry event (type 7: pos, size, content avail, cursor, flags) sets the window's width and asks for a pass.
+            var host = new UiHost();
+            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
+            main.NeedsPass = false;
+            var geo = new byte[36];
+            BinaryPrimitives.WriteSingleLittleEndian(geo.AsSpan(16), 980f);
+            Apply(host, Event(7, ++_seq, main.Hash, 0, geo));
+            Check(main.ContentWidth == 980f && main.NeedsPass, "columns: the Geometry event's content width reaches the window");
+            main.NeedsPass = false;
+            Apply(host, Event(7, ++_seq, main.Hash, 0, geo));
+            Check(!main.NeedsPass, "columns: the same width again asks for no pass");
         }
 
         /// <summary>Everything the old Markers tab showed is reachable from the Quests list.</summary>

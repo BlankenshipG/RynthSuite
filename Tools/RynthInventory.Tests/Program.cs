@@ -64,7 +64,7 @@ namespace RynthInventory.Tests
                 Run("scheduler: unchanged content is not rewritten", SchedulerUnchanged);
                 Run("window display lists parse in the engine", Pages);
                 Run("window events", Events);
-                Run("banking: no Banking tab (it is RynthILT's own, 2026-10-21)", NoBankingTab);
+                Run("banking: Infinite Leaftide only", BankingGated);
                 Run("storage from other plugins (StorageFeed)", StorageFeedTests);
                 Run("like filter: spec, facts, matcher, query", LikeFilterTests);
                 Run("checklist filter: spell lists, window limits", ChecklistTests);
@@ -636,31 +636,39 @@ namespace RynthInventory.Tests
             ParseAll(host, "after forget", out _);
         }
 
-        // ── Banking: RynthILT's own tab since 2026-10-21 ───────────────────────
+        // ── Banking: Infinite Leaftide only (gated on RynthCore's active server, 2026-10-25) ──
 
         /// <summary>
-        /// Every character's Infinite Leaftide bank was a tab of this window (SilentKelpie's, reading RynthILT's
-        /// data); it moved to RynthILT's Banking tab with its tests (RynthILT.Tests BankRosterTests). The window
-        /// has its two pages on every world, and RynthInventory reads nothing of RynthILT's.
+        /// Every character's Infinite Leaftide bank (RynthILT's data) is a tab of this window only while
+        /// RynthCore's active server is Infinite Leaftide (InventoryContext.Ilt). Elsewhere the window has
+        /// its two pages and no Banking button, and a Banking tab left open goes back to Search.
         /// </summary>
-        private static void NoBankingTab()
+        private static void BankingGated()
         {
-            const System.Reflection.BindingFlags All = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static
-                | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
-            foreach (string field in new[] { "IltData", "Bank", "BankCommand" })
-                Check(typeof(InventoryContext).GetField(field, All) == null, "InventoryContext has no " + field);
-            Check(typeof(InventoryView).GetField("TabBanking", All) == null && typeof(InventoryView).GetMethod("ShowBanking", All) == null, "no Banking tab");
-            var iltTypes = typeof(InventoryView).Assembly.GetTypes().Where(t => t.Name.StartsWith("Ilt", StringComparison.Ordinal)
-                || t.Name.StartsWith("RynthIlt", StringComparison.Ordinal) || t.Name.StartsWith("BankRoster", StringComparison.Ordinal)).Select(t => t.Name).ToList();
-            Check(iltTypes.Count == 0, "no RynthILT reader or bank roster in RynthInventory: " + string.Join(",", iltTypes));
-
             InventoryContext c = Context(false);
             var view = new InventoryView(c);
             var host = new UiHost();
             UiWindow w = host.Add(new UiWindow("RynthInventory/Main", "Global Inventory") { Visible = true });
             Draw(w, view);
             string body = BodyText(w);
-            Check(!body.Contains("###tab.bank") && body.Contains("###tab.search") && body.Contains("###tab.chars"), "Search and Characters, no Banking button");
+            Check(!body.Contains("###tab.bank") && body.Contains("###tab.search") && body.Contains("###tab.chars"), "off ILT: Search and Characters, no Banking button");
+
+            c.Ilt = true;
+            Draw(w, view);
+            Check(BodyText(w).Contains("###tab.bank"), "on ILT: the Banking button");
+            view.ShowBanking();
+            Draw(w, view);
+            body = BodyText(w);
+            Check(view.Tab == InventoryView.TabBanking && body.Contains("RynthILT"), "on ILT: the Banking page (says RynthILT is needed when it hasn't answered)");
+
+            c.Ilt = false;
+            Draw(w, view);
+            Check(view.Tab == InventoryView.TabSearch && !BodyText(w).Contains("###tab.bank"), "off ILT again: back to Search, no Banking button");
+            c.Ilt = true;
+            view.ShowBanking();
+            view.LeaveBanking();
+            Check(view.Tab == InventoryView.TabSearch, "LeaveBanking (logout, server change) leaves the Banking tab");
+            ParseAll(host, "banking", out _);
         }
 
         // ── Helpers ─────────────────────────────────────────────────────────

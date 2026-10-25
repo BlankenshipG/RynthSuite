@@ -30,6 +30,30 @@ internal static class Program
         // The DreamWeave owners asked for the Threads patrol block to hold even without RynthDreamWeave,
         // and server plugins are opt-in (2026-10-15).
         ["Plugins/RynthCore.Plugin.RynthAi/ServerPolicy.cs"] = "DreamWeave's Threads patrol block (owners' request)",
+        // Infinite Leaftide's rows and page, gated on RynthCore's active server being "ilt" (2026-10-25,
+        // SilentKelpie's test branch): Oracle's Dynamic Stamps / Temple guardian rows and stamp log, and
+        // Global Inventory's Banking page, read from RynthILT's interfaces.
+        ["Plugins/Shared/EngineServerState.cs"] = "the ILT server id the gates below compare with",
+        ["Plugins/RynthCore.Plugin.RynthOracle/OracleContext.cs"] = "ILT-gated: RynthILT readers",
+        ["Plugins/RynthCore.Plugin.RynthOracle/RynthOraclePlugin.cs"] = "ILT-gated: guardian reads, stamp source log",
+        ["Plugins/RynthCore.Plugin.RynthOracle/Data/ServerIdentity.cs"] = "IsIlt, the gate",
+        ["Plugins/RynthCore.Plugin.RynthOracle/Data/IltServerProfile.cs"] = "ILT-gated: RynthILT's profile and /qb list",
+        ["Plugins/RynthCore.Plugin.RynthOracle/Views/QuestsTab.cs"] = "ILT-gated: Dynamic Stamps and guardian rows",
+        ["Plugins/RynthCore.Plugin.RynthInventory/RynthInventoryPlugin.cs"] = "ILT-gated: bank reads",
+        ["Plugins/RynthCore.Plugin.RynthInventory/InventoryContext.cs"] = "ILT-gated: RynthILT's bank",
+        ["Plugins/RynthCore.Plugin.RynthInventory/Views/BankingTab.cs"] = "ILT-gated: the Banking page",
+        ["Plugins/RynthCore.Plugin.RynthInventory/Data/BankRoster.cs"] = "ILT-gated: the Banking page's characters",
+    };
+
+    /// <summary>Projects that may link these server-only contracts (the ILT-gated readers above).</summary>
+    private static readonly (string Project, string File)[] AllowedLinks =
+    {
+        ("Plugins/RynthCore.Plugin.RynthOracle/RynthCore.Plugin.RynthOracle.csproj", "RynthIltServerApi.cs"),
+        ("Plugins/RynthCore.Plugin.RynthOracle/RynthCore.Plugin.RynthOracle.csproj", "RynthIltDataApi.cs"),
+        ("Plugins/RynthCore.Plugin.RynthInventory/RynthCore.Plugin.RynthInventory.csproj", "RynthIltDataApi.cs"),
+        ("Tools/RynthOracle.Tests/RynthOracle.Tests.csproj", "RynthIltServerApi.cs"),
+        ("Tools/RynthOracle.Tests/RynthOracle.Tests.csproj", "RynthIltDataApi.cs"),
+        ("Tools/RynthInventory.Tests/RynthInventory.Tests.csproj", "RynthIltDataApi.cs"),
     };
 
     /// <summary>Game words that are also servers' names: allowed in these files only.</summary>
@@ -147,7 +171,9 @@ internal static class Program
             string rel = Rel(root, proj);
             var links = XDocument.Load(proj).Descendants()
                 .Select(e => e.Attribute("Include")?.Value ?? e.Attribute("Project")?.Value)
-                .Where(v => v != null && serverOnly.IsMatch(v!)).ToList();
+                .Where(v => v != null && serverOnly.IsMatch(v!))
+                .Where(v => !AllowedLinks.Any(a => a.Project.Equals(rel, StringComparison.OrdinalIgnoreCase)
+                                                   && v!.EndsWith(a.File, StringComparison.OrdinalIgnoreCase))).ToList();
             Check(links.Count == 0, $"{rel} links no server-only file: {string.Join(", ", links)}");
         }
     }

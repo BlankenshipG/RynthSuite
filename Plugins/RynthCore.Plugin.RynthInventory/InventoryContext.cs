@@ -1,4 +1,5 @@
 using System;
+using RynthCore.Plugin.Shared;
 using RynthCore.Plugin.RynthInventory.Data;
 using RynthCore.PluginSdk;
 
@@ -39,6 +40,18 @@ internal sealed class InventoryContext
     public Action RequestReload = () => { };
     /// <summary>Forgets a character (moves its file aside). Returns a message for the player.</summary>
     public Func<CharacterInfo, string> Forget = _ => string.Empty;
+
+    /// <summary>
+    /// RynthCore's active server is Infinite Leaftide (EngineServerState.IltId): the Banking page
+    /// (RynthILT's bank) shows and is read only then. Re-read every couple of seconds.
+    /// </summary>
+    public bool Ilt;
+    /// <summary>RynthILT's data interface (the bank).</summary>
+    public readonly RynthIltDataClient IltData = new();
+    /// <summary>The bank as RynthILT last reported it (None off Infinite Leaftide or before the first read).</summary>
+    public IltBankView Bank = IltBankView.None;
+    /// <summary>A Banking page action: a verb line for RynthILT (refresh, deposit, withdraw, transfer).</summary>
+    public Func<string, bool> BankCommand = _ => false;
 
     public void Print(string text)
     {

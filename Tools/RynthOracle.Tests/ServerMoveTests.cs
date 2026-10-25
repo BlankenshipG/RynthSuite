@@ -21,32 +21,31 @@ namespace RynthOracle.Tests
         }
 
         /// <summary>
-        /// Infinite Leaftide without RynthOracle (2026-10-21): its charms, pet breeding, Temple guardians,
-        /// Dynamic Stamps, /qb list and feature list are RynthILT's own pages, so RynthOracle has none of
-        /// their types, readers, tabs, tracker kinds or tag, on any world.
+        /// Infinite Leaftide (2026-10-21, gated 2026-10-25): its charms, pet breeding, /qb list page and
+        /// feature list are RynthILT's own pages; RynthOracle keeps only the Dynamic Stamps and Temple
+        /// guardian rows of the Quests list (read from RynthILT), shown only while RynthCore's active
+        /// server is "ilt". No server tags, no Pet Breeding tab, the same twelve tabs everywhere.
         /// </summary>
         private static void IltGone()
         {
             const System.Reflection.BindingFlags All = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static
                 | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
-            Type[] types = typeof(RynthOraclePlugin).Assembly.GetTypes();
-            string[] iltTypes = Array.ConvertAll(Array.FindAll(types, t =>
-                t.Name.StartsWith("Ilt", StringComparison.Ordinal) || t.Name.StartsWith("RynthIlt", StringComparison.Ordinal)
-                || t.Name.StartsWith("DynamicStamp", StringComparison.Ordinal)), t => t.FullName ?? t.Name);
-            Check(iltTypes.Length == 0, "ilt: no RynthILT reader, view or Dynamic Stamp type in RynthOracle: " + string.Join(",", iltTypes));
-            foreach (string field in new[] { "Ilt", "IltData", "Charms", "Breeding", "Guardian", "ToggleCharm", "BreedingCommand", "GuardianCommand", "UbGiveAvailable" })
+            foreach (string field in new[] { "Charms", "Breeding", "ToggleCharm", "BreedingCommand", "UbGiveAvailable" })
                 Check(typeof(OracleContext).GetField(field, All) == null, "ilt: OracleContext has no " + field);
             Check(typeof(OracleContext).Assembly.GetType("RynthCore.Plugin.RynthOracle.Data.ServerTags") == null, "ilt: no server tags at all");
             Check(typeof(OracleView).GetField("TabBreeding", All) == null, "ilt: no Pet Breeding tab");
-            Check(Enum.GetNames<QuestKind>().Length == 3 && Enum.IsDefined(QuestKind.Marker), "ilt: the Quests list has quests, Legendary quests and markers only");
+            Check(Enum.GetNames<QuestKind>().Length == 5 && Enum.IsDefined(QuestKind.Dynamic) && Enum.IsDefined(QuestKind.Guardian),
+                  "ilt: the Quests list's kinds include Dynamic Stamps and the Temple guardians");
 
             var c = new OracleContext { InWorld = true };
             var view = new OracleView(c);
-            foreach ((string tag, string world) in new[] { ("", "InfiniteLeaftide"), ("", "Coldeve") })
+            foreach ((string id, string world, int kinds) in new[] { ("ilt", "InfiniteLeaftide", 5), ("", "InfiniteLeaftide", 3), ("", "Coldeve", 3), ("aelrynth", "Aeshnidae", 3) })
             {
-                c.Server.Force(tag, world);
+                c.Server.Force(id, world);
                 string[] tabs = view.VisibleTabs();
-                Check(Array.IndexOf(tabs, "Pet Breeding") < 0 && tabs.Length == 12, $"ilt: {world}: the same twelve tabs (Gear included): " + string.Join(",", tabs));
+                Check(Array.IndexOf(tabs, "Pet Breeding") < 0 && tabs.Length == 12, $"ilt: {world} ({id}): the same twelve tabs (Gear included): " + string.Join(",", tabs));
+                Check(c.Server.IsIlt == (id == "ilt"), $"ilt: {world} ({id}): IsIlt only for RynthCore's \"ilt\" server");
+                Check(view.AvailableKinds().Count == kinds, $"ilt: {world} ({id}): {kinds} kinds of row (stamps and guardians only on ilt)");
             }
         }
 

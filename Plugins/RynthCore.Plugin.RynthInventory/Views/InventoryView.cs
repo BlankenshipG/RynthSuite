@@ -8,13 +8,13 @@ namespace RynthCore.Plugin.RynthInventory.Views;
 
 /// <summary>
 /// The Global Inventory window: a search page (every character on every server, filters,
-/// totals, results, details) and a characters page (snapshot ages, forget). Recorded on the pump
-/// thread, replayed by the engine. (A server's own pages are its server plugin's: the Banking page
-/// that showed RynthILT's bank here is RynthILT's own Banking tab since 2026-10-21.)
+/// totals, results, details), a characters page (snapshot ages, forget) and, on Infinite Leaftide
+/// only (RynthCore's active server), a Banking page with RynthILT's bank for every character
+/// (Views\BankingTab.cs). Recorded on the pump thread, replayed by the engine.
 /// </summary>
 internal sealed partial class InventoryView
 {
-    public const int TabSearch = 0, TabCharacters = 1;
+    public const int TabSearch = 0, TabCharacters = 1, TabBanking = 2;
     private const int PageSize = 100;
     private const float RowIcon = 18f, DetailIcon = 32f, DetailsHeight = 260f;
 
@@ -75,9 +75,22 @@ internal sealed partial class InventoryView
         w.SameLine();
         int chars = _c.Index?.Characters.Count ?? 0;
         w.ToggleButton($"Characters ({chars})", "tab.chars", Tab == TabCharacters, () => Tab = TabCharacters, small: true);
+        if (BankingShown)
+        {
+            w.SameLine();
+            w.ToggleButton("Banking", "tab.bank", Tab == TabBanking, () => Tab = TabBanking, small: true);
+        }
         w.SameLine();
         w.TextDisabled(StatusLine());
         w.Separator();
+
+        // The bank comes from RynthILT, not the inventory files: it draws before they are read.
+        if (Tab == TabBanking)
+        {
+            if (BankingShown) DrawBanking(w);
+            else Tab = TabSearch;
+            return;
+        }
 
         if (_c.Index == null)
         {

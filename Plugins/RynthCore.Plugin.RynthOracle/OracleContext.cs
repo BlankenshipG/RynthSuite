@@ -20,6 +20,18 @@ internal sealed class OracleContext
     public readonly VoidTracker Void = new();
     public readonly FellowshipTracker Fellowship = new();
     public readonly ServerIdentity Server = new();
+    /// <summary>RynthILT's profile with the /qb lists (Infinite Leaftide only: polled while Server.IsIlt).</summary>
+    public readonly IltServerLink Ilt = new();
+    /// <summary>RynthILT's data interface: the Temple guardians (Infinite Leaftide only).</summary>
+    public readonly RynthCore.Plugin.Shared.RynthIltDataClient IltData = new();
+    /// <summary>The Temple guardians as RynthILT last reported them (None off Infinite Leaftide).</summary>
+    public RynthCore.Plugin.Shared.IltGuardianView Guardian = RynthCore.Plugin.Shared.IltGuardianView.None;
+    /// <summary>Goes up when <see cref="Guardian"/> changes (the Quests list rebuilds its guardian rows).</summary>
+    public int GuardianRevision;
+    /// <summary>The last guardian command's problem, or "".</summary>
+    public string GuardianMessage = "";
+    /// <summary>A verb for RynthILT's Temple guardians (handin, stop, refresh, chat/auto/buy on|off).</summary>
+    public Func<string, bool> GuardianCommand = _ => false;
     // A server's own screens are its server plugin's (2026-10-20, 2026-10-21): nothing here is one server's.
     /// <summary>RynthAi's session (the one session every tracker shows); read while the Character tab shows.</summary>
     public readonly RynthCore.Plugin.Shared.RynthAiSessionClient AiSession = new();

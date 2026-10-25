@@ -58,6 +58,8 @@ internal static class UiFormat
     public const ushort EvInt = 3;
     public const ushort EvText = 5;
     public const ushort EvOpen = 6;
+    /// <summary>The window's geometry changed: f32x8 pos, size, content avail, cursor (logical units), u32 flags.</summary>
+    public const ushort EvGeometry = 7;
     public const ushort EvVisibility = 8;
     public const ushort EvError = 10;
 

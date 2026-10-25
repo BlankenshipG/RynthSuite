@@ -36,6 +36,8 @@
     <!-- RynthCore's server list and the owner plugin's profile (as in the plugin's csproj). -->
     <Compile Include="..\..\Plugins\Shared\RynthServerProfileApi.cs" Link="RynthOracle\Shared\RynthServerProfileApi.cs" />
     <Compile Include="..\..\Plugins\Shared\EngineServerState.cs" Link="RynthOracle\Shared\EngineServerState.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\RynthServers\Plugins\Shared\RynthIltServerApi.cs" Link="RynthOracle\Shared\RynthIltServerApi.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\RynthServers\Plugins\Shared\RynthIltDataApi.cs" Link="RynthOracle\Shared\RynthIltDataApi.cs" />
     <Compile Include="..\..\Plugins\Shared\ServerStateClient.cs" Link="RynthOracle\Shared\ServerStateClient.cs" />
     <!-- "RynthServer.QuestPack": the active server plugin's quest pack (as in the plugin's csproj). -->
     <Compile Include="..\..\Plugins\Shared\RynthServerQuestPackApi.cs" Link="RynthOracle\Shared\RynthServerQuestPackApi.cs" />
@@ -57,6 +59,7 @@
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\titles.csv" LogicalName="RynthOracle.titles.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\markers.csv" LogicalName="RynthOracle.markers.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\legendary.csv" LogicalName="RynthOracle.legendary.csv" />
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\dynstamps.csv" LogicalName="RynthOracle.dynstamps.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\spellcategories.csv" LogicalName="RynthOracle.spellcategories.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\equipmentsets.csv" LogicalName="RynthOracle.equipmentsets.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\materials.csv" LogicalName="RynthOracle.materials.csv" />

@@ -127,17 +127,27 @@ namespace RynthOracle.Tests
             if (dir == null) return;
             string root = Path.Combine(dir, "Plugins", "RynthCore.Plugin.RynthOracle");
             var names = new Regex(@"Ilt[A-Z]|RynthIlt|Leaftide|Conquest|Aelrynth|Levistras|DreamWeave", RegexOptions.CultureInvariant);
+            // The one exception (2026-10-25): Infinite Leaftide's Dynamic Stamps and Temple guardian rows, read
+            // from RynthILT and gated on ServerIdentity.IsIlt, may name that server in these files only.
+            var iltNames = new Regex(@"^(Ilt[A-Z]|RynthIlt|Leaftide)", RegexOptions.CultureInvariant);
+            var iltFiles = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "OracleContext.cs", "RynthOraclePlugin.cs", Path.Combine("Data", "ServerIdentity.cs"), Path.Combine("Data", "IltServerProfile.cs"),
+                Path.Combine("Data", "DynamicStamps.cs"), Path.Combine("Views", "DynamicStampsTab.cs"), Path.Combine("Views", "QuestsTab.cs"),
+            };
             int files = 0;
             var found = new System.Collections.Generic.List<string>();
             foreach (string file in Directory.GetFiles(root, "*.cs", SearchOption.AllDirectories))
             {
                 if (file.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar) || file.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar)) continue;
                 files++;
+                string rel = Path.GetRelativePath(root, file);
+                bool iltFile = iltFiles.Contains(rel);
                 string[] lines = File.ReadAllLines(file);
                 for (int i = 0; i < lines.Length; i++)
                 {
-                    Match m = names.Match(CodeOf(lines[i]));
-                    if (m.Success) found.Add($"{Path.GetRelativePath(root, file)}:{i + 1} ({m.Value})");
+                    foreach (Match m in names.Matches(CodeOf(lines[i])))
+                        if (!(iltFile && iltNames.IsMatch(m.Value))) { found.Add($"{rel}:{i + 1} ({m.Value})"); break; }
                 }
             }
             Check(files > 30, $"RynthOracle's sources were read ({files})");

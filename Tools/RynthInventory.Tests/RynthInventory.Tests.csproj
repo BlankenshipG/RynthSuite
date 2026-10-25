@@ -32,6 +32,8 @@
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
     <!-- The plugin links this one from Plugins/Shared (the glob above only covers the plugin's folder). -->
     <Compile Include="..\..\Plugins\Shared\StorageFeed.cs" Link="Shared\StorageFeed.cs" />
+    <Compile Include="..\..\Plugins\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\RynthServers\Plugins\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
   </ItemGroup>
 
   <ItemGroup>

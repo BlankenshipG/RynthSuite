@@ -29,8 +29,8 @@ namespace RynthCore.Plugin.RynthInventory;
 /// </summary>
 public sealed class RynthInventoryPlugin : RynthPluginBase
 {
-    // Previous release: 0.1.1. Keep in step with PluginExports.GetVersion.
-    public const string Version = "0.1.6";
+    // Previous release: 0.1.6. Keep in step with PluginExports.GetVersion.
+    public const string Version = "0.1.7";
 
     private const long IdentityRetryMs = 1000;
     private const long AccountWaitMs = 15_000;
@@ -57,6 +57,16 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     private readonly ConcurrentQueue<string> _storagePushes = new();
     private const int MaxQueuedPushes = 8;
     private string _lastPush = string.Empty;
+
+    // RynthILT's bank JSON (Infinite Leaftide only): every BankTabReadMs on the Banking tab, every
+    // BankIdleReadMs with the window on another tab, never with it closed or on another server.
+    private const long BankTabReadMs = 2000, BankIdleReadMs = 10_000;
+    private long _nextBankReadMs;
+    private string _bankJson = string.Empty;
+    // RynthCore's server list, read for the Infinite Leaftide gate every ServerStateReadMs.
+    private const long ServerStateReadMs = 2000;
+    private long _nextServerStateMs;
+    private string _serverStateJson = string.Empty;
 
     private bool _identityKnown;
     private long _loginMs;
@@ -92,6 +102,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _c.RequestRescan = () => { _scheduler.RequestFullScan(); _forceWrite = true; };
         _c.RequestReload = () => { _reloadWanted = true; _files.Clear(); };
         _c.Forget = ForgetCharacter;
+        _c.BankCommand = SendBankVerb;
         _ui.Log = msg => Host.Log(msg);
 
         _view = new InventoryView(_c);
@@ -126,7 +137,65 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _carriedIds.Clear();
         _carriedPacks.Clear();
         RefreshIconSupport();
+        ClearBank();
+        _nextServerStateMs = 0;
         if (_window != null) { _window.Visible = _c.Settings.MainWindowOpen; _window.NeedsPass = true; }
+    }
+
+    /// <summary>Forgets the last bank read (login, logout, off Infinite Leaftide): the next comes fresh.</summary>
+    private void ClearBank()
+    {
+        _c.Bank = IltBankView.None;
+        _bankJson = string.Empty;
+        _nextBankReadMs = 0;
+    }
+
+    /// <summary>
+    /// Whether RynthCore's active server is Infinite Leaftide (the Banking page's gate), from the
+    /// engine's server list. Leaving it drops the bank and moves the window off the Banking tab.
+    /// </summary>
+    private void TickServer(long now)
+    {
+        if (now < _nextServerStateMs) return;
+        _nextServerStateMs = now + ServerStateReadMs;
+        string json = _c.InWorld && Host.HasGetServerStateJson && Host.TryGetServerStateJson(out string j) ? j : string.Empty;
+        if (string.Equals(json, _serverStateJson, StringComparison.Ordinal)) return;
+        _serverStateJson = json;
+        bool ilt = EngineServerState.Parse(json)?.IsActive(EngineServerState.IltId) == true;
+        if (ilt == _c.Ilt) return;
+        _c.Ilt = ilt;
+        if (!ilt)
+        {
+            ClearBank();
+            _view?.LeaveBanking();
+        }
+        if (_window != null) _window.NeedsPass = true;
+    }
+
+    /// <summary>The Banking tab's actions: a verb line for RynthILT, then a quick re-read for its reply.</summary>
+    private bool SendBankVerb(string verb)
+    {
+        long now = Environment.TickCount64;
+        bool ok = _c.InWorld && _c.Ilt && _c.IltData.BankCommand(Host, now, verb);
+        _nextBankReadMs = now + 500;
+        if (_window != null) _window.NeedsPass = true;
+        return ok;
+    }
+
+    /// <summary>
+    /// On Infinite Leaftide: reads RynthILT's bank JSON while the window is open (more often on the
+    /// Banking tab) and redraws when it changed. Reading is what tells RynthILT someone is looking.
+    /// </summary>
+    private void TickBank(long now)
+    {
+        if (!_c.InWorld || !_c.Ilt || _window == null || _view == null || !_window.Visible) return;
+        if (now < _nextBankReadMs) return;
+        _nextBankReadMs = now + (_view.Tab == InventoryView.TabBanking ? BankTabReadMs : BankIdleReadMs);
+        string json = _c.IltData.ReadBank(Host, now);
+        if (string.Equals(json, _bankJson, StringComparison.Ordinal)) return;
+        _bankJson = json;
+        _c.Bank = IltBankView.Parse(json);
+        _window.NeedsPass = true;
     }
 
     public override void OnLogout()
@@ -142,6 +211,10 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _c.Live = null;
         _indexDirty = true;
         while (_storagePushes.TryDequeue(out _)) { }   // the next character's come fresh
+        ClearBank();
+        _c.Ilt = false;
+        _serverStateJson = string.Empty;
+        _view?.LeaveBanking();
         _lastPush = string.Empty;
     }
 
@@ -258,9 +331,21 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
             case "status":
                 PrintStatus();
                 break;
+            case "bank":
+            case "banking":
+                // The Banking tab: every character's Infinite Leaftide bank (RynthILT), Infinite Leaftide only.
+                if (!_c.Ilt)
+                {
+                    _c.Print("The bank is an Infinite Leaftide feature; the active server isn't Infinite Leaftide.");
+                    break;
+                }
+                _view?.ShowBanking();
+                _nextBankReadMs = 0;
+                if (_window != null) { _window.Visible = true; _window.NeedsPass = true; }
+                break;
             case "help":
             case "?":
-                _c.Print("/ginv (window), /ginv <text> (search), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv reload, /ginv status. To find items like one you carry, right-click it in the Inventory panel: Find like this in Global Inventory (/ginv like clear removes that filter).");
+                _c.Print("/ginv (window), /ginv <text> (search), /ginv bank (every character's bank, Infinite Leaftide), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv reload, /ginv status. To find items like one you carry, right-click it in the Inventory panel: Find like this in Global Inventory (/ginv like clear removes that filter).");
                 break;
             default:
                 _view?.SetSearch(arg);
@@ -328,6 +413,8 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         }
         TickWrite(now);
         TickIndex(now);
+        TickServer(now);
+        TickBank(now);
 
         if (!Host.HasUi || _window == null || _view == null) return;
         Record(_window, now, 2000, _view.Draw);

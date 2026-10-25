@@ -57,6 +57,7 @@ namespace RynthOracle.Tests
             GoToParsing();
             Loaders();
             MergedList();
+            QuestColumnsFollowWidth();
             MarkersReachable();
             GoToButtons();
             Throttle();

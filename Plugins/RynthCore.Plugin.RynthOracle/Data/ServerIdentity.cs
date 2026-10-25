@@ -28,6 +28,13 @@ internal sealed class ServerIdentity
     public bool Known => WorldName.Length > 0 || ServerId.Length > 0;
     public int Revision { get; private set; }
 
+    /// <summary>
+    /// RynthCore's active server is Infinite Leaftide (EngineServerState.IltId). Gates the rows and
+    /// reads that only that server has: the Dynamic Stamps and Temple guardian rows of the Quests
+    /// tab, RynthILT's /qb list and guardian data, and the Dynamic stamp source log line.
+    /// </summary>
+    public bool IsIlt => string.Equals(ServerId, EngineServerState.IltId, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The active server's name for the player: its name, its id, or "no server".</summary>
     public string DisplayName => ServerName.Length > 0 ? ServerName : ServerId.Length > 0 ? ServerId : "no server";
 

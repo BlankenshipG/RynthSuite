@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
 using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 using RynthCore.Plugin.RynthOracle.Views;
@@ -18,8 +20,8 @@ namespace RynthCore.Plugin.RynthOracle;
 /// </summary>
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
-    // Previous release: 0.6.2.
-    public const string Version = "0.7.2";
+    // Previous release: 0.7.2.
+    public const string Version = "0.7.3";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
     private const long CharacterReadMs = 1000;
@@ -45,7 +47,13 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     // Auto refresh (Settings QuestRefreshMinutes): the later of the login and RynthOracle's own last
     // automatic /myquests; the flags' last reply counts too (TickData).
     private DateTime _autoQuestSinceUtc = DateTime.MinValue;
-    private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1;
+    private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1, _seenIltRevision = -1;
+    // Infinite Leaftide (ServerIdentity.IsIlt): RynthILT's Temple guardian JSON last read, and when next.
+    private long _nextGuardianMs;
+    private string _guardianJson = "";
+    // The Dynamic stamp sources last logged (LogStampSources), and the revisions they were read at.
+    private (int InMyQuests, int InQb, int Matched) _loggedStamps = (-1, -1, -1);
+    private int _stampFlagRevision = -1, _stampIltRevision = -1;
     // RynthCore's server list (ServerStateClient.Revision) last applied to the server identity.
     private int _seenServerStateRevision = -1;
     private bool _noUiLogged;
@@ -64,6 +72,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.ReloadQuestList = ReloadQuestList;
         _c.Send = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
         _c.RunCommand = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
+        _c.GuardianCommand = GuardianCommand;
         _c.SendNav = line => Host.HasSendPluginCommand && Host.SendPluginCommand("RynthNav", "rnav", line);
         _ui.Log = msg => Host.Log(msg);
 
@@ -173,6 +182,77 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.EarnedTitles.Clear();
         _c.Gear.Clear();
         ClearCharacterExtras();
+        ClearIlt();
+    }
+
+    /// <summary>Forgets RynthILT's profile and guardians (logout, or the server stopped being Infinite Leaftide).</summary>
+    private void ClearIlt()
+    {
+        _c.Ilt.Clear();
+        _guardianJson = "";
+        _nextGuardianMs = 0;
+        if (!ReferenceEquals(_c.Guardian, Shared.IltGuardianView.None))
+        {
+            _c.Guardian = Shared.IltGuardianView.None;
+            _c.GuardianRevision++;
+        }
+        _c.GuardianMessage = "";
+        _loggedStamps = (-1, -1, -1);
+        _stampFlagRevision = _stampIltRevision = -1;
+    }
+
+    /// <summary>
+    /// Infinite Leaftide: logs where the Dynamic stamps come from whenever the flags or the /qb list
+    /// change and the counts move (Dynamic flags in /myquests, in the /qb list, and the listed
+    /// stamps matched), so a stamp shown as not done can be told apart from one never read. Names
+    /// the flags no listed stamp matched (up to 10), so a sheet row that doesn't fit is visible.
+    /// Nothing on any other server.
+    /// </summary>
+    private void LogStampSources()
+    {
+        if (!_c.Server.IsIlt) return;
+        if (_c.Flags.Revision == _stampFlagRevision && _c.Ilt.Revision == _stampIltRevision) return;
+        _stampFlagRevision = _c.Flags.Revision;
+        _stampIltRevision = _c.Ilt.Revision;
+        if (_c.Flags.Flags.Count == 0) return;
+        IReadOnlySet<string> qbStamps = _c.Ilt.QbStampSet;
+        var counts = DynamicStampList.Counts(_c.Flags, qbStamps);
+        if (counts == _loggedStamps) return;
+        _loggedStamps = counts;
+        List<string> unlisted = DynamicStampList.Unlisted(_c.Flags, qbStamps);
+        Host.Log($"[RynthOracle] Dynamic stamps: {counts.InMyQuests} Dynamic flag(s) in /myquests, {counts.InQb} in the /qb list"
+                 + $" ({_c.Ilt.QbCompletedSet.Count} completed flags read); {counts.Matched} of {DynamicStampList.All.Count} listed stamps done"
+                 + (unlisted.Count == 0 ? "." : $"; not in the list: {string.Join(" ", unlisted.Take(10))}{(unlisted.Count > 10 ? " ..." : "")}."));
+    }
+
+    /// <summary>The Quests tab's guardian controls: a verb for RynthILT's guardians, then a quick re-read.</summary>
+    private bool GuardianCommand(string verb)
+    {
+        long now = Environment.TickCount64;
+        bool ok = _c.InWorld && _c.Server.IsIlt && _c.IltData.GuardianCommand(Host, now, verb);
+        _c.GuardianMessage = ok ? "" : "RynthILT didn't take that (not loaded, or older than 0.2.20).";
+        _nextGuardianMs = now + 400;
+        if (_main != null) _main.NeedsPass = true;
+        return ok;
+    }
+
+    /// <summary>
+    /// While the Quests tab is on screen on Infinite Leaftide: RynthILT's Temple guardian JSON every
+    /// <see cref="CharacterExtrasReadMs"/> (the guardian rows, switches and last answer). Nothing is
+    /// read with the window closed, on another tab, or on another server.
+    /// </summary>
+    private void ReadGuardian(long now)
+    {
+        if (_main == null || _mainView == null || !_main.Visible || _mainView.Tab != OracleView.TabQuests) return;
+        if (!_c.Server.IsIlt) return;
+        if (now < _nextGuardianMs) return;
+        _nextGuardianMs = now + CharacterExtrasReadMs;
+        string json = _c.IltData.ReadGuardian(Host, now);
+        if (string.Equals(json, _guardianJson, StringComparison.Ordinal)) return;
+        _guardianJson = json;
+        _c.Guardian = Shared.IltGuardianView.Parse(json);
+        _c.GuardianRevision++;
+        _main.NeedsPass = true;
     }
 
     /// <summary>Forgets the Character tab's session (login, logout): the next character's comes fresh.</summary>
@@ -205,6 +285,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     {
         _mainView?.ShowTrackers(kind);
         if (_main != null) { _main.Visible = true; _main.NeedsPass = true; }
+        _nextGuardianMs = 0;   // read at once
     }
 
     /// <summary>Shows the main window on a tab (another plugin's link, or a /ro tab command).</summary>
@@ -349,6 +430,23 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 // The 100 exploration markers: the Quests tab's marker rows (the old Markers tab).
                 ShowTrackers(QuestKind.Marker);
                 break;
+            case "dynamic":
+            case "stamps":
+            case "dyn":
+            case "guardian":
+            case "guardians":
+            {
+                // Infinite Leaftide's trackers: the Dynamic Stamps and RynthILT's Temple guardians.
+                bool guardians = arg is "guardian" or "guardians";
+                if (!_c.Server.IsIlt)
+                {
+                    _c.Print((guardians ? "The Temple guardians are" : "Dynamic stamps are")
+                             + " an Infinite Leaftide quest line; the active server isn't Infinite Leaftide.");
+                    ShowTrackers(null);
+                }
+                else ShowTrackers(guardians ? QuestKind.Guardian : QuestKind.Dynamic);
+                break;
+            }
             case "trackers":
                 // Every tracker: the Legendary Key quests and the exploration markers. A server's own
                 // trackers and tabs are its server plugin's pages (since 2026-10-21).
@@ -505,6 +603,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             _c.Flags.LastPartialReply = null;
             Host.Log($"[RynthOracle] /myquests reply looked cut short ({partial.Got} lines, {partial.Had} flags held): merged it instead of replacing the list.");
         }
+        LogStampSources();
         if (_c.Flags.Revision != _seenFlagRevision)
         {
             _seenFlagRevision = _c.Flags.Revision;
@@ -541,6 +640,17 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         if (!_c.InWorld) return;
 
         ReadCharacterExtras(now);
+        // Infinite Leaftide only: RynthILT's profile (every 2 s; the /qb list for the stamps) and the guardians.
+        if (_c.Server.IsIlt)
+        {
+            _c.Ilt.Poll(Host, now);
+            if (_c.Ilt.Revision != _seenIltRevision)
+            {
+                _seenIltRevision = _c.Ilt.Revision;
+                if (_main != null) _main.NeedsPass = true;
+            }
+            ReadGuardian(now);
+        }
         // The Gear tab's Check runs on (appraisals spaced out) whichever tab is showing.
         if (_c.Gear.Tick(Host, now, _c.Character.Name) && _main != null) _main.NeedsPass = true;
 
@@ -551,7 +661,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         {
             _seenServerStateRevision = _c.ServerState.Revision;
             _c.VoidDotScale = VoidScaleFrom(_c.ServerState.ProfileJson);
+            bool wasIlt = _c.Server.IsIlt;
             _c.Server.Refresh(Host, _c.ServerState.State);
+            if (wasIlt && !_c.Server.IsIlt) ClearIlt();
         }
         // The active server plugin's quest pack (every 2 s; the CSV is read only when it changed).
         _c.QuestPacks.Poll(Host, Shared.ServerQuestPackClient.OwnerOf(_c.ServerState.State), now, force: serverChanged);
