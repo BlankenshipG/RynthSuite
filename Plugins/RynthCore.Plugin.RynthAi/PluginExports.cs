@@ -954,6 +954,15 @@ public static unsafe class PluginExports
         catch { }
     }
 
+    // The Inventory panel's right-click "Add to Damage panel weapons" (2026-10-25): a weapon,
+    // wand or shield by id, without selecting it first. Shields go in as off-hand items.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginAddWeaponById", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void AddWeaponById(uint id)
+    {
+        try { Runtime.Plugin?.DashboardRenderer?.AddWeapon(id); }
+        catch { }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginAddSelectedConsumable", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void AddSelectedConsumable()
     {

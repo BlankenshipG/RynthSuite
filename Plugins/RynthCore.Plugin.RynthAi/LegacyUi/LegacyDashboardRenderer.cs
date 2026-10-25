@@ -1634,6 +1634,7 @@ internal sealed partial class LegacyDashboardRenderer
     }
 
     public void AddSelectedWeapon()     { _weaponsUi.AddSelectedWeapon();     SaveSettings(); }
+    public void AddWeapon(uint id)      { _weaponsUi.AddWeapon(id);           SaveSettings(); }
     public void AddSelectedConsumable() { _weaponsUi.AddSelectedConsumable(); SaveSettings(); }
 
     /// <summary>Launches the standalone Monster Rules editor for the current char folder.</summary>

@@ -32,6 +32,17 @@ internal sealed class LegacyWeaponsUi
             _host.WriteToChat("[RynthAi] No item selected — click a weapon in your inventory first.", 1);
             return;
         }
+        AddWeapon(selId);
+    }
+
+    /// <summary>
+    /// Adds the weapon, wand or shield <paramref name="selId"/> to the Items list (the weapons the
+    /// Damage panel and combat may use): Add Selected, and the Inventory panel's right-click
+    /// "Add to Damage panel weapons" (RynthPluginAddWeaponById, 2026-10-25). Says in chat what it did.
+    /// </summary>
+    public void AddWeapon(uint selId)
+    {
+        if (selId == 0) return;
         if (_worldFilter == null) { _host.WriteToChat("[RynthAi] Object cache not ready.", 1); return; }
 
         var wo = _worldFilter[(int)selId];
