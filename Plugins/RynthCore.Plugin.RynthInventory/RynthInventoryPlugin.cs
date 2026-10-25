@@ -1020,15 +1020,18 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         }
         else
         {
-            // Need to switch characters.
+            // Need to switch characters — log out automatically so the player can pick the next one.
             var (key, name, account) = remaining[0];
             trade.Phase = TradePhase.WaitSwitch;
             trade.WaitForCharacterKey = key;
             trade.WaitForCharacterName = name;
             trade.WaitForAccount = account;
-            trade.Message = $"Switch to {name} (account {account}) to continue giving items. The trade resumes automatically.";
+            trade.Message = $"Log in as {name} (account {account}) to continue. The trade resumes automatically.";
             _c.Print(trade.Message);
             if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+            // Auto-logout: send the player back to character select.
+            if (Host.HasInvokeChatParser)
+                Host.InvokeChatParser("/logout");
         }
     }
 
