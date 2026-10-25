@@ -112,12 +112,12 @@ internal sealed class MiniRemoteHud
     public void Render()
     {
         var s = _hud.State;
-        var flags = ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoScrollbar
-                    | ImGuiWindowFlags.NoFocusOnAppearing;
-        if (s.MiniRemoteLocked) flags |= ImGuiWindowFlags.NoMove;
+        var flags = ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoFocusOnAppearing;
+        if (s.MiniRemoteLocked) flags |= ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoResize;
 
         // Left of and above centre, mirroring the Item HUD's first spot.
         UiPlacement.CenterFirstUse(new Vector2(-220, -160));
+        ImGui.SetNextWindowSizeConstraints(new Vector2(180, 120), new Vector2(800, 1200));
         ImGui.SetNextWindowBgAlpha(0.70f);
         bool open = true;
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 3));
