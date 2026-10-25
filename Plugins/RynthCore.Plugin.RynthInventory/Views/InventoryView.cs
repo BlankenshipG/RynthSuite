@@ -327,6 +327,12 @@ internal sealed partial class InventoryView
         if (color != null) w.PushStyleColor(UiFormat.ColText, color.Value);
         w.Selectable(label, "r." + key, _selectedKey == key, () => { Select(key); SelectInGame(r); }, 0f, icons ? RowIcon : 0f);
         if (color != null) w.PopStyleColor();
+        // Trade: add to trade list button.
+        if (_c.Trade != null && _c.Trade.Phase == Data.TradePhase.Building)
+        {
+            w.SameLine();
+            w.SmallButton("+", "t." + key, () => AddToTrade(r));
+        }
     }
 
     private void DrawGroupRow(UiWindow w, InventoryTotal t)
@@ -378,6 +384,11 @@ internal sealed partial class InventoryView
         w.TextColored(UiColors.Gold, it.Name + StackText(it));
         w.SameLine();
         w.SmallButton("Close", "d.close", () => _selectedKey = null);
+        if (_c.Trade != null && _c.Trade.Phase == Data.TradePhase.Building)
+        {
+            w.SameLine();
+            w.SmallButton("Add to Trade", "d.trade", () => AddToTrade(r));
+        }
 
         string who = r.Owner.Name + " on " + r.Owner.Server;
         if (!string.IsNullOrEmpty(r.Owner.Account) && r.Owner.Account != "unknown") who += $" (account {r.Owner.Account})";
@@ -504,6 +515,18 @@ internal sealed partial class InventoryView
         }
         if (index.Characters.Count == 0) w.TextDisabled("No characters recorded yet.");
         w.EndChild();
+    }
+
+    // ── Trade ────────────────────────────────────────────────────────────
+
+    private void AddToTrade(InventoryRow r)
+    {
+        if (_c.Trade == null) return;
+        // Use the full stack quantity for stackable items; 0 means "the whole object".
+        int qty = r.Item.Stack > 1 ? r.Item.Stack : 0;
+        string? error = _c.Trade.Add(r, qty);
+        if (error != null) _message = error;
+        else _message = $"Added {r.Item.Name} to trade list.";
     }
 
     private void DrawCharacter(UiWindow w, CharacterInfo ci)

@@ -41,6 +41,12 @@ internal sealed class InventoryContext
     /// <summary>Forgets a character (moves its file aside). Returns a message for the player.</summary>
     public Func<CharacterInfo, string> Forget = _ => string.Empty;
 
+    // ── Trade ────────────────────────────────────────────────────────────
+    /// <summary>The active trade list (null when none). Pump thread only.</summary>
+    public TradeList? Trade;
+    /// <summary>Action for trade commands from the trade view ("start", "cancel", "clear", "new").</summary>
+    public Action<string>? TradeCommand;
+
     /// <summary>
     /// RynthCore's active server is Infinite Leaftide (EngineServerState.IltId): the Banking page
     /// (RynthILT's bank) shows and is read only then. Re-read every couple of seconds.

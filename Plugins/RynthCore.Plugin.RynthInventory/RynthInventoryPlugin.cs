@@ -49,6 +49,8 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     private readonly UiHost _ui = new();
     private UiWindow? _window;
     private InventoryView? _view;
+    private UiWindow? _tradeWindow;
+    private TradeView? _tradeView;
     private readonly ConcurrentQueue<string> _commands = new();
 
     // Storage other plugins read for us ("storage" plugin commands, StorageFeed.cs): queued by
@@ -114,6 +116,14 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
             BarButton = false,
         });
 
+        _tradeView = new TradeView(_c);
+        _tradeWindow = _ui.Add(new UiWindow("RynthInventory/Trade", "Trade List")
+        {
+            DefaultWidth = 400f, DefaultHeight = 500f, MinWidth = 300f, MinHeight = 200f,
+            BarButton = false,
+        });
+        _c.TradeCommand = RunTradeCommand;
+
         Host.Log($"[RynthInventory] {Version} initialized. /ginv opens the window. Files: {_c.Store.Root}");
         return 0;
     }
@@ -140,6 +150,9 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         ClearBank();
         _nextServerStateMs = 0;
         if (_window != null) { _window.Visible = _c.Settings.MainWindowOpen; _window.NeedsPass = true; }
+        // Trade: auto-resume when the character the trade is waiting for logs in.
+        if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+        _tradeResumeChecked = false;
     }
 
     /// <summary>Forgets the last bank read (login, logout, off Infinite Leaftide): the next comes fresh.</summary>
@@ -207,6 +220,8 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _scheduler.Logout();
         CloseStorage();
         if (_window != null) { _window.Visible = false; _window.NeedsPass = true; }
+        // Trade window stays visible across logout so the player can see what's left.
+        if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
         _ui.SubmitEmpty(Host);
         _c.Live = null;
         _indexDirty = true;
@@ -343,9 +358,15 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
                 _nextBankReadMs = 0;
                 if (_window != null) { _window.Visible = true; _window.NeedsPass = true; }
                 break;
+            case "trade":
+                // Toggle the trade list window and start a new trade if none is active.
+                if (_c.Trade == null)
+                    _c.Trade = new TradeList();
+                if (_tradeWindow != null) { _tradeWindow.Visible = !_tradeWindow.Visible; _tradeWindow.NeedsPass = true; }
+                break;
             case "help":
             case "?":
-                _c.Print("/ginv (window), /ginv <text> (search), /ginv bank (every character's bank, Infinite Leaftide), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv reload, /ginv status. To find items like one you carry, right-click it in the Inventory panel: Find like this in Global Inventory (/ginv like clear removes that filter).");
+                _c.Print("/ginv (window), /ginv <text> (search), /ginv trade (trade list), /ginv bank (every character's bank, Infinite Leaftide), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv reload, /ginv status. To find items like one you carry, right-click it in the Inventory panel: Find like this in Global Inventory (/ginv like clear removes that filter).");
                 break;
             default:
                 _view?.SetSearch(arg);
@@ -415,9 +436,12 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         TickIndex(now);
         TickServer(now);
         TickBank(now);
+        TickTrade(now);
 
         if (!Host.HasUi || _window == null || _view == null) return;
         Record(_window, now, 2000, _view.Draw);
+        if (_tradeWindow != null && _tradeView != null && _tradeWindow.Visible)
+            Record(_tradeWindow, now, 1000, _tradeView.Draw);
         _ui.Submit(Host, now);
 
         if (_c.InWorld && _window.Visible != _c.Settings.MainWindowOpen)
@@ -830,4 +854,249 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     }
 
     private int _lastDrawnRevision = -1;
+
+    // ── Trade execution ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Trade give throttle: at most one give every TradeGiveIntervalMs (avoids flooding the server
+    /// and lets us detect success/failure before the next give).
+    /// </summary>
+    private const long TradeGiveIntervalMs = 1500;
+    private long _nextTradeGiveMs;
+    /// <summary>Whether we've checked for auto-resume on this login (once per login).</summary>
+    private bool _tradeResumeChecked;
+
+    private void RunTradeCommand(string cmd)
+    {
+        switch (cmd)
+        {
+            case "start":
+                StartTrade();
+                break;
+            case "cancel":
+                CancelTrade();
+                break;
+            case "clear":
+                _c.Trade = new TradeList();
+                if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+                break;
+            case "new":
+                _c.Trade = new TradeList();
+                if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+                break;
+        }
+    }
+
+    private void StartTrade()
+    {
+        TradeList? trade = _c.Trade;
+        if (trade == null || trade.Items.Count == 0) return;
+        if (trade.Recipient.Trim().Length == 0)
+        {
+            trade.Message = "Enter a player name to send items to.";
+            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+            return;
+        }
+        if (!_c.Host.HasGiveObjectTo)
+        {
+            trade.Message = "This engine doesn't support GiveObjectTo (needs API v62+).";
+            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+            return;
+        }
+
+        trade.Phase = TradePhase.Executing;
+        trade.TargetPlayerId = 0; // resolved per-give
+        trade.Message = "Trade started. Giving items...";
+        _nextTradeGiveMs = Environment.TickCount64;
+        if (_tradeWindow != null) { _tradeWindow.Visible = true; _tradeWindow.NeedsPass = true; }
+        _c.Print($"Trade started: giving {trade.Items.Count} item(s) to {trade.Recipient}.");
+    }
+
+    private void CancelTrade()
+    {
+        TradeList? trade = _c.Trade;
+        if (trade == null) return;
+        trade.Phase = TradePhase.Cancelled;
+        trade.Message = "Trade cancelled.";
+        if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+    }
+
+    private void TickTrade(long now)
+    {
+        TradeList? trade = _c.Trade;
+        if (trade == null) return;
+
+        // Auto-resume: when the player switches to a character the trade is waiting for.
+        if (_identityKnown && !_tradeResumeChecked && trade.Phase == TradePhase.WaitSwitch)
+        {
+            _tradeResumeChecked = true;
+            string currentKey = CharacterSnapshot.MakeKey(_c.Server, _c.Character);
+            if (string.Equals(currentKey, trade.WaitForCharacterKey, StringComparison.Ordinal))
+            {
+                trade.Phase = TradePhase.Executing;
+                trade.TargetPlayerId = 0;
+                trade.Message = $"Resumed on {_c.Character}. Giving items...";
+                _nextTradeGiveMs = now + 3000; // brief delay after login
+                _c.Print($"Trade resumed: giving items to {trade.Recipient} from {_c.Character}.");
+                if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+            }
+        }
+
+        if (trade.Phase != TradePhase.Executing || !_c.InWorld || !_identityKnown) return;
+        if (now < _nextTradeGiveMs) return;
+
+        // Find pending items for the current character.
+        string charKey = CharacterSnapshot.MakeKey(_c.Server, _c.Character);
+        List<TradeItem> pending = trade.PendingForCharacter(charKey);
+
+        if (pending.Count > 0)
+        {
+            // Resolve target player id if not yet done.
+            if (trade.TargetPlayerId == 0)
+            {
+                trade.TargetPlayerId = ResolvePlayerByName(trade.Recipient);
+                if (trade.TargetPlayerId == 0)
+                {
+                    trade.Message = $"Can't find {trade.Recipient} nearby. Make sure they are close to you.";
+                    _nextTradeGiveMs = now + 5000; // retry in 5 seconds
+                    if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+                    return;
+                }
+            }
+
+            TradeItem item = pending[0];
+            item.Status = TradeItemStatus.Giving;
+            item.StatusText = "giving...";
+            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+
+            // Try to find the actual item on the character.
+            uint objId = FindItemOnCharacter(item);
+            if (objId == 0)
+            {
+                item.Status = TradeItemStatus.NotFound;
+                item.StatusText = "not found on this character";
+                // Tell the recipient what we couldn't find.
+                NotifyRecipient(trade, $"Could not find {item.ItemName} - it may have been moved or consumed.");
+                _nextTradeGiveMs = now + 500;
+                if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+                return;
+            }
+
+            bool ok = _c.Host.GiveObjectTo(objId, trade.TargetPlayerId, item.Quantity);
+            if (ok)
+            {
+                item.Status = TradeItemStatus.Given;
+                item.StatusText = "given";
+                _c.Print($"Gave {item.ItemName} to {trade.Recipient}.");
+            }
+            else
+            {
+                item.Status = TradeItemStatus.Failed;
+                item.StatusText = "give failed";
+                NotifyRecipient(trade, $"Failed to give {item.ItemName} - give command rejected.");
+            }
+            _nextTradeGiveMs = now + TradeGiveIntervalMs;
+            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+            return;
+        }
+
+        // No more pending items on this character. Are there items on other characters?
+        var remaining = trade.PendingCharacters();
+        if (remaining.Count == 0)
+        {
+            // All done.
+            trade.Phase = TradePhase.Complete;
+            var (given, notFound, failed, _) = trade.Counts();
+            trade.Message = $"Trade complete: {given} given" +
+                            (notFound > 0 ? $", {notFound} not found" : "") +
+                            (failed > 0 ? $", {failed} failed" : "") + ".";
+            _c.Print(trade.Message);
+            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+        }
+        else
+        {
+            // Need to switch characters.
+            var (key, name, account) = remaining[0];
+            trade.Phase = TradePhase.WaitSwitch;
+            trade.WaitForCharacterKey = key;
+            trade.WaitForCharacterName = name;
+            trade.WaitForAccount = account;
+            trade.Message = $"Switch to {name} (account {account}) to continue giving items. The trade resumes automatically.";
+            _c.Print(trade.Message);
+            if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
+        }
+    }
+
+    private const uint BitfieldPlayer = 0x00000008;
+
+    /// <summary>
+    /// Resolves a player name to a nearby object id. Searches the live objects for a player
+    /// whose name matches (case-insensitive).
+    /// </summary>
+    private uint ResolvePlayerByName(string name)
+    {
+        if (!Host.HasGetLiveObjectIds) return 0;
+        uint[] ids = Host.GetLiveObjectIds();
+        string trimmed = name.Trim();
+        foreach (uint id in ids)
+        {
+            if (id == _c.Player) continue;
+            if (!Host.TryGetObjectBitfield(id, out uint bf) || (bf & BitfieldPlayer) == 0) continue;
+            if (Host.TryGetObjectName(id, out string objName)
+                && string.Equals(objName, trimmed, StringComparison.OrdinalIgnoreCase))
+                return id;
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Finds an item on the current character matching a trade item (by object id first, then by
+    /// wcid + name). Returns 0 if not found.
+    /// </summary>
+    private uint FindItemOnCharacter(TradeItem item)
+    {
+        if (_c.Player == 0) return 0;
+        // First, try the exact object id.
+        if (item.ItemId != 0 && Host.TryGetObjectName(item.ItemId, out _))
+        {
+            if (Host.TryGetObjectOwnershipInfo(item.ItemId, out uint container, out uint wielder, out _)
+                && (container == _c.Player || wielder == _c.Player || IsCarriedPack(container)))
+                return item.ItemId;
+        }
+        // Fall back to scanning inventory for matching wcid + name.
+        if (item.Wcid == 0) return 0;
+        if (!Host.HasGetContainerContents) return 0;
+        uint found = FindItemInContainer(_c.Player, item);
+        if (found != 0) return found;
+        // Check carried containers (packs).
+        foreach (uint packId in _carriedPacks)
+        {
+            found = FindItemInContainer(packId, item);
+            if (found != 0) return found;
+        }
+        return 0;
+    }
+
+    private uint FindItemInContainer(uint containerId, TradeItem item)
+    {
+        uint[] buf = new uint[256];
+        int count = Host.GetContainerContents(containerId, buf);
+        for (int i = 0; i < count; i++)
+        {
+            uint id = buf[i];
+            if (Host.TryGetObjectWcid(id, out uint wcid) && wcid == item.Wcid
+                && Host.TryGetObjectName(id, out string name)
+                && string.Equals(name, item.ItemName, StringComparison.OrdinalIgnoreCase))
+                return id;
+        }
+        return 0;
+    }
+
+    /// <summary>Tells the recipient player (via chat) about items that couldn't be given.</summary>
+    private void NotifyRecipient(TradeList trade, string message)
+    {
+        // Use InvokeChatParser to send a /tell to the recipient.
+        if (_c.Host.HasInvokeChatParser && trade.Recipient.Length > 0)
+            _c.Host.InvokeChatParser($"/tell {trade.Recipient}, [RynthInventory Trade] {message}");
+    }
 }
