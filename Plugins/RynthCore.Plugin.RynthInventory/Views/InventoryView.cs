@@ -31,6 +31,8 @@ internal sealed partial class InventoryView
     private string? _selectedKey;
     private string? _confirmForget;
     private string _message = string.Empty;
+    /// <summary>Pending trade quantity text (for stackable items).</summary>
+    private string _tradeQtyText = string.Empty;
 
     private InventoryResult? _result;
     private int _resultRevision = -1;
@@ -79,6 +81,13 @@ internal sealed partial class InventoryView
         {
             w.SameLine();
             w.ToggleButton("Banking", "tab.bank", Tab == TabBanking, () => Tab = TabBanking, small: true);
+        }
+        if (_c.TradeCommand != null)
+        {
+            w.SameLine();
+            int tradeCount = _c.Trade?.Items.Count ?? 0;
+            string tradeLabel = tradeCount > 0 ? $"Trade List ({tradeCount})" : "Trade List";
+            w.SmallButton(tradeLabel, "tab.trade", () => _c.TradeCommand.Invoke("toggle"));
         }
         w.SameLine();
         w.TextDisabled(StatusLine());
@@ -386,8 +395,19 @@ internal sealed partial class InventoryView
         w.SmallButton("Close", "d.close", () => _selectedKey = null);
         if (_c.Trade != null && _c.Trade.Phase == Data.TradePhase.Building)
         {
-            w.SameLine();
-            w.SmallButton("Add to Trade", "d.trade", () => AddToTrade(r));
+            if (it.MaxStack > 1)
+            {
+                // Stackable: show a quantity input.
+                w.SameLine();
+                w.InputText("Qty", "d.tradeqty", _tradeQtyText, 12, v => _tradeQtyText = v);
+                w.SameLine();
+                w.SmallButton("Add to Trade", "d.trade", () => AddToTradeWithQty(r));
+            }
+            else
+            {
+                w.SameLine();
+                w.SmallButton("Add to Trade", "d.trade", () => AddToTrade(r));
+            }
         }
 
         string who = r.Owner.Name + " on " + r.Owner.Server;
@@ -527,6 +547,25 @@ internal sealed partial class InventoryView
         string? error = _c.Trade.Add(r, qty);
         if (error != null) _message = error;
         else _message = $"Added {r.Item.Name} to trade list.";
+    }
+
+    private void AddToTradeWithQty(InventoryRow r)
+    {
+        if (_c.Trade == null) return;
+        int qty;
+        string trimmed = _tradeQtyText.Trim();
+        if (trimmed.Length == 0 || !int.TryParse(trimmed, out qty) || qty <= 0)
+            qty = r.Item.Stack > 1 ? r.Item.Stack : 0; // default to full stack
+        else if (r.Item.MaxStack > 1 && qty > r.Item.Stack)
+            qty = r.Item.Stack; // clamp to available
+        string? error = _c.Trade.Add(r, qty);
+        if (error != null) _message = error;
+        else
+        {
+            string qtyText = qty > 0 ? $" x{qty:N0}" : "";
+            _message = $"Added {r.Item.Name}{qtyText} to trade list.";
+        }
+        _tradeQtyText = string.Empty;
     }
 
     private void DrawCharacter(UiWindow w, CharacterInfo ci)

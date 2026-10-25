@@ -1064,21 +1064,33 @@ internal readonly record struct QuestColumns(float Done, float Label, float Labe
     private const float ReadyWidth = 100f, SolvesWidth = 60f, Gap = 8f;
 
     /// <summary>
-    /// The layout for <paramref name="contentWidth"/>: the fixed layout until the window is wide
-    /// enough to give the name more room than it has there (0 or less = the fixed layout).
+    /// The layout for <paramref name="contentWidth"/>: scales all columns to fit the window's
+    /// width. The label column gets at most half the available space so the gap between the
+    /// quest name and the Ready column stays reasonable at any window width.
     /// </summary>
     public static QuestColumns For(float contentWidth)
     {
         float width = contentWidth - ListChrome;
         if (!(width > 0f) || !float.IsFinite(width)) return Fixed;
-        float extra = Math.Clamp(width * 0.22f, 126f, 320f);
-        float extraX = width - extra;
-        float solvesX = extraX - SolvesWidth;
-        float readyX = solvesX - ReadyWidth;
-        float labelWidth = readyX - Fixed.Label - Gap;
-        if (labelWidth <= Fixed.LabelWidth) return Fixed;
+        // Right-side fixed minimums.
+        const float MinReady = 80f, MinSolves = 50f, MinExtra = 100f;
+        float rightMin = MinReady + MinSolves + MinExtra + Gap * 3;
+        float available = width - Fixed.Label - Gap;
+        if (available < rightMin + 80f) return Fixed; // too narrow to lay out dynamically
+        // Label gets up to half, capped at 50% of the space after the left columns.
+        float maxLabel = available * 0.50f;
+        float labelWidth = Math.Min(maxLabel, Fixed.LabelWidth + (available - rightMin - Fixed.LabelWidth) * 0.35f);
+        labelWidth = Math.Max(Fixed.LabelWidth, labelWidth);
+        // Distribute the rest among right-side columns proportionally.
+        float rightSpace = available - labelWidth;
+        float readyX = Fixed.Label + labelWidth + Gap;
+        float readyW = rightSpace * 0.35f;
+        float solvesX = readyX + readyW;
+        float solvesW = rightSpace * 0.20f;
+        float extraX = solvesX + solvesW;
+        float extraW = rightSpace - readyW - solvesW;
         return new QuestColumns(Fixed.Done, Fixed.Label, labelWidth, Math.Max(10, (int)(labelWidth / CharWidth)),
-                                readyX, Math.Max(8, (int)((ReadyWidth - Gap) / CharWidth)), solvesX, extraX,
-                                Math.Max(8, (int)((extra - Gap) / CharWidth)));
+                                readyX, Math.Max(8, (int)((readyW - Gap) / CharWidth)), solvesX, extraX,
+                                Math.Max(8, (int)((extraW - Gap) / CharWidth)));
     }
 }

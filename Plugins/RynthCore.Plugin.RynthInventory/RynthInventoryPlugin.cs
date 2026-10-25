@@ -884,6 +884,11 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
                 _c.Trade = new TradeList();
                 if (_tradeWindow != null) _tradeWindow.NeedsPass = true;
                 break;
+            case "toggle":
+                if (_c.Trade == null)
+                    _c.Trade = new TradeList();
+                if (_tradeWindow != null) { _tradeWindow.Visible = !_tradeWindow.Visible; _tradeWindow.NeedsPass = true; }
+                break;
         }
     }
 

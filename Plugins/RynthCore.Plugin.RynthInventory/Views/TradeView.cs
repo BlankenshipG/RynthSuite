@@ -125,6 +125,8 @@ internal sealed class TradeView
                 w.TextColored(statusColor, line);
             else
                 w.Text(line);
+            // Item info tooltip (hover to see details from the inventory index).
+            ItemTooltip(w, item);
 
             if (item.StatusText.Length > 0)
             {
@@ -135,10 +137,11 @@ internal sealed class TradeView
             // Remove button (only while building).
             if (building)
             {
+                int idx = i; // capture for lambda
                 w.SameLine();
                 w.SmallButton("X", $"trade.rm.{i}", () =>
                 {
-                    trade.RemoveAt(i);
+                    trade.RemoveAt(idx);
                     w.NeedsPass = true;
                 });
             }
@@ -168,5 +171,42 @@ internal sealed class TradeView
         {
             w.Button("New Trade", "trade.new", () => _c.TradeCommand?.Invoke("new"));
         }
+    }
+
+    /// <summary>
+    /// Shows a tooltip with item details from the inventory index when hovering over a trade item.
+    /// </summary>
+    private void ItemTooltip(UiWindow w, TradeItem item)
+    {
+        InventoryIndex? index = _c.Index;
+        if (index == null) return;
+
+        // Find the item in the index by character key + object id, or character key + wcid + name.
+        InventoryRow? row = null;
+        foreach (InventoryRow r in index.Rows)
+        {
+            if (!string.Equals(r.Owner.Key, item.CharacterKey, StringComparison.Ordinal)) continue;
+            if (item.ItemId != 0 && r.Item.Id == item.ItemId) { row = r; break; }
+            if (item.Wcid != 0 && r.Item.Wcid == item.Wcid
+                && string.Equals(r.Item.Name, item.ItemName, StringComparison.OrdinalIgnoreCase))
+            { row = r; break; }
+        }
+        if (row == null) return;
+
+        ItemRecord it = row.Item;
+        var lines = new List<string>();
+        lines.Add(it.Name + (it.Stack > 1 ? $" (stack {it.Stack:N0}/{it.MaxStack:N0})" : ""));
+        lines.Add(ItemCategory.Label(it.Category));
+        string material = ItemNames.Material(it.Material);
+        if (material.Length > 0) lines.Add(material);
+        if (it.Workmanship > 0) lines.Add("Workmanship: " + it.Workmanship.ToString(CultureInfo.InvariantCulture));
+        if (it.Value != 0) lines.Add("Value: " + it.Value.ToString("N0", CultureInfo.InvariantCulture));
+        if (it.Burden != 0) lines.Add("Burden: " + it.Burden.ToString("N0", CultureInfo.InvariantCulture));
+        if (it.ArmorLevel > 0) lines.Add("Armor Level: " + it.ArmorLevel.ToString(CultureInfo.InvariantCulture));
+        string set = ItemNames.Set(it.SetId);
+        if (set.Length > 0) lines.Add(set);
+        if (it.SpellNames.Length > 0) lines.Add("Spells: " + string.Join(", ", it.SpellNames));
+        lines.Add($"Owner: {row.Owner.Name} on {row.Owner.Server}");
+        w.Tooltip(string.Join("\n", lines));
     }
 }
