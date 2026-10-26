@@ -15,6 +15,9 @@ namespace RynthCore.Plugin.RynthAi.Translate;
 
 internal sealed class TranslateUi
 {
+    // Where the player left the window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _spot = new("RynthAi.ChatTranslate");
+
     private static readonly Vector4 ColIn = new(0.45f, 0.85f, 0.95f, 1f);
     private static readonly Vector4 ColOut = new(0.40f, 0.95f, 0.45f, 1f);
     private static readonly Vector4 ColTest = new(0.95f, 0.80f, 0.35f, 1f);
@@ -43,9 +46,11 @@ internal sealed class TranslateUi
 
         ImGui.SetNextWindowSize(new Vector2(520, 420), ImGuiCond.FirstUseEver);
         bool open = true;
+        _spot.Apply();
         bool visible = ImGui.Begin("Chat Translate##rynthtranslate", ref open, ImGuiWindowFlags.NoCollapse);
         if (!open) s.ShowWindow = false;
         if (!visible) { ImGui.End(); return; }
+        _spot.Track();
 
         RenderHeader();
         RenderLanguageRow("##win", 110f);

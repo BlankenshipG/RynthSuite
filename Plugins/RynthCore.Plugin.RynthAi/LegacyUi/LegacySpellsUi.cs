@@ -19,6 +19,9 @@ namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
 internal sealed unsafe class LegacySpellsUi
 {
+    // Where the player left the window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _spot = new("RynthAi.Spells");
+
     private const string WindowTitle = "RynthAi Spells##RynthAiSpells";
     private const string ConfirmPopupId = "Confirm##rynthaispells";
 
@@ -123,9 +126,11 @@ internal sealed unsafe class LegacySpellsUi
 
         UiPlacement.CenterFirstUse(new Vector2(40, 40));
         ImGui.SetNextWindowSize(new Vector2(1140, 660), ImGuiCond.FirstUseEver);
+        _spot.Apply();
         if (ImGui.Begin(WindowTitle, ref _settings.ShowSpellsWindow))
         {
             UiPlacement.RescueOncePerShow(ref _rescueChecked);
+            _spot.Track();
             RenderBody();
         }
         ImGui.End();

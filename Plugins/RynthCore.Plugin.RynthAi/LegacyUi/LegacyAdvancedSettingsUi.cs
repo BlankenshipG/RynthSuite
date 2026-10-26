@@ -7,6 +7,9 @@ namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
 internal sealed class LegacyAdvancedSettingsUi
 {
+    // Where the player left the window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _spot = new("RynthAi.AdvancedSettings");
+
     private readonly LegacyUiSettings _settings;
     private MissileCraftingManager? _missileCraftingManager;
 
@@ -82,8 +85,10 @@ internal sealed class LegacyAdvancedSettingsUi
 
         ImGui.SetNextWindowSize(new Vector2(600, 400), ImGuiCond.FirstUseEver);
 
+        _spot.Apply();
         if (ImGui.Begin("RynthAi Advanced Settings", ref _settings.ShowAdvancedWindow))
         {
+            _spot.Track();
             ImGui.BeginChild("AdvancedSidebar", new Vector2(150, 0), ImGuiChildFlags.Borders);
             for (int i = 0; i < _settings.AdvancedTabs.Length; i++)
             {

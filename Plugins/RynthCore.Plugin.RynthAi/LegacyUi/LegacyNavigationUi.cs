@@ -9,6 +9,9 @@ namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
 internal sealed class LegacyNavigationUi
 {
+    // Where the player left the window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _spot = new("RynthAi.Navigation");
+
     private readonly LegacyUiSettings _settings;
     private readonly RynthCoreHost _host;
 
@@ -28,11 +31,13 @@ internal sealed class LegacyNavigationUi
     public void Render()
     {
         ImGui.SetNextWindowSize(new Vector2(400, 480), ImGuiCond.FirstUseEver);
+        _spot.Apply();
         if (!ImGui.Begin("Navigation##RynthAiNav", ref DashWindows.ShowNavigation))
         {
             ImGui.End();
             return;
         }
+        _spot.Track();
 
         string activeNavName = string.IsNullOrEmpty(_settings.CurrentNavPath) ? "None (Unsaved)" : Path.GetFileName(_settings.CurrentNavPath);
         SafeImGui.TextColored(new Vector4(1, 1, 0, 1), $"Active Nav: {activeNavName}");

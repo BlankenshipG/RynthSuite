@@ -12,6 +12,11 @@ namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
 internal sealed class LegacyMetaUi
 {
+    // Where the player left the window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _rulesSpot = new("RynthAi.MacroRules");
+    private readonly SavedWindow _editorSpot = new("RynthAi.EditMetaRule");
+    private readonly SavedWindow _exprSpot = new("RynthAi.ExpressionEditor");
+
     private readonly LegacyUiSettings _settings;
     private readonly List<string> _navFiles;
 
@@ -77,11 +82,15 @@ internal sealed class LegacyMetaUi
         try
         {
             ImGui.SetNextWindowSize(new Vector2(600, 460), ImGuiCond.FirstUseEver);
+            _rulesSpot.Apply();
             bool windowOpen = ImGui.Begin("Macro Rules##RynthAiMacroRules", ref DashWindows.ShowMacroRules);
             try
             {
                 if (windowOpen)
+                {
+                    _rulesSpot.Track();
                     RenderContents();
+                }
             }
             catch (Exception ex)
             {
@@ -473,11 +482,13 @@ internal sealed class LegacyMetaUi
         // imgui.ini. ImGuiCond.Appearing was forcing the size every time the
         // popup re-opened, throwing away the user's resize.
         ImGui.SetNextWindowSize(new Vector2(650, 450), ImGuiCond.FirstUseEver);
+        _editorSpot.Apply();
         if (!ImGui.Begin("Edit Meta Rule##RynthAiEditor", ref _showMetaEditor, ImGuiWindowFlags.NoCollapse))
         {
             ImGui.End();
             return;
         }
+        _editorSpot.Track();
 
         float halfWidth = ImGui.GetContentRegionAvail().X / 2f - 4f;
 
@@ -954,8 +965,10 @@ internal sealed class LegacyMetaUi
         ImGui.SetNextWindowSize(new Vector2(720, 380), ImGuiCond.FirstUseEver);
         if (_exprPopupRequestFocus)
             ImGui.SetNextWindowFocus();
+        _exprSpot.Apply();
         if (ImGui.Begin($"Expression Editor - {_exprPopupTitle}##ExpressionPopup", ref _exprPopupOpen))
         {
+            _exprSpot.Track();
             ImGui.TextDisabled("Edit the expression here. Apply writes it back to the rule.");
             ImGui.Separator();
 

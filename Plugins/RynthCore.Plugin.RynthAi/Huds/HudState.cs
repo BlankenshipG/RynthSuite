@@ -27,12 +27,6 @@ public sealed class HudState
     public float ItemHudIconSize = 20f;
     /// <summary>Items shown on the HUD, in display order (matched by name).</summary>
     public List<HudItemEntry> ItemHudItems = new();
-    /// <summary>
-    /// Where the player left the HUD (2026-10-26). Saved here, per character, because imgui.ini is one
-    /// file every client shares and rewrites whole: another client's write put the old spot back.
-    /// </summary>
-    public bool ItemHudPlaced;
-    public float ItemHudX, ItemHudY;
 
     // ── Mini Remote ──
     public bool ShowMiniRemote;
@@ -70,9 +64,6 @@ public sealed class HudState
     /// (quests, pets) or RynthILT's (character, banking, gear, charms, games).
     /// </summary>
     public string MiniRemoteTab = string.Empty;
-    /// <summary>The floating Mini Remote's spot and size as the player left them (2026-10-26; see ItemHudPlaced).</summary>
-    public bool MiniRemotePlaced;
-    public float MiniRemoteX, MiniRemoteY, MiniRemoteW, MiniRemoteH;
 }
 
 /// <summary>An item pinned to a HUD. Matched by name; Wcid / IconDid are remembered so the

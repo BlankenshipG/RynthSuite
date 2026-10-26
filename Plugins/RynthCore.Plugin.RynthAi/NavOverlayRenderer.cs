@@ -231,10 +231,14 @@ internal sealed class NavOverlayRenderer
         }
     }
 
+    // Where the player left the Nav HUD, per character (Plugins/Shared/SavedWindow.cs); it sizes itself.
+    private readonly SavedWindow _hudSpot = new("RynthAi.NavHud", trackSize: false);
+
     private void RenderHud(in Frame f, NavOverlaySettings o)
     {
         ImGui.SetNextWindowPos(new Vector2(20, 220), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowBgAlpha(0.65f);
+        _hudSpot.Apply();
         if (!ImGui.Begin("Nav HUD##RynthAiNavHud", ref o.ShowHud,
                 ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoCollapse |
                 ImGuiWindowFlags.NoFocusOnAppearing | ImGuiWindowFlags.NoNav))
@@ -242,6 +246,7 @@ internal sealed class NavOverlayRenderer
             ImGui.End();
             return;
         }
+        _hudSpot.Track();
 
         var route = _settings.CurrentRoute;
         var pts = route.Points;

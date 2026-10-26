@@ -209,6 +209,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
     public override int Initialize()
     {
+        // Floating windows keep their spot per character through the engine (Plugins/Shared/SavedWindow.cs).
+        RynthCore.Plugin.Shared.SavedWindow.Host = Host;
         // RynthAi draws nothing itself: its windows are the engine's ImGui faces,
         // fed through the C exports in PluginExports.cs. The "dashboard" object is
         // the settings store, sub-managers and the bridge those exports call; its

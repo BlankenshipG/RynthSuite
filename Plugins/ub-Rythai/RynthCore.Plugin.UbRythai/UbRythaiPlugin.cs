@@ -61,8 +61,14 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
     private bool _windowVisible;
     private static bool _imguiResolverConfigured;
 
+    // Where the player left each window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _mainSpot = new("UbRythai.Main");
+    private readonly SavedWindow _xpSpot = new("UbRythai.XpMeter");
+    private readonly SavedWindow _gemsSpot = new("UbRythai.PortalGems");
+
     public override int Initialize()
     {
+        SavedWindow.Host = Host;
         if (Host.ImGuiContext == IntPtr.Zero)
             return 11;
 
@@ -519,8 +525,10 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
                 return;
 
             ImGui.SetNextWindowSize(new Vector2(520, 460), ImGuiCond.FirstUseEver);
+            _mainSpot.Apply();
             if (ImGui.Begin("ub-Rythai (.NET 10)###UbRythaiMain"))
             {
+                _mainSpot.Track();
                 ImGui.TextUnformatted(PluginBuildInfo.DisplayVersion);
                 ImGui.Separator();
                 ImGui.TextWrapped(
@@ -1160,11 +1168,13 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
     private void RenderXpMeterOverlay()
     {
         ImGui.SetNextWindowSize(new Vector2(360, 110), ImGuiCond.FirstUseEver);
+        _xpSpot.Apply();
         if (!ImGui.Begin("ub-Rythai XP Meter###UbXpMeter", ImGuiWindowFlags.NoCollapse))
         {
             ImGui.End();
             return;
         }
+        _xpSpot.Track();
 
         double sec = _xpMeter.RunTimeSeconds();
         double xpHr = _xpMeter.XpPerHour();
@@ -1194,11 +1204,13 @@ public sealed partial class UbRythaiPlugin : RynthPluginBase
     private void RenderMiniRemotePortalGemOverlay()
     {
         ImGui.SetNextWindowSize(new Vector2(260, 260), ImGuiCond.FirstUseEver);
+        _gemsSpot.Apply();
         if (!ImGui.Begin("ub-Rythai Portal Gems###UbPortalGems", ImGuiWindowFlags.NoCollapse))
         {
             ImGui.End();
             return;
         }
+        _gemsSpot.Track();
 
         uint pid = Host.GetPlayerId();
         ImGui.TextDisabled("Click uses inventory scan + UseObject (UB MiniRemote parity).");

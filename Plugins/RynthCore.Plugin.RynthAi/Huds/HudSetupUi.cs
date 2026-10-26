@@ -25,6 +25,8 @@ internal sealed class HudSetupUi
     private string _packFilter = string.Empty;
     private int _slot;
 
+    // Where the player left this window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _spot = new("RynthAi.InventoryHuds");
     public HudSetupUi(HudController hud) => _hud = hud;
 
     public void Render()
@@ -32,9 +34,11 @@ internal sealed class HudSetupUi
         var s = _hud.State;
         ImGui.SetNextWindowSize(new Vector2(640, 520), ImGuiCond.FirstUseEver);
         bool open = true;
+        _spot.Apply();
         bool visible = ImGui.Begin("Inventory HUDs##rynthhudsetup", ref open);
         if (!open) s.ShowSetup = false;
         if (!visible) { ImGui.End(); return; }
+        _spot.Track();
 
         RenderHudToggles(s);
         ImGui.Separator();

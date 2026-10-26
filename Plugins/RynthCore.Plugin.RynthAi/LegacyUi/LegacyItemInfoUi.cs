@@ -14,6 +14,9 @@ namespace RynthCore.Plugin.RynthAi.LegacyUi;
 /// </summary>
 internal sealed class LegacyItemInfoUi
 {
+    // Where the player left the window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _spot = new("RynthAi.ItemInfo");
+
     private readonly LegacyUiSettings _settings;
 
     // Supplied by RynthAiPlugin (it owns the host + object cache).
@@ -45,8 +48,10 @@ internal sealed class LegacyItemInfoUi
         if (!s.ShowWindow) return;
 
         ImGui.SetNextWindowSize(new Vector2(560, 600), ImGuiCond.FirstUseEver);
+        _spot.Apply();
         if (ImGui.Begin("RynthAi Item Info##ItemInfoSettings", ref s.ShowWindow))
         {
+            _spot.Track();
             RenderPreview(s);
             RenderWhen(s);
             RenderFields(s);
