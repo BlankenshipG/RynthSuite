@@ -76,7 +76,22 @@ internal static class ChatClassifier
             || text.StartsWith("Your incomplete quest bonus list", StringComparison.OrdinalIgnoreCase)
             || text.StartsWith("Your current quest bonus count", StringComparison.OrdinalIgnoreCase)
             || text.StartsWith("Quest bonus list is empty", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("[QB] ", StringComparison.Ordinal);
+            || text.StartsWith("[QB] ", StringComparison.Ordinal)
+            || IsDeedsListText(text);
+    }
+
+    // ACECustom's /deeds list (2026-10-24): "Your QB: 12,345 - Deeds bonuses are ON, ..." then one message
+    // per tier, "1000 QB (unlocked)\n * reward ...". RynthILT reads it for its QB Deeds window.
+    private static readonly Regex _deedsTierRe = new(@"^\d+ QB( \(unlocked\))?(\n|$)",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(20));
+
+    private static bool IsDeedsListText(string text)
+    {
+        if (text.StartsWith("Your QB: ", StringComparison.Ordinal))
+            return text.Contains(" - Deeds bonuses are ", StringComparison.Ordinal);
+        if (text.Length == 0 || !char.IsDigit(text[0])) return false;
+        try { return _deedsTierRe.IsMatch(text); }
+        catch (RegexMatchTimeoutException) { return false; }
     }
 
     /// <summary>A plain balance read: /bank or /b (or the @ forms) with no verb.</summary>
@@ -94,6 +109,8 @@ internal static class ChatClassifier
         if (t.Length < 3 || (t[0] != '/' && t[0] != '@')) return false;
         t = t.Substring(1);
         return t.Equals("myquests", StringComparison.OrdinalIgnoreCase)
+            || t.Equals("deeds", StringComparison.OrdinalIgnoreCase)
+            || t.Equals("deeds list", StringComparison.OrdinalIgnoreCase)
             || t.Equals("qb", StringComparison.OrdinalIgnoreCase)
             || t.StartsWith("qb ", StringComparison.OrdinalIgnoreCase);
     }
