@@ -40,6 +40,9 @@ internal sealed class ChatBuffer
     private const long TypedQuestFirstLineMs = 15_000;   // the command -> its first line
     private const long QuestListIdleMs = 4_000;          // between two lines of one list
     private long _questShowUntilMs;
+    // The same for the /bank balance dump: hidden unless the player typed /bank (RynthILT's and
+    // ub-Rythai's own reads stay out of every tab, whether or not a plugin ate them).
+    private long _bankShowUntilMs;
     // When the last quest-list line arrived: the eaten lines of a /qb list (its quest names
     // match no fixed format) that follow it belong to the same hidden list.
     private long _lastQuestListLineMs = long.MinValue / 2;
@@ -94,6 +97,7 @@ internal sealed class ChatBuffer
         bool auto = ChatClassifier.IsAutomatedText(text, chatType)
                     || ChatClassifier.IsLoginBurst(channel, chatType, loginBurst);
         bool questList = ChatClassifier.IsQuestListText(text, chatType);
+        bool bankDump = ChatClassifier.IsBankBalanceDump(text);
 
         lock (_lock)
         {
@@ -106,6 +110,17 @@ internal sealed class ChatBuffer
                 {
                     auto = false;   // the player asked for it: under All like any reply
                     _questShowUntilMs = now + QuestListIdleMs;
+                }
+                else
+                    hidden = true;
+            }
+            else if (bankDump)
+            {
+                long now = Environment.TickCount64;
+                if (now < _bankShowUntilMs)
+                {
+                    auto = false;
+                    _bankShowUntilMs = now + QuestListIdleMs;
                 }
                 else
                     hidden = true;
@@ -144,9 +159,11 @@ internal sealed class ChatBuffer
             if (newest == null || !string.Equals(newest.Text, text, StringComparison.Ordinal)) return false;
             long now = Environment.TickCount64;
             bool typedQuestList = now < _questShowUntilMs;
-            if (!typedQuestList) newest.Auto = true;
-            // A quiet /bank refresh's balance dump: not even the System tab (a typed /bank isn't eaten).
-            if (ChatClassifier.IsBankBalanceDump(text)) newest.Hidden = true;
+            bool bankDump = ChatClassifier.IsBankBalanceDump(text);
+            bool typed = bankDump ? now < _bankShowUntilMs : typedQuestList;
+            if (!typed) newest.Auto = true;
+            // A quiet /bank refresh's balance dump: not even the System tab.
+            if (bankDump) { if (!typed) newest.Hidden = true; }
             // A line of a quest list nobody asked for in chat (a /qb list's quest names).
             else if (!typedQuestList && now - _lastQuestListLineMs < QuestListIdleMs) newest.Hidden = true;
             return true;
@@ -157,6 +174,12 @@ internal sealed class ChatBuffer
     internal void NoteTypedQuestCommand()
     {
         lock (_lock) _questShowUntilMs = Environment.TickCount64 + TypedQuestFirstLineMs;
+    }
+
+    /// <summary>The player sent /bank (or /b) from the chat input: its balances show (game thread).</summary>
+    internal void NoteTypedBankCommand()
+    {
+        lock (_lock) _bankShowUntilMs = Environment.TickCount64 + TypedQuestFirstLineMs;
     }
 
     /// <summary>

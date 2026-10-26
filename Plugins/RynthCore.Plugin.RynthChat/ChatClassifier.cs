@@ -79,6 +79,14 @@ internal static class ChatClassifier
             || text.StartsWith("[QB] ", StringComparison.Ordinal);
     }
 
+    /// <summary>A plain balance read: /bank or /b (or the @ forms) with no verb.</summary>
+    internal static bool IsBankBalanceCommand(string? text)
+    {
+        string t = (text ?? string.Empty).Trim();
+        return t.Equals("/bank", StringComparison.OrdinalIgnoreCase) || t.Equals("/b", StringComparison.OrdinalIgnoreCase)
+            || t.Equals("@bank", StringComparison.OrdinalIgnoreCase) || t.Equals("@b", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>A chat command that asks for a quest list: /myquests, /qb, /qb list (or the @ forms).</summary>
     internal static bool IsQuestListCommand(string? text)
     {

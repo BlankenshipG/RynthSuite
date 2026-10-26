@@ -69,6 +69,7 @@ public sealed class RynthChatPlugin : RynthPluginBase
         if (!Host.HasInvokeChatParser || string.IsNullOrWhiteSpace(text)) return;
         // Typed by the player: a quest list they ask for shows (plugins' own reads stay hidden).
         if (ChatClassifier.IsQuestListCommand(text)) _buffer.NoteTypedQuestCommand();
+        else if (ChatClassifier.IsBankBalanceCommand(text)) _buffer.NoteTypedBankCommand();
         Host.InvokeChatParser(text);
     }
 }
