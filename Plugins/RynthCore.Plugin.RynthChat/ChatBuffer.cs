@@ -118,6 +118,8 @@ internal sealed class ChatBuffer
             ChatLine? newest = _ring[(_head - 1 + _ring.Length) % _ring.Length];
             if (newest == null || !string.Equals(newest.Text, text, StringComparison.Ordinal)) return false;
             newest.Auto = true;
+            // A quiet /bank refresh's balance dump: not even the System tab (a typed /bank isn't eaten).
+            if (ChatClassifier.IsBankBalanceDump(text)) newest.Hidden = true;
             return true;
         }
     }
@@ -147,7 +149,7 @@ internal sealed class ChatBuffer
         bool first = true;
         foreach (ChatLine? line in lines)
         {
-            if (line == null || line.Seq <= sinceSeq) continue;
+            if (line == null || line.Seq <= sinceSeq || line.Hidden) continue;
 
             if (!first) sb.Append(',');
             first = false;

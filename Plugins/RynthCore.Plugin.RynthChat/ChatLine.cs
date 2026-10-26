@@ -15,4 +15,9 @@ internal sealed class ChatLine
     /// Set under ChatBuffer's lock (NoteEaten can set it after Add).
     /// </summary>
     internal bool   Auto      { get; set; }
+    /// <summary>
+    /// Never exported (2026-10-25): a plugin ate it and it is a periodic poll's reply nobody
+    /// asked to see (the /bank balance dump of RynthILT's quiet refresh). Set by NoteEaten.
+    /// </summary>
+    internal bool   Hidden    { get; set; }
 }

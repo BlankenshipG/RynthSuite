@@ -69,6 +69,21 @@ internal static class ChatClassifier
             || text.StartsWith("Welcome to Asheron's Call", StringComparison.Ordinal);
     }
 
+    // "[BANK] Your balances are:" then "[BANK] Pyreals: 67,908,687,115", ... "[BANK] Prestige Coins: 98 (bound ...)".
+    private static readonly Regex _bankBalanceRe = new(@"^\[BANK\] (Your balances are:|[A-Za-z ]+: [\d,]+)",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(20));
+
+    /// <summary>
+    /// The server's /bank balance dump (its header and "Label: N" lines), not the other [BANK]
+    /// lines (errors, transfers). Only hidden when a plugin ate it (ChatBuffer.NoteEaten).
+    /// </summary>
+    internal static bool IsBankBalanceDump(string? text)
+    {
+        if (string.IsNullOrEmpty(text) || !text.StartsWith("[BANK] ", StringComparison.Ordinal)) return false;
+        try { return _bankBalanceRe.IsMatch(text); }
+        catch (RegexMatchTimeoutException) { return false; }
+    }
+
     /// <summary>
     /// True when a line counts as the login burst: system text (not an admin's tell) that
     /// arrives while the character is entering the world (<paramref name="loginBurst"/>).
