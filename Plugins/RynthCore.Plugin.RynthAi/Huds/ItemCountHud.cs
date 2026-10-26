@@ -16,11 +16,16 @@ internal sealed class ItemCountHud
 
     private readonly HudController _hud;
     private bool _rescueChecked; // off-screen check done for the current show
+    private readonly SavedPlacement _placement = new();
 
     public ItemCountHud(HudController hud) => _hud = hud;
 
     /// <summary>The HUD was not drawn this frame: check its position again on the next show.</summary>
-    public void OnHidden() => _rescueChecked = false;
+    public void OnHidden()
+    {
+        _rescueChecked = false;
+        _placement.Reset();
+    }
 
     public void Render()
     {
@@ -34,6 +39,7 @@ internal sealed class ItemCountHud
 
         // Right of and above centre, clear of the character in the middle of the view.
         UiPlacement.CenterFirstUse(new Vector2(220, -160));
+        SavedPlacement.Apply(s.ItemHudPlaced, new Vector2(s.ItemHudX, s.ItemHudY), Vector2.Zero);   // auto-sized: the spot only
         ImGui.SetNextWindowBgAlpha(0.55f);
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(4, 4));
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 2));
@@ -41,6 +47,12 @@ internal sealed class ItemCountHud
         ImGui.PopStyleVar(2);
         if (!visible) { ImGui.End(); return; }
         UiPlacement.RescueOncePerShow(ref _rescueChecked);
+        if (_placement.PlayerChanged(trackSize: false, out Vector2 movedTo, out _))
+        {
+            s.ItemHudPlaced = true;
+            s.ItemHudX = movedTo.X;
+            s.ItemHudY = movedTo.Y;
+        }
 
         if (entries.Length == 0)
         {

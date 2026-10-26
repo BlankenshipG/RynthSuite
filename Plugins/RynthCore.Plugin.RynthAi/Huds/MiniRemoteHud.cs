@@ -97,7 +97,14 @@ internal sealed class MiniRemoteHud
     public MiniRemoteHud(HudController hud) => _hud = hud;
 
     /// <summary>The remote was not drawn this frame: check its position again on the next show.</summary>
-    public void OnHidden() => _rescueChecked = false;
+    public void OnHidden()
+    {
+        _rescueChecked = false;
+        _placement.Reset();
+    }
+
+    // Where the player left the floating window, in huds.json (per character), not imgui.ini.
+    private readonly SavedPlacement _placement = new();
 
     /// <summary>
     /// Switches to tab <paramref name="tab"/> ("" = the remote, else a tab id) on the next
@@ -117,6 +124,7 @@ internal sealed class MiniRemoteHud
 
         // Left of and above centre, mirroring the Item HUD's first spot.
         UiPlacement.CenterFirstUse(new Vector2(-220, -160));
+        SavedPlacement.Apply(s.MiniRemotePlaced, new Vector2(s.MiniRemoteX, s.MiniRemoteY), new Vector2(s.MiniRemoteW, s.MiniRemoteH));
         ImGui.SetNextWindowSizeConstraints(new Vector2(180, 120), new Vector2(800, 1200));
         ImGui.SetNextWindowBgAlpha(0.70f);
         bool open = true;
@@ -126,6 +134,14 @@ internal sealed class MiniRemoteHud
         if (!open) s.ShowMiniRemote = false;
         if (!visible) { ImGui.End(); return; }
         UiPlacement.RescueOncePerShow(ref _rescueChecked);
+        if (_placement.PlayerChanged(trackSize: true, out Vector2 placedAt, out Vector2 placedSize))
+        {
+            s.MiniRemotePlaced = true;
+            s.MiniRemoteX = placedAt.X;
+            s.MiniRemoteY = placedAt.Y;
+            s.MiniRemoteW = placedSize.X;
+            s.MiniRemoteH = placedSize.Y;
+        }
 
         RenderBody(s, _hud.Remote(), allowTabs: true);
 

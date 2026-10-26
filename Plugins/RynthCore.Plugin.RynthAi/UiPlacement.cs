@@ -52,3 +52,53 @@ internal static class UiPlacement
         pos.X + size.X >= MinVisible && pos.Y + size.Y >= MinVisible
         && pos.X <= display.X - MinVisible && pos.Y <= display.Y - MinVisible;
 }
+
+/// <summary>
+/// A floating window's spot (and size) as the player left it, kept in the plugin's own per-character
+/// state instead of imgui.ini (2026-10-26). imgui.ini is one file all running clients share, and each
+/// rewrites the whole file from what it loaded at start, so a move in one client was undone by
+/// another client's next save. Render thread only; one instance per window.
+/// </summary>
+internal sealed class SavedPlacement
+{
+    private bool _seen;
+    private bool _editing;
+    private Vector2 _lastPos, _lastSize;
+
+    /// <summary>Before Begin: puts the window where it was saved, each time it appears.</summary>
+    public static void Apply(bool placed, Vector2 pos, Vector2 size)
+    {
+        if (!placed) return;
+        ImGui.SetNextWindowPos(pos, ImGuiCond.Appearing);
+        if (size.X > 0 && size.Y > 0) ImGui.SetNextWindowSize(size, ImGuiCond.Appearing);
+    }
+
+    /// <summary>The window is hidden: the next show starts fresh.</summary>
+    public void Reset() { _seen = false; _editing = false; }
+
+    /// <summary>
+    /// Between Begin and End: true once the player has finished moving (or, with
+    /// <paramref name="trackSize"/>, resizing) the window: the mouse went up after the window changed
+    /// while it was focused and held. A move the code makes (first-use centring, off-screen rescue,
+    /// auto-resize) is never reported.
+    /// </summary>
+    public bool PlayerChanged(bool trackSize, out Vector2 pos, out Vector2 size)
+    {
+        pos = ImGui.GetWindowPos();
+        size = ImGui.GetWindowSize();
+        bool changed = pos != _lastPos || (trackSize && size != _lastSize);
+        bool first = !_seen;
+        _seen = true;
+        _lastPos = pos;
+        _lastSize = size;
+        if (first) return false;
+        bool down = ImGui.IsMouseDown(ImGuiMouseButton.Left);
+        if (down && changed && ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)) _editing = true;
+        if (!down && _editing)
+        {
+            _editing = false;
+            return true;
+        }
+        return false;
+    }
+}
