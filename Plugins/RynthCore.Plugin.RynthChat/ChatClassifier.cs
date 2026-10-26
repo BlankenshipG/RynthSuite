@@ -54,6 +54,17 @@ internal static class ChatClassifier
     internal static bool IsAutomatedText(string text, int chatType)
     {
         if (string.IsNullOrEmpty(text) || ChannelForType(chatType) != System || chatType == AdminTellType) return false;
+        return IsQuestListText(text, chatType)
+            || text.StartsWith("Welcome to Asheron's Call", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The /myquests and /qb list replies' fixed lines (flag lines, headers, end lines), system
+    /// type only. Hidden unless the player asked for the list in chat (ChatBuffer, 2026-10-25).
+    /// </summary>
+    internal static bool IsQuestListText(string text, int chatType)
+    {
+        if (string.IsNullOrEmpty(text) || ChannelForType(chatType) != System || chatType == AdminTellType) return false;
         if (text.IndexOf(" solves (", StringComparison.Ordinal) > 0)
         {
             try { if (_questFlagRe.IsMatch(text)) return true; }
@@ -65,8 +76,18 @@ internal static class ChatClassifier
             || text.StartsWith("Your incomplete quest bonus list", StringComparison.OrdinalIgnoreCase)
             || text.StartsWith("Your current quest bonus count", StringComparison.OrdinalIgnoreCase)
             || text.StartsWith("Quest bonus list is empty", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("[QB] ", StringComparison.Ordinal)
-            || text.StartsWith("Welcome to Asheron's Call", StringComparison.Ordinal);
+            || text.StartsWith("[QB] ", StringComparison.Ordinal);
+    }
+
+    /// <summary>A chat command that asks for a quest list: /myquests, /qb, /qb list (or the @ forms).</summary>
+    internal static bool IsQuestListCommand(string? text)
+    {
+        string t = (text ?? string.Empty).Trim();
+        if (t.Length < 3 || (t[0] != '/' && t[0] != '@')) return false;
+        t = t.Substring(1);
+        return t.Equals("myquests", StringComparison.OrdinalIgnoreCase)
+            || t.Equals("qb", StringComparison.OrdinalIgnoreCase)
+            || t.StartsWith("qb ", StringComparison.OrdinalIgnoreCase);
     }
 
     // "[BANK] Your balances are:" then "[BANK] Pyreals: 67,908,687,115", ... "[BANK] Prestige Coins: 98 (bound ...)".

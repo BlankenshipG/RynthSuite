@@ -34,6 +34,16 @@ internal sealed class ChatBuffer
     private int  _count;  // lines stored (<= _ring.Length)
     private ulong _nextSeq = 1;
 
+    // Quest lists (2026-10-25): the /myquests and /qb list replies plugins ask for by themselves
+    // are hidden; one the player asked for in chat (RynthChat's input, NoteTypedQuestCommand)
+    // shows, under All. The window opens on the command and stays open while its lines keep coming.
+    private const long TypedQuestFirstLineMs = 15_000;   // the command -> its first line
+    private const long QuestListIdleMs = 4_000;          // between two lines of one list
+    private long _questShowUntilMs;
+    // When the last quest-list line arrived: the eaten lines of a /qb list (its quest names
+    // match no fixed format) that follow it belong to the same hidden list.
+    private long _lastQuestListLineMs = long.MinValue / 2;
+
     internal ChatBuffer(int capacity = DefaultCapacity)
     {
         _ring = new ChatLine?[Math.Clamp(capacity, MinCapacity, MaxCapacity)];
@@ -83,9 +93,23 @@ internal sealed class ChatBuffer
         string ts = DateTime.Now.ToString("HH:mm:ss");
         bool auto = ChatClassifier.IsAutomatedText(text, chatType)
                     || ChatClassifier.IsLoginBurst(channel, chatType, loginBurst);
+        bool questList = ChatClassifier.IsQuestListText(text, chatType);
 
         lock (_lock)
         {
+            bool hidden = false;
+            if (questList)
+            {
+                long now = Environment.TickCount64;
+                _lastQuestListLineMs = now;
+                if (now < _questShowUntilMs)
+                {
+                    auto = false;   // the player asked for it: under All like any reply
+                    _questShowUntilMs = now + QuestListIdleMs;
+                }
+                else
+                    hidden = true;
+            }
             // Numbered under the lock, so the ring is always in seq order (the
             // engine skips anything at or below the last seq it has seen).
             _ring[_head] = new ChatLine
@@ -97,6 +121,7 @@ internal sealed class ChatBuffer
                 Sender    = sender,
                 Text      = text,
                 Auto      = auto,
+                Hidden    = hidden,
             };
             _head = (_head + 1) % _ring.Length;
             if (_count < _ring.Length) _count++;
@@ -117,11 +142,21 @@ internal sealed class ChatBuffer
             if (_count == 0) return false;
             ChatLine? newest = _ring[(_head - 1 + _ring.Length) % _ring.Length];
             if (newest == null || !string.Equals(newest.Text, text, StringComparison.Ordinal)) return false;
-            newest.Auto = true;
+            long now = Environment.TickCount64;
+            bool typedQuestList = now < _questShowUntilMs;
+            if (!typedQuestList) newest.Auto = true;
             // A quiet /bank refresh's balance dump: not even the System tab (a typed /bank isn't eaten).
             if (ChatClassifier.IsBankBalanceDump(text)) newest.Hidden = true;
+            // A line of a quest list nobody asked for in chat (a /qb list's quest names).
+            else if (!typedQuestList && now - _lastQuestListLineMs < QuestListIdleMs) newest.Hidden = true;
             return true;
         }
+    }
+
+    /// <summary>The player sent /myquests or /qb from the chat input: its list shows (game thread).</summary>
+    internal void NoteTypedQuestCommand()
+    {
+        lock (_lock) _questShowUntilMs = Environment.TickCount64 + TypedQuestFirstLineMs;
     }
 
     /// <summary>
