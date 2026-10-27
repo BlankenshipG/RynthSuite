@@ -35,6 +35,29 @@ internal static class BlastTests
         r.Add("known spells: a name with several ids resolves to the id the character knows", DuplicateNameIds);
         r.Add("monster rules: UseBlast saves and loads; old files load with it off", RuleJson);
         r.Add("blast override: Blast Range off keeps today's shape; on, the base is the other shape; defaults 0 / 3", BlastOverrideSettings);
+        r.Add("rings (10-25): the level-5 rings from tier 5 (named or plain), the level-7 II from tier 7", RingLevels);
+    }
+
+    // The rings are level 5 (Cassius' Ring of Fire, Halo of Frost, ..., and the plain Flame / Acid / Force /
+    // Lightning Ring) and level 7 (the named II). A tier-5 caster used to get no ring at all: the named one
+    // waited for tier 6 and the plain ones were looked for as "Ring of Fire V" and the like.
+    private static void RingLevels()
+    {
+        var find = typeof(CombatManager).GetMethod("FindBestRingSpell",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        string Ring(int tier, string element, params string[] known)
+        {
+            var rig = new CastRig(tier, known);
+            return NameOf((int)find.Invoke(rig.C, new object[] { element, RynthCore.Loot.AcSkillType.WarMagic })!);
+        }
+        Check.Eq(Ring(5, "Fire", "Cassius' Ring of Fire"), "Cassius' Ring of Fire", "tier 5: the named level-5 ring");
+        Check.Eq(Ring(5, "Fire", "Flame Ring"), "Flame Ring", "tier 5: the plain level-5 ring when that is the one known");
+        Check.Eq(Ring(5, "Lightning", "Lightning Ring"), "Lightning Ring", "Lightning's plain ring");
+        Check.Eq(Ring(6, "Cold", "Halo of Frost"), "Halo of Frost", "tier 6: the level-5 ring");
+        Check.Eq(Ring(7, "Cold", "Halo of Frost", "Halo of Frost II"), "Halo of Frost II", "tier 7: the II");
+        Check.Eq(Ring(7, "Cold", "Halo of Frost"), "Halo of Frost", "tier 7 without the II known: the level-5 one");
+        Check.Eq(Ring(6, "Cold", "Halo of Frost", "Halo of Frost II"), "Halo of Frost", "tier 6 knowing the II: not yet (level 7)");
+        Check.Eq(Ring(4, "Cold", "Halo of Frost"), "(none)", "tier 4: no ring (none below level 5)");
     }
 
     // ── Rig ───────────────────────────────────────────────────────────────────

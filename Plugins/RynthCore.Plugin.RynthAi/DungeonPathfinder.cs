@@ -795,15 +795,25 @@ internal static partial class DungeonPathfinder
     /// of a loop and backtracking the way it came. Only true dead-ends and bridges are
     /// re-tread (the unavoidable in-and-out), via the shortest reconnecting path. The walk is
     /// closed back to the start so the Circular route returns home.
+    ///
+    /// <paramref name="portals"/> (the landblock's live portals): the patrol keeps out of their
+    /// circles, turning round before a portal it can't get past (DungeonPathfinder.Portals.cs;
+    /// what it did about each: <see cref="LastPortalAvoidance"/>). <paramref name="startAt"/>
+    /// (world): where the character stands, so a portal that splits its room leaves it the part it
+    /// is in.
     /// </summary>
     public static NavRouteParser BuildPatrolRoute(
         Dictionary<uint, DungeonNavNode> graph,
         uint startCell,
         IReadOnlySet<uint>? hazardCells = null,
         DungeonGeometry? geo = null,
-        DungeonPatrolOptions? options = null)
+        DungeonPatrolOptions? options = null,
+        IReadOnlyList<PatrolPortal>? portals = null,
+        (double X, double Y, double Z)? startAt = null)
     {
+        LastPortalAvoidance = null;
         var o = (options ?? DungeonPatrolOptions.Default).Clamped();
+        if (portals is { Count: > 0 }) return BuildPatrolRouteAroundPortals(graph, startCell, hazardCells, geo, o, portals, startAt);
         // Dead ends are judged room by room when the rooms can be made (the room patrol below).
         var rooms = geo != null && geo.DoorwayCount > 0 ? BuildRooms(graph, geo, hazardCells) : null;
         var mainRoute = GetMainRouteNodes(graph, startCell, hazardCells, o, rooms);

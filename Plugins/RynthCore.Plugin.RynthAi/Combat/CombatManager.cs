@@ -585,6 +585,46 @@ public partial class CombatManager : IDisposable
     private const double KILL_CONFIDENCE = 0.80; // predict kill if remaining HP <= avg cast damage * this
     private const int    KILL_MIN_SAMPLES = 3;    // need this many learned hits before trusting the avg
 
+    // A boss swapped off as dead with a third of its health left (report R-20261025-183343-727b,
+    // Conquest, 2026-10-25): "Predicted kill shot 0x80621EBC 'Curator of Torment' (cast#37
+    // hp~450250 dealt~294989)". Path A (casts-to-kill) fires on the cast COUNT alone: the learned
+    // average said ~37 Flame Bolts kill a Curator (kills other players helped with teach a low
+    // count), so cast #37 was "the kill" although the damage math said ~155,000 HP were left and
+    // one bolt does 5-12k, and the server's own health (34% on the re-lock) agreed. Now either
+    // prediction is called off when the evidence we have says this cast can't finish it: the
+    // fight target's fresh server health, or (once damage has landed) the HP pool minus the
+    // damage dealt, leaves more than KILL_VETO_REACH casts' worth: what is left after this cast
+    // must be under half a cast (the margin for the roll: earlier low rolls, this one high). So a
+    // normal mob's finishing cast still swaps, and a one-shot (nothing landed yet) keeps path A.
+    private const double KILL_VETO_REACH = 1.5;
+    private int _killShotVetoLoggedFor;            // fight target the "not predicted" line was logged for (once a fight)
+    // The fight target's last SERVER health (OnUpdateHealth via the plugin; ACE sends it only for
+    // the selected target) and when it came, and when our last hit on it landed: a reading older
+    // than the last hit doesn't count that hit, and one from before the fight isn't this fight's.
+    private float    _fightHealth = -1f;
+    private DateTime _fightHealthAt = DateTime.MinValue;
+    private DateTime _fightLastHitAt = DateTime.MinValue;
+    private const double FightHealthHitSlackMs = 500;   // health and the hit's chat line arrive in either order
+
+    // The armed cast's own hit (same report): the swap waits for the cast gesture to release,
+    // and a Flame Bolt's gesture released 800 ms AFTER its bolt had hit ("You singe Curator of
+    // Torment for 7883 points" at 58.107, swap at 58.920). ACE sends the killer the death
+    // message instead of a damage line on a killing blow, so a damage line on the armed target
+    // means it survived the cast that was to kill it: the swap is called off. A line under
+    // ArmedHitMinMs after the cast is the previous cast's projectile (no windup is that short).
+    private const double ArmedHitMinMs = 1000;
+
+    // A predicted kill whose death isn't confirmed yet still counts as a monster in range (same
+    // report): the swap hid the Curator from the scan for PREDICTED_SWAP_SUPPRESS_MS, the
+    // Rynthid it swapped to died at once, and with the scan empty HasTargets went false, so the
+    // corpse gate let looting claim a corpse and open it for 4.6 s while the live Curator, 1.9 m
+    // away, hit the player. Until the kill notice, health 0 or the corpse confirms its death,
+    // or the suppression ends and the scan has it again, it counts for HasTargets,
+    // HasCloseThreat (so HasEngageableTarget: combat keeps the tick, no corpse is claimed, no
+    // starved loot turn) and the idle peace-mode swap. id -> when it was swapped off (TargetClock).
+    private readonly Dictionary<int, DateTime> _predictedDeathPending = new();
+    private readonly List<int> _predictedDeathScratch = new();
+
     internal void SetDamageStores(CreatureProfileStore? creatures, MonsterDamageStore? damage)
     {
         _creatureStore = creatures;
@@ -701,8 +741,11 @@ public partial class CombatManager : IDisposable
     internal MonsterDamageStore?   DamageStore   => _damageStore;    // per-monster pet choice (PetManager)
     internal CreatureProfileStore? CreatureStore => _creatureStore;  // learned resists (PetManager)
 
-    /// <summary>True when combat has an active target or viable targets nearby. Used to block navigation.</summary>
-    public bool HasTargets => activeTargetId != 0 || _scannedTargets.Count > 0;
+    /// <summary>True when combat has an active target or viable targets nearby. Used to block navigation
+    /// and by the corpse gates. A predicted kill still alive in MonsterRange counts until its death is
+    /// confirmed (see <see cref="_predictedDeathPending"/>).</summary>
+    public bool HasTargets => activeTargetId != 0 || _scannedTargets.Count > 0
+                              || PredictedDeathPendingWithin(System.Math.Max(1, _settings.MonsterRange));
 
     // Monsters that passed range/attackable checks but were LOS-blocked by walls.
     // Non-zero means a monster is nearby but not yet visible — nav should stop.
@@ -717,7 +760,74 @@ public partial class CombatManager : IDisposable
     {
         for (int i = 0; i < _scannedTargets.Count; i++)
             if (_scannedTargets[i].Distance <= yd) return true;
+        return PredictedDeathPendingWithin(yd);
+    }
+
+    /// <summary>
+    /// True when a monster swapped off as a predicted kill is, as far as we know, still alive within
+    /// <paramref name="yd"/>: its death isn't confirmed (kill notice, health 0, corpse, deleted) and
+    /// the scan suppression from the swap hasn't ended (after that the scan itself has it again).
+    /// No side effects (the arbiter's pure path); ScanNearbyTargets prunes the map.
+    /// </summary>
+    private bool PredictedDeathPendingWithin(double yd)
+    {
+        if (_predictedDeathPending.Count == 0) return false;
+        DateTime now = TargetClock();
+        int me = unchecked((int)_playerId);
+        foreach (var kv in _predictedDeathPending)
+        {
+            if ((now - kv.Value).TotalMilliseconds > PREDICTED_SWAP_SUPPRESS_MS) continue;
+            if (!IsLiveMonster(kv.Key)) continue;
+            if (me == 0 || _worldFilter.Distance(me, kv.Key) > yd) continue;
+            return true;
+        }
         return false;
+    }
+
+    /// <summary>The object is a monster the server hasn't said is dead (health 0) and isn't a corpse.</summary>
+    private bool IsLiveMonster(int id)
+    {
+        var wo = _worldFilter[id];
+        return wo != null && (int)wo.ObjectClass == (int)AcObjectClass.Monster
+               && _worldFilter.GetHealthRatio(id) != 0f;
+    }
+
+    /// <summary>
+    /// ScanNearbyTargets: drop pending predicted kills that are confirmed dead or whose window is
+    /// over. One that is still alive at the end of its window is back in the scan from this tick
+    /// (its suppression ended), which the log says, so combat goes back to it at once.
+    /// </summary>
+    private void PrunePredictedDeaths()
+    {
+        if (_predictedDeathPending.Count == 0) return;
+        DateTime now = TargetClock();
+        _predictedDeathScratch.Clear();
+        foreach (var kv in _predictedDeathPending)
+        {
+            bool alive = IsLiveMonster(kv.Key);
+            bool over = (now - kv.Value).TotalMilliseconds > PREDICTED_SWAP_SUPPRESS_MS;
+            if (alive && !over) continue;
+            _predictedDeathScratch.Add(kv.Key);
+            if (!alive) continue;   // health 0 or the corpse: dead after all, nothing to say
+            // Alive at the end of the window: lift the swap's suppression now, whatever RynthClock
+            // says (TargetClock is that clock outside tests). A confirmed kill took the id out of
+            // this map in OnKillNotification, so its longer suppression is never lifted here.
+            _recentlyKilled.Remove(kv.Key);
+            _host.Log($"[RynthAi] Predicted kill of 0x{(uint)kv.Key:X8} '{_worldFilter[kv.Key]?.Name}' not confirmed " +
+                      $"{(now - kv.Value).TotalSeconds:0.0} s after the swap and it is still alive: it is a target again.");
+        }
+        for (int i = 0; i < _predictedDeathScratch.Count; i++)
+            _predictedDeathPending.Remove(_predictedDeathScratch[i]);
+    }
+
+    /// <summary>A predicted kill was hit after the swap (a damage line, which a killing blow never
+    /// sends): it is alive. Back in the scan now, not at the end of the suppression window.</summary>
+    private void NotePredictedKillSurvived(int id, int amount)
+    {
+        if (id == 0 || !_predictedDeathPending.Remove(id)) return;
+        _recentlyKilled.Remove(id);
+        _host.Log($"[RynthAi] Predicted kill of 0x{(uint)id:X8} '{_worldFilter[id]?.Name}' took a {amount}-point hit after the swap: " +
+                  "it is alive, a target again.");
     }
 
     /// <summary>True only when actively attacking a specific target. Unlike HasTargets, this is false between kills even when more monsters are scanned nearby.</summary>
@@ -939,6 +1049,7 @@ public partial class CombatManager : IDisposable
             for (int i = 0; i < _killPruneScratch.Count; i++)
                 _recentlyKilled.Remove(_killPruneScratch[i]);
         }
+        PrunePredictedDeaths();   // before the loop: a predicted kill still alive is scanned again this tick
 
         _scannedTargets.Clear();
         _nearbyNoLos = 0;
@@ -1137,6 +1248,7 @@ public partial class CombatManager : IDisposable
     {
         int id = (int)objectId;
         _recentlyKilled.Remove(id);
+        _predictedDeathPending.Remove(id);   // gone (died and despawned, or out of view): not a monster in range
         _hitAt.Remove(id);
         _blacklistManager.ForgetTarget(id);
         Ghosts.NoteDeleted(id);
@@ -1330,6 +1442,12 @@ public partial class CombatManager : IDisposable
         { "Bludgeon",  new[] { "Tectonic Rifts", "Tectonic Rifts II" } },
     };
 
+    /// <summary>The level-5 rings without a lore name (SpellData 3805-3808); Cold, Blade and Bludgeon have none.</summary>
+    private static readonly Dictionary<string, string> PlainRings = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "Fire", "Flame Ring" }, { "Acid", "Acid Ring" }, { "Pierce", "Force Ring" }, { "Lightning", "Lightning Ring" },
+    };
+
     private static readonly Dictionary<string, string[]> VoidSpellShapes = new(StringComparer.OrdinalIgnoreCase)
     {
         { "Nether", new[] { "Nether Arc", "Nether Ring", "Nether Streak", "Nether Bolt", "Nether Blast" } },
@@ -1493,7 +1611,14 @@ public partial class CombatManager : IDisposable
         // spell landed. Without it, three casts that hit after the player clicked a corpse were
         // "no damage": the live monster was blacklisted and combat stopped (2026-10-21, Conquest).
         if (onFight && amount > 0)
+        {
             ReportDamageOnTarget(_fightTargetId);
+            NoteFightHit(amount);   // the kill-shot health check's clock; calls off a swap the hit disproves
+        }
+        // A damage line is never a killing blow's (ACE sends the death message then), so a hit on
+        // a monster we swapped off as a predicted kill says it is alive (R-20261025-183343-727b).
+        if (amount > 0 && victimId != 0 && victimId != _fightTargetId)
+            NotePredictedKillSurvived(victimId, amount);
 
         if (!onFight && !onLastFight)
         {
@@ -2728,6 +2853,9 @@ public partial class CombatManager : IDisposable
         _fightDamage = 0;
         _fightCastCount = 0;
         _fightAppraiseRequested = false;
+        _fightHealth = -1f;
+        _fightHealthAt = DateTime.MinValue;
+        _fightLastHitAt = DateTime.MinValue;
         _predictKillSwap = false;
         _predictKillSwapArmed = false;
         // Clear the stance-stuck timer — it arms during the normal NonCombat→Magic
@@ -2759,6 +2887,7 @@ public partial class CombatManager : IDisposable
         _recentlyKilled[swapId] = RynthClock.Now.AddMilliseconds(PREDICTED_SWAP_SUPPRESS_MS);
         ForgetScanned(swapId);
         _predictedSwapAt[swapId] = TargetClock();   // fought again later = it didn't die (PredictionFailed)
+        _predictedDeathPending[swapId] = TargetClock();   // still a monster in range until its death is confirmed
         // Queue this predicted one-shot so it's CREDITED when its death confirms —
         // we may swap away before its KillerNotification. Capture the name LIVE
         // from the world filter (_fightTargetName is often empty this early).
@@ -2835,6 +2964,15 @@ public partial class CombatManager : IDisposable
         string curName = tid != 0 ? (_worldFilter[tid]?.Name ?? "") : "";
         bool curMatches = curName.Length > 0
                           && deathMessage.IndexOf(curName, StringComparison.OrdinalIgnoreCase) >= 0;
+
+        // The predicted kill's death is confirmed (R-20261025-183343-727b): no longer a monster in
+        // range for the corpse gate, and the scan stays off it for a confirmed kill's window while
+        // the corpse forms (the swap gave it 2 s). Not when the notice names the current target
+        // too (a same-named swarm): it may be the current target's, so the predicted one stays
+        // pending until its own health, corpse or window says.
+        if (pendingKillId != 0 && !(curMatches && tid != pendingKillId)
+            && _predictedDeathPending.Remove(pendingKillId))
+            _recentlyKilled[pendingKillId] = nowKill.AddMilliseconds(RECENTLY_KILLED_SUPPRESS_MS);
 
         // (2) The current target died (its name is in the message).
         if (!recorded && curMatches && _fightTargetWcid != 0 && _fightCastCount > 0)
@@ -2996,6 +3134,7 @@ public partial class CombatManager : IDisposable
         int tid = activeTargetId;
         if (tid == 0 || tid != _fightTargetId) return;
 
+        NoteFightHit((int)Math.Round(damage));
         _fightDamage += damage;
 
         // War magic sends NO 0x01B1 (its damage comes from the chat parse), so a structured
@@ -3057,6 +3196,9 @@ public partial class CombatManager : IDisposable
         _fightTargetMaxHp = 0;
         _fightHpEstimated = false;
         _fightAppraiseRequested = false;
+        _fightHealth = -1f;
+        _fightHealthAt = DateTime.MinValue;
+        _fightLastHitAt = DateTime.MinValue;
         _predictKillSwap = false;
         _fightTargetName = "";
         _fightStartedAt = default;
@@ -3170,6 +3312,81 @@ public partial class CombatManager : IDisposable
     }
 
     /// <summary>
+    /// A damage line landed on the fight target. Stamps the hit (a server health reading older
+    /// than it doesn't count it), and when the swap armed by a predicted kill shot is waiting on
+    /// this target and the line comes ArmedHitMinMs or more after the arming cast, that cast hit
+    /// without killing (a killing blow sends the death message, not a damage line): the swap is
+    /// called off and the bot keeps casting at it (R-20261025-183343-727b).
+    /// </summary>
+    private void NoteFightHit(int amount)
+    {
+        _fightLastHitAt = TargetClock();
+        if (!_predictKillSwapArmed || _fightTargetId == 0 || _predictArmTargetId != _fightTargetId) return;
+        double sinceCast = (RynthClock.Now - _predictArmCastAt).TotalMilliseconds;
+        if (sinceCast < ArmedHitMinMs) return;
+        _predictKillSwapArmed = false;
+        _host.Log($"[RynthAi] Predicted kill shot 0x{(uint)_fightTargetId:X8} '{_worldFilter[_fightTargetId]?.Name}' called off: " +
+                  $"its cast hit for {amount} {sinceCast:0} ms after it went out and the monster is still alive " +
+                  $"(cast#{_fightCastCount} hp~{_fightTargetMaxHp:0} dealt~{_fightDamage + amount:0}).");
+    }
+
+    /// <summary>The plugin's OnUpdateHealth: the server's health for <paramref name="id"/>. Kept for the
+    /// fight target only (the kill-shot check), stamped with when it came.</summary>
+    internal void NoteServerHealth(int id, float ratio)
+    {
+        if (id == 0 || id != _fightTargetId || float.IsNaN(ratio)) return;
+        _fightHealth = Math.Clamp(ratio, 0f, 1f);
+        _fightHealthAt = TargetClock();
+    }
+
+    /// <summary>The fight target's server health when it counts every hit landed so far: it came during
+    /// this fight and no hit landed more than FightHealthHitSlackMs after it.</summary>
+    private bool TryFreshFightHealth(out float ratio)
+    {
+        ratio = _fightHealth;
+        if (_fightHealthAt == DateTime.MinValue || ratio <= 0f) return false;
+        return _fightLastHitAt == DateTime.MinValue
+               || _fightHealthAt >= _fightLastHitAt.AddMilliseconds(-FightHealthHitSlackMs);
+    }
+
+    /// <summary>
+    /// The evidence says the cast just fired can't finish the fight target: what is left of it is more
+    /// than KILL_VETO_REACH casts of <paramref name="perCast"/>. Two sources, either one enough:
+    /// the fresh server health (with the HP pool, or with the damage dealt when the pool is unknown:
+    /// dealt / (1 - ratio) is the pool the health implies), and the HP pool minus the damage dealt,
+    /// once damage has landed (a one-shot has nothing landed and is left to casts-to-kill as before;
+    /// an HP pool that is off then can't hold it back). Without a per-cast figure there is no check.
+    /// </summary>
+    private bool KillShotContradicted(double perCast, out string why)
+    {
+        why = "";
+        if (perCast <= 0) return false;
+        double reach = perCast * KILL_VETO_REACH;
+        if (TryFreshFightHealth(out float ratio))
+        {
+            double left = _fightTargetMaxHp > 0 ? ratio * _fightTargetMaxHp
+                        : _fightDamage > 0 && ratio < 1f ? _fightDamage * ratio / (1.0 - ratio)
+                        : -1;
+            if (left > reach)
+            {
+                why = $"the server says its health is {ratio * 100f:0}% (~{left:0} HP left)";
+                return true;
+            }
+        }
+        if (_fightTargetMaxHp > 0 && _fightDamage > 0)
+        {
+            double left = _fightTargetMaxHp - _fightDamage;
+            if (left > reach)
+            {
+                why = $"~{left:0} of its ~{_fightTargetMaxHp:0} HP are left after ~{_fightDamage:0} dealt" +
+                      (_fightHpEstimated ? " (the HP is the tier estimate)" : "");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// After firing an offensive cast at the active target, decide whether that
     /// cast is expected to finish the mob. If so — and another target is in
     /// range — flag a swap so Think drops this mob instead of wasting the next
@@ -3184,27 +3401,42 @@ public partial class CombatManager : IDisposable
         if (PredictionFailed(activeTargetId)) return;    // survived a predicted kill — stay on it
         if (!HasAlternateTarget(activeTargetId)) return; // nothing to swap to — keep casting
 
+        // Both paths need the evidence not to say otherwise (KillShotContradicted, 2026-10-25): one
+        // cast's damage is the learned average, else this fight's own average over the casts that
+        // have landed (the one just fired hasn't).
+        double expected = _damageStore.GetAvgDamage(weaponId, _fightTargetWcid, element, tier, out int dmgSamples);
+        bool learned = dmgSamples >= KILL_MIN_SAMPLES && expected > 0;
+        double perCast = learned ? expected
+                       : _fightCastCount > 1 && _fightDamage > 0 ? _fightDamage / (_fightCastCount - 1)
+                       : 0;
+
         // (A) Casts-to-kill: we've fired the number of casts this wcid typically
         //     takes to die from this weapon+spell. Catches ONE-SHOTS (avg≈1 → swap
         //     right after cast 1), which the damage math below can't — nothing has
-        //     landed when we predict, so it has no remaining-HP signal yet.
+        //     landed when we predict, so it has no remaining-HP signal yet. On its own
+        //     it is only a count (the Curator's cast #37), hence the evidence check.
         double avgCasts = _damageStore.GetAvgCastsToKill(weaponId, _fightTargetWcid, element, tier, out int killSamples);
-        if (killSamples >= KILL_MIN_SAMPLES && avgCasts > 0
-            && _fightCastCount >= (int)Math.Round(avgCasts))
-        {
-            _predictKillSwap = true;
-            return;
-        }
+        bool byCount = killSamples >= KILL_MIN_SAMPLES && avgCasts > 0
+                       && _fightCastCount >= (int)Math.Round(avgCasts);
 
         // (B) Damage-based: remaining HP is within one comfortable cast. Precise
         //     for multi-cast fights once some damage has landed.
-        if (_fightTargetMaxHp > 0)
+        bool byDamage = _fightTargetMaxHp > 0 && learned
+                        && _fightTargetMaxHp - _fightDamage <= expected * KILL_CONFIDENCE;
+
+        if (!byCount && !byDamage) return;
+        if (KillShotContradicted(perCast, out string why))
         {
-            double expected = _damageStore.GetAvgDamage(weaponId, _fightTargetWcid, element, tier, out int dmgSamples);
-            double remaining = _fightTargetMaxHp - _fightDamage;
-            if (dmgSamples >= KILL_MIN_SAMPLES && expected > 0 && remaining <= expected * KILL_CONFIDENCE)
-                _predictKillSwap = true;
+            if (_killShotVetoLoggedFor != _fightTargetId)
+            {
+                _killShotVetoLoggedFor = _fightTargetId;
+                _host.Log($"[RynthAi] Kill shot not predicted for 0x{(uint)_fightTargetId:X8} '{_worldFilter[_fightTargetId]?.Name}' " +
+                          $"(cast#{_fightCastCount}" + (byCount ? $", ~{avgCasts:0.#} casts kill one" : "") +
+                          $", one cast ~{perCast:0}): {why}. Staying on it.");
+            }
+            return;
         }
+        _predictKillSwap = true;
     }
 
     /// <summary>True if a scanned, non-suppressed target other than <paramref name="excludeId"/> is available to swap to.</summary>
@@ -3238,6 +3470,7 @@ public partial class CombatManager : IDisposable
         if (!_predictedSwapAt.TryGetValue(id, out DateTime swappedAt)) return false;
 
         _predictedSwapAt.Remove(id);
+        _predictedDeathPending.Remove(id);
         _predictionFailedAt[id] = now;
         float hp = _worldFilter.GetHealthRatio(id);
         string health = hp >= 0f ? $"health {hp * 100f:0}%" : "health unknown";
@@ -3270,6 +3503,19 @@ public partial class CombatManager : IDisposable
 
     /// <summary>Test seam: the confirmed predicted-kill swap off the fight target.</summary>
     internal void PredictedSwapForTest() => ExecuteDeferredKillSwap();
+
+    /// <summary>Test seam: a predicted kill shot armed by a cast at the fight target <paramref name="castAgoMs"/> ago
+    /// (as the attack block arms it), waiting for the cast to be confirmed.</summary>
+    internal void ArmPredictedSwapForTest(double castAgoMs)
+    {
+        _predictKillSwapArmed = true;
+        _predictSwapGestureSeen = false;
+        _predictArmTargetId = activeTargetId;
+        _predictArmCastAt = RynthClock.Now.AddMilliseconds(-castAgoMs);
+    }
+
+    /// <summary>Tests: a predicted kill-shot swap is armed and waiting.</summary>
+    internal bool PredictedSwapArmed => _predictKillSwapArmed;
 
     /// <summary>Floor between attack commands for the first cast at a new target when the server
     /// gates are available (see <see cref="AttackIntervalMs"/>). Only bounds how fast a refused
@@ -3491,8 +3737,11 @@ public partial class CombatManager : IDisposable
             if (CurrentCombatMode == CombatMode.NonCombat)
                 _idlePeaceAttempts = 0;   // reached peace — the next idle request starts fresh
             bool peaceHeld = false;
+            // !HasTargets, not an empty scan: a predicted kill still alive and in range (its death
+            // unconfirmed, scan-suppressed for a moment) is fought again in a second or two, and a
+            // peace swap now would be undone at once (R-20261025-183343-727b).
             if (_settings.PeaceModeWhenIdle && CurrentCombatMode != CombatMode.NonCombat
-                && _scannedTargets.Count == 0 && BusyCount == 0
+                && !HasTargets && BusyCount == 0
                 && RynthClock.Now >= _navMagicWantedUntil)   // a nav recall wants Magic mode
             {
                 try { peaceHeld = HoldIdlePeace?.Invoke() == true; } catch { peaceHeld = false; }
@@ -3504,7 +3753,7 @@ public partial class CombatManager : IDisposable
             }
             if (!peaceHeld) _idlePeaceHeldLogged = false;
             if (!peaceHeld && _settings.PeaceModeWhenIdle && CurrentCombatMode != CombatMode.NonCombat
-                && _scannedTargets.Count == 0 && BusyCount == 0
+                && !HasTargets && BusyCount == 0
                 && RynthClock.Now >= _navMagicWantedUntil)   // a nav recall wants Magic mode
             {
                 // Defer idle peace-swap while a cast at the just-dropped target is still
@@ -7638,6 +7887,8 @@ public partial class CombatManager : IDisposable
 
     /// <summary>Tests: the wall-path count instead of the scan (the scan needs a live world).</summary>
     internal Func<int>? WallPathCountOverride { get; set; }
+    /// <summary>Tests: the monsters in ring range instead of the landscape count.</summary>
+    internal Func<int>? RingCountOverride { get; set; }
 
     /// <summary>Monsters (the target included) in a wall's path toward <paramref name="targetId"/>:
     /// ahead of the caster, within <paramref name="rangeYards"/>, and within <see cref="WallHalfWidth"/>
@@ -7918,7 +8169,22 @@ public partial class CombatManager : IDisposable
         // Ring override: when UseRing is enabled, check if enough monsters are within
         // ring range. If so, upgrade to ring; otherwise keep the base shape (arc/streak/blast/bolt).
         bool ringDue = rule != null && rule.UseRing && _settings.RingRange > 0
-            && CountMonstersInRange(_settings.RingRange) >= Math.Max(1, _settings.MinRingTargets);
+            && (RingCountOverride?.Invoke() ?? CountMonstersInRange(_settings.RingRange)) >= Math.Max(1, _settings.MinRingTargets);
+        // Like a wall, a ring is due only when one is known: Void Magic has no ring at all (no
+        // "Nether Ring" in SpellData.txt), so a Void caster with Use Ring on cast nothing once a
+        // pack came into ring range and stood in the fight ("No spell found: elem=Nether",
+        // #rynth-issues 2026-10-23, DreamWeave). Without one, the rule's other shape is cast.
+        int ringId = 0;
+        if (ringDue)
+        {
+            ringId = FindRingSpell(element, skill, useVoid);
+            if (ringId == 0)
+            {
+                ringDue = false;
+                if (_noRingLogged.Add(element + (useVoid ? "/void" : "")))
+                    _host.Log($"[CombatCast] no {element} ring spell known{(useVoid ? " (Void Magic has none)" : "")}: casting the rule's other shape when a ring is due");
+            }
+        }
 
         // Wall override (Wall Range on): a wall when enough monsters are in its path toward the
         // target and the character knows a wall of this element (none for Nether). Asked only for a
@@ -7945,14 +8211,14 @@ public partial class CombatManager : IDisposable
             return wallId;
         }
 
-        if (!TryGetShapeBase(element, shapeIdx, useVoid, out string baseName, out string? t7, out bool forcedWar)) return 0;
-        if (forcedWar) skill = AcSkillType.WarMagic;
-
         if (shapeIdx == ShapeRing)
         {
-            int ringId = FindBestRingSpell(element, skill);
-            if (ringId != 0) { isRing = true; castShape = ShapeRing; return ringId; }
+            isRing = true; castShape = ShapeRing;
+            return ringId;
         }
+
+        if (!TryGetShapeBase(element, shapeIdx, useVoid, out string baseName, out string? t7, out bool forcedWar)) return 0;
+        if (forcedWar) skill = AcSkillType.WarMagic;
 
         // The shape configured in the Monsters tab (Arc/Bolt/Streak/Blast) comes first, at the
         // highest level the character knows and has components for, plus the ring override above.
@@ -8049,6 +8315,20 @@ public partial class CombatManager : IDisposable
     }
 
     private readonly HashSet<string> _blastFallbackLogged = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _noRingLogged = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The best ring of <paramref name="element"/> the character knows (0 = none): War's lore
+    /// rings, else the generic "{ring base} {tier}" of the shape table (the Void row's
+    /// "Nether Ring" / "Corrosion Ring" exist on no known server, so a Void caster gets 0).
+    /// </summary>
+    private int FindRingSpell(string element, AcSkillType skill, bool useVoid)
+    {
+        if (!TryGetShapeBase(element, ShapeRing, useVoid, out string ringBase, out string? ringT7, out bool forcedWar)) return 0;
+        if (forcedWar) skill = AcSkillType.WarMagic;
+        int id = FindBestRingSpell(element, skill);
+        return id != 0 ? id : FindBestOffensiveSpellId(ringBase, skill, ringT7);
+    }
 
     private int FindBestRingSpell(string element, AcSkillType skill)
     {
@@ -8064,17 +8344,26 @@ public partial class CombatManager : IDisposable
 
         int maxTier = EffectiveMaxTier(skill);
 
+        // The rings are level 5 and 7 (SpellData: power 200 and 300): the named one (Cassius' Ring of
+        // Fire, Halo of Frost, ...) and the plain one (Flame Ring, Acid Ring, Force Ring, Lightning Ring)
+        // at 5, the named "II" at 7. The named ring used to wait for tier 6, and the plain ones were
+        // looked for with numerals ("Ring of Fire V"), names no server has: a caster at tier 5 never
+        // got a ring (2026-10-25).
         if (maxTier >= 7)
         {
             int id = TrySpellByName(loreNames[1]); if (id != 0) return id;
             id = TrySpellByName(loreNames[1].Replace("'", "\u2019")); if (id != 0) return id;
             id = TrySpellByName(loreNames[1].Replace("'", "`")); if (id != 0) return id;
         }
-        if (maxTier >= 6)
+        if (maxTier >= 5)
         {
             int id = TrySpellByName(loreNames[0]); if (id != 0) return id;
             id = TrySpellByName(loreNames[0].Replace("'", "\u2019")); if (id != 0) return id;
             id = TrySpellByName(loreNames[0].Replace("'", "`")); if (id != 0) return id;
+            if (PlainRings.TryGetValue(element, out string? plain))
+            {
+                id = TrySpellByName(plain); if (id != 0) return id;
+            }
         }
         if (maxTier >= 8)
         {

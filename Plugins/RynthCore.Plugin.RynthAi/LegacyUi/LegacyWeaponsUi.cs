@@ -196,7 +196,11 @@ internal sealed class LegacyWeaponsUi
     {
         switch (wo.ObjectClass)
         {
-            case AcObjectClass.HealingKit: return (wo.Name ?? "").Contains("Stamina", StringComparison.OrdinalIgnoreCase) ? "StaminaKit" : "HealthKit";
+            case AcObjectClass.HealingKit:
+                // A kit restores the vital in its name: a Greater Mana Kit is no healing kit (DreamWeave has them).
+                if ((wo.Name ?? "").Contains("Stamina", StringComparison.OrdinalIgnoreCase)) return "StaminaKit";
+                if ((wo.Name ?? "").Contains("Mana", StringComparison.OrdinalIgnoreCase)) return "ManaKit";
+                return "HealthKit";
             case AcObjectClass.Food:       return PotionType(wo);
             case AcObjectClass.Lockpick:   return "Lockpick";
             case AcObjectClass.Misc:
@@ -241,10 +245,10 @@ internal sealed class LegacyWeaponsUi
             name.Contains("Elixir of Healing", StringComparison.OrdinalIgnoreCase))
             return "HealthKit";
 
-        // Mana items
-        if (name.Contains("Mana", StringComparison.OrdinalIgnoreCase) ||
-            name.Contains("Mana Stone", StringComparison.OrdinalIgnoreCase))
-            return "ManaStone";
+        // Mana items. A mana kit (it restores your own mana, like a stamina kit) is no stone: typed
+        // ManaStone it switched off the ordinary stones and Drakkon's gear ran dry (10-23).
+        if (name.Contains("Mana", StringComparison.OrdinalIgnoreCase))
+            return name.TrimEnd().EndsWith(" Kit", StringComparison.OrdinalIgnoreCase) ? "ManaKit" : "ManaStone";
 
         // Stamina items. A stamina kit is used on yourself, not drunk: its own type, so the
         // potion step never takes it ("Stamina" is the old name for stamina potions).

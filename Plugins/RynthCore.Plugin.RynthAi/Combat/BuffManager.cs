@@ -2107,6 +2107,15 @@ public partial class BuffManager : IDisposable
             // dropping to the top-off line (Top Stam can be lower than Re-stam To).
             if (run && s.RestamTo > s.RestamAt && stamPct < s.RestamTo && casts < RestamRunMaxCasts)
                 return Math.Max(s.RestamTo, s.TopOffStam);
+            // Under Re-stam At with no monster in range starts one too (Drakkon, 10-23): the last swing, or a
+            // Stamina to Health just before the kill (174 stamina at once), took it there, so the fight never
+            // started the recharge, and the top-off stopped at Top Stam 60 instead of Re-stam To 90.
+            if (s.RestamTo > s.RestamAt && stamPct < s.RestamAt)
+            {
+                run = true;
+                casts = 0;
+                return Math.Max(s.RestamTo, s.TopOffStam);
+            }
             run = false;
             return s.TopOffStam;
         }
@@ -5369,6 +5378,9 @@ public partial class BuffManager : IDisposable
             _buffStanceStuckSince = Now;
             _buffStanceStuckStartMs = ActionPacer.NowMs();
         }
+        // No Magic request for a minute (buffing gave up or was taken over): that episode is over, this is a new one.
+        if (_buffStanceStuckSince != DateTime.MinValue && (Now - _lastBuffStanceAttempt).TotalMilliseconds > StanceEpisodeGapMs)
+            EndStanceEpisode();
         double stuckMs = _buffStanceStuckSince == DateTime.MinValue ? 0 : (Now - _buffStanceStuckSince).TotalMilliseconds;
 
         // Capped re-equip recovery (mirrors CombatManager): handles the rare
@@ -5725,7 +5737,24 @@ public partial class BuffManager : IDisposable
         bool first = _lastSeenMode == -1;   // the first read after a load is not a change
         _lastSeenMode = m;
         if (!first) _modeChangedAt = Now;
+        // In Magic: a stance episode is over, whoever got there. EnsureMagicMode ends it only when it runs in
+        // Magic itself; when the cast went out from another step, or combat took the stance back to its weapons
+        // first, the clock kept running and the next buff, 18 minutes later, logged "stuck 1123s". The
+        // launcher's wedge rule (a stance stuck over 300 s = an item-action hard lock) killed Drakkon on it (10-23).
+        if (m == CombatMode.Magic) EndStanceEpisode();
     }
+
+    /// <summary>The stance-stuck bookkeeping back to "no episode" (Magic was reached).</summary>
+    private void EndStanceEpisode()
+    {
+        _buffStanceConsecutiveFails = 0;
+        _buffStanceStuckSince = DateTime.MinValue;
+        _buffStanceReEquips = 0;
+        _buffStanceWedgeWarned = false;
+    }
+
+    /// <summary>A stance request after this long without one starts a new episode (the backoff's longest wait is 30 s).</summary>
+    private const double StanceEpisodeGapMs = 60_000;
 
     /// <summary>
     /// The wand is in hand after a swap through peace: Magic is asked for now, from the swap itself (it

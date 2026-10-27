@@ -29,6 +29,171 @@ internal static class CastNoDamageTests
         r.Add("no-damage casts: the chat after a combat cast is logged, swings at us left out, capped, 4 s", CastChatTrace);
         r.Add("no-damage casts (flight 63260): 3 magic casts landing nothing -> one short real sidestep, no cast meanwhile; a hit resets; 30 s apart", ResyncSidestep);
         r.Add("no-damage casts (R-20261021 c788): a corpse selected mid-fight stops the target's health; its chat hits still count, it is not blacklisted", SelectionElsewhereChatHitsCount);
+        r.Add("kill shot (R-20261025 727b): cast #37 of ~37 is no kill with ~155k of a 450k boss left", KillShotVetoedByHpPool);
+        r.Add("kill shot (R-20261025 727b): fresh server health vetoes it; stale health doesn't", KillShotVetoedByFreshHealth);
+        r.Add("kill shot (R-20261025 727b): a normal 3-cast mob is still predicted on its last cast", KillShotNormalMobStillPredicted);
+        r.Add("kill shot (R-20261025 727b): the armed cast's own hit calls the swap off; the previous bolt's doesn't", ArmedSwapCalledOffByHit);
+    }
+
+    // ── A boss swapped off as dead (report R-20261025-183343-727b, Conquest) ─────────────────────
+    // "Predicted kill shot 0x80621EBC 'Curator of Torment' (cast#37 hp~450250 dealt~294989)": the
+    // learned casts-to-kill (~37) fired on the count alone with ~155,000 HP left; the bot locked a
+    // Rynthid that died at once and looted a corpse while the Curator (34%) hit the player.
+    private const uint Boss = 0x80621EBC, Rynthid = 0x80539C4E, BossWcid = 40001, RynthidWcid = 40010;
+    private const int FlameBolt8 = 8;
+    private const string BossHit = "You singe Curator of Torment for 8194 points with Incantation of Flame Bolt.";
+
+    private sealed class BossRig
+    {
+        public readonly LegacyUiSettings S = new() { MonsterRange = 30 };
+        public readonly MonsterDamageStore Store = new();
+        public readonly CombatManager C;
+        public DateTime Now = new(2026, 10, 25, 19, 29, 24);
+
+        /// <param name="pool">The Curator's HP (the Damage panel's manual HP); 0 = unknown.</param>
+        /// <param name="castsToKill">What the store learned: casts of Flame Bolt VIII to kill one.</param>
+        public BossRig(double pool, int castsToKill, uint wcid = BossWcid)
+        {
+            FakeHost.Reset();
+            FakeHost.WeaponCalls = true;
+            FakeHost.CombatModeValue = CombatMode.Magic;
+            FakeHost.Names[Player] = "Me";
+            FakeHost.Positions[Player] = (Lb | 0x0141, 96f, 96f, 0f);
+            FakeHost.PlayerPose = (Lb | 0x0141, 96f, 96f, 0f);
+            FakeHost.Names[Boss] = "Curator of Torment";
+            FakeHost.Positions[Boss] = (Lb | 0x0141, 96f, 97.9f, 0f);
+            FakeHost.ItemTypes[Boss] = 0x10;
+            FakeHost.Wcids[Boss] = wcid;
+            FakeHost.Names[Rynthid] = "Discorporate Rynthid of Rage";
+            FakeHost.Positions[Rynthid] = (Lb | 0x0141, 97.7f, 96f, 0f);
+            FakeHost.ItemTypes[Rynthid] = 0x10;
+            FakeHost.Wcids[Rynthid] = RynthidWcid;
+            var host = FakeHost.Create();
+            var cache = FakeHost.MakeCache(host, Player, new[] { Boss, Rynthid }, null);
+            C = new CombatManager(host, S, cache);
+            C.SetPlayerId(Player);
+            C.SetDamageStores(null, Store);
+            C.TargetClock = () => Now;
+            for (int i = 0; i < 3; i++)
+            {
+                Store.RecordKill(Wand, wcid, "Curator of Torment", "Fire", FlameBolt8, castsToKill, 0);
+                Store.RecordHit(Wand, wcid, "Curator of Torment", "Fire", FlameBolt8, 8194, false);
+            }
+            if (pool > 0) Store.SetManualHp(wcid, pool, "Curator of Torment");
+            C.SetScannedTargetsForTests(new[]
+            {
+                new CombatManager.ScannedTarget { Id = unchecked((int)Boss), Distance = 1.9, Angle = 0, Bearing = double.NaN, Name = "Curator of Torment" },
+                new CombatManager.ScannedTarget { Id = unchecked((int)Rynthid), Distance = 1.7, Angle = 87, Bearing = double.NaN, Name = "Discorporate Rynthid of Rage" },
+            });
+            C.EngageForTest(unchecked((int)Boss));
+        }
+
+        public bool Cast() => C.CastAndPredictForTest(Wand, "Fire", FlameBolt8);
+        /// <summary><paramref name="casts"/> casts, each landing <paramref name="hit"/>, 3.7 s apart; false if any predicted a kill.</summary>
+        public bool CastAndHit(int casts, string hit)
+        {
+            bool any = false;
+            for (int i = 0; i < casts; i++)
+            {
+                any |= Cast();
+                Now = Now.AddSeconds(3.7);
+                C.HandleChatForDamage(hit, 7);
+            }
+            return any;
+        }
+        public int LogCount(string part) => FakeHost.Logs.Count(l => l.Contains(part, StringComparison.Ordinal));
+    }
+
+    private static void KillShotVetoedByHpPool()
+    {
+        var r = new BossRig(pool: 450250, castsToKill: 37);
+        Check.False(r.CastAndHit(36, BossHit), "casts 1-36: no prediction (count not reached, ~155k+ left)");
+        Check.False(r.Cast(), "cast #37: the count is reached but ~155k of 450k HP are left: no kill predicted");
+        Check.Eq(r.LogCount("Kill shot not predicted for 0x80621EBC 'Curator of Torment'"), 1, "said, naming the boss");
+        Check.True(r.LogCount("of its ~450250 HP are left") == 1, "with the HP evidence");
+        Check.False(r.Cast(), "cast #38: still none");
+        Check.Eq(r.LogCount("Kill shot not predicted"), 1, "the line is once a fight, not per cast");
+        Check.Eq(unchecked((uint)r.C.activeTargetId), Boss, "still on the Curator");
+
+        // Hit on until the evidence agrees: predicted once what is left is within a cast and a half.
+        int hits = 36;
+        bool predicted = false;
+        while (!predicted && hits < 60)
+        {
+            r.C.HandleChatForDamage(BossHit, 7);
+            hits++;
+            double before = 450250 - hits * 8194.0;
+            predicted = r.Cast();
+            if (!predicted)
+                Check.True(before > 1.5 * 8194, $"not predicted only while more than 1.5 casts are left (~{before:0})");
+        }
+        double leftAt = 450250 - hits * 8194.0;
+        Check.True(predicted, "the finishing cast is still predicted");
+        Check.True(leftAt > 0 && leftAt <= 1.5 * 8194, $"with ~{leftAt:0} left (within a cast and a half)");
+    }
+
+    private static void KillShotVetoedByFreshHealth()
+    {
+        // HP pool unknown: only the server's health can say. 36 casts landed (~295k), the Curator at 34%.
+        var r = new BossRig(pool: 0, castsToKill: 37);
+        r.CastAndHit(36, BossHit);
+        r.C.NoteServerHealth(unchecked((int)Boss), 0.34f);   // came with the last hit (selected)
+        Check.False(r.Cast(), "cast #37 at 34% health (~152k left by the damage dealt): no kill predicted");
+        Check.True(r.LogCount("the server says its health is 34%") == 1, "the health is the reason given");
+
+        // The same fight with a health reading from before the last hit: it doesn't count that
+        // hit, so it is no evidence, and the count alone predicts as before.
+        r = new BossRig(pool: 0, castsToKill: 37);
+        r.CastAndHit(35, BossHit);
+        r.C.NoteServerHealth(unchecked((int)Boss), 0.34f);
+        r.CastAndHit(1, BossHit);   // a hit 3.7 s after the reading
+        Check.True(r.Cast(), "stale health: cast #37 is predicted (no evidence against it)");
+        Check.Eq(r.LogCount("Kill shot not predicted"), 0, "nothing vetoed");
+
+        // Another monster's health is not the fight target's.
+        r = new BossRig(pool: 0, castsToKill: 37);
+        r.CastAndHit(36, BossHit);
+        r.C.NoteServerHealth(unchecked((int)Rynthid), 0.34f);
+        Check.True(r.Cast(), "the Rynthid's health says nothing about the Curator");
+    }
+
+    private static void KillShotNormalMobStillPredicted()
+    {
+        // A mob of 24,000 HP that 3 bolts kill: cast #3 is the kill, by count and by the damage left.
+        const string hit = "You singe Curator of Torment for 8000 points with Incantation of Flame Bolt.";
+        var r = new BossRig(pool: 24000, castsToKill: 3, wcid: 40020);
+        Check.False(r.CastAndHit(2, hit), "casts 1-2: no prediction");
+        Check.True(r.Cast(), "cast #3: predicted (8,000 left, one cast ~8,000)");
+
+        // With its health in: 33% left of 24,000 agrees.
+        r = new BossRig(pool: 24000, castsToKill: 3, wcid: 40020);
+        r.CastAndHit(2, hit);
+        r.C.NoteServerHealth(unchecked((int)Boss), 0.33f);
+        Check.True(r.Cast(), "fresh health at 33% agrees: predicted");
+
+        // A low roll on the way (dealt 13,000 of 24,000): 11,000 left is within reach of one cast, still predicted.
+        r = new BossRig(pool: 24000, castsToKill: 3, wcid: 40020);
+        r.CastAndHit(1, hit);
+        r.CastAndHit(1, "You singe Curator of Torment for 5000 points with Incantation of Flame Bolt.");
+        Check.True(r.Cast(), "a low roll before the last cast doesn't hold the prediction back");
+        Check.Eq(r.LogCount("Kill shot not predicted"), 0, "nothing vetoed for the normal mob");
+    }
+
+    private static void ArmedSwapCalledOffByHit()
+    {
+        var r = new BossRig(pool: 0, castsToKill: 37);
+        r.C.ArmPredictedSwapForTest(castAgoMs: 2900);   // the bolt went out 2.9 s ago
+        r.C.HandleChatForDamage("You singe Curator of Torment for 7883 points with Incantation of Flame Bolt.", 7);
+        Check.False(r.C.PredictedSwapArmed, "its hit landed and it is alive: the swap is called off");
+        Check.Eq(r.LogCount("Predicted kill shot 0x80621EBC 'Curator of Torment' called off"), 1, "and logged");
+        Check.Eq(unchecked((uint)r.C.activeTargetId), Boss, "still on the Curator");
+
+        r = new BossRig(pool: 0, castsToKill: 37);
+        r.C.ArmPredictedSwapForTest(castAgoMs: 200);   // the line can't be this cast's: no windup is that short
+        r.C.HandleChatForDamage(BossHit, 7);
+        Check.True(r.C.PredictedSwapArmed, "the previous bolt landing just after the arming cast doesn't call it off");
+        r.C.HandleChatForDamage("Discorporate Rynthid of Rage catches your attack, with dire consequences!", 0);
+        Check.True(r.C.PredictedSwapArmed, "nor does another monster's line");
     }
 
     // ── A corpse selected during the fight (report R-20261021-191720-c788, Conquest) ─────────────

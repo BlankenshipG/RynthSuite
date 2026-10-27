@@ -156,7 +156,13 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
                 else if (_barWindow != null) { _barWindow.Visible = !_barWindow.Visible; _barWindow.NeedsPass = true; NoteNoUi(_barWindow.Visible); }
                 break;
             case DefVerb.Selection when c.Text.Length > 0:
-                if (uint.TryParse(c.Text.Replace("0x", "", StringComparison.OrdinalIgnoreCase), System.Globalization.NumberStyles.HexNumber, null, out uint pick))
+                // Test hooks: "/rdef selection 0x80001234" selects that object; "stack" the first stack in the pack.
+                if (c.Text.Equals("stack", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var it in _session.Items())
+                        if (it.Stack > 1 && !it.Wielded) { Host.SelectItem(it.Id); break; }
+                }
+                else if (uint.TryParse(c.Text.Replace("0x", "", StringComparison.OrdinalIgnoreCase), System.Globalization.NumberStyles.HexNumber, null, out uint pick))
                     Host.SelectItem(pick);
                 break;
             case DefVerb.Selection:

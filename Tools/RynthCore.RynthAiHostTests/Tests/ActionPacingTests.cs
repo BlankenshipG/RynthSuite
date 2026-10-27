@@ -62,6 +62,7 @@ internal static class ActionPacingTests
         r.Add("refusal: a refused peace-before-open is asked again inside the 2.5 s ceiling; exactly one accepted request goes out before the open", PeaceBeforeOpenRefusedRetried);
         r.Add("refusal: a streak that went quiet for 10 s+ (a death, a logout) is over - 600 s later a refusal starts a fresh streak, and Forget ends one", RefusalStreakExpires);
         r.Add("refusal: wand wielded, a request accepted then dropped (a teleport), 9 s of refusals - the stuck clock restarts, no re-equip UseObject", StuckClockRestartsOnRefusal);
+        r.Add("stance clock (Drakkon 10-23): Magic seen ends the episode; a request a minute after the last starts a new one (no 'stuck 1123s')", StuckClockEndsInMagicAndAfterAGap);
         r.Add("refusal: the stall watchdog's refused mode toggle spends no ladder step (Unfire) and is asked again next tick", StallToggleRefusedSpendsNoStep);
         r.Add("refusal: missile crafting asks for peace until accepted, and combines after the 2.5 s ceiling; already in peace it combines on the first tick with no mode request", CraftingPeaceRefusal);
         r.Add("pacing (stance): a refused ChangeCombatMode burns no try and no backoff step, and the next tick asks again (pacing on and off)", RefusedStanceBurnsNothing);
@@ -747,6 +748,49 @@ internal static class ActionPacingTests
             Check.Eq(string.Join(",", FakeHost.CombatModeRequests), "8,8", "accepted again");
             Check.Eq((int)reEquips.GetValue(r.B)!, 0, "still no re-equip");
             Check.False(FakeHost.Uses.Contains(Wand), "still no UseObject(wand)");
+        }
+        finally { PaceOff(); }
+    }
+
+    // Drakkon 10-23 22:30: the launcher killed him on "[BuffStance] ChangeCombatMode(Magic) retry #4 (stuck 1123s)".
+    // The clock had started on a Magic request 18 minutes before and never ended: Magic was reached while
+    // EnsureMagicMode wasn't looking (combat took the stance back to its weapons first).
+    private static void StuckClockEndsInMagicAndAfterAGap()
+    {
+        PaceOff();
+        try
+        {
+            var r = new BuffRig(CombatMode.NonCombat);
+            SetupBuffRigVitals(r);
+            FakeHost.Names[Wand] = "Academy Wand";
+            FakeHost.ItemTypes[Wand] = 0x8000;
+            FakeHost.Ints[(Wand, 10)] = 0x01000000;   // in hand
+            r.S.WieldUnlistedWandWhenNoneListed = true;
+            r.B.SetWorldObjectCache(FakeHost.MakeCache(r.Host, Player, new[] { Wand }));
+            var since = typeof(BuffManager).GetField("_buffStanceStuckSince", Priv)!;
+            var lastTry = typeof(BuffManager).GetField("_lastBuffStanceAttempt", Priv)!;
+            var noteMode = typeof(BuffManager).GetMethod("NoteModeChange", Priv)!;
+
+            r.At(0); r.B.OnHeartbeat();
+            Check.True((DateTime)since.GetValue(r.B)! != DateTime.MinValue, "set-up: a Magic request started the stuck clock");
+
+            // The client reaches Magic and combat swaps back to its weapons before the buff step looks.
+            FakeHost.CombatModeValue = CombatMode.Magic;
+            noteMode.Invoke(r.B, null);
+            Check.True((DateTime)since.GetValue(r.B)! == DateTime.MinValue, "seen in Magic: the episode is over, the clock stopped");
+            FakeHost.CombatModeValue = CombatMode.Melee;
+            noteMode.Invoke(r.B, null);
+
+            // A clock left running anyway (any other way out): 20 minutes on, the next request starts afresh.
+            since.SetValue(r.B, r.T0.AddMinutes(-20));
+            lastTry.SetValue(r.B, r.T0.AddMinutes(-20));
+            FakeHost.CombatModeValue = CombatMode.NonCombat;
+            noteMode.Invoke(r.B, null);
+            FakeHost.Logs.Clear();
+            r.At(1); r.B.OnHeartbeat();
+            string retry = FakeHost.Logs.FirstOrDefault(l => l.Contains("[BuffStance] ChangeCombatMode(Magic) retry")) ?? "";
+            Check.True(retry.Contains("retry #1 (stuck 0s"), "a new episode: retry #1, stuck 0 s, not 1200 s: " + retry);
+            Check.True((r.NowAt - (DateTime)since.GetValue(r.B)!).TotalSeconds < 3, "the clock starts now");
         }
         finally { PaceOff(); }
     }

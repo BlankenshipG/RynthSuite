@@ -30,6 +30,34 @@ internal static class WallTests
         r.Add("walls: far off the target, it turns first and casts after the settle; facing it, no turn", WallFacing);
         r.Add("walls: the cast itself waits for the turn, then goes as an area cast", WallCastThroughAttack);
         r.Add("walls: UseWall, Wall Range and Min Wall Targets load off / 0 / 3 from old files", OldSettings);
+        r.Add("rings: a ring is due only when one is known; Void has none, so a Void caster casts its bolt (#rynth-issues 2026-10-23)", RingNeedsAKnownRing);
+    }
+
+    // A Void caster on DreamWeave with Use Ring on stood in the fight once 3+ monsters were near:
+    // the ring override picked "Nether Ring", which doesn't exist, and nothing else was tried
+    // ("No spell found: elem=Nether warTier=1 voidTier=7").
+    private static void RingNeedsAKnownRing()
+    {
+        var rig = new Rig(7, "Nether Bolt VII", "Nether Streak VII", "Frost Bolt VI", "Halo of Frost", "Frost Ring II");
+        rig.S.RingRange = 20; rig.S.MinRingTargets = 3; rig.S.WallRange = 0;
+        int near = 4;
+        rig.C.RingCountOverride = () => near;
+        var boltRing = new MonsterRule { Name = "Gilded Shade", UseBolt = true, UseRing = true };
+
+        Check.Eq(rig.Cast("Nether", boltRing), ("Nether Bolt VII", "Bolt"), "Void, 4 near (3 needed), no Void ring exists: Nether Bolt");
+        var streakRing = new MonsterRule { Name = "Gilded Shade", UseBolt = false, UseStreak = true, UseRing = true };
+        Check.Eq(rig.Cast("Nether", streakRing), ("Nether Streak VII", "Streak"), "Void, Streak + Ring: Nether Streak");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("no Nether ring spell known")), "logged once");
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("no Nether ring spell known")), 1, "only once");
+
+        Check.Eq(rig.Cast("Cold", boltRing).Shape, "Ring", "War with a cold ring known: still the ring");
+        near = 2;
+        Check.Eq(rig.Cast("Cold", boltRing), ("Frost Bolt VI", "Bolt"), "too few near: Bolt");
+
+        var noRing = new Rig(7, "Flame Bolt VI");
+        noRing.S.RingRange = 20; noRing.S.MinRingTargets = 3; noRing.S.WallRange = 0;
+        noRing.C.RingCountOverride = () => 5;
+        Check.Eq(noRing.Cast("Fire", boltRing), ("Flame Bolt VI", "Bolt"), "War with no fire ring known: Flame Bolt, not nothing");
     }
 
     private static int Id(string name) => SpellTable.Named(name).Select(r => r.Id).First();

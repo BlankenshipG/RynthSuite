@@ -2495,6 +2495,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         float prevRatio = _objectCache?.GetHealthRatio(unchecked((int)targetId)) ?? -1f;
         _sessionStats?.OnUpdateHealth(targetId, currentHealth, maxHealth);
         _objectCache?.OnUpdateHealth(targetId, healthRatio);
+        _combatManager?.NoteServerHealth(unchecked((int)targetId), healthRatio);   // kill-shot evidence (fight target only)
         _dashboard?.OnUpdateHealth(targetId, healthRatio, currentHealth, maxHealth);
         if (_loginComplete && targetId == _playerId && maxHealth > 0)
         {

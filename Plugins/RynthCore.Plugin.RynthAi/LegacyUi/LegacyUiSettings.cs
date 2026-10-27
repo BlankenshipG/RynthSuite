@@ -187,7 +187,7 @@ public sealed class LegacyUiSettings
     public bool StopMacroWhenPackFull = false;
     public int RestamAt = 30;
     /// <summary>
-    /// In combat, once stamina drops under Re-stam At, keep recharging until it reaches this %
+    /// Once stamina is under Re-stam At (in a fight, or just after one), keep recharging until it reaches this %
     /// (one Revitalize often doesn't get far). 0, or not above Re-stam At = one recharge, as before.
     /// </summary>
     public int RestamTo = 0;

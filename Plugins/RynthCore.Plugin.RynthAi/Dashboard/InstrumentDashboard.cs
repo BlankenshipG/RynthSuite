@@ -854,6 +854,7 @@ internal sealed unsafe class InstrumentDashboard
         if (!open) return;
         try
         {
+            KeepPopupOnScreen();
             ImDrawListPtr dl = ImGui.GetWindowDrawList();
             float w = ImGui.GetContentRegionAvail().X;
             Vector2 p = ImGui.GetCursorScreenPos();
@@ -1002,6 +1003,7 @@ internal sealed unsafe class InstrumentDashboard
         if (!open) return;
         try
         {
+            KeepPopupOnScreen(flipDownTo: _charAnchor.Y);
             RynthCoreHost host = _d.Host;
             bool oracle = host.SetPanelOpen(OracleKey, RynthPanelOpen.Ask) >= 0;
             ImGui.TextDisabled("Character");
@@ -1025,6 +1027,29 @@ internal sealed unsafe class InstrumentDashboard
         {
             ImGui.EndPopup();
         }
+    }
+
+    /// <summary>
+    /// Keeps the current popup inside the game window. ImGui only fits a popup to the screen when
+    /// it placed the popup itself; one placed with SetNextWindowPos stays where it was put, so the
+    /// Char menu (opened upward from the icon) ran off the top with the dashboard in the top left
+    /// corner (#rynth-issues "character window not clamped to screen", 2026-10-23).
+    /// <paramref name="flipDownTo"/>: for a menu opened upward, the Y to open it downward from
+    /// when its top is off screen; then it is pushed back inside the edges. Skipped on the
+    /// appearing frame: the popup isn't measured yet, and moving it then would cancel the pivot
+    /// ImGui applies once it is.
+    /// </summary>
+    private static void KeepPopupOnScreen(float flipDownTo = float.NaN)
+    {
+        if (ImGui.IsWindowAppearing()) return;
+        Vector2 pos = ImGui.GetWindowPos(), size = ImGui.GetWindowSize();
+        if (size.X <= 0 || size.Y <= 0) return;
+        Vector2 display = ImGui.GetIO().DisplaySize;
+        Vector2 p = pos;
+        if (!float.IsNaN(flipDownTo) && p.Y < 0) p.Y = flipDownTo;
+        p.X = Math.Clamp(p.X, 0, Math.Max(0, display.X - size.X));
+        p.Y = Math.Clamp(p.Y, 0, Math.Max(0, display.Y - size.Y));
+        if (p != pos) ImGui.SetWindowPos(p);
     }
 
     private static void PanelItem(RynthCoreHost host, string key, string command)

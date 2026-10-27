@@ -747,8 +747,7 @@ internal sealed class ManaStoneManager
         bool hasRule = false;
         foreach (var rule in _settings.ConsumableRules)
         {
-            if (!rule.Type.Equals("ManaStone", StringComparison.OrdinalIgnoreCase)) continue;
-            if (string.IsNullOrWhiteSpace(rule.Name)) continue;
+            if (!IsStoneRule(rule)) continue;
             hasRule = true;
             if (rule.Name.Equals(item.Name, StringComparison.OrdinalIgnoreCase))
                 return true;
@@ -766,6 +765,24 @@ internal sealed class ManaStoneManager
         return OrdinaryStoneNames.Contains(item.Name)
                || item.Name.Contains("Mana Charge", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// A ManaStone line in Items that names a stone. A kit isn't one: "Greater Mana Kit" (a kit that
+    /// restores your own mana) was typed ManaStone from the word "Mana" (Drakkon, 10-23). As a stone rule
+    /// it switched off the ordinary stones (rules → named ones only), so his Greater and Major Mana Stones
+    /// were never used and his shirt ran dry, and RynthAi tried to drain gear into the kit (refused).
+    /// </summary>
+    private bool IsStoneRule(ConsumableRule rule)
+    {
+        if (!rule.Type.Equals("ManaStone", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(rule.Name)) return false;
+        if (!IsKitName(rule.Name)) return true;
+        if (_kitRulesNoted.Add(rule.Name))
+            _host.Log($"[RynthAi] ManaStone: '{rule.Name}' is in Items as a mana stone but is a kit: not used as a stone (Items: change its type).");
+        return false;
+    }
+    private readonly HashSet<string> _kitRulesNoted = new(StringComparer.OrdinalIgnoreCase);
+
+    internal static bool IsKitName(string name) => name.TrimEnd().EndsWith(" Kit", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The retail tapping stones (ACE world data names), smallest to largest.</summary>
     internal static readonly HashSet<string> OrdinaryStoneNames = new(StringComparer.OrdinalIgnoreCase)
@@ -802,7 +819,7 @@ internal sealed class ManaStoneManager
         if (IsManaStone(item)) return true;
         if (_settings.EnableManaTapping || string.IsNullOrEmpty(item.Name)) return false;
         foreach (var rule in _settings.ConsumableRules)
-            if (rule.Type.Equals("ManaStone", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(rule.Name))
+            if (IsStoneRule(rule))
                 return false;   // rules decide (IsManaStone already said no)
         return OrdinaryStoneNames.Contains(item.Name)
                || item.Name.Contains("Mana Charge", StringComparison.OrdinalIgnoreCase);
