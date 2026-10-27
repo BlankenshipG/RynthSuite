@@ -305,6 +305,42 @@ internal sealed class DungeonGeometry
         return false;
     }
 
+    /// <summary>The height of the cell's floor at (x, y), the floor polygon nearest
+    /// <paramref name="zRef"/> in height if several are under it (any height apart). False when
+    /// (x, y) is off the cell's floor or the cell has no floor data.</summary>
+    internal bool TryCellFloorHeight(uint cell, double x, double y, double zRef, out double h)
+    {
+        h = 0;
+        if (!_floors.TryGetValue(cell, out var list)) return false;
+        double best = double.MaxValue;
+        foreach (var v in list)
+        {
+            if (!InsidePolygon2D(v, x, y)) continue;
+            NewellNormal(v, out double nx, out double ny, out double nz);
+            if (Math.Abs(nz) < 1e-9) continue;
+            double px = 0, py = 0, pz = 0;
+            foreach (var q in v) { px += q.X; py += q.Y; pz += q.Z; }
+            px /= v.Length; py /= v.Length; pz /= v.Length;
+            double fh = pz - (nx * (x - px) + ny * (y - py)) / nz;
+            if (Math.Abs(fh - zRef) < best) { best = Math.Abs(fh - zRef); h = fh; }
+        }
+        return best < double.MaxValue;
+    }
+
+    /// <summary>The box round the cell's floor polygons (false: no floor data).</summary>
+    internal bool TryCellFloorBounds(uint cell, out double minX, out double minY, out double maxX, out double maxY)
+    {
+        minX = minY = double.MaxValue; maxX = maxY = double.MinValue;
+        if (!_floors.TryGetValue(cell, out var list)) return false;
+        foreach (var v in list)
+            foreach (var q in v)
+            {
+                minX = Math.Min(minX, q.X); maxX = Math.Max(maxX, q.X);
+                minY = Math.Min(minY, q.Y); maxY = Math.Max(maxY, q.Y);
+            }
+        return minX <= maxX;
+    }
+
     /// <summary>True when (x, y) is on the floor of any of <paramref name="cells"/>; also true
     /// when none of them has floor data (nothing to check against).</summary>
     public bool OnFloorOfAny(IEnumerable<uint> cells, double x, double y, double z)

@@ -23,6 +23,7 @@ internal static class StuckCastTests
     {
         r.Add("stuck cast: after a 'too busy' UseDone nothing starts until the server answers; no timer re-send while our cast is open", NoResendAfterTooBusy);
         r.Add("stuck cast: with no cast of ours open, one probe after 1.5 s, then doubling; a UseDone(0) clears", ProbeWhenNothingOpen);
+        r.Add("too busy (Conquest 10-25): a try held by another check (animating) is not spent; the next asker (combat) gets it", TryNotSpentWhenHeld);
         r.Add("stuck cast: a held cast is turned to its target at cycle + 1 s, broken by a jump TurnGraceMs after the turn; a normal 4 s cast trips neither", TurnThenJump);
         r.Add("stuck cast: already facing the target (no turn), the jump is at cycle + 2 s", JumpWithoutTurn);
         r.Add("stuck cast: no starts in the air; after landing, no UseDone in 3 s -> Peace mode, 3 s more -> going on", AfterTheJump);
@@ -338,6 +339,36 @@ internal static class StuckCastTests
             Check.True(May(host), "a UseDone with another error clears the hold");
             Check.False(ActionPacer.ServerBusy, "not busy any more");
             Check.True(FakeHost.Logs.Any(l => l.Contains("the server answered again (UseDone 0x402)")), "logged");
+        }
+        finally { Done(); }
+    }
+
+    // Conquest report R-20261025-183343 (Dargoth Hera): a corpse pickup and a cast went out together, the
+    // cast was refused 'too busy', and the buff step took all three tries after it while the character was
+    // still animating, so it sent nothing; combat never got a try and the fight stood for the latch's 15 s.
+    private static void TryNotSpentWhenHeld()
+    {
+        var host = Setup();
+        try
+        {
+            Check.True(MayAs(host, "Combat", HealNeed.None), "free");
+            Cast(host, "Heart Rend");
+            _t += 100;
+            FakeHost.UseDone(ActionPacer.TooBusyErr);   // refused next to a pickup (no UseDone of its own)
+            Check.False(MayAs(host, "Combat", HealNeed.None), "held right after the 0x1D");
+            _t += ActionPacer.BusyProbeMs;
+            FakeHost.CastBusy = 1;                       // the client still animates
+            Check.False(MayAs(host, "Buff", HealNeed.None), "the buff step's try is held by the animation");
+            FakeHost.CastBusy = 0;
+            Check.True(MayAs(host, "Combat", HealNeed.None), "combat gets the try the buff step couldn't use");
+            Check.False(MayAs(host, "Buff", HealNeed.None), "and only one start has it");
+            Check.Eq(FakeHost.Logs.Count(l => l.Contains("one try (#1)")), 1, "one try logged");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("Combat: one try (#1)")), "and it was combat's");
+            // The next try is counted from the one that went (doubling as before).
+            _t += ActionPacer.BusyProbeMs * 2 - 1;
+            Check.False(MayAs(host, "Combat", HealNeed.None), "the next try waits twice as long");
+            _t += 1;
+            Check.True(MayAs(host, "Combat", HealNeed.None), "then goes");
         }
         finally { Done(); }
     }

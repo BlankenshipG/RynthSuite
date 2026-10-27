@@ -23,7 +23,7 @@ internal static class VitalsTests
         r.Add("vitals: Stamina to Health follows its own health line and stamina floor", StaminaToHealthThresholds);
         r.Add("vitals: profiles without the Stamina to Health keys load today's 30 / 20", StaminaToHealthDefaults);
         r.Add("vitals: Re-stam To keeps a started recharge going to its line; off = one recharge as before", RestamTo);
-        r.Add("vitals: a recharge started in a fight finishes to Re-stam To after the fight", RestamRunOutlivesFight);
+        r.Add("vitals: a recharge started in a fight, or under Re-stam At just after one, finishes to Re-stam To", RestamRunOutlivesFight);
         r.Add("vitals: a Re-stam To run counts casts sent, not the ticks spent waiting for one", RestamRunCountsSentCasts);
         r.Add("vitals: out of Magic stance a listed stamina potion goes before Revitalize; a caster casts first", StaminaPotionFirst);
         r.Add("vitals: a listed potion whose stack ran out is drunk from the next stack of that name", ListedPotionNextStack);
@@ -336,6 +336,21 @@ internal static class VitalsTests
         Check.Eq(BuffManager.StaminaLine(false, 91, s, ref run, ref casts), 60, "reached 90: done, the top-off line again");
         Check.False(run, "the recharge ended");
         Check.Eq(BuffManager.StaminaLine(false, 55, s, ref run, ref casts), 60, "no recharge running: idle uses Top Stam");
+
+        // Drakkon, 10-23: the fight ended with stamina under Re-stam At before a recharge started (a
+        // Stamina to Health drained 174 just before the kill): the top-off stopped at 60.
+        run = false; casts = 0;
+        Check.Eq(BuffManager.StaminaLine(false, 20, s, ref run, ref casts), 90, "no monster, 20%: under Re-stam At, recharge to 90");
+        Check.True(run, "a recharge started");
+        casts++;
+        Check.Eq(BuffManager.StaminaLine(false, 65, s, ref run, ref casts), 90, "65% after one kit: still to 90, not Top Stam 60");
+        casts++;
+        Check.Eq(BuffManager.StaminaLine(false, 92, s, ref run, ref casts), 60, "reached 90: done");
+        Check.Eq(BuffManager.StaminaLine(false, 40, s, ref run, ref casts), 60, "40% with no recharge running (over Re-stam At): Top Stam as before");
+        var off = new LegacyUiSettings { RestamAt = 35, RestamTo = 0, TopOffStam = 60 };
+        run = false; casts = 0;
+        Check.Eq(BuffManager.StaminaLine(false, 20, off, ref run, ref casts), 60, "Re-stam To off: Top Stam as before");
+        Check.False(run, "and no recharge run");
     }
 
     // Drakkon, 2026-10-20: every Re-stam To run stopped after one Robustification. The stamina chain also

@@ -27,6 +27,8 @@ namespace RynthCore.PatrolProof;
 //                  floors off, wall distances, look-in sizes): patrol cells, waypoints, lap length
 //     pockets      for each start, the dead-end areas off the reachable cells (largest first, the
 //                  ones hanging off the trunk), their rooms and the smaller areas inside them
+//     portal x,y,z[,r]  a portal the patrol keeps out of (world metres; r the keep-out radius, default
+//                  3.5 m), as BuildDunPatrol passes the live ones; repeatable. One line per portal.
 // The start cell is handled as BuildDunPatrol does: a start in a hazard moves to NearestSafeCell.
 internal static class Waypoints
 {
@@ -40,6 +42,7 @@ internal static class Waypoints
         var inv = CultureInfo.InvariantCulture;
         var extra = new HashSet<uint>();
         var fileCells = new HashSet<uint>();
+        var portals = new List<PatrolPortal>();
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
@@ -66,6 +69,12 @@ internal static class Waypoints
                     if (uint.TryParse(l.Replace("0x", ""), NumberStyles.HexNumber, null, out uint c)) fileCells.Add(c);
                 }
             }
+            else if (a == "portal" && i + 1 < args.Length)
+            {
+                double[] v = args[++i].Split(',').Select(t => double.Parse(t, inv)).ToArray();
+                portals.Add(new PatrolPortal { Id = (uint)portals.Count + 1, Name = "given", X = v[0], Y = v[1], Z = v[2],
+                                               Radius = v.Length > 3 ? v[3] : DungeonPathfinder.PortalKeepOutDefault });
+            }
             else if (a == "hz" && i + 1 < args.Length)
                 foreach (string t in args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries))
                     extra.Add(uint.Parse(t.Replace("0x", ""), NumberStyles.HexNumber));
@@ -80,7 +89,7 @@ internal static class Waypoints
         if (!loader.Initialize(acDir)) { Console.WriteLine("Geometry loader failed: " + loader.StatusMessage); return 1; }
         var graph = DungeonPathfinder.GetGraph(lb, loader.CellDat);
         var geo = DungeonPathfinder.GetGeometry(lb, loader.CellDat, loader.DungeonLOS);
-        var surfaceCells = DungeonHazardSurfaces.ComputeHazardCells(lb, loader.CellDat, loader.PortalDat);
+        var surfaceCells = DungeonHazardSurfaces.ComputeHazardCells(lb, loader.DungeonLOS, loader.PortalDat);
         Console.WriteLine($"Landblock 0x{lb:X4}: {graph.Count} cells; hazard textures {DungeonHazardSurfaces.HazardTextureCount} -> {surfaceCells.Count} Detector C cells: {Ids(surfaceCells)}");
         if (fileCells.Count > 0) Console.WriteLine($"  hzfile cells: {Ids(fileCells)}");
         if (extra.Count > 0) Console.WriteLine($"  hz cells: {Ids(extra)}");
@@ -120,15 +129,22 @@ internal static class Waypoints
                 var log = new Dictionary<NavPoint, DungeonPathfinder.PatrolPointInfo>(ReferenceEqualityComparer.Instance);
                 DungeonPathfinder.PointLog = log;
                 NavRouteParser route;
-                try { route = DungeonPathfinder.BuildPatrolRoute(graph, start, hazards, geo, opt); }
+                List<PortalAvoidance> avoided;
+                try
+                {
+                    route = DungeonPathfinder.BuildPatrolRoute(graph, start, hazards, geo, opt, portals);
+                    avoided = DungeonPathfinder.LastPortalAvoidance;
+                }
                 finally { DungeonPathfinder.PointLog = null; }
                 var lines = DungeonPathfinder.DescribePatrol(route, graph, geo, hazards, log);
+                if (avoided != null) lines.AddRange(avoided.Select(r => "wp " + r.Describe()));
                 Console.WriteLine();
                 Console.WriteLine($"== start {s0:X8}{(start != s0 ? $" (moved to safe {start:X8})" : "")}, hazards {name} ({cells.Count})");
                 Console.WriteLine("   " + EnteredRooms(route, graph, geo, hazards, log));
                 foreach (string l in lines)
                 {
-                    bool isSummary = l.StartsWith("wp summary", StringComparison.Ordinal) || l.StartsWith("wp main route", StringComparison.Ordinal);
+                    bool isSummary = l.StartsWith("wp summary", StringComparison.Ordinal) || l.StartsWith("wp main route", StringComparison.Ordinal)
+                                  || l.StartsWith("wp portal", StringComparison.Ordinal);
                     if (summaryOnly && !isSummary) continue;
                     if (tinyOnly && !isSummary && !IsTiny(l)) continue;
                     Console.WriteLine("   " + l);

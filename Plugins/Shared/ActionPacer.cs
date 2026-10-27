@@ -382,7 +382,7 @@ internal static class ActionPacer
         bool animationGate = true, bool settleGate = true, bool attackRepeat = false)
     {
         if (!Enabled) { why = ""; return true; }
-        if (ServerBusyHolds(host, who, attackRepeat, out why, heal)) return false;
+        if (ServerBusyHolds(host, who, attackRepeat, out why, out bool tryAfterBusy, heal)) return false;
         // An emergency heal does not wait for the movement settle (150-600 ms): at Emergency Heal At
         // the heal comes first; it still obeys the in-flight rules below (OutstandingAllows, GestureHolds).
         if (settleGate && heal != HealNeed.Emergency && MoveAudit.SettleHolds(host, out why))
@@ -395,7 +395,24 @@ internal static class ActionPacer
         lock (Gate) _settleLogged.Clear();
         if (!OutstandingAllows(host, who, heal, out why, attackRepeat)) return false;
         if (animationGate && GestureHolds(host, who, heal, out why)) return false;
+        // The one try after a 'too busy' answer is spent only by a start that goes: one held by the checks
+        // above left it for the next asker. A Conquest report (10-25): after a corpse pickup and a cast went
+        // out together, the buff step took all three tries and sent nothing (still animating), combat never
+        // got one, and the fight stood for the latch's 15 s.
+        if (tryAfterBusy) SpendTryAfterBusy(host, who);
         return true;
+    }
+
+    private static void SpendTryAfterBusy(RynthCoreHost host, string who)
+    {
+        int n;
+        lock (Gate)
+        {
+            _probes++;
+            _lastProbeAt = NowMs();
+            n = _probes;
+        }
+        Log(host, $"[Pace] {who}: one try (#{n}) after the server's 'too busy' answer; no cast of ours is open");
     }
 
     private static bool OutstandingAllows(RynthCoreHost host, string who, HealNeed heal, out string why, bool attack = false)
@@ -762,9 +779,10 @@ internal static class ActionPacer
     /// a hung cast) or the character is in the air after a breaker jump. Runs the held-cast turn and
     /// the stuck-cast breaker. Called by MayStart.
     /// </summary>
-    private static bool ServerBusyHolds(RynthCoreHost host, string who, bool attackRepeat, out string why, HealNeed heal = HealNeed.None)
+    private static bool ServerBusyHolds(RynthCoreHost host, string who, bool attackRepeat, out string why, out bool tryAfterBusy, HealNeed heal = HealNeed.None)
     {
         why = "";
+        tryAfterBusy = false;
         bool healStart = heal != HealNeed.None;
         long now = NowMs();
         long gapEnd, gapLen;
@@ -815,9 +833,7 @@ internal static class ActionPacer
             if (!attackRepeat && stuck == null && _busySince != 0 && _stage == BreakStage.None && !healWaiting
                 && now - Math.Max(_busySince, _lastProbeAt) >= Math.Min(BusyProbeMs << Math.Min(_probes, 8), BusyProbeMaxMs))
             {
-                probe = true;
-                _probes++;
-                _lastProbeAt = now;
+                probe = true;   // spent in MayStart once the start passes its other checks (SpendTryAfterBusy)
             }
         }
 
@@ -860,7 +876,7 @@ internal static class ActionPacer
         }
         if (probe)
         {
-            Log(host, $"[Pace] {who}: one try (#{_probes}) after the server's 'too busy' answer; no cast of ours is open");
+            tryAfterBusy = true;
             return false;
         }
 

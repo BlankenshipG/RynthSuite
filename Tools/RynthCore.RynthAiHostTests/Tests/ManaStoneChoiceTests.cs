@@ -26,6 +26,8 @@ internal static class ManaStoneChoiceTests
         r.Add("mana charges: used up, the next charge of that name is found (retail: each use destroys one)", NextChargeFoundByName);
         r.Add("mana charges: never taken for the empty stone to drain loot into", ChargeIsNeverEmptyStone);
         r.Add("mana charges: refill gear even when ManaStone rules name only other stones", ChargesIgnoreStoneRules);
+        r.Add("mana stones (Drakkon 10-23): a mana kit typed ManaStone in Items is no stone rule: the ordinary stones still refill gear", KitIsNoStoneRule);
+        r.Add("mana tapping (Drakkon 10-24): mana kits are no empty stones: nothing looted for them; the item goes into the real stone", KitsAreNoEmptyStones);
         r.Add("mana stones: the server's 'low on Mana' refills gear whose read is stale-high", ServerLowRefills);
         r.Add("mana stones: worn gear is identified again, so a stale-high read follows the gear", GearReadRefreshed);
         r.Add("mana stones: worn means worn per the tracker - a packed item with a stale wield record takes no appraisals, gear it says is worn gets refilled", WornPerTracker);
@@ -122,6 +124,39 @@ internal static class ManaStoneChoiceTests
         Check.False(m.IsRefillStone(W("Major Mana Stone")), "an unnamed stone still doesn't");
         s.EnableManaTapping = false;
         Check.True(m.IsRefillStone(W("Tiny Mana Charge")), "tapping off too");
+    }
+
+    // Drakkon 10-23: "Greater Mana Kit" (a kit for his own mana) was in Items typed ManaStone. As the only stone
+    // rule it switched the ordinary stones off: his Greater and Major Mana Stones were never used, his shirt ran
+    // dry, and RynthAi tried to drain his necklace into the kit ("Cannot use the Greater Mana Kit with the Necklace").
+    private static void KitIsNoStoneRule()
+    {
+        FakeHost.Reset();
+        var host = FakeHost.Create();
+        var cache = new WorldObjectCache(host);
+        var s = new LegacyUiSettings { EnableManaTapping = true };
+        s.ConsumableRules.Add(new ConsumableRule { Name = "Greater Mana Kit", Type = "ManaStone" });
+        var m = new ManaStoneManager(host, s, cache);
+        WorldObject W(string name, AcObjectClass cls = AcObjectClass.ManaStone) => new(0x60001000, name, cls);
+        Check.True(m.IsManaStone(W("Greater Mana Stone")) && m.IsManaStone(W("Major Mana Stone")), "the ordinary stones count again");
+        Check.True(m.IsRefillStone(W("Major Mana Stone")), "and refill worn gear");
+        Check.False(m.IsManaStone(W("Greater Mana Kit", AcObjectClass.HealingKit)), "the kit is no stone (nothing drained into it)");
+        Check.True(FakeHost.Logs.Count(l => l.Contains("'Greater Mana Kit' is in Items as a mana stone but is a kit")) == 1, "said once");
+        s.EnableManaTapping = false;
+        Check.True(m.IsRefillStone(W("Greater Mana Stone")), "tapping off: still refills gear");
+
+        // A real stone named in Items still means "only the named ones".
+        s.EnableManaTapping = true;
+        s.ConsumableRules.Add(new ConsumableRule { Name = "Major Mana Stone", Type = "ManaStone" });
+        Check.True(m.IsManaStone(W("Major Mana Stone")), "the named stone");
+        Check.False(m.IsManaStone(W("Greater Mana Stone")), "not the unnamed one");
+
+        // Adding one to Items types it ManaKit now, and a kit in the pack is no healing kit.
+        var detect = typeof(LegacyWeaponsUi).GetMethod("DetectConsumableType", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        Check.Eq((string)detect.Invoke(null, new object[] { W("Greater Mana Kit", AcObjectClass.HealingKit) })!, "ManaKit", "Items types a mana kit ManaKit");
+        Check.Eq((string)detect.Invoke(null, new object[] { W("Greater Mana Stone") })!, "ManaStone", "and a stone ManaStone");
+        Check.Eq(LegacyWeaponsUi.PackConsumableType(W("Greater Mana Kit", AcObjectClass.HealingKit)), "ManaKit", "a mana kit in the pack is not a healing kit");
+        Check.Eq(LegacyWeaponsUi.PackConsumableType(W("Treated Healing Kit", AcObjectClass.HealingKit)), "HealthKit", "a healing kit still is");
     }
 
     private static void ServerLowRefills()
@@ -382,6 +417,32 @@ internal static class ManaStoneChoiceTests
         rig.Run(1000);
         Check.Eq(rig.OnPlayer.Count, 1, "the charged stone goes on the player in the fight");
         Check.Eq(rig.OnPlayer[0], StoneA, "stone A");
+    }
+
+    // Drakkon 10-23/24: with "Greater Mana Kit" typed ManaStone, his 5 kits were empty stones to RynthAi. It looted
+    // an item for each, every drain into a kit was refused, it gave up after 3 and looted the next: a hundred items.
+    // Tom: the stone first, then one item for it, drained, and the next only with another empty stone.
+    private static void KitsAreNoEmptyStones()
+    {
+        const uint KitA = 0x80400031, KitB = 0x80400032;
+        void Kits(List<uint> ids)
+        {
+            foreach (uint k in new[] { KitA, KitB }) { FakeHost.Names[k] = "Greater Mana Kit"; FakeHost.Containers[k] = Player; ids.Add(k); }
+        }
+        using (var rig = new Rig(tapping: true, Array.Empty<(uint, int?)>(), maceMana: 5000, before: Kits))
+        {
+            rig.S.ConsumableRules.Add(new ConsumableRule { Name = "Greater Mana Kit", Type = "ManaStone" });
+            Check.Eq(rig.M.CountEmptyStones(), 0, "kits only: no empty stone");
+            Check.Eq(rig.M.FreeEmptyStoneSlots(), 0, "so no item is looted to tap");
+        }
+        using (var rig = new Rig(tapping: true, new (uint, int?)[] { (StoneA, null) }, ringToDrain: true, stoneName: "Major Mana Stone", maceMana: 5000, before: Kits))
+        {
+            rig.S.ConsumableRules.Add(new ConsumableRule { Name = "Greater Mana Kit", Type = "ManaStone" });
+            Check.Eq(rig.M.CountEmptyStones(), 1, "one empty Major Mana Stone (the kits don't count)");
+            rig.Run(1600);
+            Check.True(rig.OnRing.Count == 1 && rig.OnRing[0] == StoneA, $"the ring is drained into the stone, never a kit ({string.Join(",", rig.OnRing.Select(x => $"0x{x:X8}"))})");
+            Check.Eq(rig.M.FreeEmptyStoneSlots(), 0, "and no second item while that drain is out");
+        }
     }
 
     private static void OneTapItemAtATime()

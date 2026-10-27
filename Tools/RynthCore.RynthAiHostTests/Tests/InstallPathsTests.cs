@@ -118,6 +118,7 @@ internal static class InstallPathsTests
         Check.Eq(PrivateStatic(typeof(RynthCore.Plugin.RynthAi.RadarWallRenderer), "ExploredDir"), @"C:\Games\RynthSuite\RynthAi\ExploredDungeons", "explored dungeons");
         // The tests point the store at their scratch folder (Program.Main); this is its value before that.
         Check.Eq(Program.LiveHazardFolder, @"C:\Games\RynthSuite\RynthAi\DungeonHazards", "dungeon hazards");
+        Check.Eq(Program.LiveHazardTextureFolder, @"C:\Games\RynthSuite\RynthAi", "hazard floor textures (HazardTextures.txt)");
         Check.Eq(Program.LiveCreatureFolder, @"C:\Games\RynthSuite\RynthAi\CreatureData", "creature data");
     }
 

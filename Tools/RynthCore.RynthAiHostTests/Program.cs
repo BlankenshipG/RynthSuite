@@ -23,6 +23,9 @@ internal static class Program
     /// <summary>CreatureProfileStore's folder before Main pointed it at the scratch folder.</summary>
     public static string LiveCreatureFolder { get; private set; } = "";
 
+    /// <summary>DungeonHazardSurfaces' folder (HazardTextures.txt) before Main pointed it at the scratch folder.</summary>
+    public static string LiveHazardTextureFolder { get; private set; } = "";
+
     private static int Main(string[] args)
     {
         if (Directory.Exists(TempRoot)) Directory.Delete(TempRoot, recursive: true);
@@ -39,6 +42,10 @@ internal static class Program
         // A sighted lava/acid hotspot is persisted under C:\Games\RynthSuite\RynthAi\DungeonHazards.
         LiveHazardFolder = RynthCore.Plugin.RynthAi.DungeonHazardStore.Folder;
         RynthCore.Plugin.RynthAi.DungeonHazardStore.Folder = Path.Combine(TempRoot, "DungeonHazards");
+        // Detector C's flagged floor textures are persisted to C:\Games\RynthSuite\RynthAi\HazardTextures.txt.
+        LiveHazardTextureFolder = RynthCore.Plugin.RynthAi.DungeonHazardSurfaces.Folder;
+        RynthCore.Plugin.RynthAi.DungeonHazardSurfaces.Folder = Path.Combine(TempRoot, "HazardTextures");
+        RynthCore.Plugin.RynthAi.DungeonHazardSurfaces.Reload();
         // Appraised creatures are saved to C:\Games\RynthSuite\RynthAi\CreatureData\creatures.json.
         LiveCreatureFolder = RynthCore.Plugin.RynthAi.CreatureData.CreatureProfileStore.Folder;
         RynthCore.Plugin.RynthAi.CreatureData.CreatureProfileStore.Folder = Path.Combine(TempRoot, "CreatureData");
@@ -64,6 +71,7 @@ internal static class Program
         PatrolDoorwayTests.Register(runner);
         PatrolSettingsTests.Register(runner);
         PatrolPocketTests.Register(runner);
+        PatrolPortalTests.Register(runner);
         BuffTests.Register(runner);
         SpellCatalogTests.Register(runner);
         CombatMathTests.Register(runner);
@@ -110,6 +118,7 @@ internal static class Program
         NavOverlayTests.Register(runner);
         ActionPacingTests.Register(runner);
         HazardEscapeTests.Register(runner);
+        HazardFloorTests.Register(runner);
         ManaStoneChoiceTests.Register(runner);
         CustomDebuffTests.Register(runner);
         DebuffRenewTests.Register(runner);

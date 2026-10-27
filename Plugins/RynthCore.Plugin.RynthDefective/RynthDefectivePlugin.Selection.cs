@@ -88,9 +88,9 @@ public sealed partial class RynthDefectivePlugin
 
         string where = string.Empty;
         float relative = float.NaN;
-        bool carried = false;
-        foreach (var it in _session.Items()) if (it.Id == sel) { carried = true; break; }
-        if (carried) where = "in your pack";
+        Items.CarriedItem? carried = null;
+        foreach (var it in _session.Items()) if (it.Id == sel) { carried = it; break; }
+        if (carried != null) where = CarriedText(carried);
         else if (Host.TryGetObjectPosition(sel, out uint oc, out float ox, out float oy, out float oz) && oc != 0
                  && Host.TryGetPlayerPose(out uint pc, out float px, out float py, out float pz, out float qw, out _, out _, out float qz) && pc != 0)
         {
@@ -105,10 +105,25 @@ public sealed partial class RynthDefectivePlugin
             if (dist >= 0.5) relative = (float)rel;
             where = $"{dist.ToString(dist < 10 ? "0.0" : "0", CultureInfo.InvariantCulture)} yd {Compass(bearing)}";
         }
+        // Not carried (on the ground, in a corpse or chest): AC's own stack size.
+        if (carried == null && Host.TryGetObjectIntProperty(sel, StackSizeProperty, out int stack) && stack > 1)
+            where = "stack of " + stack.ToString("N0", CultureInfo.InvariantCulture) + (where.Length > 0 ? " · " + where : "");
 
         HealthSeen? h = _health;
         float health = h != null && h.Id == sel ? h.Ratio : -1f;
         return new SelectionView(true, sel, name, where, relative, health, h?.Current ?? 0, h?.Max ?? 0);
+    }
+
+    private const uint StackSizeProperty = 12;   // PropertyInt.StackSize
+
+    /// <summary>A carried item's line: how many in the stack or uses left, and where (in your pack, in hand, worn).</summary>
+    private static string CarriedText(Items.CarriedItem it)
+    {
+        var parts = new System.Collections.Generic.List<string>(2);
+        if (it.MaxStack > 1 || it.Stack > 1) parts.Add("stack of " + it.Stack.ToString("N0", CultureInfo.InvariantCulture));
+        if (it.MaxUses > 0) parts.Add($"{it.Uses.ToString(CultureInfo.InvariantCulture)} of {it.MaxUses.ToString(CultureInfo.InvariantCulture)} uses");
+        parts.Add(!it.Wielded ? "in your pack" : Items.ItemKinds.IsWeapon(Items.ItemKinds.Classify(it)) ? "in hand" : "worn");
+        return string.Join(" · ", parts);
     }
 
     /// <summary>A landblock coordinate as a world one: 192 units a landblock (the cell's high bytes).</summary>

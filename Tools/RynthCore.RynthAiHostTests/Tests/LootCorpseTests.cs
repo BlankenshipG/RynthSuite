@@ -53,6 +53,8 @@ internal static class LootCorpseTests
         r.Add("boost loot: the wait ends after BoostLootKillWaitMs, for a close monster, and with Boost Loot off", BoostLootHoldLimits);
         r.Add("boost loot: looting the kill's corpse ends the wait; an older corpse does not", BoostLootWaitEndsOnKillCorpse);
         r.Add("monster ignore: a close Priority 0 monster neither holds combat nor starves the corpse", IgnoredMonsterDoesNotHoldLoot);
+        r.Add("loot gate (R-20261025 727b): a predicted kill still alive holds the corpse; after its window combat has it again", PredictedKillHoldsCorpse);
+        r.Add("loot gate (R-20261025 727b): the kill notice, health 0 or a hit after the swap settle a predicted kill at once", PredictedKillSettled);
         r.Add("corpse close: a finished corpse is closed once (CloseContainer, API v76)", FinishedCorpseClosedOnce);
         r.Add("corpse close: an engine without CloseContainer leaves it to the next open (no close)", FinishedCorpseNotClosedOnOldEngine);
         r.Add("corpse close: an abandoned open corpse is closed once", AbandonedCorpseClosed);
@@ -398,6 +400,96 @@ internal static class LootCorpseTests
         Check.True(bot.HasLootWork(), "the corpse is lootable");
         var inputs = new ArbiterInputs(true, false, combat.HasEngageableTarget, true, false, true, combatEngaged: combat.HasEngageableTarget);
         Check.Eq(ActivityArbiter.Decide(in inputs), BotActivity.Looting, "so looting has the tick without needing a starved turn");
+    }
+
+    // ── A predicted kill that is still alive (report R-20261025-183343-727b, Conquest) ─────────
+    // The bot swapped off a Curator of Torment as a predicted kill (34% health left), the Rynthid it
+    // locked next died at once, and with the Curator kept out of the scan HasTargets went false:
+    // "Corpse loot: claimed corpse target", 4.6 s of looting with the live Curator 1.9 m away.
+
+    /// <summary>The Water Elemental 2 m away fought, then swapped off as a predicted kill (dropped,
+    /// out of the scan), with combat's target clock at <paramref name="now"/>.</summary>
+    private static Bot PredictedKillWorld(out CombatManager combat, Func<DateTime> now)
+    {
+        var bot = StarvationWorld(2f, out combat);
+        FakeHost.Wcids[Monster] = 40030;
+        combat.TargetClock = now;
+        combat.SetDamageStores(null, new RynthCore.Plugin.RynthAi.CreatureData.MonsterDamageStore());
+        combat.EngageForTest(unchecked((int)Monster));
+        combat.CastAndPredictForTest(0x8008AB76, "Fire", 8);   // one cast at it (the kill notice credits it)
+        combat.PredictedSwapForTest();
+        Rescan(combat);
+        return bot;
+    }
+
+    private static void Rescan(CombatManager combat)
+    {
+        typeof(CombatManager).GetField("_lastScanTime", Any)?.SetValue(combat, DateTime.MinValue);
+        combat.ScanNearbyTargets();
+    }
+
+    private static void PredictedKillHoldsCorpse()
+    {
+        DateTime now = new(2026, 10, 25, 19, 32, 58);
+        var bot = PredictedKillWorld(out var combat, () => now);
+        int mob = unchecked((int)Monster);
+        Check.Eq(combat.activeTargetId, 0, "the swap dropped it");
+        Check.False(combat.ScannedTargets.Any(t => t.Id == mob), "and the scan is kept off it (its death animation)");
+        Check.True(combat.HasTargets, "but it still counts as a target in range (corpse gates, nav hold)");
+        Check.True(combat.HasCloseThreat(RynthAiPlugin.LootStarveCloseYards), "and as a close threat (no starved loot turn)");
+        Check.True(combat.HasEngageableTarget, "so combat keeps the tick");
+
+        Check.True(bot.HasLootWork(), "the corpse is lootable");
+        bot.Tick(BotActivity.Combat);
+        Check.Eq(bot.Get<int>("_targetCorpseId"), 0, "no corpse claimed while combat holds the tick");
+        Check.True(FakeHost.Logs.Any(l => l.Contains($"corpse 0x{Corpse:X8} waits for combat")), "the corpse waits for combat, and says so");
+        bot.Tick(BotActivity.Looting);
+        Check.Eq(bot.Get<int>("_targetCorpseId"), 0, "nor with the Looting tick (the claim gate holds too)");
+        Check.False(FakeHost.Uses.Contains(Corpse), "the corpse is not opened");
+        AgeCorpse(bot, RynthAiPlugin.LootStarveMs + 1000);
+        bot.HasLootWork();
+        Check.False((bool)bot.Call("IsLootStarvedTurn", true, true)!, "a long-waiting corpse gets no starved turn past it either");
+
+        // Its window passes with no word of its death: it is a target again at once.
+        now = now.AddSeconds(2.1);
+        Rescan(combat);
+        Check.True(combat.ScannedTargets.Any(t => t.Id == mob), "after the window it is scanned again");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("not confirmed 2.1 s after the swap and it is still alive: it is a target again")),
+                   "said once the window ends");
+        combat.HandleCombatTrigger();
+        Check.Eq(combat.activeTargetId, mob, "and combat locks it again");
+    }
+
+    private static void PredictedKillSettled()
+    {
+        DateTime now = new(2026, 10, 25, 19, 32, 58);
+        int mob = unchecked((int)Monster);
+
+        // The kill notice confirms it: the corpse may be looted.
+        var bot = PredictedKillWorld(out var combat, () => now);
+        combat.OnKillNotification("You killed the Ancient Water Elemental!");
+        Check.False(combat.HasTargets, "kill notice: dead, nothing in range");
+        Check.False(combat.HasEngageableTarget, "combat lets the tick go");
+        Check.True(combat.IsKillSuppressed(mob), "the scan stays off it while its corpse forms");
+        bot.HasLootWork();
+        bot.Tick(BotActivity.Looting);
+        Check.Eq(bot.Get<int>("_targetCorpseId"), unchecked((int)Corpse), "the corpse is claimed");
+
+        // Health 0 from the server: dead too.
+        bot = PredictedKillWorld(out combat, () => now);
+        Check.True(combat.HasTargets, "pending");
+        bot.Cache.OnUpdateHealth(Monster, 0f);   // the bot's cache is combat's world filter
+        Check.False(combat.HasTargets, "health 0: dead, nothing in range");
+
+        // A damage line on it after the swap (a killing blow sends none): alive, back in the scan now.
+        PredictedKillWorld(out combat, () => now);
+        combat.HandleChatForDamage("You singe Ancient Water Elemental for 7883 points with Incantation of Flame Bolt.", 7);
+        Check.False(combat.IsKillSuppressed(mob), "the hit lifts the suppression");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("took a 7883-point hit after the swap")), "and says so");
+        Rescan(combat);
+        Check.True(combat.ScannedTargets.Any(t => t.Id == mob), "scanned again before the window ends");
+        combat.HandleCombatTrigger();
+        Check.Eq(combat.activeTargetId, mob, "combat goes back to it at once");
     }
 
     // ── Boost Loot Priority: one kill, one loot (2026-10-14, Kelpie: the next target was locked

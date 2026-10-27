@@ -2899,7 +2899,7 @@ public sealed partial class RynthAiPlugin
         }
     }
 
-    private void BuildDunPatrol(bool isRebuild, bool settingsChanged = false)
+    private void BuildDunPatrol(bool isRebuild, bool settingsChanged = false, bool portalAppeared = false)
     {
         // The one way into the dungeon patrol (the command, the dashboard button, a meta's "Patrol", the hazard
         // reroute): where a server's owners asked for it to be off (a Thread on DreamWeave) nothing is built (ServerPolicy).
@@ -2962,14 +2962,14 @@ public sealed partial class RynthAiPlugin
         // explored is built clean without having to re-sight and reroute.
         _objectCache?.SeedHazardsFromStore(landblockKey);
 
-        // Detector C: offline EnvCell-surface hazard cells (lava/acid floor textures). Catches the
-        // invisible-HotSpot majority the live weenie scan can't see — pure dat reads, cached per
-        // landblock. No-op unless the user has flagged hazard textures (/ra hazard learnhere|texture).
+        // Detector C: offline EnvCell hazard cells (lava/acid textures on a cell's walkable floor).
+        // Catches the invisible-HotSpot majority the live weenie scan can't see — pure dat reads,
+        // cached per landblock. No-op unless the user has flagged hazard textures (/ra hazard learnhere|texture).
         var portalDat = _raycast?.GeometryLoader?.PortalDat;
         HashSet<uint>? surfaceHazards = null;
         if (portalDat != null)
         {
-            surfaceHazards = DungeonHazardSurfaces.ComputeHazardCells(landblockKey, cellDat, portalDat);
+            surfaceHazards = DungeonHazardSurfaces.ComputeHazardCells(landblockKey, _raycast?.GeometryLoader?.DungeonLOS, portalDat);
             if (surfaceHazards.Count > 0) _objectCache?.SeedSurfaceHazards(surfaceHazards);
         }
 
@@ -2998,11 +2998,42 @@ public sealed partial class RynthAiPlugin
         // The dungeon map geometry (doorways, floors, walls): doorways taken straight on and
         // big rooms crossed directly. Null (old cell walk) until DungeonLOS is up.
         var geometry = DungeonPathfinder.GetGeometry(landblockKey, cellDat, _raycast?.GeometryLoader?.DungeonLOS);
+        // Portals (DungeonPathfinder.Portals.cs, 2026-10-23): the patrol keeps out of every portal the
+        // client knows in this dungeon (Tiny Hive: it walked onto the Surface Portal). A character
+        // standing in a portal's circle walks out first, and the patrol is built from where it gets
+        // to (that cell, that side of the portal).
+        var portals = PatrolPortalsIn(landblockKey);
+        double playerWX = ((playerCell >> 24) & 0xFF) * 192.0 + playerLocalX, playerWY = ((playerCell >> 16) & 0xFF) * 192.0 + playerLocalY;
+        (double X, double Y, double Z) startAt = (playerWX, playerWY, patrolWZ);
+        NavPoint? walkOut = null;
+        uint losCell = playerCell;
+        float losX = playerLocalX, losY = playerLocalY, losZ = patrolWZ;
+        List<PortalAvoidance>? portalReport = null;
+
         // Diagnostics: record which rule laid each waypoint (logged below, one line each).
         var pointLog = new Dictionary<NavPoint, DungeonPathfinder.PatrolPointInfo>(ReferenceEqualityComparer.Instance);
         DungeonPathfinder.PointLog = pointLog;
         NavRouteParser route;
-        try { route = DungeonPathfinder.BuildPatrolRoute(graph, startCell, hazards, geometry, patrolOptions); }
+        try
+        {
+            if (portals.Count > 0)
+                walkOut = DungeonPathfinder.PortalWalkOut(geometry, portals, playerWX, playerWY, patrolWZ, patrolOptions.WallClearance);
+            if (walkOut != null)
+            {
+                startAt = (DungeonGeometry.NavToWorld(walkOut.EW), DungeonGeometry.NavToWorld(walkOut.NS), walkOut.Z * 240.0);
+                uint outCell = DungeonPathfinder.CellAt(graph, geometry, walkOut);
+                if (graph.ContainsKey(outCell))
+                {
+                    if (!evacuate && (hazards == null || !hazards.Contains(outCell))) startCell = outCell;
+                    losCell = outCell;
+                    losX = (float)(startAt.X - ((outCell >> 24) & 0xFF) * 192.0);
+                    losY = (float)(startAt.Y - ((outCell >> 16) & 0xFF) * 192.0);
+                    losZ = (float)startAt.Z;
+                }
+            }
+            route = DungeonPathfinder.BuildPatrolRoute(graph, startCell, hazards, geometry, patrolOptions, portals, startAt);
+            portalReport = DungeonPathfinder.LastPortalAvoidance;
+        }
         finally { DungeonPathfinder.PointLog = null; }
 
         // Lead the bot out of the hazard first.
@@ -3012,7 +3043,24 @@ public sealed partial class RynthAiPlugin
             route.Points.Insert(0, lead);
             pointLog[lead] = new DungeonPathfinder.PatrolPointInfo { Kind = "evacuate", Cell = startCell, Why = "start cell is a hazard" };
         }
+
+        // Pick the first waypoint with a clear line of sight from the player. The patrol
+        // builder emits its first waypoints at the doorway between startCell and its DFS-
+        // chosen neighbor — that doorway can sit on the far wall of startCell, so a player
+        // who logged in near the opposite wall faces a pillar or corner between them and
+        // waypoint 0. Walking the list forward to the first LOS-clear point sidesteps the
+        // "patrol immediately runs into a wall on login" failure mode. (From where the character
+        // walks out of a portal's circle to, when it stands in one.)
+        int startIdx = FindFirstLineOfSightWaypoint(route, losCell, losX, losY, losZ);
+        // The way to that waypoint: out of a portal's circle first, round any portal in between.
+        if (portals.Count > 0 && route.Points.Count > 0)
+        {
+            DungeonPathfinder.PointLog = pointLog;
+            try { startIdx = LeadPatrolPastPortals(route, graph, geometry, portals, portalReport, walkOut, playerWX, playerWY, patrolWZ, startIdx, patrolOptions.WallClearance); }
+            finally { DungeonPathfinder.PointLog = null; }
+        }
         LogPatrolWaypoints(route, graph, geometry, hazards, pointLog, playerCell, startCell);
+        LogPatrolPortals(portalReport, portals, route);
 
         // Empty-route guard: a single-cell / hazard-locked start yields no waypoints. Do NOT claim the
         // patrol started or enable nav — the bot would just stand in place (in the hazard) taking damage.
@@ -3023,14 +3071,6 @@ public sealed partial class RynthAiPlugin
                 ChatLine("[RynthAi] DunNav-Patrol: no walkable route from here — you're standing in or surrounded by a hazard. Move to safe ground and retry.");
             return;
         }
-
-        // Pick the first waypoint with a clear line of sight from the player. The patrol
-        // builder emits its first waypoints at the doorway between startCell and its DFS-
-        // chosen neighbor — that doorway can sit on the far wall of startCell, so a player
-        // who logged in near the opposite wall faces a pillar or corner between them and
-        // waypoint 0. Walking the list forward to the first LOS-clear point sidesteps the
-        // "patrol immediately runs into a wall on login" failure mode.
-        int startIdx = FindFirstLineOfSightWaypoint(route, playerCell, playerLocalX, playerLocalY, patrolWZ);
 
         if (!isRebuild)
         {
@@ -3058,12 +3098,18 @@ public sealed partial class RynthAiPlugin
         _dunPatrolLandblock     = landblockKey;
         _dunPatrolHazardVersion = _objectCache?.HazardVersion ?? 0;
         _dunPatrolSettings.MarkBuilt(patrolOptions);
+        MarkPatrolPortals(portals);
 
         int hazardCount = hazards?.Count ?? 0;
         string hazardNote = hazardCount > 0 ? $", {hazardCount} hazard cell(s) avoided" : "";
+        string portalNote = portals.Count > 0 ? $", kept out of {portals.Count} portal(s)" : "";
         if (isRebuild && settingsChanged)
         {
             ChatLine($"[RynthAi] DunNav-Patrol: patrol settings changed → rebuilt from here, {route.Points.Count} waypoints ({patrolOptions.Describe()}).");
+        }
+        else if (isRebuild && portalAppeared)
+        {
+            ChatLine($"[RynthAi] DunNav-Patrol: a portal came into view → rerouted to keep out of it ({portals.Count} portal(s) kept out of).");
         }
         else if (isRebuild)
         {
@@ -3077,7 +3123,7 @@ public sealed partial class RynthAiPlugin
             string layout = geometry != null && doorwayPts > 0
                 ? $", {doorwayPts} of them lined up on doorways"
                 : geometry == null ? " (dungeon map not loaded yet: cell-centre route)" : "";
-            ChatLine($"[RynthAi] DunNav-Patrol: {graph.Count} cells, {route.Points.Count} waypoints{layout} → circular patrol started{skipNote}{hazardNote}");
+            ChatLine($"[RynthAi] DunNav-Patrol: {graph.Count} cells, {route.Points.Count} waypoints{layout} → circular patrol started{skipNote}{hazardNote}{portalNote}");
         }
     }
 
@@ -3110,7 +3156,9 @@ public sealed partial class RynthAiPlugin
         var patrolOptions = PatrolOptionsFrom(settings);
         bool settingsChanged = _dunPatrolSettings.ShouldRebuild(patrolOptions, Environment.TickCount64);
         bool hazardsChanged = _objectCache.HazardVersion != _dunPatrolHazardVersion;
-        if (!hazardsChanged && !settingsChanged) return; // nothing new sighted, settings as built
+        // A portal the patrol wasn't built round came into view (RynthAiPlugin.PatrolPortals.cs).
+        bool portalAppeared = PatrolPortalAppeared();
+        if (!hazardsChanged && !settingsChanged && !portalAppeared) return; // nothing new sighted, settings as built
 
         // Only reroute if still in the dungeon this patrol was built for. A portal to a new
         // landblock means BuildDunPatrol would (correctly) re-home, but that should happen via
@@ -3123,9 +3171,10 @@ public sealed partial class RynthAiPlugin
             return;
         }
 
-        BuildDunPatrol(isRebuild: true, settingsChanged: settingsChanged);
+        BuildDunPatrol(isRebuild: true, settingsChanged: settingsChanged, portalAppeared: portalAppeared && !hazardsChanged);
         // A rebuild that gave up (graph not loaded, ...) keeps the old route: don't retry every tick.
         if (settingsChanged) _dunPatrolSettings.MarkBuilt(patrolOptions);
+        if (portalAppeared && _dunPatrolActive) MarkPatrolPortals(PatrolPortalsIn(_dunPatrolLandblock));
     }
 
     // ── Patrol-management info / actions (engine-side right-click flyout) ──────
@@ -3283,14 +3332,18 @@ public sealed partial class RynthAiPlugin
         var surfaces = DungeonHazardSurfaces.GetCellSurfaces(cellDat, portalDat, cell);
         if (surfaces.Count == 0) { ChatLine($"[RynthAi] EnvCell 0x{cell:X8}: no readable surfaces."); return; }
 
-        ChatLine($"[RynthAi] EnvCell 0x{cell:X8} surfaces ({surfaces.Count}) — texId is the Detector C hazard key:");
+        // Only a texture on the walkable floor makes a cell a hazard; walls and ceilings don't.
+        var floorTex = DungeonHazardSurfaces.GetCellFloorTextures(cell, _raycast?.GeometryLoader?.DungeonLOS, portalDat);
+        ChatLine($"[RynthAi] EnvCell 0x{cell:X8} surfaces ({surfaces.Count}) — texId is the Detector C hazard key (floor textures only):");
         foreach (var (surfIdx, texId) in surfaces)
         {
             string texStr = texId == 0 ? "(solid color)" : $"0x{texId:X8}";
-            string tag    = texId != 0 && DungeonHazardSurfaces.IsHazardTexture(texId) ? "  ← HAZARD" : "";
-            ChatLine($"[RynthAi]   surf 0x{surfIdx:X4}  tex {texStr}{tag}");
+            string where  = texId != 0 && floorTex.Contains(texId) ? "  floor" : "";
+            string tag    = texId != 0 && DungeonHazardSurfaces.IsHazardTexture(texId)
+                ? (floorTex.Contains(texId) ? "  ← HAZARD" : "  (flagged, but not on this floor)") : "";
+            ChatLine($"[RynthAi]   surf 0x{surfIdx:X4}  tex {texStr}{where}{tag}");
         }
-        ChatLine("[RynthAi] On a lava/acid floor, run /ra hazard learnhere (auto) or /ra hazard texture add 0x<texId>.");
+        ChatLine("[RynthAi] On a lava/acid floor, run /ra hazard learnhere (auto) or /ra hazard texture add 0x<texId> (a floor texture).");
     }
 
     /// <summary>Stand on a hazard floor: flags the texture(s) rare across this landblock (the lava texture).</summary>
@@ -3304,7 +3357,7 @@ public sealed partial class RynthAiPlugin
             ChatLine("[RynthAi] Geometry not loaded — raycast must be initialized first."); return;
         }
 
-        var learned = DungeonHazardSurfaces.LearnFromCell(cell, cellDat, portalDat);
+        var learned = DungeonHazardSurfaces.LearnFromCell(cell, _raycast?.GeometryLoader?.DungeonLOS, portalDat);
         DungeonPathfinder.InvalidateCache();
         if (learned.Count == 0)
         {
