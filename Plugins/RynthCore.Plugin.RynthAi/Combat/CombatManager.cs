@@ -1373,6 +1373,13 @@ public partial class CombatManager : IDisposable
         { "Yield",     new[] { "Magic Yield Other",               "Yield" } },
     };
 
+    // The Void debuffs (2026-10-27): "{base} I".."VII" and "Incantation of {base}" in SpellData.txt,
+    // cast with Void Magic. Corrosion and Corruption are projectiles that put their Nether damage
+    // over time on what they hit (Corruption flies as a blast); Destructive Curse, Weakening Curse
+    // and Festering Curse land directly. Keyed "Void:{base}" in the debuff list.
+    internal static readonly string[] VoidDebuffBases =
+        { "Corrosion", "Corruption", "Destructive Curse", "Weakening Curse", "Festering Curse" };
+
     // Shape index into the SpellShapes / VoidSpellShapes rows. ShapeWall (2026-10-08) has no row:
     // walls have no tiered base names and are found by spell category (WallCategories).
     internal const int ShapeArc = 0, ShapeRing = 1, ShapeStreak = 2, ShapeBolt = 3, ShapeBlast = 4, ShapeWall = 5;
@@ -7056,6 +7063,8 @@ public partial class CombatManager : IDisposable
                     spellId = FindBestVulnSpellWithTier(debuffKey.Substring(5), out castTier);
                 else if (debuffKey.StartsWith("Custom:"))
                     spellId = FindBestCustomDebuffWithTier(debuffKey.Substring(7), out castTier);
+                else if (debuffKey.StartsWith("Void:"))
+                    spellId = FindBestVoidDebuffWithTier(debuffKey.Substring(5), out castTier);
                 else
                     spellId = FindBestDebuffSpellWithTier(debuffKey, out castTier);
 
@@ -7342,6 +7351,11 @@ public partial class CombatManager : IDisposable
         if (rule.Yield)     list.Add("Yield");
         if (rule.Broadside) list.Add("Broadside");
         if (rule.GravityWell) list.Add("Gravity");
+        if (rule.Corrosion)        list.Add("Void:Corrosion");
+        if (rule.Corruption)       list.Add("Void:Corruption");
+        if (rule.DestructiveCurse) list.Add("Void:Destructive Curse");
+        if (rule.WeakeningCurse)   list.Add("Void:Weakening Curse");
+        if (rule.FesteringCurse)   list.Add("Void:Festering Curse");
         if (!string.IsNullOrWhiteSpace(rule.CustomDebuffs))
             foreach (string part in rule.CustomDebuffs.Split(new[] { ',', ';', '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
@@ -7371,6 +7385,24 @@ public partial class CombatManager : IDisposable
         for (int t = Math.Min(maxTier, 7); t >= 1; t--)
         {
             id = TrySpellByName($"{name} {GetRomanNumeral(t)}");
+            if (id != 0) { tier = t; return id; }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// The best level of a Void debuff the character knows ("Incantation of X", then X VII..I),
+    /// capped by Void Magic alone: a character without it gets 0 and the debuff is passed over.
+    /// </summary>
+    private int FindBestVoidDebuffWithTier(string baseName, out int tier)
+    {
+        tier = 0;
+        if (_spellManager == null) return 0;
+        int maxTier = EffectiveMaxTier(AcSkillType.VoidMagic);
+        if (maxTier >= 8) { int id = TrySpellByName($"Incantation of {baseName}"); if (id != 0) { tier = 8; return id; } }
+        for (int t = Math.Min(maxTier, 7); t >= 1; t--)
+        {
+            int id = TrySpellByName($"{baseName} {GetRomanNumeral(t)}");
             if (id != 0) { tier = t; return id; }
         }
         return 0;

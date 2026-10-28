@@ -871,6 +871,15 @@ public sealed class MonsterRule
     public bool Imperil { get; set; }
     public bool Yield { get; set; }
     public bool Vuln { get; set; }
+    /// <summary>The Void debuffs (VTank's Cs, Cp, DC, WC and FC columns), cast with Void Magic:
+    /// the Nether damage-over-time spells Corrosion, Corruption and Destructive Curse, then
+    /// Weakening Curse (less damage from the monster) and Festering Curse (less healing on it).
+    /// Off in files from before 2026-10-27.</summary>
+    public bool Corrosion { get; set; }
+    public bool Corruption { get; set; }
+    public bool DestructiveCurse { get; set; }
+    public bool WeakeningCurse { get; set; }
+    public bool FesteringCurse { get; set; }
     public bool UseArc { get; set; }
     public bool UseRing { get; set; }
     public bool UseStreak { get; set; }

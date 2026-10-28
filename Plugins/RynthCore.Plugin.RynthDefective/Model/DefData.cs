@@ -52,17 +52,34 @@ internal enum KindFilter { All, Melee, Missile, War, Void }
 /// <summary>RynthDefective's settings for one character.</summary>
 internal sealed class DefSettings
 {
-    public const int SlotsMin = 1, SlotsMax = 24, PerRowMin = 1, PerRowMax = 12, ButtonMin = 20, ButtonMax = 64,
-        PickerIconMin = 20, PickerIconMax = 48;
-
     /// <summary>
     /// The shortcut bar (2026-10-22, plugin API v90): its first 18 slots are AC's own (the retail
     /// toolbar's, its keys AC's keymap), the rest this plugin's own slots (Slots, keys the engine's
-    /// hotkeys). The player picks how many it shows.
+    /// hotkeys). The player picks how many it shows. With <see cref="IndependentBar"/> every slot
+    /// is this plugin's own (ShortcutBar/BarMapping.cs).
     /// </summary>
-    public const int RetailSlots = 18, BarSlotsMin = 1, BarSlotsMax = RetailSlots + SlotsMax;
+    public const int RetailSlots = 18, BarSlotsMin = 1, BarSlotsMax = 42;
+
+    /// <summary>
+    /// RynthDefective's own slots (DefData.Slots, "/rdef use 1..42"): as many as the bar can show, so
+    /// an independent bar is as long as the usual one (which shows own slots 1-24 after the game's 18).
+    /// The old script-window bar shows the first <see cref="SlotCountMax"/> of them.
+    /// </summary>
+    public const int SlotsMin = 1, SlotsMax = BarSlotsMax, SlotCountMax = 24, PerRowMin = 1, PerRowMax = 12, ButtonMin = 20, ButtonMax = 64,
+        PickerIconMin = 20, PickerIconMax = 48;
     public int BarSlots = RetailSlots;
 
+    /// <summary>
+    /// The shortcut bar is independent of AC's toolbar (2026-10-27): AC's 18 slots are not on it, every
+    /// slot is RynthDefective's own (bar slot N = own slot N, clicks through the use controller, keys
+    /// the engine's hotkeys running /rdef use N). Per character, like the slots it decides about: AC
+    /// keeps its 18 shortcut slots per character on the server, and the own slots are per character
+    /// here, so one character can keep the game's toolbar on the bar while another goes independent.
+    /// Off (the default, and what a file from before reads as): slots 1-18 are AC's.
+    /// </summary>
+    public bool IndependentBar;
+
+    /// <summary>The old script-window bar's slot count (engines without the shortcut bar).</summary>
     public int SlotCount = 8;
     public int SlotsPerRow = 8;
     /// <summary>Icon size of the slot buttons, in logical units.</summary>
@@ -81,7 +98,7 @@ internal sealed class DefSettings
 
     public void Clamp()
     {
-        SlotCount = Math.Clamp(SlotCount, SlotsMin, SlotsMax);
+        SlotCount = Math.Clamp(SlotCount, SlotsMin, SlotCountMax);
         BarSlots = Math.Clamp(BarSlots, BarSlotsMin, BarSlotsMax);
         SlotsPerRow = Math.Clamp(SlotsPerRow, PerRowMin, PerRowMax);
         ButtonSize = Math.Clamp(ButtonSize, ButtonMin, ButtonMax);

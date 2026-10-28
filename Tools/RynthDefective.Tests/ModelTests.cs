@@ -367,7 +367,7 @@ namespace RynthDefective.Tests
             DefSettings s = r.Settings;
             Check(s.SlotCount == 12 && s.SlotsPerRow == 6 && s.ButtonSize == 44 && s.PickerIconSize == 28, "sizes");
             Check(!s.ShowIcons && !s.ShowCounts && s.SwapWhileBotRuns && s.BarOpen && s.PickerOpen && s.PreferredKind == KindFilter.War, "switches");
-            Check(r.Slots.Count == DefSettings.SlotsMax, "all 24 slots");
+            Check(r.Slots.Count == DefSettings.SlotsMax, "all 42 slots");
             ItemRef a = r.Slots[0].Item!;
             Check(a.Id == 0x7000_0001u && a.Name == "Peerless Healing Kit" && a.Wcid == 628 && a.Icon == 0x06001234 && a.Underlay == 0x06000FFF && a.Overlay == 0x06000EEE, "a slot's item with its identity and picture");
             Check(r.Slots[0].Mode == UseMode.OnSelf && r.Slots[1].Item == null && r.Slots[1].Mode == UseMode.Auto, "modes and empty slots");
@@ -398,28 +398,37 @@ namespace RynthDefective.Tests
 
             File.WriteAllText(own, "{}");
             d = st.Load("S", "A", out problem);
-            Check(problem == null && d.Settings.SlotCount == 8 && d.Slots.Count == 24, "{} = defaults");
+            Check(problem == null && d.Settings.SlotCount == 8 && d.Slots.Count == DefSettings.SlotsMax, "{} = defaults");
 
             File.WriteAllText(own, "{\"settings\":{\"slotCount\":99,\"slotsPerRow\":0,\"buttonSize\":1000,\"pickerIconSize\":-5,\"preferredKind\":42,\"showIcons\":\"yes\"},"
                                    + "\"slots\":[7,{\"item\":{\"id\":5.0,\"name\":\"Kit\"},\"mode\":9},{\"item\":{\"id\":1}},{\"item\":{\"name\":\"  \"}},{\"item\":\"x\"},null],"
                                    + "\"favourites\":[\"x\",{\"name\":\"Sword\"},{\"id\":3}],\"recent\":5}");
             d = st.Load("S", "A", out problem);
             Check(problem == null, "odd values are not a problem");
-            Check(d.Settings.SlotCount == DefSettings.SlotsMax && d.Settings.SlotsPerRow == DefSettings.PerRowMin && d.Settings.ButtonSize == DefSettings.ButtonMax
+            Check(d.Settings.SlotCount == DefSettings.SlotCountMax && d.Settings.SlotsPerRow == DefSettings.PerRowMin && d.Settings.ButtonSize == DefSettings.ButtonMax
                   && d.Settings.PickerIconSize == DefSettings.PickerIconMin && d.Settings.PreferredKind == KindFilter.All && d.Settings.ShowIcons, "clamped, a string is not a bool");
             Check(d.Slots[0].Empty, "a non-object slot is empty");
             Check(d.Slots[1].Item?.Name == "Kit" && d.Slots[1].Item!.Id == 5 && d.Slots[1].Mode == UseMode.Auto, "2.0 is 2; an unknown mode is automatic");
             Check(d.Slots[2].Empty && d.Slots[3].Empty && d.Slots[4].Empty, "an item with no name can't be found again: empty");
             Check(d.Favourites.Count == 1 && d.Favourites[0].Name == "Sword" && d.Recent.Count == 0, "bad favourites are skipped; recent that isn't a list is none");
-            Eq(d.Slots.Count, DefSettings.SlotsMax, "still 24 slots");
+            Eq(d.Slots.Count, DefSettings.SlotsMax, "still 42 slots");
 
             // More slots than the maximum in a file are cut.
             var sb = new StringBuilder("{\"slots\":[");
-            for (int i = 0; i < 40; i++) sb.Append(i > 0 ? "," : "").Append("{\"item\":{\"id\":").Append(i + 1).Append(",\"name\":\"N").Append(i).Append("\"}}");
+            for (int i = 0; i < DefSettings.SlotsMax + 10; i++) sb.Append(i > 0 ? "," : "").Append("{\"item\":{\"id\":").Append(i + 1).Append(",\"name\":\"N").Append(i).Append("\"}}");
             sb.Append("]}");
             File.WriteAllText(own, sb.ToString());
             d = st.Load("S", "A", out _);
-            Check(d.Slots.Count == 24 && d.Slots[23].Item!.Name == "N23", "slots past the 24th are dropped");
+            Check(d.Slots.Count == DefSettings.SlotsMax && d.Slots[DefSettings.SlotsMax - 1].Item!.Name == "N" + (DefSettings.SlotsMax - 1), "slots past the 42nd are dropped");
+
+            // A file from before 2026-10-27 (24 slots): its slots load, the rest are empty.
+            sb.Clear().Append("{\"slots\":[");
+            for (int i = 0; i < 24; i++) sb.Append(i > 0 ? "," : "").Append("{\"item\":{\"id\":").Append(i + 1).Append(",\"name\":\"Old").Append(i).Append("\"}}");
+            sb.Append("]}");
+            File.WriteAllText(own, sb.ToString());
+            d = st.Load("S", "A", out _);
+            Check(d.Slots.Count == DefSettings.SlotsMax && d.Slots[23].Item!.Name == "Old23" && d.Slots[24].Empty && d.Slots[DefSettings.SlotsMax - 1].Empty,
+                "a 24-slot file loads into the first 24 of 42");
 
             Eq(DefStore.SafeFileName("CON"), "_CON", "reserved names");
             Eq(DefStore.FileStem("Dream Weave", "Ana:Lee"), "Dream Weave_Ana_Lee", "illegal characters become underscores");
@@ -505,7 +514,7 @@ namespace RynthDefective.Tests
             m = rig.S.SetFromName(3, "health");
             Check(rig.S.Data.Slots[2].Item?.Name == "Health Potion" && m.Contains("Slot 3"), "set by name");
             Check(rig.S.SetFromName(3, "elixir").Contains("No item named"), "a name that matches nothing");
-            Check(rig.S.SetFromSelected(0).Contains("no slot") && rig.S.SetFromSelected(25).Contains("no slot"), "slot numbers are checked");
+            Check(rig.S.SetFromSelected(0).Contains("no slot") && rig.S.SetFromSelected(DefSettings.SlotsMax + 1).Contains("no slot"), "slot numbers are checked");
 
             rig.S.SetSlotMode(1, UseMode.Use);
             Eq(rig.S.Data.Slots[0].Mode, UseMode.Use, "mode");
@@ -527,7 +536,7 @@ namespace RynthDefective.Tests
             // Pressing a slot.
             rig.S.SetSlotCount(8);
             Check(rig.S.UseSlot(2)!.Contains("empty"), "an empty slot says so");
-            Check(rig.S.UseSlot(40)!.Contains("no slot"), "a slot that doesn't exist");
+            Check(rig.S.UseSlot(DefSettings.SlotsMax + 1)!.Contains("no slot"), "a slot that doesn't exist");
             Check(rig.S.UseSlot(1) == null && rig.S.Use.HasPending, "a set slot queues its item");
         }
 
@@ -569,7 +578,7 @@ namespace RynthDefective.Tests
             Check(rig.S.BindKey(3, "", false).Contains("Type the key"), "a blank key");
             Check(rig.S.BindKey(3, "Ctrl + F9", false).Contains("no spaces"), "spaces in a key");
             Check(rig.S.BindKey(4, "F9", true).Contains("empty"), "by name needs an item");
-            Check(rig.S.BindKey(30, "F9", false).Contains("no slot"), "slot checked");
+            Check(rig.S.BindKey(DefSettings.SlotsMax + 1, "F9", false).Contains("no slot"), "slot checked");
 
             rig.S.RunChat = _ => false;
             Check(rig.S.BindKey(3, "F11", false).Contains("/rc hotkey add F11 /rdef use 3"), "an engine that can't: the exact line to type");

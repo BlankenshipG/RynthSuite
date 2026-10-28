@@ -42,7 +42,8 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
     private HostDefWorld? _world;
     private BarView? _bar;
     private PickerView? _picker;
-    private UiWindow? _barWindow, _pickerWindow;
+    private BarSettingsView? _settingsView;
+    private UiWindow? _barWindow, _pickerWindow, _settingsWindow;
 
     private bool _inWorld;
     private bool _identityKnown;
@@ -69,6 +70,10 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         _session.SelectedId = () => Host.HasGetSelectedItemId ? Host.GetSelectedItemId() : 0;
         _session.RunChat = line => Host.HasInvokeChatParser && Host.InvokeChatParser(line);
         _session.Save = RequestSave;
+        _session.ReadRetail = ReadRetail;
+        _session.ObjectName = id => Host.TryGetObjectName(id, out string n) && n.Length > 0 ? n : null;
+        _session.CommandKeys = command => Host.HasKeyBinding ? Host.GetActionKeys(command) : string.Empty;
+        _session.BindOwnKey = (own, key) => Host.HasKeyBinding && BindOwnSlotKey(own, key, out _);
 
         _session.Use.Say = text => { _session.SetStatus(text); Host.Log("[RynthDefective] " + text); };
         _session.Use.Warn = text => { _session.SetStatus(text, warning: true); Print(text); };
@@ -81,6 +86,18 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         _pickerWindow = _ui.Add(new UiWindow("RynthDefective/Weapons", "Defective Weapons") { DefaultWidth = 360f, DefaultHeight = 480f, MinWidth = 260f, MinHeight = 160f });
         _bar.RequestFit = FitBar;
         _bar.ShowPicker = () => ShowPicker(true);
+        // The settings for the Shortcuts bar: the old bar that held them stays shut while it is used.
+        // No RynthBar button or Scripts menu line: the bar's gear and right-click menu, and /rdef settings.
+        _settingsView = new BarSettingsView(_session)
+        {
+            WindowShown = PanelShown,
+            ShowWindow = (title, show) => Host.SetPanelOpen(title, show ? RynthPanelOpen.Open : RynthPanelOpen.Close),
+            Tell = text => { _session.SetStatus(text); Print(text); _nextBarBuildMs = 0; },
+        };
+        _settingsWindow = _ui.Add(new UiWindow("RynthDefective/Settings", "Defective Settings")
+        {
+            DefaultWidth = 380f, DefaultHeight = 470f, MinWidth = 280f, MinHeight = 200f, ShowInBar = false,
+        });
         Host.Log($"[RynthDefective] {Version} initialized. /rdef shows or hides the bar; /rdef use <slot or item name>; /rdef help. Files: {_store.Root}");
         return 0;
     }
@@ -104,8 +121,9 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         _session.Use.Reset();
         _world?.Reset();
         _barView = RynthCore.Plugin.RynthDefective.ShortcutBar.BarSnapshot.NotReady;
-        foreach (UiWindow? w in new[] { _barWindow, _pickerWindow })
+        foreach (UiWindow? w in new[] { _barWindow, _pickerWindow, _settingsWindow })
             if (w != null) { w.Visible = false; w.NeedsPass = true; }
+        _session.DeclineCopy();
         _ui.SubmitEmpty(Host);
     }
 
@@ -169,6 +187,9 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
                 if (UsesShortcutBar) Host.SetPanelOpen(RynthCore.Plugin.RynthDefective.ShortcutBar.SelectionWindow.Title, RynthPanelOpen.Toggle);
                 else Print("This RynthCore can't show the selection window (it needs plugin API v90).");
                 break;
+            case DefVerb.Settings:
+                ShowSettingsWindow(true);
+                break;
             case DefVerb.Panels:
                 if (UsesPanelButtons) Host.SetPanelOpen(RynthCore.Plugin.RynthDefective.ShortcutBar.PanelButtonsWindow.Title, RynthPanelOpen.Toggle);
                 else Print("This RynthCore can't open the game's panels from buttons (it needs plugin API v90).");
@@ -218,6 +239,9 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
     private void PrintHelp()
     {
         Print(DefCommandParser.Usage);
+        if (UsesShortcutBar)
+            Print("RynthDefective draws the Shortcuts bar, the Game Panels buttons and the Selection window. Its settings: /rdef settings, "
+                  + "or the gear on the bar; right-click the bar's title to show or hide Game Panels and Selection.");
         Print("A key for a slot: /rdef bind 1 F9 (or Edit slots in the bar). Any item by name from Settings > Hotkeys: /rc hotkey add F9 /rdef use Stamina Kit.");
     }
 
@@ -264,6 +288,35 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
 
     // ── Windows ─────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// RynthDefective's settings: their own window with the Shortcuts bar; on an engine without it, the
+    /// old bar's Settings section (that bar is the one in use there).
+    /// </summary>
+    private void ShowSettingsWindow(bool visible)
+    {
+        if (!UsesShortcutBar)
+        {
+            if (_barWindow == null || _bar == null) return;
+            _barWindow.Visible = visible;
+            _bar.SettingsOpen = visible;
+            FitBar();
+            NoteNoUi(visible);
+            return;
+        }
+        if (_settingsWindow == null) return;
+        _settingsWindow.Visible = visible;
+        _settingsWindow.NeedsPass = true;
+        NoteNoUi(visible);
+    }
+
+    /// <summary>Whether one of the windows RynthDefective draws shows (by its title); null = not on this engine.</summary>
+    private bool? PanelShown(string title)
+    {
+        if (!UsesShortcutBar || (title == ShortcutBar.PanelButtonsWindow.Title && !UsesPanelButtons)) return null;
+        int state = Host.SetPanelOpen(title, RynthPanelOpen.Ask);
+        return state < 0 ? null : state == 1;
+    }
+
     private void ShowPicker(bool visible)
     {
         if (_pickerWindow == null) return;
@@ -285,6 +338,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
     {
         if (_barWindow != null) _barWindow.NeedsPass = true;
         if (_pickerWindow != null) _pickerWindow.NeedsPass = true;
+        if (_settingsWindow != null) _settingsWindow.NeedsPass = true;
     }
 
     /// <summary>A weapon (or shield) went into the hands: first in the picker's recent list.</summary>
@@ -328,14 +382,21 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         TickBar(now);
         TickSelection(now);
 
-        // With the shortcut bar the old script-window bar stays shut (the weapon picker is still one).
-        if (UsesShortcutBar && _barWindow != null && _barWindow.Visible) { _barWindow.Visible = false; _barWindow.NeedsPass = true; }
+        // With the shortcut bar the old script-window bar stays shut (the weapon picker is still one), and
+        // has no RynthBar button (one that opened a window shut again at once). Its settings have their
+        // own window then (_settingsWindow).
+        if (_barWindow != null)
+        {
+            if (UsesShortcutBar && _barWindow.Visible) { _barWindow.Visible = false; _barWindow.NeedsPass = true; }
+            _barWindow.ShowInBar = !UsesShortcutBar;
+        }
 
         if (!Host.HasUi || _barWindow == null || _pickerWindow == null || _bar == null || _picker == null) return;
         if (_session.Use.HasPending || _session.Use.InFlight) _barWindow.NeedsPass = _pickerWindow.NeedsPass = true;
         if (!_session.IconsAvailable) RefreshIconSupport();
         Record(_barWindow, now, _bar.Draw);
         Record(_pickerWindow, now, _picker.Draw);
+        if (_settingsWindow != null && _settingsView != null) Record(_settingsWindow, now, _settingsView.Draw);
         _ui.Submit(Host, now);
 
         if (_identityKnown)

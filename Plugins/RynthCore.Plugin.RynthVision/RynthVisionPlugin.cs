@@ -11,15 +11,20 @@ namespace RynthCore.Plugin.RynthVision;
 /// <summary>
 /// World-space visualization plugin (a RynthCore-native take on Decal's
 /// SkunkVision): highlights unclimbable slopes, impassable water, and a
-/// radar-range ring using the engine's Nav3D overlay API. Settings come from
-/// the engine's Vision panels (ImGui face and the Avalonia twin, through the
-/// JSON exports in PluginExports) or the /rv chat command, and persist to
-/// %APPDATA%\RynthCore\rynthvision.json.
+/// radar-range ring using the engine's Nav3D overlay API, and lights dark
+/// dungeons (SkunkVision's Dungeon Light; RynthVisionPlugin.Light.cs, through
+/// RynthCore's ambient light floor). Settings come from RynthVision's own
+/// Vision window (2026-10-27, Ui/VisionWindow.cs: it takes the engine's Vision
+/// panel's place on an engine with plugin API v91; RynthVisionPlugin.Ui.cs), the
+/// engine's Vision panels on an older engine (its ImGui face, and the Avalonia
+/// twin, through the JSON exports in PluginExports), or the /rv chat command,
+/// and persist to %APPDATA%\RynthCore\rynthvision.json.
 ///
 /// Terrain data (the portal/cell .dat files) is opened on the first in-world
-/// tick that has slopes or water switched on, never while they're off.
+/// tick that has slopes or water switched on, or the first EnvCell the
+/// dungeon light is on in, never while those are off.
 /// </summary>
-public sealed class RynthVisionPlugin : RynthPluginBase
+public sealed partial class RynthVisionPlugin : RynthPluginBase
 {
     // An EnvCell pose more than this far below the ground is a dungeon under
     // the landscape, not a building interior (see IsOnLandscape).
@@ -46,34 +51,52 @@ public sealed class RynthVisionPlugin : RynthPluginBase
 
     public override int Initialize()
     {
+        // The Vision window draws with ImGui.NET bound to the engine's cimgui, in its look.
+        RynthCore.Plugin.Shared.ImGuiNativeBinding.Ensure(msg => Host.Log("[RynthVision] " + msg));
+        RynthCore.Plugin.Shared.RynthUi.RynthUi.Init(Host);
+        _hostsWindow = Ui.VisionManifest.HostsWindow(Host.HasAmbientLight, Host.HasSetPanelOpen, Host.HasSettingsDrawers, Host.HasUiTheme);
         _settings.Load();
         _window    = new LandblockWindow(_terrain);
         _radarRing = new RadarRingOverlay(Host, _settings);
         _slopes    = new SlopeOverlay(Host, _settings);
         _water     = new WaterOverlay(Host, _settings);
 
-        Host.Log("[RynthVision] Initialized. Use the Vision panel, or /rv [radar|slopes|water|watertypes|debug].");
+        Host.Log("[RynthVision] Initialized" + (_hostsWindow ? " (draws the Vision window)" : " (RynthCore's own Vision panel)") +
+                 ". Use the Vision panel, or /rv [radar|slopes|water|watertypes|debug|light].");
         return 0;
     }
 
-    public override void OnLoginComplete() => _terrainAttempted = false;
+    public override void OnLoginComplete()
+    {
+        _terrainAttempted = false;
+        ResetLightPlace();
+    }
 
     public override void OnLogout() => Host.Log("[RynthVision] Logout.");
 
-    public override void Shutdown() => _terrain.Dispose();
+    public override void Shutdown()
+    {
+        ClearLightFloor();
+        _terrain.Dispose();
+    }
 
     // Nav3D geometry is buffered every tick and drawn by the engine at end of
     // frame (after the 3D pass). Submitting from OnTick rather than OnRender
     // keeps overlays alive even when the ImGui shell is disabled.
     public override void OnTick()
     {
-        if (!Host.HasNav3D)
-            return;
+        // The window's, /rv's and the light's changes first: this tick draws with them.
+        TickUi();
 
-        // One pose for every overlay this tick.
-        if (!Host.TryGetPlayerPose(out uint cellId, out float x, out float y, out float z,
-                out _, out _, out _, out _) || (cellId >> 16) == 0)
-            return; // not in the world / portalspace
+        // One pose for the light and every overlay this tick.
+        bool inWorld = Host.TryGetPlayerPose(out uint cellId, out float x, out float y, out float z,
+            out _, out _, out _, out _) && (cellId >> 16) != 0;
+
+        // The dungeon light runs in and out of the world (out of it, it clears the floor).
+        TickLight(inWorld ? cellId : 0);
+
+        if (!Host.HasNav3D || !inWorld)
+            return; // no overlays, or not in the world / portalspace
 
         bool wanted = _settings.ShowUnclimbableSlopes || _settings.ShowImpassableWater;
         if (wanted && !_terrainWanted) _terrainAttempted = false; // switched on again: retry
@@ -150,24 +173,40 @@ public sealed class RynthVisionPlugin : RynthPluginBase
         eat = 1; // consume — don't send to the server as chat
 
         string arg = text.Length > 3 ? text.Substring(3).Trim().ToLowerInvariant() : string.Empty;
+
+        // "/rv light ..." (Light/DungeonLight.ParseCommand): applied and answered in chat on the tick.
+        if (arg == "light" || arg.StartsWith("light ", StringComparison.Ordinal))
+        {
+            QueueLightCommand(arg.Substring(5));
+            return;
+        }
+
+        // The settings are the tick's (the Vision window reads the copy it publishes): toggles go through
+        // its queue, like the window's own changes.
+        Action<VisionSettings>? toggle;
         switch (arg)
         {
-            case "radar":      _settings.ShowRadarRing = !_settings.ShowRadarRing; break;
-            case "slopes":     _settings.ShowUnclimbableSlopes = !_settings.ShowUnclimbableSlopes; break;
-            case "water":      _settings.ShowImpassableWater = !_settings.ShowImpassableWater; break;
-            case "watertypes": InspectTerrain(); return;
+            case "radar":      toggle = static st => st.ShowRadarRing = !st.ShowRadarRing; break;
+            case "slopes":     toggle = static st => st.ShowUnclimbableSlopes = !st.ShowUnclimbableSlopes; break;
+            case "water":      toggle = static st => st.ShowImpassableWater = !st.ShowImpassableWater; break;
+            case "watertypes": QueueInspectTerrain(); return;
             case "debug":      _debug = !_debug; Host.Log($"[RynthVision] debug = {_debug}"); return;
-            case "":           break;
+            case "":           toggle = null; break;
             default:
-                Host.Log($"[RynthVision] Unknown option '{arg}'. Use radar | slopes | water | watertypes | debug.");
+                Host.Log($"[RynthVision] Unknown option '{arg}'. Use radar | slopes | water | watertypes | debug | light.");
                 return;
         }
 
-        _settings.Save();
-        Host.Log($"[RynthVision] radar={_settings.ShowRadarRing} slopes={_settings.ShowUnclimbableSlopes} water={_settings.ShowImpassableWater}");
+        _uiActions.Enqueue(() =>
+        {
+            toggle?.Invoke(_settings);
+            _settings.Save();
+            MarkSettingsChanged();
+            Host.Log($"[RynthVision] radar={_settings.ShowRadarRing} slopes={_settings.ShowUnclimbableSlopes} water={_settings.ShowImpassableWater}");
+        });
     }
 
-    // ── Bridge methods called from PluginExports (engine Vision panels) ───────
+    // ── Bridge methods called from PluginExports (engine Vision panels; pump thread, as the tick) ──
 
     internal string BuildSettingsJson() => _settings.ToJson();
 
@@ -176,6 +215,7 @@ public sealed class RynthVisionPlugin : RynthPluginBase
     {
         _settings.ApplyJson(json);
         _settings.Save();
+        MarkSettingsChanged();
     }
 
     // Streams pose + the terrain height under the player + the screen projection

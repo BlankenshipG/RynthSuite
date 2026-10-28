@@ -122,6 +122,7 @@ internal static class Program
         ManaStoneChoiceTests.Register(runner);
         CustomDebuffTests.Register(runner);
         DebuffRenewTests.Register(runner);
+        VoidDebuffTests.Register(runner);
         ProfileLoadTests.Register(runner);
         ActivityInterfaceTests.Register(runner);
         CastNoDamageTests.Register(runner);

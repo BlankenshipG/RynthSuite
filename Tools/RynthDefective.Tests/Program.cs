@@ -79,6 +79,11 @@ namespace RynthDefective.Tests
                 Run("window: a bar button of its own, one-shot size request", WindowHeader);
                 Run("window: slot clicks and editor events reach their code", WindowEvents);
                 Run("window: lists stay inside the engine's limits", WindowLimits);
+                Run("bar: the game's slots and own slots, usual and independent", BarMappingUsualAndIndependent);
+                Run("bar: a healing kit in one of the game's slots is used on you here", BarRetailKit);
+                Run("bar: making it independent offers to copy the game's 18 slots", BarIndependentCopy);
+                Run("store: the independent bar setting; files from before read it off", BarStoreIndependent);
+                Run("window: the settings window parses and its switches reach their code", BarSettingsWindow);
             }
             finally
             {

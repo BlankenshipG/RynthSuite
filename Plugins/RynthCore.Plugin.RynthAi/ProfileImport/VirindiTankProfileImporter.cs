@@ -235,6 +235,11 @@ public static class VirindiTankProfileImporter
         dst.Imperil = src.Imperil;
         dst.Yield = src.Yield;
         dst.Vuln = src.Vuln;
+        dst.Corrosion = src.Corrosion;
+        dst.Corruption = src.Corruption;
+        dst.DestructiveCurse = src.DestructiveCurse;
+        dst.WeakeningCurse = src.WeakeningCurse;
+        dst.FesteringCurse = src.FesteringCurse;
         dst.UseArc = src.UseArc;
         dst.UseBolt = src.UseBolt;
         dst.UseRing = src.UseRing;
@@ -262,6 +267,11 @@ public static class VirindiTankProfileImporter
             Imperil = row.Imperil,
             Yield = row.Yield,
             Vuln = row.Vuln,
+            Corrosion = row.Corrosion,
+            Corruption = row.Corruption,
+            DestructiveCurse = row.DestructiveCurse,
+            WeakeningCurse = row.WeakeningCurse,
+            FesteringCurse = row.FesteringCurse,
             UseArc = row.UseArc,
             UseBolt = row.UseBolt,
             UseRing = row.UseRing,

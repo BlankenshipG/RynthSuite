@@ -1065,6 +1065,10 @@ internal sealed partial class LegacyDashboardRenderer
             // Same for kite (2026-10-16): an older Monsters panel omits Kite and would wipe PullAway.
             if (json.IndexOf("\"Kite\"", StringComparison.OrdinalIgnoreCase) < 0)
                 CarryKite(_settings.MonsterRules, incoming);
+            // And the Void debuffs (2026-10-27): an engine without them would turn them all off.
+            // The colon makes it the key: a typed-in debuff "Corrosion" is a value.
+            if (json.IndexOf("\"Corrosion\":", StringComparison.OrdinalIgnoreCase) < 0)
+                CarryVoidDebuffs(_settings.MonsterRules, incoming);
 
             _settings.MonsterRules = incoming;
             SaveMonstersFile();
@@ -1095,6 +1099,24 @@ internal sealed partial class LegacyDashboardRenderer
                 string.Equals(o.Name, r.Name, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(o.MatchExpression ?? "", r.MatchExpression ?? "", StringComparison.OrdinalIgnoreCase));
             if (old != null) r.Kite = old.Kite;
+        }
+    }
+
+    /// <summary>Copies the five Void debuff switches from <paramref name="current"/> onto the
+    /// matching rules of <paramref name="incoming"/> (same Name and MatchExpression, case-insensitive).</summary>
+    internal static void CarryVoidDebuffs(List<MonsterRule> current, List<MonsterRule> incoming)
+    {
+        foreach (var r in incoming)
+        {
+            var old = current.FirstOrDefault(o =>
+                string.Equals(o.Name, r.Name, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(o.MatchExpression ?? "", r.MatchExpression ?? "", StringComparison.OrdinalIgnoreCase));
+            if (old == null) continue;
+            r.Corrosion = old.Corrosion;
+            r.Corruption = old.Corruption;
+            r.DestructiveCurse = old.DestructiveCurse;
+            r.WeakeningCurse = old.WeakeningCurse;
+            r.FesteringCurse = old.FesteringCurse;
         }
     }
 

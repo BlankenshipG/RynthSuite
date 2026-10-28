@@ -66,6 +66,7 @@ internal sealed class DefStore
             st.ShowCounts = Bool(s, "showCounts", st.ShowCounts);
             st.PreferredKind = (KindFilter)Int(s, "preferredKind", (int)st.PreferredKind);
             st.SwapWhileBotRuns = Bool(s, "swapWhileBotRuns", st.SwapWhileBotRuns);
+            st.IndependentBar = Bool(s, "independentBar", st.IndependentBar);   // missing (a file from before 2026-10-27): off
             st.BarOpen = Bool(s, "barOpen", st.BarOpen);
             st.PickerOpen = Bool(s, "pickerOpen", st.PickerOpen);
             st.Clamp();
@@ -156,6 +157,7 @@ internal sealed class DefStore
             w.WriteBoolean("showCounts", s.ShowCounts);
             w.WriteNumber("preferredKind", (int)s.PreferredKind);
             w.WriteBoolean("swapWhileBotRuns", s.SwapWhileBotRuns);
+            w.WriteBoolean("independentBar", s.IndependentBar);
             w.WriteBoolean("barOpen", s.BarOpen);
             w.WriteBoolean("pickerOpen", s.PickerOpen);
             w.WriteEndObject();

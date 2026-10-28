@@ -5,7 +5,12 @@
 //  the instrument look of RynthAi's dashboard and the player's colour theme.
 //
 //    header   SHORTCUTS and the slot count (the drag handle; Ctrl+wheel: the
-//             size), then Edit, Weapons (the weapon picker) and Hide.
+//             size; right-click: the bar's menu), then Edit, Weapons (the
+//             weapon picker), Settings (RynthDefective's settings window) and
+//             Hide.
+//    menu     right-click the header, or the end of a slot's menu: Settings...,
+//             and show / hide the Game Panels buttons and the Selection window
+//             (they have no RynthBar button of their own).
 //    slots    the item's picture, its key in the top-left corner (AC's keymap
 //             for slots 1-18, the engine's hotkeys after), the count or "in
 //             hand" under it. They fill the window's width and wrap: drag the
@@ -18,6 +23,8 @@
 //  it. A slot 1-18 key is AC's own (its keymap, so the retail toolbar answers
 //  to it too, in every client); a key past 18 is an engine hotkey running
 //  /rdef use N. A key comes off whatever had it, after the player says so.
+//  An independent bar (DefSettings.IndependentBar) has only RynthDefective's
+//  own slots: every key is an engine hotkey (BarMapping, BarSlot.Own).
 //
 //  AC's render thread. Reads the snapshot the tick built; every click is
 //  queued for the tick (IBarActions).
@@ -46,7 +53,15 @@ internal interface IBarActions
     /// <summary>A key was bound or removed: the bar asks for its keys again.</summary>
     void KeysChanged();
     void ShowWeapons();
+    /// <summary>RynthDefective's settings window (the weapon swap switch, the independent bar ...).</summary>
+    void ShowSettings();
     void Hide();
+
+    // A slot's keys (any thread: the engine queues the change). AC's slot: AC's keymap action
+    // UseQuickSlot_N; one of RynthDefective's own: its seam for own-slot keys (BindOwnSlotKey).
+    RynthKeyCheck CheckKey(BarSlot slot, string key, out string message);
+    bool BindKey(BarSlot slot, string key, out string message);
+    bool UnbindKey(BarSlot slot, string key, out string message);
 }
 
 internal sealed class ShortcutBarWindow
@@ -133,6 +148,7 @@ internal sealed class ShortcutBarWindow
         ImGui.SetCursorScreenPos(origin);
         ImGui.Dummy(new Vector2(width, height));
         SlotMenu(view);
+        BarMenu();
         if (_openKeyPopup)
         {
             _openKeyPopup = false;
@@ -156,13 +172,16 @@ internal sealed class ShortcutBarWindow
     private float Header(ImDrawListPtr dl, BarSnapshot view, float x0, float y, float w)
     {
         float h = Px(HeaderH), chip = Px(ChipSize);
-        const int chips = 3;
+        const int chips = 4;
         float chipsW = chips * chip + (chips - 1) * Px(1);
 
         ImGui.SetCursorScreenPos(new Vector2(x0, y));
         ImGui.InvisibleButton("##sb_drag", new Vector2(Math.Max(1, w - chipsW - Px(4)), h));
+        bool menu = ImGui.IsItemClicked(ImGuiMouseButton.Right);
         _host.PanelDragWithLastItem();
-        SafeImGui.SetItemTooltip("Drag to move the bar. Ctrl+wheel here: bigger or smaller.\nDrag the window's edge to change how many slots fit in a row.");
+        if (menu) ImGui.OpenPopup(BarMenuId);
+        SafeImGui.SetItemTooltip("Drag to move the bar. Ctrl+wheel here: bigger or smaller. Right-click: settings, Game Panels, Selection.\n"
+                                 + "Drag the window's edge to change how many slots fit in a row.");
 
         ImFontPtr tf = Font(RynthUiFont.NarrowBold11);
         float size = Fs(tf) * 10f / 11f;
@@ -178,6 +197,10 @@ internal sealed class ShortcutBarWindow
         cx += chip + Px(1);
         if (Chip("##sb_weapons", RynthIcons.Sword, new Vector2(cx, cy), _faint, "Weapons: every weapon and wand you carry, wield one with a click."))
             _act.ShowWeapons();
+        cx += chip + Px(1);
+        if (Chip("##sb_settings", RynthIcons.Gear, new Vector2(cx, cy), _faint,
+                "Settings (/rdef settings): weapon swaps under RynthAi, a bar independent of the game's toolbar,\nand showing the Game Panels buttons and the Selection window."))
+            _act.ShowSettings();
         cx += chip + Px(1);
         if (Chip("##sb_hide", RynthIcons.X, new Vector2(cx, cy), _faint, "Hide the bar (/rdef shows it again). Its keys keep working."))
             _act.Hide();
@@ -227,7 +250,7 @@ internal sealed class ShortcutBarWindow
             int col = i % perRow, row = i / perRow;
             Vector2 p = new(MathF.Round(x0 + col * (cell + gap)), MathF.Round(y + row * (cell + gap)));
             if (i < view.Slots.Length) Slot(dl, view.Slots[i], p, cell);
-            else EditButton(dl, i == view.Slots.Length ? -1 : 1, p, cell, view.Slots.Length);
+            else EditButton(dl, i == view.Slots.Length ? -1 : 1, p, cell, view.Slots.Length, view.Independent);
         }
         return y + rows * (cell + gap) - gap;
     }
@@ -306,7 +329,7 @@ internal sealed class ShortcutBarWindow
         }
     }
 
-    private void EditButton(ImDrawListPtr dl, int delta, Vector2 p, float cell, int count)
+    private void EditButton(ImDrawListPtr dl, int delta, Vector2 p, float cell, int count, bool independent)
     {
         Vector2 size = new(cell, cell);
         bool can = delta < 0 ? count > DefSettings.BarSlotsMin : count < DefSettings.BarSlotsMax;
@@ -315,6 +338,7 @@ internal sealed class ShortcutBarWindow
         bool hot = can && ImGui.IsItemHovered();
         SafeImGui.SetItemTooltip(delta < 0
             ? "One slot fewer (the last one's item stays: add the slot back and it is there)."
+            : independent ? "One more slot (RynthCore's: this bar is independent of the game's toolbar)."
             : count < DefSettings.RetailSlots ? "One more slot (the game's own, up to 18)."
             : "One more slot (RynthCore's: the game's toolbar holds 18).");
         float r = Px(3);
@@ -348,24 +372,73 @@ internal sealed class ShortcutBarWindow
             if (!_host.HasKeyBinding)
             {
                 ImGui.TextDisabled(s.AllKeys.Length > 0 ? "Keys: " + s.AllKeys
-                    : s.Retail ? "No key: bind UseQuickSlot_" + s.Number + " in Configure Keyboard." : "No key: /rdef bind " + (s.Number - DefSettings.RetailSlots) + " F9");
-                return;
+                    : s.Retail ? "No key: bind UseQuickSlot_" + s.Number + " in Configure Keyboard." : "No key: /rdef bind " + s.Own + " F9");
             }
-            string[] keys = SplitKeys(s.AllKeys);
-            ImGui.TextDisabled(keys.Length == 0 ? "No key yet" : keys.Length == 1 ? "Key" : "Keys");
-            foreach (string key in keys)
+            else
             {
-                if (!ImGui.MenuItem("Remove " + key)) continue;
-                if (_host.UnbindActionKey(KeyAction(s.Number), key, out string why)) _act.KeysChanged();
-                else ShowKeyMessage(s.Number, why);
+                string[] keys = SplitKeys(s.AllKeys);
+                ImGui.TextDisabled(keys.Length == 0 ? "No key yet" : keys.Length == 1 ? "Key" : "Keys");
+                foreach (string key in keys)
+                {
+                    if (!ImGui.MenuItem("Remove " + key)) continue;
+                    if (_act.UnbindKey(s, key, out string why)) _act.KeysChanged();
+                    else ShowKeyMessage(s, why);
+                }
+                if (ImGui.MenuItem(keys.Length == 0 ? "Add a key..." : "Add another key..."))
+                    StartKeyCapture(s);
+                SafeImGui.SetItemTooltip(s.Retail
+                    ? "Press the key: it becomes this slot's in the game's own keymap, so the retail toolbar and every client use it too."
+                    : "Press the key: a RynthCore hotkey for this slot (/rdef use " + s.Own + ").");
             }
-            if (ImGui.MenuItem(keys.Length == 0 ? "Add a key..." : "Add another key..."))
-                StartKeyCapture(s.Number);
-            SafeImGui.SetItemTooltip(s.Retail
-                ? "Press the key: it becomes this slot's in the game's own keymap, so the retail toolbar and every client use it too."
-                : "Press the key: a RynthCore hotkey for this slot (the game's toolbar holds 18).");
+            ImGui.Separator();
+            BarMenuItems();
         }
         finally { ImGui.EndPopup(); }
+    }
+
+    // ── The bar's menu (right-click the header; also at the end of a slot's menu) ──
+
+    private const string BarMenuId = "##sb_bar_menu";
+
+    private void BarMenu()
+    {
+        if (!ImGui.IsPopupOpen(BarMenuId)) return;
+        ImGui.PushStyleColor(ImGuiCol.PopupBg, WithAlpha(_bg, 0xFA));
+        ImGui.PushStyleColor(ImGuiCol.Border, _line);
+        ImGui.PushStyleVar(ImGuiStyleVar.PopupRounding, Px(4));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(Px(6), Px(5)));
+        bool open = ImGui.BeginPopup(BarMenuId);
+        ImGui.PopStyleVar(2);
+        ImGui.PopStyleColor(2);
+        if (!open) return;
+        try
+        {
+            ImGui.TextDisabled("RynthDefective's Shortcuts bar");
+            ImGui.Separator();
+            BarMenuItems();
+            ImGui.Separator();
+            if (ImGui.MenuItem("Weapons...")) _act.ShowWeapons();
+            if (ImGui.MenuItem("Hide the bar")) _act.Hide();
+            SafeImGui.SetItemTooltip("/rdef, or the lightning button on the RynthCore bar, shows it again. Its keys keep working.");
+        }
+        finally { ImGui.EndPopup(); }
+    }
+
+    /// <summary>Settings..., and the two windows RynthDefective draws besides the bar (no RynthBar buttons of their own).</summary>
+    private void BarMenuItems()
+    {
+        if (ImGui.MenuItem("Settings...")) _act.ShowSettings();
+        SafeImGui.SetItemTooltip("RynthDefective's settings (/rdef settings): weapon swaps under RynthAi, a bar independent of the game's toolbar.");
+        if (_host.HasAcPanels) PanelToggle(PanelButtonsWindow.Title, "Game panel buttons",
+            "The buttons for the game's own panels (pack, spellbook, map ...), first in the bottom-right corner (/rdef panels).");
+        PanelToggle(SelectionWindow.Title, "Selection", "What is selected, how far and which way, and a creature's health (/rdef selection).");
+    }
+
+    private void PanelToggle(string title, string label, string tip)
+    {
+        int state = _host.SetPanelOpen(title, RynthPanelOpen.Ask);
+        if (ImGui.MenuItem(label, null, state == 1, state >= 0)) _host.SetPanelOpen(title, RynthPanelOpen.Toggle);
+        SafeImGui.SetItemTooltip(tip);
     }
 
     // ── Keys: "press a key" ───────────────────────────────────────────────
@@ -374,29 +447,25 @@ internal sealed class ShortcutBarWindow
 
     private const string KeyPopupId = "##sb_key_popup";
     private bool _openKeyPopup;
-    private int _keySlot;
+    private BarSlot? _keySlot;   // the slot as it was drawn when the key was asked for (its mapping: Retail / Own)
     private KeyStep _keyStep;
     private string _keyName = string.Empty, _keyText = string.Empty;
-
-    /// <summary>The action a slot's keys run: AC's UseQuickSlot_N for 1-18, the engine command for the rest.</summary>
-    public static string KeyAction(int number) =>
-        number <= DefSettings.RetailSlots ? "UseQuickSlot_" + number : DefCommandParser.UseCommand(number - DefSettings.RetailSlots);
 
     private static string[] SplitKeys(string keys) =>
         keys.Length == 0 ? Array.Empty<string>() : keys.Split(", ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    private void StartKeyCapture(int number)
+    private void StartKeyCapture(BarSlot slot)
     {
-        _keySlot = number;
+        _keySlot = slot;
         _keyStep = KeyStep.Waiting;
         _keyName = _keyText = string.Empty;
         _host.BeginKeyCapture();
         _openKeyPopup = true;
     }
 
-    private void ShowKeyMessage(int number, string text)
+    private void ShowKeyMessage(BarSlot slot, string text)
     {
-        _keySlot = number;
+        _keySlot = slot;
         _keyStep = KeyStep.Message;
         _keyText = text;
         _openKeyPopup = true;
@@ -406,7 +475,7 @@ internal sealed class ShortcutBarWindow
     {
         if (!ImGui.IsPopupOpen(KeyPopupId))
         {
-            if (_keyStep == KeyStep.Waiting && _keySlot != 0) { _host.CancelKeyCapture(); _keySlot = 0; }   // clicked away
+            if (_keyStep == KeyStep.Waiting && _keySlot != null) { _host.CancelKeyCapture(); _keySlot = null; }   // clicked away
             return;
         }
         ImGui.PushStyleColor(ImGuiCol.PopupBg, WithAlpha(_bg, 0xFA));
@@ -419,8 +488,10 @@ internal sealed class ShortcutBarWindow
         if (!open) return;
         try
         {
+            BarSlot? ks = _keySlot;
+            if (ks == null) { ImGui.CloseCurrentPopup(); return; }
             ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + Px(230));
-            ImGui.TextDisabled($"Slot {_keySlot}{(_keySlot <= DefSettings.RetailSlots ? " (the game's own)" : " (RynthCore's)")}");
+            ImGui.TextDisabled($"Slot {ks.Number}{(ks.Retail ? " (the game's own)" : " (RynthCore's)")}");
             switch (_keyStep)
             {
                 case KeyStep.Waiting:
@@ -432,10 +503,10 @@ internal sealed class ShortcutBarWindow
                         if (text.Length > 0) ImGui.TextColored(new Vector4(0.98f, 0.5f, 0.46f, 1f), text);
                         break;
                     }
-                    if (got == RynthKeyCapture.Cancelled) { _keySlot = 0; ImGui.CloseCurrentPopup(); break; }
+                    if (got == RynthKeyCapture.Cancelled) { _keySlot = null; ImGui.CloseCurrentPopup(); break; }
                     _keyName = text;
-                    RynthKeyCheck check = _host.CheckActionKey(KeyAction(_keySlot), _keyName, out string msg);
-                    if (check == RynthKeyCheck.Free) Bind();
+                    RynthKeyCheck check = _act.CheckKey(ks, _keyName, out string msg);
+                    if (check == RynthKeyCheck.Free) Bind(ks);
                     else
                     {
                         _keyStep = check == RynthKeyCheck.Taken ? KeyStep.Confirm : KeyStep.Message;
@@ -444,18 +515,18 @@ internal sealed class ShortcutBarWindow
                     break;
                 case KeyStep.Confirm:
                     SafeImGui.Text(_keyText);
-                    ImGui.TextDisabled($"Use it for slot {_keySlot} instead? It comes off those.");
-                    if (ImGui.Button($"Use {_keyName} here")) Bind();
+                    ImGui.TextDisabled($"Use it for slot {ks.Number} instead? It comes off those.");
+                    if (ImGui.Button($"Use {_keyName} here")) Bind(ks);
                     ImGui.SameLine();
-                    if (ImGui.Button("Another key")) StartKeyCapture(_keySlot);
+                    if (ImGui.Button("Another key")) StartKeyCapture(ks);
                     ImGui.SameLine();
-                    if (ImGui.Button("Cancel")) { _keySlot = 0; ImGui.CloseCurrentPopup(); }
+                    if (ImGui.Button("Cancel")) { _keySlot = null; ImGui.CloseCurrentPopup(); }
                     break;
                 case KeyStep.Message:
                     SafeImGui.Text(_keyText);
-                    if (ImGui.Button("Another key")) StartKeyCapture(_keySlot);
+                    if (ImGui.Button("Another key")) StartKeyCapture(ks);
                     ImGui.SameLine();
-                    if (ImGui.Button("Close")) { _keySlot = 0; ImGui.CloseCurrentPopup(); }
+                    if (ImGui.Button("Close")) { _keySlot = null; ImGui.CloseCurrentPopup(); }
                     break;
             }
             ImGui.PopTextWrapPos();
@@ -463,12 +534,12 @@ internal sealed class ShortcutBarWindow
         finally { ImGui.EndPopup(); }
     }
 
-    private void Bind()
+    private void Bind(BarSlot slot)
     {
-        if (_host.BindActionKey(KeyAction(_keySlot), _keyName, out string why))
+        if (_act.BindKey(slot, _keyName, out string why))
         {
             _act.KeysChanged();
-            _keySlot = 0;
+            _keySlot = null;
             ImGui.CloseCurrentPopup();
             return;
         }

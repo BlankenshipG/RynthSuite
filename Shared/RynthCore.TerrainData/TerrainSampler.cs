@@ -259,6 +259,27 @@ public sealed class TerrainSampler : IDisposable
         return (words[idx] >> 2) & 0x1F;
     }
 
+    /// <summary>EnvCell flag: the cell sees outside (a building's room), from the cell's dat entry.</summary>
+    public const uint EnvCellSeenOutside = 0x01;
+
+    /// <summary>
+    /// The flags word of EnvCell <paramref name="cellId"/> (0xLLLLCCCC, CCCC 0x0100 and up) from the
+    /// cell dat: the uint after the cell's id (<see cref="EnvCellSeenOutside"/> = 0x01, static objects
+    /// 0x02, weenies 0x04, restriction 0x08; the same read as RynthNav.Baker's AppendCells). AC itself
+    /// lights an EnvCell from the sky when SeenOutside is set and with its flat dungeon ambient when
+    /// not (CellManager::ChangePosition). False for an outdoor cell id, before
+    /// <see cref="Initialize"/>, or when the cell isn't in the dat. Any thread (the dat reader locks).
+    /// </summary>
+    public bool TryGetEnvCellFlags(uint cellId, out uint flags)
+    {
+        flags = 0;
+        if (!_ready || (cellId & 0xFFFF) < 0x100 || (cellId & 0xFFFF) >= 0xFFFE) return false;
+        byte[]? data = _cellDat.GetFileData(cellId);
+        if (data == null || data.Length < 8) return false;
+        flags = BitConverter.ToUInt32(data, 4);
+        return true;
+    }
+
     private static string? FindDat(string folder, params string[] names)
     {
         foreach (var n in names)

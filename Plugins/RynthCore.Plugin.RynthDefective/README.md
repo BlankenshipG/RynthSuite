@@ -8,6 +8,35 @@ contains no code from it: it was written from the plugin's public feature descri
 against RynthCore's own APIs. (Defective's repository states no licence; ask Aun if you want a
 literal port or shared code.)
 
+## The Shortcuts bar, Game Panels and Selection
+
+On a RynthCore engine with plugin API v90, **RynthDefective is what draws the Shortcuts
+bar** (its RynthCore bar button is the lightning bolt; `/rdef` shows or hides it), **the Game Panels
+buttons** (pack, spellbook, map ... in the bottom-right corner; `/rdef panels`) and **the Selection
+window** (what is selected and its health, at the top; `/rdef selection`). Turn RynthDefective off and
+all three go.
+
+* **Settings**: the gear on the bar's title, *Settings...* in its right-click menu, or `/rdef settings`
+  open RynthDefective's settings window: which of the three windows show, *Independent of the game's
+  toolbar*, the slot picture size, *Allow weapon swaps while RynthAi's macro runs* and the weapon picker's
+  icon size.
+* **Right-click the bar's title** (or the end of any slot's menu) for *Settings...* and to show or hide
+  *Game panel buttons* and *Selection* (they have no RynthCore bar button of their own).
+* **Slots 1-18 are the game's own** shortcut slots (the retail toolbar's items, saved on the server, and
+  AC's own keys); slots 19 and on are RynthDefective's. Click a slot to use it. A **healing kit** in one of
+  the game's slots is used **on you, one touch**, by RynthDefective when you click it on the bar; other
+  items are used as the game's toolbar would. The slot's game key (UseQuickSlot_N in Configure Keyboard)
+  is the game's own and goes straight to the game, as before.
+* **Independent of the game's toolbar** (per character, off by default): every slot on the bar is
+  RynthDefective's own. The game's 18 slots are not on it; clicks are one-touch (a kit on yourself, a
+  potion used, a weapon wielded) and keys are RynthCore hotkeys (`/rdef use N` for bar slot N). Turning it
+  on offers to copy the items in the game's 18 slots into the bar's slots 1-18 (nothing is copied unless you
+  say so); your own slots move after them, to 19 and on, with their keys, so the bar looks as it did. The
+  game's toolbar and its keys are not changed. Turning it off shows the game's 18 first again, RynthDefective's
+  slot 1 at 19.
+
+On an older engine the bar below is a script window, with its settings under its *Settings* button.
+
 ## What it does
 
 **Slots.** The bar is a row (or grid) of slots, each holding one item: a healing kit, a stamina kit,
@@ -66,20 +95,27 @@ weapons you wielded are listed first (they are also in their kind's group).
 
 ```
 /rdef                         show / hide the bar
+/rdef settings                RynthDefective's settings window
+/rdef panels | selection      show / hide the Game Panels buttons, the Selection window
 /rdef use <slot | item name>  use the slot's item, or the carried item with that name
 /rdef set <slot> [item name]  put the selected item (or the named one) in a slot
 /rdef clear <slot>            empty a slot
 /rdef bind <slot> <key>       bind a key (F9, Ctrl+1 ...) to the slot; /rdef unbind <slot>
 /rdef weapons [search]        show the weapon picker
 /rdef fav                     make the selected weapon a favourite (or take it out)
-/rdef slots <n>               how many slots (1-24)
+/rdef slots <n>               how many slots the script-window bar shows (1-24)
 /rdef list | status | help
 ```
 
+`/rdef use`, `set`, `clear`, `bind` take RynthDefective's own slot numbers (1-42): on the Shortcuts bar own
+slot N is bar slot 18+N, or bar slot N when the bar is independent of the game's toolbar.
+
 ## Settings
 
-Slots (1-24), slots per row, button size, picker row icon size, item icons on/off, counts and keys on/off,
-allow weapon swaps under RynthAi. Kept per character with the slots, favourites and recent weapons in
+Shortcuts bar: the windows shown, independent of the game's toolbar, slot picture size, allow weapon swaps
+under RynthAi, picker row icon size. Script-window bar: slots (1-24), slots per row, button size, picker row
+icon size, item icons on/off, counts and keys on/off, allow weapon swaps under RynthAi. Kept per character
+with the slots, favourites and recent weapons in
 `<RynthSuite>\RynthDefective\characters\<server>_<character>.json`.
 
 ## Not in 0.1
@@ -89,5 +125,5 @@ changer (Defective has them).
 
 ## Needs
 
-RynthCore engine API 71 with ImGui for the windows (op level 2 for pictures; text buttons without it).
-`/rdef use` works on any engine with UseObject.
+RynthCore engine API 71 with ImGui for the windows (op level 2 for pictures; text buttons without it);
+API 90 for the Shortcuts bar, Game Panels and Selection. `/rdef use` works on any engine with UseObject.

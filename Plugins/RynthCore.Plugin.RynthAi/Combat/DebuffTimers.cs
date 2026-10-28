@@ -5,7 +5,7 @@ namespace RynthCore.Plugin.RynthAi;
 
 /// <summary>
 /// Which of a monster rule's debuffs (Imperil, the vulns, Fester, Yield, Broadside, Gravity
-/// Well, custom ones) are on which target, and when each is due again. A landed debuff with a
+/// Well, the Void ones, custom ones) are on which target, and when each is due again. A landed debuff with a
 /// known duration is renewed a little before it wears off (2026-10-20: they were cast once
 /// per target, so a long fight with a high-HP monster lost them after 4-5 minutes). One with
 /// no known duration, or given up on after <see cref="MaxFailures"/> fizzles or resists, is

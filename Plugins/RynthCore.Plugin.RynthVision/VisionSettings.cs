@@ -9,8 +9,11 @@ namespace RynthCore.Plugin.RynthVision;
 /// <summary>
 /// Feature toggles and colours for RynthVision overlays. Colours are ARGB
 /// (0xAARRGGBB) to match the engine's Nav3D API. Persists to
-/// %APPDATA%\RynthCore\rynthvision.json; the engine's Vision panels (ImGui face
-/// and Avalonia twin) read and write these through the plugin's JSON exports.
+/// %APPDATA%\RynthCore\rynthvision.json. RynthVision's own Vision window
+/// (Ui/VisionWindow.cs, 2026-10-27) edits a copy (<see cref="Clone"/>) and queues
+/// each change for the tick; the engine's Vision panels (its ImGui face on an
+/// older engine, the Avalonia twin) still read and write these through the
+/// plugin's JSON exports. Same file and keys either way, so nothing to migrate.
 /// </summary>
 internal sealed class VisionSettings
 {
@@ -81,6 +84,17 @@ internal sealed class VisionSettings
     // water" view that doesn't signal impassability.
     public bool WaterImpassableOnly = true;
 
+    // Dungeon light (2026-10-27; Light/DungeonLight.cs): raises the ambient light AC draws
+    // dungeons with (RynthCore's ambient light floor, plugin API v91). Off by default. Strength
+    // 0-100 maps onto an ambient of 20 % (AC's own dungeon) to 100 %; the colour tints it (ARGB,
+    // alpha always FF); the scope is where it lights (LightScope: 0 dungeons, 1 also buildings,
+    // 2 also outdoors). The engine's Vision panel doesn't show these (plugin screens move out
+    // of the engine, RynthCore CLAUDE.md): the Light tab of RynthVision's own Vision window and /rv light.
+    public bool LightOn = false;
+    public int LightStrength = Light.DungeonLight.DefaultStrength;
+    public uint LightColorArgb = Light.DungeonLight.DefaultColor;
+    public int LightScope = (int)Light.LightScope.Dungeons;
+
     // ── JSON bridge (manual build + JsonDocument parse — both AOT-safe) ───────
 
     /// <summary>
@@ -106,7 +120,11 @@ internal sealed class VisionSettings
             + $"\"waterRadius\":{WaterRenderRadius},"
             + $"\"waterAnyCorner\":{(WaterAnyCorner ? 1 : 0)},"
             + $"\"waterImpassableOnly\":{(WaterImpassableOnly ? 1 : 0)},"
-            + $"\"waterTypes\":[{string.Join(",", WaterTerrainTypes)}]"
+            + $"\"waterTypes\":[{string.Join(",", WaterTerrainTypes)}],"
+            + $"\"light\":{(LightOn ? 1 : 0)},"
+            + $"\"lightStrength\":{LightStrength},"
+            + $"\"lightColor\":{LightColorArgb},"
+            + $"\"lightScope\":{LightScope}"
             + "}";
     }
 
@@ -133,13 +151,34 @@ internal sealed class VisionSettings
         {
             var list = new List<int>();
             foreach (var e in v.EnumerateArray())
-                if (e.TryGetInt32(out int n) && n >= 0 && n <= 31 && !list.Contains(n)) list.Add(n);
-            // An empty (or all-invalid) list would match nothing and paint no
-            // water ever, so it means "back to the defaults". The panels then
-            // re-read the settings and show the defaults.
-            WaterTerrainTypes = list.Count > 0 ? list.ToArray() : (int[])DefaultWaterTerrainTypes.Clone();
+                if (e.TryGetInt32(out int n)) list.Add(n);
+            WaterTerrainTypes = NormalizeWaterTypes(list);
         }
+        // Out-of-range light values are pulled into range (a hand-edited file, an older panel).
+        if (r.TryGetProperty("light", out v))         LightOn = v.GetInt32() != 0;
+        if (r.TryGetProperty("lightStrength", out v)) LightStrength = Math.Clamp(v.GetInt32(), 0, 100);
+        if (r.TryGetProperty("lightColor", out v))    LightColorArgb = 0xFF000000u | (v.GetUInt32() & 0x00FFFFFFu);
+        if (r.TryGetProperty("lightScope", out v))    LightScope = Math.Clamp(v.GetInt32(), 0, 2);
     }
+
+    /// <summary>
+    /// The water types to keep from <paramref name="types"/>: 0..31, each once, in order. An empty
+    /// (or all-invalid) list would match nothing and paint no water ever, so it means "back to the
+    /// defaults"; the window (or a panel) then shows the defaults.
+    /// </summary>
+    public static int[] NormalizeWaterTypes(IEnumerable<int> types)
+    {
+        var list = new List<int>();
+        foreach (int n in types)
+            if (n >= 0 && n <= 31 && !list.Contains(n)) list.Add(n);
+        return list.Count > 0 ? list.ToArray() : (int[])DefaultWaterTerrainTypes.Clone();
+    }
+
+    /// <summary>
+    /// A copy for the window (published by the tick, read on AC's render thread). The water list is
+    /// shared: it is replaced, never changed in place.
+    /// </summary>
+    public VisionSettings Clone() => (VisionSettings)MemberwiseClone();
 
     // ── Persistence ───────────────────────────────────────────────────────────
 

@@ -2,7 +2,7 @@ using System;
 
 namespace RynthCore.Plugin.RynthDefective.Model;
 
-internal enum DefVerb { Toggle, Help, Use, Set, Clear, Bind, Unbind, Weapons, Favourite, Slots, List, Status, Error, Panels, Selection }
+internal enum DefVerb { Toggle, Help, Use, Set, Clear, Bind, Unbind, Weapons, Favourite, Slots, List, Status, Error, Panels, Selection, Settings }
 
 /// <summary>A parsed "/rdef ..." line. Use: <see cref="Slot"/> (1-based) or <see cref="Text"/> (an item name).</summary>
 internal sealed record DefCommand(DefVerb Verb, int Slot = 0, string Text = "", string Error = "");
@@ -11,7 +11,7 @@ internal static class DefCommandParser
 {
     public const string Usage =
         "/rdef [use <slot or item name> | set <slot> [item name] | clear <slot> | bind <slot> <key> | unbind <slot> | "
-        + "weapons [search] | fav | slots <count> | list | status | panels (the game panel buttons) | selection]";
+        + "weapons [search] | fav | slots <count> | list | status | settings | panels (the game panel buttons) | selection]";
 
     /// <summary>Parses the arguments after "/rdef" (blank = show or hide the bar).</summary>
     public static DefCommand Parse(string? args)
@@ -28,6 +28,7 @@ internal static class DefCommandParser
             case "list": case "ls": return new DefCommand(DefVerb.List);
             case "status": return new DefCommand(DefVerb.Status);
             case "panels": case "panel": return new DefCommand(DefVerb.Panels);
+            case "settings": case "options": case "setup": return new DefCommand(DefVerb.Settings);
             case "selection": case "target":
                 // "/rdef selection 0x80001234": select that object (a test hook for the Selection window).
                 return new DefCommand(DefVerb.Selection, Text: rest);
@@ -56,9 +57,9 @@ internal static class DefCommandParser
             case "unbind":
                 return TrySlot(rest, out int us) ? new DefCommand(DefVerb.Unbind, us) : Fail("Which slot? e.g. /rdef unbind 3");
             case "slots":
-                return int.TryParse(rest, out int count) && count >= DefSettings.SlotsMin && count <= DefSettings.SlotsMax
+                return int.TryParse(rest, out int count) && count >= DefSettings.SlotsMin && count <= DefSettings.SlotCountMax
                     ? new DefCommand(DefVerb.Slots, count)
-                    : Fail($"How many slots? {DefSettings.SlotsMin} to {DefSettings.SlotsMax}, e.g. /rdef slots 10");
+                    : Fail($"How many slots? {DefSettings.SlotsMin} to {DefSettings.SlotCountMax}, e.g. /rdef slots 10");
             default:
                 // "/rdef Stamina Kit" is a shorthand for use.
                 return new DefCommand(DefVerb.Use, Text: a);

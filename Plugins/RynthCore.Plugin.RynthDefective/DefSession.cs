@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using RynthCore.Plugin.RynthDefective.Items;
 using RynthCore.Plugin.RynthDefective.Model;
+using RynthCore.Plugin.RynthDefective.ShortcutBar;
 using RynthCore.Plugin.RynthDefective.Use;
 
 namespace RynthCore.Plugin.RynthDefective;
@@ -25,6 +26,14 @@ internal sealed class DefSession
     public Func<string, bool> RunChat = _ => false;
     /// <summary>Asks for the character's file to be written soon.</summary>
     public Action Save = () => { };
+    /// <summary>AC's 18 shortcut slots now (object ids, spell ids; slot 1 first); false when they can't be read (out of the world, an older engine).</summary>
+    public Func<uint[], uint[], bool> ReadRetail = (_, _) => false;
+    /// <summary>An object's name as the client knows it (an item in one of AC's slots that the pack read missed); null = unknown.</summary>
+    public Func<uint, string?> ObjectName = _ => null;
+    /// <summary>The keys the engine's hotkeys give a chat command ("/rdef use 3"): "F9, Ctrl+1"; "" = none.</summary>
+    public Func<string, string> CommandKeys = _ => string.Empty;
+    /// <summary>Gives own slot N the key (it comes off whatever had it): the plugin's BindOwnSlotKey. False when it can't.</summary>
+    public Func<int, string, bool> BindOwnKey = (_, _) => false;
     /// <summary>The pictures and bar buttons need op level 2 script windows.</summary>
     public bool IconsAvailable;
     public bool LoggedIn;
@@ -64,6 +73,21 @@ internal sealed class DefSession
         if (slot.Item == null) return $"Slot {slotNumber} is empty. Set it from the bar (Edit slots) or with /rdef set {slotNumber}.";
         Use.Request(new UseRequest(slot.Item, null, slot.Mode, "slot " + slotNumber, Now()));
         return null;
+    }
+
+    /// <summary>
+    /// A click on AC's own shortcut slot <paramref name="number"/> (1-18, the usual bar) holding
+    /// <paramref name="objectId"/>: a healing kit is used on yourself here, through the use controller
+    /// (one touch, nothing selected, as a RynthDefective slot does it), and true is returned. Anything
+    /// else returns false and the click goes to AC's own toolbar use. Only the bar's click comes here:
+    /// the slot's own key (AC's UseQuickSlot_N in AC's keymap) is AC's, and still goes straight to AC.
+    /// </summary>
+    public bool UseRetailSlot(int number, uint objectId)
+    {
+        CarriedItem? kit = BarMapping.RetailKit(objectId, Items());
+        if (kit == null) return false;
+        Use.Request(new UseRequest(ItemRef.From(kit), null, UseMode.OnSelf, "game slot " + number, Now()));
+        return true;
     }
 
     /// <summary>/rdef use &lt;name&gt;: an item by what the player typed.</summary>
@@ -137,7 +161,7 @@ internal sealed class DefSession
 
     public void SetSlotCount(int count)
     {
-        Settings.SlotCount = Math.Clamp(count, DefSettings.SlotsMin, DefSettings.SlotsMax);
+        Settings.SlotCount = Math.Clamp(count, DefSettings.SlotsMin, DefSettings.SlotCountMax);
         Save();
     }
 
@@ -214,6 +238,86 @@ internal sealed class DefSession
         string combo = key.EndsWith(" (off)", StringComparison.Ordinal) ? key[..^6] : key;
         RunChat($"/rc hotkey remove {combo}");
         return combo;
+    }
+
+    // ── Independent bar ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// How many items in AC's slots the settings window offers to copy into the bar's own slots, after
+    /// the bar was made independent (0 = no offer). Nothing is copied until the player says so.
+    /// </summary>
+    public int CopyOffer;
+
+    /// <summary>Turns the independent bar on or off (DefSettings.IndependentBar). Returns what to tell the player.</summary>
+    public string SetIndependent(bool on)
+    {
+        CopyOffer = 0;
+        if (Settings.IndependentBar != on)
+        {
+            Settings.IndependentBar = on;
+            Save();
+        }
+        if (!on)
+            return "The Shortcuts bar shows the game's 18 slots first again; RynthDefective's own slots follow them from slot 19 (its slot 1 there).";
+        var ids = new uint[DefSettings.RetailSlots];
+        var spells = new uint[DefSettings.RetailSlots];
+        int items = ReadRetail(ids, spells) ? BarMapping.RetailItems(ids) : 0;
+        CopyOffer = items;
+        const string what = "The Shortcuts bar is independent of the game's toolbar now: every slot is RynthDefective's own "
+                            + "(clicks one-touch, keys RynthCore hotkeys). The game's toolbar and its keys are unchanged.";
+        return items == 0 ? what
+            : what + $" The game's 18 slots hold {items} item{(items == 1 ? "" : "s")}: Defective Settings offers to copy them in.";
+    }
+
+    /// <summary>The player said no to the copy.</summary>
+    public void DeclineCopy() => CopyOffer = 0;
+
+    /// <summary>
+    /// The copy the settings window offers: AC's 18 slots into the own slots 1-18, the own slots that
+    /// followed them moved to 19 and on with their keys (BarMapping.CopyRetail), so the independent bar
+    /// looks as the usual one did. Returns what to tell the player.
+    /// </summary>
+    public string CopyRetailSlots()
+    {
+        CopyOffer = 0;
+        if (!Settings.IndependentBar) return "The bar uses the game's slots itself: make it independent first (Defective Settings).";
+        var ids = new uint[DefSettings.RetailSlots];
+        var spells = new uint[DefSettings.RetailSlots];
+        if (!ReadRetail(ids, spells)) return "The game's shortcut slots can't be read right now (in the world, on RynthCore with the Shortcuts bar).";
+
+        // The moving slots' keys, read before anything is bound (a bind can land at once).
+        var keysOf = new Dictionary<int, string[]>();
+        for (int n = 1; n <= DefSettings.SlotsMax - DefSettings.RetailSlots; n++)
+            if (!Data.Slots[n - 1].Empty)
+                keysOf[n] = BarMapping.SplitKeys(CommandKeys(DefCommandParser.UseCommand(n)));
+
+        BarCopyResult r = BarMapping.CopyRetail(Data.Slots, ids, spells, ResolveRetail);
+        if (r.Refused != null) return r.Refused;
+        Save();
+        int keysMoved = 0, keysFailed = 0;
+        foreach ((int from, int to) in r.Moved)
+            if (keysOf.TryGetValue(from, out string[]? keys))
+                foreach (string key in keys)
+                    if (BindOwnKey(to, key)) keysMoved++; else keysFailed++;
+        Keys.Invalidate();
+
+        string msg = r.Copied == 0 ? "None of the game's slots held an item to copy." : $"Copied {r.Copied} of the game's slots into this bar (slots 1-18).";
+        if (r.Skipped > 0) msg += $" {r.Skipped} couldn't be (a spell, or an item not in your pack).";
+        if (r.Moved.Count > 0)
+            msg += $" Your own {r.Moved.Count} slot{(r.Moved.Count == 1 ? "" : "s")} moved after them, to 19 and on"
+                   + (keysMoved > 0 ? $", {keysMoved} key{(keysMoved == 1 ? "" : "s")} with them" : "") + ".";
+        if (keysFailed > 0) msg += $" {keysFailed} key{(keysFailed == 1 ? "" : "s")} couldn't be moved: bind {(keysFailed == 1 ? "it" : "them")} again (right-click a slot).";
+        if (r.Copied > 0) msg += " The game's keys still use the game's toolbar: give these slots keys with right-click > Add a key.";
+        return msg;
+    }
+
+    /// <summary>An item in one of AC's slots as a slot reference: from the pack read, else by the name the client knows.</summary>
+    private ItemRef? ResolveRetail(uint id)
+    {
+        CarriedItem? it = FindById(id);
+        if (it != null) return ItemRef.From(it);
+        string? name = ObjectName(id);
+        return string.IsNullOrWhiteSpace(name) ? null : new ItemRef { Id = id, Name = name.Trim() };
     }
 
     // ── Favourites ──────────────────────────────────────────────────────────
