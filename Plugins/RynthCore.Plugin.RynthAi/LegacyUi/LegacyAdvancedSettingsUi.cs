@@ -1006,6 +1006,13 @@ internal sealed class LegacyAdvancedSettingsUi
                     }
                     ImGui.EndTable();
                 }
+                ImGui.Checkbox("Buff the shield", ref _settings.BuffShield);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Cast the ticked Impenetrability and Banes on your shield too, after\n" +
+                        "the armor, renewed with it. The shield is the one in the Items list\n" +
+                        "(Shield) that you wear: buffing puts it in a pack for the wand, so it\n" +
+                        "is buffed there. On by default. No shield listed: nothing changes.");
 
                 ImGui.Spacing();
                 ImGui.Separator();

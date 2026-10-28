@@ -66,6 +66,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra nav save [name] — save the route; a name saves it as <name>.nav");
         ChatLine("[RynthAi] /ra nav load <name> — load a nav from NavProfiles (none by that name: a new empty one)");
         ChatLine("[RynthAi] /ra nav list        — list the navs in NavProfiles");
+        ChatLine("[RynthAi] /ra nav restart     — run the loaded route again from its first point (a stop/start keeps its place; a finished Once route stays done)");
         ChatLine("[RynthAi] /ra meta load <name> — load a meta from MetaFiles (none by that name: a new blank one)");
         ChatLine("[RynthAi] /ra meta new <name>  — create a blank meta and load it");
         ChatLine("[RynthAi] /ra meta list        — list the metas in MetaFiles");
@@ -1148,8 +1149,24 @@ public sealed partial class RynthAiPlugin
                 var names = _dashboard.NavFileNames();
                 ChatLine(names.Count == 0 ? "[RynthAi] No navs in NavProfiles." : $"[RynthAi] Navs ({names.Count}): {string.Join(", ", names)}");
                 break;
+            case "restart":
+            {
+                // Stopping and starting the macro keeps the route where it was (a finished Once
+                // route stays finished); this is the way to run it again from the top on purpose.
+                var route = _dashboard.Settings.CurrentRoute;
+                if (_navigationEngine == null) { ChatLine("[RynthAi] Navigation engine not ready."); break; }
+                if (!_navigationEngine.RestartRoute())
+                {
+                    ChatLine(route != null && route.RouteType == NavRouteType.Follow && route.FollowTargetName.Length > 0
+                        ? "[RynthAi] A Follow route has no waypoints to restart."
+                        : "[RynthAi] No nav route loaded to restart.");
+                    break;
+                }
+                ChatLine($"[RynthAi] Nav route restarted from its first point ({route!.RouteType}, {route.Points.Count} waypoints).");
+                break;
+            }
             default:
-                ChatLine("[RynthAi] /ra nav save [name] | /ra nav load <name> | /ra nav list");
+                ChatLine("[RynthAi] /ra nav save [name] | /ra nav load <name> | /ra nav list | /ra nav restart");
                 break;
         }
     }

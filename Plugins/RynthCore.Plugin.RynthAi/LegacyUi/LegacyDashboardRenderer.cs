@@ -2055,7 +2055,8 @@ internal sealed partial class LegacyDashboardRenderer
         dst.FastBuffChain            = tmp.FastBuffChain;
         dst.SkipUnusableBuffs        = tmp.SkipUnusableBuffs;
         dst.DisabledBuffs            = tmp.DisabledBuffs;
-        dst.BlacklistAttempts             = tmp.BlacklistAttempts;
+        dst.BuffShield               = tmp.BuffShield;
+        dst.BlacklistAttempts           = tmp.BlacklistAttempts;
         dst.BlacklistTimeoutSec           = tmp.BlacklistTimeoutSec;
         // 0 is never meant (every UI floors it at 250+) and is what the Settings-panel bug
         // saved into profiles: it judges each cast before its damage can land.
@@ -2870,6 +2871,7 @@ internal sealed partial class LegacyDashboardRenderer
             switch (cmd.Cmd)
             {
                 case "startNav":
+                    _settings.RearmFinishedNavRoute();   // the player's Start Navigation re-runs a finished Once route
                     _settings.IsMacroRunning  = true;
                     _settings.EnableNavigation = true;
                     if (_settings.BotAction != "Navigating")
@@ -3202,7 +3204,12 @@ internal sealed partial class LegacyDashboardRenderer
         {
             case 0: _settings.EnableCombat = enabled; break;
             case 1: _settings.EnableBuffing = enabled; break;
-            case 2: _settings.EnableNavigation = enabled; break;
+            case 2:
+                // The player switching nav on over a finished Once route re-runs it (a meta's
+                // enablenav doesn't, NavigationEngine.HandleRouteEnd).
+                if (enabled && !_settings.EnableNavigation) _settings.RearmFinishedNavRoute();
+                _settings.EnableNavigation = enabled;
+                break;
             case 3: _settings.EnableLooting = enabled; break;
             case 4: _settings.EnableMeta = enabled; break;
         }

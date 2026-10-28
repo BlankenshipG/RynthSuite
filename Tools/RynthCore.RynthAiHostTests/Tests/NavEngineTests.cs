@@ -29,7 +29,7 @@ internal static class NavEngineTests
         r.Add("nav engine: walks to each waypoint, a Circular route wraps", CircularWraps);
         r.Add("nav engine: a Linear route turns round at both ends", LinearBounces);
         r.Add("nav engine: a Linear route keeps its direction through a pause", LinearDirectionSurvivesStop);
-        r.Add("nav engine: a Once route ends, turns nav off, and re-runs from [0]", OnceCompletes);
+        r.Add("nav engine: a Once route ends, turns nav off, stays finished, and the player can re-run it from [0]", OnceCompletes);
         r.Add("nav engine: closest approach counts as arriving; a pause forgets it", SweepPass);
         r.Add("nav engine: a pause point waits its time on the clock", PausePoint);
         r.Add("nav engine: standing still through a pause, the stop is sent once and then once a second (not every tick)", PauseStopsOnce);
@@ -223,10 +223,21 @@ internal static class NavEngineTests
         Check.Eq(nav.Idx, 2, "the index is left past the end");
         Check.False(FakeHost.AutoRun, "stopped");
 
-        nav.S.EnableNavigation = true;   // re-run
+        // A meta or expression switching nav on (a macro start replays "/vt opt set enablenav true"):
+        // the route stays finished, as a finished VTank Once route does (2026-10-28; it re-ran from [0]).
+        nav.S.EnableNavigation = true;
         nav.Tick();
-        Check.Eq(nav.Idx, 0, "re-enabled: the route restarts from [0]");
-        Check.Eq(LogCount("Once route re-armed"), 1, "logged");
+        Check.Eq(nav.Idx, 2, "nav switched on: still finished");
+        Check.False(nav.S.EnableNavigation, "and nav off again");
+        Check.Eq(LogCount("the Once route is finished"), 1, "logged");
+
+        // The player's Nav switch / Start Navigation (RearmFinishedNavRoute) re-runs it from [0].
+        Check.True(nav.S.RearmFinishedNavRoute(), "the player re-runs it");
+        nav.S.EnableNavigation = true;
+        nav.Tick();
+        Check.Eq(nav.Idx, 0, "re-run from [0]");
+        Check.True(nav.S.EnableNavigation, "nav on");
+        Check.False(nav.S.RearmFinishedNavRoute(), "a route that isn't finished is left alone");
     }
 
     private static void SweepPass()

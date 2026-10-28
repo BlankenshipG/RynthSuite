@@ -63,6 +63,7 @@ internal sealed class LegacyNavigationUi
             ImGui.PushStyleColor(ImGuiCol.ButtonActive,  new Vector4(0.08f, 0.28f, 0.08f, 1f));
             if (ImGui.Button("Start Navigation", new Vector2(-1, 28)))
             {
+                _settings.RearmFinishedNavRoute();   // a finished Once route runs again
                 _settings.IsMacroRunning  = true;
                 _settings.EnableNavigation = true;
                 if (_settings.BotAction != "Navigating")

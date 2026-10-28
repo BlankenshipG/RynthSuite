@@ -68,6 +68,7 @@ internal static class Program
         MetaSchedulerTests.Register(runner);
         NavEngineTests.Register(runner);
         NavReachTests.Register(runner);
+        NavResumeTests.Register(runner);
         PatrolDoorwayTests.Register(runner);
         PatrolSettingsTests.Register(runner);
         PatrolPocketTests.Register(runner);
@@ -143,6 +144,7 @@ internal static class Program
         HpFailsafeTests.Register(runner);
         PluginFixTests.Register(runner);
         BuffChainTests.Register(runner);
+        ShieldBuffTests.Register(runner);
         LootPacingTests.Register(runner);
         CorpseCloseTests.Register(runner);
         VTankHotkeyTests.Register(runner);

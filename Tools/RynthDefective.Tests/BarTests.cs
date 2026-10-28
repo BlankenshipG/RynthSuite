@@ -125,8 +125,8 @@ namespace RynthDefective.Tests
             int saves = b.R.Saves;
             string m = b.S.SetIndependent(true);
             Check(b.S.Settings.IndependentBar && b.R.Saves > saves, "turned on, saved");
-            Eq(b.S.CopyOffer, 5, "the offer counts the game's slots with an item (not the spell)");
-            Check(m.Contains("independent") && m.Contains("5 items") && m.Contains("offers to copy"), "and says so: " + m);
+            Eq(b.S.CopyOffer, 6, "the offer counts the game's slots with an item or a spell");
+            Check(m.Contains("independent") && m.Contains("6 shortcuts") && m.Contains("offers to copy"), "and says so: " + m);
             Check(b.S.Data.Slots[0].Item!.Id == own1.Id && b.S.Data.Slots[1].Item!.Id == own2.Id && b.S.Data.Slots[2].Empty,
                 "turning it on copies nothing by itself");
 
@@ -135,7 +135,7 @@ namespace RynthDefective.Tests
             List<DefSlot> s = b.S.Data.Slots;
             Check(s[0].Item?.Id == kit.Id && s[1].Item?.Id == potion.Id && s[4].Item?.Id == sword.Id, "the game's items are in own 1, 2, 5");
             Check(s[0].Mode == UseMode.Auto && s[0].Item!.Name == "Peerless Healing Kit" && s[0].Item!.Wcid == 628, "copied with their identity, automatic use");
-            Check(s[6].Empty, "a spell can't be copied: the slot stays empty");
+            Check(s[6].IsSpell && s[6].SpellId == 1234 && s[6].Item == null, "a spell goes in as a spell slot");
             Check(s[8].Item?.Name == "Lucky Gold Letter" && s[8].Item!.Id == 0x7200_0099u, "an item the pack read missed goes by the name the client knows");
             Check(s[9].Empty, "one nobody can name stays empty");
             Check(s[2].Empty && s[3].Empty && s[17].Empty, "the game's empty slots stay empty");
@@ -143,7 +143,7 @@ namespace RynthDefective.Tests
             Check(s.Skip(20).All(x => x.Empty), "nothing past them");
             Eq(s.Count, DefSettings.SlotsMax, "still 42 own slots");
             Check(b.Bound.Count == 2 && b.Bound.Contains((19, "F9")) && b.Bound.Contains((19, "Ctrl+F9")), "own 1's keys follow it to 19: " + string.Join(";", b.Bound));
-            Check(m.Contains("Copied 4") && m.Contains("2 couldn't") && m.Contains("2 slots moved") && m.Contains("2 keys"), "and it says what it did: " + m);
+            Check(m.Contains("Copied 5") && m.Contains("1 couldn't") && m.Contains("2 slots moved") && m.Contains("2 keys"), "and it says what it did: " + m);
             for (int n = 1; n <= 20; n++)
             {
                 // The independent bar shows what the usual one did: bar N is own N.

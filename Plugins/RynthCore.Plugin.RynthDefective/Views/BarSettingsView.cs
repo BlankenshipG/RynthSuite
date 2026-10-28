@@ -59,7 +59,7 @@ internal sealed class BarSettingsView
         if (st.IndependentBar && _s.CopyOffer > 0)
         {
             int n = _s.CopyOffer;
-            w.TextColored(SlotText.Waiting, $"The game's 18 slots hold {n} item{(n == 1 ? "" : "s")}. Copy {(n == 1 ? "it" : "them")} into this bar's slots 1-18?");
+            w.TextColored(SlotText.Waiting, $"The game's 18 slots hold {n} shortcut{(n == 1 ? "" : "s")} (items and spells). Copy {(n == 1 ? "it" : "them")} into this bar's slots 1-18?");
             w.TextWrapped("Your own slots move after them, to 19 and on, with their keys, so the bar looks as before. "
                           + "The game's toolbar and its keys stay as they are.");
             w.SmallButton("Copy them", "set.copy", () => Tell(_s.CopyRetailSlots()));

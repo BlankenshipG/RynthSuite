@@ -30,7 +30,7 @@ all three go.
 * **Independent of the game's toolbar** (per character, off by default): every slot on the bar is
   RynthDefective's own. The game's 18 slots are not on it; clicks are one-touch (a kit on yourself, a
   potion used, a weapon wielded) and keys are RynthCore hotkeys (`/rdef use N` for bar slot N). Turning it
-  on offers to copy the items in the game's 18 slots into the bar's slots 1-18 (nothing is copied unless you
+  on offers to copy the items and spells in the game's 18 slots into the bar's slots 1-18 (nothing is copied unless you
   say so); your own slots move after them, to 19 and on, with their keys, so the bar looks as it did. The
   game's toolbar and its keys are not changed. Turning it off shows the game's 18 first again, RynthDefective's
   slot 1 at 19.
@@ -50,6 +50,17 @@ a potion, a scroll, a weapon, a wand, a shield... Click a slot, or press its key
 | Weapon, wand, shield, armor, jewelry | wielded / worn (a double-click); an item already in hand is left alone |
 
 A slot can be set to another way: use it, use it on me, use it on the selected target, or wield it.
+
+**Spell slots.** One of RynthDefective's own slots can hold a spell instead: right-click it on the Shortcuts
+bar and choose *Put a spell here...*, then find the spell by name among the ones the character knows (the
+engine can't tell RynthDefective which spell is selected in the game's spellbook, so it is picked there), or
+type `/rdef spell 3 Heal Self VI`. Its picture is the spell's. Pressing it casts the spell, in Magic mode
+(asked for first when the character is in another stance; the cast waits for the stance to settle): a spell
+cast on yourself only (Self buffs, recalls) goes on you; any other on the selection, or on you when nothing is
+selected and the spell is a helpful one (Heal Other, a buff); a war, void or debuff spell with nothing (or
+yourself) selected is refused and says so, as is a spell the character doesn't know. The same one-at-a-time
+and busy rules as items apply. The game's own 18 slots keep the game's own spell handling; copying them into an
+independent bar brings their spells along as spell slots.
 
 **Put an item in a slot** (Edit slots in the bar): *Set from selected* takes the item you have selected
 in the game, or *Pick from pack* chooses from a searchable list of what you carry. `/rdef set 3` does the
@@ -84,6 +95,13 @@ weapons you wielded are listed first (they are also in their kind's group).
   the server, or the last action is unanswered (the server's UseDone; a wield is answered by the item
   reading in hand). Pressing again while one waits does not queue a second; pressing another slot replaces the
   waiting one. A request not sent within 6 s gives up and says why.
+* A busy reading that just sits there is a leftover, not a reason to wait: the client's busy count can stay
+  up with nothing in flight after a death, a login or an interrupted action (and RynthAi's "waiting on the
+  server" with it). A count that hasn't moved for 4 s with nothing of RynthDefective's in flight, a gesture
+  that has "animated" for 4 s, or RynthAi's bit on for 5.5 s holds nothing (logged once); only a count above
+  that leftover holds again. RynthDefective never resets the count itself (the engine owns it). If the server
+  really is busy it answers "You're too busy" and the use is tried once more a second later.
+* A key pressed in portal space (a death's too) is not kept for later: it says so.
 * After a wield from a fighting stance the stance follows the weapon (wand: magic, melee weapon: melee,
   launcher with ammunition in hand: missile) once the character is still. At peace you stay at peace. A bow
   without arrows in hand returns you to peace rather than leaving a stance it can't use. Shields, armor and
@@ -99,6 +117,7 @@ weapons you wielded are listed first (they are also in their kind's group).
 /rdef panels | selection      show / hide the Game Panels buttons, the Selection window
 /rdef use <slot | item name>  use the slot's item, or the carried item with that name
 /rdef set <slot> [item name]  put the selected item (or the named one) in a slot
+/rdef spell <slot> <name>     put one of your spells in a slot (it casts it)
 /rdef clear <slot>            empty a slot
 /rdef bind <slot> <key>       bind a key (F9, Ctrl+1 ...) to the slot; /rdef unbind <slot>
 /rdef weapons [search]        show the weapon picker
@@ -107,7 +126,7 @@ weapons you wielded are listed first (they are also in their kind's group).
 /rdef list | status | help
 ```
 
-`/rdef use`, `set`, `clear`, `bind` take RynthDefective's own slot numbers (1-42): on the Shortcuts bar own
+`/rdef use`, `set`, `spell`, `clear`, `bind` take RynthDefective's own slot numbers (1-42): on the Shortcuts bar own
 slot N is bar slot 18+N, or bar slot N when the bar is independent of the game's toolbar.
 
 ## Settings
@@ -120,8 +139,8 @@ with the slots, favourites and recent weapons in
 
 ## Not in 0.1
 
-Pages, spell slots, arrow auto-equip, gear highlight, summon cooldown counters and the war-magic element
-changer (Defective has them).
+Pages, arrow auto-equip, gear highlight, summon cooldown counters and the war-magic element changer
+(Defective has them).
 
 ## Needs
 

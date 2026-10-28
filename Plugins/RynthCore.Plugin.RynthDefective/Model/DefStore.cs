@@ -83,6 +83,12 @@ internal sealed class DefStore
                 slot.Item = ParseRef(e, "item");
                 int mode = Int(e, "mode", 0);
                 slot.Mode = mode >= 0 && mode <= (int)UseMode.Equip ? (UseMode)mode : UseMode.Auto;
+                // A spell (2026-10-28; a file from before has none): only in a slot without an item.
+                if (slot.Item == null && e.TryGetProperty("spell", out JsonElement sp) && sp.ValueKind == JsonValueKind.Object)
+                {
+                    slot.SpellId = UInt(sp, "id");
+                    slot.SpellName = slot.SpellId != 0 ? Str(sp, "name") : string.Empty;
+                }
             }
         }
         ParseRefs(root, "favourites", d.Favourites, DefData.MaxFavourites);
@@ -167,6 +173,13 @@ internal sealed class DefStore
             {
                 w.WriteStartObject();
                 if (slot.Item != null) WriteRef(w, "item", slot.Item);
+                else if (slot.SpellId != 0)
+                {
+                    w.WriteStartObject("spell");
+                    w.WriteNumber("id", slot.SpellId);
+                    w.WriteString("name", slot.SpellLabel);
+                    w.WriteEndObject();
+                }
                 w.WriteNumber("mode", (int)slot.Mode);
                 w.WriteEndObject();
             }

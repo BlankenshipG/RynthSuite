@@ -916,6 +916,9 @@ public partial class BuffManager : IDisposable
                 var info = kvp.Value;
                 lines.Add($"item|{kvp.Key}|{info.CastAt.Ticks}|{info.ExpiresAt.Ticks}|{info.SpellLevel}|{info.SpellName}");
             }
+            // Last: a build from before the shield's lines reads them as old-style lines that
+            // expired long ago (no exception, so the lines above are loaded either way).
+            SaveShieldTimers(lines);
             // The "char doesn't know this spell" blacklist is NO LONGER persisted.
             // Persisting it meant one lag-induced no-chat timeout permanently
             // poisoned a KNOWN spell across all future sessions, collapsing the
@@ -934,9 +937,11 @@ public partial class BuffManager : IDisposable
         {
             _ramBuffTimers.Clear();
             _itemSpellTimers.Clear();
+            _shieldSpellTimers.Clear();
             foreach (string line in System.IO.File.ReadAllLines(_buffTimerPath))
             {
                 string[] p = line.Split('|');
+                if (LoadShieldTimer(p)) continue;
 
                 if (p[0] == "item" && p.Length >= 6)
                 {
@@ -973,9 +978,10 @@ public partial class BuffManager : IDisposable
                         _ramBuffTimers[family] = new RamTimerInfo { Expiration = expiration, SpellLevel = level, SpellName = name };
                 }
             }
-            int total = _ramBuffTimers.Count + _itemSpellTimers.Count;
+            int total = _ramBuffTimers.Count + _itemSpellTimers.Count + _shieldSpellTimers.Count;
             if (total > 0)
-                _host.WriteToChat($"[RynthAi] Restored {_ramBuffTimers.Count} player + {_itemSpellTimers.Count} item spell timer(s).", 1);
+                _host.WriteToChat($"[RynthAi] Restored {_ramBuffTimers.Count} player + {_itemSpellTimers.Count} item spell timer(s)" +
+                                  (_shieldSpellTimers.Count > 0 ? $" + {_shieldSpellTimers.Count} on the shield." : "."), 1);
         }
         catch { }
     }
@@ -1020,6 +1026,7 @@ public partial class BuffManager : IDisposable
         _upgradeParkedUntil.Clear();
         _ramBuffTimers.Clear();
         _itemSpellTimers.Clear();
+        ResetShieldBuffs();             // the shield's timers, rests and park too
         EndPendingUpgrade(_pendingSpellId, "a new Force Rebuff");
         _pendingSpellId = 0;
         _lastCastAttempt = DateTime.MinValue;
@@ -1521,6 +1528,20 @@ public partial class BuffManager : IDisposable
                 // the arbiter on Buffing, so CombatManager can't sneak a peace-mode
                 // switch in mid-cast.
                 if (_pendingSpellId != 0) { TryEmergencyHealWhilePending(); Hold("buff cast in flight", pendingSpell.Name); return; }
+            }
+            else if (pendingIsArmor && PendingIsShield)
+            {
+                // An armor spell aimed at the shield (BuffManager.Shield.cs): chat is authoritative,
+                // as for the armor, but a give-up counts against the shield only. No blacklist (the
+                // same spell just went on the armor) and no family park for the armor.
+                if (PendingGiveUpReached(NoChatResolveTimeoutMs))
+                {
+                    ShieldCastNoShow(pendingSpell);
+                    _pendingSpellId = 0;
+                    _pendingShieldId = 0;
+                    _onCastResolved?.Invoke("no-chat timeout (shield)");
+                }
+                if (_pendingSpellId != 0) { TryEmergencyHealWhilePending(); Hold("item spell in flight", pendingSpell?.Name ?? ""); return; }
             }
             else if (pendingIsArmor)
             {
@@ -2299,6 +2320,7 @@ public partial class BuffManager : IDisposable
         // ever come; setting pending anyway waited 2.5 s and counted a no-show
         // strike. Mirror the buff path: not handled, so the potion gets its turn.
         _pendingSpellId = spellId;
+        _pendingShieldId = 0;   // on the player, not the shield
         _pendingVitalSpellId = spellId;   // instant: confirmed by chat, never by the registry
         _pendingVitalLabel = label;
         _pendingVitalBase = what;
@@ -2785,7 +2807,8 @@ public partial class BuffManager : IDisposable
                 continue;
             if (!IsBuffActive(spellId, thresholdSec)) return true;
         }
-        return false;
+        // The shield's armor spells start a batch the same way (BuffManager.Shield.cs).
+        return ShieldBuffBelowThreshold(desiredBuffs, thresholdSec);
     }
 
     // "[FR] skip ..." lines while a rebuff runs: the selector runs every tick (~30 ms), and a
@@ -2912,6 +2935,7 @@ public partial class BuffManager : IDisposable
             int upgradeFrom = spellInfo != null && buffFamily != 0 ? ActiveLevelBelow(buffFamily, upgradeTo) : 0;
 
             _pendingSpellId = spellId;
+            _pendingShieldId = 0;   // on the player, not the shield
             if (buffFamily != 0)
             {
                 _lastCastSpellIdByFamily[buffFamily] = spellId;
@@ -2967,7 +2991,8 @@ public partial class BuffManager : IDisposable
             }
             return true;
         }
-        return false;
+        // Everything on the character is on: the shield's armor spells (BuffManager.Shield.cs).
+        return CastShieldBuffs(desiredBuffs, diagnose);
     }
 
     /// <summary>Casts that replaced an active buff of the same family at a lower level (tests, status).</summary>
@@ -3310,6 +3335,7 @@ public partial class BuffManager : IDisposable
     {
         _forceRebuffCastFamilies.Clear();
         _runConfirmedLevelByFamily.Clear();
+        _shieldRunLevels.Clear();
     }
 
     /// <summary>
@@ -3572,10 +3598,12 @@ public partial class BuffManager : IDisposable
         // left them "active" for up to an hour and the bot fought unbuffed (reported as
         // "buffing skips missile weapons"). The player's registry dropping to zero (a death,
         // or logging in after one) is the signal: forget them so they get recast.
-        if (count == 0 && _lastLivePlayerEnchantCount != 0 && _itemSpellTimers.Count > 0)
+        if (count == 0 && _lastLivePlayerEnchantCount != 0 && (_itemSpellTimers.Count > 0 || _shieldSpellTimers.Count > 0))
         {
-            _host.Log($"[BuffDiag] player enchantments dropped to 0 (was {_lastLivePlayerEnchantCount}) - clearing {_itemSpellTimers.Count} item-spell timer(s) so weapon/armor buffs recast");
+            _host.Log($"[BuffDiag] player enchantments dropped to 0 (was {_lastLivePlayerEnchantCount}) - clearing {_itemSpellTimers.Count} item-spell timer(s)" +
+                      $"{(_shieldSpellTimers.Count > 0 ? $" and {_shieldSpellTimers.Count} on the shield" : "")} so weapon/armor buffs recast");
             _itemSpellTimers.Clear();
+            _shieldSpellTimers.Clear();
         }
         _lastLivePlayerEnchantCount = count;
 
@@ -3808,7 +3836,7 @@ public partial class BuffManager : IDisposable
             _host.WriteToChat($"[RynthAi] ServerTime={Math.Round(serverNow)} (no live read: serverTime=0 or API missing)", 1);
         }
 
-        if (_ramBuffTimers.Count == 0 && _itemSpellTimers.Count == 0)
+        if (_ramBuffTimers.Count == 0 && _itemSpellTimers.Count == 0 && _shieldSpellTimers.Count == 0)
         {
             _host.WriteToChat("[RynthAi] No buff timers active.", 1);
             return;
@@ -3819,6 +3847,7 @@ public partial class BuffManager : IDisposable
             _host.WriteToChat($"[RynthAi] -- Item spells ({_itemSpellTimers.Count}) --", 1);
             PrintItemSpellTimers();
         }
+        PrintShieldSpellTimers();
 
         if (_ramBuffTimers.Count > 0)
         {
@@ -3882,13 +3911,17 @@ public partial class BuffManager : IDisposable
 
     public void PrintItemBuffDebug()
     {
-        if (_itemSpellTimers.Count == 0)
+        if (_itemSpellTimers.Count == 0 && _shieldSpellTimers.Count == 0)
         {
             _host.WriteToChat("[RynthAi] No item spell timers recorded yet.", 1);
             return;
         }
-        _host.WriteToChat($"[RynthAi] -- Item spells ({_itemSpellTimers.Count}) --", 1);
-        PrintItemSpellTimers();
+        if (_itemSpellTimers.Count > 0)
+        {
+            _host.WriteToChat($"[RynthAi] -- Item spells ({_itemSpellTimers.Count}) --", 1);
+            PrintItemSpellTimers();
+        }
+        PrintShieldSpellTimers();
     }
 
     private void PrintItemSpellTimers()
@@ -4228,8 +4261,9 @@ public partial class BuffManager : IDisposable
         // Only clear pending if this enchantment matches what we were casting.
         // Armor/item enchantments fire on the item, not the player — clearing
         // _pendingSpellId unconditionally would lose track of pending item casts
-        // and prevent the chat handler from recording their timers.
-        if (_pendingSpellId != 0)
+        // and prevent the chat handler from recording their timers. A cast at the shield never
+        // lands on the player: only its chat line resolves it.
+        if (_pendingSpellId != 0 && !PendingIsShield)
         {
             var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
             if (pendingSpell != null && pendingSpell.Family == spellInfo.Family)
@@ -4368,12 +4402,12 @@ public partial class BuffManager : IDisposable
             else if (_pendingSpellId != 0)
             {
                 var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
-                if (pendingSpell != null && IsItemEnchantment(pendingSpell.Name))
+                if (pendingSpell != null && IsItemEnchantment(pendingSpell.Name) && !PendingIsShield)   // the shield's refusal leaves the armor's timer
                 {
                     _itemSpellTimers.Remove(pendingSpell.Family);
                     SaveBuffTimers();
                 }
-                _host.Log($"[BuffChat] PARKED pending={_pendingSpellId} — AC too busy (cast gesture in progress); throttle kept, backing off before re-issue.");
+                _host.Log($"[BuffChat] PARKED pending={_pendingSpellId}{(PendingIsShield ? " (on the shield)" : "")} — AC too busy (cast gesture in progress); throttle kept, backing off before re-issue.");
                 if (_pendingSpellId != _pendingVitalSpellId)
                     _chain.TooBusyLine(_pendingSpellId, s => _host.Log(s));
             }
@@ -4432,6 +4466,14 @@ public partial class BuffManager : IDisposable
                     _noComponentsUntil[_pendingSpellId] = RynthClock.Now.AddSeconds(NoComponentsLevelSec);
                     _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: using a lower level for {NoComponentsLevelSec / 60:0} min.", 2);
                 }
+                else if (pendingSpell != null && PendingIsShield)
+                {
+                    // Aimed at the shield: the family rests on the shield only; the armor's is on.
+                    bool noComps = lower.Contains("components") || lower.Contains("missing some required");
+                    ShieldCastRefused(pendingSpell, "hard rejection", BuffFailCooldownSec);
+                    _host.WriteToChat($"[RynthAi] Skipping {pendingSpell.Name} on the shield for {BuffFailCooldownSec / 60:0} min " +
+                                      $"({(noComps ? "no components for it" : "the server refused it")}).", 2);
+                }
                 else if (pendingSpell != null)
                 {
                     if (IsItemEnchantment(pendingSpell.Name))
@@ -4481,7 +4523,9 @@ public partial class BuffManager : IDisposable
                 return;
             }
             double restSec = LowManaFamilyRestSec;
-            if (pendingSpell != null)
+            if (pendingSpell != null && PendingIsShield)
+                ShieldCastRefused(pendingSpell, "not enough mana", restSec);   // rests on the shield; the armor's timer stays
+            else if (pendingSpell != null)
             {
                 if (IsItemEnchantment(pendingSpell.Name))
                 {
@@ -4515,17 +4559,30 @@ public partial class BuffManager : IDisposable
             if (_pendingSpellId != 0)
             {
                 var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
-                if (pendingSpell != null && IsItemEnchantment(pendingSpell.Name))
+                if (pendingSpell != null && IsItemEnchantment(pendingSpell.Name) && !PendingIsShield)   // a fizzle at the shield leaves the armor's timer
                 {
                     _itemSpellTimers.Remove(pendingSpell.Family);
                     SaveBuffTimers();
                 }
-                _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId} via soft-fail in '{text}'");
+                _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId}{(PendingIsShield ? " (on the shield)" : "")} via soft-fail in '{text}'");
             }
             _lastCastAttempt = DateTime.MinValue;
             EndPendingUpgrade(_pendingSpellId, "fizzled");
             _pendingSpellId = 0;
             _onCastResolved?.Invoke("soft-fail");
+            return;
+        }
+
+        // "Flame Bane VI cannot be cast on Kite Shield." (ACE IsInvalidTarget: an item that takes no
+        // spells). Read only for a cast at the shield: shield buffing rests; the armor carries on.
+        if (PendingIsShield && lower.Contains(" cannot be cast on "))
+        {
+            _cast.Result(null, "refused by the server", atStart: true);
+            _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId} on the shield 0x{(uint)_pendingShieldId:X8} - '{text}'");
+            ParkShield(_pendingShieldId, "the server says these spells can't be cast on it");
+            _pendingSpellId = 0;
+            _pendingShieldId = 0;
+            _onCastResolved?.Invoke("can't be cast on the shield");
             return;
         }
 
@@ -4604,6 +4661,11 @@ public partial class BuffManager : IDisposable
             spellInfo = SpellTableStub.GetById(tracked.SpellId);
         if (spellInfo == null && _pendingSpellId != 0)
             spellInfo = SpellTableStub.GetById(_pendingSpellId);
+
+        // An armor spell's line for the shield (its own cast, a late line, or a self-cast that
+        // reached a worn shield) goes on the shield's timer, not the armor's (BuffManager.Shield.cs).
+        if (spellInfo != null && !viaDueToCasting && ShieldCastLine(spellInfo, afterCast))
+            return;
 
         // A result that names another spell than the pending one is not the pending cast's
         // result: the pending cast keeps waiting for its own (or its give-up time).
@@ -5428,7 +5490,7 @@ public partial class BuffManager : IDisposable
                     return WandSwapFailed(_wandSwap.Abandon("no pack with room"), forBuff, wandId, now);
                 }
                 bool offhand = hands.TryGetValue(step.Id, out int slot) && (slot & HandSwapSequence.ShieldSlot) != 0;
-                if (offhand) OffhandStowed?.Invoke(step.Id);   // combat puts it back after
+                if (offhand) OffhandPutAway(step.Id);   // combat puts it back after (and it is buffed in the pack)
                 _host.MoveItemInternal((uint)step.Id, (uint)pack, 0, 1);   // amount>=1 (engine rejects 0)
                 _wandSwap.Sent(step, now);
                 _wandSwapLastMoved = step.Id;
@@ -5554,7 +5616,7 @@ public partial class BuffManager : IDisposable
         if (!_host.ChangeCombatModeFor(CombatMode.NonCombat, "Buff", "wand swap burst: peace, the hands and the wand at once")) return 1;
         foreach (int id in moves)
         {
-            if (hands.TryGetValue(id, out int slot) && (slot & HandSwapSequence.ShieldSlot) != 0) OffhandStowed?.Invoke(id);
+            if (hands.TryGetValue(id, out int slot) && (slot & HandSwapSequence.ShieldSlot) != 0) OffhandPutAway(id);
             _host.PutItemInContainer(unchecked((uint)id), unchecked((uint)pack), 0);
         }
         _host.WieldItem(unchecked((uint)wandId), HeldSlot);

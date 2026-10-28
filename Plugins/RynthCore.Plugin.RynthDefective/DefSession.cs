@@ -30,6 +30,8 @@ internal sealed class DefSession
     public Func<uint[], uint[], bool> ReadRetail = (_, _) => false;
     /// <summary>An object's name as the client knows it (an item in one of AC's slots that the pack read missed); null = unknown.</summary>
     public Func<uint, string?> ObjectName = _ => null;
+    /// <summary>The spells the character knows, with names, A-Z (empty = can't be read now). Spell slots.</summary>
+    public Func<IReadOnlyList<SpellInfo>> KnownSpells = () => Array.Empty<SpellInfo>();
     /// <summary>The keys the engine's hotkeys give a chat command ("/rdef use 3"): "F9, Ctrl+1"; "" = none.</summary>
     public Func<string, string> CommandKeys = _ => string.Empty;
     /// <summary>Gives own slot N the key (it comes off whatever had it): the plugin's BindOwnSlotKey. False when it can't.</summary>
@@ -70,6 +72,11 @@ internal sealed class DefSession
     {
         if (slotNumber < 1 || slotNumber > DefSettings.SlotsMax) return $"There is no slot {slotNumber}.";
         DefSlot slot = Data.Slots[slotNumber - 1];
+        if (slot.IsSpell)
+        {
+            Use.Request(UseRequest.Cast(slot.SpellId, slot.SpellLabel, "slot " + slotNumber, Now()));
+            return null;
+        }
         if (slot.Item == null) return $"Slot {slotNumber} is empty. Set it from the bar (Edit slots) or with /rdef set {slotNumber}.";
         Use.Request(new UseRequest(slot.Item, null, slot.Mode, "slot " + slotNumber, Now()));
         return null;
@@ -129,10 +136,46 @@ internal sealed class DefSession
         if (slotNumber < 1 || slotNumber > DefSettings.SlotsMax) return $"There is no slot {slotNumber}.";
         DefSlot slot = Data.Slots[slotNumber - 1];
         slot.Item = ItemRef.From(it);
+        slot.SpellId = 0;
+        slot.SpellName = string.Empty;
         slot.Mode = UseMode.Auto;
         Save();
         ItemKind kind = ItemKinds.Classify(it);
         return $"Slot {slotNumber}: {it.FullName} ({UseModes.Describe(ItemKinds.DefaultAction(kind))} when pressed).";
+    }
+
+    /// <summary>
+    /// Puts a spell the character knows in a slot (the bar's "Put a spell here...": a search over the
+    /// known spells; the engine can't tell which spell is selected in the game's spellbook). Refused for
+    /// a spell the character doesn't know, when the spellbook can be read.
+    /// </summary>
+    public string SetSpell(int slotNumber, uint spellId)
+    {
+        if (slotNumber < 1 || slotNumber > DefSettings.SlotsMax) return $"There is no slot {slotNumber}.";
+        if (spellId == 0) return "That isn't a spell.";
+        IReadOnlyList<SpellInfo> known = KnownSpells();
+        SpellInfo? spell = null;
+        foreach (SpellInfo s in known)
+            if (s.Id == spellId) { spell = s; break; }
+        if (spell == null && known.Count > 0) return $"You don't know {SpellTable.Name(spellId)}, so it can't go in a slot.";
+        SpellInfo info = spell ?? (SpellTable.TryGet(spellId, out SpellInfo t) ? t : new SpellInfo(spellId, SpellTable.Name(spellId), false, false));
+        Data.Slots[slotNumber - 1] = new DefSlot { SpellId = spellId, SpellName = info.Name };
+        Save();
+        return $"Slot {slotNumber}: {info.Name} ({SpellTargeting.Describe(info)} when pressed).";
+    }
+
+    /// <summary>/rdef spell &lt;slot&gt; &lt;name&gt;: one of the character's spells by what the player typed.</summary>
+    public string SetSpellFromName(int slotNumber, string text)
+    {
+        if (slotNumber < 1 || slotNumber > DefSettings.SlotsMax) return $"There is no slot {slotNumber}.";
+        IReadOnlyList<SpellInfo> known = KnownSpells();
+        if (known.Count == 0) return "Your spells can't be read right now (in the world, on RynthCore with ReadKnownSpells).";
+        List<SpellInfo> found = SpellTable.Search(known, text, 6, out int total);
+        if (total == 0) return $"You know no spell named '{text}'.";
+        bool exact = found[0].Name.Equals((text ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase);
+        if (total > 1 && !exact)
+            return $"{total} of your spells match '{text}': {string.Join(", ", found.ConvertAll(s => s.Name))}{(total > found.Count ? ", ..." : "")}. Type more of the name.";
+        return SetSpell(slotNumber, found[0].Id);
     }
 
     public string ClearSlot(int slotNumber)
@@ -212,6 +255,7 @@ internal sealed class DefSession
         if (combo.IndexOf(' ') >= 0) return "A key has no spaces, e.g. Ctrl+F9.";
         if (slotNumber < 1 || slotNumber > DefSettings.SlotsMax) return $"There is no slot {slotNumber}.";
         ItemRef? item = Data.Slots[slotNumber - 1].Item;
+        if (byName && Data.Slots[slotNumber - 1].IsSpell) return $"Slot {slotNumber} holds a spell: bind the slot itself (/rdef bind {slotNumber} <key>).";
         if (byName && item == null) return $"Slot {slotNumber} is empty: nothing to bind by name.";
 
         string command = byName ? NameCommand(item!) : DefCommandParser.UseCommand(slotNumber);
@@ -261,12 +305,12 @@ internal sealed class DefSession
             return "The Shortcuts bar shows the game's 18 slots first again; RynthDefective's own slots follow them from slot 19 (its slot 1 there).";
         var ids = new uint[DefSettings.RetailSlots];
         var spells = new uint[DefSettings.RetailSlots];
-        int items = ReadRetail(ids, spells) ? BarMapping.RetailItems(ids) : 0;
+        int items = ReadRetail(ids, spells) ? BarMapping.RetailShortcuts(ids, spells) : 0;
         CopyOffer = items;
         const string what = "The Shortcuts bar is independent of the game's toolbar now: every slot is RynthDefective's own "
                             + "(clicks one-touch, keys RynthCore hotkeys). The game's toolbar and its keys are unchanged.";
         return items == 0 ? what
-            : what + $" The game's 18 slots hold {items} item{(items == 1 ? "" : "s")}: Defective Settings offers to copy them in.";
+            : what + $" The game's 18 slots hold {items} shortcut{(items == 1 ? "" : "s")} (items and spells): Defective Settings offers to copy them in.";
     }
 
     /// <summary>The player said no to the copy.</summary>
@@ -301,8 +345,8 @@ internal sealed class DefSession
                     if (BindOwnKey(to, key)) keysMoved++; else keysFailed++;
         Keys.Invalidate();
 
-        string msg = r.Copied == 0 ? "None of the game's slots held an item to copy." : $"Copied {r.Copied} of the game's slots into this bar (slots 1-18).";
-        if (r.Skipped > 0) msg += $" {r.Skipped} couldn't be (a spell, or an item not in your pack).";
+        string msg = r.Copied == 0 ? "None of the game's slots held an item or a spell to copy." : $"Copied {r.Copied} of the game's slots into this bar (slots 1-18).";
+        if (r.Skipped > 0) msg += $" {r.Skipped} couldn't be (an item not in your pack whose name the game doesn't know).";
         if (r.Moved.Count > 0)
             msg += $" Your own {r.Moved.Count} slot{(r.Moved.Count == 1 ? "" : "s")} moved after them, to 19 and on"
                    + (keysMoved > 0 ? $", {keysMoved} key{(keysMoved == 1 ? "" : "s")} with them" : "") + ".";

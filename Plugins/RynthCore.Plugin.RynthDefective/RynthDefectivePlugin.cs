@@ -72,6 +72,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         _session.Save = RequestSave;
         _session.ReadRetail = ReadRetail;
         _session.ObjectName = id => Host.TryGetObjectName(id, out string n) && n.Length > 0 ? n : null;
+        _session.KnownSpells = () => _world.KnownSpells(HostDefWorld.KnownMaxAgeMs);
         _session.CommandKeys = command => Host.HasKeyBinding ? Host.GetActionKeys(command) : string.Empty;
         _session.BindOwnKey = (own, key) => Host.HasKeyBinding && BindOwnSlotKey(own, key, out _);
 
@@ -108,7 +109,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         _inWorld = true;
         _identityKnown = false;
         _nextIdentityTryMs = Environment.TickCount64;
-        _session.Use.Reset();
+        _session.Use.ResetSession();
         _world?.Reset();
     }
 
@@ -118,7 +119,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         _inWorld = false;
         _identityKnown = false;
         _session.LoggedIn = false;
-        _session.Use.Reset();
+        _session.Use.ResetSession();
         _world?.Reset();
         _barView = RynthCore.Plugin.RynthDefective.ShortcutBar.BarSnapshot.NotReady;
         foreach (UiWindow? w in new[] { _barWindow, _pickerWindow, _settingsWindow })
@@ -130,7 +131,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
     public override void Shutdown()
     {
         SaveNow();
-        _session.Use.Reset();
+        _session.Use.ResetSession();
         _ui.SubmitEmpty(Host);
     }
 
@@ -209,6 +210,9 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
             case DefVerb.Set:
                 Print(c.Text.Length > 0 ? _session.SetFromName(c.Slot, c.Text) : _session.SetFromSelected(c.Slot));
                 break;
+            case DefVerb.Spell:
+                Print(_session.SetSpellFromName(c.Slot, c.Text));
+                break;
             case DefVerb.Clear:
                 Print(_session.ClearSlot(c.Slot));
                 break;
@@ -252,6 +256,11 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         for (int i = 1; i <= _session.Settings.SlotCount; i++)
         {
             DefSlot slot = _session.Data.Slots[i - 1];
+            if (slot.IsSpell)
+            {
+                Print($"{i}: {slot.SpellLabel} (a spell){(_session.KeyOfSlot(i) is { } sk ? "  [" + sk + "]" : "")}");
+                continue;
+            }
             if (slot.Item == null) { Print($"{i}: (empty)"); continue; }
             SlotStatus s = ItemMatcher.Status(slot.Item, items);
             sb.Clear();

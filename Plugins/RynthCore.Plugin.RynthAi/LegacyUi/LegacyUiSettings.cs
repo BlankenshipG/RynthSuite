@@ -389,6 +389,14 @@ public sealed class LegacyUiSettings
         else next.Add(buffBaseName);
         _disabledBuffs = next;
     }
+    /// <summary>
+    /// Cast the armor spells (Impenetrability and the Banes still ticked above) on the shield
+    /// listed in the Items list too, after the armor, on the armor's timers (BuffManager.Shield.cs).
+    /// The self-cast never reaches it: ACE won't wield the wand beside a shield, so buffing puts
+    /// the shield into a pack first. On by default; a profile saved before this setting existed
+    /// loads it as on. No shield listed: nothing changes.
+    /// </summary>
+    public bool BuffShield = true;
     public bool StartMacroOnLogin;
     public bool PatrolOnLogin;
     /// <summary>
@@ -725,6 +733,32 @@ public sealed class LegacyUiSettings
     public string SelectedProfile = "Default";
     [JsonIgnore] public NavRouteParser CurrentRoute { get; set; } = new();
     public int ActiveNavIndex;
+
+    /// <summary>
+    /// True for a Once route that has walked off its last point (the nav engine leaves the
+    /// index past the end). It stays finished over a macro stop/start and a meta turning nav
+    /// on, until it is loaded again, edited, or restarted (/ra nav restart, or
+    /// <see cref="RearmFinishedNavRoute"/> from the player's own nav-on controls).
+    /// </summary>
+    public bool NavRouteFinished()
+    {
+        var route = CurrentRoute;
+        return route != null && route.RouteType == NavRouteType.Once
+            && route.Points.Count > 0 && ActiveNavIndex >= route.Points.Count;
+    }
+
+    /// <summary>
+    /// The player turned nav on (the Nav switch, a Start Navigation button): a finished Once
+    /// route runs again from [0], as re-enabling nav did before 2026-10-28. Metas and scripts
+    /// that switch nav on don't call this, so a stop/start replaying a meta's
+    /// "/vt opt set enablenav true" no longer re-runs a finished route. True if it rewound.
+    /// </summary>
+    public bool RearmFinishedNavRoute()
+    {
+        if (!NavRouteFinished()) return false;
+        ActiveNavIndex = 0;
+        return true;
+    }
 
     public bool ShowAdvancedWindow;
     public int SelectedAdvancedTab;

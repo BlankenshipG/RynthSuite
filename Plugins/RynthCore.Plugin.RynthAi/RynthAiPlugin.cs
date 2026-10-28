@@ -1795,7 +1795,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     // The hold timer keys off wantBuffRaw, NOT off the decision: keying it
                     // off the decision would reset it on the bypass tick itself and the
                     // ~10s retry cadence would silently become "once every 5 minutes".
-                    if (!wantBuffRaw)
+                    // Only while the macro runs (2026-10-28): stopped mid-heal, buffing still "wanted"
+                    // a vital recharge nothing acts on, and 5 min later a stopped character was told
+                    // buffing was stuck (stance wedge?) with nothing wrong.
+                    if (!wantBuffRaw || !settings.IsMacroRunning)
                     {
                         _buffingHeldSince = DateTime.MinValue;
                         _buffComaWarned = false;

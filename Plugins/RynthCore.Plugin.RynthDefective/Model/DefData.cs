@@ -4,17 +4,29 @@ using RynthCore.Plugin.RynthDefective.Items;
 
 namespace RynthCore.Plugin.RynthDefective.Model;
 
-/// <summary>One slot of the bar: an item (or nothing) and how pressing it uses that item.</summary>
+/// <summary>One slot of the bar: an item or a spell (or nothing), and how pressing it uses that item.</summary>
 internal sealed class DefSlot
 {
-    /// <summary>The item the slot holds; null = empty.</summary>
+    /// <summary>The item the slot holds; null = none.</summary>
     public ItemRef? Item;
     /// <summary>How pressing it uses the item. <see cref="UseMode.Auto"/> picks by what the item is.</summary>
     public UseMode Mode = UseMode.Auto;
+    /// <summary>The spell the slot casts (2026-10-28); 0 = none. A slot holds an item or a spell, never both.</summary>
+    public uint SpellId;
+    /// <summary>The spell's name when it was put in the slot (shown when the spell table doesn't know it).</summary>
+    public string SpellName = string.Empty;
 
-    public bool Empty => Item == null;
+    public bool Empty => Item == null && SpellId == 0;
+    public bool IsSpell => Item == null && SpellId != 0;
 
-    public DefSlot Clone() => new() { Item = Item?.Clone(), Mode = Mode };
+    /// <summary>What the slot holds, by name: the item's, the spell's, or "".</summary>
+    public string Label => Item?.FullName ?? (SpellId != 0 ? SpellLabel : string.Empty);
+
+    /// <summary>The spell's name: the table's, else the saved one, else "Spell 1234".</summary>
+    public string SpellLabel =>
+        SpellTable.TryGet(SpellId, out SpellInfo s) ? s.Name : SpellName.Length > 0 ? SpellName : SpellTable.Name(SpellId);
+
+    public DefSlot Clone() => new() { Item = Item?.Clone(), Mode = Mode, SpellId = SpellId, SpellName = SpellName };
 }
 
 /// <summary>The "use as" choice of a slot.</summary>

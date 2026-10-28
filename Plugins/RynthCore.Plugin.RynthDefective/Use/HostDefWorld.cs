@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using RynthCore.Plugin.RynthDefective.Items;
+using RynthCore.Plugin.RynthDefective.Model;
 using RynthCore.Plugin.Shared;
 using RynthCore.PluginSdk;
 
@@ -29,9 +30,12 @@ internal sealed unsafe class HostDefWorld : IDefWorld
     public bool InWorld => _host.HasGetPlayerId && _host.GetPlayerId() != 0 && !(_host.HasIsPortaling && _host.IsPortaling());
     public uint PlayerId => _host.HasGetPlayerId ? _host.GetPlayerId() : 0;
     public uint SelectedId => _host.HasGetSelectedItemId ? _host.GetSelectedItemId() : 0;
-    public bool ClientBusy => _host.HasGetBusyState && _host.GetBusyState() != 0;
+    public int BusyCount => _host.HasGetBusyState ? Math.Max(0, _host.GetBusyState()) : 0;
     public bool Animating => _host.HasGetCastBusyState && _host.GetCastBusyState() != 0;
     public int UseDoneSeq => _host.HasUseDoneSeq ? _host.GetUseDoneSeq() : 0;
+
+    public uint UseDoneError(int seqAtSend) =>
+        _host.TryGetLastUseDone(out int seq, out uint error) && seq == seqAtSend + 1 ? error : 0;
     public int CombatMode => _host.GetCurrentCombatMode();
 
     public bool? BotWaitingOnServer => BotActivity.Read(_host) is { } a ? (a & RynthAiActivity.ServerAction) != 0 : null;
@@ -67,11 +71,81 @@ internal sealed unsafe class HostDefWorld : IDefWorld
     public bool UseObjectOn(uint id, uint target) => _host.HasUseObjectOn && _host.UseObjectOn(id, target);
     public bool SetCombatMode(int mode) => _host.HasChangeCombatMode && _host.ChangeCombatMode(mode);
 
+    // ── Spells (spell slots) ────────────────────────────────────────────────
+
+    /// <summary>The character's spells are re-read when older than this (a spell scribed since shows within it).</summary>
+    public const long KnownMaxAgeMs = 5000;
+    private uint[] _knownBuf = new uint[2048];
+    private HashSet<uint>? _known;
+    private SpellInfo[] _knownList = Array.Empty<SpellInfo>();
+    private long _knownAtMs = long.MinValue / 4;
+
+    public bool CanCast => _host.HasCastSpell;
+
+    public bool CastSpell(uint target, uint spellId) =>
+        _host.HasCastSpell && spellId != 0 && spellId <= int.MaxValue && _host.CastSpell(target, (int)spellId);
+
+    /// <summary>
+    /// From the spellbook the engine reads (ReadKnownSpells; RynthAi's note: the engine's IsSpellKnown
+    /// answers "known" for spells the character doesn't have, so it isn't asked). A "no" is checked
+    /// against a fresh read before it is believed. Null when the spellbook can't be read.
+    /// </summary>
+    public bool? KnowsSpell(uint spellId)
+    {
+        HashSet<uint>? known = KnownIds(KnownMaxAgeMs);
+        if (known == null) return null;
+        if (known.Contains(spellId)) return true;
+        known = KnownIds(0);
+        return known == null ? null : known.Contains(spellId);
+    }
+
+    /// <summary>The character's spells with names, A-Z (the bar's spell search); empty when they can't be read.</summary>
+    public SpellInfo[] KnownSpells(long maxAgeMs)
+    {
+        KnownIds(maxAgeMs);
+        return _knownList;
+    }
+
+    private HashSet<uint>? KnownIds(long maxAgeMs)
+    {
+        long now = NowMs;
+        if (now - _knownAtMs < maxAgeMs) return _known;
+        _knownAtMs = now;
+        if (!_host.HasReadKnownSpells)
+        {
+            _known = null;
+            _knownList = Array.Empty<SpellInfo>();
+            return null;
+        }
+        int n = _host.ReadKnownSpells(_knownBuf, _knownBuf.Length);
+        if (n > _knownBuf.Length && n <= 65536)
+        {
+            _knownBuf = new uint[n];
+            n = _host.ReadKnownSpells(_knownBuf, _knownBuf.Length);
+        }
+        if (n <= 0)
+        {
+            // Not readable yet (before the character's description arrives): can't tell.
+            _known = null;
+            _knownList = Array.Empty<SpellInfo>();
+            return null;
+        }
+        n = Math.Min(n, _knownBuf.Length);
+        var set = new HashSet<uint>(n);
+        for (int i = 0; i < n; i++) if (_knownBuf[i] != 0) set.Add(_knownBuf[i]);
+        if (_known == null || !set.SetEquals(_known)) _knownList = SpellTable.Known(_knownBuf.AsSpan(0, n));
+        _known = set;
+        return set;
+    }
+
     public void Reset()
     {
         _reader.Reset();
         _items = new List<CarriedItem>();
         _itemsAtMs = long.MinValue / 4;
+        _known = null;
+        _knownList = Array.Empty<SpellInfo>();
+        _knownAtMs = long.MinValue / 4;
     }
 }
 

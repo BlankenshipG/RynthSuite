@@ -120,7 +120,7 @@ public partial class BuffManager
                 }
                 _bowDequipAttempts++;
                 if (_worldObjectCache?[bowId] is WorldObject blocker && IsInOffhandSlot(blocker))
-                    OffhandStowed?.Invoke(bowId);   // a shield: combat puts it back after
+                    OffhandPutAway(bowId);   // a shield: combat puts it back after (and it is buffed in the pack)
                 _host.MoveItemInternal((uint)bowId, (uint)openPack, 0, 1); // amount>=1 (engine rejects 0)
                 _weaponSwapGate?.NoteMove(bowId, wieldedNow: true);
                 _bowDequipPendingId = bowId;

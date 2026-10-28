@@ -75,19 +75,38 @@ namespace RynthDefective.Tests
         {
             Harness h = With(Kit(0x10));
             ItemRef kit = ItemRef.From(Kit(0x10));
-            h.World.ClientBusy = true;
+            // A count that keeps moving is an action under way (the player's own, another plugin's): it holds.
+            h.Tick();   // the first look: idle
             h.Slot(kit);
-            h.Ticks(5, 1000);
-            Eq(h.World.Sent.Count, 0, "the client's busy count holds it");
+            for (int i = 0; i < 5; i++)
+            {
+                h.World.BusyCount = 1 + (i % 2);
+                h.Tick(1000);
+            }
+            Eq(h.World.Sent.Count, 0, "a moving busy count holds it");
             Check(h.Use.HasPending && h.Warned.Count == 0, "still waiting inside the limit");
-            h.Ticks(2, 1000);
+            h.World.BusyCount = 2;
+            h.Tick(1000);
             Check(!h.Use.HasPending && h.Warned.Count == 1 && h.Warned[0] == "Peerless Healing Kit: not used, the character is busy.", "past the limit it gives up and says why: " + string.Join(";", h.Warned));
+            Eq(h.World.Sent.Count, 0, "and sent nothing");
 
             h = With(Kit(0x10));
             h.World.Animating = true;
             h.Slot(kit);
-            h.Ticks(7, 1000);
-            Check(h.Warned.Count == 1 && h.Warned[0].Contains("an animation is playing"), "a gesture holds it: " + string.Join(";", h.Warned));
+            h.Ticks(3, 1000);
+            Eq(h.World.Sent.Count, 0, "a gesture holds it");
+            h.World.Animating = false;
+            h.Tick(100);
+            Eq(h.World.Sent.Count, 1, "and it goes when the gesture ends");
+
+            h = With(Kit(0x10));
+            h.World.Animating = true;
+            h.Slot(kit);
+            h.Ticks(4, 1000);
+            Eq(h.World.Sent.Count, 0, "a gesture 3 s long still holds it");
+            h.Tick(1000);
+            Check(h.World.Sent.Count == 1 && h.Warned.Count == 0, "one that never ends (a stuck motion queue) is let go after 4 s");
+            Eq(h.Logged.Count(l => l.Contains("'animating' for")), 1, "logged once");
 
             h = With(Kit(0x10));
             h.World.BotWaitingOnServer = true;
@@ -113,6 +132,168 @@ namespace RynthDefective.Tests
             h.Slot(kit);
             h.Tick();
             Eq(h.World.Sent.Count, 1, "no RynthAi: nothing to wait for");
+        }
+
+        private static BusyFacts Facts(int count = 0, long steady = 0, int leftover = 0, long own = long.MaxValue / 4,
+            bool anim = false, long animMs = 0, bool? bot = null, long botMs = 0) =>
+            new(count, steady, leftover, own, anim, animMs, bot, botMs);
+
+        private static void BusyRuleDecisions()
+        {
+            Eq(BusyRule.Decide(Facts(), out BusyStale st), BusyHold.None, "idle: send");
+            Eq(st, BusyStale.None, "nothing ignored");
+
+            Eq(BusyRule.Decide(Facts(count: 1, steady: 10_000), out st), BusyHold.None, "busy with nothing in flight for longer than the bound: send");
+            Eq(st, BusyStale.Count, "the count was ignored as a leftover");
+            Eq(BusyRule.Decide(Facts(count: 1, steady: BusyRule.CountTrustMs), out _), BusyHold.None, "exactly the bound: a leftover");
+            Eq(BusyRule.Decide(Facts(count: 1, steady: BusyRule.CountTrustMs - 1), out _), BusyHold.Busy, "just under it: still trusted");
+
+            Eq(BusyRule.Decide(Facts(count: 1, steady: 10_000, own: 500), out _), BusyHold.Busy, "busy just after our own use: wait");
+            Eq(BusyRule.Decide(Facts(count: 1, steady: 10_000, own: BusyRule.OwnTrustMs), out _), BusyHold.None, "our own use long enough ago: a leftover");
+
+            Eq(BusyRule.Decide(Facts(anim: true, animMs: 300), out _), BusyHold.Animation, "animating: wait");
+            Eq(BusyRule.Decide(Facts(count: 1, steady: 10_000, anim: true, animMs: 300), out _), BusyHold.Animation, "animating holds over a leftover count");
+            Eq(BusyRule.Decide(Facts(anim: true, animMs: BusyRule.AnimationMaxMs), out st), BusyHold.None, "a gesture past the bound is a stuck motion queue");
+            Eq(st, BusyStale.Animation, "and ignored as such");
+            Eq(BusyRule.Decide(Facts(count: 1, steady: 200, anim: true, animMs: 9000), out _), BusyHold.Busy, "a stuck gesture doesn't hide a fresh count");
+
+            Eq(BusyRule.Decide(Facts(count: 1, steady: 200), out _), BusyHold.Busy, "a count that just changed: wait");
+            Eq(BusyRule.Decide(Facts(count: 3, steady: 200, leftover: 2), out _), BusyHold.Busy, "a count that just rose above the leftover: wait");
+            Eq(BusyRule.Decide(Facts(count: 2, steady: 200, leftover: 2), out st), BusyHold.None, "back at the leftover (our use answered): holds nothing though it just moved");
+            Eq(st, BusyStale.Count, "the leftover is still a leftover");
+            Eq(BusyRule.Decide(Facts(count: 3, steady: 5000, leftover: 2), out st), BusyHold.None, "above the leftover but unchanged for longer than the bound: a bigger leftover");
+            Eq(st, BusyStale.Count, "ignored");
+
+            Eq(BusyRule.Decide(Facts(bot: true, botMs: 1000), out _), BusyHold.Bot, "RynthAi waiting on the server, fresh: wait");
+            Eq(BusyRule.Decide(Facts(bot: true, botMs: BusyRule.BotTrustMs), out st), BusyHold.None, "RynthAi's bit longer than its own action limits: send");
+            Eq(st, BusyStale.Bot, "ignored");
+            Eq(BusyRule.Decide(Facts(count: 1, steady: 10_000, bot: true, botMs: 10_000), out st), BusyHold.None, "RynthAi's copy of a leftover count (its macro off after a death)");
+            Eq(st, BusyStale.Count | BusyStale.Bot, "both ignored");
+            Eq(BusyRule.Decide(Facts(count: 1, steady: 10_000, bot: true, botMs: BusyRule.CountTrustMs), out _), BusyHold.None, "with a leftover count the bit gets the count's bound");
+            Eq(BusyRule.Decide(Facts(count: 1, steady: 10_000, bot: true, botMs: 1000), out _), BusyHold.Bot, "a bit that just came on holds even over a leftover (RynthAi just sent something)");
+            Eq(BusyRule.Decide(Facts(bot: false, botMs: 50), out _), BusyHold.None, "RynthAi idle");
+        }
+
+        private static void UseStaleBusy()
+        {
+            ItemRef kit = ItemRef.From(Kit(0x10));
+
+            // A login with a count the last session left: nothing moves it.
+            Harness h = With(Kit(0x10));
+            h.World.BusyCount = 2;
+            h.Tick();   // the first look
+            h.Slot(kit);
+            h.Ticks(3, 1000);
+            Eq(h.World.Sent.Count, 0, "right after the first look the count may be real: held");
+            h.Tick(1000);
+            Eq(string.Join("|", h.World.Sent), "useon 10 me", "unchanged for 4 s with nothing in flight: a leftover, the kit goes");
+            Eq(h.Warned.Count, 0, "no warning");
+            Eq(h.Logged.Count(l => l.Contains("busy count has read 2")), 1, "the leftover is logged once");
+            Check(h.Logged.Any(l => l.Contains("left alone")), "and the log says the count isn't touched");
+            Eq(h.Use.Busy.Leftover, 2, "2 is the leftover");
+
+            // Our own kit raises it; the answer brings it back to the leftover; the next kit goes at once.
+            h.World.BusyCount = 3;
+            h.Tick(100);
+            Check(h.Use.InFlight, "our kit is in flight");
+            h.World.BusyCount = 2;
+            h.World.Answer();
+            h.Tick(100);
+            Check(!h.Use.InFlight, "answered");
+            h.Slot(kit);
+            h.Tick(300);
+            Eq(h.World.Sent.Count, 2, "the next kit goes at once: the count is back at the leftover");
+            Eq(h.Logged.Count(l => l.Contains("busy count has read")), 1, "nothing new logged");
+            h.World.Answer();
+            h.Tick(100);
+
+            // Something else raises it above the leftover: real again, until it too sits unchanged.
+            h.World.BusyCount = 3;
+            h.Tick(300);
+            h.Slot(kit);
+            h.Ticks(3, 1000);
+            Eq(h.World.Sent.Count, 2, "a count above the leftover that just rose holds the kit");
+            h.Tick(1000);
+            Eq(h.World.Sent.Count, 3, "until it has sat unchanged for 4 s too");
+            Eq(h.Logged.Count(l => l.Contains("busy count has read 3")), 1, "a bigger leftover gets its own line");
+            h.World.Answer();
+            h.Tick(100);
+            h.World.BusyCount = 0;
+            h.Tick(100);
+            Eq(h.Use.Busy.Leftover, 0, "idle again: no leftover");
+
+            // A death: the count and RynthAi's copy of it sit through the death portal.
+            h = With(Kit(0x10));
+            h.World.BusyCount = 1;
+            h.World.BotWaitingOnServer = true;
+            h.Tick();
+            h.World.InWorld = false;
+            h.Ticks(8, 1000);
+            h.World.InWorld = true;
+            h.Slot(kit);
+            h.Tick(100);
+            Eq(string.Join("|", h.World.Sent), "useon 10 me", "landed: the count and RynthAi's bit that sat through the portal hold nothing");
+            Check(h.Logged.Any(l => l.Contains("RynthAi has read 'waiting on the server'")), "RynthAi's bit is logged as ignored too");
+
+            // A request made in the portal is dropped and said so.
+            h = With(Kit(0x10));
+            h.World.InWorld = false;
+            h.Slot(kit);
+            h.Tick();
+            Check(!h.Use.HasPending && h.World.Sent.Count == 0 && h.Warned.Count == 1 && h.Warned[0].Contains("portal space"), "a key in portal space: not used, and says why: " + string.Join(";", h.Warned));
+
+            // A login starts the clocks again (ResetSession), portal space doesn't.
+            h = With(Kit(0x10));
+            h.World.BusyCount = 1;
+            h.Tick();
+            h.Ticks(6, 1000);
+            h.Use.ResetSession();
+            h.Slot(kit);
+            h.Tick(100);
+            Eq(h.World.Sent.Count, 0, "after a login the count is new again: held for now");
+        }
+
+        private static void UseTooBusyRetry()
+        {
+            ItemRef kit = ItemRef.From(Kit(0x10));
+            Harness h = With(Kit(0x10));
+            h.Slot(kit);
+            h.Tick();
+            Eq(h.World.Sent.Count, 1, "sent");
+            h.World.Answer(UseController.TooBusyError);
+            h.Tick(100);
+            Check(!h.Use.InFlight && h.Use.HasPending, "answered 'too busy': queued once more");
+            h.Tick(500);
+            Eq(h.World.Sent.Count, 1, "not straight away");
+            h.Tick(600);
+            Eq(h.World.Sent.Count, 2, "a second later, sent again");
+            Check(h.Logged.Any(l => l.Contains("one more try")), "the log says it is the retry");
+            h.World.Answer(UseController.TooBusyError);
+            h.Tick(100);
+            Check(!h.Use.InFlight && !h.Use.HasPending && h.Warned.Count == 1 && h.Warned[0].Contains("the server says the character is busy"),
+                "busy again: said once, not retried again: " + string.Join(";", h.Warned));
+            h.Ticks(5, 1000);
+            Eq(h.World.Sent.Count, 2, "no loop");
+
+            // Another answer: no retry.
+            h = With(Kit(0x10));
+            h.Slot(kit);
+            h.Tick();
+            h.World.Answer(0x0402);
+            h.Tick(100);
+            h.Ticks(3, 1000);
+            Check(h.World.Sent.Count == 1 && !h.Use.HasPending, "another error is not retried");
+
+            // A newer request while the first was in flight wins over the retry.
+            h = With(Kit(0x10), Potion(0x20));
+            h.Slot(kit);
+            h.Tick();
+            h.Slot(ItemRef.From(Potion(0x20)));
+            h.World.Answer(UseController.TooBusyError);
+            h.Tick(100);
+            Check(h.Use.Pending?.Item?.Name == "Health Potion", "the newest wish wins over the retry");
+            h.Tick(1100);
+            Eq(string.Join("|", h.World.Sent), "useon 10 me|use 20", "the potion goes, the kit isn't sent again");
         }
 
         private static void UseUnanswered()

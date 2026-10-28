@@ -59,8 +59,9 @@ internal static class BarMapping
     /// Copies AC's 18 slots (<paramref name="ids"/>, <paramref name="spells"/>, slot 1 first) into the own
     /// slots 1-18, so an independent bar looks as the usual one did: the own slots that were after AC's
     /// (own N at bar 18+N) move to own 18+N, where an independent bar shows them. <see cref="BarCopyResult.Moved"/>
-    /// lists the moves of the slots that held something (their "/rdef use N" keys go with them). A spell, or
-    /// an item <paramref name="resolve"/> can't name, can't go in an own slot: that slot stays empty (Skipped).
+    /// lists the moves of the slots that held something (their "/rdef use N" keys go with them). A spell goes
+    /// in as a spell slot (2026-10-28); an item <paramref name="resolve"/> can't name can't go in an own slot:
+    /// that slot stays empty (Skipped).
     /// Refused (nothing changed) when an own slot past 24 holds something: there is no room to move it.
     /// </summary>
     public static BarCopyResult CopyRetail(List<DefSlot> own, ReadOnlySpan<uint> ids, ReadOnlySpan<uint> spells, Func<uint, ItemRef?> resolve)
@@ -68,7 +69,7 @@ internal static class BarMapping
         const int retail = DefSettings.RetailSlots, room = DefSettings.SlotsMax - DefSettings.RetailSlots;
         for (int n = room + 1; n <= own.Count; n++)
             if (!own[n - 1].Empty)
-                return new BarCopyResult(0, 0, Array.Empty<(int, int)>(), $"Your slot {n} holds {own[n - 1].Item!.FullName}: there is no room to move "
+                return new BarCopyResult(0, 0, Array.Empty<(int, int)>(), $"Your slot {n} holds {own[n - 1].Label}: there is no room to move "
                     + $"slots {room + 1}-{DefSettings.SlotsMax} after the game's {retail}. Empty them (or copy by hand) first.");
 
         var next = DefData.NewSlots();
@@ -85,7 +86,11 @@ internal static class BarMapping
             uint id = i < ids.Length ? ids[i] : 0, spell = i < spells.Length ? spells[i] : 0;
             if (id == 0)
             {
-                if (spell != 0) skipped++;
+                if (spell != 0)
+                {
+                    next[i] = new DefSlot { SpellId = spell, SpellName = SpellTable.Name(spell) };
+                    copied++;
+                }
                 continue;
             }
             ItemRef? r = resolve(id);
@@ -97,11 +102,12 @@ internal static class BarMapping
         return new BarCopyResult(copied, skipped, moved, null);
     }
 
-    /// <summary>How many of AC's slots hold an item (spells can't be copied, so they don't count).</summary>
-    public static int RetailItems(ReadOnlySpan<uint> ids)
+    /// <summary>How many of AC's slots hold an item or a spell (what a copy would bring over).</summary>
+    public static int RetailShortcuts(ReadOnlySpan<uint> ids, ReadOnlySpan<uint> spells)
     {
         int n = 0;
-        foreach (uint id in ids) if (id != 0) n++;
+        for (int i = 0; i < ids.Length; i++)
+            if (ids[i] != 0 || (i < spells.Length && spells[i] != 0)) n++;
         return n;
     }
 

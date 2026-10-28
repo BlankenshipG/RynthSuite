@@ -2,7 +2,7 @@ using System;
 
 namespace RynthCore.Plugin.RynthDefective.Model;
 
-internal enum DefVerb { Toggle, Help, Use, Set, Clear, Bind, Unbind, Weapons, Favourite, Slots, List, Status, Error, Panels, Selection, Settings }
+internal enum DefVerb { Toggle, Help, Use, Set, Clear, Bind, Unbind, Weapons, Favourite, Slots, List, Status, Error, Panels, Selection, Settings, Spell }
 
 /// <summary>A parsed "/rdef ..." line. Use: <see cref="Slot"/> (1-based) or <see cref="Text"/> (an item name).</summary>
 internal sealed record DefCommand(DefVerb Verb, int Slot = 0, string Text = "", string Error = "");
@@ -10,7 +10,7 @@ internal sealed record DefCommand(DefVerb Verb, int Slot = 0, string Text = "", 
 internal static class DefCommandParser
 {
     public const string Usage =
-        "/rdef [use <slot or item name> | set <slot> [item name] | clear <slot> | bind <slot> <key> | unbind <slot> | "
+        "/rdef [use <slot or item name> | set <slot> [item name] | spell <slot> <spell name> | clear <slot> | bind <slot> <key> | unbind <slot> | "
         + "weapons [search] | fav | slots <count> | list | status | settings | panels (the game panel buttons) | selection]";
 
     /// <summary>Parses the arguments after "/rdef" (blank = show or hide the bar).</summary>
@@ -42,6 +42,13 @@ internal static class DefCommandParser
                 SplitSlot(rest, out string? slotText, out string tail);
                 if (slotText == null || !TrySlot(slotText, out int slot)) return Fail("Which slot? e.g. /rdef set 3  (the item selected in the game goes in slot 3) or /rdef set 3 Peerless Healing Kit");
                 return new DefCommand(DefVerb.Set, slot, tail);
+            }
+            case "spell":
+            {
+                SplitSlot(rest, out string? slotText, out string tail);
+                if (slotText == null || !TrySlot(slotText, out int slot) || tail.Length == 0)
+                    return Fail("Usage: /rdef spell <slot> <spell name>, e.g. /rdef spell 3 Heal Self VI (one of your spells; the slot casts it)");
+                return new DefCommand(DefVerb.Spell, slot, tail);
             }
             case "clear":
             {

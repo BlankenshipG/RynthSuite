@@ -235,6 +235,14 @@ public sealed partial class RynthDefectivePlugin : IBarActions
         _nextBarBuildMs = 0;
     });
 
+    public void SetSpell(int number, uint spellId) => QueueBar(() =>
+    {
+        // The game's own slots take spells from the game's spellbook (drag one onto the retail toolbar).
+        if (IsRetail(number)) { Print($"Slot {number} is the game's own: drag the spell onto it from the game's spellbook."); return; }
+        Print(_session.SetSpell(OwnOf(number), spellId));
+        _nextBarBuildMs = 0;
+    });
+
     public void ChangeSlotCount(int delta) => QueueBar(() =>
     {
         DefSettings st = _session.Settings;

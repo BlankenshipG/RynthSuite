@@ -25,12 +25,16 @@
 //  /rdef use N. A key comes off whatever had it, after the player says so.
 //  An independent bar (DefSettings.IndependentBar) has only RynthDefective's
 //  own slots: every key is an engine hotkey (BarMapping, BarSlot.Own).
+//  Spells (2026-10-28): an own slot's menu has "Put a spell here...", a search
+//  over the character's spells (the engine can't read the spell selected in
+//  the game's spellbook); the slot then casts it (UseController).
 //
 //  AC's render thread. Reads the snapshot the tick built; every click is
 //  queued for the tick (IBarActions).
 // ============================================================================
 
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthDefective.Model;
@@ -48,6 +52,8 @@ internal interface IBarActions
     void SetFromSelected(int number);
     void Clear(int number);
     void ChangeSlotCount(int delta);
+    /// <summary>Puts spell <paramref name="spellId"/> in bar slot <paramref name="number"/> (one of RynthDefective's own).</summary>
+    void SetSpell(int number, uint spellId);
     /// <summary>An item dragged out of AC's UI was let go over slot <paramref name="number"/>.</summary>
     void DropItem(int number, uint objectId);
     /// <summary>A key was bound or removed: the bar asks for its keys again.</summary>
@@ -155,6 +161,12 @@ internal sealed class ShortcutBarWindow
             ImGui.OpenPopup(KeyPopupId);
         }
         KeyPopup();
+        if (_openSpellPopup)
+        {
+            _openSpellPopup = false;
+            ImGui.OpenPopup(SpellPopupId);
+        }
+        SpellPopup(view);
         return height;
     }
 
@@ -367,6 +379,15 @@ internal sealed class ShortcutBarWindow
             ImGui.Separator();
             bool hasSelection = _host.HasGetSelectedItemId && _host.GetSelectedItemId() != 0;
             if (ImGui.MenuItem("Put the selected item here", null, false, hasSelection)) _act.SetFromSelected(s.Number);
+            if (!s.Retail)
+            {
+                if (ImGui.MenuItem("Put a spell here...", null, false, view.CanCast)) StartSpellPick(s);
+                SafeImGui.SetItemTooltip(view.CanCast
+                    ? "One of your spells, found by name: the slot casts it, in Magic mode, on the selection\n"
+                      + "(on you for your own spells, or with nothing selected for a helpful one).\n"
+                      + "The game doesn't tell RynthCore which spell is selected in its spellbook, so you find it here."
+                    : "This RynthCore can't cast spells for a plugin.");
+            }
             if (ImGui.MenuItem("Empty this slot", null, false, !s.Empty)) _act.Clear(s.Number);
             ImGui.Separator();
             if (!_host.HasKeyBinding)
@@ -439,6 +460,95 @@ internal sealed class ShortcutBarWindow
         int state = _host.SetPanelOpen(title, RynthPanelOpen.Ask);
         if (ImGui.MenuItem(label, null, state == 1, state >= 0)) _host.SetPanelOpen(title, RynthPanelOpen.Toggle);
         SafeImGui.SetItemTooltip(tip);
+    }
+
+    // ── Spells: "Put a spell here..." ─────────────────────────────────────
+
+    private const string SpellPopupId = "##sb_spell_popup";
+    private const int SpellRows = 40;
+    private bool _openSpellPopup, _spellFocus;
+    private BarSlot? _spellSlot;
+    private string _spellSearch = string.Empty, _spellQuery = "\0";
+    private IReadOnlyList<SpellInfo>? _spellSource;
+    private List<SpellInfo> _spellMatches = new();
+    private int _spellTotal;
+
+    private void StartSpellPick(BarSlot slot)
+    {
+        _spellSlot = slot;
+        _spellSearch = string.Empty;
+        _spellSource = null;
+        _spellFocus = true;
+        _openSpellPopup = true;
+    }
+
+    private void SpellPopup(BarSnapshot view)
+    {
+        if (!ImGui.IsPopupOpen(SpellPopupId)) return;
+        ImGui.PushStyleColor(ImGuiCol.PopupBg, WithAlpha(_bg, 0xFA));
+        ImGui.PushStyleColor(ImGuiCol.Border, _line);
+        ImGui.PushStyleVar(ImGuiStyleVar.PopupRounding, Px(4));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(Px(8), Px(7)));
+        bool open = ImGui.BeginPopup(SpellPopupId);
+        ImGui.PopStyleVar(2);
+        ImGui.PopStyleColor(2);
+        if (!open) return;
+        try
+        {
+            BarSlot? ss = _spellSlot;
+            if (ss == null) { ImGui.CloseCurrentPopup(); return; }
+            float w = Px(250), row = Px(20);
+            ImGui.TextDisabled($"Slot {ss.Number}: a spell to cast");
+            IReadOnlyList<SpellInfo> known = view.KnownSpells;
+            if (_spellFocus)
+            {
+                ImGui.SetKeyboardFocusHere();
+                _spellFocus = false;
+            }
+            ImGui.SetNextItemWidth(w);
+            ImGui.InputTextWithHint("##sb_spell_search", "type a spell's name", ref _spellSearch, 64u);
+            if (!ReferenceEquals(known, _spellSource) || _spellSearch != _spellQuery)
+            {
+                _spellSource = known;
+                _spellQuery = _spellSearch;
+                _spellMatches = SpellTable.Search(known, _spellSearch, SpellRows, out _spellTotal);
+            }
+            if (known.Count == 0) ImGui.TextDisabled("Your spells can't be read right now.");
+            else
+            {
+                int shown = Math.Clamp(_spellMatches.Count, 1, 10);
+                if (ImGui.BeginChild("##sb_spell_list", new Vector2(w, shown * (row + Px(2)) + Px(8)), ImGuiChildFlags.Borders))
+                {
+                    foreach (SpellInfo sp in _spellMatches)
+                    {
+                        ImGui.PushID(unchecked((int)sp.Id));
+                        Vector2 start = ImGui.GetCursorPos();
+                        bool clicked = ImGui.Selectable("##sp", false, ImGuiSelectableFlags.AllowOverlap, new Vector2(0, row));
+                        SafeImGui.SetItemTooltip($"{sp.Name}: {SpellTargeting.Describe(sp)}.");
+                        ImGui.SetCursorPos(start);
+                        IntPtr tex = _host.GetIconTexture(RynthIconKind.Spell, sp.Id);
+                        if (tex != IntPtr.Zero) ImGui.Image(tex, new Vector2(row, row));
+                        else ImGui.Dummy(new Vector2(row, row));
+                        ImGui.SameLine();
+                        ImGui.SetCursorPosY(start.Y + (row - ImGui.GetTextLineHeight()) * 0.5f);
+                        ImGui.TextUnformatted(sp.Name);
+                        ImGui.PopID();
+                        if (clicked)
+                        {
+                            _act.SetSpell(ss.Number, sp.Id);
+                            _spellSlot = null;
+                            ImGui.CloseCurrentPopup();
+                            break;
+                        }
+                    }
+                }
+                ImGui.EndChild();
+                if (_spellMatches.Count == 0) ImGui.TextDisabled("You know no spell by that name.");
+                else if (_spellTotal > _spellMatches.Count) SafeImGui.TextDisabled($"{_spellTotal - _spellMatches.Count} more: type more of the name.");
+            }
+            if (ImGui.Button("Cancel")) { _spellSlot = null; ImGui.CloseCurrentPopup(); }
+        }
+        finally { ImGui.EndPopup(); }
     }
 
     // ── Keys: "press a key" ───────────────────────────────────────────────

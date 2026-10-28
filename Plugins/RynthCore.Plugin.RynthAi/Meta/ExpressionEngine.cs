@@ -3701,6 +3701,7 @@ internal sealed partial class ExpressionEngine
             ["CastBuffsOverItemBuffs"]       = (() => B(s.CastBuffsOverItemBuffs),       v => s.CastBuffsOverItemBuffs       = ToDouble(v) != 0),
             ["FastBuffChain"]                = (() => B(s.FastBuffChain),                v => s.FastBuffChain                = ToDouble(v) != 0),
             ["SkipUnusableBuffs"]            = (() => B(s.SkipUnusableBuffs),            v => s.SkipUnusableBuffs            = ToDouble(v) != 0),
+            ["BuffShield"]                   = (() => B(s.BuffShield),                   v => s.BuffShield                   = ToDouble(v) != 0),
             // AutoVendor (UB names map here through /ub opt: AutoVendor.Enabled -> AutoVendorEnabled, ...)
             ["AutoVendorEnabled"]          = (() => B(s.AutoVendorEnabled),          v => s.AutoVendorEnabled          = ToDouble(v) != 0),
             ["AutoVendorEnableBuying"]     = (() => B(s.AutoVendorEnableBuying),     v => s.AutoVendorEnableBuying     = ToDouble(v) != 0),

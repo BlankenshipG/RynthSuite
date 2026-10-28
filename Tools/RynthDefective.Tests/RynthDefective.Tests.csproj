@@ -44,5 +44,9 @@
     <Compile Include="..\..\Plugins\Shared\RynthUi\RynthIcons.cs" Link="Shared\RynthUi\RynthIcons.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The plugin's spell table, under the name the plugin reads it by (spell slots). -->
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthDefective.SpellData.txt" Link="Shared\SpellData.txt" />
+  </ItemGroup>
 
 </Project>

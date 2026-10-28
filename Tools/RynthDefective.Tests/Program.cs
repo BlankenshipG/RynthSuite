@@ -65,6 +65,15 @@ namespace RynthDefective.Tests
                 Run("use: a kit on yourself, answered by UseDone", UseKit);
                 Run("use: one at a time, the newest wish wins, a held key queues once", UseQueue);
                 Run("use: busy, animating and RynthAi waiting hold a request, then it gives up", UseBusy);
+                Run("busy rule: a leftover count, our own use, animation, a count that just changed", BusyRuleDecisions);
+                Run("use: a busy count left by a death or a login doesn't hold the bar", UseStaleBusy);
+                Run("use: 'You're too busy' from the server: one more try", UseTooBusyRetry);
+                Run("spells: the table's names and flags, the name search", SpellTableAndSearch);
+                Run("spells: whom a cast goes to", SpellCastTarget);
+                Run("spells: a slot casts, Magic mode first, refusals", SpellUse);
+                Run("spells: putting a spell in a slot (by id, by name), the command", SpellSession);
+                Run("store: a spell slot saved and read; files from before read unchanged", SpellStore);
+                Run("window: a spell slot on the script-window bar and in its editor", SpellWindow);
                 Run("use: no UseDone, the quiet release and the time limit", UseUnanswered);
                 Run("use: a slot whose object is gone uses the next of its name", UseRebind);
                 Run("use: by name, missing items, target needed", UseByNameAndTargets);
@@ -196,7 +205,9 @@ namespace RynthDefective.Tests
             public bool InWorld { get; set; } = true;
             public uint PlayerId => Me;
             public uint SelectedId { get; set; }
-            public bool ClientBusy { get; set; }
+            public int BusyCount { get; set; }
+            /// <summary>The busy count above zero (1) or idle; set BusyCount for a count of its own.</summary>
+            public bool ClientBusy { get => BusyCount > 0; set => BusyCount = value ? Math.Max(1, BusyCount) : 0; }
             public bool Animating { get; set; }
             public bool? BotWaitingOnServer { get; set; }
             public bool? BotMacroRunning { get; set; }
@@ -204,11 +215,14 @@ namespace RynthDefective.Tests
             public int CombatMode { get; set; } = Stance.NonCombat;
             public int RefusalSeq { get; set; }
             public uint RefusedObject;
+            /// <summary>The error of the newest UseDone (Answer sets it).</summary>
+            public uint LastUseDoneError;
             public List<CarriedItem> Inventory = new();
             public bool RefuseSends;
             public readonly List<string> Sent = new();
 
             public bool RefusalNamed(uint objectId) => RefusedObject == objectId;
+            public uint UseDoneError(int seqAtSend) => UseDoneSeq == seqAtSend + 1 ? LastUseDoneError : 0;
             public IReadOnlyList<CarriedItem> Items() => Inventory;
             public CarriedItem? Live(uint id) => Inventory.FirstOrDefault(i => i.Id == id);
 
@@ -229,12 +243,30 @@ namespace RynthDefective.Tests
             public bool SetCombatMode(int mode)
             {
                 Sent.Add("mode " + mode);
-                CombatMode = mode;
+                if (!ModeRefused) CombatMode = mode;
+                return true;
+            }
+
+            /// <summary>The client asked for a mode but stays where it is (a weapon that can't cast in hand).</summary>
+            public bool ModeRefused;
+            public bool CanCast { get; set; } = true;
+            /// <summary>The spells the character knows; null = the spellbook can't be read.</summary>
+            public HashSet<uint>? Known;
+            public bool? KnowsSpell(uint spellId) => Known == null ? null : Known.Contains(spellId);
+
+            public bool CastSpell(uint target, uint spellId)
+            {
+                if (RefuseSends) return false;
+                Sent.Add($"cast {spellId} {(target == Me ? "me" : target.ToString("X"))}");
                 return true;
             }
 
             public void Advance(long ms) => NowMs += ms;
-            public void Answer() => UseDoneSeq++;
+            public void Answer(uint error = 0)
+            {
+                UseDoneSeq++;
+                LastUseDoneError = error;
+            }
         }
 
         private sealed class Harness

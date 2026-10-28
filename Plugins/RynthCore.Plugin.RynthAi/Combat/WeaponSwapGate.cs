@@ -147,6 +147,22 @@ public sealed class WeaponSwapGate
         }
     }
 
+    /// <summary>
+    /// True while <paramref name="itemId"/> may still be on its way into or out of a hand: a
+    /// multi-step swap holds the gate, or the last claimed swap noted a move of this item and the
+    /// next swap would still wait for it (MinIntervalMs). Buffing doesn't aim a spell at a shield
+    /// then (BuffManager.Shield.cs).
+    /// </summary>
+    public bool MayBeMoving(int itemId)
+    {
+        long now = NowMs();
+        lock (_lock)
+        {
+            if (_heldBy.Length > 0 && now < _heldUntilMs) return true;
+            return itemId != 0 && _movingId == itemId && now - _lastSwapTickMs < MinIntervalMs;
+        }
+    }
+
     /// <summary>Milliseconds since the last successful swap (diagnostics).</summary>
     public long MsSinceLastSwap
     {
