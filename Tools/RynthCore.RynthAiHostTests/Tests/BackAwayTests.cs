@@ -10,9 +10,11 @@ namespace RynthCore.RynthAiHostTests.Tests;
 // The back-away combat does on a server plugin's request (CombatManager.BackAwayFrom, RynthAi.Hub
 // BackAwayFrom). It was the Empyrean Handler lethal-ring evade (Silentkelpie's PR 12) until 2026-10-20,
 // when the Handler's detection and its setting went to RynthILT (Infinite Leaftide content); RynthAi
-// keeps the generic part: face the object, back-jump, hold attacks until it settles. Gated: only while
-// the macro is running with combat on, and only inside the radius (at least Ring Range). RynthAi alone
-// never reacts to the Handler's line any more.
+// keeps the generic part: stop attacking, run away from the object (face away, autorun until outside
+// the radius plus a margin), hold attacks until it is over. A single back-jump until 2026-10-28, which
+// never cleared the 12-yard ring; it remains only for an engine without heading snap / autorun. Gated:
+// only while the macro is running with combat on, and only inside the radius (at least Ring Range).
+// RynthAi alone never reacts to the Handler's line any more.
 internal static class BackAwayTests
 {
     private const uint Player = 0x50000D11;
@@ -22,7 +24,7 @@ internal static class BackAwayTests
 
     public static void Register(Runner r)
     {
-        r.Add("back away: inside the radius with the macro running and combat on, one back-jump (and none while it runs)", Jumps);
+        r.Add("back away: inside the radius with the macro running and combat on, runs away (faces away, autorun on, no back-jump)", Runs);
         r.Add("back away: not with the macro stopped or combat off", Gated);
         r.Add("back away: outside the radius (Ring Range widens it), or an object without a position: no jump", NotThese);
         r.Add("back away: RynthAi alone ignores the Empyrean Handler's ring line (RynthILT's now)", HandlerLineIgnored);
@@ -58,19 +60,17 @@ internal static class BackAwayTests
         public int Ask(double radius = 12, int holdMs = 750) => Combat.BackAwayFrom(unchecked((int)Danger), radius, holdMs, "test");
     }
 
-    private static void Jumps()
+    private static void Runs()
     {
         var rig = new Rig(dangerYards: 5);
         Check.Eq(rig.Ask(), RynthAiHub.BackAwayStarted, "5 yards inside 12: started");
-        Check.Eq(rig.Jumps, 1, "one back-jump");
+        Check.Eq(rig.Jumps, 0, "no back-jump: a jump covers a yard or two, the ring is 12");
+        Check.True(FakeHost.AutoRun, "autorun on");
+        // The danger is due north (+Y): running away faces south.
+        Check.True(Math.Abs(FakeHost.HeadingDeg - 180f) < 1f, $"faces away from it (heading {FakeHost.HeadingDeg:0})");
         Check.True(rig.Combat.BackAwayActive, "combat holds while it runs");
-        Check.Eq(rig.Ask(), RynthAiHub.BackAwayNotNow, "a second request while backing away: not now");
-        Check.Eq(rig.Jumps, 1, "still one jump");
-
-        var refused = new Rig(5);
-        refused.Combat.RequestBackJump = (_, _) => false;
-        Check.Eq(refused.Ask(), RynthAiHub.BackAwayJumpRefused, "the jumper refused: said so");
-        Check.False(refused.Combat.BackAwayActive, "and combat isn't held");
+        Check.Eq(rig.Ask(), RynthAiHub.BackAwayNotNow, "a second request while running: not now");
+        Check.True(FakeHost.Logs.Exists(l => l.Contains("[CombatEvade]") && l.Contains("running away")), "logged as a run");
     }
 
     private static void Gated()

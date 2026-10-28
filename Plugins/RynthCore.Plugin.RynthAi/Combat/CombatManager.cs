@@ -2116,9 +2116,12 @@ public partial class CombatManager : IDisposable
 
     // ── Back away from a danger point (RynthAi.Hub BackAwayFrom) ──────────────
     // rynth's generic "get out of this radius now" for a server plugin that knows its server's
-    // dangers (2026-10-21). On this branch (test merge, 2026-10-25) it rides the Handler-ring
-    // back-jump above: face the object, Jumper "xs" away from it, hold attacks until it settles.
-    // Only while the macro runs with combat on.
+    // dangers (2026-10-21; RynthILT asks it for the Empyrean Handler's lethal ring). It runs away
+    // (the escape below: stop attacking, face away, autorun until outside the ring plus a margin,
+    // hold until the ring has gone off). It was the single back-jump until 2026-10-28: a run-back
+    // jump covers a yard or two, so the character died inside the 12-yard ring every time. The
+    // back-jump stays for an engine without heading snap / autorun. Only while the macro runs with
+    // combat on.
 
     /// <summary>BackAwayFrom results (RynthAi.Hub BackAwayFrom passes them on as they are).</summary>
     internal const int BackAwayStarted = 1, BackAwayNotNow = 0, BackAwayOutside = 2, BackAwayUnknownObject = 3, BackAwayJumpRefused = -1;
@@ -2136,19 +2139,28 @@ public partial class CombatManager : IDisposable
         if (me == 0 || objectId == 0) return BackAwayUnknownObject;
         double dist = _worldFilter.Distance(unchecked((int)me), objectId);
         if (dist < 0 || dist == double.MaxValue || double.IsNaN(dist)) return BackAwayUnknownObject;
-        if (dist > radiusYards) return BackAwayOutside;
-        float face = TryGetHeadingTo(objectId, out double toIt, out _) ? (float)(toIt % 360.0)
-            : _host.TryGetPlayerHeading(out float curr) ? curr : 0f;
-        int hold = Math.Clamp(holdMs, BackAwayMinHoldMs, BackAwayMaxHoldMs);
+        double danger = Math.Max(radiusYards, Math.Max(1, _settings.RingRange));
+        if (dist > danger) return BackAwayOutside;
+        bool haveHeading = TryGetHeadingTo(objectId, out double toIt, out _);
         DateTime now = RynthClock.Now;
         _handlerRingEvadeAt = now;
         _handlerRingEvadeId = objectId;
         _handlerRingJumpStarted = false;
+        StopAttackForEscape("back away");
+        if (haveHeading && _host.HasTurnToHeading && _host.HasSetAutoRun)
+        {
+            StartRingRun(objectId, _worldFilter[objectId]?.Name ?? $"0x{(uint)objectId:X8}", dist, danger, toIt, now, why);
+            return BackAwayStarted;
+        }
+
+        float face = haveHeading ? (float)(toIt % 360.0)
+            : _host.TryGetPlayerHeading(out float curr) ? curr : 0f;
+        int hold = Math.Clamp(holdMs, BackAwayMinHoldMs, BackAwayMaxHoldMs);
         _handlerRingEvadeUntil = now.AddMilliseconds(hold + 2_200);
         if (RequestBackJump?.Invoke(face, hold) == true)
         {
             _handlerRingJumpStarted = true;
-            _host.Log($"[CombatEvade] Back away ({why}): back-jump from 0x{(uint)objectId:X8} at {dist:0.0} m (radius {radiusYards:0.#} m).");
+            _host.Log($"[CombatEvade] Back away ({why}): back-jump from 0x{(uint)objectId:X8} at {dist:0.0} m (radius {danger:0.#} m; no heading snap / autorun on this engine).");
             return BackAwayStarted;
         }
         _handlerRingEvadeUntil = DateTime.MinValue;
@@ -2233,32 +2245,12 @@ public partial class CombatManager : IDisposable
         _handlerRingEvadeId = handlerId;
         _handlerRingJumpStarted = false;
 
-        // Stop the bound melee/missile attack (and any kite run) so the escape isn't eaten by
-        // the swing servo or steered by the pull-away.
-        try
-        {
-            if (_host.HasCancelAttack) _host.CancelAttack();
-            ReleaseHeldTurn();
-            EndKite("Handler lethal ring");
-        }
-        catch { }
+        StopAttackForEscape("Handler lethal ring");
 
         // Run away: face directly away from the Handler and autorun (forward is the fastest motion).
         if (haveHeading && _host.HasTurnToHeading && _host.HasSetAutoRun)
         {
-            float away = (float)((toHandler + 180.0) % 360.0);
-            _host.TurnToHeadingBy(RingEscapeSource, away);
-            bool running = _host.SetAutoRunBy(RingEscapeSource, true);
-            _ringRunActive = true;
-            _ringRunning = running;
-            _ringDanger = danger;
-            _ringSafeYards = danger + HandlerRingSafeMarginYards;
-            _ringRunAt = running ? now : DateTime.MinValue;
-            _ringTurnAt = _ringTickAt = now;
-            _handlerRingEvadeUntil = DateTime.MinValue;
-            _host.Log($"[CombatEvade] Lethal ring — running away from '{name}' at {dist:0.0} m " +
-                      $"(ring {danger:0.#} m, stop at {_ringSafeYards:0.#} m), heading {away:0}°" +
-                      (running ? "." : " (autorun refused; holding and re-trying)."));
+            StartRingRun(handlerId, name, dist, danger, toHandler, now, "Lethal ring");
             return;
         }
 
@@ -2282,6 +2274,39 @@ public partial class CombatManager : IDisposable
             _handlerRingEvadeId = 0;
             _host.Log("[CombatEvade] Lethal ring heard in range, but the back-jump did not start.");
         }
+    }
+
+    /// <summary>Stops the bound melee/missile attack (and any kite run) so an escape isn't eaten by
+    /// the swing servo or steered by the pull-away.</summary>
+    private void StopAttackForEscape(string why)
+    {
+        try
+        {
+            if (_host.HasCancelAttack) _host.CancelAttack();
+            ReleaseHeldTurn();
+            EndKite(why);
+        }
+        catch { }
+    }
+
+    /// <summary>The run-away escape: face directly away from the caster and autorun (forward is the
+    /// fastest motion); TickRingRun keeps it going until outside <paramref name="danger"/> plus a margin.</summary>
+    private void StartRingRun(int casterId, string name, double dist, double danger, double toCaster, DateTime now, string why)
+    {
+        float away = (float)((toCaster + 180.0) % 360.0);
+        _host.TurnToHeadingBy(RingEscapeSource, away);
+        bool running = _host.SetAutoRunBy(RingEscapeSource, true);
+        _handlerRingEvadeId = casterId;
+        _ringRunActive = true;
+        _ringRunning = running;
+        _ringDanger = danger;
+        _ringSafeYards = danger + HandlerRingSafeMarginYards;
+        _ringRunAt = running ? now : DateTime.MinValue;
+        _ringTurnAt = _ringTickAt = now;
+        _handlerRingEvadeUntil = DateTime.MinValue;
+        _host.Log($"[CombatEvade] {why} — running away from '{name}' at {dist:0.0} m " +
+                  $"(ring {danger:0.#} m, stop at {_ringSafeYards:0.#} m), heading {away:0}°" +
+                  (running ? "." : " (autorun refused; holding and re-trying)."));
     }
 
     /// <summary>
