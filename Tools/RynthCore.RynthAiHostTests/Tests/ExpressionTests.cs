@@ -894,6 +894,15 @@ internal static class ExpressionTests
         Is(e, "getquestktrequired[killtask]", "50");
         qt.OnChatLine("Quest list is empty.");
         Is(e, "isrefreshingquests[]", "0");
+
+        // A reply someone else asked for (RynthOracle's poll, a typed /myquests) is read too, never eaten.
+        long done = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30;
+        Check.True(!qt.OnChatLine("You say, \"hello\""), "ordinary chat starts no read");
+        Is(e, "isrefreshingquests[]", "0");
+        Check.True(!qt.OnChatLine($"templeattributestrengthwait - 4 solves ({done})\"Strength\" -1 72000"), "an unasked quest line isn't eaten");
+        Is(e, "isrefreshingquests[]", "1");
+        Is(e, "getqueststatus[templeattributestrengthwait]", "0");   // just handed in: on cooldown
+        Check.True(qt.TryGetFlag("TempleAttributeStrengthWait", out var strength) && strength.Solves == 4, "the unasked reply updates the flag");
     }
 
     private static void FellowshipDefaults()

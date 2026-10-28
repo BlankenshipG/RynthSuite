@@ -128,7 +128,15 @@ internal sealed class QuestTracker
     public bool OnChatLine(string text)
     {
         if (!_refreshing)
-            return false;
+        {
+            // A /myquests reply someone else asked for (RynthOracle polls every 10 minutes, the
+            // player types it): read it too, or the flags stay as they were at login and RynthILT's
+            // Guardian rows never move (2026-10-28). Never eaten here: the asker hides its own.
+            if (!QuestLineRegex.IsMatch(text))
+                return false;
+            ExpectReply();
+            _quietRefresh = false;
+        }
 
         if (text.Contains("Quest list is empty"))
         {
