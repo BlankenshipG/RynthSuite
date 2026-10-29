@@ -26,6 +26,7 @@ internal static class Program
         Percents();
         Colours();
         Commands();
+        Replies();
         Status();
         SettingsJson();
         Manifest();
@@ -321,5 +322,55 @@ internal static class Program
         Check(back.RadarRangeWorld == 120f && back.RadarRingThickness == 3.5f && back.RadarRingHeight == 7f && back.SlopeRenderRadius == 5
             && back.SlopeFloorZ == 0.5f && back.SlopeHeightBias == 0.25f && back.WaterRenderRadius == 6, "the tuning");
         Check(back.WaterTerrainTypes.SequenceEqual(new[] { 17, 19 }), "the water types");
+    }
+    /// <summary>
+    /// Every /rv command answers in chat (2026-10-28): each verb typed right and typed wrong, and the
+    /// line it says. The commands themselves run on the plugin's tick with the game's host, so the
+    /// parse and the reply wording are checked here.
+    /// </summary>
+    private static void Replies()
+    {
+        var verbs = new (string Typed, VisionVerb Verb)[]
+        {
+            ("", VisionVerb.Status), ("radar", VisionVerb.Radar), ("slopes", VisionVerb.Slopes), ("water", VisionVerb.Water),
+            ("watertypes", VisionVerb.WaterTypes), ("debug", VisionVerb.Debug), ("light", VisionVerb.Light),
+            ("light 60", VisionVerb.Light), ("rader", VisionVerb.Unknown), ("lightning", VisionVerb.Unknown),
+        };
+        var seen = new HashSet<VisionVerb>();
+        foreach (var (typed, verb) in verbs)
+        {
+            Eq(VisionCommands.Parse(typed, out _), verb, $"'/rv {typed}'");
+            seen.Add(verb);
+        }
+        foreach (VisionVerb v in Enum.GetValues<VisionVerb>()) Check(seen.Contains(v), $"the table covers /rv's {v}");
+        VisionCommands.Parse("light color torch", out string rest);
+        Eq(rest.Trim(), "color torch", "/rv light passes the rest on");
+
+        Eq(VisionCommands.Switched(VisionVerb.Radar, true), "Radar ring on.", "radar: the new state");
+        Eq(VisionCommands.Switched(VisionVerb.Water, false), "Impassable water off.", "water: the new state");
+        Check(VisionCommands.State(true, false, true).Contains("Radar ring on, unclimbable slopes off, impassable water on"), "/rv alone: the state");
+        Check(VisionCommands.State(true, false, true).Contains(VisionCommands.Usage), "/rv alone: and the usage");
+        Check(VisionCommands.Debug(true).StartsWith("Debug on", StringComparison.Ordinal), "debug: the new state");
+        string unknown = VisionCommands.Unknown("rader");
+        Check(unknown.Contains("'/rv rader'") && unknown.Contains("Usage"), "an unknown word: named, with the usage");
+
+        // /rv light: every kind answers (the change's summary, show, status, help, or the error with the usage).
+        foreach (string typed in new[] { "", "on", "off", "toggle", "60", "dungeons", "color torch", "show", "status", "help", "101", "color", "brighter" })
+        {
+            LightCommand c = DungeonLight.ParseCommand(typed);
+            string reply = c.Kind switch
+            {
+                LightCommandKind.Error => c.Error + " " + DungeonLight.Usage,
+                LightCommandKind.Help => DungeonLight.Usage,
+                LightCommandKind.Status => "Dungeon light: " + DungeonLight.StatusLine(S()),
+                LightCommandKind.Show => "Vision window shown, on its Light tab.",
+                _ => DungeonLight.Summary(true, 40, LightScope.Dungeons, DungeonLight.DefaultColor, engineHasApi: true),
+            };
+            Check(reply.Trim().Length > 0, $"/rv light {typed}: answers");
+            if (c.Kind == LightCommandKind.Error) Check(c.Error.Length > 0 && reply.Contains("/rv light"), $"/rv light {typed}: why, and the usage");
+        }
+        string summary = DungeonLight.Summary(true, 60, LightScope.Indoors, DungeonLight.DefaultColor, engineHasApi: true);
+        Check(summary.StartsWith("Dungeon light on: strength 60%", StringComparison.Ordinal), "the light's summary: " + summary);
+        Check(DungeonLight.Summary(false, 40, LightScope.Dungeons, DungeonLight.DefaultColor, engineHasApi: false).Contains("newer RynthCore"), "an old engine says why");
     }
 }

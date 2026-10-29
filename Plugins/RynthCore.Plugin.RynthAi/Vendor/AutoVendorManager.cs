@@ -257,26 +257,34 @@ internal sealed class AutoVendorManager
         }
         if (!_host.HasVendorTrade) { SayNeedsUpdate(); return; }
         Start(0, a, explicitCommand: true);
+        if (_phase != Phase.Idle)
+            Said($"started at {_vendorName} with {Path.GetFileName(_profilePath)}{(_settings.AutoVendorTestMode ? " (TestMode: nothing is bought or sold)" : "")}.");
     }
 
     public void CommandBuyAll()
     {
         if (!_host.HasVendorTrade) { SayNeedsUpdate(); return; }
         if (_cart.BuyList.Count == 0) { Tool("buy list is empty"); return; }
+        int entries = _cart.BuyList.Count;
         if (_cart.BuyAll(_host, _openVendorId) == 0)
             Error($"buy refused: {TradeMessage()}");
+        else
+            Said($"buying the buy list ({entries} entr{(entries == 1 ? "y" : "ies")}).");
     }
 
     public void CommandSellAll()
     {
         if (!_host.HasVendorTrade) { SayNeedsUpdate(); return; }
         if (_cart.SellList.Count == 0) { Tool("sell list is empty"); return; }
+        int items = _cart.SellList.Count;
         if (_cart.SellAll(_host, _openVendorId) == 0)
             Error($"sell refused: {TradeMessage()}");
+        else
+            Said($"selling the sell list ({items} item(s)).");
     }
 
-    public void CommandClearBuy() => _cart.ClearBuy();
-    public void CommandClearSell() => _cart.ClearSell();
+    public void CommandClearBuy() { _cart.ClearBuy(); Said("buy list cleared."); }
+    public void CommandClearSell() { _cart.ClearSell(); Said("sell list cleared."); }
 
     /// <summary>/ub vendor addbuy[p] [count] name</summary>
     public void CommandAddBuy(string args, bool partial)
@@ -347,14 +355,17 @@ internal sealed class AutoVendorManager
         _opening = true;
         if (_host.HasSetAutoRun) _host.SetAutoRunBy("Vendor", false);
         _host.Log($"[RynthAi] AutoVendor: attempting to open vendor {vendor.Name}");
+        Said($"opening {vendor.Name}.");
     }
 
     /// <summary>/ub vendor opencancel</summary>
     public void CommandOpenCancel()
     {
+        bool was = _opening;
         if (_opening) CancelUse();
         _opening = false;
         _openHoldUntil = 0;
+        Said(was ? $"stopped opening {_openTargetName}." : "no vendor was being opened.");
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1586,6 +1597,16 @@ internal sealed class AutoVendorManager
     private void Chat(string msg) => _host.WriteToChat($"[RynthAi] {msg}", 1);
     private void Tool(string msg) => _host.WriteToChat($"[RynthAi] AutoVendor: {msg}", 1);
     private void Error(string msg) => _host.WriteToChat($"[RynthAi] AutoVendor: {msg}", 2);
+
+    /// <summary>The plugin's command replies (CommandReply.cs): a /ub vendor command answers by them.</summary>
+    internal CommandReply? Reply { get; set; }
+
+    /// <summary>A /ub vendor or /ub autovendor command worked: said when typed, only logged when a meta sent it.</summary>
+    private void Said(string msg)
+    {
+        if (Reply is { } r) r.Ok($"[RynthAi] AutoVendor: {msg}");
+        else Tool(msg);
+    }
 
     /// <summary>UB Util.ThinkOrWrite: a /tell to yourself when Think is on (metas watch for it).</summary>
     private void ThinkOrWrite(string msg)

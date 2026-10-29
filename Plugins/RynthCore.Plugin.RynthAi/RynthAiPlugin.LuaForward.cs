@@ -11,7 +11,10 @@ public sealed partial class RynthAiPlugin
     {
         string rest = parts.Length > 2 ? string.Join(" ", parts, 2, parts.Length - 2) : "";
         if (Host.HasSendPluginCommand && Host.SendPluginCommand("RynthLua", "lua", rest))
+        {
+            Reply.Answered();   // RynthLua answers its own /lua verbs
             return;
-        ChatLine("[RynthAi] Lua scripting is now the RynthLua plugin. Add RynthCore.Plugin.RynthLua.dll in the launcher's Plugins tab, then use /lua (or /ra lua).");
+        }
+        ReplyFail("[RynthAi] Lua scripting is now the RynthLua plugin. Add RynthCore.Plugin.RynthLua.dll in the launcher's Plugins tab, then use /lua (or /ra lua).");
     }
 }

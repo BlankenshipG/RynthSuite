@@ -454,13 +454,14 @@ public sealed partial class RynthAiPlugin
         string sub = parts.Length >= 3 ? parts[2].Trim().ToLowerInvariant() : string.Empty;
         if (sub == "stop")
         {
-            if (_ownCorpseTravel == OwnCorpseTravelState.None) ChatLine("[RynthAi] Own corpse: not travelling.");
+            if (_ownCorpseTravel == OwnCorpseTravelState.None) ReplyOk("[RynthAi] Own corpse: not travelling.");
             else EndOwnCorpseTravel("stopped by /ra owncorpse stop");
             return;
         }
         if (sub == "go")
         {
-            StartOwnCorpseTravel(manual: true);
+            if (s == null) { ReplyFail("[RynthAi] Own corpse: settings not ready (log in first)."); return; }
+            StartOwnCorpseTravel(manual: true);   // says where it goes, or why not
             return;
         }
 

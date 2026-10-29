@@ -84,6 +84,7 @@ namespace RynthSort.Tests
                 Run("order: slot orders and the pack column", SlotOrders);
                 Run("plan: stacks and order inside packs", PlanInPack);
                 Run("moves: answers for moves within a pack", MoveAnswersInPlace);
+                Run("replies: every /rsort word answers", Replies);
                 Run("plan: a fixed inventory runs out of moves", Converges);
                 Run("loop: auto-sort tidies every pack, then stays still", ConvergesInTheLoop);
                 Run("remote: another plugin's \"rsort\" command reaches /rsort, anything else is not ours", RemoteCommand);

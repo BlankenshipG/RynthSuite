@@ -66,6 +66,7 @@ namespace RynthInventory.Tests
                 Run("window events", Events);
                 Run("banking: no Banking tab (it is RynthILT's own, 2026-10-21)", NoBankingTab);
                 Run("storage from other plugins (StorageFeed)", StorageFeedTests);
+                Run("replies: every /ginv word answers", Replies);
             }
             finally
             {

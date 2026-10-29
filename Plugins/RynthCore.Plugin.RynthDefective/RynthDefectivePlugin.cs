@@ -7,6 +7,7 @@ using RynthCore.Plugin.RynthDefective.Model;
 using RynthCore.Plugin.RynthDefective.Ui;
 using RynthCore.Plugin.RynthDefective.Use;
 using RynthCore.Plugin.RynthDefective.Views;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginCore;
 using RynthCore.PluginSdk;
 
@@ -61,6 +62,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
 
     public override int Initialize()
     {
+        _reply = new CommandReply("[RynthDefective]", (t, c) => Host.WriteToChat(t, c), t => Host.Log(t));
         _ui.Log = msg => Host.Log(msg);
         // The shortcut bar (plugin API v90) draws with ImGui.NET bound to the engine's cimgui, in its look.
         RynthCore.Plugin.Shared.ImGuiNativeBinding.Ensure(msg => Host.Log("[RynthDefective] " + msg));
@@ -77,7 +79,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         _session.BindOwnKey = (own, key) => Host.HasKeyBinding && BindOwnSlotKey(own, key, out _);
 
         _session.Use.Say = text => { _session.SetStatus(text); Host.Log("[RynthDefective] " + text); };
-        _session.Use.Warn = text => { _session.SetStatus(text, warning: true); Print(text); };
+        _session.Use.Warn = text => { _session.SetStatus(text, warning: true); PrintFail(text); };
         _session.Use.Log = line => Host.Log(line);
         _session.Use.Wielded = OnWielded;
 
@@ -106,6 +108,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
     // The engine calls this on a real login and on a freshly (re)loaded plugin already in game.
     public override void OnLoginComplete()
     {
+        if (_corpsesStarted) StopCorpses();
         _inWorld = true;
         _identityKnown = false;
         _nextIdentityTryMs = Environment.TickCount64;
@@ -116,6 +119,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
     public override void OnLogout()
     {
         SaveNow();
+        StopCorpses();
         _inWorld = false;
         _identityKnown = false;
         _session.LoggedIn = false;
@@ -131,6 +135,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
     public override void Shutdown()
     {
         SaveNow();
+        SaveCorpsesNow();
         _session.Use.ResetSession();
         _ui.SubmitEmpty(Host);
     }
@@ -158,54 +163,88 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         }
         if (c.Verb == DefVerb.Error)
         {
-            Print(c.Error);
+            PrintFail(c.Error);
             return;
         }
         if (!_identityKnown)
         {
-            Print("Log in first.");
+            PrintFail("Log in first.");
             return;
         }
 
+        // Every command answers (2026-10-28, Plugins/Shared/CommandReply.cs). RynthDefective can't tell a
+        // typed /rdef from a hotkey's or a meta's (the engine sends them all the same way), so each one does.
         switch (c.Verb)
         {
             case DefVerb.Toggle:
                 if (UsesShortcutBar)
-                    Host.SetPanelOpen(RynthCore.Plugin.RynthDefective.ShortcutBar.ShortcutBarWindow.Title, RynthPanelOpen.Toggle);
-                else if (_barWindow != null) { _barWindow.Visible = !_barWindow.Visible; _barWindow.NeedsPass = true; NoteNoUi(_barWindow.Visible); }
+                    Answer(DefReplies.Window("Shortcuts bar", Host.SetPanelOpen(RynthCore.Plugin.RynthDefective.ShortcutBar.ShortcutBarWindow.Title, RynthPanelOpen.Toggle)));
+                else if (_barWindow != null)
+                {
+                    _barWindow.Visible = !_barWindow.Visible; _barWindow.NeedsPass = true; NoteNoUi(_barWindow.Visible);
+                    Print(CommandReply.Shown("Item bar", _barWindow.Visible));
+                }
                 break;
             case DefVerb.Selection when c.Text.Length > 0:
                 // Test hooks: "/rdef selection 0x80001234" selects that object; "stack" the first stack in the pack.
                 if (c.Text.Equals("stack", StringComparison.OrdinalIgnoreCase))
                 {
+                    CarriedItem? stack = null;
                     foreach (var it in _session.Items())
-                        if (it.Stack > 1 && !it.Wielded) { Host.SelectItem(it.Id); break; }
+                        if (it.Stack > 1 && !it.Wielded) { stack = it; break; }
+                    if (stack == null) PrintFail(DefReplies.NoStack);
+                    else Answer(DefReplies.Selected(stack.Id, Host.SelectItem(stack.Id), _session.ObjectName(stack.Id)));
                 }
-                else if (uint.TryParse(c.Text.Replace("0x", "", StringComparison.OrdinalIgnoreCase), System.Globalization.NumberStyles.HexNumber, null, out uint pick))
-                    Host.SelectItem(pick);
+                else if (DefReplies.TryParseSelection(c.Text, out uint pick, out string why))
+                    Answer(DefReplies.Selected(pick, Host.SelectItem(pick), _session.ObjectName(pick)));
+                else PrintFail(why);
                 break;
             case DefVerb.Selection:
-                if (UsesShortcutBar) Host.SetPanelOpen(RynthCore.Plugin.RynthDefective.ShortcutBar.SelectionWindow.Title, RynthPanelOpen.Toggle);
-                else Print("This RynthCore can't show the selection window (it needs plugin API v90).");
+                if (UsesShortcutBar) Answer(DefReplies.Window("Selection window", Host.SetPanelOpen(RynthCore.Plugin.RynthDefective.ShortcutBar.SelectionWindow.Title, RynthPanelOpen.Toggle)));
+                else PrintFail("This RynthCore can't show the selection window (it needs plugin API v90).");
                 break;
             case DefVerb.Settings:
                 ShowSettingsWindow(true);
+                Print("Settings shown.");
+                break;
+            case DefVerb.Corpses when c.Text.Equals("clear", StringComparison.OrdinalIgnoreCase):
+                _corpseBook.Clear();
+                Print("This character's corpses are forgotten.");
+                break;
+            case DefVerb.Corpses when c.Text.Length > 0:
+                // Test hooks: "die" notes a death where you stand; "as Olthoi Slayer" counts that name's corpses as yours.
+                Print(CorpseTestHook(c.Text));
+                break;
+            case DefVerb.Corpses:
+                if (UsesShortcutBar) Answer(DefReplies.Window("Corpses window", Host.SetPanelOpen(Corpses.CorpsesWindow.Title, RynthPanelOpen.Toggle)));
+                else PrintFail("This RynthCore can't show the corpses window (it needs plugin API v90).");
                 break;
             case DefVerb.Panels:
-                if (UsesPanelButtons) Host.SetPanelOpen(RynthCore.Plugin.RynthDefective.ShortcutBar.PanelButtonsWindow.Title, RynthPanelOpen.Toggle);
-                else Print("This RynthCore can't open the game's panels from buttons (it needs plugin API v90).");
+                if (UsesPanelButtons) Answer(DefReplies.Window("Game Panels buttons", Host.SetPanelOpen(RynthCore.Plugin.RynthDefective.ShortcutBar.PanelButtonsWindow.Title, RynthPanelOpen.Toggle)));
+                else PrintFail("This RynthCore can't open the game's panels from buttons (it needs plugin API v90).");
                 break;
             case DefVerb.Weapons:
+            {
                 if (c.Text.Length > 0 && _picker != null) _picker.Search = c.Text;
-                ShowPicker(c.Text.Length > 0 || _pickerWindow?.Visible != true);
+                bool show = c.Text.Length > 0 || _pickerWindow?.Visible != true;
+                ShowPicker(show);
+                Print(DefReplies.Weapons(show, c.Text));
                 break;
+            }
             case DefVerb.Use:
                 if (c.Slot > 0)
                 {
                     string? problem = _session.UseSlot(c.Slot);
-                    if (problem != null) { _session.SetStatus(problem, warning: true); Print(problem); }
+                    // A use that goes is quiet (logged): slot hotkeys send /rdef use N on every press, and
+                    // the use itself is the feedback (Tom 2026-10-28). Failures still answer.
+                    if (problem != null) { _session.SetStatus(problem, warning: true); PrintFail(problem); }
+                    else Reply.Ok(DefReplies.UseSlot(_session.Data.Slots[c.Slot - 1], c.Slot), quiet: true);
                 }
-                else _session.UseByName(c.Text);
+                else
+                {
+                    _session.UseByName(c.Text);
+                    Reply.Ok(DefReplies.UseName(c.Text), quiet: true);
+                }
                 break;
             case DefVerb.Set:
                 Print(c.Text.Length > 0 ? _session.SetFromName(c.Slot, c.Text) : _session.SetFromSelected(c.Slot));
@@ -280,11 +319,16 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
               + $"{(_session.Use.InFlight ? "an action is in flight" : _session.Use.HasPending ? "an action is waiting" : "idle")}; file {_store.PathFor(_server, _character)}");
     }
 
-    private void Print(string text)
-    {
-        if (!Host.WriteToChat("[RynthDefective] " + text, 1))
-            Host.Log("[RynthDefective] " + text);
-    }
+    // Chat lines wait in the shared reply queue (the host drops a line written within 100 ms of
+    // another plugin's); the tick writes them.
+    private CommandReply? _reply;
+    private CommandReply Reply => _reply ??= new CommandReply("[RynthDefective]", (t, c) => Host.WriteToChat(t, c), t => Host.Log(t));
+
+    private void Print(string text) => Reply.Ok(text);
+
+    private void PrintFail(string text) => Reply.Fail(text);
+
+    private void Answer((bool Ok, string Text) reply) => Reply.Say(reply.Ok, reply.Text);
 
     private void NoteNoUi(bool shown)
     {
@@ -367,8 +411,13 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         while (_commands.TryDequeue(out string? cmd))
         {
             try { RunCommand(cmd); }
-            catch (Exception ex) { Host.Log($"[RynthDefective] /rdef {cmd} failed: {ex.GetType().Name}: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                Host.Log($"[RynthDefective] /rdef {cmd} failed: {ex.GetType().Name}: {ex.Message}");
+                PrintFail($"/rdef {cmd} failed: {ex.Message}");
+            }
         }
+        Reply.Flush();
         _ui.Poll(Host);
 
         if (_inWorld)
@@ -390,6 +439,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         if (_saveDueMs != 0 && now >= _saveDueMs) SaveNow();
         TickBar(now);
         TickSelection(now);
+        TickCorpses(now);
 
         // With the shortcut bar the old script-window bar stays shut (the weapon picker is still one), and
         // has no RynthBar button (one that opened a window shut again at once). Its settings have their
@@ -451,6 +501,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
         _identityKnown = true;
         _revisionSeen = -1;
         RefreshIconSupport();
+        StartCorpses();
         if (_barWindow != null && _bar != null)
         {
             _barWindow.Visible = data.Settings.BarOpen;

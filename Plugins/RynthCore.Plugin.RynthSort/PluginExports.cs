@@ -60,6 +60,22 @@ public static unsafe class PluginExports
         try { return Runtime.Plugin?.AutoState ?? -1; } catch { return -1; }
     }
 
+    // The same state for RynthAi's own dashboard (2026-10-23): a plugin reads another's exports only
+    // through the engine's RynthPluginGet*Json broker (GetPluginExportJson). {"auto":-1|0|1}, a
+    // literal (nothing to free).
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetAutoSortJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr AutoSortJson()
+    {
+        int state;
+        try { state = Runtime.Plugin?.AutoState ?? -1; } catch { state = -1; }
+        return state switch
+        {
+            1 => LiteralPointer("{\"auto\":1}"u8),
+            0 => LiteralPointer("{\"auto\":0}"u8),
+            _ => LiteralPointer("{\"auto\":-1}"u8),
+        };
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "RynthSortCommand", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void Command(IntPtr utf8)
     {

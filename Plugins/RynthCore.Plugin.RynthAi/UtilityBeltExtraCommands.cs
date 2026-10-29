@@ -55,6 +55,7 @@ public sealed partial class RynthAiPlugin
             && Host.TryGetObjectName(_playerId, out string me) && !string.IsNullOrWhiteSpace(me))
         {
             Host.InvokeChatParser($"/tell {me}, {msg}");
+            Reply.Answered();   // the tell to yourself is the answer (metas watch for it)
             return;
         }
         ChatLine("[RynthAi] " + msg);
@@ -83,9 +84,9 @@ public sealed partial class RynthAiPlugin
             case "playsound":     UbPlaySound(args); return true;
             case "setmotion":     UbSetMotion(args); return true;
             case "getmotion":     UbGetMotion(); return true;
-            case "clearmotion":   EvalExpr("clearmotion[]"); ChatLine("[RynthAi] Cleared all motions."); return true;
-            case "autostack":     _inventoryManager?.RunManual(cram: false, stack: true); ChatLine("[RynthAi] AutoStack: stacking your inventory."); return true;
-            case "autocram":      _inventoryManager?.RunManual(cram: true, stack: false); ChatLine("[RynthAi] AutoCram: moving items into side packs."); return true;
+            case "clearmotion":   EvalExpr("clearmotion[]"); ReplyOk("[RynthAi] Cleared all motions."); return true;
+            case "autostack":     _inventoryManager?.RunManual(cram: false, stack: true); ReplyOk("[RynthAi] AutoStack: stacking your inventory."); return true;
+            case "autocram":      _inventoryManager?.RunManual(cram: true, stack: false); ReplyOk("[RynthAi] AutoCram: moving items into side packs."); return true;
             // /ub opt list|get|set stay on the /mt opt handler (it knows the Mag-Tools
             // option aliases); only toggle, which that one lacks, is handled here.
             case "opt" when args.StartsWith("toggle", StringComparison.OrdinalIgnoreCase):
@@ -111,12 +112,13 @@ public sealed partial class RynthAiPlugin
         int sp = args.IndexOf(' ');
         if (sp <= 0 || !int.TryParse(args.AsSpan(0, sp), out int ms) || ms < 0)
         {
-            ChatLine("[RynthAi] Usage: /ub delay <millisecondDelay> <command>");
+            ReplyFail("[RynthAi] Usage: /ub delay <millisecondDelay> <command>");
             return;
         }
         string command = args.Substring(sp + 1).Trim();
-        if (command.Length == 0) return;
+        if (command.Length == 0) { ReplyFail("[RynthAi] Usage: /ub delay <millisecondDelay> <command>"); return; }
         _delayedCommands.Add((Environment.TickCount64 + ms, command, MetaCommandActive));
+        ReplyOk($"[RynthAi] In {ms} ms: {command}");
     }
 
     // /ub count {item <name> | profile <lootProfile> | player <range>} [debug] [think]
@@ -125,7 +127,7 @@ public sealed partial class RynthAiPlugin
         var words = args.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
         bool think = words.RemoveAll(w => w.Equals("think", StringComparison.OrdinalIgnoreCase)) > 0;
         words.RemoveAll(w => w.Equals("debug", StringComparison.OrdinalIgnoreCase));
-        if (words.Count < 2) { ChatLine("[RynthAi] Usage: /ub count {item <name> | profile <lootProfile> | player <range>} [think]"); return; }
+        if (words.Count < 2) { ReplyFail("[RynthAi] Usage: /ub count {item <name> | profile <lootProfile> | player <range>} [think]"); return; }
         string kind = words[0].ToLowerInvariant();
         string what = string.Join(" ", words.Skip(1));
         var inv = _objectCache?.GetDirectInventory(forceRefresh: true) ?? (IReadOnlyList<WorldObject>)Array.Empty<WorldObject>();
@@ -144,7 +146,7 @@ public sealed partial class RynthAiPlugin
             case "profile":
             {
                 string path = ResolveLootProfilePath(what);
-                if (path.Length == 0 || !TryLoadLootProfile(path, out VTankLootProfile profile, out _)) { ChatLine($"[RynthAi] count: loot profile not found: {what}"); return; }
+                if (path.Length == 0 || !TryLoadLootProfile(path, out VTankLootProfile profile, out _)) { ReplyFail($"[RynthAi] count: loot profile not found: {what}"); return; }
                 var ctx = new VTankLootContext(Host, _playerId) { Cache = _objectCache };
                 int n = 0;
                 foreach (var wo in inv)
@@ -158,7 +160,7 @@ public sealed partial class RynthAiPlugin
             }
             case "player":
             {
-                if (!double.TryParse(what, NumberStyles.Float, CultureInfo.InvariantCulture, out double range)) { ChatLine("[RynthAi] count player <range>"); return; }
+                if (!double.TryParse(what, NumberStyles.Float, CultureInfo.InvariantCulture, out double range)) { ReplyFail("[RynthAi] Usage: /ub count player <range>"); return; }
                 int n = 0;
                 int me = unchecked((int)_playerId);
                 if (_objectCache != null)
@@ -168,7 +170,7 @@ public sealed partial class RynthAiPlugin
                 break;
             }
             default:
-                ChatLine("[RynthAi] Usage: /ub count {item <name> | profile <lootProfile> | player <range>} [think]");
+                ReplyFail("[RynthAi] Usage: /ub count {item <name> | profile <lootProfile> | player <range>} [think]");
                 break;
         }
     }
@@ -192,14 +194,14 @@ public sealed partial class RynthAiPlugin
         DateTime t = utc ? DateTime.UtcNow : RynthClock.Now;
         string s;
         try { s = format.Length > 0 ? t.ToString(format, CultureInfo.InvariantCulture) : t.ToString(CultureInfo.InvariantCulture); }
-        catch (FormatException) { ChatLine($"[RynthAi] Bad date format: {format}"); return; }
+        catch (FormatException) { ReplyFail($"[RynthAi] Bad date format: {format}"); return; }
         ChatLine("[RynthAi] " + s);
     }
 
     private void UbId()
     {
         uint sel = Host.GetSelectedItemId();
-        if (sel == 0) { ChatLine("[RynthAi] Nothing selected."); return; }
+        if (sel == 0) { ReplyFail("[RynthAi] Nothing selected."); return; }
         string name = Host.TryGetObjectName(sel, out string n) ? n : "?";
         ChatLine($"[RynthAi] {name}: id 0x{sel:X8} ({sel})");
     }
@@ -210,7 +212,7 @@ public sealed partial class RynthAiPlugin
         if (sel == 0) sel = _playerId;
         if (sel == 0 || !Host.TryGetObjectPosition(sel, out uint cell, out float x, out float y, out float z))
         {
-            ChatLine("[RynthAi] No position for the selected object.");
+            ReplyFail("[RynthAi] No position for the selected object.");
             return;
         }
         string name = Host.TryGetObjectName(sel, out string n) ? n : "?";
@@ -222,14 +224,14 @@ public sealed partial class RynthAiPlugin
     // /ub portal[p] <portalName>: use the nearest portal (or NPC) by name; portalp = partial.
     private void UbPortal(string name, bool partial)
     {
-        if (name.Length == 0 || _objectCache == null || _playerId == 0) { ChatLine("[RynthAi] Usage: /ub portal[p] <portalName>"); return; }
+        if (name.Length == 0 || _objectCache == null || _playerId == 0) { ReplyFail("[RynthAi] Usage: /ub portal[p] <portalName>"); return; }
         var best = FindNearestPositioned(wo =>
             (partial ? wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
                      : wo.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
             && (IsPortalObject(wo) || wo.ObjectClass == AcObjectClass.Npc), out double bestD);
-        if (best == null) { ChatLine($"[RynthAi] No portal named {(partial ? "like " : "")}'{name}' nearby."); LogPortalMiss("portal " + name); return; }
+        if (best == null) { ReplyFail($"[RynthAi] No portal named {(partial ? "like " : "")}'{name}' nearby."); LogPortalMiss("portal " + name); return; }
         _navigationEngine?.Stop();
-        ChatLine($"[RynthAi] Using {best.Name} ({bestD:F1} m).");
+        ReplyOk($"[RynthAi] Using {best.Name} ({bestD:F1} m).");
         Host.UseFor(unchecked((uint)best.Id), "Command", "/ub portal", UseKind.Asked);
     }
 
@@ -244,9 +246,13 @@ public sealed partial class RynthAiPlugin
         if (sp > 0 && int.TryParse(args.AsSpan(0, sp), out _)) file = args.Substring(sp + 1).Trim();
         file = file.Trim('"');
         if (!Path.IsPathRooted(file)) file = Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, file);
-        if (!File.Exists(file)) { ChatLine($"[RynthAi] Sound file not found: {file}"); return; }
-        try { PlaySound(file, IntPtr.Zero, 0x00020000 /*SND_FILENAME*/ | 0x0001 /*SND_ASYNC*/); }
-        catch (Exception ex) { ChatLine($"[RynthAi] playsound failed: {ex.Message}"); }
+        if (!File.Exists(file)) { ReplyFail($"[RynthAi] Sound file not found: {file}"); return; }
+        try
+        {
+            if (PlaySound(file, IntPtr.Zero, 0x00020000 /*SND_FILENAME*/ | 0x0001 /*SND_ASYNC*/)) ReplyOk($"[RynthAi] Playing {Path.GetFileName(file)}.");
+            else ReplyFail($"[RynthAi] playsound: Windows couldn't play {file}.");
+        }
+        catch (Exception ex) { ReplyFail($"[RynthAi] playsound failed: {ex.Message}"); }
     }
 
     private static readonly string[] UbMotions = { "Forward", "Backward", "TurnRight", "TurnLeft", "StrafeRight", "StrafeLeft", "Walk" };
@@ -255,8 +261,9 @@ public sealed partial class RynthAiPlugin
     private void UbSetMotion(string args)
     {
         var w = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (w.Length != 2 || (w[1] != "0" && w[1] != "1")) { ChatLine("[RynthAi] Usage: /ub setmotion <" + string.Join("|", UbMotions) + "> <0|1>"); return; }
+        if (w.Length != 2 || (w[1] != "0" && w[1] != "1")) { ReplyFail("[RynthAi] Usage: /ub setmotion <" + string.Join("|", UbMotions) + "> <0|1>"); return; }
         EvalExpr($"setmotion[`{w[0]}`,{w[1]}]");
+        ReplyOk($"[RynthAi] Motion {w[0]}: {(w[1] == "1" ? "on" : "off")}.");
     }
 
     private void UbGetMotion()
@@ -269,7 +276,7 @@ public sealed partial class RynthAiPlugin
     private void UbOpt(string args)
     {
         var map = _metaManager?.Expressions.BuildSettingsMapPublic();
-        if (map == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (map == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
         var w = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         string verb = w.Length > 0 ? w[0].ToLowerInvariant() : "list";
         switch (verb)
@@ -279,7 +286,8 @@ public sealed partial class RynthAiPlugin
                     ChatLine("[RynthAi] " + string.Join(", ", chunk));
                 break;
             case "get" when w.Length >= 2:
-                ChatLine(map.TryGetValue(w[1], out var g) ? $"[RynthAi] {w[1]} = {g.Get()}" : $"[RynthAi] No option '{w[1]}' (/ub opt list).");
+                if (map.TryGetValue(w[1], out var g)) ChatLine($"[RynthAi] {w[1]} = {g.Get()}");
+                else ReplyFail($"[RynthAi] No option '{w[1]}' (/ub opt list).");
                 break;
             case "set" when w.Length >= 3:
                 if (map.TryGetValue(w[1], out var st))
@@ -288,21 +296,21 @@ public sealed partial class RynthAiPlugin
                     v = v.Equals("true", StringComparison.OrdinalIgnoreCase) ? "1" : v.Equals("false", StringComparison.OrdinalIgnoreCase) ? "0" : v;
                     st.Set(v);
                     _dashboard?.SaveSettings();
-                    ChatLine($"[RynthAi] {w[1]} = {st.Get()}");
+                    ReplyOk($"[RynthAi] {w[1]} = {st.Get()}");
                 }
-                else ChatLine($"[RynthAi] No option '{w[1]}' (/ub opt list).");
+                else ReplyFail($"[RynthAi] No option '{w[1]}' (/ub opt list).");
                 break;
             case "toggle" when w.Length >= 2:
                 foreach (string name in w.Skip(1))
                 {
-                    if (!map.TryGetValue(name, out var tg)) { ChatLine($"[RynthAi] No option '{name}'."); continue; }
+                    if (!map.TryGetValue(name, out var tg)) { ReplyFail($"[RynthAi] No option '{name}'."); continue; }
                     tg.Set(tg.Get() is "0" or "" or "False" ? "1" : "0");
-                    ChatLine($"[RynthAi] {name} = {tg.Get()}");
+                    ReplyOk($"[RynthAi] {name} = {tg.Get()}");
                 }
                 _dashboard?.SaveSettings();
                 break;
             default:
-                ChatLine("[RynthAi] Usage: /ub opt {list | get <option> | set <option> <newValue> | toggle <options>}");
+                ReplyFail("[RynthAi] Usage: /ub opt {list | get <option> | set <option> <newValue> | toggle <options>}");
                 break;
         }
     }
@@ -319,12 +327,13 @@ public sealed partial class RynthAiPlugin
     private void UbSimpleJump(string args)
     {
         int ms = int.TryParse(args, out int v) ? Math.Clamp(v, 0, 1000) : 0;
-        _jumper?.Start("", null, ms);
+        if (_jumper == null) { ReplyFail("[RynthAi] Jumper not ready (not logged in yet)."); return; }
+        if (_jumper.Start("", null, ms)) ReplyOk(JumpLine("", null, ms));   // a refusal says why itself
     }
 
     private void UbDumpSkills()
     {
-        if (_charSkills == null) { ChatLine("[RynthAi] Skills not ready."); return; }
+        if (_charSkills == null) { ReplyFail("[RynthAi] Skills not ready."); return; }
         var lines = new List<string>();
         foreach (AcSkillType sk in Enum.GetValues<AcSkillType>())
         {
@@ -341,7 +350,7 @@ public sealed partial class RynthAiPlugin
     private void UbQuests(string args)
     {
         var w = args.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-        if (w.Length < 2 || !w[0].Equals("check", StringComparison.OrdinalIgnoreCase)) { ChatLine("[RynthAi] Usage: /ub quests check <questFlag>"); return; }
+        if (w.Length < 2 || !w[0].Equals("check", StringComparison.OrdinalIgnoreCase)) { ReplyFail("[RynthAi] Usage: /ub quests check <questFlag>"); return; }
         string flag = w[1].Trim();
         bool has = EvalExpr($"testquestflag[`{flag}`]") == "1";
         string status = EvalExpr($"getqueststatus[`{flag}`]");
@@ -356,15 +365,15 @@ public sealed partial class RynthAiPlugin
         if (force) w.RemoveAt(w.Count - 1);
         if (w.Count != 4 || !TryParseLandblock(w[0], out uint start) || !TryParseLandblock(w[2], out uint end))
         {
-            ChatLine("[RynthAi] Usage: /ub translateroute <startLandblock> <routeToLoad> <endLandblock> <routeToSaveAs> [force]");
+            ReplyFail("[RynthAi] Usage: /ub translateroute <startLandblock> <routeToLoad> <endLandblock> <routeToSaveAs> [force]");
             return;
         }
         string navFolder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "NavProfiles");
         string inPath = Path.IsPathRooted(w[1]) ? w[1] : Path.Combine(navFolder, w[1]);
         string outPath = Path.IsPathRooted(w[3]) ? w[3] : Path.Combine(navFolder, w[3]);
         if (!outPath.EndsWith(".nav", StringComparison.OrdinalIgnoreCase)) outPath += ".nav";
-        if (!File.Exists(inPath)) { ChatLine($"[RynthAi] Route not found: {inPath}"); return; }
-        if (File.Exists(outPath) && !force) { ChatLine($"[RynthAi] {Path.GetFileName(outPath)} exists; add force to overwrite."); return; }
+        if (!File.Exists(inPath)) { ReplyFail($"[RynthAi] Route not found: {inPath}"); return; }
+        if (File.Exists(outPath) && !force) { ReplyFail($"[RynthAi] {Path.GetFileName(outPath)} exists; add force to overwrite."); return; }
 
         // A landblock is 192 m = 0.8 nav units. Landblock id: 0xXXYY.
         double dEW = (((int)(end >> 8) & 0xFF) - ((int)(start >> 8) & 0xFF)) * 0.8;
@@ -376,7 +385,7 @@ public sealed partial class RynthAiPlugin
             if (p.Type is NavPointType.PortalNPC or NavPointType.Npc) { p.PortalExitNS += dNS; p.PortalExitEW += dEW; }
         }
         route.Save(outPath);
-        ChatLine($"[RynthAi] Translated {route.Points.Count} points to {Path.GetFileName(outPath)} (NS {dNS:+0.0;-0.0}, EW {dEW:+0.0;-0.0}).");
+        ReplyOk($"[RynthAi] Translated {route.Points.Count} points to {Path.GetFileName(outPath)} (NS {dNS:+0.0;-0.0}, EW {dEW:+0.0;-0.0}).");
     }
 
     private static bool TryParseLandblock(string s, out uint lb)

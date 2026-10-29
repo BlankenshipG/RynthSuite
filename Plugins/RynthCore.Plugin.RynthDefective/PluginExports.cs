@@ -45,6 +45,19 @@ public static unsafe class PluginExports
     public static void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth) =>
         Runtime.OnUpdateHealth(targetId, healthRatio, currentHealth, maxHealth);
 
+    // The Corpses window (RynthDefectivePlugin.Corpses.cs): the server's corpse lines, corpses coming into view and leaving it.
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnChatWindowText", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void OnChatWindowText(IntPtr textUtf16, int chatType, IntPtr eatFlag) => Runtime.OnChatWindowText(textUtf16, chatType, eatFlag);
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnCreateObject", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void OnCreateObject(uint objectId) => Runtime.OnCreateObject(objectId);
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnDeleteObject", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void OnDeleteObject(uint objectId) => Runtime.OnDeleteObject(objectId);
+
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnViewObjectContents", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void OnViewObjectContents(uint objectId) => Runtime.OnViewObjectContents(objectId);
+
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnLogout", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnLogout() => Runtime.OnLogout();
 
@@ -92,6 +105,7 @@ public static unsafe class PluginExports
             if (name == RynthDefectivePlugin.BarSurface) result = plugin.RenderBar(popped, out wantH);
             else if (name == RynthDefectivePlugin.PanelsSurface) result = plugin.RenderPanels(out wantH);
             else if (name == RynthDefectivePlugin.SelectionSurface) result = plugin.RenderSelection(out wantH);
+            else if (name == RynthDefectivePlugin.CorpsesSurface) result = plugin.RenderCorpses(out wantH);
             else return 0;
             if (result != 1) return result;
             if (wantWidth != null) *wantWidth = width;

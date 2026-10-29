@@ -69,7 +69,7 @@ public sealed partial class RynthVisionPlugin
     });
 
     /// <summary>"Log terrain types here": on the tick (it may open the terrain data). Any thread.</summary>
-    internal void QueueInspectTerrain() => _uiActions.Enqueue(InspectTerrain);
+    internal void QueueInspectTerrain(bool toChat = false) => _uiActions.Enqueue(() => InspectTerrain(toChat));
 
     /// <summary>Asks the window to show <paramref name="tab"/> on its next draw. Any thread.</summary>
     private void RequestTab(VisionTab tab) => Volatile.Write(ref _tabRequest, (int)tab);

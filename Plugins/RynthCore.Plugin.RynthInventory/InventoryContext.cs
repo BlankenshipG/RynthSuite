@@ -1,5 +1,6 @@
 using System;
 using RynthCore.Plugin.RynthInventory.Data;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginSdk;
 
 namespace RynthCore.Plugin.RynthInventory;
@@ -40,9 +41,21 @@ internal sealed class InventoryContext
     /// <summary>Forgets a character (moves its file aside). Returns a message for the player.</summary>
     public Func<CharacterInfo, string> Forget = _ => string.Empty;
 
-    public void Print(string text)
+    /// <summary>
+    /// The plugin's chat lines, queued and written by the tick (Plugins/Shared/CommandReply.cs: the host
+    /// drops a line within 100 ms of another plugin's). Null before Initialize.
+    /// </summary>
+    public CommandReply? Reply;
+
+    public void Print(string text) => Print(text, ok: true);
+
+    /// <summary>A line saying a command didn't work (the failure colour).</summary>
+    public void PrintFail(string text) => Print(text, ok: false);
+
+    private void Print(string text, bool ok)
     {
-        if (!Host.WriteToChat("[RynthInventory] " + text, 1))
+        if (Reply != null) { Reply.Say(ok, text); return; }
+        if (!Host.WriteToChat("[RynthInventory] " + text, ok ? CommandReply.OkChatType : CommandReply.FailChatType))
             Host.Log("[RynthInventory] " + text);
     }
 }

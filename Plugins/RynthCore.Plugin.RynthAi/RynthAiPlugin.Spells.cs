@@ -56,7 +56,7 @@ public sealed partial class RynthAiPlugin
     private void HandleSpellsCommand(string mode)
     {
         var settings = _dashboard?.Settings;
-        if (settings == null) { ChatLine("[RynthAi] Settings not ready (log in first)."); return; }
+        if (settings == null) { ReplyFail("[RynthAi] Settings not ready (log in first)."); return; }
         EnsureSpellsUi();
 
         settings.ShowSpellsWindow = mode.ToLowerInvariant() switch
@@ -65,7 +65,7 @@ public sealed partial class RynthAiPlugin
             "hide" or "close" or "off" => false,
             _ => !settings.ShowSpellsWindow,
         };
-        ChatLine($"[RynthAi] Spells window {(settings.ShowSpellsWindow ? "opened" : "closed")}.");
+        ReplyOk($"[RynthAi] Spells window {(settings.ShowSpellsWindow ? "opened" : "closed")}.");
     }
 
     /// <summary>
@@ -75,7 +75,7 @@ public sealed partial class RynthAiPlugin
     private void HandleBuffProfileCommand(string[] parts)
     {
         var dash = _dashboard;
-        if (dash == null) { ChatLine("[RynthAi] Settings not ready (log in first)."); return; }
+        if (dash == null) { ReplyFail("[RynthAi] Settings not ready (log in first)."); return; }
 
         string arg = parts.Length >= 3 ? string.Join(" ", parts, 2, parts.Length - 2).Trim() : string.Empty;
         if (arg.Length == 0 || arg.Equals("list", StringComparison.OrdinalIgnoreCase))
@@ -96,6 +96,7 @@ public sealed partial class RynthAiPlugin
             || arg.Equals(LegacyDashboardRenderer.BuiltInBuffProfileLabel, StringComparison.OrdinalIgnoreCase))
         {
             dash.SetActiveBuffProfile(string.Empty);
+            Reply.Answered();
             return; // BuffManager posts the "built-in list" chat line
         }
 
@@ -103,8 +104,9 @@ public sealed partial class RynthAiPlugin
         {
             if (!Path.GetFileNameWithoutExtension(file).Equals(arg, StringComparison.OrdinalIgnoreCase)) continue;
             dash.SetActiveBuffProfile(Path.Combine(BuffProfileStore.Folder, file));
+            Reply.Answered();
             return; // BuffManager posts the "profile 'X'" chat line once it loads
         }
-        ChatLine($"[RynthAi] No buff profile named '{arg}'. /ra buffprofile list shows them.");
+        ReplyFail($"[RynthAi] No buff profile named '{arg}'. /ra buffprofile list shows them.");
     }
 }

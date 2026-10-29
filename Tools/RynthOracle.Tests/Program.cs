@@ -65,6 +65,7 @@ namespace RynthOracle.Tests
             Refreshes();
             SkillsTabs();
             ServerMove();
+            Replies();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;
         }

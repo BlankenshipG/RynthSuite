@@ -3849,7 +3849,7 @@ public sealed partial class RynthAiPlugin
         var settings = _dashboard?.Settings;
         if (settings == null || _objectCache == null || _playerId == 0)
         {
-            ChatLine("[RynthAi] Corpse info not ready yet.");
+            ReplyFail("[RynthAi] Corpse info not ready yet.");
             return;
         }
 
@@ -3874,14 +3874,14 @@ public sealed partial class RynthAiPlugin
         var settings = _dashboard?.Settings;
         if (settings == null || _objectCache == null || _playerId == 0)
         {
-            ChatLine("[RynthAi] Corpse ownership diagnostics are not ready yet.");
+            ReplyFail("[RynthAi] Corpse ownership diagnostics are not ready yet.");
             return;
         }
 
         string selector = parts.Length >= 3 ? parts[2].Trim().ToLowerInvariant() : string.Empty;
         if (!TryResolveCorpseForDiagnostics(selector, out WorldObject? corpse, out string source))
         {
-            ChatLine("[RynthAi] No corpse found for diagnostics. Use /ra corpsecheck [target|open|nearest].");
+            ReplyFail("[RynthAi] No corpse found for diagnostics. Use /ra corpsecheck [target|open|nearest].");
             return;
         }
 
@@ -3911,14 +3911,14 @@ public sealed partial class RynthAiPlugin
     {
         if (_fellowshipTracker == null)
         {
-            ChatLine("[RynthAi] Fellowship tracker is not ready yet.");
+            ReplyFail("[RynthAi] Fellowship tracker is not ready yet.");
             return;
         }
 
         string fellowSub = parts.Length >= 3 ? parts[2].Trim().ToLowerInvariant() : "status";
         if (!_fellowshipTracker.IsInFellowship && fellowSub != "help")
         {
-            ChatLine("[RynthAi] Not in a fellowship.");
+            ReplyFail("[RynthAi] Not in a fellowship.");
             return;
         }
 
@@ -3972,7 +3972,7 @@ public sealed partial class RynthAiPlugin
                 }
                 else
                 {
-                    ChatLine("[RynthAi] Usage: /ra fellow ismember <name>");
+                    ReplyFail("[RynthAi] Usage: /ra fellow ismember <name>");
                 }
                 break;
 
@@ -3981,7 +3981,7 @@ public sealed partial class RynthAiPlugin
                 break;
 
             default:
-                ChatLine($"[RynthAi] Unknown fellow subcommand: {fellowSub}. Try /ra fellow help");
+                ReplyFail($"[RynthAi] Unknown fellow subcommand: {fellowSub}. Try /ra fellow help");
                 break;
         }
     }
@@ -4099,27 +4099,27 @@ public sealed partial class RynthAiPlugin
         var settings = _dashboard?.Settings;
         if (settings == null || _objectCache == null || _playerId == 0)
         {
-            ChatLine("[RynthAi] Corpse opening is not ready yet.");
+            ReplyFail("[RynthAi] Corpse opening is not ready yet.");
             return;
         }
 
         if (_openedContainerId != 0)
         {
-            ChatLine($"[RynthAi] A container is already open: 0x{(uint)_openedContainerId:X8}");
+            ReplyFail($"[RynthAi] A container is already open: 0x{(uint)_openedContainerId:X8}");
             return;
         }
 
         double maxMeters = GetCorpseApproachRangeMaxMeters(settings);
         if (!TryFindNearestCorpse(maxMeters, out WorldObject? corpse, out double distanceMeters))
         {
-            ChatLine("[RynthAi] No unopened corpse is within corpse max range.");
+            ReplyFail("[RynthAi] No unopened corpse is within corpse max range.");
             return;
         }
 
         _targetCorpseId = corpse!.Id;
         _corpseTargetSince = CorpseNowMs;
         _lastCorpseOpenAttemptAt = 0;
-        ChatLine($"[RynthAi] Corpse target set to {corpse.Name} at {ConvertMetersToYards(distanceMeters):F1} yd.");
+        ReplyOk($"[RynthAi] Corpse target set to {corpse.Name} at {ConvertMetersToYards(distanceMeters):F1} yd.");
         TickCorpseOpening();
     }
 }

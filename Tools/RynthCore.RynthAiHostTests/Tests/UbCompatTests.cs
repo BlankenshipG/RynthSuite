@@ -21,7 +21,7 @@ internal static class UbCompatTests
 
     public static void Register(Runner r)
     {
-        r.Add("ub compat: ub-IT verbs with no RynthAi equivalent are accepted, said once", NoEquivalentAccepted);
+        r.Add("ub compat: ub-IT verbs with no RynthAi equivalent are accepted, said once to a meta and every time typed", NoEquivalentAccepted);
         r.Add("ub compat: ub-Rythai's verbs get no RynthAi reply, and a meta passes them on", UbRythaiVerbsLeftAlone);
         r.Add("ub compat: aliases and features map onto RynthAi, RynthNav, RynthSort and the server", AliasesAndFeatures);
         r.Add("ub compat: a meta's /ub line uses the /ub meaning, not /mt's", MetaUsesUbMeaning);
@@ -70,13 +70,17 @@ internal static class UbCompatTests
     private static void NoEquivalentAccepted()
     {
         var w = new World();
-        Check.True(w.Ub("/ub soak on"), "/ub soak is handled");
-        Check.True(w.Ub("/ub soak off"), "again");
-        Check.Eq(w.ChatWith("/ub soak"), 1, "said once per session, not per meta pulse");
+        Check.True(w.Meta("/ub soak on"), "/ub soak is handled");
+        Check.True(w.Meta("/ub soak off"), "again");
+        Check.Eq(w.ChatWith("/ub soak"), 1, "a meta's: said once per session, not per meta pulse");
+        // Typed, it answers every time (a typed command always answers, CommandReply.cs).
+        Check.True(w.Ub("/ub soak on"), "typed /ub soak is handled");
+        Check.True(w.Ub("/ub soak on"), "typed again");
+        Check.Eq(w.ChatWith("/ub soak"), 3, "typed: said each time");
         // /ub videopatch is not here: RynthAi already forwards it to the engine's /rc videopatch.
         foreach (string line in new[] { "/ub chat max", "/ub playeroption AutoRepeatAttack on", "/ub statushud toggle", "/ub professor war 7", "/ub xp level" })
             Check.True(w.Ub(line), line + " is handled");
-        Check.Eq(w.ChatWith("Unrecognized"), 0, "no 'Unrecognized /ub command'");
+        Check.Eq(w.ChatWith("Unrecognized") + w.ChatWith("Unknown /ub command"), 0, "no 'Unknown /ub command'");
         Check.False(w.Ub("/ub notaubitcommand"), "a verb ub-IT doesn't have is still unknown");
     }
 
@@ -121,7 +125,7 @@ internal static class UbCompatTests
         w.Ub("/ub packsort");
         Check.True(FakeHost.PluginCommands.Contains(("RynthSort", "rsort", "now")), "packsort -> /rsort now");
 
-        // Server and engine commands go to the chat parser.
+        // Server commands go to the chat parser.
         w.Ub("/ub qblist");
         w.Ub("/ub augs");
         w.Ub("/ub window save");
@@ -129,7 +133,9 @@ internal static class UbCompatTests
         // qblist / augs are ACECustom's commands: the server plugin's (RynthILT) since 2026-10-20.
         Check.False(FakeHost.ChatCommands.Contains("/qb list") || FakeHost.ChatCommands.Contains("/aug"),
                     "qblist / augs: no server plugin, so nothing is sent to the server");
-        Check.True(FakeHost.ChatCommands.Contains("/rc window save"), "window save -> /rc window save");
+        // The engine has no /rc window save (it never had): RynthAi says where the setting is instead.
+        Check.False(FakeHost.ChatCommands.Contains("/rc window save"), "window save sends no engine command");
+        Check.Eq(w.ChatWith("Remember Game Window Position"), 1, "window save says where RynthCore keeps the window");
         Check.True(FakeHost.ChatCommands.Contains("/fellowship dismiss Storm"), "fellow dismiss -> /fellowship dismiss");
 
         // With a server plugin they are its verbs ("ub qblist", "ub augs").

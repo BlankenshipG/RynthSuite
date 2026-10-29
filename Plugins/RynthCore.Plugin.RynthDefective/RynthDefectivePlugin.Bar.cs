@@ -64,7 +64,12 @@ public sealed partial class RynthDefectivePlugin : IBarActions
             "\",\"icon\":\"\\u" + ((int)RynthIcons.Crosshair[0]).ToString("X4", CultureInfo.InvariantCulture) +
             "\",\"width\":280,\"height\":46,\"minWidth\":120,\"minHeight\":24,\"bar\":false,\"edgeToEdge\":true," +
             "\"chrome\":\"none\",\"fitHeight\":true,\"corner\":\"top\",\"scale\":\"draw\"}";
-        return "{\"version\":1,\"windows\":[" + bar + panels + selection + "]}";
+        // Where your corpses are (a bar button of its own).
+        string corpses = ",{\"id\":\"corpses\",\"title\":\"" + Corpses.CorpsesWindow.Title + "\",\"surface\":\"" + CorpsesSurface +
+            "\",\"icon\":\"\\u" + ((int)RynthIcons.Skull[0]).ToString("X4", CultureInfo.InvariantCulture) +
+            "\",\"width\":290,\"height\":80,\"minWidth\":140,\"minHeight\":30,\"bar\":true,\"edgeToEdge\":true," +
+            "\"chrome\":\"none\",\"fitHeight\":true,\"scale\":\"draw\"}";
+        return "{\"version\":1,\"windows\":[" + bar + panels + selection + corpses + "]}";
     }
 
     /// <summary>RynthPluginRenderEmbed "window:panels". 1 drawn, 0 not ready, -2 failed (three in a row). Render thread.</summary>

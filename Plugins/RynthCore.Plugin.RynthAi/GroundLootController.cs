@@ -323,7 +323,7 @@ public sealed partial class RynthAiPlugin
     private void HandleGroundLootCommand(string[] parts)
     {
         var settings = _dashboard?.Settings;
-        if (settings == null) { ChatLine("[RynthAi] Not logged in."); return; }
+        if (settings == null) { ReplyFail("[RynthAi] Not logged in."); return; }
 
         string verb = parts.Length >= 3 ? parts[2].Trim().ToLowerInvariant() : "status";
         switch (verb)
@@ -331,17 +331,17 @@ public sealed partial class RynthAiPlugin
             case "on":
                 settings.EnableGroundLoot = true;
                 _dashboard?.SaveSettings();
-                ChatLine("[RynthAi] Ground loot ON (uses the loot profile and the corpse max range).");
+                ReplyOk("[RynthAi] Ground loot ON (uses the loot profile and the corpse max range).");
                 break;
             case "off":
                 settings.EnableGroundLoot = false;
                 ResetGroundLoot(clearCaches: true);
                 _dashboard?.SaveSettings();
-                ChatLine("[RynthAi] Ground loot OFF.");
+                ReplyOk("[RynthAi] Ground loot OFF.");
                 break;
             case "scan":
                 ResetGroundLoot(clearCaches: true);
-                ChatLine("[RynthAi] Ground loot: cleared skip list; rescanning.");
+                ReplyOk("[RynthAi] Ground loot: cleared skip list; rescanning.");
                 break;
             default:
                 double yards = settings.CorpseApproachRangeMax;

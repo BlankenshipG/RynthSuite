@@ -191,6 +191,11 @@ internal static class DungeonLight
     public const string Usage =
         "/rv light [on|off] | 0-100 (strength) | dungeons|indoors|everywhere | color RRGGBB|white|torch|moon | show | status";
 
+    /// <summary>What /rv light says after a change: the light's settings now (and why it can't light on an old engine).</summary>
+    public static string Summary(bool on, int strength, LightScope scope, uint colorArgb, bool engineHasApi) =>
+        $"Dungeon light {(on ? "on" : "off")}: strength {strength}%, {ScopeWord(scope)}, {ColorName(colorArgb)}."
+        + (engineHasApi ? "" : " Needs a newer RynthCore (plugin API 91) to light anything.");
+
     /// <summary>One line for chat and the Light tab: what the light is doing here and why.</summary>
     public static string StatusLine(in LightStatus s)
     {

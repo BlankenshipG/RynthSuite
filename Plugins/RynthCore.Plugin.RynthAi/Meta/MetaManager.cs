@@ -152,6 +152,16 @@ internal sealed class MetaManager
     public void SetMtCommandHandler(Func<string, bool> handler) => _mtCommandHandler = handler;
     public void SetRaCommandHandler(Action<string> handler) => _raCommandHandler = handler;
 
+    private CommandReply? _reply;
+
+    /// <summary>What /vt commands say back (CommandReply.cs). The plugin hands over its own, so a /vt
+    /// line answers like every other command; on its own (tests) a meta's action is the "sent by a meta" test.</summary>
+    internal CommandReply Reply
+    {
+        get => _reply ??= new CommandReply((text, color) => _host.WriteToChat(text, color), line => _host.Log(line), () => IsExecutingAction);
+        set => _reply = value;
+    }
+
     /// <summary>Embedded Nav Route's "Patrol" (any case): the dungeon patrol instead of a route,
     /// unless the meta or NavProfiles has a route by that name.</summary>
     internal const string PatrolRoute = "Patrol";
@@ -1276,7 +1286,9 @@ internal sealed class MetaManager
         {
             string optName = parts[3].ToLower();
             string optVal = parts[4];
-            return TrySetVtOption(optName, optVal);
+            bool set = TrySetVtOption(optName, optVal);
+            ReplyVtOption(parts[3], optVal);
+            return set;
         }
 
         // /vt opt get <option> — show one option's value.
@@ -1284,7 +1296,7 @@ internal sealed class MetaManager
             parts[2].Equals("get", StringComparison.OrdinalIgnoreCase))
         {
             string optName = parts[3];
-            _host.WriteToChat($"[RynthAi] {optName} = {GetVtOption(optName) ?? "(not set)"}", 1);
+            Reply.Info($"[RynthAi] {optName} = {GetVtOption(optName) ?? "(not set)"}");
             return true;
         }
 
@@ -1296,11 +1308,11 @@ internal sealed class MetaManager
             foreach (string name in System.Linq.Enumerable.OrderBy(VtOptionMap.Keys, k => k, StringComparer.OrdinalIgnoreCase))
             {
                 string item = $"{name}={GetVtOption(name) ?? "?"}";
-                if (line.Length + item.Length > 180) { _host.WriteToChat("[RynthAi] " + line, 1); line.Clear(); }
+                if (line.Length + item.Length > 180) { Reply.Info("[RynthAi] " + line); line.Clear(); }
                 if (line.Length > 0) line.Append(", ");
                 line.Append(item);
             }
-            if (line.Length > 0) _host.WriteToChat("[RynthAi] " + line, 1);
+            if (line.Length > 0) Reply.Info("[RynthAi] " + line);
             return true;
         }
 
@@ -1332,8 +1344,8 @@ internal sealed class MetaManager
         // /vt tapjump — a quick jump with no charge.
         if (sub == "tapjump")
         {
-            if (!(_host.HasTapJump && _host.TapJump()))
-                _host.WriteToChat("[RynthAi] /vt tapjump: the engine's jump isn't available.", 1);
+            if (_host.HasTapJump && _host.TapJump()) Reply.Ok("[RynthAi] Tap jump.");
+            else Reply.Fail("[RynthAi] /vt tapjump: the engine's jump isn't available.");
             return true;
         }
 
@@ -1364,7 +1376,10 @@ internal sealed class MetaManager
             string name = string.Join(" ", parts, 3, parts.Length - 3);
             // The macro was started again: the route still running keeps its place.
             if (_replaying && parts[2].Equals("load", StringComparison.OrdinalIgnoreCase) && KeepRunningNavFile(name))
+            {
+                Reply.Ok($"[RynthAi] Nav '{name}' is the route already running; it keeps its place.");
                 return true;
+            }
             _raCommandHandler?.Invoke($"/ra nav {parts[2].ToLowerInvariant()} {name}");
             return true;
         }
@@ -1389,11 +1404,11 @@ internal sealed class MetaManager
             }
             if (!File.Exists(path))
             {
-                _host.WriteToChat($"[RynthAi] Loot profile not found: {name}", 1);
+                Reply.Fail($"[RynthAi] Loot profile not found: {name}");
                 return true;
             }
             _settings.CurrentLootPath = path;
-            _host.WriteToChat($"[RynthAi] Loot profile set: {Path.GetFileName(path)}", 1);
+            Reply.Ok($"[RynthAi] Loot profile set: {Path.GetFileName(path)}");
             return true;
         }
 
@@ -1403,7 +1418,7 @@ internal sealed class MetaManager
             string state = string.Join(" ", parts, 2, parts.Length - 2);
             _settings.CurrentState = state;
             _settings.ForceStateReset = true;
-            _host.WriteToChat($"[RynthAi] Meta state set: {state}", 1);
+            Reply.Ok($"[RynthAi] Meta state set: {state}");
             return true;
         }
 
@@ -1414,13 +1429,19 @@ internal sealed class MetaManager
             if (parts.Length >= 4 && (parts[2].Equals("loadchar", StringComparison.OrdinalIgnoreCase)
                                       || parts[2].Equals("savechar", StringComparison.OrdinalIgnoreCase)))
                 _raCommandHandler?.Invoke($"/ra settings {parts[2].ToLowerInvariant()} {string.Join(" ", parts, 3, parts.Length - 3)}");
+            else
+                Reply.Ignored("[RynthAi] Usage: /vt settings loadchar|savechar <name> (other /vt settings verbs are VTank's own; ignored).");
             return true;
         }
 
         // /vt <option> <value> — an option written as a verb (DerethExploration: "/vt navclosestoprange
         // 0.005"): the same as /vt opt set, for the VTank options RynthAi maps.
         if (parts.Length == 3 && (VtOptionMap.ContainsKey(sub) || IsSpecialVtOption(sub)))
-            return TrySetVtOption(sub, parts[2]);
+        {
+            bool set = TrySetVtOption(sub, parts[2]);
+            ReplyVtOption(parts[1], parts[2]);
+            return set;
+        }
 
         // /vt <verb> aliases → existing /ra handlers (Phase 1.3 VTank-meta migration).
         // Re-dispatch through the /ra path (_raCommandHandler → HandleRaCommand).
@@ -1451,6 +1472,7 @@ internal sealed class MetaManager
                 _deleteMonsterLogged = true;
                 RynthLog.Write(LogCat.Meta, "[Meta] /vt deletemonster accepted and ignored (no RynthAi equivalent).");
             }
+            Reply.Ignored("[RynthAi] /vt deletemonster has no RynthAi equivalent; accepted and ignored.");
             return true;
         }
 
@@ -1464,15 +1486,16 @@ internal sealed class MetaManager
                 int n = route.Points.Count;
                 route.Points.Reverse();
                 _settings.ActiveNavIndex = Math.Clamp(n - 1 - _settings.ActiveNavIndex, 0, n - 1);
-                _host.WriteToChat($"[RynthAi] Route reversed ({n} pts).", 1);
+                Reply.Ok($"[RynthAi] Route reversed ({n} pts).");
             }
+            else Reply.Fail("[RynthAi] /vt reverseroute: no route is loaded.");
             return true;
         }
 
         // /vt echo <text> — local chat echo (no server send).
         if (sub == "echo" && parts.Length >= 3)
         {
-            _host.WriteToChat(string.Join(" ", parts, 2, parts.Length - 2), 1);
+            Reply.Info(string.Join(" ", parts, 2, parts.Length - 2));
             return true;
         }
 
@@ -1484,6 +1507,49 @@ internal sealed class MetaManager
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// After a /vt opt set (or "/vt &lt;option&gt; &lt;value&gt;"): the option's value now, and whether RynthAi
+    /// has a setting by that name (otherwise it is only kept for metas to read back).
+    /// </summary>
+    private void ReplyVtOption(string vtName, string asked)
+    {
+        bool known = IsSpecialVtOption(vtName) || VtOptionMap.ContainsKey(vtName)
+                     || Expressions.BuildSettingsMapPublic().ContainsKey(vtName);
+        string now = GetVtOption(vtName) ?? "(not set)";
+        // A switch asked for as true/false/on/off reads back as 1/0: shown the way it was asked.
+        if (asked.ToLowerInvariant() is "true" or "false" or "on" or "off" && now is "1" or "0" or "true" or "false")
+            now = now is "1" or "true" ? "True" : "False";
+        Reply.Ok($"[RynthAi] {vtName} = {now}"
+                 + (known ? "" : " (no RynthAi setting by that name: kept only as an option metas can read)"));
+    }
+
+    /// <summary>The /vt verbs RynthAi takes, for the usage line.</summary>
+    internal const string VtVerbList = "opt set|get|list, <option> <value>, start, stop, e, jump, tapjump, equipitemsfor, "
+        + "meta load, nav load|save, loot load, setmetastate, settings loadchar|savechar, setattackbar, forcebuff, "
+        + "cancelforcebuff, cancelbuff, addnavpt, mexec, clearbusy, testitem, propertydump, reverseroute, echo";
+
+    /// <summary>The usage line for a /vt line RynthAi didn't take (an unknown verb or the wrong arguments).</summary>
+    internal static string VtUsageFor(string line)
+    {
+        string[] w = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string verb = w.Length > 1 ? w[1].ToLowerInvariant() : "";
+        string? usage = verb switch
+        {
+            "opt" => "/vt opt set <option> <value> | /vt opt get <option> | /vt opt list",
+            "meta" => "/vt meta load <name>",
+            "nav" => "/vt nav load <name> | /vt nav save <name>",
+            "loot" or "lootprofile" or "looting" => "/vt loot load <profile>",
+            "setmetastate" => "/vt setmetastate <state>",
+            "equipitemsfor" => "/vt equipitemsfor <monster name>",
+            "setattackbar" => "/vt setattackbar <0 to 1>",
+            "echo" => "/vt echo <text>",
+            _ => null,
+        };
+        return usage != null
+            ? "[RynthAi] Usage: " + usage
+            : $"[RynthAi] Unknown /vt command{(verb.Length > 0 ? $" '{verb}'" : "")}. RynthAi takes: {VtVerbList}.";
     }
 
     /// <summary>The RynthAi setting a VTank option name maps to (EnableNav → EnableNavigation).</summary>

@@ -42,6 +42,7 @@
   <ItemGroup>
     <!-- RynthLuaPaths.cs uses the install-folder resolver. -->
     <Compile Include="..\..\Plugins\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <Compile Include="..\..\Plugins\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
   </ItemGroup>
 
 </Project>

@@ -38,6 +38,7 @@
     <Compile Include="..\..\Plugins\Shared\RynthAiActivityApi.cs" Link="Shared\RynthAiActivityApi.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthAiStatusApi.cs" Link="Shared\RynthAiStatusApi.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <Compile Include="..\..\Plugins\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
   </ItemGroup>
 

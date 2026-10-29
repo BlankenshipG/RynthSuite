@@ -56,6 +56,8 @@ namespace RynthDefective.Tests
                 Run("picker: favourites and recent weapons first", PickerShortcuts);
                 Run("pack list: one line per kind of item", PackLists);
                 Run("commands: /rdef parsing", Commands);
+                Run("replies: the shared queue (tag, colours, retry, drop, quiet)", ReplyQueue);
+                Run("replies: every /rdef verb answers, typed right or wrong", ReplyEveryVerb);
                 Run("store: save and load", StoreRoundTrip);
                 Run("store: odd files", StoreOddFiles);
                 Run("hotkeys: the engine's file read for the key under a slot", HotkeyFile);
@@ -93,6 +95,12 @@ namespace RynthDefective.Tests
                 Run("bar: making it independent offers to copy the game's 18 slots", BarIndependentCopy);
                 Run("store: the independent bar setting; files from before read it off", BarStoreIndependent);
                 Run("window: the settings window parses and its switches reach their code", BarSettingsWindow);
+                Run("corpses: the server's lines", CorpseLinesParse);
+                Run("corpses: a death, the server's line before or after it, nothing dropped", CorpseDeaths);
+                Run("corpses: a corpse in view is the death beside it, else one found", CorpseSeen);
+                Run("corpses: gone, rotted, at most 20, forget", CorpseGoneAndExpiry);
+                Run("corpses: the files, this character's and the others'", CorpseStoreFiles);
+                Run("corpses: rows: places, times, distance and the arrow", CorpseRowText);
             }
             finally
             {

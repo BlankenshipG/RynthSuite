@@ -41,6 +41,8 @@
   <ItemGroup>
     <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file as RynthCore src\Shared. -->
     <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- How a chat command answers (2026-10-28): the shared reply queue and colours. -->
+    <Compile Include="..\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
   </ItemGroup>
   <ItemGroup>
     <!-- The Characters window (2026-10-21): RynthNet draws it with ImGui.NET bound to the engine's

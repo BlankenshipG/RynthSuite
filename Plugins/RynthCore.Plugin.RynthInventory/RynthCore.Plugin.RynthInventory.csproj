@@ -41,6 +41,8 @@
   <ItemGroup>
     <!-- Storage another plugin reads for us ("storage" commands: Aelrynth's vault from RynthAelrynth). Also linked by RynthInventory.Tests. -->
     <Compile Include="..\Shared\StorageFeed.cs" Link="Shared\StorageFeed.cs" />
+    <!-- How a chat command answers (2026-10-28): the shared reply queue and colours. -->
+    <Compile Include="..\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
   </ItemGroup>
 
 </Project>

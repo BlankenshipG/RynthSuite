@@ -2,7 +2,7 @@ using System;
 
 namespace RynthCore.Plugin.RynthDefective.Model;
 
-internal enum DefVerb { Toggle, Help, Use, Set, Clear, Bind, Unbind, Weapons, Favourite, Slots, List, Status, Error, Panels, Selection, Settings, Spell }
+internal enum DefVerb { Toggle, Help, Use, Set, Clear, Bind, Unbind, Weapons, Favourite, Slots, List, Status, Error, Panels, Selection, Settings, Spell, Corpses }
 
 /// <summary>A parsed "/rdef ..." line. Use: <see cref="Slot"/> (1-based) or <see cref="Text"/> (an item name).</summary>
 internal sealed record DefCommand(DefVerb Verb, int Slot = 0, string Text = "", string Error = "");
@@ -11,7 +11,7 @@ internal static class DefCommandParser
 {
     public const string Usage =
         "/rdef [use <slot or item name> | set <slot> [item name] | spell <slot> <spell name> | clear <slot> | bind <slot> <key> | unbind <slot> | "
-        + "weapons [search] | fav | slots <count> | list | status | settings | panels (the game panel buttons) | selection]";
+        + "weapons [search] | fav | slots <count> | list | status | settings | panels (the game panel buttons) | selection | corpses [clear]]";
 
     /// <summary>Parses the arguments after "/rdef" (blank = show or hide the bar).</summary>
     public static DefCommand Parse(string? args)
@@ -29,6 +29,7 @@ internal static class DefCommandParser
             case "status": return new DefCommand(DefVerb.Status);
             case "panels": case "panel": return new DefCommand(DefVerb.Panels);
             case "settings": case "options": case "setup": return new DefCommand(DefVerb.Settings);
+            case "corpses": case "corpse": return new DefCommand(DefVerb.Corpses, Text: rest);
             case "selection": case "target":
                 // "/rdef selection 0x80001234": select that object (a test hook for the Selection window).
                 return new DefCommand(DefVerb.Selection, Text: rest);

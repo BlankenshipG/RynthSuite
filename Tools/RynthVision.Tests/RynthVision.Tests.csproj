@@ -27,6 +27,8 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthVision\Ui\VisionManifest.cs" Link="RynthVision\VisionManifest.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthVision\Ui\VisionFields.cs" Link="RynthVision\VisionFields.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthVision\VisionSettings.cs" Link="RynthVision\VisionSettings.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthVision\VisionCommands.cs" Link="RynthVision\VisionCommands.cs" />
+    <Compile Include="..\..\Plugins\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
   </ItemGroup>
 
 </Project>

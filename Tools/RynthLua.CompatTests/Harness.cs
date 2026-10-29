@@ -261,6 +261,12 @@ internal static class Harness
         });
         // A second script in the same plugin (another script competing for a handler).
         Fn("runScript", a => { Plugin!.RunCode(Str(a, 0), Str(a, 1)); return DynValue.Nil; });
+        // A script file in the (temp) Scripts folder, for "/lua start <name>" (replies.lua).
+        Fn("writeScript", a =>
+        {
+            System.IO.File.WriteAllText(System.IO.Path.Combine(RynthLuaPaths.Scripts, Str(a, 0) + ".lua"), Str(a, 1));
+            return DynValue.Nil;
+        });
         Fn("stopScript", a => DynValue.NewBoolean(Plugin!.StopScript(Str(a, 0))));
         Fn("scriptLoaded", a => DynValue.NewBoolean(Plugin!.ScriptIsLoaded(Str(a, 0))));
         Fn("scriptConsole", a => DynValue.NewString(Plugin!.ScriptConsoleText(Str(a, 0))));

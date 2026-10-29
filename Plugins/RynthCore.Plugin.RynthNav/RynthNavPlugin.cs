@@ -136,6 +136,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
 
     public override int Initialize()
     {
+        _ = Reply;
         _status = "initialized";
         // Every use logged (Plugins/Shared/UseAudit.cs). No macro here: no door/corpse guard.
         RynthCore.Plugin.Shared.UseAudit.Reset("RynthNav", null);
@@ -183,7 +184,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         lock (_gotoGate) { _gotoPath = null; _gotoIdx = 0; }
         _badTiles.Clear();
         _tileRegions.Clear(); _tilePrints.Clear(); ResetCoarse();
-        _chatOut.Clear();
+        Reply.Clear();
         _goNote = "";
         HideMarkers("logged out");
         _meshView.Clear(); _meshDunLb = 0;
@@ -216,15 +217,15 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
     // Chat from the tick thread. The engine drops an off-thread WriteToChat that comes
     // within 100 ms of any other plugin's (RynthAi writes often), so a line said here is
     // queued and retried on later ticks until it goes through (one line per tick; a line
-    // that still can't be written after ~3 s is dropped so the queue never jams).
-    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _chatOut = new();
-    private int _chatTries;
-    private void Say(string text) { if (_chatOut.Count < 64) _chatOut.Enqueue("[RynthNav] " + text); }
-    private void FlushChat()
-    {
-        if (!_chatOut.TryPeek(out string? line)) return;
-        if (Host.WriteToChat(line, 1) || ++_chatTries > 90) { _chatOut.TryDequeue(out _); _chatTries = 0; }
-    }
+    // that still can't be written after ~1.5 s goes to the log so the queue never jams).
+    // The queue is the shared one every plugin answers commands through (Plugins/Shared/CommandReply.cs).
+    private RynthCore.Plugin.Shared.CommandReply? _reply;
+    private RynthCore.Plugin.Shared.CommandReply Reply =>
+        _reply ??= new RynthCore.Plugin.Shared.CommandReply("[RynthNav]", (t, c) => Host.WriteToChat(t, c), t => Host.Log(t));
+    private void Say(string text) => Reply.Ok(text);
+    /// <summary>A command that didn't work: why, and the usage (the failure colour).</summary>
+    private void SayFail(string text) => Reply.Fail(text);
+    private void FlushChat() => Reply.Flush();
 
     private uint CurrentLandblock => (_cellId >> 16) & 0xFFFF;
 

@@ -16,19 +16,57 @@ namespace RynthCore.Plugin.RynthAi;
 /// </summary>
 public sealed partial class RynthAiPlugin
 {
-    private void ChatLine(string text)
+    private CommandReply? _reply;
+
+    /// <summary>What chat commands say back: typed ones always answer, a meta's are quiet when they work (CommandReply.cs).</summary>
+    internal CommandReply Reply => _reply ??= new CommandReply(
+        (text, color) => Host.WriteToChat(text, color),
+        line => Host.Log(line),
+        () => _metaCommandDepth > 0 || _metaManager?.IsExecutingAction == true);
+
+    /// <summary>A chat line (lists, status, help, and lines that already answered a command): shown either way.</summary>
+    private void ChatLine(string text) => Reply.Info(text);
+
+    /// <summary>A command worked: what changed and the value now (quiet, logged, when a meta sent it).</summary>
+    private void ReplyOk(string text) => Reply.Ok(text);
+
+    /// <summary>A command didn't work: why, and the usage (a meta's repeats once a minute).</summary>
+    private void ReplyFail(string text) => Reply.Fail(text);
+
+    /// <summary>An action that reports whether it went out: <paramref name="okText"/> or <paramref name="failText"/>.</summary>
+    private void ReplyIf(bool ok, string okText, string failText)
     {
-        Host.WriteToChat(text, 1);
+        if (ok) ReplyOk(okText);
+        else ReplyFail(failText);
     }
+
+    /// <summary>
+    /// A line from code that returns one string for either outcome (the dashboard's nav, meta and
+    /// settings-profile loads and saves, the Items list fill and clean): a failure by its wording,
+    /// else it worked.
+    /// </summary>
+    private void ReplyResult(string text)
+    {
+        if (ResultFailed(text)) ReplyFail(text);
+        else ReplyOk(text);
+    }
+
+    private static readonly Regex ResultFailedRx = new(
+        @"^(\[RynthAi\] )?(Can't|Couldn't|No |Not logged in|Nav NOT saved|Nav save failed|Your inventory|Settings not ready|Save failed|Dashboard not ready)"
+        + @"|' can't be used| not loaded: | already exists\.",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>True when a one-string result (see <see cref="ReplyResult"/>) says it didn't work.</summary>
+    internal static bool ResultFailed(string text) => ResultFailedRx.IsMatch(text);
 
     /// <summary>/ra items clean and the engine Items panel's Remove Missing button (RynthPluginCleanItems).</summary>
     internal void CleanMissingItems()
-        => ChatLine(_dashboard?.CleanMissingItems(_objectCache, _playerId) ?? "[RynthAi] Settings not ready.");
+        => ReplyResult(_dashboard?.CleanMissingItems(_objectCache, _playerId) ?? "[RynthAi] Settings not ready.");
 
     private void HandleHelpCommand()
     {
         ChatLine("[RynthAi] === Commands ===");
-        ChatLine("[RynthAi] /ra fellow       â€” fellowship diagnostics and queries");
+        ChatLine("[RynthAi] /ra fellow       — fellowship diagnostics and queries");
         ChatLine("[RynthAi] /ra help          — show this list");
         ChatLine("[RynthAi] /ra version       — RynthAi version and build date, and the engine it runs on");
         ChatLine("[RynthAi] /ra server        - which server RynthCore says this is, its overrides, and the server plugin's settings");
@@ -120,7 +158,7 @@ public sealed partial class RynthAiPlugin
     private void HandleOffhandCommand(string[] parts)
     {
         var settings = _dashboard?.Settings;
-        if (settings == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (settings == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
 
         if (parts.Length < 3)
         {
@@ -136,7 +174,7 @@ public sealed partial class RynthAiPlugin
             }
             int shields = settings.ItemRules.Count(WeaponList.IsShieldRule);
             ChatLine($"[RynthAi] {shields} shield(s) in the Items list (Add Selected Weapon adds a shield too).");
-            ChatLine("[RynthAi] Usage: /ra offhand auto|shield|weapon|none [rule name] — /ra offhand default <rule name> — /ra offhand dual on|off");
+            ReplyFail("[RynthAi] Usage: /ra offhand auto|shield|weapon|none [rule name] — /ra offhand default <rule name> — /ra offhand dual on|off");
             return;
         }
 
@@ -146,33 +184,33 @@ public sealed partial class RynthAiPlugin
             bool on = parts.Length < 4 || parts[3].Equals("on", StringComparison.OrdinalIgnoreCase) || parts[3] == "1";
             settings.PreferDualWield = on;
             _dashboard!.SaveSettings();
-            ChatLine($"[RynthAi] Auto now prefers {(on ? "dual wield (with the Dual Wield skill and a second listed one-handed weapon)" : "a shield")}.");
+            ReplyOk($"[RynthAi] Auto now prefers {(on ? "dual wield (with the Dual Wield skill and a second listed one-handed weapon)" : "a shield")}.");
             return;
         }
 
         bool toDefault = arg.Equals("default", StringComparison.OrdinalIgnoreCase);
         if (!toDefault && !OffhandRules.TryParse(arg, out _))
         {
-            ChatLine("[RynthAi] Usage: /ra offhand auto|shield|weapon|none [rule name] — /ra offhand default <rule name> — /ra offhand dual on|off");
+            ReplyFail("[RynthAi] Usage: /ra offhand auto|shield|weapon|none [rule name] — /ra offhand default <rule name> — /ra offhand dual on|off");
             return;
         }
         var mode = toDefault ? OffhandMode.Auto : OffhandRules.Parse(arg, OffhandMode.Auto);
 
         if (parts.Length == 3)
         {
-            if (toDefault) { ChatLine("[RynthAi] Usage: /ra offhand default <rule name>"); return; }
+            if (toDefault) { ReplyFail("[RynthAi] Usage: /ra offhand default <rule name>"); return; }
             settings.OffhandDefault = OffhandRules.SettingValue(mode);
             _dashboard!.SaveSettings();
-            ChatLine($"[RynthAi] Offhand set to {OffhandRules.Label(mode)} (for every Monsters rule that doesn't choose its own).");
+            ReplyOk($"[RynthAi] Offhand set to {OffhandRules.Label(mode)} (for every Monsters rule that doesn't choose its own).");
             return;
         }
 
         string ruleName = string.Join(" ", parts.Skip(3));
         var rule = settings.MonsterRules.FirstOrDefault(r => r.Name.Equals(ruleName, StringComparison.OrdinalIgnoreCase));
-        if (rule == null) { ChatLine($"[RynthAi] No Monsters rule named '{ruleName}'."); return; }
+        if (rule == null) { ReplyFail($"[RynthAi] No Monsters rule named '{ruleName}'."); return; }
         rule.OffhandId = toDefault ? OffhandRules.RuleDefault : OffhandRules.RuleValue(mode);
         _dashboard!.SaveMonsterRules();
-        ChatLine(toDefault
+        ReplyOk(toDefault
             ? $"[RynthAi] Rule '{rule.Name}' uses the global Offhand setting again."
             : $"[RynthAi] Rule '{rule.Name}': Offhand {OffhandRules.Label(mode)}.");
     }
@@ -180,14 +218,14 @@ public sealed partial class RynthAiPlugin
     private void HandlePowerCommand(string[] parts)
     {
         var settings = _dashboard?.Settings;
-        if (settings == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (settings == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
 
         if (parts.Length < 3)
         {
             string current = settings.MeleeAttackPower < 0 ? "auto" : $"{settings.MeleeAttackPower}%";
             string currentMissile = settings.MissileAttackPower < 0 ? "auto" : $"{settings.MissileAttackPower}%";
             ChatLine($"[RynthAi] Melee power: {current}, Missile power: {currentMissile}");
-            ChatLine("[RynthAi] Usage: /ra power <0-100|auto>");
+            ReplyFail("[RynthAi] Usage: /ra power <0-100|auto>");
             return;
         }
 
@@ -196,17 +234,17 @@ public sealed partial class RynthAiPlugin
         {
             settings.MeleeAttackPower = -1;
             settings.MissileAttackPower = -1;
-            ChatLine("[RynthAi] Attack power set to auto.");
+            ReplyOk("[RynthAi] Attack power set to auto.");
         }
         else if (int.TryParse(val, out int pct) && pct >= 0 && pct <= 100)
         {
             settings.MeleeAttackPower = pct;
             settings.MissileAttackPower = pct;
-            ChatLine($"[RynthAi] Attack power set to {pct}%.");
+            ReplyOk($"[RynthAi] Attack power set to {pct}%.");
         }
         else
         {
-            ChatLine("[RynthAi] Usage: /ra power <0-100|auto>");
+            ReplyFail("[RynthAi] Usage: /ra power <0-100|auto>");
         }
     }
 
@@ -215,7 +253,7 @@ public sealed partial class RynthAiPlugin
         uint targetId = _currentTargetId;
         if (targetId == 0)
         {
-            ChatLine("[RynthAi] No target selected — click something first.");
+            ReplyFail("[RynthAi] No target selected — click something first.");
             return;
         }
 
@@ -225,7 +263,7 @@ public sealed partial class RynthAiPlugin
 
         if (!Host.HasObjectIsAttackable)
         {
-            ChatLine("[RynthAi] API not available — engine too old.");
+            ReplyFail("[RynthAi] API not available — engine too old.");
             return;
         }
 
@@ -237,31 +275,32 @@ public sealed partial class RynthAiPlugin
     {
         if (parts.Length < 3 || !int.TryParse(parts[2], out int spellId))
         {
-            ChatLine("[RynthAi] Usage: /ra cast <spellId>");
+            ReplyFail("[RynthAi] Usage: /ra cast <spellId>");
             return;
         }
 
         if (_currentTargetId == 0)
         {
-            ChatLine("[RynthAi] No target selected.");
+            ReplyFail("[RynthAi] No target selected.");
             return;
         }
 
         if (!Host.HasCastSpell)
         {
-            ChatLine("[RynthAi] CastSpell not available — hook not found.");
+            ReplyFail("[RynthAi] CastSpell not available — hook not found.");
             return;
         }
 
         bool ok = Host.CastSpellFor(_currentTargetId, spellId, "Command", $"spell {spellId} (/ra cast)", asked: true);
-        ChatLine($"[RynthAi] CastSpell(target=0x{_currentTargetId:X8}, spell={spellId}) => {ok}");
+        string line = $"[RynthAi] CastSpell(target=0x{_currentTargetId:X8}, spell={spellId}) => {ok}";
+        if (ok) ReplyOk(line); else ReplyFail(line);
     }
 
     private void HandleCacheCommand()
     {
         if (_objectCache == null)
         {
-            ChatLine("[RynthAi] Object cache not initialized (not logged in yet).");
+            ReplyFail("[RynthAi] Object cache not initialized (not logged in yet).");
             return;
         }
 
@@ -285,7 +324,7 @@ public sealed partial class RynthAiPlugin
 
     private void HandleCache2Command()
     {
-        if (_objectCache == null) { ChatLine("[RynthAi] Cache not ready."); return; }
+        if (_objectCache == null) { ReplyFail("[RynthAi] Cache not ready."); return; }
         var (total, creatures, inventory, landscape, pending) = _objectCache.GetStats();
         ChatLine($"[RynthAi] Cache stats: {total} total | {creatures} creatures | {inventory} inv | {landscape} landscape | {pending} pending");
         ChatLine("[RynthAi] Direct inventory snapshot:");
@@ -303,7 +342,7 @@ public sealed partial class RynthAiPlugin
     {
         if (_raycast == null)
         {
-            ChatLine("[RynthAi] Raycast system not initialized.");
+            ReplyFail("[RynthAi] Raycast system not initialized.");
             return;
         }
 
@@ -323,13 +362,13 @@ public sealed partial class RynthAiPlugin
     {
         if (_raycast == null || !_raycast.IsInitialized)
         {
-            ChatLine("[RynthAi LOS] Raycast system not initialized.");
+            ReplyFail("[RynthAi LOS] Raycast system not initialized.");
             return;
         }
 
         if (_currentTargetId == 0)
         {
-            ChatLine("[RynthAi LOS] No target selected — select a monster first.");
+            ReplyFail("[RynthAi LOS] No target selected — select a monster first.");
             return;
         }
 
@@ -348,7 +387,7 @@ public sealed partial class RynthAiPlugin
             case "atlatl":   isArc = true;  arcVelocity = settings?.AtlatlArcVelocity   ?? 22.0f; modeLabel = $"Atlatl arc (v={arcVelocity:F1})"; break;
             case "magic":    isArc = true;  arcVelocity = settings?.MagicArcVelocity    ?? 40.0f; modeLabel = $"Magic arc (horizontal v={arcVelocity:F1}, from head height)"; break;
             default:
-                ChatLine($"[RynthAi LOS] Unknown mode '{modeArg}'. Use: linear | bow | crossbow | atlatl | magic");
+                ReplyFail($"[RynthAi LOS] Unknown mode '{modeArg}'. Use: linear | bow | crossbow | atlatl | magic");
                 return;
         }
 
@@ -359,7 +398,7 @@ public sealed partial class RynthAiPlugin
         if (!Host.TryGetPlayerPose(out uint pCell, out float px, out float py, out float pz,
                 out _, out _, out _, out _))
         {
-            ChatLine("[RynthAi LOS] Player position unavailable.");
+            ReplyFail("[RynthAi LOS] Player position unavailable.");
             return;
         }
 
@@ -375,7 +414,7 @@ public sealed partial class RynthAiPlugin
         // Target position
         if (!Host.TryGetObjectPosition(_currentTargetId, out uint tCell, out float tx, out float ty, out float tz))
         {
-            ChatLine("[RynthAi LOS] Target position unavailable.");
+            ReplyFail("[RynthAi LOS] Target position unavailable.");
             return;
         }
 
@@ -552,14 +591,14 @@ public sealed partial class RynthAiPlugin
     {
         if (_raycast == null || !_raycast.IsInitialized)
         {
-            ChatLine("[RynthAi LAND] Raycast system not initialized.");
+            ReplyFail("[RynthAi LAND] Raycast system not initialized.");
             return;
         }
 
         if (!Host.TryGetPlayerPose(out uint pCell, out float px, out float py, out float pz,
                 out _, out _, out _, out _))
         {
-            ChatLine("[RynthAi LAND] Player position unavailable.");
+            ReplyFail("[RynthAi LAND] Player position unavailable.");
             return;
         }
 
@@ -576,7 +615,7 @@ public sealed partial class RynthAiPlugin
         var lb = _raycast.GeometryLoader.GetLandblockData(landblockKey);
         if (lb == null)
         {
-            ChatLine("[RynthAi LAND] Landblock data unavailable (dungeon, or height table not loaded).");
+            ReplyFail("[RynthAi LAND] Landblock data unavailable (dungeon, or height table not loaded).");
             return;
         }
 
@@ -608,13 +647,13 @@ public sealed partial class RynthAiPlugin
     {
         if (_raycast == null || !_raycast.IsInitialized)
         {
-            ChatLine("[RynthAi RAYLAND] Raycast system not initialized.");
+            ReplyFail("[RynthAi RAYLAND] Raycast system not initialized.");
             return;
         }
         if (!Host.TryGetPlayerPose(out uint pCell, out float px, out float py, out float pz,
                 out _, out _, out _, out _))
         {
-            ChatLine("[RynthAi RAYLAND] Player position unavailable.");
+            ReplyFail("[RynthAi RAYLAND] Player position unavailable.");
             return;
         }
 
@@ -679,13 +718,13 @@ public sealed partial class RynthAiPlugin
     {
         if (_metaManager == null)
         {
-            ChatLine("[RynthAi] Meta not ready (not logged in yet).");
+            ReplyFail("[RynthAi] Meta not ready (not logged in yet).");
             return;
         }
 
         if (parts.Length < 3)
         {
-            ChatLine("[RynthAi] Usage: /ra mexec <expression>");
+            ReplyFail("[RynthAi] Usage: /ra mexec <expression>");
             ChatLine("[RynthAi]   e.g. /ra mexec setvar[Nav, NTTest5]");
             ChatLine("[RynthAi]   e.g. /ra mexec getcharintprop[25]");
             return;
@@ -722,7 +761,7 @@ public sealed partial class RynthAiPlugin
     {
         if (_metaManager == null)
         {
-            ChatLine("[RynthAi] Meta not ready (not logged in yet).");
+            ReplyFail("[RynthAi] Meta not ready (not logged in yet).");
             return;
         }
 
@@ -751,7 +790,7 @@ public sealed partial class RynthAiPlugin
 
     private void HandleListPvarsCommand()
     {
-        if (_metaManager == null) { ChatLine("[RynthAi] Meta not ready."); return; }
+        if (_metaManager == null) { ReplyFail("[RynthAi] Meta not ready."); return; }
         var pvars = _metaManager.Expressions.Pvars;
         if (pvars.Count == 0) { ChatLine("[RynthAi] No persistent variables set."); return; }
         ChatLine($"[RynthAi] Persistent variables ({pvars.Count}):");
@@ -761,7 +800,7 @@ public sealed partial class RynthAiPlugin
 
     private void HandleListGvarsCommand()
     {
-        if (_metaManager == null) { ChatLine("[RynthAi] Meta not ready."); return; }
+        if (_metaManager == null) { ReplyFail("[RynthAi] Meta not ready."); return; }
         var gvars = _metaManager.Expressions.Gvars;
         if (gvars.Count == 0) { ChatLine("[RynthAi] No global variables set."); return; }
         ChatLine($"[RynthAi] Global variables ({gvars.Count}):");
@@ -771,7 +810,7 @@ public sealed partial class RynthAiPlugin
 
     private void HandleWieldedCommand()
     {
-        if (_objectCache == null) { ChatLine("[RynthAi] Cache not ready."); return; }
+        if (_objectCache == null) { ReplyFail("[RynthAi] Cache not ready."); return; }
 
         // Use CurrentWieldedLocation (stype=10, InqInt fallback) — more robust than
         // TryGetObjectWielderInfo which requires the phys-obj offset probe to succeed.
@@ -795,15 +834,15 @@ public sealed partial class RynthAiPlugin
     {
         if (_raycast == null || !_raycast.IsInitialized)
         {
-            ChatLine("[RynthAi] Raycast not initialized.");
+            ReplyFail("[RynthAi] Raycast not initialized.");
             return;
         }
-        if (_playerId == 0) { ChatLine("[RynthAi] Not logged in."); return; }
+        if (_playerId == 0) { ReplyFail("[RynthAi] Not logged in."); return; }
 
         if (!Host.TryGetPlayerPose(out uint pCell, out float px, out float py, out float pz,
                 out _, out _, out _, out _))
         {
-            ChatLine("[RynthAi] Player position unavailable.");
+            ReplyFail("[RynthAi] Player position unavailable.");
             return;
         }
 
@@ -906,7 +945,7 @@ public sealed partial class RynthAiPlugin
         var settings = _dashboard?.Settings;
         if (settings == null)
         {
-            ChatLine("[RynthAi] Nav debug unavailable: settings not ready.");
+            ReplyFail("[RynthAi] Nav debug unavailable: settings not ready.");
             return;
         }
 
@@ -924,7 +963,7 @@ public sealed partial class RynthAiPlugin
         bool poseOk = Host.TryGetPlayerPose(out uint cellId, out float x, out float y, out float z, out _, out _, out _, out _);
         if (!poseOk)
         {
-            ChatLine("[RynthAi]   Player pose unavailable.");
+            ReplyFail("[RynthAi]   Player pose unavailable.");
             return;
         }
 
@@ -977,7 +1016,7 @@ public sealed partial class RynthAiPlugin
     {
         if (_jumper == null)
         {
-            ChatLine("[RynthAi] Jumper not ready (not logged in yet).");
+            ReplyFail("[RynthAi] Jumper not ready (not logged in yet).");
             return;
         }
 
@@ -987,7 +1026,7 @@ public sealed partial class RynthAiPlugin
         {
             if (c != 's' && c != 'w' && c != 'x' && c != 'z' && c != 'c')
             {
-                ChatLine("[RynthAi] Usage: /ra jump[swzxc] [heading] [holdtime]");
+                ReplyFail("[RynthAi] Usage: /ra jump[swzxc] [heading] [holdtime]");
                 return;
             }
         }
@@ -1009,7 +1048,7 @@ public sealed partial class RynthAiPlugin
                 heading = maybeHeading;
                 if (!int.TryParse(parts[3], out holdMs))
                 {
-                    ChatLine("[RynthAi] Usage: /ra jump[swzxc] [heading] [holdtime]");
+                    ReplyFail("[RynthAi] Usage: /ra jump[swzxc] [heading] [holdtime]");
                     return;
                 }
             }
@@ -1027,12 +1066,28 @@ public sealed partial class RynthAiPlugin
             }
             else
             {
-                ChatLine("[RynthAi] Usage: /ra jump[swzxc] [heading] [holdtime]");
+                ReplyFail("[RynthAi] Usage: /ra jump[swzxc] [heading] [holdtime]");
                 return;
             }
         }
 
-        _jumper.Start(letters, heading, holdMs);
+        if (_jumper.Start(letters, heading, holdMs))   // a refusal (busy, bad values) says why itself
+            ReplyOk(JumpLine(letters, heading, holdMs));
+    }
+
+    /// <summary>What a jump command answers: "Jumping forward, run (500 ms charge), facing 90°."</summary>
+    internal static string JumpLine(string letters, float? heading, int holdMs)
+    {
+        var ways = new List<string>();
+        if (letters.Contains('w')) ways.Add("forward");
+        if (letters.Contains('x')) ways.Add("backward");
+        if (letters.Contains('z')) ways.Add("left");
+        if (letters.Contains('c')) ways.Add("right");
+        if (letters.Contains('s')) ways.Add("run");
+        string how = ways.Count > 0 ? " " + string.Join(", ", ways) : " in place";
+        string charge = holdMs > 0 ? $" ({holdMs} ms charge)" : "";
+        string face = heading.HasValue ? $", facing {heading.Value:0.#}°" : "";
+        return $"[RynthAi] Jumping{how}{charge}{face}.";
     }
 
     // /ra follow [on|off|status] — track the fellowship leader's live position
@@ -1040,7 +1095,7 @@ public sealed partial class RynthAiPlugin
     private void HandleFollowCommand(string[] parts)
     {
         var settings = _dashboard?.Settings;
-        if (settings == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (settings == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
 
         string arg = parts.Length >= 3
             ? parts[2].ToLowerInvariant()
@@ -1053,7 +1108,7 @@ public sealed partial class RynthAiPlugin
                 settings.FollowNamedTargetId = 0;
                 settings.FollowMode = true;
                 settings.EnableNavigation = true;   // follow is a nav activity
-                ChatLine(settings.IsMacroRunning
+                ReplyOk(settings.IsMacroRunning
                     ? "[RynthAi] Follow ON — tracking the fellowship leader."
                     : "[RynthAi] Follow ON — start the bot to begin moving.");
                 break;
@@ -1061,7 +1116,7 @@ public sealed partial class RynthAiPlugin
                 settings.FollowMode = false;
                 settings.FollowTargetId = 0;
                 settings.FollowNamedTargetId = 0;
-                ChatLine("[RynthAi] Follow OFF.");
+                ReplyOk("[RynthAi] Follow OFF.");
                 break;
             case "status":
                 ChatLine($"[RynthAi] Follow: {(settings.FollowMode ? "ON" : "off")}  " +
@@ -1083,11 +1138,11 @@ public sealed partial class RynthAiPlugin
                             if (wo.Id != unchecked((int)_playerId) && wo.ObjectClass != RynthCore.Loot.AcObjectClass.Corpse
                                 && wo.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0) { who = wo; break; }
                 }
-                if (who == null) { ChatLine($"[RynthAi] Follow: no one named '{name}' nearby. Usage: /ra follow [on|off|status|<name>]"); break; }
+                if (who == null) { ReplyFail($"[RynthAi] Follow: no one named '{name}' nearby. Usage: /ra follow [on|off|status|<name>]"); break; }
                 settings.FollowNamedTargetId = unchecked((uint)who.Id);
                 settings.FollowMode = true;
                 settings.EnableNavigation = true;
-                ChatLine($"[RynthAi] Follow ON — following {who.Name}.");
+                ReplyOk($"[RynthAi] Follow ON — following {who.Name}.");
                 break;
             }
         }
@@ -1098,7 +1153,7 @@ public sealed partial class RynthAiPlugin
         var settings = _dashboard?.Settings;
         if (settings == null)
         {
-            ChatLine("[RynthAi] Settings not ready.");
+            ReplyFail("[RynthAi] Settings not ready.");
             return;
         }
 
@@ -1108,13 +1163,13 @@ public sealed partial class RynthAiPlugin
 
         if (!Host.HasGetPlayerPose || !Host.TryGetPlayerPose(out _, out _, out _, out float z, out _, out _, out _, out _))
         {
-            ChatLine("[RynthAi] Player pose unavailable.");
+            ReplyFail("[RynthAi] Player pose unavailable.");
             return;
         }
 
         if (!NavCoordinateHelper.TryGetNavCoords(Host, out double ns, out double ew))
         {
-            ChatLine("[RynthAi] Could not resolve current coords.");
+            ReplyFail("[RynthAi] Could not resolve current coords.");
             return;
         }
 
@@ -1128,22 +1183,22 @@ public sealed partial class RynthAiPlugin
         _dashboard?.AutoSaveRoute();
 
         int idx = settings.CurrentRoute.Points.Count - 1;
-        ChatLine($"[RynthAi] Added waypoint [{idx}] NS={ns:F3} EW={ew:F3} Z={z / 240.0:F4} to {navName}.");
+        ReplyOk($"[RynthAi] Added waypoint [{idx}] NS={ns:F3} EW={ew:F3} Z={z / 240.0:F4} to {navName}.");
     }
 
     private void HandleNavCommand(string[] parts)
     {
-        if (_dashboard == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (_dashboard == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
         string sub = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
         string rest = parts.Length > 3 ? string.Join(" ", parts, 3, parts.Length - 3) : "";
         switch (sub)
         {
             case "save":
-                ChatLine(_dashboard.SaveRoute(rest.Length > 0 ? rest : null));
+                ReplyResult(_dashboard.SaveRoute(rest.Length > 0 ? rest : null));
                 break;
             case "load":
-                if (rest.Length == 0) { ChatLine("[RynthAi] Usage: /ra nav load <name>"); break; }
-                ChatLine(_dashboard.LoadNavByName(rest));
+                if (rest.Length == 0) { ReplyFail("[RynthAi] Usage: /ra nav load <name>"); break; }
+                ReplyResult(_dashboard.LoadNavByName(rest));
                 break;
             case "list":
                 var names = _dashboard.NavFileNames();
@@ -1154,7 +1209,7 @@ public sealed partial class RynthAiPlugin
                 // Stopping and starting the macro keeps the route where it was (a finished Once
                 // route stays finished); this is the way to run it again from the top on purpose.
                 var route = _dashboard.Settings.CurrentRoute;
-                if (_navigationEngine == null) { ChatLine("[RynthAi] Navigation engine not ready."); break; }
+                if (_navigationEngine == null) { ReplyFail("[RynthAi] Navigation engine not ready."); break; }
                 if (!_navigationEngine.RestartRoute())
                 {
                     ChatLine(route != null && route.RouteType == NavRouteType.Follow && route.FollowTargetName.Length > 0
@@ -1162,41 +1217,45 @@ public sealed partial class RynthAiPlugin
                         : "[RynthAi] No nav route loaded to restart.");
                     break;
                 }
-                ChatLine($"[RynthAi] Nav route restarted from its first point ({route!.RouteType}, {route.Points.Count} waypoints).");
+                ReplyOk($"[RynthAi] Nav route restarted from its first point ({route!.RouteType}, {route.Points.Count} waypoints).");
                 break;
             }
             default:
-                ChatLine("[RynthAi] /ra nav save [name] | /ra nav load <name> | /ra nav list | /ra nav restart");
+                // Bare "/ra nav" asks what it takes; anything else is a wrong form.
+                const string navUsage = "[RynthAi] /ra nav save [name] | /ra nav load <name> | /ra nav list | /ra nav restart";
+                if (sub.Length == 0) ChatLine(navUsage);
+                else ReplyFail($"[RynthAi] Unknown /ra nav verb '{sub}'. Usage: /ra nav save [name] | load <name> | list | restart");
                 break;
         }
     }
 
     private void HandleMetaCommand(string[] parts)
     {
-        if (_dashboard == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (_dashboard == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
         string sub = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
         string rest = parts.Length > 3 ? string.Join(" ", parts, 3, parts.Length - 3) : "";
         switch (sub)
         {
             case "load":
             case "new":
-                if (rest.Length == 0) { ChatLine($"[RynthAi] Usage: /ra meta {sub} <name>"); break; }
-                ChatLine(_dashboard.LoadMetaByName(rest, createOnly: sub == "new"));
+                if (rest.Length == 0) { ReplyFail($"[RynthAi] Usage: /ra meta {sub} <name>"); break; }
+                ReplyResult(_dashboard.LoadMetaByName(rest, createOnly: sub == "new"));
                 break;
             case "list":
                 var names = _dashboard.MetaFileNames();
                 ChatLine(names.Count == 0 ? "[RynthAi] No metas in MetaFiles." : $"[RynthAi] Metas ({names.Count}): {string.Join(", ", names)}");
                 break;
             default:
-                ChatLine("[RynthAi] /ra meta load <name> | /ra meta new <name> | /ra meta list");
+                if (sub.Length == 0) ChatLine("[RynthAi] /ra meta load <name> | /ra meta new <name> | /ra meta list");
+                else ReplyFail($"[RynthAi] Unknown /ra meta verb '{sub}'. Usage: /ra meta load <name> | new <name> | list");
                 break;
         }
     }
 
     private void HandleScanCommand()
     {
-        if (_objectCache == null) { ChatLine("[RynthAi] Cache not ready."); return; }
-        if (_playerId == 0) { ChatLine("[RynthAi] Not logged in."); return; }
+        if (_objectCache == null) { ReplyFail("[RynthAi] Cache not ready."); return; }
+        if (_playerId == 0) { ReplyFail("[RynthAi] Not logged in."); return; }
 
         double maxDist = _dashboard?.Settings?.MonsterRange ?? 30.0;
         int playerId = (int)_playerId;
@@ -1268,7 +1327,7 @@ public sealed partial class RynthAiPlugin
     {
         if (_objectCache == null)
         {
-            ChatLine("[RynthAi] Cache not ready.");
+            ReplyFail("[RynthAi] Cache not ready.");
             return;
         }
 
@@ -1334,26 +1393,26 @@ public sealed partial class RynthAiPlugin
             if (mode is "on" or "1" or "true")
             {
                 _lootInspectMode = true;
-                ChatLine("[RynthAi] Loot inspect: ON — classifying each item you select.");
+                ReplyOk("[RynthAi] Loot inspect: ON — classifying each item you select.");
                 return;
             }
             if (mode is "off" or "0" or "false")
             {
                 _lootInspectMode = false;
-                ChatLine("[RynthAi] Loot inspect: OFF.");
+                ReplyOk("[RynthAi] Loot inspect: OFF.");
                 return;
             }
         }
 
         if (!Host.HasGetSelectedItemId)
         {
-            ChatLine("[RynthAi] Host does not expose selected item id.");
+            ReplyFail("[RynthAi] Host does not expose selected item id.");
             return;
         }
         uint selected = Host.GetSelectedItemId();
         if (selected == 0)
         {
-            ChatLine("[RynthAi] No item selected. Click an item in the world or inventory first.");
+            ReplyFail("[RynthAi] No item selected. Click an item in the world or inventory first.");
             return;
         }
         InspectLootRuleForItem(unchecked((int)selected));
@@ -1361,7 +1420,7 @@ public sealed partial class RynthAiPlugin
 
     internal void InspectLootRuleForItem(int itemId, bool quiet = false)
     {
-        if (_objectCache == null) return;
+        if (_objectCache == null) { if (!quiet) ReplyFail("[RynthAi] Loot inspect: the object cache isn't ready (log in first)."); return; }
         WorldObject? item = _objectCache[itemId];
         if (item == null)
         {
@@ -1396,13 +1455,13 @@ public sealed partial class RynthAiPlugin
 
         if (string.IsNullOrWhiteSpace(candidatePath))
         {
-            ChatLine("[RynthAi] No loot profile selected. Pick one in the dashboard or pass a full path.");
+            ReplyFail("[RynthAi] No loot profile selected. Pick one in the dashboard or pass a full path.");
             return false;
         }
 
         if (!System.IO.File.Exists(candidatePath))
         {
-            ChatLine($"[RynthAi] Loot profile not found: {candidatePath}");
+            ReplyFail($"[RynthAi] Loot profile not found: {candidatePath}");
             return false;
         }
 
@@ -1428,7 +1487,7 @@ public sealed partial class RynthAiPlugin
         }
         catch (Exception ex)
         {
-            ChatLine($"[RynthAi] Failed to load loot profile: {ex.Message}");
+            ReplyFail($"[RynthAi] Failed to load loot profile: {ex.Message}");
             return false;
         }
     }
@@ -1670,7 +1729,7 @@ public sealed partial class RynthAiPlugin
                         req.KeepCount = n;
                         break;
                     }
-                    ChatLine($"[RynthAi] loot add: '{parts[i]}'? Use keep, keep N, salvage, sell, read, name, like, t11 or preview.");
+                    ReplyFail($"[RynthAi] loot add: '{parts[i]}'? Use keep, keep N, salvage, sell, read, name, like, t11 or preview.");
                     return;
             }
         }
@@ -1735,7 +1794,7 @@ public sealed partial class RynthAiPlugin
     /// "it's just standing there" investigation into a single read. (D3)</summary>
     private void HandleWhyCommand()
     {
-        if (_combatManager == null) { ChatLine("[RynthAi] Combat manager not ready."); return; }
+        if (_combatManager == null) { ReplyFail("[RynthAi] Combat manager not ready."); return; }
         var s = _combatManager.GetStateSnapshot();
 
         int total  = _combatManager.LastScanTotalMonsters;
@@ -1810,7 +1869,7 @@ public sealed partial class RynthAiPlugin
     /// </summary>
     private void HandleGhostsCommand(string cmd, string[] parts)
     {
-        if (_combatManager == null) { ChatLine("[RynthAi] Combat manager not ready."); return; }
+        if (_combatManager == null) { ReplyFail("[RynthAi] Combat manager not ready."); return; }
         var ghosts = _combatManager.Ghosts;
         string sub = parts.Length >= 3 ? parts[2].ToLowerInvariant() : "";
         bool canRemove = Host.HasRemoveClientObject;
@@ -1821,12 +1880,12 @@ public sealed partial class RynthAiPlugin
             var wo = sel != 0 ? _objectCache?[(int)sel] : null;
             if (wo == null || (int)wo.ObjectClass != (int)AcObjectClass.Monster)
             {
-                ChatLine("[RynthAi] /ra ghost: select the monster that never takes a swing first.");
+                ReplyFail("[RynthAi] /ra ghost: select the monster that never takes a swing first.");
                 return;
             }
             double silent = _combatManager.ServerSilentMs((int)sel, RynthClock.Now);
             _combatManager.MarkGhost((int)sel, wo.Name, silent, "marked by /ra ghost");
-            ChatLine($"[RynthAi] 0x{sel:X8} '{wo.Name}' marked as a ghost" + (canRemove ? " and sent for removal from the client (see the log)." : " (this engine can't remove it from the client; it is skipped)."));
+            ReplyOk($"[RynthAi] 0x{sel:X8} '{wo.Name}' marked as a ghost" + (canRemove ? " and sent for removal from the client (see the log)." : " (this engine can't remove it from the client; it is skipped)."));
             return;
         }
 
@@ -1834,21 +1893,21 @@ public sealed partial class RynthAiPlugin
         {
             case "clear":
             {
-                if (!canRemove) { ChatLine("[RynthAi] This engine can't remove objects from the client (needs plugin API v83)."); return; }
+                if (!canRemove) { ReplyFail("[RynthAi] This engine can't remove objects from the client (needs plugin API v83)."); return; }
                 int sent = 0, refused = 0;
                 foreach (var g in ghosts.All.ToList())
                 {
                     int r = Host.RemoveClientObject((uint)g.Id);
                     if (r == 1 || r == 2) sent++; else refused++;
                 }
-                ChatLine($"[RynthAi] Ghosts: {sent} removed from the client" + (refused > 0 ? $", {refused} refused (the server talked about them recently, or not a creature - they stay skipped)." : "."));
+                ReplyOk($"[RynthAi] Ghosts: {sent} removed from the client" + (refused > 0 ? $", {refused} refused (the server talked about them recently, or not a creature - they stay skipped)." : "."));
                 return;
             }
             case "forget":
             {
                 int n = ghosts.Count;
                 ghosts.Clear();
-                ChatLine($"[RynthAi] Ghosts: {n} forgotten; they can be targeted again.");
+                ReplyOk($"[RynthAi] Ghosts: {n} forgotten; they can be targeted again.");
                 return;
             }
         }
@@ -1872,7 +1931,7 @@ public sealed partial class RynthAiPlugin
 
     private void HandleCombatStateCommand()
     {
-        if (_combatManager == null) { ChatLine("[RynthAi] Combat manager not ready."); return; }
+        if (_combatManager == null) { ReplyFail("[RynthAi] Combat manager not ready."); return; }
 
         var s = _combatManager.GetStateSnapshot();
         var now = RynthClock.Now;
@@ -1967,7 +2026,7 @@ public sealed partial class RynthAiPlugin
     private void HandleMacroRunCommand(string verb, string[] parts)
     {
         var dash = _dashboard;
-        if (dash == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (dash == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
         bool running = dash.Settings.IsMacroRunning;
 
         switch (verb)
@@ -1975,21 +2034,21 @@ public sealed partial class RynthAiPlugin
             case "start":
             case "resume":
                 _macroResumeAt = 0;
-                if (running) { ChatLine("[RynthAi] Macro already RUNNING."); return; }
+                if (running) { ReplyOk("[RynthAi] Macro already RUNNING."); return; }
                 if (RefuseMacroStartForVTank()) return;   // one bot per client (Decal bridge)
                 dash.TogglePanelMacro();
-                ChatLine("[RynthAi] Macro STARTED.");
+                ReplyOk("[RynthAi] Macro STARTED.");
                 return;
 
             case "stop":
                 _macroResumeAt = 0;
-                if (!running) { ChatLine("[RynthAi] Macro already STOPPED."); return; }
+                if (!running) { ReplyOk("[RynthAi] Macro already STOPPED."); return; }
                 dash.TogglePanelMacro();
                 // Kill autorun now rather than waiting out the nav engine's stop
                 // debounce — a /ra stop is usually issued because the box is
                 // running somewhere you don't want it to.
                 _navigationEngine?.Stop();
-                ChatLine("[RynthAi] Macro STOPPED.");
+                ReplyOk("[RynthAi] Macro STOPPED.");
                 return;
 
             case "pause":
@@ -2003,7 +2062,7 @@ public sealed partial class RynthAiPlugin
                     _navigationEngine?.Stop();
                 }
                 _macroResumeAt = CorpseNowMs + sec * 1000L;
-                ChatLine($"[RynthAi] Macro PAUSED — auto-resume in {sec}s ('/ra start' to resume now, '/ra stop' to cancel).");
+                ReplyOk($"[RynthAi] Macro PAUSED — auto-resume in {sec}s ('/ra start' to resume now, '/ra stop' to cancel).");
                 return;
             }
         }
@@ -2013,7 +2072,7 @@ public sealed partial class RynthAiPlugin
     /// the "bot just stands there" class and had no state surface of its own.</summary>
     private void HandleNavStateCommand()
     {
-        if (_navigationEngine == null) { ChatLine("[RynthAi] Navigation engine not ready."); return; }
+        if (_navigationEngine == null) { ReplyFail("[RynthAi] Navigation engine not ready."); return; }
         var n = _navigationEngine.GetStateSnapshot();
 
         ChatLine("[RynthAi] === Nav State ===");
@@ -2043,7 +2102,7 @@ public sealed partial class RynthAiPlugin
     /// where the combine sweep is, and the last thing that failed.</summary>
     private void HandleSalvageStateCommand()
     {
-        if (_salvageManager == null) { ChatLine("[RynthAi] Salvage manager not ready."); return; }
+        if (_salvageManager == null) { ReplyFail("[RynthAi] Salvage manager not ready."); return; }
         var v = _salvageManager.GetStateSnapshot();
 
         ChatLine("[RynthAi] === Salvage State ===");
@@ -2071,10 +2130,10 @@ public sealed partial class RynthAiPlugin
     private void HandleDumpInventoryCommand()
     {
         Host.Log("[RynthAi dumpinv] ENTRY");
-        if (_objectCache == null) { ChatLine("[RynthAi] Cache not ready."); return; }
+        if (_objectCache == null) { ReplyFail("[RynthAi] Cache not ready."); return; }
         uint playerId = Host.GetPlayerId();
         Host.Log($"[RynthAi dumpinv] playerId=0x{playerId:X8}");
-        if (playerId == 0) { ChatLine("[RynthAi] Not logged in."); return; }
+        if (playerId == 0) { ReplyFail("[RynthAi] Not logged in."); return; }
 
         // ── Part 1: Cached inventory — NO native ownership calls, just IDs and names ──
         Host.Log("[RynthAi dumpinv] Starting Part 1 - cache enum");
@@ -2102,7 +2161,7 @@ public sealed partial class RynthAiPlugin
         ChatLine($"[RynthAi] HasGetContainerContents={Host.HasGetContainerContents}");
         if (!Host.HasGetContainerContents)
         {
-            ChatLine("[RynthAi] GetContainerContents API not available.");
+            ReplyFail("[RynthAi] GetContainerContents API not available.");
             return;
         }
 
@@ -2168,30 +2227,30 @@ public sealed partial class RynthAiPlugin
     {
         if (parts.Length < 4)
         {
-            ChatLine("[RynthAi] Usage: /ra settings loadchar <name> | /ra settings savechar <name>");
+            ReplyFail("[RynthAi] Usage: /ra settings loadchar <name> | /ra settings savechar <name>");
             return;
         }
 
         string sub = parts[2].ToLower();
         if (sub != "loadchar" && sub != "savechar")
         {
-            ChatLine("[RynthAi] Usage: /ra settings loadchar <name> | /ra settings savechar <name>");
+            ReplyFail("[RynthAi] Usage: /ra settings loadchar <name> | /ra settings savechar <name>");
             return;
         }
 
         string name = string.Join(" ", parts, 3, parts.Length - 3).Trim();
         if (string.IsNullOrEmpty(name))
         {
-            ChatLine($"[RynthAi] Usage: /ra settings {sub} <name>");
+            ReplyFail($"[RynthAi] Usage: /ra settings {sub} <name>");
             return;
         }
 
-        if (_dashboard == null) { ChatLine("[RynthAi] Dashboard not ready."); return; }
+        if (_dashboard == null) { ReplyFail("[RynthAi] Dashboard not ready."); return; }
 
         string result = sub == "loadchar"
             ? _dashboard.LoadProfile(name)
             : _dashboard.SaveAsProfile(name);
-        ChatLine($"[RynthAi] {result}");
+        ReplyResult($"[RynthAi] {result}");
     }
 
     private void HandleClearBusyCommand()
@@ -2210,7 +2269,7 @@ public sealed partial class RynthAiPlugin
         if (_combatManager != null) _combatManager.BusyCount = 0;
         if (_buffManager != null)   _buffManager.BusyCount = 0;
         int after = Host.HasGetBusyState ? Host.GetBusyState() : -1;
-        ChatLine($"[RynthAi] Busy state cleared (was {before} → {after})");
+        ReplyOk($"[RynthAi] Busy state cleared (was {before} → {after})");
     }
 
     // Broader reset for the "AC wedged with item-action notice" failure mode
@@ -2221,7 +2280,7 @@ public sealed partial class RynthAiPlugin
     private void HandlePanicCommand()
     {
         int before = Host.HasGetBusyState ? Host.GetBusyState() : -1;
-        ChatLine("[RynthAi] PANIC — full AC state reset");
+        ReplyOk("[RynthAi] PANIC — full AC state reset");
         RynthCore.Plugin.Shared.ActionPacer.Forget("/ra panic");
 
         if (Host.HasCancelAttack)      Host.CancelAttack();
@@ -2241,13 +2300,14 @@ public sealed partial class RynthAiPlugin
         if (_buffManager != null)   _buffManager.BusyCount = 0;
 
         int after = Host.HasGetBusyState ? Host.GetBusyState() : -1;
-        ChatLine($"[RynthAi] Panic complete (busy {before} → {after}). If items still won't use or equip, /rc actionstate shows why.");
+        ReplyOk($"[RynthAi] Panic complete (busy {before} → {after}). If items still won't use or equip, /rc actionstate shows why.");
     }
 
     private void HandleForceBuff()
     {
-        if (_buffManager == null) { ChatLine("[RynthAi] Buff manager not ready."); return; }
+        if (_buffManager == null) { ReplyFail("[RynthAi] Buff manager not ready."); return; }
         _buffManager.RequestForceFullRebuff();   // chat commands run on AC's thread; applied on the pump
+        Reply.Answered();   // the pump says "Starting Force Rebuff..." on its next heartbeat
     }
 
     // /ra buff force | cancel | skipped: the same actions as /ra forcebuff, /ra cancelforcebuff
@@ -2261,8 +2321,9 @@ public sealed partial class RynthAiPlugin
             case "force":  HandleForceBuff(); break;
             case "cancel": HandleCancelForceBuff(); break;
             case "skipped":
-                if (_buffManager == null) { ChatLine("[RynthAi] Buff manager not ready."); break; }
+                if (_buffManager == null) { ReplyFail("[RynthAi] Buff manager not ready."); break; }
                 _buffManager.RequestSkipReport();   // chat commands run on AC's thread; the pump builds the list and answers
+                Reply.Answered();
                 break;
             default:
                 ChatLine("[RynthAi] /ra buff force    - recast every buff now, whatever time is left");
@@ -2274,8 +2335,9 @@ public sealed partial class RynthAiPlugin
 
     private void HandleCancelForceBuff()
     {
-        if (_buffManager == null) { ChatLine("[RynthAi] Buff manager not ready."); return; }
+        if (_buffManager == null) { ReplyFail("[RynthAi] Buff manager not ready."); return; }
         _buffManager.RequestCancelBuffing();
+        Reply.Answered();   // the pump says "Sequence cancelled." on its next heartbeat
     }
 
     private void HandleBusyInfoCommand()
@@ -2311,9 +2373,9 @@ public sealed partial class RynthAiPlugin
 
     private void HandleMapDumpCommand()
     {
-        if (_objectCache == null) { ChatLine("[RynthAi] Cache not ready."); return; }
-        if (!Host.HasGetObjectPosition) { ChatLine("[RynthAi] GetObjectPosition not available."); return; }
-        if (!Host.TryGetPlayerPose(out uint playerCell, out _, out _, out _, out _, out _, out _, out _)) { ChatLine("[RynthAi] Can't get player cell."); return; }
+        if (_objectCache == null) { ReplyFail("[RynthAi] Cache not ready."); return; }
+        if (!Host.HasGetObjectPosition) { ReplyFail("[RynthAi] GetObjectPosition not available."); return; }
+        if (!Host.TryGetPlayerPose(out uint playerCell, out _, out _, out _, out _, out _, out _, out _)) { ReplyFail("[RynthAi] Can't get player cell."); return; }
 
         uint landblock = playerCell >> 16;
         ChatLine($"[RynthAi] === Map Dump (landblock 0x{landblock:X4}) ===");
@@ -2447,7 +2509,7 @@ public sealed partial class RynthAiPlugin
     {
         if (parts.Length < 3)
         {
-            ChatLine("[RynthAi] Usage: /ra use[i|l][p] <name> [on <name2>]");
+            ReplyFail("[RynthAi] Usage: /ra use[i|l][p] <name> [on <name2>]");
             return;
         }
 
@@ -2461,37 +2523,37 @@ public sealed partial class RynthAiPlugin
             string tgtName = argStr.Substring(onIdx + 4).Trim();
             var src = FindObject(srcName, inv, land, partial);
             var tgt = FindObject(tgtName, inv, land, partial);
-            if (src == null) { ChatLine($"[RynthAi] Not found: '{srcName}'"); return; }
-            if (tgt == null) { ChatLine($"[RynthAi] Not found: '{tgtName}'"); return; }
+            if (src == null) { ReplyFail($"[RynthAi] Not found: '{srcName}'"); return; }
+            if (tgt == null) { ReplyFail($"[RynthAi] Not found: '{tgtName}'"); return; }
             Host.UseOnFor((uint)src.Id, (uint)tgt.Id, "Command", "/ra use X on Y", UseKind.Asked);
-            ChatLine($"[RynthAi] UseObjectOn: {src.Name} (0x{src.Id:X}) → {tgt.Name} (0x{tgt.Id:X})");
+            ReplyOk($"[RynthAi] UseObjectOn: {src.Name} (0x{src.Id:X}) → {tgt.Name} (0x{tgt.Id:X})");
             return;
         }
 
         var obj = FindObject(argStr.Trim(), inv, land, partial);
         if (obj == null)
         {
-            ChatLine($"[RynthAi] Not found: '{argStr.Trim()}'");
+            ReplyFail($"[RynthAi] Not found: '{argStr.Trim()}'");
             if (!partial) SuggestPartialMatches(argStr.Trim(), inv, land, parts[1].ToLowerInvariant());
             return;
         }
         Host.UseFor((uint)obj.Id, "Command", "/ra use", UseKind.Asked);
-        ChatLine($"[RynthAi] UseObject: {obj.Name} (0x{obj.Id:X})");
+        ReplyOk($"[RynthAi] UseObject: {obj.Name} (0x{obj.Id:X})");
     }
 
     private void HandleSelectCommand(string[] parts, bool inv, bool land, bool partial)
     {
         if (parts.Length < 3)
         {
-            ChatLine("[RynthAi] Usage: /ra select[i|l][p] <name>");
+            ReplyFail("[RynthAi] Usage: /ra select[i|l][p] <name>");
             return;
         }
 
         string name = string.Join(" ", parts, 2, parts.Length - 2).Trim();
         var obj = FindObject(name, inv, land, partial);
-        if (obj == null) { ChatLine($"[RynthAi] Not found: '{name}'"); return; }
+        if (obj == null) { ReplyFail($"[RynthAi] Not found: '{name}'"); return; }
         Host.SelectItem((uint)obj.Id);
-        ChatLine($"[RynthAi] Selected: {obj.Name} (0x{obj.Id:X})");
+        ReplyOk($"[RynthAi] Selected: {obj.Name} (0x{obj.Id:X})");
     }
 
     // ── Give commands ─────────────────────────────────────────────────────────
@@ -2553,8 +2615,8 @@ public sealed partial class RynthAiPlugin
 
     private void HandleGiveCommand(string[] parts, GiveItemMatch itemMatch, bool partialPlayer, bool allItems = false)
     {
-        if (_objectCache == null) { ChatLine("[RynthAi] Object cache not ready."); return; }
-        if (!Host.HasMoveItemExternal)  { ChatLine("[RynthAi] MoveItemExternal not available."); return; }
+        if (_objectCache == null) { ReplyFail("[RynthAi] Object cache not ready."); return; }
+        if (!Host.HasMoveItemExternal)  { ReplyFail("[RynthAi] MoveItemExternal not available."); return; }
 
         string argStr = string.Join(" ", parts, 2, parts.Length - 2).Trim();
 
@@ -2562,7 +2624,7 @@ public sealed partial class RynthAiPlugin
         int toIdx = argStr.LastIndexOf(" to ", StringComparison.OrdinalIgnoreCase);
         if (toIdx < 0)
         {
-            ChatLine("[RynthAi] Usage: /ra give[a][p|P|pp|r] [count] <item> to <player>");
+            ReplyFail("[RynthAi] Usage: /ra give[a][p|P|pp|r] [count] <item> to <player>");
             return;
         }
 
@@ -2571,7 +2633,7 @@ public sealed partial class RynthAiPlugin
 
         if (string.IsNullOrEmpty(itemPart) || string.IsNullOrEmpty(playerPart))
         {
-            ChatLine("[RynthAi] Item name and player name must not be empty.");
+            ReplyFail("[RynthAi] Item name and player name must not be empty.");
             return;
         }
 
@@ -2595,14 +2657,14 @@ public sealed partial class RynthAiPlugin
                 : string.Equals(wo.Name, playerPart, StringComparison.OrdinalIgnoreCase);
             if (match) { target = wo; break; }
         }
-        if (target == null) { ChatLine($"[RynthAi] Target not found: '{playerPart}'"); return; }
+        if (target == null) { ReplyFail($"[RynthAi] Target not found: '{playerPart}'"); return; }
 
         // Compile regex if needed
         Regex? rx = null;
         if (itemMatch == GiveItemMatch.Regex)
         {
             try   { rx = new Regex(itemPart, RegexOptions.IgnoreCase); }
-            catch { ChatLine($"[RynthAi] Invalid regex: {itemPart}"); return; }
+            catch { ReplyFail($"[RynthAi] Invalid regex: {itemPart}"); return; }
         }
 
         // Collect matching carried stacks (never worn or wielded gear)
@@ -2615,7 +2677,7 @@ public sealed partial class RynthAiPlugin
         });
         if (!allItems && matches.Count > maxCount) matches.RemoveRange(maxCount, matches.Count - maxCount);
 
-        if (matches.Count == 0) { ChatLine($"[RynthAi] No items found matching '{itemPart}'"); return; }
+        if (matches.Count == 0) { ReplyFail($"[RynthAi] No items found matching '{itemPart}'"); return; }
 
         if (allItems)
         {
@@ -2651,9 +2713,9 @@ public sealed partial class RynthAiPlugin
             string skippedNote = protectedCount > 0 ? $", {protectedCount} protected stack(s) skipped" : "";
             string capNote = capped ? $", capped at {MaxGiveAllPerCommand}: run it again for the rest" : "";
             if (toGive.Count == 0)
-                ChatLine($"[RynthAi] Nothing to give: every item matching '{itemPart}' is protected ({protectedCount} skipped).");
+                ReplyFail($"[RynthAi] Nothing to give: every item matching '{itemPart}' is protected ({protectedCount} skipped).");
             else
-                ChatLine($"[RynthAi] Queued {toGive.Count} stack(s) matching '{itemPart}' → {target.Name}{skippedNote}{capNote}");
+                ReplyOk($"[RynthAi] Queued {toGive.Count} stack(s) matching '{itemPart}' → {target.Name}{skippedNote}{capNote}");
         }
         else if (countGiven)
         {
@@ -2675,13 +2737,13 @@ public sealed partial class RynthAiPlugin
             {
                 // Through the queue: an NPC that takes one item per give needs the repeat-until-met loop.
                 EnqueueGive((uint)gives[0].Item.Id, (uint)target.Id, gives[0].Amount);
-                ChatLine($"[RynthAi] Giving {gives[0].Amount} x '{gives[0].Item.Name}' to {target.Name}");
+                ReplyOk($"[RynthAi] Giving {gives[0].Amount} x '{gives[0].Item.Name}' to {target.Name}");
             }
             else
             {
                 foreach (var (item, amount) in gives)
                     EnqueueGive((uint)item.Id, (uint)target.Id, amount);
-                ChatLine($"[RynthAi] Queued {maxCount - remaining} item(s) from {gives.Count} stack(s) matching '{itemPart}' → {target.Name}");
+                ReplyOk($"[RynthAi] Queued {maxCount - remaining} item(s) from {gives.Count} stack(s) matching '{itemPart}' → {target.Name}");
             }
         }
         else
@@ -2689,7 +2751,7 @@ public sealed partial class RynthAiPlugin
             var item = matches[0];
             int stackSize = Math.Max(1, item.Values(LongValueKey.StackCount, 1));
             GiveItem((uint)item.Id, (uint)target.Id, stackSize, stackSize);
-            ChatLine($"[RynthAi] Giving '{item.Name}' to {target.Name}");
+            ReplyOk($"[RynthAi] Giving '{item.Name}' to {target.Name}");
         }
     }
 
@@ -2710,12 +2772,12 @@ public sealed partial class RynthAiPlugin
 
     private void HandleGiveProfileCommand(string[] parts, bool partialPlayer)
     {
-        if (_objectCache == null) { ChatLine("[RynthAi] Object cache not ready."); return; }
-        if (!Host.HasMoveItemExternal)  { ChatLine("[RynthAi] MoveItemExternal not available."); return; }
+        if (_objectCache == null) { ReplyFail("[RynthAi] Object cache not ready."); return; }
+        if (!Host.HasMoveItemExternal)  { ReplyFail("[RynthAi] MoveItemExternal not available."); return; }
 
         string argStr = string.Join(" ", parts, 2, parts.Length - 2).Trim();
         int toIdx = argStr.LastIndexOf(" to ", StringComparison.OrdinalIgnoreCase);
-        if (toIdx < 0) { ChatLine("[RynthAi] Usage: /ra ig[p] <lootProfile> to <player>"); return; }
+        if (toIdx < 0) { ReplyFail("[RynthAi] Usage: /ra ig[p] <lootProfile> to <player>"); return; }
 
         string profileArg = argStr.Substring(0, toIdx).Trim();
         string playerPart = argStr.Substring(toIdx + 4).Trim();
@@ -2730,7 +2792,7 @@ public sealed partial class RynthAiPlugin
         if (!isJson && !profilePath.EndsWith(".utl", StringComparison.OrdinalIgnoreCase))
             profilePath += ".utl";
 
-        if (!System.IO.File.Exists(profilePath)) { ChatLine($"[RynthAi] Profile not found: {profilePath}"); return; }
+        if (!System.IO.File.Exists(profilePath)) { ReplyFail($"[RynthAi] Profile not found: {profilePath}"); return; }
 
         // Find target in landscape by name (player, NPC, container, etc.)
         WorldObject? target = null;
@@ -2741,7 +2803,7 @@ public sealed partial class RynthAiPlugin
                 : string.Equals(wo.Name, playerPart, StringComparison.OrdinalIgnoreCase);
             if (match) { target = wo; break; }
         }
-        if (target == null) { ChatLine($"[RynthAi] Target not found: '{playerPart}'"); return; }
+        if (target == null) { ReplyFail($"[RynthAi] Target not found: '{playerPart}'"); return; }
 
         // Load profile and enqueue all matching items through the throttled give queue,
         // mirroring the givea* commands so the server isn't flooded with MoveItemExternal calls.
@@ -2788,7 +2850,7 @@ public sealed partial class RynthAiPlugin
     private void HandleDungeonNavCommand(string[] parts)
     {
         var settings = _dashboard?.Settings;
-        if (settings == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (settings == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
 
         if (parts.Length < 4 ||
             !double.TryParse(parts[2], System.Globalization.NumberStyles.Float,
@@ -2796,35 +2858,35 @@ public sealed partial class RynthAiPlugin
             !double.TryParse(parts[3], System.Globalization.NumberStyles.Float,
                              System.Globalization.CultureInfo.InvariantCulture, out double destEW))
         {
-            ChatLine("[RynthAi] Usage: /ra dunnav <NS> <EW>  (e.g. /ra dunnav 12.5 -34.2)");
+            ReplyFail("[RynthAi] Usage: /ra dunnav <NS> <EW>  (e.g. /ra dunnav 12.5 -34.2)");
             return;
         }
 
         if (!Host.TryGetPlayerPose(out uint playerCell, out _, out _, out float playerWZ, out _, out _, out _, out _))
         {
-            ChatLine("[RynthAi] Cannot get player position."); return;
+            ReplyFail("[RynthAi] Cannot get player position."); return;
         }
 
         uint landblockKey = playerCell >> 16;
         bool isDungeon    = (playerCell & 0xFFFF) >= 0x0100;
         if (!isDungeon)
         {
-            ChatLine("[RynthAi] dunnav requires you to be inside a dungeon (cell >= 0x0100).");
+            ReplyFail("[RynthAi] dunnav requires you to be inside a dungeon (cell >= 0x0100).");
             return;
         }
 
         var cellDat = _raycast?.GeometryLoader.CellDat;
         if (cellDat == null || !cellDat.IsLoaded)
         {
-            ChatLine("[RynthAi] Cell dat not loaded — raycast system must be initialized first."); return;
+            ReplyFail("[RynthAi] Cell dat not loaded — raycast system must be initialized first."); return;
         }
 
         if (!NavCoordinateHelper.TryGetNavCoords(Host, out double playerNS, out double playerEW))
         {
-            ChatLine("[RynthAi] Cannot get player nav coordinates."); return;
+            ReplyFail("[RynthAi] Cannot get player nav coordinates."); return;
         }
 
-        ChatLine($"[RynthAi] DunNav: building graph for landblock 0x{landblockKey:X4}...");
+        ReplyOk($"[RynthAi] DunNav: building graph for landblock 0x{landblockKey:X4}...");
 
         var route = DungeonPathfinder.NavigateTo(
             landblockKey, cellDat,
@@ -2835,7 +2897,7 @@ public sealed partial class RynthAiPlugin
 
         if (route == null)
         {
-            ChatLine($"[RynthAi] DunNav: no walkable path found — destination may only be reachable via a drop (graph={nodeCount} nodes, dest={destNS:F2}N/{destEW:F2}E).");
+            ReplyFail($"[RynthAi] DunNav: no walkable path found — destination may only be reachable via a drop (graph={nodeCount} nodes, dest={destNS:F2}N/{destEW:F2}E).");
             return;
         }
 
@@ -2845,7 +2907,7 @@ public sealed partial class RynthAiPlugin
         settings.ActiveNavIndex   = 0;
         settings.EnableNavigation = true;
 
-        ChatLine($"[RynthAi] DunNav: {nodeCount} cells, path={pathLength} steps → navigating to {destNS:F2}N/{destEW:F2}E");
+        ReplyOk($"[RynthAi] DunNav: {nodeCount} cells, path={pathLength} steps → navigating to {destNS:F2}N/{destEW:F2}E");
     }
 
     private void HandleDungeonNavPatrolCommand(string[] parts) => HandleDungeonNavPatrol();
@@ -2927,13 +2989,13 @@ public sealed partial class RynthAiPlugin
             return;
         }
         var settings = _dashboard?.Settings;
-        if (settings == null) { if (!isRebuild) ChatLine("[RynthAi] Settings not ready."); return; }
+        if (settings == null) { if (!isRebuild) ReplyFail("[RynthAi] Settings not ready."); return; }
         var patrolOptions = PatrolOptionsFrom(settings);
 
         if (!Host.TryGetPlayerPose(out uint playerCell, out float playerLocalX, out float playerLocalY,
                                    out float patrolWZ, out _, out _, out _, out _))
         {
-            if (!isRebuild) ChatLine("[RynthAi] Cannot get player position."); return;
+            if (!isRebuild) ReplyFail("[RynthAi] Cannot get player position."); return;
         }
 
         uint landblockKey = playerCell >> 16;
@@ -2942,23 +3004,23 @@ public sealed partial class RynthAiPlugin
         {
             // Left the dungeon (e.g. portalled out) — stop tracking; nothing to rebuild.
             _dunPatrolActive = false;
-            if (!isRebuild) ChatLine("[RynthAi] dunnav-patrol requires you to be inside a dungeon (cell >= 0x0100).");
+            if (!isRebuild) ReplyFail("[RynthAi] dunnav-patrol requires you to be inside a dungeon (cell >= 0x0100).");
             return;
         }
 
         var cellDat = _raycast?.GeometryLoader.CellDat;
         if (cellDat == null || !cellDat.IsLoaded)
         {
-            if (!isRebuild) ChatLine("[RynthAi] Cell dat not loaded — raycast system must be initialized first."); return;
+            if (!isRebuild) ReplyFail("[RynthAi] Cell dat not loaded — raycast system must be initialized first."); return;
         }
 
         if (!NavCoordinateHelper.TryGetNavCoords(Host, out double playerNS, out double playerEW))
         {
-            if (!isRebuild) ChatLine("[RynthAi] Cannot get player nav coordinates."); return;
+            if (!isRebuild) ReplyFail("[RynthAi] Cannot get player nav coordinates."); return;
         }
 
         var graph = DungeonPathfinder.GetGraph(landblockKey, cellDat);
-        if (graph.Count == 0) { if (!isRebuild) ChatLine("[RynthAi] DunNav-Patrol: dungeon graph is empty."); return; }
+        if (graph.Count == 0) { if (!isRebuild) ReplyFail("[RynthAi] DunNav-Patrol: dungeon graph is empty."); return; }
 
         // Prefer the actual cell the player is standing in. NearestCell-by-distance can
         // pick a same-floor cell across an interior wall when the player is hugging a
@@ -2971,7 +3033,7 @@ public sealed partial class RynthAiPlugin
         else
         {
             startCell = DungeonPathfinder.NearestCell(graph, playerNS, playerEW, patrolWZ);
-            if (startCell == 0) { if (!isRebuild) ChatLine("[RynthAi] DunNav-Patrol: cannot find starting cell."); return; }
+            if (startCell == 0) { if (!isRebuild) ReplyFail("[RynthAi] DunNav-Patrol: cannot find starting cell."); return; }
         }
 
         // Pull in hazards discovered on previous visits to this dungeon so the route avoids
@@ -3085,7 +3147,7 @@ public sealed partial class RynthAiPlugin
         {
             _dunPatrolActive = false;
             if (!isRebuild)
-                ChatLine("[RynthAi] DunNav-Patrol: no walkable route from here — you're standing in or surrounded by a hazard. Move to safe ground and retry.");
+                ReplyFail("[RynthAi] DunNav-Patrol: no walkable route from here — you're standing in or surrounded by a hazard. Move to safe ground and retry.");
             return;
         }
 
@@ -3140,7 +3202,7 @@ public sealed partial class RynthAiPlugin
             string layout = geometry != null && doorwayPts > 0
                 ? $", {doorwayPts} of them lined up on doorways"
                 : geometry == null ? " (dungeon map not loaded yet: cell-centre route)" : "";
-            ChatLine($"[RynthAi] DunNav-Patrol: {graph.Count} cells, {route.Points.Count} waypoints{layout} → circular patrol started{skipNote}{hazardNote}{portalNote}");
+            ReplyOk($"[RynthAi] DunNav-Patrol: {graph.Count} cells, {route.Points.Count} waypoints{layout} → circular patrol started{skipNote}{hazardNote}{portalNote}");
         }
     }
 
@@ -3343,7 +3405,7 @@ public sealed partial class RynthAiPlugin
         var portalDat = _raycast?.GeometryLoader?.PortalDat;
         if (cellDat == null || portalDat == null || !cellDat.IsLoaded)
         {
-            ChatLine("[RynthAi] Geometry not loaded — raycast must be initialized first."); return;
+            ReplyFail("[RynthAi] Geometry not loaded — raycast must be initialized first."); return;
         }
 
         var surfaces = DungeonHazardSurfaces.GetCellSurfaces(cellDat, portalDat, cell);
@@ -3371,18 +3433,18 @@ public sealed partial class RynthAiPlugin
         var portalDat = _raycast?.GeometryLoader?.PortalDat;
         if (cellDat == null || portalDat == null || !cellDat.IsLoaded)
         {
-            ChatLine("[RynthAi] Geometry not loaded — raycast must be initialized first."); return;
+            ReplyFail("[RynthAi] Geometry not loaded — raycast must be initialized first."); return;
         }
 
         var learned = DungeonHazardSurfaces.LearnFromCell(cell, _raycast?.GeometryLoader?.DungeonLOS, portalDat);
         DungeonPathfinder.InvalidateCache();
         if (learned.Count == 0)
         {
-            ChatLine("[RynthAi] No rare floor texture found here to flag. If this IS lava, use /ra hazard surfaces then texture add 0x<id>.");
+            ReplyFail("[RynthAi] No rare floor texture found here to flag. If this IS lava, use /ra hazard surfaces then texture add 0x<id>.");
             return;
         }
-        foreach (uint t in learned) ChatLine($"[RynthAi] Flagged hazard texture 0x{t:X8}.");
-        ChatLine("[RynthAi] Re-run /ra dunnav-patrol to rebuild the route avoiding every cell with that floor.");
+        foreach (uint t in learned) ReplyOk($"[RynthAi] Flagged hazard texture 0x{t:X8}.");
+        ReplyOk("[RynthAi] Re-run /ra dunnav-patrol to rebuild the route avoiding every cell with that floor.");
     }
 
     private void HandleHazardTextureCommand(string[] parts)
@@ -3394,10 +3456,10 @@ public sealed partial class RynthAiPlugin
             case "add":
             {
                 if (parts.Length < 5 || !TryParseHexUint(parts[4], out uint tex))
-                { ChatLine("[RynthAi] Usage: /ra hazard texture add 0x<OrigTextureId>"); return; }
+                { ReplyFail("[RynthAi] Usage: /ra hazard texture add 0x<OrigTextureId>"); return; }
                 bool added = DungeonHazardSurfaces.AddHazardTexture(tex);
                 DungeonPathfinder.InvalidateCache();
-                ChatLine(added
+                ReplyOk(added
                     ? $"[RynthAi] Added hazard texture 0x{tex:X8}. Re-run /ra dunnav-patrol to rebuild around it."
                     : $"[RynthAi] Texture 0x{tex:X8} was already flagged.");
                 break;
@@ -3407,10 +3469,10 @@ public sealed partial class RynthAiPlugin
             case "remove":
             {
                 if (parts.Length < 5 || !TryParseHexUint(parts[4], out uint tex))
-                { ChatLine("[RynthAi] Usage: /ra hazard texture del 0x<OrigTextureId>"); return; }
+                { ReplyFail("[RynthAi] Usage: /ra hazard texture del 0x<OrigTextureId>"); return; }
                 bool removed = DungeonHazardSurfaces.RemoveHazardTexture(tex);
                 DungeonPathfinder.InvalidateCache();
-                ChatLine(removed ? $"[RynthAi] Removed hazard texture 0x{tex:X8}." : $"[RynthAi] Texture 0x{tex:X8} was not flagged.");
+                ReplyOk(removed ? $"[RynthAi] Removed hazard texture 0x{tex:X8}." : $"[RynthAi] Texture 0x{tex:X8} was not flagged.");
                 break;
             }
             default:
@@ -3443,11 +3505,11 @@ public sealed partial class RynthAiPlugin
         cell = 0;
         if (!Host.TryGetPlayerPose(out uint c, out _, out _, out _, out _, out _, out _, out _))
         {
-            ChatLine("[RynthAi] Cannot read player position."); return false;
+            ReplyFail("[RynthAi] Cannot read player position."); return false;
         }
         if ((c & 0xFFFF) < 0x0100)
         {
-            ChatLine("[RynthAi] You must be inside a dungeon (cell >= 0x0100) to mark hazards."); return false;
+            ReplyFail("[RynthAi] You must be inside a dungeon (cell >= 0x0100) to mark hazards."); return false;
         }
         cell = c;
         return true;
@@ -3463,9 +3525,9 @@ public sealed partial class RynthAiPlugin
         if (!TryGetCurrentDungeonCell(out uint cell)) return;
         bool added = _objectCache?.AddHazardCell(cell) ?? false;
         if (added)
-            ChatLine($"[RynthAi] Marked cell 0x{cell:X8} as a hazard — patrol will avoid it (saved). Re-run /ra dunnav-patrol to rebuild now.");
+            ReplyOk($"[RynthAi] Marked cell 0x{cell:X8} as a hazard — patrol will avoid it (saved). Re-run /ra dunnav-patrol to rebuild now.");
         else
-            ChatLine($"[RynthAi] Cell 0x{cell:X8} was already marked as a hazard.");
+            ReplyOk($"[RynthAi] Cell 0x{cell:X8} was already marked as a hazard.");
     }
 
     private void UnmarkCurrentCellHazard()
@@ -3481,7 +3543,7 @@ public sealed partial class RynthAiPlugin
     {
         if (!Host.TryGetPlayerPose(out uint c, out _, out _, out _, out _, out _, out _, out _))
         {
-            ChatLine("[RynthAi] Cannot read player position."); return;
+            ReplyFail("[RynthAi] Cannot read player position."); return;
         }
         uint lb = c >> 16;
         var cells = _objectCache?.GetHazardCellsForLandblock(lb) ?? new System.Collections.Generic.List<uint>();
@@ -3497,7 +3559,7 @@ public sealed partial class RynthAiPlugin
 
     private void ScanNearbyLandscape()
     {
-        if (_objectCache == null) { ChatLine("[RynthAi] Object cache not ready."); return; }
+        if (_objectCache == null) { ReplyFail("[RynthAi] Object cache not ready."); return; }
         int shown = 0;
         ChatLine("[RynthAi] Nearby landscape objects (name → cell):");
         foreach (var wo in _objectCache.GetLandscape())

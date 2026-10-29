@@ -86,5 +86,6 @@ public partial class BuffManager
         _swapTestAt = Now;
         LastWandSwapTrail = "";
         _host.Log($"[SwapTest] start: '{name}' (mode {CurrentCombatMode})");
+        _host.WriteToChat($"[RynthAi] Swap test: {name}; the result follows.", 1);   // /ra swaptest's answer
     }
 }

@@ -91,6 +91,8 @@ internal static unsafe class FakeHost
     // ── What tested code sent to the engine ───────────────────────────────────
     public static readonly List<string> Logs = new();
     public static readonly List<string> Chat = new();
+    /// <summary>The chat type (colour) of each <see cref="Chat"/> line, in the same order.</summary>
+    public static readonly List<int> ChatTypes = new();
     public static readonly List<string> ChatCommands = new();
     /// <summary>Every SetAutoRun call, in order; AutoRun is the last value sent.</summary>
     public static readonly List<bool> AutoRunCalls = new();
@@ -302,7 +304,7 @@ internal static unsafe class FakeHost
         ServerTime = 0; Vitae = 1.0f; Portaling = false; PlayerPose = default; HasPose = true;
         Vitals = default; BaseVitals = default; WorldName = ""; AccountName = "";
         HeadingDeg = 0; Wcids.Clear(); Spellbook.Clear(); PlayerIdValue = 0;
-        Logs.Clear(); Chat.Clear(); ChatCommands.Clear(); AfterCastSpell = null;
+        Logs.Clear(); Chat.Clear(); ChatTypes.Clear(); ChatCommands.Clear(); AfterCastSpell = null;
         AutoRunCalls.Clear(); AutoRun = false; Jumps = 0; TapJumpCalls = false; TapJumps = 0; TapJumpRefuse = false; Turns = 0; Casts.Clear(); CastRefused = false; CastsRefused = 0; StopCalls = false; Stops = 0; SetMotionCalls = false; MotionCalls.Clear(); AttackSendCalls = false; AttackCalls.Clear(); Sent.Clear(); GiveCalls = false; Gives.Clear(); GiveLands = true; GiveHandler = null;
         Uses.Clear(); IdRequests.Clear(); TargetCalls = false; HealthQueries.Clear(); IdTimes.Clear(); Moves.Clear(); Appraised.Clear(); WeaponCalls = false; ContentsCalls = false; CombatModeValue = 1;
         RequestIdAccepts = true; RefusedIdRequests = 0; UseObjectAccepts = true;
@@ -608,7 +610,7 @@ internal static unsafe class FakeHost
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    private static int WriteToChat(IntPtr text, int type) { Chat.Add(Marshal.PtrToStringUni(text) ?? ""); return 1; }
+    private static int WriteToChat(IntPtr text, int type) { Chat.Add(Marshal.PtrToStringUni(text) ?? ""); ChatTypes.Add(type); return 1; }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static int SendPluginCommand(IntPtr plugin, IntPtr action, IntPtr value)

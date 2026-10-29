@@ -47,7 +47,7 @@ public sealed partial class RynthAiPlugin
         uint me = Host.GetPlayerId();
         if (me == 0)
         {
-            ChatLine("[RynthAi] Not logged in.");
+            ReplyFail("[RynthAi] Not logged in.");
             return;
         }
         uint target = me;

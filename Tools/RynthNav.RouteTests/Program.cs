@@ -48,6 +48,7 @@ internal static partial class Program
         Run(nameof(ArrowSingleTarget), ArrowSingleTarget);
         Run(nameof(ArrowAlongRoute), ArrowAlongRoute);
         Run(nameof(FavoritesAndRecent), FavoritesAndRecent);
+        Run(nameof(CommandReplies), CommandReplies);
         Run(nameof(CoordinateParsing), CoordinateParsing);
         Run(nameof(BearingAndDistance), BearingAndDistance);
         Run(nameof(RealData), RealData);
@@ -510,6 +511,31 @@ internal static partial class Program
         Check(back.Recent.Count == AtlasStore.MaxRecent && back.Recent[0].Name == "P5", "recent survives in order");
         Near(back.Favorites[0].Ns, 42.08, 1e-9, "coordinates survive");
         Check(back.RemoveFavorite("HOLTBURG") && back.Favorites.Count == 0, "remove by name");
+    }
+
+    /// <summary>
+    /// The /rnav words that used to answer nothing (2026-10-28: every command answers): "recent" without
+    /// "clear", "arrive" alone or with a wrong number, an unknown word. The rest of /rnav already
+    /// answered; RunCommand itself needs the game, so its lines are checked here.
+    /// </summary>
+    private static void CommandReplies()
+    {
+        var s = new AtlasStore();
+        Check(NavReplies.Recent(s.Recent).StartsWith("no recent places", StringComparison.Ordinal), "recent: none yet");
+        s.Touch(new SavedPlace { Name = "Holtburg", Ns = 42.08, Ew = 33.6 });
+        s.Touch(new SavedPlace { Name = "Yaraq", Ns = -21.5, Ew = -1.8 });
+        string recent = NavReplies.Recent(s.Recent);
+        Check(recent.Contains("(2): Yaraq, Holtburg") && recent.Contains("/rnav recent clear"), "recent: newest first, and how to clear: " + recent);
+
+        foreach (var (typed, ok) in new[] { ("10", true), ("2", true), ("200", true), ("1", false), ("201", false), ("far", false), ("", false) })
+        {
+            Check(NavReplies.TryArrive(typed, out double yd) == ok, $"arrive '{typed}' {(ok ? "taken" : "refused")}");
+            if (ok) Check(NavReplies.Arrived(yd).Contains($"{yd:F0} yd"), $"arrive {typed}: the new distance");
+            else Check(NavReplies.ArriveUsage(typed, 10).Contains("/rnav arrive <yards 2-200>"), $"arrive '{typed}': the usage");
+        }
+        Check(NavReplies.ArriveUsage("far", 10).StartsWith("'far' isn't 2-200 yd.", StringComparison.Ordinal), "arrive far: says why");
+        Check(NavReplies.ArriveUsage("", 12).Contains("within 12 yd"), "arrive alone: the distance now");
+        Check(NavReplies.Unknown("gogo") == "unknown 'gogo' — /rnav help", "an unknown word");
     }
 
     // ── Coordinates ──────────────────────────────────────────────────────────

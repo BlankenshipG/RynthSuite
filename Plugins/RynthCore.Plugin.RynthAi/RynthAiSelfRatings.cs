@@ -62,6 +62,7 @@ public sealed partial class RynthAiPlugin
             return;
         }
         Host.RequestId(me);
+        Reply.Answered();   // the ratings follow when the ID data arrives
         _selfRatingsRequestedAt = now;
         ItemInfoLog($"self 0x{me:X8}: identify requested for the ratings");
     }

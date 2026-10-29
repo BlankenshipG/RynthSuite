@@ -165,6 +165,7 @@ internal static class Program
         DifficultyTierTests.Register(runner);
         TickIsolationTests.Register(runner);
         ChoresInFightTests.Register(runner);
+        CommandReplyTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }

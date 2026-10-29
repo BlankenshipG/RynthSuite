@@ -44,7 +44,7 @@ public sealed partial class RynthNetPlugin
             {
                 if (!CommandParser.TagsAndRest(args, out List<string> tags, out string after))
                 {
-                    ChatLine("usage: /rn bct <tag[,tag]> [delayMs] <command>");
+                    ChatFail("usage: /rn bct <tag[,tag]> [delayMs] <command>");
                     break;
                 }
                 CommandParser.DelayAndCommand(after, out int delay, out string command);
@@ -57,12 +57,12 @@ public sealed partial class RynthNetPlugin
                 var known = node.GetPeers().Select(p => p.Identity.Character).Where(c => c.Length > 0);
                 if (!CommandParser.NameAndCommand(args, known, out string name, out string command))
                 {
-                    ChatLine("usage: /rn tell <character>[,] <command>");
+                    ChatFail("usage: /rn tell <character>[,] <command>");
                     break;
                 }
                 if (!node.GetPeers().Any(p => string.Equals(p.Identity.Character, name, StringComparison.OrdinalIgnoreCase)))
                 {
-                    ChatLine($"no client is playing {name} (/rn list).");
+                    ChatFail($"no client is playing {name} (/rn list).");
                     break;
                 }
                 Report(SendCommand(new NetTarget(TargetKind.Character, name), command, 0, includeSelf: false), command, name);
@@ -93,7 +93,7 @@ public sealed partial class RynthNetPlugin
                 break;
             case "followme":
             {
-                if (!_loggedIn) { ChatLine("log in first."); break; }
+                if (!_loggedIn) { ChatFail("log in first."); break; }
                 NetTarget target = args.Length > 0 && CommandParser.TagsAndRest(args, out List<string> tags, out _)
                     ? new NetTarget(TargetKind.Tags, string.Join(",", tags)) : NetTarget.All;
                 string command = "/ra follow " + _character;
@@ -104,7 +104,7 @@ public sealed partial class RynthNetPlugin
             case "useselected":
             {
                 uint sel = Host.GetSelectedItemId();
-                if (sel == 0) { ChatLine("select something first."); break; }
+                if (sel == 0) { ChatFail("select something first."); break; }
                 NetTarget target = args.Length > 0 && CommandParser.TagsAndRest(args, out List<string> tags, out _)
                     ? new NetTarget(TargetKind.Tags, string.Join(",", tags)) : NetTarget.All;
                 // The same command UtilityBelt's network window sends (RynthAi's meta expressions run it).
@@ -113,7 +113,7 @@ public sealed partial class RynthNetPlugin
                 break;
             }
             default:
-                ChatLine($"unknown command '{verb}'. /rn help lists them.");
+                ChatFail($"unknown command '{verb}'. /rn help lists them.");
                 break;
         }
     }
@@ -134,7 +134,7 @@ public sealed partial class RynthNetPlugin
             {
                 if (!CommandParser.TagsAndRest(args, out List<string> tags, out string after))
                 {
-                    ChatLine("usage: /ub bct <tag[,tag]> [millisecondDelay] <command>");
+                    ChatFail("usage: /ub bct <tag[,tag]> [millisecondDelay] <command>");
                     break;
                 }
                 CommandParser.DelayAndCommand(after, out int delay, out string command);
@@ -146,7 +146,7 @@ public sealed partial class RynthNetPlugin
                 ListClients(node, args);
                 break;
             default:
-                ChatLine($"/ub {verb} isn't a network command.");
+                ChatFail($"/ub {verb} isn't a network command.");
                 break;
         }
     }
@@ -154,7 +154,7 @@ public sealed partial class RynthNetPlugin
     private void Report(List<string>? names, string command, string to)
     {
         if (names == null) return;
-        if (names.Count == 0) { ChatLine($"nobody to send '{command}' to ({to}). /rn list shows the clients."); return; }
+        if (names.Count == 0) { ChatFail($"nobody to send '{command}' to ({to}). /rn list shows the clients."); return; }
         ChatLine($"'{command}' -> {string.Join(", ", names)}");
     }
 
@@ -188,7 +188,7 @@ public sealed partial class RynthNetPlugin
     {
         List<string> filter = new();
         if (args.Length > 0) CommandParser.TagsAndRest(args, out filter, out _);
-        if (!node.IsRunning) { ChatLine("offline: " + (_offlineReason.Length > 0 ? _offlineReason : "stopped")); return; }
+        if (!node.IsRunning) { ChatFail("offline: " + (_offlineReason.Length > 0 ? _offlineReason : "stopped")); return; }
 
         var peers = new List<PeerInfo>(node.GetPeers());
         peers.Sort((a, b) => string.Compare(a.Identity.Character, b.Identity.Character, StringComparison.OrdinalIgnoreCase));
@@ -252,7 +252,7 @@ public sealed partial class RynthNetPlugin
     private void TagCommand(string args)
     {
         string verb = FirstWord(args, out string value).ToLowerInvariant();
-        if (!_loggedIn) { ChatLine("log in first: tags belong to a character."); return; }
+        if (!_loggedIn) { ChatFail("log in first: tags belong to a character."); return; }
         switch (verb)
         {
             case "":
@@ -260,12 +260,13 @@ public sealed partial class RynthNetPlugin
                 ChatLine(MyTags.Count > 0 ? $"{_character}'s tags: {string.Join(", ", MyTags)}" : $"{_character} has no tags. /rn tag add <tag>");
                 break;
             case "add":
-                ChatLine(SetTag(value, on: true, out string whyAdd) ? $"tagged {_character}: {string.Join(", ", MyTags)}" : whyAdd);
+                if (SetTag(value, on: true, out string whyAdd)) ChatLine($"tagged {_character}: {string.Join(", ", MyTags)}");
+                else ChatFail(whyAdd);
                 break;
             case "remove":
             case "rm":
             case "del":
-                if (!SetTag(value, on: false, out string whyRemove)) ChatLine(whyRemove);
+                if (!SetTag(value, on: false, out string whyRemove)) ChatFail(whyRemove);
                 else ChatLine(MyTags.Count > 0 ? $"{_character}'s tags: {string.Join(", ", MyTags)}" : $"{_character} has no tags now.");
                 break;
             case "clear":
@@ -273,7 +274,7 @@ public sealed partial class RynthNetPlugin
                 if (UpdateSettings(s => s.Character(key).Tags.Clear())) ChatLine($"{_character} has no tags now.");
                 break;
             default:
-                ChatLine("usage: /rn tag [list | add <tag> | remove <tag> | clear]");
+                ChatFail("usage: /rn tag [list | add <tag> | remove <tag> | clear]");
                 break;
         }
     }
@@ -308,7 +309,7 @@ public sealed partial class RynthNetPlugin
     {
         if (!node.IsRunning)
         {
-            ChatLine("offline: " + (_offlineReason.Length > 0 ? _offlineReason : "stopped"));
+            ChatFail("offline: " + (_offlineReason.Length > 0 ? _offlineReason : "stopped"));
             return;
         }
         RynthNetPolicy p = MyPolicy;
@@ -332,7 +333,7 @@ public sealed partial class RynthNetPlugin
         }
         else if (a is "on" or "off" or "default")
         {
-            if (!_loggedIn) { ChatLine("log in first: the policy belongs to a character (the file's \"defaults\" cover the rest)."); return; }
+            if (!_loggedIn) { ChatFail("log in first: the policy belongs to a character (the file's \"defaults\" cover the rest)."); return; }
             if (a == "default")
                 UpdateSettings(s => { if (s.Characters.TryGetValue(key, out RynthNetCharacter? c)) c.Policy = null; });
             else
@@ -348,7 +349,7 @@ public sealed partial class RynthNetPlugin
         }
         else if (a.Length > 0)
         {
-            ChatLine("usage: /rn remote on|off|default   /rn remote log on|off");
+            ChatFail("usage: /rn remote on|off|default   /rn remote log on|off");
             return;
         }
         ChatLine($"commands from your other clients {(MyPolicy.AcceptRemoteCommands ? "run here" : "are refused here")}" +
@@ -368,10 +369,10 @@ public sealed partial class RynthNetPlugin
         }
         if (verb is not ("add" or "remove" or "rm" or "clear") || (verb != "clear" && value.Length == 0))
         {
-            ChatLine($"usage: /rn {name} [list | add <x> | remove <x> | clear] - {meaning}");
+            ChatFail($"usage: /rn {name} [list | add <x> | remove <x> | clear] - {meaning}");
             return;
         }
-        if (!_loggedIn) { ChatLine("log in first: the policy belongs to a character (the file's \"defaults\" cover the rest)."); return; }
+        if (!_loggedIn) { ChatFail("log in first: the policy belongs to a character (the file's \"defaults\" cover the rest)."); return; }
         bool had = select(MyPolicy).Exists(x => string.Equals(x, value, StringComparison.OrdinalIgnoreCase));
         string key = CharacterKey;
         bool saved = UpdateSettings(s =>
@@ -385,7 +386,7 @@ public sealed partial class RynthNetPlugin
         });
         if (!saved) return;
         List<string> now = select(MyPolicy);
-        if (verb is "remove" or "rm" && !had) ChatLine($"{name} has no '{value}'.");
+        if (verb is "remove" or "rm" && !had) ChatFail($"{name} has no '{value}'.");
         else ChatLine(now.Count == 0 ? $"{name}: empty." : $"{name}: {string.Join(" | ", now)}");
     }
 }

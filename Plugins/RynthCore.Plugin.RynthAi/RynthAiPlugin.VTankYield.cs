@@ -25,7 +25,7 @@ public sealed partial class RynthAiPlugin
         if (dash == null)
             return false;
         _vtankYield.Poll(Host);
-        if (!_vtankYield.RefuseStart(dash.Settings, ChatLine))
+        if (!_vtankYield.RefuseStart(dash.Settings, ReplyFail))   // a refusal: said even to a meta (once a minute)
             return false;
         Host.Log("[RynthAi] VTank yield: macro start refused (VTank's macro runs).");
         return true;
@@ -71,16 +71,18 @@ public sealed partial class RynthAiPlugin
     private void HandleVTankYieldCommand(string[] parts)
     {
         var dash = _dashboard;
-        if (dash == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (dash == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
         if (parts.Length >= 3)
         {
             string v = parts[2].ToLowerInvariant();
             if (v is "on" or "1" or "true") dash.Settings.YieldToVTank = true;
             else if (v is "off" or "0" or "false") dash.Settings.YieldToVTank = false;
-            else { ChatLine("[RynthAi] Usage: /ra vtankyield [on|off]"); return; }
+            else { ReplyFail("[RynthAi] Usage: /ra vtankyield [on|off]"); return; }
             dash.SaveSettings();
         }
         _vtankYield.Poll(Host);
-        ChatLine(_vtankYield.Describe(dash.Settings.YieldToVTank, Host.HasGetVTankState));
+        string line = _vtankYield.Describe(dash.Settings.YieldToVTank, Host.HasGetVTankState);
+        if (parts.Length >= 3) ReplyOk(line);   // set: what it is now
+        else ChatLine(line);                    // the status asked for
     }
 }

@@ -496,22 +496,22 @@ public sealed partial class RynthAiPlugin
     /// <summary>"/ra huds|itemhud|remote|miniremote [show|hide|toggle]".</summary>
     private void HandleHudCommand(string which, string mode)
     {
-        if (_huds == null) { ChatLine("[RynthAi] HUDs not ready (log in first)."); return; }
+        if (_huds == null) { ReplyFail("[RynthAi] HUDs not ready (log in first)."); return; }
         ChatLine("[RynthAi] " + _huds.HandleCommand(which, mode));
     }
 
     /// <summary>"/ra itemhud add &lt;name&gt;" and the inventory panel's "Add to item count HUD". Pump thread.</summary>
     private void HandleItemHudAdd(string name)
     {
-        if (_huds == null) { ChatLine("[RynthAi] HUDs not ready (log in first)."); return; }
-        if (string.IsNullOrWhiteSpace(name)) { ChatLine("[RynthAi] Usage: /ra itemhud add <item name>"); return; }
+        if (_huds == null) { ReplyFail("[RynthAi] HUDs not ready (log in first)."); return; }
+        if (string.IsNullOrWhiteSpace(name)) { ReplyFail("[RynthAi] Usage: /ra itemhud add <item name>"); return; }
         ChatLine("[RynthAi] " + _huds.AddToItemHudAndShow(name));
     }
 
     /// <summary>/ra translate ... — forwards to the chat translator.</summary>
     private void HandleTranslateCommand(string[] parts)
     {
-        if (_translator == null) { ChatLine("[RynthAi] Chat translator not ready (log in first)."); return; }
+        if (_translator == null) { ReplyFail("[RynthAi] Chat translator not ready (log in first)."); return; }
         _translator.HandleCommand(parts.Length > 2 ? parts[2..] : Array.Empty<string>(), ChatLine);
     }
 
@@ -529,8 +529,10 @@ public sealed partial class RynthAiPlugin
         string arg = parts.Length > 2 ? parts[2] : "status";
         bool? state = arg.Equals("toggle", StringComparison.OrdinalIgnoreCase) ? !RynthLog.DebugToChat : ParseOnOff(arg);
         if (state.HasValue) RynthLog.DebugToChat = state.Value;
-        ChatLine($"[RynthAi] Debug-to-chat is {(RynthLog.DebugToChat ? "ON" : "off")}."
-                 + (RynthLog.DebugToChat && RynthLog.TracedCategories().Count == 0 ? " (no categories traced — see /ra trace list)" : ""));
+        string line = $"[RynthAi] Debug-to-chat is {(RynthLog.DebugToChat ? "ON" : "off")}."
+                      + (RynthLog.DebugToChat && RynthLog.TracedCategories().Count == 0 ? " (no categories traced — see /ra trace list)" : "");
+        if (state.HasValue) ReplyOk(line);   // a change
+        else ChatLine(line);                 // the status asked for
     }
 
     /// <summary>"/ra trace &lt;cat|all|ilt|list&gt; [on|off|status]".</summary>
@@ -560,13 +562,13 @@ public sealed partial class RynthAiPlugin
         {
             if (!state.HasValue) { foreach (string l in RynthLog.StatusLines()) ChatLine(l); return; }
             int n = RynthLog.SetTracingByPrefix(string.Empty, state.Value);
-            ChatLine($"[RynthAi] Tracing {(state.Value ? "enabled" : "disabled")} for {n} categories.");
+            ReplyOk($"[RynthAi] Tracing {(state.Value ? "enabled" : "disabled")} for {n} categories.");
             return;
         }
 
         if (!RynthLog.TryParseCategory(target, out LogCat cat))
         {
-            ChatLine($"[RynthAi] Unknown trace category '{target}'. Use /ra trace list.");
+            ReplyFail($"[RynthAi] Unknown trace category '{target}'. Use /ra trace list.");
             return;
         }
 
@@ -578,7 +580,7 @@ public sealed partial class RynthAiPlugin
 
         bool enable = state ?? !RynthLog.IsTracing(cat);
         RynthLog.SetTracing(cat, enable);
-        ChatLine($"[RynthAi] Trace {cat}: {(enable ? "ON" : "off")} → {RynthLog.TraceDirectory}");
+        ReplyOk($"[RynthAi] Trace {cat}: {(enable ? "ON" : "off")} → {RynthLog.TraceDirectory}");
     }
 
     /// <summary>"/ra logs [open|prune|flush|file on|off]".</summary>
@@ -593,20 +595,22 @@ public sealed partial class RynthAiPlugin
                     RynthLog.Flush();
                     System.IO.Directory.CreateDirectory(RynthLog.Directory);
                     System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{RynthLog.Directory}\"") { UseShellExecute = true });
+                    ReplyOk($"[RynthAi] Opened {RynthLog.Directory}.");
                 }
-                catch (Exception ex) { RynthLog.Exception(LogCat.Commands, ex, "logs open"); ChatLine($"[RynthAi] Could not open {RynthLog.Directory}: {ex.Message}"); }
+                catch (Exception ex) { RynthLog.Exception(LogCat.Commands, ex, "logs open"); ReplyFail($"[RynthAi] Could not open {RynthLog.Directory}: {ex.Message}"); }
                 break;
             case "prune":
-                ChatLine($"[RynthAi] Pruned {RynthLog.Prune()} old diagnostics file(s).");
+                ReplyOk($"[RynthAi] Pruned {RynthLog.Prune()} old diagnostics file(s).");
                 break;
             case "flush":
                 RynthLog.Flush();
-                ChatLine("[RynthAi] Diagnostics flushed to disk.");
+                ReplyOk("[RynthAi] Diagnostics flushed to disk.");
                 break;
             case "file":
                 bool? state = ParseOnOff(parts.Length > 3 ? parts[3] : null);
                 if (state.HasValue) RynthLog.FileLogAll = state.Value;
-                ChatLine($"[RynthAi] Daily RynthAi log file is {(RynthLog.FileLogAll ? "ON" : "off")}.");
+                string fileLine = $"[RynthAi] Daily RynthAi log file is {(RynthLog.FileLogAll ? "ON" : "off")}.";
+                if (state.HasValue) ReplyOk(fileLine); else ChatLine(fileLine);
                 break;
             default:
                 foreach (string l in RynthLog.StatusLines()) ChatLine(l);
@@ -617,21 +621,21 @@ public sealed partial class RynthAiPlugin
     /// <summary>/ra navrec [on|off] — toggles route recording.</summary>
     private void HandleNavRecordCommand(string[] parts)
     {
-        if (_dashboard == null) return;
+        if (_dashboard == null) { ReplyFail("[RynthAi] Settings not ready (log in first)."); return; }
         var s = _dashboard.Settings;
         string arg = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
         s.IsRecordingNav = arg switch { "on" => true, "off" => false, _ => !s.IsRecordingNav };
-        ChatLine($"[RynthAi] Nav recording {(s.IsRecordingNav ? "ON — walk the route; portals are captured" : "OFF")}.");
+        ReplyOk($"[RynthAi] Nav recording {(s.IsRecordingNav ? "ON — walk the route; portals are captured" : "OFF")}.");
     }
 
     /// <summary>/ra navhud [on|off] — shows or hides the navigation HUD window.</summary>
     private void HandleNavHudCommand(string[] parts)
     {
-        if (_dashboard == null) return;
+        if (_dashboard == null) { ReplyFail("[RynthAi] Settings not ready (log in first)."); return; }
         var o = _dashboard.Settings.NavOverlay;
         string arg = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
         o.ShowHud = arg switch { "on" => true, "off" => false, _ => !o.ShowHud };
-        ChatLine($"[RynthAi] Nav HUD {(o.ShowHud ? "shown" : "hidden")}.");
+        ReplyOk($"[RynthAi] Nav HUD {(o.ShowHud ? "shown" : "hidden")}.");
     }
 
     /// <summary>/ra navtrail [on|off|toggle|clear] — breadcrumb tracking switch, wipe, or a status report.</summary>
@@ -641,16 +645,16 @@ public sealed partial class RynthAiPlugin
         if (arg == "clear")
         {
             _navBreadcrumbs?.RequestClear();
-            ChatLine("[RynthAi] Breadcrumb trail cleared.");
+            ReplyOk("[RynthAi] Breadcrumb trail cleared.");
             return;
         }
         if (arg is "on" or "off" or "toggle")
         {
-            if (_dashboard == null) return;
+            if (_dashboard == null) { ReplyFail("[RynthAi] Settings not ready (log in first)."); return; }
             var o = _dashboard.Settings.NavOverlay;
             o.TrackBreadcrumbs = arg switch { "on" => true, "off" => false, _ => !o.TrackBreadcrumbs };
             _dashboard.SaveSettings();
-            ChatLine($"[RynthAi] Breadcrumb tracking {(o.TrackBreadcrumbs ? "on" : "off")}.");
+            ReplyOk($"[RynthAi] Breadcrumb tracking {(o.TrackBreadcrumbs ? "on" : "off")}.");
             return;
         }
         bool tracking = _dashboard?.Settings.NavOverlay.TrackBreadcrumbs ?? false;
@@ -662,11 +666,11 @@ public sealed partial class RynthAiPlugin
     /// <summary>/ra navoverlay [on|off] — route overlay (rings / lines, waypoint labels, guide line); no argument toggles.</summary>
     private void HandleNavOverlayCommand(string[] parts)
     {
-        if (_dashboard == null) return;
+        if (_dashboard == null) { ReplyFail("[RynthAi] Settings not ready (log in first)."); return; }
         var o = _dashboard.Settings.NavOverlay;
         string arg = parts.Length > 2 ? parts[2].ToLowerInvariant() : "";
         o.ShowRouteMarkers = arg switch { "on" => true, "off" => false, _ => !o.ShowRouteMarkers };
         _dashboard.SaveSettings();
-        ChatLine($"[RynthAi] Route overlay {(o.ShowRouteMarkers ? "on" : "off")}.");
+        ReplyOk($"[RynthAi] Route overlay {(o.ShowRouteMarkers ? "on" : "off")}.");
     }
 }

@@ -105,7 +105,7 @@ internal static class MetaSampleCompatTests
         FakeHost.GroundContainer = 0x80F00001;
         w.Ub("/ub close corpse");
         Check.True(FakeHost.Closes.Contains(0x80F00001), "closes the open container");
-        Check.False(FakeHost.Chat.Any(c => c.Contains("Unrecognized")), "never 'Unrecognized /ub command'");
+        Check.False(FakeHost.Chat.Any(c => c.Contains("Unrecognized") || c.Contains("Unknown /ub command")), "never 'Unknown /ub command'");
     }
 
     private static void UbExpression()

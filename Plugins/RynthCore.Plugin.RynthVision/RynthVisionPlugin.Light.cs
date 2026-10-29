@@ -170,9 +170,10 @@ public sealed partial class RynthVisionPlugin
                 if (_hostsWindow && Host.SetPanelOpen(VisionManifest.Title, RynthPanelOpen.Open) >= 0)
                 {
                     RequestTab(VisionTab.Light);
+                    LightChat("Vision window shown, on its Light tab.");
                     return;
                 }
-                LightChat("The Vision window's Light tab needs a newer RynthCore (plugin API 91); " + DungeonLight.Usage);
+                LightChat("The Vision window's Light tab needs a newer RynthCore (plugin API 91); " + DungeonLight.Usage, ok: false);
                 return;
             case LightCommandKind.Status:
                 LightChat("Dungeon light: " + DungeonLight.StatusLine(CurrentLightStatus(Host.HasAmbientLight)));
@@ -181,21 +182,18 @@ public sealed partial class RynthVisionPlugin
                 LightChat(DungeonLight.Usage);
                 return;
             default:
-                LightChat(cmd.Error + " " + DungeonLight.Usage);
+                LightChat(cmd.Error + " " + DungeonLight.Usage, ok: false);
                 return;
         }
         s.Save();
         MarkSettingsChanged();
-        string summary = $"Dungeon light {(s.LightOn ? "on" : "off")}: strength {s.LightStrength}%, " +
-            $"{DungeonLight.ScopeWord((LightScope)s.LightScope)}, {DungeonLight.ColorName(s.LightColorArgb)}.";
-        if (!Host.HasAmbientLight)
-            summary += " Needs a newer RynthCore (plugin API 91) to light anything.";
-        LightChat(summary);
+        LightChat(DungeonLight.Summary(s.LightOn, s.LightStrength, (LightScope)s.LightScope, s.LightColorArgb, Host.HasAmbientLight));
     }
 
-    private void LightChat(string text)
+    /// <summary>/rv light's answer: the log, and chat through the reply queue (Plugins/Shared/CommandReply.cs).</summary>
+    private void LightChat(string text, bool ok = true)
     {
         Host.Log("[RynthVision] " + text);
-        if (Host.HasWriteToChat) Host.WriteToChat("[RynthVision] " + text, 1);
+        _reply.Say(ok, text);
     }
 }
