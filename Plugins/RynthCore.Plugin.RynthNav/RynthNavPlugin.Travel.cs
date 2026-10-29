@@ -120,6 +120,7 @@ public sealed partial class RynthNavPlugin
 
     private void InitTravel()
     {
+        LoadCustomPortals();
         string path = NavFile("locations.json");
         Task.Run(() =>
         {
@@ -156,7 +157,7 @@ public sealed partial class RynthNavPlugin
 
     private void OnLoginTravel()
     {
-        _charKey = ""; _playerName = ""; _known = null; _nextKnownMs = 0;
+        _charKey = ""; _playerName = ""; _known = null; _nextKnownMs = 0; _server = ""; _usedPortalSeen = false;
         _pendingRecallSlot = null; _castRecallSpell = 0; _pendingTie = null; _selfCastMs = 0;
         _trkHaveLast = false; _trkPortaling = false;
     }
@@ -165,8 +166,9 @@ public sealed partial class RynthNavPlugin
     {
         _recallWait = false;
         _trkHaveLast = false; _trkPortaling = false;
-        _known = null; _charKey = "";
+        _known = null; _charKey = ""; _server = ""; _usedPortalSeen = false;
         SaveStores(force: true);
+        TickCustomPortals(force: true);
     }
 
     // ── Tick ─────────────────────────────────────────────────────────────────
@@ -203,7 +205,8 @@ public sealed partial class RynthNavPlugin
         bool teleported = TrackTeleport(now);
         UpdateArrow(teleported);
 
-        if (now >= _nextSaveMs) { _nextSaveMs = now + 3000; SaveStores(force: false); }
+        if (now >= _nextSaveMs) { _nextSaveMs = now + 3000; SaveStores(force: false); TickCustomPortals(); }
+        else if (!_customLoaded) TickCustomPortals();
         RebuildTravelJson();
     }
 
@@ -214,6 +217,7 @@ public sealed partial class RynthNavPlugin
         Host.TryGetWorldName(out string world);
         _playerName = name;
         _charKey = (world.Length > 0 ? world : "?") + "|" + name;
+        if (world.Trim().Length > 0) _server = world.Trim();
     }
 
     private void RefreshKnownSpells(long now)
@@ -287,6 +291,7 @@ public sealed partial class RynthNavPlugin
                 _trkPortalBeside = _selfCastMs != 0 && now - _selfCastMs < HandCastWindowMs && _trkHaveLast && LivePortalWithin(_trkLastWx, _trkLastWy, PortalBesideUnits);
                 _trkHavePre = _trkHaveLast;
                 _trkPreCell = _trkLastCell; _trkPreWx = _trkLastWx; _trkPreWy = _trkLastWy;
+                NoteUsedPortal(_trkHaveLast, _trkLastCell, _trkLastWx, _trkLastWy);   // a custom portal's landing (CustomPortals.cs)
             }
             return false;
         }
@@ -300,6 +305,7 @@ public sealed partial class RynthNavPlugin
             double preWx = _trkPortaling ? _trkPreWx : _trkLastWx, preWy = _trkPortaling ? _trkPreWy : _trkLastWy;
             long startMs = _trkPortaling ? _trkPortalStartMs : now;
             bool portalBeside = _trkPortaling && _trkPortalBeside;
+            if (!_trkPortaling) _usedPortalSeen = false;   // a jump with no portal space seen: no portal is known
             _trkPortaling = false;
             if (now - _trkLastTeleportMs > 2000)
             {
@@ -362,7 +368,8 @@ public sealed partial class RynthNavPlugin
         // Not a recall we know of: a portal, most likely. Portal Recall goes back to where
         // the last portal dropped you. A landing at a known recall's spot (a recall cast by
         // hand, or dying and waking at the lifestone) isn't a portal.
-        if (landing.OnMap && LandsLikeARecall(landing)) return;
+        if (landing.OnMap && LandsLikeARecall(landing)) { _usedPortalSeen = false; return; }
+        LearnCustomPortal(landing);
         string label = landing.Label;
         if (havePre && IsOnMap(preCell))
         {
@@ -1003,6 +1010,7 @@ public sealed partial class RynthNavPlugin
         "/rnav route <place|coords> — plan a route (portals and recalls), no walking\n" +
         "/rnav atlas <search> — find places | fav [place] — favorite | recalls [on|off] | tie 1|2|lifestone\n" +
         "/rnav goto <coords> | preview <coords> | portals on|off | stop | here | load | test | navdata\n" +
+        "/rnav portals scan [yd] | list | forget <name> | clear confirm — this server's own portals (a landing is learned the first time you take one)\n" +
         "/rnav avoid — show; avoid portals on|off|<m> | walls on|off|<m> | corners <m>\n" +
         "/rnav markers on|off | markers labels on|off | markers guide on|off — the trip on the ground\n" +
         "/rnav mesh on|off | floor on|off | walls on|off | radius <m> | triangles <n> — draw the navmesh: green floor, red walls\n" +
@@ -1035,11 +1043,7 @@ public sealed partial class RynthNavPlugin
             case "navdata": Say($"tiles and Atlas folder: {NavDataDir} ({NavConfig.Source}); route graph: {_graphStatus}; Town Network: {_townNetStatus}"); break;
             case "avoid": CmdAvoid(rest); break;
             case "aphus": CmdAphus(rest.Trim().ToLowerInvariant()); break;
-            case "portals":
-                _portalsEnabled = !rest.Equals("off", StringComparison.OrdinalIgnoreCase);
-                NavDataConfig.WriteSwitch("portals", _portalsEnabled);
-                Say($"portal and recall routing {(_portalsEnabled ? "ON" : "OFF")} for walking (go/goto)");
-                break;
+            case "portals": CmdPortals(rest); break;
             case "stop": DoMove(5); Say("stopped"); break;
             case "goto":
             case "go":

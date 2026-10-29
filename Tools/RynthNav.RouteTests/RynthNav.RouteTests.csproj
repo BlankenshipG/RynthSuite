@@ -28,6 +28,7 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TownNet.cs" Link="Linked\TownNet.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PortalAvoid.cs" Link="Linked\PortalAvoid.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TravelPlan.cs" Link="Linked\TravelPlan.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\CustomPortals.cs" Link="Linked\CustomPortals.cs" />
     <!-- The goto's autorun, sent when it changes (AutoRunGateTests). -->
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\AutoRunGate.cs" Link="Linked\AutoRunGate.cs" />
     <!-- The planned trip, its path, the path markers and "save as nav route" (TripExportTests). -->

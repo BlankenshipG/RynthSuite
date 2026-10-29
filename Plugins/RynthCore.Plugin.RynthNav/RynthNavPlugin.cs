@@ -941,10 +941,11 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
                                                  NavGraph.LandblockAt(NavCoords.WorldX(bew), NavCoords.WorldY(bns))) != false;
         bool? land = startOnMap && g != null ? g.SameLand(CurrentLandblock, NavGraph.LandblockAt(NavCoords.WorldX(goalEw), NavCoords.WorldY(goalNs))) : null;
 
-        TravelPlan.Result r = TravelPlan.Plan(_portalsEnabled ? _portals : null, RecallPlanner.Links(recalls), hub,
+        List<PortalLink>? portals = _portalsEnabled ? RoutePortals() : null;
+        TravelPlan.Result r = TravelPlan.Plan(portals, RecallPlanner.Links(recalls), hub,
             _portalsEnabled, _recallsEnabled, startOnMap, startNs, startEw, goalNs, goalEw, canWalk, land, name);
 
-        Host.Log($"[RynthNav] plan {name}: {r.Basis}; {(_portalsEnabled ? $"{_portals?.Count ?? 0} portals" : "no portals")}, "
+        Host.Log($"[RynthNav] plan {name}: {r.Basis}; {(_portalsEnabled ? $"{portals?.Count ?? 0} portals ({(portals?.Count ?? 0) - (_portals?.Count ?? 0)} custom for {(_server.Length > 0 ? _server : "?")})" : "no portals")}, "
                + $"{recalls.Count} recall(s) ready" + (recalls.Count > 0 ? " (" + string.Join(", ", recalls.ConvertAll(o => o.Name)) + ")" : "")
                + $", Town Network {(hub == null ? (_portalsEnabled ? "not loaded" : "unused") : $"{hub.Entries.Count} entries / {hub.Exits.Count} exits")}"
                + $", land check {(canWalk == null ? "off (no route graph)" : "on")}"

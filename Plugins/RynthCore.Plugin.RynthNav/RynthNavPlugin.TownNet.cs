@@ -271,8 +271,8 @@ public sealed partial class RynthNavPlugin
             List<RouteStep> rest;
             double restCost;
             int used = 0;
-            if (_portalsEnabled && _portals is { Count: > 0 })
-                rest = PortalRoute.Plan(_portals, null, hx.DstNs, hx.DstEw, goalNs, goalEw, out restCost, out used);
+            if (_portalsEnabled && RoutePortals() is { Count: > 0 } routePortals)
+                rest = PortalRoute.Plan(routePortals, null, hx.DstNs, hx.DstEw, goalNs, goalEw, out restCost, out used);
             else
             {
                 restCost = NavCoords.Distance(hx.DstNs, hx.DstEw, goalNs, goalEw);

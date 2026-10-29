@@ -58,6 +58,7 @@ internal static partial class Program
         RunTownNet();
         RunAvoid();
         RunTravelPlan();
+        RunCustomPortals();
         RunTripExport();
         RunAutoRunGate();
 
