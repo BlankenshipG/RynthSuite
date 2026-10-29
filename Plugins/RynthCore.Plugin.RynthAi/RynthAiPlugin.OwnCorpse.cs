@@ -247,6 +247,7 @@ public sealed partial class RynthAiPlugin
         _currentLootItemPipelined       = pipelined;
         _currentLootItemStackable       = stackable;
         _currentLootItemErrSeqAtSend    = errSeqAtSend;
+        NoteLootMoveSent();
         _currentLootItemActionLabel     = "Recover";
         _currentLootItemName            = name;
         _currentLootItemIsSalvage       = false;   // never salvage your own things

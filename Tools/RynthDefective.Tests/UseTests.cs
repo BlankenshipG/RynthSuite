@@ -174,6 +174,189 @@ namespace RynthDefective.Tests
             Eq(BusyRule.Decide(Facts(bot: false, botMs: 50), out _), BusyHold.None, "RynthAi idle");
         }
 
+        // RynthAi holds for the press (RynthAi.Yield, 2026-10-29) and says what it has in flight.
+        private static BusyFacts Paced(int count = 0, long steady = 0, int leftover = 0, long own = long.MaxValue / 4,
+            bool anim = false, long animMs = 0, bool? botWait = null, bool paced = false, long pacedMs = 0) =>
+            new(count, steady, leftover, own, anim, animMs, botWait, 0, paced, pacedMs);
+
+        private static void BusyRulePaced()
+        {
+            Eq(BusyRule.Decide(Paced(), out BusyStale st), BusyHold.None, "idle: send");
+            Eq(BusyRule.Decide(Paced(count: 2, steady: 100), out st), BusyHold.None,
+                "a count that just moved, with nothing of ours or RynthAi's in flight (a death's, a corpse open's): send");
+            Eq(st, BusyStale.Count, "ignored as a leftover");
+            Eq(BusyRule.Decide(Paced(count: 1, steady: 100, own: 500), out _), BusyHold.Busy, "right after our own use: wait");
+            Eq(BusyRule.Decide(Paced(count: 1, steady: 100, own: BusyRule.OwnTrustMs), out _), BusyHold.None, "our own use long enough ago: send");
+            Eq(BusyRule.Decide(Paced(count: 3, steady: 100, leftover: 3, own: 500), out _), BusyHold.None, "our use's count back at the leftover: send");
+            Eq(BusyRule.Decide(Paced(paced: true, pacedMs: 300), out _), BusyHold.Bot, "RynthAi's own action unanswered: wait for its answer");
+            Eq(BusyRule.Decide(Paced(paced: true, pacedMs: BusyRule.BotTrustMs), out st), BusyHold.None, "at most BotTrustMs");
+            Eq(st, BusyStale.Bot, "then ignored");
+            Eq(BusyRule.Decide(Paced(count: 1, steady: 50, botWait: true), out _), BusyHold.None,
+                "RynthAi's 'waiting on the server' bit (its copy of the busy count) holds nothing while it holds for us");
+            Eq(BusyRule.Decide(Paced(anim: true, animMs: 300), out _), BusyHold.Animation, "a gesture still holds");
+            Eq(BusyRule.Decide(Facts(count: 1, steady: 100), out _), BusyHold.Busy, "without the hold (a RynthAi from before): the old rule, a fresh count holds");
+        }
+
+        private static void UsePlayersTurn()
+        {
+            ItemRef kit = ItemRef.From(Kit(0x10));
+
+            // After a death: the death left 2 in the count, and RynthAi's rebuffs keep moving it.
+            Harness h = With(Kit(0x10));
+            h.World.YieldOn = true;
+            h.World.BusyCount = 2;
+            h.Tick();
+            h.World.BusyCount = 3; h.Tick(400);   // a cast of RynthAi's, answered
+            h.World.BusyCount = 2; h.Tick(400);
+            Eq(h.World.HoldAsks, 0, "nothing asked while nothing waits");
+            h.Slot(kit);
+            h.Tick(50);
+            Eq(string.Join("|", h.World.Sent), "useon 10 me", "the press goes at once: nothing of ours or RynthAi's is in flight");
+            Check(h.World.HoldAsks == 1 && h.World.BotHeldNow && h.Use.BotHeld, "RynthAi was asked to hold, and holds through the kit's flight");
+            Eq(h.Warned.Count, 0, "no warning");
+            Eq(h.Logged.Count(l => l.Contains("nothing of ours or RynthAi's in flight")), 1, "the leftover is logged once");
+            h.Tick(100);
+            Check(h.World.HoldAsks == 2 && h.World.BotHeldNow, "asked again every tick of the flight");
+            h.World.Answer();
+            h.Tick(100);
+            Check(!h.Use.InFlight && !h.World.BotHeldNow && h.World.Releases == 1 && !h.Use.BotHeld, "answered: RynthAi is let go that tick");
+            h.Tick(100);
+            Eq(h.World.Releases, 1, "and only once");
+
+            // RynthAi's own cast is still out: the press waits for its answer, and goes before anything new of RynthAi's.
+            h = With(Kit(0x10));
+            h.World.YieldOn = true;
+            h.World.BotOwnAction = true;
+            h.World.BusyCount = 1;
+            h.Tick();
+            h.Slot(kit);
+            h.Ticks(3, 500);
+            Eq(h.World.Sent.Count, 0, "RynthAi's cast has no answer yet: the press waits");
+            Check(h.World.BotHeldNow && h.World.HoldAsks == 3, "while RynthAi holds its next one (asked every tick)");
+            h.World.BotOwnAction = false;
+            h.World.BusyCount = 0;
+            h.Tick(100);
+            Eq(h.World.Sent.Count, 1, "answered: the press goes next");
+
+            // A RynthAi action that never gets an answer holds the press at most BotTrustMs.
+            h = With(Kit(0x10));
+            h.World.YieldOn = true;
+            h.World.BotOwnAction = true;
+            h.Tick();
+            h.Slot(kit);
+            h.Ticks(5, 1000);
+            Eq(h.World.Sent.Count, 0, "5 s: still waiting for RynthAi's answer");
+            h.Tick(600);
+            Check(h.World.Sent.Count == 1 && h.Warned.Count == 0, "past 5.5 s the press goes anyway, no warning");
+            Check(h.Logged.Any(l => l.Contains("RynthAi's own action has had no answer")), "and the log says why");
+
+            // Our use gets no answer: RynthAi is let go after FlightHoldMs though the use is still out.
+            h = With(Kit(0x10));
+            h.World.YieldOn = true;
+            h.Tick();
+            h.Slot(kit);
+            h.Tick(50);
+            h.World.BusyCount = 1;   // the client holds our kit busy (so it isn't let go as quiet)
+            h.Tick(2000);
+            Check(h.Use.InFlight && h.World.BotHeldNow, "2 s into the flight: RynthAi still holds");
+            h.Tick(1100);
+            Check(h.Use.InFlight && !h.World.BotHeldNow && h.World.Releases == 1, "past 3 s: RynthAi goes on while our use waits for its answer");
+
+            // Portal space drops the press and lets RynthAi go.
+            h = With(Kit(0x10));
+            h.World.YieldOn = true;
+            h.World.BotOwnAction = true;
+            h.Tick();
+            h.Slot(kit);
+            h.Tick(100);
+            Check(h.World.BotHeldNow, "held while the press waits");
+            h.World.InWorld = false;
+            h.Tick(100);
+            Check(!h.Use.HasPending && !h.World.BotHeldNow && h.World.Releases == 1, "portal space: dropped, RynthAi let go");
+
+            // A RynthAi from before RynthAi.Yield: nothing to ask, nothing to let go, the old rule.
+            h = With(Kit(0x10));
+            h.World.BusyCount = 1;
+            h.Tick();
+            h.Slot(kit);
+            h.Tick(100);
+            Check(h.World.Sent.Count == 0 && h.World.HoldAsks == 0 && h.World.Releases == 0 && !h.Use.BotHeld,
+                "no hold taken; a count that may be real still holds the press");
+        }
+
+        // A report (10-29): after portalling in, four presses of a weapon slot in three seconds each said
+        // "the client didn't take the request (nothing was sent)": the engine takes no game action until
+        // 5 s after portal space ends. The press now waits for it.
+        private static Harness OutOfPortal(params CarriedItem[] items)
+        {
+            Harness h = With(items);
+            h.World.InWorld = false;   // portal space
+            h.Tick(100);
+            h.World.InWorld = true;    // out of it: the engine's gate holds game actions a while yet
+            h.World.RefuseSends = true;
+            h.Tick(100);
+            return h;
+        }
+
+        private static void UseAfterPortal()
+        {
+            ItemRef kit = ItemRef.From(Kit(0x10));
+            Harness h = OutOfPortal(Kit(0x10));
+            h.Slot(kit);
+            h.Tick(50);
+            Check(h.World.Sent.Count == 0 && h.Warned.Count == 0 && h.Use.HasPending, "refused just after the portal: it waits, no warning");
+            Eq(h.Said.Count(s => s.Contains("waiting for the game to finish the portal")), 1, "says what it waits for");
+            h.Ticks(8, 250);
+            Check(h.Warned.Count == 0 && h.Use.HasPending, "2 s more of refusals: still waiting");
+            Eq(h.Said.Count(s => s.Contains("waiting for the game")), 1, "said once");
+            Eq(h.Logged.Count(l => l.Contains("doesn't take") && l.Contains("after the portal")), 1, "logged once");
+            h.World.RefuseSends = false;   // the engine's gate opens
+            h.Tick(250);
+            Eq(string.Join("|", h.World.Sent), "useon 10 me", "it goes the moment the client takes it");
+            Check(h.Use.InFlight && h.Warned.Count == 0, "in flight, never a warning");
+
+            // A second press of the same slot while it waits doesn't queue twice.
+            h = OutOfPortal(Kit(0x10));
+            h.Slot(kit);
+            h.Tick(50);
+            Check(!h.Slot(kit), "the same press again: already waiting");
+
+            // The client never takes it: once the portal is 6 s behind, the refusal is said as before.
+            h = OutOfPortal(Kit(0x10));
+            h.Slot(kit);
+            h.Ticks(24, 250);
+            Check(!h.Use.HasPending && h.Warned.Count == 1 && h.Warned[0].Contains("didn't take the request"),
+                "6 s after the portal it gives up and says so: " + string.Join("|", h.Warned));
+
+            // Long after a portal a refusal is said at once, as before.
+            h = OutOfPortal(Kit(0x10));
+            h.Tick(UseController.PortalRetryWindowMs);
+            h.Slot(kit);
+            h.Tick(50);
+            Check(h.Warned.Count == 1 && h.Warned[0].Contains("didn't take the request") && !h.Use.HasPending, "well after the portal: said at once");
+
+            // A plugin loaded in the world saw no arrival: said at once.
+            h = With(Kit(0x10));
+            h.World.RefuseSends = true;
+            h.Tick();
+            h.Slot(kit);
+            h.Tick(50);
+            Check(h.Warned.Count == 1 && !h.Use.HasPending, "no portal seen: said at once");
+
+            // A spell slot: the cast waits the same way, after Magic mode.
+            h = OutOfPortal();
+            h.World.Known = new HashSet<uint> { 6 };
+            h.World.CombatMode = Stance.Magic;
+            Check(h.Use.Request(UseRequest.Cast(6, "Heal Self I", "slot", h.World.NowMs)), "a cast queued");
+            h.Tick(50);
+            h.Ticks(4, 250);
+            Check(h.Use.InFlight && h.World.Sent.Count == 0 && h.Warned.Count == 0, "the cast is refused and waits");
+            Eq(h.Said.Count(s => s.Contains("waiting for the game to finish the portal")), 1, "said once");
+            h.World.RefuseSends = false;
+            h.Tick(250);
+            Eq(string.Join("|", h.World.Sent), "cast 6 me", "cast the moment the client takes it");
+        }
+
         private static void UseStaleBusy()
         {
             ItemRef kit = ItemRef.From(Kit(0x10));

@@ -40,6 +40,9 @@ internal sealed unsafe class HostDefWorld : IDefWorld
 
     public bool? BotWaitingOnServer => BotActivity.Read(_host) is { } a ? (a & RynthAiActivity.ServerAction) != 0 : null;
     public bool? BotMacroRunning => BotActivity.Read(_host) is { } a ? (a & RynthAiActivity.MacroRunning) != 0 : null;
+    public bool? BotPaced => BotYield.Available(_host) && BotActivity.Read(_host) is { } a ? (a & RynthAiActivity.PacedAction) != 0 : null;
+    public bool HoldBot(uint ms) => BotYield.Hold(_host, ms);
+    public void ReleaseBot() => BotYield.Release(_host);
 
     public int RefusalSeq => _host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out int seq, out _, out _, out _) ? seq : 0;
 
@@ -146,6 +149,47 @@ internal sealed unsafe class HostDefWorld : IDefWorld
         _known = null;
         _knownList = Array.Empty<SpellInfo>();
         _knownAtMs = long.MinValue / 4;
+    }
+}
+
+/// <summary>
+/// RynthAi's "RynthAi.Yield" interface (2026-10-29): the player's key press takes RynthAi's turn, so
+/// RynthAi starts nothing new until the press has gone. Resolved again every call (a RynthAi reload
+/// frees the table). Absent on a RynthAi from before it: nothing is held then.
+/// </summary>
+internal static unsafe class BotYield
+{
+    private static RynthAiYieldApiV1* Table(RynthCoreHost host)
+    {
+        if (!host.HasGetPluginInterface) return null;
+        try
+        {
+            var t = (RynthAiYieldApiV1*)host.GetPluginInterface("RynthAi", RynthAiYieldApiV1.InterfaceName, RynthAiYieldApiV1.InterfaceVersion);
+            return t != null && t->Version >= 1 && t->StructSize >= (uint)sizeof(RynthAiYieldApiV1) ? t : null;
+        }
+        catch
+        {
+            return null;   // a RynthAi mid-reload
+        }
+    }
+
+    public static bool Available(RynthCoreHost host) => Table(host) != null;
+
+    /// <summary>Asks for the player's turn for <paramref name="ms"/>; true when RynthAi holds (its pacing is on).</summary>
+    public static bool Hold(RynthCoreHost host, uint ms)
+    {
+        var t = Table(host);
+        if (t == null || t->HoldForPlayer == null) return false;
+        try { return t->HoldForPlayer(ms) != 0; }
+        catch { return false; }
+    }
+
+    public static void Release(RynthCoreHost host)
+    {
+        var t = Table(host);
+        if (t == null || t->ReleaseHold == null) return;
+        try { t->ReleaseHold(); }
+        catch { }
     }
 }
 

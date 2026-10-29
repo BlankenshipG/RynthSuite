@@ -7245,6 +7245,13 @@ public partial class CombatManager : IDisposable
         // table went to Slash (listed first), so a fire wand cast Blades (2026-09-30).
         if (target == null) return WeaponPlanner.FallbackOrder[0];
         var plan = PlanFor(target, rule);
+        // The plan's wand isn't the one in hand (the swap was held: the target is nearly dead, a
+        // swap is resting, the off hand blocks it): the wand in hand casts its own element (owner's
+        // rule, 2026-09-30: "the wand should always cast its element"). The plan's element went
+        // out through the other wand: Acid Blasts from a Frost Sceptre while "not swapping Frost
+        // Sceptre for Acid Staff yet (target at 23% health)" (R-20261029-125901-e22d, Conquest).
+        if (HeldWandElement(plan, rule) is string held)
+            return held;
         if (_autoElemDiagCount < 20)
         {
             _autoElemDiagCount++;
@@ -7258,6 +7265,32 @@ public partial class CombatManager : IDisposable
     /// This character can cast <paramref name="element"/> itself (FindBestShapedSpell falls
     /// back to Fire for anything it can't, so a non-zero result alone doesn't say that).
     /// </summary>
+    // Logged once per (plan wand, wand in hand, element): the cast follows the wand in hand.
+    private (int Plan, int Hand, string Elem) _heldWandElemLogged;
+
+    /// <summary>
+    /// The element of the wand in hand when it isn't the plan's weapon and the character can cast
+    /// that element (null = cast the plan's element). Only a wand: a melee or missile weapon in
+    /// hand doesn't choose the spell. A wand whose element isn't known yet, or isn't castable
+    /// (Nether without Void), leaves the plan's element.
+    /// </summary>
+    private string? HeldWandElement(WeaponPlan plan, MonsterRule? rule)
+    {
+        int hand = InHandWeaponId();
+        if (hand == 0 || plan.WeaponId == 0 || hand == plan.WeaponId) return null;
+        if (_worldFilter[hand] is not WorldObject wo || !IsWandObject(wo)) return null;
+        var c = ListedCandidates().FirstOrDefault(x => x.Id == hand);
+        string elem = c?.Element ?? WeaponElements.Normalize(ElementTracker.Read(hand, wo.Name).Element);
+        if (elem.Length == 0 || elem.Equals(plan.Element, StringComparison.OrdinalIgnoreCase) || !CanCastElement(elem, rule)) return null;
+        var key = (plan.WeaponId, hand, elem);
+        if (key != _heldWandElemLogged)
+        {
+            _heldWandElemLogged = key;
+            _host.Log($"[CombatCast] the plan's wand 0x{(uint)plan.WeaponId:X8} '{WeaponName(plan.WeaponId)}' ({plan.Element}) isn't in hand: casting {elem}, the element of 0x{(uint)hand:X8} '{wo.Name}' in hand");
+        }
+        return elem;
+    }
+
     private bool CanCastElement(string element, MonsterRule? rule)
     {
         if (CanCastOverride != null) return CanCastOverride(element);

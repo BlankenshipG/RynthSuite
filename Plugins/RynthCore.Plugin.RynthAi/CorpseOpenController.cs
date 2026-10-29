@@ -121,6 +121,24 @@ public sealed partial class RynthAiPlugin
     private bool _currentLootItemPipelined;   // sent while the last pickup's Return played (ACE queues it)
     private int _currentLootItemErrSeqAtSend; // TryGetLastWeenieError seq at the send (0 = unknown)
     private int _currentLootItemFreeRetries;  // resends after a too-busy answer (not counted as attempts)
+    // 2026-10-29 (R-20261029-122319-321f): what the server said to the last send, and what the
+    // tries into the current destination came to (TickPendingCorpsePickup, JudgeLootDest).
+    private bool _currentLootItemAwaitingAnswer;   // the last send has had no answer yet
+    private long _currentLootItemRefusedAt;        // when a refusal of the last send was first seen (0 = none)
+    private uint _currentLootItemRefusalError;
+    private bool _currentLootItemRefusalBusy;      // "too busy": before its pickup could run, not the pack's answer
+    private int _currentLootItemDestRefusals;      // tries into _currentLootItemDest refused after the pickup ran
+    private int _currentLootItemDestTimeouts;      // tries into it with no answer in PickupAnswerWaitMs
+    private bool _currentLootItemTimedOut;         // a send of this item went unanswered: a later answer may be to it
+    private readonly List<int> _currentLootItemDestsTried = new();
+    private long _moveAwaitTickAt;                 // CorpseNowMs of the previous answer-wait call
+    // How long the server took to answer recent pickups (confirmations and refusals after the
+    // pickup ran): the answer wait is sized from the slowest of them.
+    private readonly long[] _pickupAnswerLatencies = new long[8];
+    private int _pickupAnswerLatencyCount, _pickupAnswerLatencyNext;
+    // Items given up (or dropped by a reset) with a move still possibly at the server: one that
+    // lands in a pack afterwards un-marks that pack (WatchLateLandings).
+    private readonly Dictionary<int, (long Until, long SentAt)> _lateLandings = new();
     // The last answered pickup, until the character has finished its "Return" (stood up again).
     // The corpse/chest is closed only after this (2026-10-07), and the next move may go out while
     // it plays: ACE queues a move that arrives during the Return as its NextPickup.
@@ -597,6 +615,7 @@ public sealed partial class RynthAiPlugin
             return;
 
         SyncCorpseContainerState();
+        WatchLateLandings(CorpseNowMs);
         TickDeferredClose(settings);
         TakeLootThisRequest(settings);   // /ra lootthis (RynthAiPlugin.VTankHotkeys.cs)
 
@@ -1729,6 +1748,7 @@ public sealed partial class RynthAiPlugin
             _currentLootItemPipelined        = pipelined;
             _currentLootItemStackable        = stackable;
             _currentLootItemErrSeqAtSend     = errSeqAtSend;
+            NoteLootMoveSent();
             _currentLootItemFreeRetries      = 0;
             _currentLootItemActionLabel      = matchActionLabel;
             _currentLootItemName             = matchItemName;
@@ -1863,6 +1883,157 @@ public sealed partial class RynthAiPlugin
                 || (evt == EventInventoryServerSaveFailed && obj == unchecked((uint)_currentLootItemId));
         }
         catch { return false; }
+    }
+
+    // ── Waiting for the server's answer to a move (2026-10-29, R-20261029-122319-321f) ──
+    // Conquest, RynthAi 2026.10.29.1, "if max loot attempts are reached it locks up on looting
+    // other items": a pack move was retried every ~0.5 s once the character stood still, and
+    // after 3 tries (~1.6 s) the pack counted as full for 5 min. That server took 1.5-2.7 s to
+    // answer a pickup ("pickup confirmed for 0x8023F05A; merged into a stack in the pack (1657
+    // ms after the send)" came after attempt 3 had gone out), so moves were judged failed while
+    // the server was still on them. A resend while one is out does nothing useful either: the
+    // client drops it (its one pending inventory request, "You can only move or use one item at
+    // a time") or ACE turns it away as too busy. Good side packs were marked full one after
+    // another, each item burning two of them, until no pack was left. Now a send is followed by
+    // another only once it is answered (the item lands, or the server refuses it) or after
+    // PickupAnswerWaitMs with no answer, and only the server's refusals mark a pack full for
+    // longer than the item (PackRefusals).
+
+    /// <summary>The least time a move is given to be answered before it counts as unanswered.</summary>
+    internal const long PickupAnswerWaitMinMs = 4000;
+
+    /// <summary>The most: a slow server's measured answers raise the wait up to this.</summary>
+    internal const long PickupAnswerWaitMaxMs = 8000;
+
+    /// <summary>Added to the slowest recent answer.</summary>
+    internal const long PickupAnswerWaitMarginMs = 1500;
+
+    /// <summary>A pickup given up on is watched this long for a late landing.</summary>
+    internal const long LateLandingWatchMs = 15_000;
+
+    /// <summary>How long a send waits for its answer: the slowest of the last 8 answers plus a margin, 4-8 s.</summary>
+    internal long PickupAnswerWaitMs()
+    {
+        long slowest = 0;
+        for (int i = 0; i < _pickupAnswerLatencyCount; i++)
+            slowest = Math.Max(slowest, _pickupAnswerLatencies[i]);
+        return Math.Clamp(slowest + PickupAnswerWaitMarginMs, PickupAnswerWaitMinMs, PickupAnswerWaitMaxMs);
+    }
+
+    private void NotePickupAnswerLatency(long ms)
+    {
+        if (ms <= 0) return;
+        _pickupAnswerLatencies[_pickupAnswerLatencyNext] = ms;
+        _pickupAnswerLatencyNext = (_pickupAnswerLatencyNext + 1) % _pickupAnswerLatencies.Length;
+        if (_pickupAnswerLatencyCount < _pickupAnswerLatencies.Length) _pickupAnswerLatencyCount++;
+    }
+
+    /// <summary>A move of the current item went out: its answer is awaited afresh.</summary>
+    private void NoteLootMoveSent()
+    {
+        _currentLootItemAwaitingAnswer = true;
+        _currentLootItemRefusedAt = 0;
+        _currentLootItemRefusalError = 0;
+        _currentLootItemRefusalBusy = false;
+    }
+
+    /// <summary>
+    /// Notes the first refusal of the last send, every tick (so its time is known), and whether
+    /// it was "too busy" or the server's own answer after it ran the pickup. The "error 0x0" of
+    /// the report is a real refusal: the engine keeps only the last refusal message, ACE follows
+    /// a YoureTooBusy (0x1D) with InventoryServerSaveFailed for the item and no error code, and
+    /// a full pack answers with the same InventoryServerSaveFailed, no code ("Unable to put X
+    /// into container", Player.DoHandleActionPutItemInContainer). The old code took every one
+    /// for "too busy" and resent it free: 'Brier Wasp's Treasure Map' went into the full main
+    /// pack 6 times over 18 s. The time tells them apart: ACE turns a busy move away when it
+    /// arrives, and refuses for room only after the pickup motion (longer than PickupAnswerMinMs).
+    /// </summary>
+    private void PollCurrentPickupRefusal(long now)
+    {
+        if (_currentLootItemRefusedAt != 0 || !CurrentPickupRefused(out uint err))
+            return;
+        long after = now - _currentLootItemMoveRequestedAt;
+        _currentLootItemRefusedAt = now;
+        _currentLootItemRefusalError = err;
+        _currentLootItemRefusalBusy = err == WeenieErrorYoureTooBusy || after < PickupAnswerMinMs;
+        if (!_currentLootItemRefusalBusy && !_currentLootItemTimedOut)
+            NotePickupAnswerLatency(after);
+    }
+
+    /// <summary>
+    /// While a move waits for its answer the corpse's timeout clock does not run (as for the
+    /// cast-answer hold, PauseCorpseClockWhileHeld): three unanswered tries take longer than
+    /// the 12 s corpse timeout, which is meant for an idle corpse.
+    /// </summary>
+    private void PauseCorpseClockWhileMoveAwaits(long now)
+    {
+        long last = _moveAwaitTickAt;
+        _moveAwaitTickAt = now;
+        if (last == 0 || _targetCorpseId == 0 || _corpseTargetSince == 0 || _corpseHoldFrozenAge >= 0)
+            return;
+        long gap = now - last;
+        if (gap > 0 && gap <= PickupHoldMaxGapMs)
+            _corpseTargetSince += gap;
+    }
+
+    /// <summary>
+    /// What the tries into the current destination say about it: full (<paramref name="confirmed"/>:
+    /// the server refused at least two after running the pickup), doubtful (at least two failed,
+    /// some only for want of an answer: the item tries another pack, the mark is the item's
+    /// alone), or nothing (the server was only too busy: no pack is to blame).
+    /// </summary>
+    private bool JudgeLootDest(out bool confirmed)
+    {
+        confirmed = _currentLootItemDestRefusals >= 2;
+        return confirmed || _currentLootItemDestRefusals + _currentLootItemDestTimeouts >= 2;
+    }
+
+    private string LootPackName(int packId) =>
+        packId == unchecked((int)_playerId) ? "the main pack" : $"pack 0x{(uint)packId:X8}";
+
+    /// <summary>A pack other than the ones left out could take the item (the client's own counts).</summary>
+    private bool HasOtherLootDestination()
+    {
+        if (_objectCache == null || _playerId == 0) return false;
+        long now = CorpseNowMs;
+        return WorldObjectCache.FindLootDestination(_objectCache.GetDirectInventory(forceRefresh: false),
+                   unchecked((int)_playerId), Host, id => _packRefusals.IsRefused(id, now)) != 0;
+    }
+
+    /// <summary>The current item is done without its landing seen: watch for one that comes late.</summary>
+    private void WatchLateLanding(long now)
+    {
+        if (_currentLootItemId == 0 || _currentLootItemDestsTried.Count == 0)
+            return;
+        _lateLandings[_currentLootItemId] = (now + LateLandingWatchMs, _currentLootItemMoveRequestedAt);
+    }
+
+    /// <summary>
+    /// An item given up on that lands in a pack after all: that pack had room, so it is no longer
+    /// treated as full (it may have been marked while the server was still on the item).
+    /// </summary>
+    private void WatchLateLandings(long now)
+    {
+        if (_lateLandings.Count == 0 || _objectCache == null)
+            return;
+        List<int>? done = null;
+        foreach (var kv in _lateLandings)
+        {
+            WorldObject? wo = _objectCache[kv.Key];
+            int container = wo?.Container ?? 0;
+            if (wo != null && InPlayerInventory(container))
+            {
+                bool wasMarked = _packRefusals.IsRefused(container, now);
+                _packRefusals.Accepted(container);
+                LootDiag($"[RynthAi] {LootTag}: 0x{(uint)kv.Key:X8} landed in {LootPackName(container)} {now - kv.Value.SentAt} ms after its last send, after it was given up" +
+                         (wasMarked ? $"; {LootPackName(container)} has room after all and is no longer treated as full." : "."));
+                (done ??= new()).Add(kv.Key);
+            }
+            else if (now >= kv.Value.Until)
+                (done ??= new()).Add(kv.Key);
+        }
+        if (done != null)
+            foreach (int id in done) _lateLandings.Remove(id);
     }
 
     /// <summary>A stack when its move is sent: it may merge into a stack in the pack and be deleted.</summary>
@@ -2033,14 +2204,18 @@ public sealed partial class RynthAiPlugin
                             : mergedAway
                                 ? "merged into a stack in the pack"
                                 : $"off the corpse, not seen in a pack (container=0x{(uint)currentContainer:X8})",
-                answered);
+                answered,
+                inPack ? currentContainer : 0);
             return;
         }
 
-        // The server turned the move away ("You're too busy": it arrived during the last
-        // pickup's bend-down, not its Return). Resend it as soon as the character is still,
-        // without counting it as one of the item's 3 tries.
-        bool refused = CurrentPickupRefused(out uint refusal);
+        // The server turned the move away. "Too busy" (it arrived during the last pickup's
+        // bend-down, not its Return): resend it as soon as the character is still, without
+        // counting it as one of the item's 3 tries. Refused after the pickup ran (no room): one
+        // of the tries, and the evidence a pack is full (PollCurrentPickupRefusal).
+        PollCurrentPickupRefusal(now);
+        bool refused = _currentLootItemRefusedAt != 0;
+        bool busyRefusal = refused && _currentLootItemRefusalBusy;
 
         // Item still on corpse — wait before retrying the UseObject. The window counts from
         // when the character is still: while a pickup animation plays the engine holds the
@@ -2050,35 +2225,81 @@ public sealed partial class RynthAiPlugin
         if (PickupAnimating(now))
         {
             _currentLootItemStillSince = 0;
+            if (_currentLootItemAwaitingAnswer) PauseCorpseClockWhileMoveAwaits(now);
             return;
         }
         if (_currentLootItemStillSince == 0)
             _currentLootItemStillSince = now;
-        bool freeRetry = refused && _currentLootItemFreeRetries < PickupFreeRetries;
+        bool freeRetry = busyRefusal && _currentLootItemFreeRetries < PickupFreeRetries;
+
+        // No answer yet: no resend before PickupAnswerWaitMs (2026-10-29, R-20261029-122319-321f).
+        // The Loot Retry Timeout alone (0.5-1 s) is shorter than a slow server's answer (1.5-2.7 s
+        // on Conquest), and a resend while the move is out is dropped by the client or refused.
+        long answerWaitMs = PickupAnswerWaitMs();
+        long sinceSend = now - _currentLootItemMoveRequestedAt;
+        if (_currentLootItemAwaitingAnswer && !refused && sinceSend < answerWaitMs)
+        {
+            PauseCorpseClockWhileMoveAwaits(now);
+            return;
+        }
         long verifyWindowMs = Math.Max(150, settings.LootRetryTimeoutMs);
         long windowStart = Math.Max(_currentLootItemMoveRequestedAt, _currentLootItemStillSince);
         if (!freeRetry && now - windowStart < verifyWindowMs)
             return;
 
+        // The last send failed: what it came to, once per send (a free resend's "too busy" is
+        // not one of the tries). Refused after the pickup ran counts against the pack; no answer
+        // at all only half (JudgeLootDest).
+        string lastTry = "";
+        if (_currentLootItemAwaitingAnswer && !freeRetry)
+        {
+            _currentLootItemAwaitingAnswer = false;
+            long answerMs = refused ? _currentLootItemRefusedAt - _currentLootItemMoveRequestedAt : sinceSend;
+            if (!refused)
+            {
+                _currentLootItemDestTimeouts++;
+                _currentLootItemTimedOut = true;
+                lastTry = $"no answer in {answerMs} ms";
+            }
+            else if (!busyRefusal)
+            {
+                _currentLootItemDestRefusals++;
+                lastTry = $"refused {answerMs} ms after the send, after its pickup ran (error 0x{_currentLootItemRefusalError:X})";
+            }
+            else
+                lastTry = $"too busy, {answerMs} ms after the send";
+        }
+
         if (!freeRetry && _currentLootItemMoveAttempts >= 3)
         {
-            // None of the tries landed: the pack they went to is likely full (its contents
-            // unknown to the client). Leave that pack out for a while and give the item one
-            // more round into the next one; with no other pack, the item is left as before.
-            if (_currentLootItemDest != 0)
+            // None of the tries landed. When the server refused them after running the pickup,
+            // the pack they went to is full (its contents unknown to the client): leave it out
+            // for a while and give the item one more round into the next one; with no other
+            // pack, the corpse is left with the pack-full message. When they only went unanswered
+            // the pack is not known to be full: the item may try another pack, but the mark is
+            // dropped with the item, so the next item and corpse start fresh (R-20261029-122319-321f:
+            // those quick marks used up every pack). When the server was only too busy, no pack is
+            // to blame.
+            int dest = _currentLootItemDest;
+            if (dest != 0 && JudgeLootDest(out bool confirmed))
             {
-                _packRefusals.Refuse(_currentLootItemDest, now);
-                if (!_currentLootItemPackRetried)
+                _packRefusals.Refuse(dest, now, confirmed);
+                if (!_currentLootItemPackRetried && (confirmed || HasOtherLootDestination()))
                 {
-                    LootDiag($"[RynthAi] {LootTag}: {(_currentLootItemDest == _playerId ? "the main pack" : $"pack 0x{(uint)_currentLootItemDest:X8}")} took none of {_currentLootItemMoveAttempts} tries for 0x{(uint)_currentLootItemId:X8}; treating it as full for {RynthCore.Plugin.RynthAi.Loot.PackRefusals.HoldMs / 60_000} min and trying another pack.");
+                    LootDiag(confirmed
+                        ? $"[RynthAi] {LootTag}: {LootPackName(dest)} took none of {_currentLootItemMoveAttempts} tries for 0x{(uint)_currentLootItemId:X8} (the server refused {_currentLootItemDestRefusals} after the pickup ran); treating it as full for {RynthCore.Plugin.RynthAi.Loot.PackRefusals.HoldMs / 60_000} min and trying another pack."
+                        : $"[RynthAi] {LootTag}: {LootPackName(dest)} took none of {_currentLootItemMoveAttempts} tries for 0x{(uint)_currentLootItemId:X8} ({_currentLootItemDestTimeouts} unanswered in {answerWaitMs} ms, {_currentLootItemDestRefusals} refused); trying another pack for this item only (not known to be full).");
                     _currentLootItemPackRetried = true;
                     _currentLootItemMoveAttempts = 0;
+                    _currentLootItemDestRefusals = 0;
+                    _currentLootItemDestTimeouts = 0;
                     _currentLootItemStillSince = 0;
                     _lastLootActionAt = now;
                     return;
                 }
             }
-            LootDiag($"[RynthAi] {LootTag}: pickup failed for 0x{(uint)_currentLootItemId:X8}; container remained 0x{(uint)_openedContainerId:X8} after {_currentLootItemMoveAttempts} attempt(s).");
+            LootDiag($"[RynthAi] {LootTag}: pickup failed for 0x{(uint)_currentLootItemId:X8}; container remained 0x{(uint)_openedContainerId:X8} after {_currentLootItemMoveAttempts} attempt(s)" +
+                     (lastTry.Length > 0 ? $" (last: {lastTry})." : "."));
             _processedCorpseItems.Add(_currentLootItemId);
             ResetCurrentLootItem();
             _lastLootActionAt = now;
@@ -2093,6 +2314,8 @@ public sealed partial class RynthAiPlugin
         RynthCore.Plugin.RynthAi.ItemInfo.SelfSelect.Mark(unchecked((uint)_currentLootItemId));
         Host.SelectItem(unchecked((uint)_currentLootItemId));
         int errSeqAtSend = LastWeenieErrorSeq();
+        long refusedAfter = refused ? _currentLootItemRefusedAt - _currentLootItemMoveRequestedAt : 0;
+        uint refusal = _currentLootItemRefusalError;
         LootPickupResult retry = SendLootPickup(_currentLootItemId, _currentLootItemName, _openedContainerId);
         if (retry == LootPickupResult.NoRoom || retry == LootPickupResult.Refused)
             return; // SendLootPickup finished the item / corpse
@@ -2103,12 +2326,14 @@ public sealed partial class RynthAiPlugin
             _currentLootItemMoveAttempts++;
         _currentLootItemErrSeqAtSend = errSeqAtSend;
         _currentLootItemMoveRequestedAt = now;
+        if (retried) NoteLootMoveSent();
         _currentLootItemStillSince = 0;
         _currentLootItemSawAnim = false;
         _lastLootActionAt = now;
         LootDiag(freeRetry
-            ? $"[RynthAi] {LootTag}: the server refused 0x{(uint)_currentLootItemId:X8} (error 0x{refusal:X}); sending it again now the character is still."
-            : $"[RynthAi] {LootTag}: retrying use for 0x{(uint)_currentLootItemId:X8} attempt {_currentLootItemMoveAttempts}.");
+            ? $"[RynthAi] {LootTag}: the server refused 0x{(uint)_currentLootItemId:X8} as too busy ({refusedAfter} ms after the send, before its pickup ran; error 0x{refusal:X}); sending it again now the character is still."
+            : $"[RynthAi] {LootTag}: retrying use for 0x{(uint)_currentLootItemId:X8} attempt {_currentLootItemMoveAttempts}" +
+              (lastTry.Length > 0 ? $" (last: {lastTry})." : "."));
 
         if (!retried && _currentLootItemMoveAttempts >= 3)
         {
@@ -2149,7 +2374,18 @@ public sealed partial class RynthAiPlugin
             ? SendOwnCorpsePickup(itemId, out dest)
             : LootPickup.Send(Host, _objectCache, unchecked((uint)itemId), _playerId, out dest,
                               id => _packRefusals.IsRefused(id, CorpseNowMs));
-        if (r == LootPickupResult.Moved) _currentLootItemDest = unchecked((int)dest);
+        if (r == LootPickupResult.Moved)
+        {
+            int to = unchecked((int)dest);
+            if (to != _currentLootItemDest)
+            {
+                // Another pack: what the tries into the last one came to says nothing about it.
+                _currentLootItemDestRefusals = 0;
+                _currentLootItemDestTimeouts = 0;
+            }
+            _currentLootItemDest = to;
+            if (!_currentLootItemDestsTried.Contains(to)) _currentLootItemDestsTried.Add(to);
+        }
         if (ownCorpse && r == LootPickupResult.NoRoom)
         {
             PauseOwnCorpseNoRoom(corpseId, itemName);
@@ -2182,13 +2418,32 @@ public sealed partial class RynthAiPlugin
     /// </summary>
     private void ConfirmCurrentLootItemMoved(long now, string reason) => ConfirmCurrentLootItem(now, reason, answered: true);
 
-    private void ConfirmCurrentLootItem(long now, string reason, bool answered)
+    /// <param name="landedIn">The pack the item was seen in (0: merged away, or not seen).</param>
+    private void ConfirmCurrentLootItem(long now, string reason, bool answered, int landedIn = 0)
     {
         if (_currentLootItemId == 0)
             return;
 
         int itemId = _currentLootItemId;
-        if (answered && _currentLootItemDest != 0) _packRefusals.Accepted(_currentLootItemDest);
+        if (answered)
+        {
+            // The pack it landed in has room, whatever it was marked (an earlier send may have
+            // landed after the item moved on to another pack: R-20261029-122319-321f). A stack
+            // that merged needed no slot, so it clears its destination only when no refusal
+            // from there said otherwise.
+            if (landedIn != 0)
+            {
+                if (_packRefusals.IsRefused(landedIn, now))
+                    LootDiag($"[RynthAi] {LootTag}: 0x{(uint)itemId:X8} landed in {LootPackName(landedIn)}; it has room after all and is no longer treated as full.");
+                _packRefusals.Accepted(landedIn);
+            }
+            else if (_currentLootItemDest != 0 && _currentLootItemDestRefusals == 0)
+                _packRefusals.Accepted(_currentLootItemDest);
+            // Only an answer that is surely to the last send (a lag spike's answer to an earlier,
+            // timed-out send would stretch the wait for every item after it).
+            if (!_currentLootItemTimedOut) NotePickupAnswerLatency(now - _currentLootItemMoveRequestedAt);
+        }
+        if (answered) _currentLootItemDestsTried.Clear();   // landed: nothing to watch for (ResetCurrentLootItem)
         _processedCorpseItems.Add(_currentLootItemId);
         LootDiag($"[RynthAi] {LootTag}: pickup confirmed for 0x{(uint)_currentLootItemId:X8}; {reason}" +
                  $" ({now - _currentLootItemMoveRequestedAt} ms after the send{(_currentLootItemPipelined ? ", queued" : "")}).");
@@ -3023,6 +3278,21 @@ public sealed partial class RynthAiPlugin
 
     private void ResetCurrentLootItem()
     {
+        // An item done without its landing seen (given up, or dropped by a close / reopen /
+        // stop) may still land: watch for it. Its unanswered-tries pack marks go with it, so
+        // the next item and corpse start fresh (R-20261029-122319-321f).
+        long now = CorpseNowMs;
+        WatchLateLanding(now);
+        _packRefusals.ClearUnconfirmed();
+        _currentLootItemAwaitingAnswer = false;
+        _currentLootItemRefusedAt = 0;
+        _currentLootItemRefusalError = 0;
+        _currentLootItemRefusalBusy = false;
+        _currentLootItemDestRefusals = 0;
+        _currentLootItemDestTimeouts = 0;
+        _currentLootItemTimedOut = false;
+        _currentLootItemDestsTried.Clear();
+        _moveAwaitTickAt = 0;
         _currentLootItemId = 0;
         _currentLootItemRequested = false;
         _currentLootItemRequestedAt = 0;

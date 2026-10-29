@@ -54,6 +54,7 @@ internal static class WeaponTests
         r.Add("slayer: read through the host (int 166, float 138, monster int 2), cached by wcid", SlayerFromHost);
         r.Add("refusal: a refused stance change in combat's equip pass sets no backoff and starts no stuck clock", StanceRefusedKeepsBackoff);
         r.Add("weapon choice: an unlisted wand is never picked (Damage tab, learned, pack, name)", UnlistedNeverPicked);
+        r.Add("cast element: with the plan's wand not in hand (a held swap), the wand in hand casts its own element (R-20261029-125901-e22d)", HeldWandCastsItsElement);
         r.Add("weapon choice: the Monsters rule's weapon is used (R-20261022-193411-fb72), below this monster's Damage tab pick; the Default row's like the Damage tab default", MonsterRuleWeapon);
         r.Add("Items list: a listed item no longer carried is reported missing (pack, hand, unknown)", MissingFromPack);
         r.Add("weapon choice: a listed weapon someone else now has (sold) is skipped, even as this monster's Damage tab pick", SoldWeaponSkipped);
@@ -888,6 +889,36 @@ internal static class WeaponTests
     /// Lightning wand; the rule says the fire wand. Each step uses a new rule object, so PlanFor's
     /// cache (keyed on the rule by reference) doesn't hand back the previous answer.
     /// </summary>
+    // Conquest, 2026-10-29: "not swapping 0x80181B46 'Frost Sceptre' for 0x8024231C 'Acid Staff' yet
+    // (target at 23% health)", then Incantation of Acid Blast cast through the Frost Sceptre.
+    private static void HeldWandCastsItsElement()
+    {
+        var rig = new Rig(1535, "Ethereal Wisp");
+        rig.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+        var rule = new MonsterRule { Name = "Ethereal" };   // damage type Auto
+        var pref = typeof(CombatManager).GetMethod("GetPreferredElement", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        string Elem() => (string)pref.Invoke(rig.C, new object?[] { rig.Target, rule })!;
+
+        var plan = rig.C.PlanFor(rig.Target, rule);
+        Check.Eq(unchecked((uint)plan.WeaponId), ListedWand, "the plan: the Lightning wand (the weakness)");
+
+        rig.C.InHandOverride = () => unchecked((int)ListedWand);
+        Check.Eq(Elem(), "Lightning", "the plan's wand in hand: its element");
+
+        rig.C.InHandOverride = () => unchecked((int)FireWand);   // the swap was held: the fire wand stays
+        Check.Eq(Elem(), "Fire", "the fire wand in hand casts Fire, not the plan's Lightning");
+        Check.True(FakeHost.Logs.Count(l => l.Contains("isn't in hand: casting Fire")) == 1, "logged once");
+        Elem();
+        Check.True(FakeHost.Logs.Count(l => l.Contains("isn't in hand: casting Fire")) == 1, "still once");
+
+        rig.C.CanCastOverride = e => e != "Nether" && e != "Fire";   // a wand whose element can't be cast
+        Check.Eq(Elem(), "Lightning", "an element the character can't cast: the plan's element");
+
+        rig.C.InHandOverride = () => 0;                               // nothing readable in hand
+        rig.C.CanCastOverride = e => e != "Nether";
+        Check.Eq(Elem(), "Lightning", "nothing in hand: the plan's element");
+    }
+
     private static void MonsterRuleWeapon()
     {
         var rig = new Rig(1535, "Ethereal Wisp");

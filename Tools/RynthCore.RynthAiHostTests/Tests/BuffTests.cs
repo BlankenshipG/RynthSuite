@@ -78,6 +78,7 @@ internal static class BuffTests
         r.Add("buff timers: tier-8 weapon auras last 90 minutes", TierEightAuras);   // was a known failure; fixed by 9a317a8
         r.Add("buff chat: another player's speech can't record a buff timer", SpeechIsNotACast);   // was a known failure; fixed by 0e384d2
         r.Add("buff school: Armor Tinkering Expertise is a Creature Enchantment spell", ArmorTinkeringSchool);   // was a known failure
+        r.Add("mana floor: under Get Mana At with nothing to refill mana, buffs go on while a heal's mana is kept (R-20261029-103248-ce48)", ManaFloorNoRefill);
         r.Add("buff upgrade: in a force run, the priority buffs go first, then the families cast before the skill rose are recast a level higher", UpgradeInRun);
         r.Add("buff upgrade: the next pass recasts every buff a level higher once the skill allows it; equal level or a lower skill casts nothing", UpgradeNextPass);
         r.Add("buff upgrade: a higher level learned from a scroll is cast at once (the spellbook is read again)", UpgradeAfterScroll);
@@ -1217,6 +1218,85 @@ internal static class BuffTests
         Check.Eq(Show(up), "Incantation of Strength Self", "recast to reach the cap again");
         var line = FakeHost.Logs.LastOrDefault(l => l.Contains("[Buff] upgrade:")) ?? "";
         Check.True(line.Contains("level 6 -> 7 (Incantation of Strength Self)"), "the line says 6 -> 7, the level counted: " + line);
+    }
+
+    // A report (DreamWeave, 2026-10-29: "Buffing seems to be getting stuck"): logged in at
+    // 209/207 mana, the first buffs took max mana to 536, the same 209 read 39% under Get Mana At
+    // 40%, and with no Stamina to Mana known and no mana potion every buff after waited on regen.
+    private static BuffRig FloorRig(bool knowStaminaToMana, uint mana, uint stamina = 383)
+    {
+        FakeHost.Reset();
+        foreach (var row in SpellTable.Rows)
+            if (knowStaminaToMana || !row.Name.StartsWith("Stamina to Mana", StringComparison.Ordinal))
+                FakeHost.Spellbook.Add((uint)row.Id);
+        FakeHost.Skills[(Player, STypeCreature)] = (300, 2);
+        FakeHost.Skills[(Player, STypeLife)] = (300, 2);
+        FakeHost.Skills[(Player, STypeItem)] = (300, 2);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        var rig = new BuffRig();
+        rig.B.SetWorldObjectCache(FakeHost.MakeCache(rig.Host, Player, Array.Empty<uint>()));
+        BuffManager.ManaCostOverride = id => LevelOf(id) * 10;
+        rig.S.IsMacroRunning = true;
+        rig.S.SpellCastIntervalMs = 0;
+        rig.S.GetManaAt = 40; rig.S.TopOffMana = 40;
+        rig.S.HealAt = 0; rig.S.TopOffHP = 0; rig.S.EmergencyHealAt = 0; rig.S.StaminaToHealthAt = 0;
+        rig.S.RestamAt = 0; rig.S.TopOffStam = 0; rig.S.UsePotions = false;
+        rig.V.MaxHealth = 400; rig.V.CurrentHealth = 400;
+        rig.V.MaxStamina = 383; rig.V.CurrentStamina = stamina;
+        rig.V.MaxMana = 536; rig.V.CurrentMana = mana;
+        var at = FakeClock(rig);
+        at(0);
+        rig.B.MarkLiveBuffsReadyForTests();
+        rig.Live(("Strength Self I", 3000));
+        rig.B.ForceFullRebuff();
+        return rig;
+    }
+
+    private static int FloorBeats(BuffRig rig, int n)
+    {
+        int before = FakeHost.Casts.Count;
+        for (int i = 0; i < n; i++)
+        {
+            rig.B.OnHeartbeat();
+            if (FakeHost.Casts.Count > before)
+            {
+                int id = FakeHost.Casts.Last().SpellId;
+                rig.B.OnChatWindowText($"You cast {NameOf(id)} on {(BuffManager.IsItemEnchantment(NameOf(id)) ? "Rune Robe" : "yourself")}", 7);
+                SetFld(rig.B, "_lastCastAttempt", DateTime.Now.AddSeconds(-10));
+                SetFld(rig.B, "_lastSelfBuffPollAt", DateTime.MinValue);
+            }
+        }
+        return FakeHost.Casts.Count - before;
+    }
+
+    private static void ManaFloorNoRefill()
+    {
+        // The report: 209/536 (39%), Get Mana At 40%, no Stamina to Mana, no potion. Buffs go.
+        var r = FloorRig(knowStaminaToMana: false, mana: 209);
+        int keep = r.B.ManaFloorHealReserve();
+        Check.True(keep > 0, $"a heal's mana is kept ({keep})");
+        int sent = FloorBeats(r, 6);
+        Check.True(sent > 0, $"buffs are cast under the floor (sent {sent}, last skip: {r.B.LastBuffSkipReason})");
+        Check.True(FakeHost.Casts.All(c => !NameOf(c.SpellId).StartsWith("Stamina to Mana", StringComparison.Ordinal)), "no Stamina to Mana (none is known)");
+        Check.True(FakeHost.Logs.Count(l => l.Contains("nothing can refill it") && l.Contains("buffing goes on")) == 1, "logged once");
+
+        // Down near the heal reserve: buffing waits, and the line names every source's reason.
+        var low = FloorRig(knowStaminaToMana: false, mana: (uint)(keep + 10));
+        Check.Eq(FloorBeats(low, 6), 0, "under a heal's mana plus a buff: buffing waits");
+        string line = FakeHost.Logs.LastOrDefault(l => l.Contains("buffing waits: mana")) ?? "";
+        Check.True(line.Contains("Stamina to Mana: no known") && line.Contains("mana potion: Use Potions is off") && line.Contains("for healing"),
+            "the line gives each reason: " + line);
+
+        // Stamina to Mana known, stamina under its line: the floor still refills first, as before
+        // (Revitalize for stamina, then Stamina to Mana); no buff goes while it can refill.
+        var s2m = FloorRig(knowStaminaToMana: true, mana: 209, stamina: 20);
+        FloorBeats(s2m, 6);
+        var sentNames = FakeHost.Casts.Select(c => NameOf(c.SpellId)).ToList();
+        Check.True(sentNames.Count > 0 && sentNames.All(n => n.StartsWith("Revitalize", StringComparison.Ordinal) || n.StartsWith("Stamina to Mana", StringComparison.Ordinal)
+                                                         || n.Contains("Revitalize") || n.Contains("Stamina to Mana")),
+            "Stamina to Mana known: only refills go, no buff: " + string.Join(", ", sentNames));
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("buffing goes on")), 0, "the no-refill path isn't taken");
     }
 
     private static T Fld<T>(BuffManager b, string name) => (T)typeof(BuffManager).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(b)!;

@@ -37,6 +37,7 @@
   <ItemGroup>
     <!-- What RynthAi is doing (read only), so a weapon swap stays out of its way. -->
     <Compile Include="..\Shared\RynthAiActivityApi.cs" Link="Shared\RynthAiActivityApi.cs" />
+    <Compile Include="..\Shared\RynthAiYieldApi.cs" Link="Shared\RynthAiYieldApi.cs" />
     <!-- An older RynthAi without RynthAi.Activity: its RynthAi.Status macro bit instead. -->
     <Compile Include="..\Shared\RynthAiStatusApi.cs" Link="Shared\RynthAiStatusApi.cs" />
     <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file as RynthCore src\Shared. -->

@@ -400,6 +400,38 @@ public partial class BuffManager : IDisposable
         return Math.Min(reserve, cost + (max - cost) / 2);
     }
 
+    /// <summary>Logged once per stretch under Get Mana At: buffing goes on because nothing can refill
+    /// mana (CheckBuffs' mana floor).</summary>
+    private bool _manaFloorNoRefillLogged;
+
+    /// <summary>Heals the mana floor keeps mana for when nothing can refill it.</summary>
+    internal const int ManaFloorHeals = 2;
+
+    /// <summary>
+    /// The mana the Get Mana At floor keeps when nothing can refill it: ManaFloorHeals casts of the
+    /// Heal Self vitals would cast now (0 when none is known or Life Magic isn't usable).
+    /// </summary>
+    internal int ManaFloorHealReserve()
+    {
+        int heal = IsSkillUsable(AcSkillType.LifeMagic)
+            ? _spellManager.GetDynamicSelfBuffId("Heal Self", AcSkillType.LifeMagic, LevelLacksComponents)
+            : 0;
+        int cost = heal != 0 ? SpellManaCost(heal) : 0;
+        return cost > 0 ? ManaFloorHeals * cost : 0;
+    }
+
+    /// <summary>True when no mana potion could be drunk at all (Use Potions off, or none listed or
+    /// in the pack); false while one exists but waits (drunk under 2.5 s ago, a cast holds it).</summary>
+    private bool NoManaPotionToDrink()
+    {
+        if (!_settings.UsePotions || _worldObjectCache == null) return true;
+        if (HasListedPotion("ManaPotion")) return false;
+        foreach (var wo in _worldObjectCache.GetDirectInventory(forceRefresh: false))
+            if (!IsKitName(wo.Name) && string.Equals(RynthCore.Plugin.RynthAi.LegacyUi.LegacyWeaponsUi.PotionType(wo), "ManaPotion", StringComparison.OrdinalIgnoreCase))
+                return false;
+        return true;
+    }
+
     /// <summary>Combat fights with magic (CombatManager's chosen weapon is a wand; before it chose,
     /// the stance). A melee character's attacks don't spend mana, so the reserve doesn't hold them.</summary>
     private bool FightsWithMagic() => _combatManager?.FightsWithMagic ?? CurrentCombatMode == CombatMode.Magic;
@@ -1717,30 +1749,71 @@ public partial class BuffManager : IDisposable
             // Mana under Get Mana At left buffing waiting on natural regen - one buff every 1-2
             // minutes (tester, 10-01: 85 minutes of "buffing waits", Stamina to Mana never cast).
             // A low stamina is topped up first (kit, Revitalize, potion) so Stamina to Mana can run.
-            if (_vitals.StaminaPct > StaminaToManaFloorPct() && AttemptVitalCast("Stamina to Mana Self"))
+            // Each source's reason, for the log line below: it used to show only the last one tried
+            // (the potion's), so a missing Stamina to Mana read as "none in the Items list or the pack".
+            string s2mWhy, stamWhy = "-", potWhy;
+            _vitalWhy = "";
+            if (_vitals.StaminaPct > StaminaToManaFloorPct())
             {
-                _isRechargingMana = true;
-                return;
+                if (AttemptVitalCast("Stamina to Mana Self"))
+                {
+                    _isRechargingMana = true;
+                    return;
+                }
+                s2mWhy = Why(_vitalWhy);
             }
-            if (_vitals.StaminaPct <= 15 && (AttemptStaminaKitUse() || AttemptVitalCast("Revitalize Self")
-                                              || AttemptPotion("StaminaPotion", "Stamina")))
+            else s2mWhy = $"stamina {_vitals.StaminaPct}% is under its line ({StaminaToManaFloorPct()}%)";
+            if (_vitals.StaminaPct <= 15)
             {
-                _isRechargingStamina = true;
-                return;
+                _vitalWhy = "";
+                if (AttemptStaminaKitUse() || AttemptVitalCast("Revitalize Self")
+                    || AttemptPotion("StaminaPotion", "Stamina"))
+                {
+                    _isRechargingStamina = true;
+                    return;
+                }
+                stamWhy = Why(_vitalWhy);
             }
+            _vitalWhy = "";
             if (AttemptPotion("ManaPotion"))
             {
                 _isRechargingMana = true;
                 return;
             }
-            LastBuffSkipReason = $"mana {_vitals.ManaPct}% under Get Mana At {manaFloor}%";
-            if ((RynthClock.Now - _lastManaFloorLogAt).TotalSeconds >= 30)
+            potWhy = Why(_vitalWhy);
+
+            // Nothing can ever refill it (no Stamina to Mana known, no mana potion to drink): waiting
+            // only means natural regeneration, so buffing crawled one buff per regen climb. Worse, a
+            // rebuff raises max mana: the character logged in with full mana (209/207), the first
+            // buffs took max mana to 536, the same 209 read 39% under Get Mana At 40%, and every buff
+            // after waited (report R-20261029-103248-ce48, DreamWeave, 2026-10-29: "Buffing seems to
+            // be getting stuck"). The floor is there to keep mana for healing, so with no refill the
+            // buffs go on while mana keeps ManaFloorHealReserve after one (BuffWaitsForMana still
+            // holds any buff mana can't pay for). The same rule as the reserve: "With no Stamina to
+            // Mana at all nothing refills: the buff goes."
+            bool canRefill = TopStaminaToManaId() != 0 || !NoManaPotionToDrink();
+            int keep = ManaFloorHealReserve();
+            if (!canRefill && _vitals.CurrentMana >= keep + EstimatedManaCost(8))
             {
-                _lastManaFloorLogAt = RynthClock.Now;
-                _host.Log($"[RynthAi] Vitals: buffing waits: mana {_vitals.ManaPct}% is under Get Mana At {manaFloor}%, stamina {_vitals.StaminaPct}%, and nothing refilled it (Stamina to Mana / stamina / potion: {Why(_vitalWhy)})");
+                if (!_manaFloorNoRefillLogged)
+                {
+                    _manaFloorNoRefillLogged = true;
+                    _host.Log($"[RynthAi] Vitals: mana {_vitals.CurrentMana}/{_vitals.MaxMana} ({_vitals.ManaPct}%) is under Get Mana At {manaFloor}%, but nothing can refill it (Stamina to Mana: {s2mWhy}; mana potion: {potWhy}): buffing goes on, keeping {keep} mana for healing.");
+                }
             }
-            return;
+            else
+            {
+                LastBuffSkipReason = $"mana {_vitals.ManaPct}% under Get Mana At {manaFloor}%";
+                if ((RynthClock.Now - _lastManaFloorLogAt).TotalSeconds >= 30)
+                {
+                    _lastManaFloorLogAt = RynthClock.Now;
+                    _host.Log($"[RynthAi] Vitals: buffing waits: mana {_vitals.CurrentMana}/{_vitals.MaxMana} ({_vitals.ManaPct}%) is under Get Mana At {manaFloor}%, stamina {_vitals.StaminaPct}%, and nothing refilled it (Stamina to Mana: {s2mWhy}; stamina: {stamWhy}; mana potion: {potWhy})" +
+                              (canRefill ? "" : $"; keeping {keep} mana for healing"));
+                }
+                return;
+            }
         }
+        else _manaFloorNoRefillLogged = false;
 
         // Too-busy backoff gates BUFFING only, and sits after CheckVitals on
         // purpose: a refused heal is worth retrying hard, a refused buff is not.

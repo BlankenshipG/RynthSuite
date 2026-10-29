@@ -54,6 +54,9 @@ internal static class SelfTestMetaTests
             var cache = FakeHost.MakeCache(host, Player, new[] { buffBot }, new Dictionary<uint, float> { [buffBot] = 1f });
             var r = new Run(host, cache, "T2 Fight");
             r.M.SetCombatTargetCount(() => targets);
+            // What the Default state sets before the run reaches the fight. It came from an earlier test's
+            // pvars file, which reached the disk only when its real-time save throttle allowed (a flake).
+            r.M.Expressions.Evaluate("setpvar[rt_fight,`PENDING`]");
             return r;
         }
 

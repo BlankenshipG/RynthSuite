@@ -85,6 +85,7 @@ internal static class Program
         FloodPerfTests.Register(runner);
         LootSalvageTests.Register(runner);
         LootCorpseTests.Register(runner);
+        LootRetryTimingTests.Register(runner);
         ChestLootTests.Register(runner);
         OwnCorpseTests.Register(runner);
         UseRefusalTests.Register(runner);

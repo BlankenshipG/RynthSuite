@@ -35,6 +35,7 @@
   <ItemGroup>
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthDefective\**\*.cs" Exclude="..\..\Plugins\RynthCore.Plugin.RynthDefective\obj\**;..\..\Plugins\RynthCore.Plugin.RynthDefective\bin\**" Link="RynthDefective\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\..\Plugins\Shared\RynthAiActivityApi.cs" Link="Shared\RynthAiActivityApi.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthAiYieldApi.cs" Link="Shared\RynthAiYieldApi.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthAiStatusApi.cs" Link="Shared\RynthAiStatusApi.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
     <Compile Include="..\..\Plugins\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />

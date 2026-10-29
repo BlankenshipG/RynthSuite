@@ -70,6 +70,9 @@ namespace RynthDefective.Tests
                 Run("busy rule: a leftover count, our own use, animation, a count that just changed", BusyRuleDecisions);
                 Run("use: a busy count left by a death or a login doesn't hold the bar", UseStaleBusy);
                 Run("use: 'You're too busy' from the server: one more try", UseTooBusyRetry);
+                Run("busy rule with RynthAi holding: its own action and our last use hold, the rest of the count doesn't", BusyRulePaced);
+                Run("use: the player's turn - after a death the press goes next, RynthAi holds and is let go", UsePlayersTurn);
+                Run("use: just after a portal the client takes nothing for a few seconds - the press waits and goes when it can", UseAfterPortal);
                 Run("spells: the table's names and flags, the name search", SpellTableAndSearch);
                 Run("spells: whom a cast goes to", SpellCastTarget);
                 Run("spells: a slot casts, Magic mode first, refusals", SpellUse);
@@ -219,6 +222,28 @@ namespace RynthDefective.Tests
             public bool Animating { get; set; }
             public bool? BotWaitingOnServer { get; set; }
             public bool? BotMacroRunning { get; set; }
+            /// <summary>RynthAi has RynthAi.Yield with its pacing on (off: a RynthAi from before, as the older tests assume).</summary>
+            public bool YieldOn;
+            /// <summary>RynthAi's own action is unanswered (read only while YieldOn).</summary>
+            public bool BotOwnAction;
+            public bool? BotPaced => YieldOn ? BotOwnAction : null;
+            /// <summary>The asks for the player's turn, the releases, and whether RynthAi holds now.</summary>
+            public int HoldAsks, Releases;
+            public bool BotHeldNow;
+            public long HeldUntil;
+            public bool HoldBot(uint ms)
+            {
+                if (!YieldOn) return false;
+                HoldAsks++;
+                BotHeldNow = true;
+                HeldUntil = NowMs + ms;
+                return true;
+            }
+            public void ReleaseBot()
+            {
+                Releases++;
+                BotHeldNow = false;
+            }
             public int UseDoneSeq { get; set; } = 1;
             public int CombatMode { get; set; } = Stance.NonCombat;
             public int RefusalSeq { get; set; }

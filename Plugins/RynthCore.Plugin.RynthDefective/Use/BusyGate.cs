@@ -27,6 +27,16 @@
 //  After that the use is sent: if the server really is busy it answers
 //  "You're too busy" (UseDone 0x1D) and the use controller tries once more.
 //
+//  With RynthAi holding for the press (RynthAi.Yield, 2026-10-29), RynthAi says
+//  exactly what it has in flight (its pacer's one outstanding action), so the
+//  rule is simpler and doesn't wait seconds for the count to sit still:
+//    * RynthAi's own unanswered action holds, for at most BotTrustMs;
+//    * the count holds only right after our own use (OwnTrustMs);
+//    * anything else in the count is a leftover (a death, a login, a corpse
+//      open's +1) or a click in the game's own windows: the use goes.
+//  After a death or a login RynthAi's stream of rebuffs kept the count moving,
+//  so it never read "steady" and a press waited until it gave up.
+//
 //  RynthDefective never resets the client's count itself (ForceResetBusyCount):
 //  the count is the engine's (its reconciler and watchdogs own it), RynthAi
 //  stopped resetting it on 2026-10-06 because a reset zeroes actions the server
@@ -54,9 +64,15 @@ internal enum BusyStale { None = 0, Count = 1, Animation = 2, Bot = 4 }
 /// <param name="AnimatingMs">How long it has animated without a break.</param>
 /// <param name="BotWaiting">RynthAi is waiting on the server (null = RynthAi isn't there).</param>
 /// <param name="BotSteadyMs">How long that bit has read its current value.</param>
+/// <param name="BotPaced">
+/// RynthAi holds for the press and reports its own unanswered action (RynthAi.Yield); null = it
+/// doesn't (absent, from before, its pacing off): the rules above apply.
+/// </param>
+/// <param name="BotPacedMs">How long RynthAi's own action has been unanswered (0 when none).</param>
 internal readonly record struct BusyFacts(
     int Count, long CountSteadyMs, int Leftover, long SinceOwnSendMs,
-    bool Animating, long AnimatingMs, bool? BotWaiting, long BotSteadyMs);
+    bool Animating, long AnimatingMs, bool? BotWaiting, long BotSteadyMs,
+    bool? BotPaced = null, long BotPacedMs = 0);
 
 internal static class BusyRule
 {
@@ -77,6 +93,23 @@ internal static class BusyRule
         {
             if (f.AnimatingMs < AnimationMaxMs) return BusyHold.Animation;
             stale |= BusyStale.Animation;
+        }
+        if (f.BotPaced is bool paced)
+        {
+            // RynthAi holds for the press and says what it has in flight: that, and our own last use,
+            // are all that hold it. The rest of the count is a leftover or a click in the game's own
+            // windows; a really busy server answers "You're too busy" (one more try).
+            if (paced)
+            {
+                if (f.BotPacedMs < BotTrustMs) return BusyHold.Bot;
+                stale |= BusyStale.Bot;
+            }
+            if (f.Count > 0)
+            {
+                if (f.Count > f.Leftover && f.SinceOwnSendMs < OwnTrustMs) return BusyHold.Busy;
+                stale |= BusyStale.Count;
+            }
+            return BusyHold.None;
         }
         if (f.Count > 0)
         {
@@ -110,14 +143,22 @@ internal sealed class BusyGate
     private long _animatingSinceMs;
     private bool? _bot;
     private long _botSinceMs;
+    private bool _paced;
+    private long _pacedSinceMs;
     private long _ownSendMs = long.MinValue / 4;
     private BusyStale _logged;
 
     /// <summary>The count judged a leftover (0 = none).</summary>
     public int Leftover => _leftover;
 
-    public void Observe(int count, bool animating, bool? botWaiting, long now)
+    public void Observe(int count, bool animating, bool? botWaiting, long now) => Observe(count, animating, botWaiting, null, now);
+
+    /// <param name="botPaced">RynthAi's own action is unanswered (null = it can't say).</param>
+    public void Observe(int count, bool animating, bool? botWaiting, bool? botPaced, long now)
     {
+        bool paced = botPaced == true;
+        if (paced && !_paced) _pacedSinceMs = now;
+        _paced = paced;
         if (count < 0) count = 0;
         if (!_started)
         {
@@ -153,17 +194,24 @@ internal sealed class BusyGate
     /// <summary>Our own use or cast went out now.</summary>
     public void NoteOwnSend(long now) => _ownSendMs = now;
 
-    public BusyFacts Facts(long now) => new(
+    public BusyFacts Facts(long now) => Facts(now, false);
+
+    /// <param name="pacedKnown">RynthAi holds for the press (its PacedAction bit is meaningful).</param>
+    public BusyFacts Facts(long now, bool pacedKnown) => new(
         _count, now - _countSinceMs, _leftover, now - _ownSendMs,
-        _animating, _animating ? now - _animatingSinceMs : 0, _bot, now - _botSinceMs);
+        _animating, _animating ? now - _animatingSinceMs : 0, _bot, now - _botSinceMs,
+        pacedKnown ? _paced : null, pacedKnown && _paced ? now - _pacedSinceMs : 0);
 
     /// <summary>
     /// What holds a use back now. A count found to be a leftover becomes the new leftover;
     /// <paramref name="newlyIgnored"/> names the leftovers not reported before (log them once).
     /// </summary>
-    public BusyHold Judge(long now, out BusyStale newlyIgnored)
+    public BusyHold Judge(long now, out BusyStale newlyIgnored) => Judge(now, false, out newlyIgnored);
+
+    /// <param name="pacedKnown">RynthAi holds for the press (RynthAi.Yield): its own action is what it says.</param>
+    public BusyHold Judge(long now, bool pacedKnown, out BusyStale newlyIgnored)
     {
-        BusyHold hold = BusyRule.Decide(Facts(now), out BusyStale stale);
+        BusyHold hold = BusyRule.Decide(Facts(now, pacedKnown), out BusyStale stale);
         if ((stale & BusyStale.Count) != 0 && _count > _leftover)
         {
             _leftover = _count;
@@ -175,15 +223,21 @@ internal sealed class BusyGate
     }
 
     /// <summary>The words for the log line when a leftover is first ignored.</summary>
-    public string Describe(BusyStale what, long now)
+    public string Describe(BusyStale what, long now) => Describe(what, now, false);
+
+    public string Describe(BusyStale what, long now, bool pacedKnown)
     {
-        BusyFacts f = Facts(now);
+        BusyFacts f = Facts(now, pacedKnown);
         var parts = new System.Collections.Generic.List<string>(3);
         if ((what & BusyStale.Count) != 0)
-            parts.Add($"the client's busy count has read {f.Count} for {f.CountSteadyMs / 1000.0:0.0} s with nothing of ours in flight");
+            parts.Add(f.BotPaced != null
+                ? $"the client's busy count reads {f.Count} with nothing of ours or RynthAi's in flight"
+                : $"the client's busy count has read {f.Count} for {f.CountSteadyMs / 1000.0:0.0} s with nothing of ours in flight");
         if ((what & BusyStale.Animation) != 0)
             parts.Add($"the character has read 'animating' for {f.AnimatingMs / 1000.0:0.0} s");
-        if ((what & BusyStale.Bot) != 0)
+        if ((what & BusyStale.Bot) != 0 && f.BotPaced != null)
+            parts.Add($"RynthAi's own action has had no answer for {f.BotPacedMs / 1000.0:0.0} s");
+        else if ((what & BusyStale.Bot) != 0)
             parts.Add($"RynthAi has read 'waiting on the server' for {f.BotSteadyMs / 1000.0:0.0} s"
                       + ((what & BusyStale.Count) != 0 || (_logged & BusyStale.Count) != 0 ? " (its copy of the same count)" : ""));
         return "[RynthDefective] " + string.Join("; ", parts)
@@ -194,6 +248,7 @@ internal sealed class BusyGate
     {
         _started = false;
         _leftover = 0;
+        _paced = false;
         _logged = BusyStale.None;
         _ownSendMs = long.MinValue / 4;
     }
