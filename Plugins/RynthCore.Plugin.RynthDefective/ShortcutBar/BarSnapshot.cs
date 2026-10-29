@@ -48,10 +48,11 @@ internal sealed record BarSlot(
 /// <summary>
 /// The bar as drawn. Independent: every slot is RynthDefective's own (DefSettings.IndependentBar).
 /// Spells: the character's spells, A-Z, for "Put a spell here..." (empty when they can't be read);
-/// CanCast: the engine casts for plugins.
+/// CanCast: the engine casts for plugins. WeaponsButton: the title shows the Weapons button
+/// (DefSettings.WeaponsButtonOnBar).
 /// </summary>
 internal sealed record BarSnapshot(BarSlot[] Slots, bool Ready, int IconSize, bool Independent = false,
-    IReadOnlyList<SpellInfo>? Spells = null, bool CanCast = false)
+    IReadOnlyList<SpellInfo>? Spells = null, bool CanCast = false, bool WeaponsButton = false)
 {
     public static readonly BarSnapshot NotReady = new(Array.Empty<BarSlot>(), false, 36);
 
@@ -98,7 +99,7 @@ internal sealed class BarSnapshotBuilder
             // Every slot is RynthDefective's own: AC's toolbar isn't read or shown (BarMapping).
             var own = new BarSlot[st.BarSlots];
             for (int n = 1; n <= st.BarSlots; n++) own[n - 1] = Own(n, BarMapping.OwnSlot(n, true), true, session, items, spells, _host);
-            return new BarSnapshot(own, true, st.ButtonSize, true, spells, canCast);
+            return new BarSnapshot(own, true, st.ButtonSize, true, spells, canCast, st.WeaponsButtonOnBar);
         }
         if (_host.GetShortcuts(_ids, _spells) == 0) return BarSnapshot.NotReady;
         RefreshKeys(now);
@@ -108,7 +109,7 @@ internal sealed class BarSnapshotBuilder
         var slots = new BarSlot[st.BarSlots];
         for (int n = 1; n <= st.BarSlots; n++)
             slots[n - 1] = BarMapping.IsRetail(n, false) ? Retail(n, byId) : Own(n, BarMapping.OwnSlot(n, false), false, session, items, spells, _host);
-        return new BarSnapshot(slots, true, st.ButtonSize, false, spells, canCast);
+        return new BarSnapshot(slots, true, st.ButtonSize, false, spells, canCast, st.WeaponsButtonOnBar);
     }
 
     private BarSlot Retail(int n, Dictionary<uint, CarriedItem> byId)

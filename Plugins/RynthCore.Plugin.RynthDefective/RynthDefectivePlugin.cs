@@ -96,6 +96,7 @@ public sealed partial class RynthDefectivePlugin : RynthPluginBase
             WindowShown = PanelShown,
             ShowWindow = (title, show) => Host.SetPanelOpen(title, show ? RynthPanelOpen.Open : RynthPanelOpen.Close),
             Tell = text => { _session.SetStatus(text); Print(text); _nextBarBuildMs = 0; },
+            ShowWeapons = () => ShowPicker(true),
         };
         _settingsWindow = _ui.Add(new UiWindow("RynthDefective/Settings", "Defective Settings")
         {

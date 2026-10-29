@@ -184,7 +184,8 @@ internal sealed class ShortcutBarWindow
     private float Header(ImDrawListPtr dl, BarSnapshot view, float x0, float y, float w)
     {
         float h = Px(HeaderH), chip = Px(ChipSize);
-        const int chips = 4;
+        // The Weapons button only when the settings ask for it (DefSettings.WeaponsButtonOnBar).
+        int chips = view.WeaponsButton ? 4 : 3;
         float chipsW = chips * chip + (chips - 1) * Px(1);
 
         ImGui.SetCursorScreenPos(new Vector2(x0, y));
@@ -207,9 +208,12 @@ internal sealed class ShortcutBarWindow
                 _edit ? "Done editing." : "Edit: the slot numbers, and - / + to take a slot off or add one.", _edit))
             _edit = !_edit;
         cx += chip + Px(1);
-        if (Chip("##sb_weapons", RynthIcons.Sword, new Vector2(cx, cy), _faint, "Weapons: every weapon and wand you carry, wield one with a click."))
-            _act.ShowWeapons();
-        cx += chip + Px(1);
+        if (view.WeaponsButton)
+        {
+            if (Chip("##sb_weapons", RynthIcons.Sword, new Vector2(cx, cy), _faint, "Weapons: every weapon and wand you carry, wield one with a click."))
+                _act.ShowWeapons();
+            cx += chip + Px(1);
+        }
         if (Chip("##sb_settings", RynthIcons.Gear, new Vector2(cx, cy), _faint,
                 "Settings (/rdef settings): weapon swaps under RynthAi, a bar independent of the game's toolbar,\nand showing the Game Panels buttons and the Selection window."))
             _act.ShowSettings();

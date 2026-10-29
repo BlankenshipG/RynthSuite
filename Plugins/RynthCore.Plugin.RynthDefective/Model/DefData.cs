@@ -105,6 +105,12 @@ internal sealed class DefSettings
     public KindFilter PreferredKind = KindFilter.All;
     /// <summary>Weapon swaps are refused while RynthAi's macro runs (it picks the weapon itself); this lets them through.</summary>
     public bool SwapWhileBotRuns;
+    /// <summary>
+    /// The Weapons button (the sword) in the Shortcuts bar's title (2026-10-29). Off (the default): the
+    /// title holds only edit, settings and hide, so a click aimed at one doesn't open the weapon picker;
+    /// the picker opens from the settings window, the bar's right-click menu and /rdef weapons.
+    /// </summary>
+    public bool WeaponsButtonOnBar;
     public bool BarOpen;
     public bool PickerOpen;
 

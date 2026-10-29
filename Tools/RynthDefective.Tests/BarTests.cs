@@ -218,6 +218,8 @@ namespace RynthDefective.Tests
             view.WindowShown = t => shown.TryGetValue(t, out bool v) ? v : null;   // no Game Panels on this "engine"
             view.ShowWindow = (t, v) => shown[t] = v;
             view.Tell = told.Add;
+            int pickers = 0;
+            view.ShowWeapons = () => pickers++;
             void Draw() { win.Begin(); view.Draw(win); win.End(); }
             string Text() => Encoding.UTF8.GetString(win.Body);
 
@@ -239,6 +241,14 @@ namespace RynthDefective.Tests
             Check(shown[BarSettingsView.SelectionTitle], "the Selection box shows the window");
             SetBool("set.swap", true);
             Check(b.S.Settings.SwapWhileBotRuns, "the swap switch");
+            Check(Text().Contains("Weapon picker...") && Text().Contains("Weapons button on the bar"), "the picker button and the bar-button switch are in the settings");
+            Click("set.weapons");
+            Eq(pickers, 1, "Weapon picker... opens the picker");
+            Check(!b.S.Settings.WeaponsButtonOnBar, "the bar has no Weapons button by default");
+            SetBool("set.weaponsbtn", true);
+            Check(b.S.Settings.WeaponsButtonOnBar, "the switch puts it back");
+            SetBool("set.weaponsbtn", false);
+            Check(!b.S.Settings.WeaponsButtonOnBar, "and takes it off again");
 
             SetBool("set.indep", true);
             Check(b.S.Settings.IndependentBar && told.Count == 1 && told[0].Contains("independent"), "the independent switch, told in chat");

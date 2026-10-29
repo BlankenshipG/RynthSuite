@@ -348,6 +348,7 @@ namespace RynthDefective.Tests
             d.Settings.ShowCounts = false;
             d.Settings.PreferredKind = KindFilter.War;
             d.Settings.SwapWhileBotRuns = true;
+            d.Settings.WeaponsButtonOnBar = true;
             d.Settings.BarOpen = true;
             d.Settings.PickerOpen = true;
             var kit = Kit(0x7000_0001u);
@@ -367,6 +368,7 @@ namespace RynthDefective.Tests
             DefSettings s = r.Settings;
             Check(s.SlotCount == 12 && s.SlotsPerRow == 6 && s.ButtonSize == 44 && s.PickerIconSize == 28, "sizes");
             Check(!s.ShowIcons && !s.ShowCounts && s.SwapWhileBotRuns && s.BarOpen && s.PickerOpen && s.PreferredKind == KindFilter.War, "switches");
+            Check(s.WeaponsButtonOnBar, "the Weapons button on the bar, kept");
             Check(r.Slots.Count == DefSettings.SlotsMax, "all 42 slots");
             ItemRef a = r.Slots[0].Item!;
             Check(a.Id == 0x7000_0001u && a.Name == "Peerless Healing Kit" && a.Wcid == 628 && a.Icon == 0x06001234 && a.Underlay == 0x06000FFF && a.Overlay == 0x06000EEE, "a slot's item with its identity and picture");
@@ -399,6 +401,7 @@ namespace RynthDefective.Tests
             File.WriteAllText(own, "{}");
             d = st.Load("S", "A", out problem);
             Check(problem == null && d.Settings.SlotCount == 8 && d.Slots.Count == DefSettings.SlotsMax, "{} = defaults");
+            Check(!d.Settings.WeaponsButtonOnBar, "a file from before has no Weapons button on the bar");
 
             File.WriteAllText(own, "{\"settings\":{\"slotCount\":99,\"slotsPerRow\":0,\"buttonSize\":1000,\"pickerIconSize\":-5,\"preferredKind\":42,\"showIcons\":\"yes\"},"
                                    + "\"slots\":[7,{\"item\":{\"id\":5.0,\"name\":\"Kit\"},\"mode\":9},{\"item\":{\"id\":1}},{\"item\":{\"name\":\"  \"}},{\"item\":\"x\"},null],"

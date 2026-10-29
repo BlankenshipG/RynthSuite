@@ -26,6 +26,8 @@ internal sealed class BarSettingsView
     public Action<string, bool> ShowWindow = (_, _) => { };
     /// <summary>A message for the player (the chat, and the status line).</summary>
     public Action<string> Tell = _ => { };
+    /// <summary>Opens the weapon picker (/rdef weapons).</summary>
+    public Action ShowWeapons = () => { };
 
     public BarSettingsView(DefSession session) => _s = session;
 
@@ -74,6 +76,10 @@ internal sealed class BarSettingsView
         w.Tooltip("Ctrl+wheel over the bar's title makes the whole bar bigger or smaller.");
 
         w.SeparatorText("Weapons");
+        w.SmallButton("Weapon picker...", "set.weapons", () => ShowWeapons());
+        w.Tooltip("Every weapon and wand you carry, wield one with a click (/rdef weapons, or Weapons... in the bar's right-click menu).");
+        w.Checkbox("Weapons button on the bar", "set.weaponsbtn", st.WeaponsButtonOnBar, v => { st.WeaponsButtonOnBar = v; Changed(); });
+        w.Tooltip("Shows the sword button in the Shortcuts bar's title, next to edit, settings and hide. Off (the default): the picker opens from here.");
         w.Checkbox("Allow weapon swaps while RynthAi's macro runs", "set.swap", st.SwapWhileBotRuns, v => { st.SwapWhileBotRuns = v; Changed(); });
         w.Tooltip("Off (the default): a weapon, wand or shield is not wielded while the RynthAi macro runs - it picks the weapon itself and would swap back. Kits, potions and other items always work.");
         w.SliderInt("Weapon picker row icon", "set.picker", st.PickerIconSize, DefSettings.PickerIconMin, DefSettings.PickerIconMax, v => { st.PickerIconSize = v; Changed(); });
