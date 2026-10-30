@@ -2099,14 +2099,20 @@ public partial class CombatManager : IDisposable
     private const double HandlerRingHoldMinMs = 3_500;
     private const double HandlerRingTurnRefreshMs = 250;
     private const double HandlerRingRunRefreshMs = 1_000;
-    /// <summary>Pump-thread orphan watch: Think stopped driving the run this long ago -> autorun off.</summary>
-    private const double HandlerRingOrphanMs = 1_500;
+    /// <summary>Think last drove the run this long ago: the combat heartbeat drives it (PollRingEscape).</summary>
+    private const double HandlerRingOrphanMs = 100;
     private const string RingEscapeSource = "Combat/RingEscape";
     private bool _ringRunActive;
     private bool _ringRunning;          // autorun is on (else holding at a safe distance)
     private double _ringSafeYards;
     private double _ringDanger;
     private DateTime _ringRunAt = DateTime.MinValue, _ringTurnAt = DateTime.MinValue, _ringTickAt = DateTime.MinValue;
+    // Where the caster was last seen (2026-10-30): a Handler killed as it channels leaves the
+    // world (its corpse is another object) while the ring still goes off. The run went on from
+    // the spot it stood on, not "the caster is gone" at once.
+    private bool _ringHaveLast;
+    private uint _ringLastLb;
+    private float _ringLastX, _ringLastY;
 
     /// <summary>
     /// Plugin wires this to <c>Jumper.Start("xs", faceHeading, ms)</c> — face the danger, then
@@ -2310,6 +2316,8 @@ public partial class CombatManager : IDisposable
         _ringSafeYards = danger + HandlerRingSafeMarginYards;
         _ringRunAt = running ? now : DateTime.MinValue;
         _ringTurnAt = _ringTickAt = now;
+        _ringHaveLast = false;
+        NoteRingCaster();
         _handlerRingEvadeUntil = DateTime.MinValue;
         _host.Log($"[CombatEvade] {why} — running away from '{name}' at {dist:0.0} m " +
                   $"(ring {danger:0.#} m, stop at {_ringSafeYards:0.#} m), heading {away:0}°" +
@@ -2367,6 +2375,8 @@ public partial class CombatManager : IDisposable
         double elapsed = (now - _handlerRingEvadeAt).TotalMilliseconds;
         int me = _host.GetPlayerId() == 0 ? 0 : (int)_host.GetPlayerId();
         double d = me != 0 && _handlerRingEvadeId != 0 ? _worldFilter.Distance(me, _handlerRingEvadeId) : -1;
+        if (d >= 0 && d != double.MaxValue) NoteRingCaster();
+        else d = RingDistanceFromLast(out _);
         bool gone = d < 0;
 
         if (_ringRunning)
@@ -2395,7 +2405,7 @@ public partial class CombatManager : IDisposable
         if (_ringRunning)
         {
             if ((now - _ringTurnAt).TotalMilliseconds >= HandlerRingTurnRefreshMs
-                && TryGetHeadingTo(_handlerRingEvadeId, out double toward, out _))
+                && RingHeadingToCaster(out double toward))
             {
                 _host.TurnToHeadingBy(RingEscapeSource, (float)((toward + 180.0) % 360.0));
                 _ringTurnAt = now;
@@ -2423,11 +2433,49 @@ public partial class CombatManager : IDisposable
         return false;
     }
 
+    /// <summary>Remembers where the ring caster stands (when the client still has it).</summary>
+    private void NoteRingCaster()
+    {
+        if (_handlerRingEvadeId == 0) return;
+        try
+        {
+            if (!_host.TryGetObjectPosition((uint)_handlerRingEvadeId, out uint cell, out float x, out float y, out _) || cell == 0) return;
+            _ringLastLb = cell >> 16;
+            _ringLastX = x; _ringLastY = y;
+            _ringHaveLast = true;
+        }
+        catch { }
+    }
+
+    /// <summary>Yards from where the caster was last seen (same landblock only), or -1.</summary>
+    private double RingDistanceFromLast(out double headingTo)
+    {
+        headingTo = 0;
+        if (!_ringHaveLast) return -1;
+        try
+        {
+            if (!_host.TryGetPlayerPose(out uint cell, out float px, out float py, out _, out _, out _, out _, out _)
+                || (cell >> 16) != _ringLastLb) return -1;
+            double dx = _ringLastX - px, dy = _ringLastY - py;
+            headingTo = Math.Atan2(dx, dy) * (180.0 / Math.PI);
+            if (headingTo < 0) headingTo += 360.0;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+        catch { return -1; }
+    }
+
+    /// <summary>The heading toward the caster, or toward where it was last seen.</summary>
+    private bool RingHeadingToCaster(out double toward)
+    {
+        if (TryGetHeadingTo(_handlerRingEvadeId, out toward, out _)) return true;
+        return RingDistanceFromLast(out toward) >= 0;
+    }
+
     /// <summary>Clears the run-away escape (autorun off if it was on).</summary>
     private void EndRingRun()
     {
         if (_ringRunning) _host.SetAutoRunBy(RingEscapeSource, false);
-        _ringRunActive = _ringRunning = false;
+        _ringRunActive = _ringRunning = _ringHaveLast = false;
         _ringRunAt = _ringTurnAt = DateTime.MinValue;
         _handlerRingEvadeUntil = DateTime.MinValue;
         _handlerRingEvadeId = 0;
@@ -2441,15 +2489,36 @@ public partial class CombatManager : IDisposable
         _host.Log($"[CombatEvade] Ring escape stopped: {why}.");
     }
 
-    /// <summary>Pump-thread orphan watch: Think drives the run; when it stops (death, another
-    /// activity, combat or the macro off) autorun must not be left on.</summary>
+    /// <summary>
+    /// Pump-thread watch (each combat heartbeat): combat or the macro off ends the run (autorun
+    /// must not be left on). Think not driving it (another activity has the tick: looting with
+    /// Loot priority, buffing) no longer ends it (2026-10-30): the run's own tick goes on from
+    /// here, bounded by its own limits (run until outside the ring or 5 s, hold until the ring
+    /// has gone off). It was stopped after 1.5 s, inside the ring.
+    /// </summary>
     internal void PollRingEscape()
     {
         if (!_ringRunActive) return;
-        if ((RynthClock.Now - _ringTickAt).TotalMilliseconds > HandlerRingOrphanMs
-            || !_settings.EnableCombat
-            || !_settings.IsMacroRunning)
-            StopRingEscape("combat stopped driving it");
+        if (!_settings.EnableCombat || !_settings.IsMacroRunning)
+        {
+            StopRingEscape("combat or the macro is off");
+            return;
+        }
+        if ((RynthClock.Now - _ringTickAt).TotalMilliseconds > HandlerRingOrphanMs)
+            TickRingRun();
+    }
+
+    /// <summary>
+    /// Another part of RynthAi just stopped movement (nav's stop on a change of activity): while
+    /// the ring run is running, turn away and autorun again now, not at the next refresh.
+    /// </summary>
+    public void ReassertRingRun()
+    {
+        if (!_ringRunActive || !_ringRunning) return;
+        if (RingHeadingToCaster(out double toward))
+            _host.TurnToHeadingBy(RingEscapeSource, (float)((toward + 180.0) % 360.0));
+        if (_host.SetAutoRunBy(RingEscapeSource, true)) _ringRunAt = RynthClock.Now;
+        _ringTurnAt = RynthClock.Now;
     }
 
     /// <summary>

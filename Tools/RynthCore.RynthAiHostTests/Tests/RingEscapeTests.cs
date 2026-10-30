@@ -32,6 +32,9 @@ internal static class RingEscapeTests
         r.Add("chaser ring: an Empyrean Chaser's lethal ring runs away from the Chaser too", ChaserRunsAway);
         r.Add("chaser ring: 'The chaser ...' flees the Chaser even with a Handler nearer", ChaserNamedWins);
         r.Add("ring: a line naming no caster flees the nearest Handler or Chaser; the line is logged once", NearestCasterWithoutSubject);
+        r.Add("handler ring: with Think not driving it (looting with Loot priority) the heartbeat runs on, not autorun off", HeartbeatDrivesRun);
+        r.Add("handler ring: the Handler killed as it channels (gone from the client) runs on from where it stood", RunsFromLastSpot);
+        r.Add("handler ring: nav's stop on a change of activity is followed by the run again at once", ReassertAfterStop);
     }
 
     private const uint Chaser = 0x80000E32;
@@ -169,6 +172,53 @@ internal static class RingEscapeTests
         c.StopRingEscape("test");
         c.HandleChatForRingEvade("briefly channels infused Empyrean hatred to release a lethal ring.", Emote);
         Check.Eq(FakeHost.Logs.Count(l => l.Contains("lethal-ring line heard")), 1, "logged once per session");
+    }
+
+    // 2026-10-30: the Handler died 0.4 s before RynthILT heard its ring; the arbiter gave the tick
+    // to Looting (Loot priority on), combat's Think stopped, and 1.5 s later the orphan watch
+    // turned autorun off: the character stood 2 m from the ring opening the corpse.
+    private static void HeartbeatDrivesRun()
+    {
+        var c = Rig(1.7f, out _);
+        c.HandleChatForRingEvade(Channel, Emote);
+        Check.True(FakeHost.AutoRun, "running");
+        // Think hasn't run for 2 s (another activity has the tick).
+        typeof(CombatManager).GetField("_ringTickAt", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(c, RynthClock.Now.AddSeconds(-2));
+        c.PollKite();
+        Check.True(FakeHost.AutoRun, "autorun stays on: the heartbeat drives the run");
+        Check.True(c.RingEvadeActive, "the evade is still on");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("Ring escape stopped")), "not stopped");
+        MovePlayer(96, 96 - 16);
+        typeof(CombatManager).GetField("_ringTickAt", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(c, RynthClock.Now.AddSeconds(-2));
+        c.PollKite();
+        Check.False(FakeHost.AutoRun, "outside the ring the heartbeat stops the run itself");
+    }
+
+    private static void RunsFromLastSpot()
+    {
+        var c = Rig(1.7f, out _);
+        c.HandleChatForRingEvade(Channel, Emote);
+        FakeHost.Positions.Remove(Handler);   // killed: the creature is gone, the corpse is another object
+        FakeHost.Names.Remove(Handler);
+        Check.True(c.Think(), "still held");
+        Check.True(FakeHost.AutoRun, "still running away from where it stood");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("caster is gone")), "not stopped as gone");
+        MovePlayer(96, 96 - 16);
+        c.Think();
+        Check.False(FakeHost.AutoRun, "stops 16 m from where it stood");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Ring run stopped") && l.Contains("outside the ring")), "logged as clear");
+    }
+
+    private static void ReassertAfterStop()
+    {
+        var c = Rig(1.7f, out _);
+        c.HandleChatForRingEvade(Channel, Emote);
+        FakeHost.AutoRun = false;   // nav's SetAutoRun(False) on the arbiter's change
+        c.ReassertRingRun();
+        Check.True(FakeHost.AutoRun, "running again at once");
+        Check.True(Math.Abs(FakeHost.HeadingDeg - 180.0) < 1.0, "still facing away");
     }
 
     private static void MovePlayer(float x, float y)

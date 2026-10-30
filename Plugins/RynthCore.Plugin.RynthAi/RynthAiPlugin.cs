@@ -912,6 +912,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         bool ownMovement = RynthCore.Plugin.Shared.MoveAudit.OwnMovementActive;   // before nav's own stops clear it
         _navigationEngine?.Stop();
+        // A lethal-ring escape is running: nav's stops just turned its autorun off. Run on, and
+        // no StopCompletely (2026-10-30).
+        if (_combatManager?.RingEvadeActive == true)
+        {
+            _combatManager.ReassertRingRun();
+            if (owner == BotActivity.Combat) ResetDoorState();
+            return;
+        }
         // A StopCompletely only when RynthAi itself has the character moving (2026-10-06): with
         // nothing of ours moving it is one more movement packet on the server's motion - 116 in 46
         // minutes on 10-06, on every change of activity - and it cut off movement another plugin
@@ -1873,11 +1881,24 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     // has a monster inside MonsterRange, so without this corpses waited until
                     // the area emptied and were usually left behind (2026-10-03).
                     bool lootStarved = IsLootStarvedTurn(wantLoot, wantCombat);
+                    // A lethal-ring escape (the Empyrean Handler's ring, RynthILT's BackAwayFrom)
+                    // keeps the tick for combat until it is done (2026-10-30). It is driven from
+                    // combat's tick; given to Looting with Loot priority on (or Buffing, or Nav
+                    // priority) combat's Think stopped, the orphan watch turned autorun off after
+                    // 1.5 s, and the character stood in the ring opening a corpse.
+                    bool ringEscape = settings.EnableCombat && _combatManager?.RingEvadeActive == true;
+                    if (ringEscape)
+                    {
+                        wantBuff = false;
+                        wantCombat = true;
+                        engaged = true;
+                        lootStarved = false;
+                    }
                     var inputs = new ArbiterInputs(
                         settings.IsMacroRunning, wantBuff, wantCombat, wantLoot, wantSalvage, wantNav,
                         combatEngaged: engaged,
-                        boostNav:      settings.BoostNavPriority,
-                        boostLoot:     settings.BoostLootPriority,
+                        boostNav:      settings.BoostNavPriority && !ringEscape,
+                        boostLoot:     settings.BoostLootPriority && !ringEscape,
                         followActive:  followActive,
                         lootStarved:   lootStarved);
                     _activity = _arbiter.Apply(in inputs, settings);

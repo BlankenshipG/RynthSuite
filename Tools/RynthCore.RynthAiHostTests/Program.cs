@@ -114,6 +114,8 @@ internal static class Program
         PetRefillTests.Register(runner);
         AutoStackTests.Register(runner);
         BackAwayTests.Register(runner);
+        RingEscapeTests.Register(runner);
+        RingEvadeTests.Register(runner);
         ServerPluginForwardTests.Register(runner);
         IgnoreMonsterTests.Register(runner);
         WorldCacheTypedTests.Register(runner);
