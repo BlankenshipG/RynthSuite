@@ -10,7 +10,8 @@ namespace RynthCore.Plugin.RynthNav;
 // out the walk heads straight for its goal for a moment (BlindPushTicks), and that, or a wall the
 // mesh doesn't show, used to mean running into it until the 30 s progress watchdog. Now: blocked
 // for StuckWindowMs = turn away at an angle (alternating sides), plan again, and after
-// StuckMaxTries on one leg without progress stop and say where.
+// StuckMaxTries on one leg without progress stop and say where. Since 2026-10-30 the first block
+// at a spot is a running jump on the same heading (over a fence or a step), then the turn away.
 public sealed partial class RynthNavPlugin
 {
     private const long StuckWindowMs = 1200;       // running this long...
@@ -24,6 +25,7 @@ public sealed partial class RynthNavPlugin
     private long _stuckWinMs, _unstickUntilMs;
     private double _stuckWx, _stuckWy, _unstickDeg;
     private int _stuckTries, _stuckSide = 1;
+    private bool _stuckJumped;                     // jumped at this blocked spot already (then step round it)
 
     /// <summary>DriveTo for the walk's own steering: remembers that it ran and which way.</summary>
     private void WalkDrive(double deg)
@@ -57,7 +59,7 @@ public sealed partial class RynthNavPlugin
     private void ResetBlocked()
     {
         _ranLastTick = false;
-        _stuckWinMs = 0; _unstickUntilMs = 0; _stuckTries = 0;
+        _stuckWinMs = 0; _unstickUntilMs = 0; _stuckTries = 0; _stuckJumped = false;
     }
 
     /// <summary>
@@ -88,9 +90,22 @@ public sealed partial class RynthNavPlugin
         if (now - _stuckWinMs < StuckWindowMs) return false;
         double moved = Math.Sqrt((_wx - _stuckWx) * (_wx - _stuckWx) + (_wy - _stuckWy) * (_wy - _stuckWy));
         _stuckWinMs = now; _stuckWx = _wx; _stuckWy = _wy;
-        if (moved >= StuckMoveUnits) return false;
+        if (moved >= StuckMoveUnits) { _stuckJumped = false; return false; }
 
         string at = NavCoords.Fmt(NavCoords.NsFromWorld(_wy), NavCoords.EwFromWorld(_wx));
+        // First, jump on the same heading (2026-10-30): a fence, a step or a low wall the mesh
+        // smooths over is often cleared by a running jump; only then step round it.
+        if (!_stuckJumped && Host.HasTapJump)
+        {
+            _stuckJumped = true;
+            DriveTo(_lastDriveDeg);
+            _ranLastTick = true;
+            Host.TapJump();
+            Host.Log($"[RynthNav] walk: blocked at {at} heading {_lastDriveDeg:F0} (moved {moved:F1}u): jumping first");
+            lock (_gate) _status = "blocked: jumping";
+            return true;
+        }
+        _stuckJumped = false;
         if (++_stuckTries > StuckMaxTries)
         {
             string why; lock (_gate) why = _status;

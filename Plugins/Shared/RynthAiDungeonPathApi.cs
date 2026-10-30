@@ -15,6 +15,8 @@
 //    across ticks. RynthAi may not be loaded, or may be reloaded.
 //  - Every function returns safely (no exception crosses the boundary).
 //
+//  v2 (2026-10-30): FindPath2 (drops down, cells to avoid, point kinds).
+//
 //  World units: x = east  (landblockX * 192 + local x),
 //               y = north (landblockY * 192 + local y),
 //               z = height (the pose z). Both ends in the same dungeon landblock.
@@ -29,7 +31,12 @@ public unsafe struct RynthAiDungeonPathApiV1
 {
     public const string PluginName = "RynthAi";
     public const string InterfaceName = "RynthAi.DungeonPath";
-    public const uint InterfaceVersion = 1;
+    public const uint InterfaceVersion = 2;
+
+    /// <summary>FindPath2 point kinds: walk on to the next point.</summary>
+    public const int KindWalk = 0;
+    /// <summary>FindPath2 point kinds: the edge of a drop; the next point is where you land (walk off).</summary>
+    public const int KindDrop = 1;
 
     /// <summary>FindPath: a path was found.</summary>
     public const int ResultOk = 1;
@@ -48,4 +55,12 @@ public unsafe struct RynthAiDungeonPathApiV1
     /// last, and the count into <c>*count</c>. Returns ResultOk, ResultNoPath or ResultNoData.
     /// </summary>
     public delegate* unmanaged[Cdecl]<uint, double, double, double, double, double, double, double*, int, int*, int> FindPath;
+
+    /// <summary>
+    /// v2 (2026-10-30): FindPath with more ways and fewer: <c>maxDrop</c> (world units, 0 = none)
+    /// lets the walk drop down a ledge or shaft that high (one way: never up); <c>avoid</c> holds
+    /// <c>avoidCount</c> x,y,z points (world) whose cells are left out (a locked door's doorway);
+    /// <c>kinds</c> (room for <c>maxPoints</c>, may be null) gets each point's KindWalk / KindDrop.
+    /// </summary>
+    public delegate* unmanaged[Cdecl]<uint, double, double, double, double, double, double, double, double*, int, double*, int*, int, int*, int> FindPath2;
 }

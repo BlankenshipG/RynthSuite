@@ -19,10 +19,10 @@ internal static partial class Program
 
     /// <summary>A fake pathfinder: a dog-leg through (ax, by) - the walls are the test's business.</summary>
     private static int _pathCalls;
-    private static double[]? DogLeg(uint lb, double ax, double ay, double az, double bx, double by, double bz)
+    private static DungeonWay? DogLeg(uint lb, double ax, double ay, double az, double bx, double by, double bz)
     {
         _pathCalls++;
-        return new[] { ax, ay, az, ax, by, az, bx, by, bz };
+        return new DungeonWay(new[] { ax, ay, az, ax, by, az, bx, by, bz });
     }
 
     private static void PathfinderFillsMissingWalks()

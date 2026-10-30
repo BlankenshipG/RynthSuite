@@ -393,6 +393,7 @@ public sealed partial class RynthNavPlugin
             _learnTarget = t.Name; _learnTargetInDungeon = true; _learnTargetLb = lb; _learnTargetX = t.X; _learnTargetY = t.Y;
             _learnRevisit = false;
             _dunWalker = new HubWalker(way, LastTeleportMs > 0 ? LastTeleportMs : now - HubWalker.CooldownMs, now);
+            ResetDoor();
             _dunLastX = hx; _dunLastY = hy;
             AutoRun.Forget();
             _learn = LearnState.DungeonGoing;
@@ -423,10 +424,18 @@ public sealed partial class RynthNavPlugin
             SetLearnLine($"took '{_learnTarget}' in the dungeon: learning where it lands");
             return;
         }
-        switch (w.Step(LocalX, LocalY, now, out double heading, out string why))
+        DoorAct door = WalkDoor(w, now, out string doorWhy);
+        if (door == DoorAct.Busy) return;
+        double heading = 0;
+        string why = doorWhy;
+        HubWalker.Act act = door == DoorAct.Blocked ? HubWalker.Act.Stop : w.Step(LocalX, LocalY, _wz, now, out heading, out why);
+        switch (act)
         {
             case HubWalker.Act.Run:
                 DriveTo(heading);
+                return;
+            case HubWalker.Act.Jump:
+                WalkJump(heading, w);
                 return;
             case HubWalker.Act.Hold:
                 AutoRun.Halt();

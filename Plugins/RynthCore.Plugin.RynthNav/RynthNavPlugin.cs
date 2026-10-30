@@ -145,6 +145,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         _recallsEnabled = NavDataConfig.ReadSwitch("recalls", true);
         InitLearn();
         InitGems();
+        InitDoors();
         LoadAvoidSettings();
         LoadMarkerSettings();
         LoadMeshSettings();

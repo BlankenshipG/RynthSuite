@@ -58,7 +58,7 @@ internal static partial class DungeonPathfinder
     //     same scale as Z.
     //   - atan2(|dZ|, dHoriz) > DropAngleDeg → drop.
     // Near-zero horizontal distance (rooms stacked vertically) is always a drop.
-    private static bool IsDropEdge(DungeonNavNode a, DungeonNavNode b)
+    internal static bool IsDropEdge(DungeonNavNode a, DungeonNavNode b)
     {
         double dZ = Math.Abs(b.Z - a.Z);
         if (dZ < 0.5) return false; // trivially flat
@@ -268,16 +268,30 @@ internal static partial class DungeonPathfinder
 
     // ── A* ───────────────────────────────────────────────────────────────────
 
+    /// <summary>Extra cost (nav units, ~10 m) of a drop taken on purpose: stairs or a ramp of about
+    /// the same length are walked instead.</summary>
+    internal const double DropPenaltyNav = 1.0 / 24.0;
+
+    /// <summary>
+    /// A drop edge <paramref name="maxDropZ"/> allows: downward only (a fall can't be climbed),
+    /// and no farther down than that (world units; fall damage). 0 = no drops.
+    /// </summary>
+    internal static bool DropAllowed(DungeonNavNode from, DungeonNavNode to, double maxDropZ) =>
+        maxDropZ > 0 && to.Z < from.Z - 0.5 && from.Z - to.Z <= maxDropZ;
+
     /// <summary>
     /// Finds the shortest portal-connected path from startCell to goalCell,
     /// skipping any edge classified as a drop by IsDropEdge and any neighbor cell
     /// in <paramref name="hazardCells"/> (lava / acid pools, etc.).
+    /// <paramref name="maxDropZ"/> &gt; 0 (2026-10-30, RynthNav's routes): a drop down of up to that
+    /// many world units is a way too (one way: never up), at <see cref="DropPenaltyNav"/> extra.
     /// Returns ordered List of cell IDs, or empty if unreachable.
     /// </summary>
     public static List<uint> FindPath(
         uint startCell, uint goalCell,
         Dictionary<uint, DungeonNavNode> graph,
-        IReadOnlySet<uint>? hazardCells = null)
+        IReadOnlySet<uint>? hazardCells = null,
+        double maxDropZ = 0)
     {
         if (!graph.ContainsKey(startCell) || !graph.ContainsKey(goalCell))
             return new List<uint>();
@@ -305,13 +319,14 @@ internal static partial class DungeonPathfinder
             {
                 if (closed.Contains(nbId)) continue;
                 if (!graph.TryGetValue(nbId, out var nbNode)) continue;
-                if (IsDropEdge(curNode, nbNode)) continue;
+                bool drop = IsDropEdge(curNode, nbNode);
+                if (drop && !DropAllowed(curNode, nbNode, maxDropZ)) continue;
                 // Goal cell is allowed even if marked hazardous (the player asked to go there).
                 if (nbId != goalCell && hazardCells != null && hazardCells.Contains(nbId)) continue;
 
                 double dNS   = curNode.NS - nbNode.NS;
                 double dEW   = curNode.EW - nbNode.EW;
-                double tentG = gCur + Math.Sqrt(dNS * dNS + dEW * dEW);
+                double tentG = gCur + Math.Sqrt(dNS * dNS + dEW * dEW) + (drop ? DropPenaltyNav : 0);
 
                 if (tentG < gScore.GetValueOrDefault(nbId, double.MaxValue))
                 {

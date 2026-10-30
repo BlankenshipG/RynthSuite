@@ -22,6 +22,7 @@ internal static partial class Program
         RunGems();
         RunGemDungeons();
         RunDungeonPaths();
+        RunWalkDoors();
     }
 
     private static readonly DateTime T0 = new(2026, 10, 29, 12, 0, 0, DateTimeKind.Utc);

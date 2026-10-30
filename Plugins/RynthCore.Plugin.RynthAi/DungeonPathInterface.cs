@@ -24,6 +24,7 @@ internal static unsafe class DungeonPathInterface
             t->Version = RynthAiDungeonPathApiV1.InterfaceVersion;
             t->StructSize = (uint)sizeof(RynthAiDungeonPathApiV1);
             t->FindPath = &FindPath;
+            t->FindPath2 = &FindPath2;
             _table = t;
         }
         return (IntPtr)_table;
@@ -47,6 +48,25 @@ internal static unsafe class DungeonPathInterface
             RynthAiPlugin? p = PluginExports.Runtime.Plugin;
             if (p == null || points == null || maxPoints < 2 || count == null) return RynthAiDungeonPathApiV1.ResultNoData;
             return p.DungeonPathForPlugin(landblock, sx, sy, sz, gx, gy, gz, points, maxPoints, count);
+        }
+        catch
+        {
+            return RynthAiDungeonPathApiV1.ResultNoData;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int FindPath2(uint landblock, double sx, double sy, double sz, double gx, double gy, double gz,
+        double maxDrop, double* avoid, int avoidCount, double* points, int* kinds, int maxPoints, int* count)
+    {
+        try
+        {
+            if (count != null) *count = 0;
+            RynthAiPlugin? p = PluginExports.Runtime.Plugin;
+            if (p == null || points == null || maxPoints < 2 || count == null) return RynthAiDungeonPathApiV1.ResultNoData;
+            if (avoid == null) avoidCount = 0;
+            return p.DungeonPathForPlugin(landblock, sx, sy, sz, gx, gy, gz, points, maxPoints, count,
+                Math.Max(0, maxDrop), avoid, Math.Clamp(avoidCount, 0, 64), kinds);
         }
         catch
         {

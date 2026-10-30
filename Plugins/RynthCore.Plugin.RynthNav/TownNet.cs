@@ -19,6 +19,8 @@ internal sealed class TownNetPoint
 {
     public uint Cell;
     public double X, Y, Z;
+    /// <summary>The edge of a drop (2026-10-30): walk on off it; the next point is where you land, lower down.</summary>
+    public bool Drop;
 }
 
 internal sealed class TownNetArrival
@@ -107,7 +109,27 @@ internal sealed class TownNetWalk
 /// A walk inside dungeon <c>landblock</c> between two landblock-local points (x, y, z), as x,y,z
 /// triples from the first to the second, or null when there is none (RynthAi's dungeon pathfinder).
 /// </summary>
-internal delegate double[]? DungeonPather(uint landblock, double ax, double ay, double az, double bx, double by, double bz);
+internal delegate DungeonWay? DungeonPather(uint landblock, double ax, double ay, double az, double bx, double by, double bz);
+
+/// <summary>A walk from RynthAi's dungeon pathfinder: x,y,z triples (landblock-local), and which points are the edge of a drop.</summary>
+internal sealed class DungeonWay
+{
+    public readonly double[] Points;
+    /// <summary>Per point: the edge of a drop (the next point is the landing). Null: none.</summary>
+    public readonly bool[]? Drops;
+    public DungeonWay(double[] points, bool[]? drops = null) { Points = points; Drops = drops; }
+    public int Count => Points.Length / 3;
+    public bool HasDrop => Drops != null && Array.IndexOf(Drops, true) >= 0;
+
+    /// <summary>The walk as walker points in <paramref name="cell"/>.</summary>
+    public TownNetPoint[] ToPoints(uint cell)
+    {
+        var tp = new TownNetPoint[Count];
+        for (int i = 0; i < tp.Length; i++)
+            tp[i] = new TownNetPoint { Cell = cell, X = Points[i * 3], Y = Points[i * 3 + 1], Z = Points[i * 3 + 2], Drop = Drops != null && Drops[i] };
+        return tp;
+    }
+}
 
 internal sealed class TownNet
 {
@@ -487,10 +509,9 @@ internal sealed class TownNet
                 {
                     TownNetExit ex = t.Exits[x];
                     if (!ex.Learned || (ex.Cell >> 16) != lb || t.Walk(a, x) != null) continue;
-                    double[]? pts = pather(lb, ar.X, ar.Y, ar.Z, ex.X, ex.Y, ex.Z);
-                    if (pts == null || pts.Length < 6) continue;
-                    var tp = new TownNetPoint[pts.Length / 3];
-                    for (int i = 0; i < tp.Length; i++) tp[i] = new TownNetPoint { Cell = ar.Cell, X = pts[i * 3], Y = pts[i * 3 + 1], Z = pts[i * 3 + 2] };
+                    DungeonWay? dw = pather(lb, ar.X, ar.Y, ar.Z, ex.X, ex.Y, ex.Z);
+                    if (dw == null || dw.Count < 2) continue;
+                    TownNetPoint[] tp = dw.ToPoints(ar.Cell);
                     t.AddWalk(new TownNetWalk { Arrival = a, Exit = x, Points = tp, Length = PathLength(tp, 0) * 1.15, Planned = true });
                 }
             }
@@ -645,8 +666,17 @@ internal sealed class HubWalker
     public const long CooldownMs = 4000;
     public const long StuckMs = 8000;   // 3 s stopped a walk that had only just landed (10-01 20:13: the client holds you a moment after portal space; a turn in place takes time too)
     public const long TouchWaitMs = 3000;
+    /// <summary>No progress this long: jump (still running), over a lip, a step or a railing (2026-10-30).</summary>
+    public const long JumpAfterMs = 2000;
+    /// <summary>Jumps per stuck spot before StuckMs gives up.</summary>
+    public const int MaxJumps = 2;
+    /// <summary>On a walk over more than one level, a point counts as reached only within this height of it.</summary>
+    public const double LevelUnits = 3.0;
+    /// <summary>The walk's points span more than this in height: a walk over levels (ramps, stairs, drops).</summary>
+    public const double LevelSpanUnits = 2.5;
 
-    public enum Act { Run, Hold, Stop, NoTeleport }
+    /// <summary>Run = run with the heading; Jump = run with it and jump now; Hold = stand; Stop; NoTeleport.</summary>
+    public enum Act { Run, Hold, Stop, NoTeleport, Jump }
 
     private readonly List<TownNetPoint> _way;
     private readonly long _landMs;
@@ -655,9 +685,17 @@ internal sealed class HubWalker
     private long _bestMs, _atPortalMs;
     private bool _retried, _backing;
     private readonly double[] _radius;   // per waypoint: how close counts as reached (sharper turn, closer)
+    private readonly bool _levels;       // the walk goes over more than one level: heights count
+    private int _jumps;                  // jumps at this stuck spot
+    private long _jumpMs;
+
+    /// <summary>The walk goes up or down levels (its points span more than LevelSpanUnits in height).</summary>
+    public bool Levels => _levels;
+    /// <summary>Jumps so far on this walk (the log).</summary>
+    public int JumpsTotal { get; private set; }
 
     public double Length { get; }
-    public long LimitMs { get; }
+    public long LimitMs { get; private set; }
     public bool Waiting { get; private set; }
     /// <summary>True on the tick the cooldown hold began (say so once).</summary>
     public bool JustStartedWaiting { get; private set; }
@@ -688,6 +726,21 @@ internal sealed class HubWalker
             if (sin > 1e-6) _radius[i] = Math.Min(WaypointUnits, Math.Max(0.05, MaxCutUnits / sin));
         }
         LimitMs = nowMs + (long)((Length / 3.0 + 10.0) * 1000) + CooldownMs;
+        double zMin = double.MaxValue, zMax = double.MinValue;
+        foreach (TownNetPoint p in way) { zMin = Math.Min(zMin, p.Z); zMax = Math.Max(zMax, p.Z); }
+        _levels = zMax - zMin > LevelSpanUnits;
+    }
+
+    /// <summary>
+    /// Point <paramref name="i"/> reached in height: always on a one-level walk or with no height;
+    /// otherwise within LevelUnits of it, or below the edge of a drop (falling off it).
+    /// </summary>
+    private bool LevelOk(int i, double z)
+    {
+        if (!_levels || double.IsNaN(z)) return true;
+        TownNetPoint p = _way[i];
+        if (p.Drop && z < p.Z + LevelUnits) return true;
+        return Math.Abs(z - p.Z) < LevelUnits;
     }
 
     /// <summary>Metres left to the exit's centre from (x, y).</summary>
@@ -703,9 +756,24 @@ internal sealed class HubWalker
     /// nothing happened).
     /// </summary>
     /// <summary>Not moving through no fault of the walk (portal space): the stuck clock starts again.</summary>
-    public void Pause(long now) { _bestMs = now; _best = double.MaxValue; }
+    public void Pause(long now) { _bestMs = now; _best = double.MaxValue; _jumps = 0; }
 
-    public Act Step(double x, double y, long now, out double heading, out string why)
+    /// <summary>A hold through no fault of the walk (a door opening): the stuck clock and the time limit wait too.</summary>
+    public void Hold(long now, long heldMs) { Pause(now); LimitMs += heldMs; }
+
+    /// <summary>The points still ahead, from the one being walked to (index, point).</summary>
+    public IEnumerable<(int Index, TownNetPoint Point)> Ahead()
+    {
+        for (int i = Math.Max(1, _idx); i < _way.Count; i++) yield return (i, _way[i]);
+    }
+
+    /// <summary>The point the walk was at before the one being walked to.</summary>
+    public TownNetPoint Previous => _way[Math.Max(0, _idx - 1)];
+
+    public Act Step(double x, double y, long now, out double heading, out string why) => Step(x, y, double.NaN, now, out heading, out why);
+
+    /// <param name="z">Your height (NaN: unknown; heights then don't count).</param>
+    public Act Step(double x, double y, double z, long now, out double heading, out string why)
     {
         heading = 0; why = "";
         JustStartedWaiting = false;
@@ -718,8 +786,10 @@ internal sealed class HubWalker
             double db = Math.Sqrt((b.X - x) * (b.X - x) + (b.Y - y) * (b.Y - y));
             TownNet.SegmentDistance(x, y, _way[_idx - 1], b, out double along);
             if (db >= _radius[_idx] && along < 1.0) break;
+            // Over levels: a point right above or below (a ramp's turn, the floor under a walkway) isn't reached yet.
+            if (!LevelOk(_idx, z)) break;
             _idx++;
-            _best = double.MaxValue; _bestMs = now;
+            _best = double.MaxValue; _bestMs = now; _jumps = 0;
         }
         TownNetPoint tgt = _way[_idx], prev = _way[_idx - 1];
         double off = TownNet.SegmentDistance(x, y, prev, tgt, out double tSeg);
@@ -774,13 +844,19 @@ internal sealed class HubWalker
             aimX = prev.X + sx * tt; aimY = prev.Y + sy * tt;
         }
 
-        // Stuck: no StuckProgress closer to where we're heading in StuckMs.
+        // Stuck: no StuckProgress closer to where we're heading in StuckMs. Before that, jump
+        // (running on): a lip, a step up or a low railing the walk runs into.
         double dAim = Math.Sqrt((aimX - x) * (aimX - x) + (aimY - y) * (aimY - y));
-        if (dAim < _best - StuckProgress) { _best = dAim; _bestMs = now; }
-        else if (now - _bestMs > StuckMs) { why = $"stuck near {x:F1}, {y:F1}"; return Act.Stop; }
-
         heading = Math.Atan2(aimX - x, aimY - y) * 180.0 / Math.PI;
         if (heading < 0) heading += 360.0;
+        if (dAim < _best - StuckProgress) { _best = dAim; _bestMs = now; _jumps = 0; }
+        else if (now - _bestMs > StuckMs) { why = $"stuck near {x:F1}, {y:F1}" + (_jumps > 0 ? $" (jumped {_jumps}x)" : ""); return Act.Stop; }
+        else if (_jumps < MaxJumps && now - _bestMs > JumpAfterMs * (_jumps + 1) && now - _jumpMs > JumpAfterMs)
+        {
+            _jumps++; JumpsTotal++;
+            _jumpMs = now;
+            return Act.Jump;
+        }
         return Act.Run;
     }
 }

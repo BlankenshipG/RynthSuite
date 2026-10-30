@@ -26,7 +26,7 @@ public sealed partial class RynthNavPlugin
     private volatile TownNet? _baseTownNet;
     /// <summary>What routes and the walker use: townnet.json plus this server's learned dungeons (TownNet.Merge). Null: neither.</summary>
     private volatile TownNet? _townNet;
-    private (TownNet? Base, int Version, string Server, Atlas? Atlas, bool Dats, int Retry) _mergedKey = (null, -1, "", null, false, 0);
+    private (TownNet? Base, int Version, string Server, Atlas? Atlas, bool Dats, int Retry, double Drop, int Locked) _mergedKey = (null, -1, "", null, false, 0, -1, -1);
     private int _mergeRetry;          // bumped to plan again (the dats weren't loaded the last time)
     private long _mergeRetryAtMs;
     private volatile string _townNetStatus = "loading…";
@@ -85,7 +85,8 @@ public sealed partial class RynthNavPlugin
         Atlas atlas = _atlas;
         bool dats = DungeonPathAvailable();
         if (_mergeRetryAtMs != 0 && NowMs >= _mergeRetryAtMs) { _mergeRetryAtMs = 0; _mergeRetry++; }
-        var key = (b, _custom.Version, server, (Atlas?)atlas, dats, _mergeRetry);
+        // The drop setting and the locked doors found change the planned walks (2026-10-30).
+        var key = (b, _custom.Version, server, (Atlas?)atlas, dats, _mergeRetry, _dropMeters, _lockedDoorVersion);
         if (key == _mergedKey) return;
         _mergedKey = key;
         bool anyDungeonPortal = false;
@@ -180,6 +181,7 @@ public sealed partial class RynthNavPlugin
         _hubActive = false; _hubLanded = false; _hubWaitSaid = false; _hubSettleSince = 0;
         _hubWalker = null;
         _hubLeaving = false; _hubLeftPortal = false; _hubLeaveMs = 0; _hubLb = 0;
+        ResetDoor();
     }
 
     private double LocalX => _wx - ((_cellId >> 24) & 0xFF) * 192.0;
@@ -244,7 +246,7 @@ public sealed partial class RynthNavPlugin
                 return;
             }
             _hubWalker = new HubWalker(way, landMs, now);
-            Say($"{hubName}: walking to the {exit.Name} ({_hubWalker.Length:F0} m).");
+            Say($"{hubName}: walking to the {exit.Name} ({_hubWalker.Length:F0} m{(_hubWalker.Levels ? ", over more than one level" : "")}).");
             Host.Log($"[RynthNav] {hubName}: landed at {x:F1},{y:F1} (lb 0x{lb:X4}), walk from {from}: {way.Count} points, {_hubWalker.Length:F1} m to {exit.Name}");
         }
 
@@ -304,10 +306,24 @@ public sealed partial class RynthNavPlugin
             return;
         }
 
-        switch (_hubWalker!.Step(LocalX, LocalY, now, out double heading, out string why))
+        // A closed door across the walk: open it (or unlock it), else go round it (RynthNavPlugin.Doors.cs).
+        switch (WalkDoor(_hubWalker!, now, out string doorWhy))
+        {
+            case DoorAct.Busy:
+                return;
+            case DoorAct.Blocked:
+                if (exit.Learned && HubWalkRound(exit, now)) return;
+                HubStop(exit, doorWhy);
+                return;
+        }
+
+        switch (_hubWalker!.Step(LocalX, LocalY, _wz, now, out double heading, out string why))
         {
             case HubWalker.Act.Run:
                 DriveTo(heading);
+                return;
+            case HubWalker.Act.Jump:
+                WalkJump(heading, _hubWalker);
                 return;
             case HubWalker.Act.Hold:
                 HubHalt();
@@ -327,6 +343,20 @@ public sealed partial class RynthNavPlugin
                 HubStop(exit, why);
                 return;
         }
+    }
+
+    /// <summary>
+    /// A door on the walk nothing opens: the walk planned again from here (RynthAi's dungeon
+    /// pathfinder, the locked doors' doorways left out). False when there is no other way.
+    /// </summary>
+    private bool HubWalkRound(TownNetExit exit, long now)
+    {
+        List<TownNetPoint>? way = DungeonWayHere(exit.X, exit.Y, exit.Z);
+        if (way == null) return false;
+        _hubWalker = new HubWalker(way, now - HubWalker.CooldownMs, now);
+        Say($"{exit.Hub}: a door on the way won't open; going round it ({_hubWalker.Length:F0} m to the {exit.Name}).");
+        Host.Log($"[RynthNav] {exit.Hub}: walk planned again round {_lockedDoors.Count} locked door(s): {way.Count} points, {_hubWalker.Length:F1} m");
+        return true;
     }
 
     private void HubStop(TownNetExit exit, string why) =>

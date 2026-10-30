@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthNav;
@@ -17,7 +18,7 @@ public sealed partial class RynthNavPlugin
     private const int DunPathMaxPoints = 512;
     private const long DunPathRetryMs = 5000;
 
-    private readonly Dictionary<string, double[]?> _dunPathCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DungeonWay?> _dunPathCache = new(StringComparer.Ordinal);
     private bool _dunPathAvailable;
     private long _dunPathCheckMs;
     private string _dunPathWhy = "";
@@ -49,30 +50,49 @@ public sealed partial class RynthNavPlugin
 
     /// <summary>
     /// A walk inside dungeon <paramref name="lb"/> between two landblock-local points (x,y,z triples,
-    /// local), or null. Remembered per pair (the dats don't change). Tick thread.
+    /// local), or null. Remembered per pair (the dats don't change). With RynthAi's v2 interface
+    /// (2026-10-30) the walk may drop down a ledge or shaft up to the drop setting, and keeps out of
+    /// the doorways of the locked doors this session found (RynthNavPlugin.Doors.cs). Tick thread.
     /// </summary>
-    private unsafe double[]? DungeonPath(uint lb, double ax, double ay, double az, double bx, double by, double bz)
+    private unsafe DungeonWay? DungeonPath(uint lb, double ax, double ay, double az, double bx, double by, double bz)
     {
         lb &= 0xFFFF;
-        string key = string.Create(CultureInfo.InvariantCulture, $"{lb:X4}|{ax:0.#},{ay:0.#},{az:0}|{bx:0.#},{by:0.#},{bz:0}");
-        if (_dunPathCache.TryGetValue(key, out double[]? cached)) return cached;
+        List<(double X, double Y, double Z)> avoid = LockedDoorSpots(lb);
+        string key = string.Create(CultureInfo.InvariantCulture,
+            $"{lb:X4}|{ax:0.#},{ay:0.#},{az:0}|{bx:0.#},{by:0.#},{bz:0}|d{_dropMeters:0.#}|a{avoid.Count}:{_lockedDoorVersion}");
+        if (_dunPathCache.TryGetValue(key, out DungeonWay? cached)) return cached;
         RynthAiDungeonPathApiV1* t = DungeonPathTable();
         if (t == null) { _dunPathAvailable = false; return null; }   // not cached: RynthAi may come back
         double ox = ((lb >> 8) & 0xFF) * 192.0, oy = (lb & 0xFF) * 192.0;
         var buf = new double[DunPathMaxPoints * 3];
+        var kinds = new int[DunPathMaxPoints];
         int count = 0, r;
-        fixed (double* p = buf)
-            r = t->FindPath(lb, ox + ax, oy + ay, az, ox + bx, oy + by, bz, p, DunPathMaxPoints, &count);
-        double[]? result = null;
+        bool v2 = t->Version >= 2 && t->StructSize >= (uint)sizeof(RynthAiDungeonPathApiV1) && t->FindPath2 != null;
+        if (v2)
+        {
+            var av = new double[Math.Max(1, avoid.Count * 3)];
+            for (int i = 0; i < avoid.Count; i++) { av[i * 3] = ox + avoid[i].X; av[i * 3 + 1] = oy + avoid[i].Y; av[i * 3 + 2] = avoid[i].Z; }
+            fixed (double* p = buf) fixed (int* k = kinds) fixed (double* a = av)
+                r = t->FindPath2(lb, ox + ax, oy + ay, az, ox + bx, oy + by, bz, _dropMeters, a, avoid.Count, p, k, DunPathMaxPoints, &count);
+        }
+        else
+        {
+            fixed (double* p = buf)
+                r = t->FindPath(lb, ox + ax, oy + ay, az, ox + bx, oy + by, bz, p, DunPathMaxPoints, &count);
+        }
+        DungeonWay? result = null;
         if (r == RynthAiDungeonPathApiV1.ResultOk && count >= 2)
         {
-            result = new double[count * 3];
+            var pts = new double[count * 3];
+            bool[]? drops = null;
             for (int i = 0; i < count; i++)
             {
-                result[i * 3] = buf[i * 3] - ox;
-                result[i * 3 + 1] = buf[i * 3 + 1] - oy;
-                result[i * 3 + 2] = buf[i * 3 + 2];
+                pts[i * 3] = buf[i * 3] - ox;
+                pts[i * 3 + 1] = buf[i * 3 + 1] - oy;
+                pts[i * 3 + 2] = buf[i * 3 + 2];
+                if (v2 && kinds[i] == RynthAiDungeonPathApiV1.KindDrop) (drops ??= new bool[count])[i] = true;
             }
+            result = new DungeonWay(pts, drops);
         }
         else if (r == RynthAiDungeonPathApiV1.ResultNoData) { _dunPathNoData = true; return null; }   // the dats may not be loaded yet: ask again later
         if (_dunPathCache.Count > 4000) _dunPathCache.Clear();
@@ -84,11 +104,11 @@ public sealed partial class RynthNavPlugin
     private List<TownNetPoint>? DungeonWayHere(double x, double y, double z)
     {
         if (!DungeonPathAvailable()) return null;
-        double[]? pts = DungeonPath(CurrentLandblock, LocalX, LocalY, _wz, x, y, z);
-        if (pts == null) return null;
-        var way = new List<TownNetPoint>(pts.Length / 3);
-        for (int i = 0; i < pts.Length / 3; i++) way.Add(new TownNetPoint { Cell = _cellId, X = pts[i * 3], Y = pts[i * 3 + 1], Z = pts[i * 3 + 2] });
-        if (way.Count > 0) way[0] = new TownNetPoint { Cell = _cellId, X = LocalX, Y = LocalY, Z = _wz };
+        DungeonWay? dw = DungeonPath(CurrentLandblock, LocalX, LocalY, _wz, x, y, z);
+        if (dw == null) return null;
+        var way = new List<TownNetPoint>(dw.ToPoints(_cellId));
+        if (way.Count > 0) way[0] = new TownNetPoint { Cell = _cellId, X = LocalX, Y = LocalY, Z = _wz, Drop = way[0].Drop };
+        if (dw.HasDrop) Host.Log($"[RynthNav] dungeon walk drops down {dw.Drops!.Count(d => d)} ledge(s) on the way (drops up to {_dropMeters:0.#} m allowed: /rnav drops)");
         return way.Count >= 2 ? way : null;
     }
 }

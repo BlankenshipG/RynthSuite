@@ -116,6 +116,7 @@ internal static class Program
         BackAwayTests.Register(runner);
         RingEscapeTests.Register(runner);
         RingEvadeTests.Register(runner);
+        DungeonDropTests.Register(runner);
         ServerPluginForwardTests.Register(runner);
         IgnoreMonsterTests.Register(runner);
         WorldCacheTypedTests.Register(runner);
