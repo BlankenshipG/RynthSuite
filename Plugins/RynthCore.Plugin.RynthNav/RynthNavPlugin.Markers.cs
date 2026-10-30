@@ -105,7 +105,7 @@ public sealed partial class RynthNavPlugin
         string enterName, bool live)
     {
         var tr = new List<TripRecall>();
-        if (recalls != null) foreach (RecallOption o in recalls) tr.Add(new TripRecall(o.Name, o.SpellId, o.Command, o.CastSeconds));
+        if (recalls != null) foreach (RecallOption o in recalls) tr.Add(new TripRecall(o.Name, o.SpellId, o.Command, o.CastSeconds, o.ToArrival));
         _trip = new PlannedTrip(++_tripSeq, steps ?? new List<RouteStep>(), goal, goalNs, goalEw,
             IsOnMap(_cellId), new WorldPt(_wx, _wy, _wz), _cellId, tr,
             enterName.Length > 0 ? _enterPortal : "", enterName, live);

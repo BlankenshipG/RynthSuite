@@ -99,7 +99,15 @@ internal sealed class TownNetWalk
     /// <summary>The least room on the walk from the walker's centre to a wall or object (m); 0 = not given.</summary>
     public double MinClear;
     public TownNetPoint[] Points = Array.Empty<TownNetPoint>();
+    /// <summary>Worked out from the dats (RynthAi's dungeon pathfinder), not walked yet: walking it and taking the portal makes it a learned walk.</summary>
+    public bool Planned;
 }
+
+/// <summary>
+/// A walk inside dungeon <c>landblock</c> between two landblock-local points (x, y, z), as x,y,z
+/// triples from the first to the second, or null when there is none (RynthAi's dungeon pathfinder).
+/// </summary>
+internal delegate double[]? DungeonPather(uint landblock, double ax, double ay, double az, double bx, double by, double bz);
 
 internal sealed class TownNet
 {
@@ -330,7 +338,13 @@ internal sealed class TownNet
     /// With the Atlas, its map portals into a learned dungeon (the world data's own, landing in the
     /// cell a learned walk starts in) are entries too. The result is read-only once returned.
     /// </summary>
-    public static TownNet Merge(TownNet? baseNet, CustomPortalStore store, string server, Atlas? atlas = null)
+    /// <param name="pather">
+    /// The dungeon pathfinder (RynthAi's, from the dats). With it every learned arrival gets a planned
+    /// walk to each portal of its dungeon whose landing is known and that nobody walked to from there
+    /// (TownNetWalk.Planned, its length counted 15% longer), map portals landing where nobody walked
+    /// from yet become entries, and portals with a known landing that nobody walked to become exits.
+    /// </param>
+    public static TownNet Merge(TownNet? baseNet, CustomPortalStore store, string server, Atlas? atlas = null, DungeonPather? pather = null)
     {
         var t = new TownNet { Version = SupportedVersion };
         if (baseNet != null)
@@ -357,6 +371,10 @@ internal sealed class TownNet
             if (p.OnMap && p.DestKnown && !p.DestOnMap && p.DestCell != 0) hubName.TryAdd(p.DestLandblock, p.Name);
         string HubOf(uint lb) => hubName.TryGetValue(lb, out string? n) ? n : $"dungeon {lb:X4}";
 
+        var walkedLbs = new HashSet<uint>();
+        foreach (DungeonWalk w in store.WalksFor(server)) walkedLbs.Add(w.Landblock);
+        bool LearnedDungeon(uint lb) => !baseLbs.Contains(lb) && (walkedLbs.Contains(lb) || pather != null);
+
         int ArrivalAt(uint cell, double x, double y, double z)
         {
             int a = t.LearnedArrival(firstArrival, cell >> 16, x, y, z);
@@ -371,24 +389,27 @@ internal sealed class TownNet
         }
 
         var exitOf = new Dictionary<CustomPortal, int>();
+        int ExitFor(CustomPortal p)
+        {
+            if (exitOf.TryGetValue(p, out int x)) return x;
+            var ex = new TownNetExit
+            {
+                Guid = string.Create(CultureInfo.InvariantCulture, $"learned:{p.Cell:X8}:{p.X:0.#},{p.Y:0.#}"),
+                Name = p.Name, Cell = p.Cell, X = p.X, Y = p.Y, Z = p.Z,
+                DestOnMap = p.DestOnMap, DestNs = p.DestNs, DestEw = p.DestEw, DestCell = p.DestCell,
+                Hub = HubOf(p.Landblock), Learned = true,
+            };
+            t.Exits.Add(ex);
+            x = t.Exits.Count - 1;
+            exitOf[p] = x;
+            return x;
+        }
         foreach (DungeonWalk w in store.WalksFor(server))
         {
             if (baseLbs.Contains(w.Landblock) || w.Count < 2) continue;
             CustomPortal? p = store.FindInDungeon(server, w.ExitName, w.ExitCell, w.ExitX, w.ExitY, w.ExitZ);
             if (p == null || !p.DestKnown) continue;   // forgotten, or its landing isn't known
-            if (!exitOf.TryGetValue(p, out int x))
-            {
-                var ex = new TownNetExit
-                {
-                    Guid = string.Create(CultureInfo.InvariantCulture, $"learned:{p.Cell:X8}:{p.X:0.#},{p.Y:0.#}"),
-                    Name = p.Name, Cell = p.Cell, X = p.X, Y = p.Y, Z = p.Z,
-                    DestOnMap = p.DestOnMap, DestNs = p.DestNs, DestEw = p.DestEw, DestCell = p.DestCell,
-                    Hub = HubOf(p.Landblock), Learned = true,
-                };
-                t.Exits.Add(ex);
-                x = t.Exits.Count - 1;
-                exitOf[p] = x;
-            }
+            int x = ExitFor(p);
             int a = ArrivalAt(w.ArrivalCell != 0 ? w.ArrivalCell : (w.Landblock << 16) | 0x100, w.ArrivalX, w.ArrivalY, w.ArrivalZ);
             uint cell = t.Arrivals[a].Cell;
             var pts = new TownNetPoint[w.Count];
@@ -405,7 +426,8 @@ internal sealed class TownNet
         {
             if (!p.OnMap || !p.DestKnown || p.DestOnMap || !p.DestHasPos || baseLbs.Contains(p.DestLandblock)) continue;
             int a = t.LearnedArrival(firstArrival, p.DestLandblock, p.DestX, p.DestY, p.DestZ);
-            if (a < 0) continue;   // nothing walked from where it lands yet
+            if (a < 0 && pather != null && LearnedDungeon(p.DestLandblock)) a = ArrivalAt(p.DestCell, p.DestX, p.DestY, p.DestZ);
+            if (a < 0) continue;   // nothing walked from where it lands yet (and no way to plan one)
             t.Entries.Add(new TownNetEntry
             {
                 Guid = string.Create(CultureInfo.InvariantCulture, $"learned:{p.Cell:X8}:{p.Ns:0.##},{p.Ew:0.##}"),
@@ -436,13 +458,48 @@ internal sealed class TownNet
             }
 
         // A learned exit into another learned dungeon: lands at that arrival (a chain).
-        foreach (var (p, x) in exitOf)
+        foreach (var (p, x) in new List<KeyValuePair<CustomPortal, int>>(exitOf))
             if (!p.DestOnMap && p.DestHasPos)
-                t.Exits[x].DestArrival = t.LearnedArrival(firstArrival, p.DestLandblock, p.DestX, p.DestY, p.DestZ);
+            {
+                int a = t.LearnedArrival(firstArrival, p.DestLandblock, p.DestX, p.DestY, p.DestZ);
+                if (a < 0 && pather != null && LearnedDungeon(p.DestLandblock)) a = ArrivalAt(p.DestCell, p.DestX, p.DestY, p.DestZ);
+                t.Exits[x].DestArrival = a;
+            }
+
+        // The dats fill the gaps: a planned walk from each learned arrival to each portal of its
+        // dungeon (with a known landing) that nobody walked to from there.
+        if (pather != null)
+        {
+            foreach (CustomPortal p in portals)
+                if (!p.OnMap && p.DestKnown && !baseLbs.Contains(p.Landblock) && LearnedDungeon(p.Landblock)) ExitFor(p);
+            for (int x = 0; x < t.Exits.Count; x++)
+                if (t.Exits[x].Learned && !t.Exits[x].DestOnMap && t.Exits[x].DestArrival < 0)
+                    foreach (CustomPortal p in portals)
+                        if (exitOf.TryGetValue(p, out int px) && px == x && p.DestHasPos && LearnedDungeon(p.DestLandblock))
+                            t.Exits[x].DestArrival = ArrivalAt(p.DestCell, p.DestX, p.DestY, p.DestZ);
+            for (int a = firstArrival; a < t.Arrivals.Count; a++)
+            {
+                TownNetArrival ar = t.Arrivals[a];
+                uint lb = ar.Cell >> 16;
+                for (int x = 0; x < t.Exits.Count; x++)
+                {
+                    TownNetExit ex = t.Exits[x];
+                    if (!ex.Learned || (ex.Cell >> 16) != lb || t.Walk(a, x) != null) continue;
+                    double[]? pts = pather(lb, ar.X, ar.Y, ar.Z, ex.X, ex.Y, ex.Z);
+                    if (pts == null || pts.Length < 6) continue;
+                    var tp = new TownNetPoint[pts.Length / 3];
+                    for (int i = 0; i < tp.Length; i++) tp[i] = new TownNetPoint { Cell = ar.Cell, X = pts[i * 3], Y = pts[i * 3 + 1], Z = pts[i * 3 + 2] };
+                    t.AddWalk(new TownNetWalk { Arrival = a, Exit = x, Points = tp, Length = PathLength(tp, 0) * 1.15, Planned = true });
+                }
+            }
+        }
         return t;
     }
 
     /// <summary>How many entries, exits and walks were learned (not townnet.json's).</summary>
+    /// <summary>How many walks were planned from the dats (not walked yet).</summary>
+    public int PlannedWalks() { int n = 0; foreach (TownNetWalk w in Walks) if (w.Planned) n++; return n; }
+
     public (int Entries, int Exits, int Walks) LearnedCounts()
     {
         int e = 0, x = 0, w = 0;

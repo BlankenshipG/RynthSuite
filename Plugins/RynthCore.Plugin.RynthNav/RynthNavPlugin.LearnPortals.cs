@@ -345,9 +345,20 @@ public sealed partial class RynthNavPlugin
         uint lb = CurrentLandblock;
         DateTime utc = DateTime.UtcNow;
         double hx = LocalX, hy = LocalY;
-        (string Name, uint Cell, double X, double Y, double Z)? best = null;
-        double bestD = double.MaxValue;
-        int left = 0;
+        bool dats = DungeonPathAvailable();
+        var cands = new List<(string Name, uint Cell, double X, double Y, double Z, double D)>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Consider(string name, uint pc, double lx, double ly, double z)
+        {
+            if (Entrance.IsDestroyed(name)) return;
+            if (_custom.FindInDungeon(server, name, pc, lx, ly, z) is { DestKnown: true }) return;
+            string key = DungeonKey(name, lb, lx, ly);
+            if (_learnDone.Contains(key) || !seen.Add(key)) return;
+            double d = Math.Sqrt((lx - hx) * (lx - hx) + (ly - hy) * (ly - hy));
+            // Without RynthAi's dungeon pathfinder only a straight walk is possible: near, on this floor.
+            if (!dats && (d > LearnDungeonReach || Math.Abs(z - _wz) > LearnDungeonHeight)) return;
+            cands.Add((name, pc, lx, ly, z, d));
+        }
         foreach (uint id in Host.GetLiveObjectIds())
         {
             if (!LivePortalAt(id, out uint pc, out double wx, out double wy, out double wz, out string name)) continue;
@@ -355,37 +366,44 @@ public sealed partial class RynthNavPlugin
             double lx = wx - ((pc >> 24) & 0xFF) * 192.0, ly = wy - ((pc >> 16) & 0xFF) * 192.0;
             Host.TryGetObjectWcid(id, out uint wcid);
             _custom.SawInDungeon(server, name, wcid, pc, lx, ly, wz, utc);
-            if (Entrance.IsDestroyed(name)) continue;
-            if (_custom.FindInDungeon(server, name, pc, lx, ly, wz) is { DestKnown: true }) continue;
-            if (_learnDone.Contains(DungeonKey(name, lb, lx, ly))) continue;
-            double d = Math.Sqrt((lx - hx) * (lx - hx) + (ly - hy) * (ly - hy));
-            if (d > LearnDungeonReach || Math.Abs(wz - _wz) > LearnDungeonHeight) continue;
-            left++;
-            if (d < bestD) { bestD = d; best = (name, pc, lx, ly, wz); }
+            Consider(name, pc, lx, ly, wz);
         }
-        if (best is not { } t)
+        // Saved earlier but out of sight from here: with the dungeon pathfinder they can be walked to too.
+        if (dats)
+            foreach (CustomPortal p in _custom.For(server))
+                if (!p.OnMap && p.Landblock == lb && !p.DestKnown) Consider(p.Name, p.Cell, p.X, p.Y, p.Z);
+        cands.Sort((a, b) => a.D.CompareTo(b.D));
+
+        foreach (var t in cands)
         {
-            _learnDeadDungeons.Add(lb);   // nothing left, or the rest are out of a straight walk's reach from the landing
-            Host.Log($"[RynthNav] learn: no untried portal within {LearnDungeonReach:0} m in dungeon 0x{lb:X4}");
-            return false;
+            List<TownNetPoint>? way = dats ? DungeonWayHere(t.X, t.Y, t.Z) : null;
+            string how = way != null ? $"{TownNet.PathLength(way, 0):0} m by RynthAi's dungeon pathfinder" : $"{t.D:0} m straight";
+            if (way == null)
+            {
+                if (t.D > LearnDungeonReach || Math.Abs(t.Z - _wz) > LearnDungeonHeight) { _learnDone.Add(DungeonKey(t.Name, lb, t.X, t.Y)); continue; }
+                way = new List<TownNetPoint>
+                {
+                    new() { Cell = _cellId, X = hx, Y = hy, Z = _wz },
+                    new() { Cell = t.Cell, X = t.X, Y = t.Y, Z = t.Z },
+                };
+            }
+            int left = cands.Count - 1;
+            _learnDone.Add(DungeonKey(t.Name, lb, t.X, t.Y));
+            _learnTried++; _dunTries++;
+            _learnTarget = t.Name; _learnTargetInDungeon = true; _learnTargetLb = lb; _learnTargetX = t.X; _learnTargetY = t.Y;
+            _learnRevisit = false;
+            _dunWalker = new HubWalker(way, LastTeleportMs > 0 ? LastTeleportMs : now - HubWalker.CooldownMs, now);
+            _dunLastX = hx; _dunLastY = hy;
+            AutoRun.Forget();
+            _learn = LearnState.DungeonGoing;
+            _learnStepMs = now;
+            SetLearnLine($"in the dungeon: trying '{t.Name}' ({how}, {left} more)");
+            Host.Log($"[RynthNav] learn: dungeon 0x{lb:X4}: trying '{t.Name}' at {t.X:F1},{t.Y:F1} ({how}, {left} more)");
+            return true;
         }
-        _learnDone.Add(DungeonKey(t.Name, lb, t.X, t.Y));
-        _learnTried++; _dunTries++;
-        _learnTarget = t.Name; _learnTargetInDungeon = true; _learnTargetLb = lb; _learnTargetX = t.X; _learnTargetY = t.Y;
-        _learnRevisit = false;
-        var way = new List<TownNetPoint>
-        {
-            new() { Cell = _cellId, X = hx, Y = hy, Z = _wz },
-            new() { Cell = t.Cell, X = t.X, Y = t.Y, Z = t.Z },
-        };
-        _dunWalker = new HubWalker(way, LastTeleportMs > 0 ? LastTeleportMs : now - HubWalker.CooldownMs, now);
-        _dunLastX = hx; _dunLastY = hy;
-        AutoRun.Forget();
-        _learn = LearnState.DungeonGoing;
-        _learnStepMs = now;
-        SetLearnLine($"in the dungeon: trying '{t.Name}' ({bestD:0} m away, {left - 1} more in reach)");
-        Host.Log($"[RynthNav] learn: dungeon 0x{lb:X4}: trying '{t.Name}' at {t.X:F1},{t.Y:F1} ({bestD:0} m straight, {left - 1} more in reach)");
-        return true;
+        _learnDeadDungeons.Add(lb);   // nothing left, or the rest can't be reached from the landing
+        Host.Log($"[RynthNav] learn: no untried portal reachable in dungeon 0x{lb:X4}{(dats ? "" : $" within {LearnDungeonReach:0} m straight (RynthAi's dungeon pathfinder isn't available: {_dunPathWhy})")}");
+        return false;
     }
 
     /// <summary>One tick walking straight to a dungeon portal: taken (a teleport), or given up (stuck, no teleport).</summary>

@@ -26,7 +26,9 @@ public sealed partial class RynthNavPlugin
     private volatile TownNet? _baseTownNet;
     /// <summary>What routes and the walker use: townnet.json plus this server's learned dungeons (TownNet.Merge). Null: neither.</summary>
     private volatile TownNet? _townNet;
-    private (TownNet? Base, int Version, string Server, Atlas? Atlas) _mergedKey = (null, -1, "", null);
+    private (TownNet? Base, int Version, string Server, Atlas? Atlas, bool Dats, int Retry) _mergedKey = (null, -1, "", null, false, 0);
+    private int _mergeRetry;          // bumped to plan again (the dats weren't loaded the last time)
+    private long _mergeRetryAtMs;
     private volatile string _townNetStatus = "loading…";
     private HubLinks? _hubLinks;
     private (TownNet? Net, int Level, bool Olthoi) _hubLinksKey;
@@ -81,14 +83,22 @@ public sealed partial class RynthNavPlugin
         TownNet? b = _baseTownNet;
         string server = _server;
         Atlas atlas = _atlas;
-        var key = (b, _custom.Version, server, (Atlas?)atlas);
+        bool dats = DungeonPathAvailable();
+        if (_mergeRetryAtMs != 0 && NowMs >= _mergeRetryAtMs) { _mergeRetryAtMs = 0; _mergeRetry++; }
+        var key = (b, _custom.Version, server, (Atlas?)atlas, dats, _mergeRetry);
         if (key == _mergedKey) return;
         _mergedKey = key;
-        if (server.Length == 0 || _custom.WalksFor(server).Count == 0) { _townNet = b; return; }
-        TownNet merged = TownNet.Merge(b, _custom, server, atlas);
+        bool anyDungeonPortal = false;
+        if (server.Length > 0) foreach (CustomPortal p in _custom.For(server)) if (!p.OnMap && p.DestKnown) { anyDungeonPortal = true; break; }
+        if (server.Length == 0 || (_custom.WalksFor(server).Count == 0 && !(dats && anyDungeonPortal))) { _townNet = b; return; }
+        _dunPathNoData = false;
+        TownNet merged = TownNet.Merge(b, _custom, server, atlas, dats ? DungeonPath : null);
         var (e, x, w) = merged.LearnedCounts();
+        int planned = merged.PlannedWalks();
         _townNet = merged.Exits.Count == 0 ? b : merged;
-        Host.Log($"[RynthNav] learned dungeons for {server}: {e} entry portal(s), {x} exit portal(s), {w} walk(s) inside");
+        Host.Log($"[RynthNav] learned dungeons for {server}: {e} entry portal(s), {x} exit portal(s), {w - planned} walk(s) inside"
+               + (dats ? $" + {planned} planned from the dats (RynthAi's dungeon pathfinder)" : " (RynthAi's dungeon pathfinder not available: walked ones only)"));
+        if (_dunPathNoData) _mergeRetryAtMs = NowMs + 15000;   // some dungeon wasn't readable yet: plan again shortly
     }
 
     /// <summary>The character's level (0 = not known) and whether they're an Olthoi. Tick thread.</summary>
@@ -187,9 +197,16 @@ public sealed partial class RynthNavPlugin
             long landMs = _routeIdx > 0 ? _hubSettleSince : _trkLastTeleportMs > 0 ? Math.Min(now, _trkLastTeleportMs) : now - HubWalker.CooldownMs;
             double x = LocalX, y = LocalY;
             List<TownNetPoint>? way = t.WayTo(_route![_routeIdx].HubExit, x, y, HubOffRouteUnits, out string from);
+            if (way == null && exit.Learned)
+            {
+                // Away from every walk RynthNav knows to it: RynthAi's dungeon pathfinder (the dats) finds the way.
+                way = DungeonWayHere(exit.X, exit.Y, exit.Z);
+                if (way != null) from = "RynthAi's dungeon pathfinder (not walked before)";
+            }
             if (way == null)
             {
-                FinishGoto($"stopped in {hubName}: you landed at {x:F1}, {y:F1}, away from every walk to the {exit.Name}");
+                FinishGoto($"stopped in {hubName}: you landed at {x:F1}, {y:F1}, away from every walk to the {exit.Name}"
+                         + (exit.Learned && !_dunPathAvailable ? $" ({_dunPathWhy}: the dungeon pathfinder can't find one)" : ""));
                 return;
             }
             _hubWalker = new HubWalker(way, landMs, now);

@@ -44,6 +44,7 @@
     <Compile Include="..\Shared\RynthAiCombatApi.cs" Link="Shared\RynthAiCombatApi.cs" />
     <!-- RynthNav's navmesh path queries (stuck-recovery detours outdoors). -->
     <Compile Include="..\Shared\RynthNavPathApi.cs" Link="Shared\RynthNavPathApi.cs" />
+    <Compile Include="..\Shared\RynthAiDungeonPathApi.cs" Link="Shared\RynthAiDungeonPathApi.cs" />
     <!-- Reading our hits out of the combat log (victim + amount); RynthTracker reads the same lines. -->
     <Compile Include="..\Shared\CombatText.cs" Link="Shared\CombatText.cs" />
     <!-- One logged, guarded way to use an object (who used what, and why). -->

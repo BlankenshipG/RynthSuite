@@ -26,7 +26,8 @@ internal readonly record struct WorldPt(double X, double Y, double H)
 }
 
 /// <summary>A recall of the plan, as the plan was made (RouteStep.RecallIndex indexes these).</summary>
-internal readonly record struct TripRecall(string Name, int SpellId, string Command, double CastSeconds);
+/// <summary>A recall the trip may cast. ToArrival >= 0: it lands in a learned dungeon, at that arrival of the route hub.</summary>
+internal readonly record struct TripRecall(string Name, int SpellId, string Command, double CastSeconds, int ToArrival = -1);
 
 /// <summary>
 /// One trip RynthNav planned (Route) or is walking (Go), frozen when it was planned: the steps,
@@ -199,6 +200,12 @@ internal sealed class PlannedTrip
             if (arrival < 0) { why = "the portal before it doesn't say where it lands"; return null; }
             pts = net.Walk(arrival, exit)?.Points;
             if (pts == null) { why = $"no walk is known from where the {net.Exits[prevExit].Name} lands to the {net.Exits[exit].Name}"; return null; }
+        }
+        else if (i > 0 && Steps[i - 1].UseRecall && RecallOf(i - 1) is { ToArrival: >= 0 } into)
+        {
+            // A recall or portal gem into a learned dungeon: the walk from where it lands.
+            pts = net.Walk(into.ToArrival, exit)?.Points;
+            if (pts == null) { why = $"no walk is known from where {into.Name} lands to the {net.Exits[exit].Name}"; return null; }
         }
         else if (i == 0 && !StartOnMap && net.Contains((StartCell >> 16) & 0xFFFF))
         {
