@@ -45,8 +45,12 @@ internal sealed class QuestTracker
     // Matches lines produced by the AC /myquests command.
     // Format: key - N solves (unixTimestamp)"description" maxSolves repeatSeconds
     // Example: blankaug - 1 solves (1609459200)"Blank Aug" 1 0
+    // Infinite Leaftide (ACECustom) puts a space after the timestamp:
+    //   templeattributefocuswait - 42 solves (1792844530) "TempleAttributeFocusWait" -1 571000
+    // Without "\s*" there the description, max solves and repeat time went unread, every flag had
+    // no cooldown and RynthILT's Guardian rows all said "Ready now" (2026-10-30).
     private static readonly Regex QuestLineRegex = new Regex(
-        @"(?<key>\S+) \- (?<solves>\d+) solves \((?<completedOn>\d{0,11})\)""?((?<description>.*)"" (?<maxSolves>.*) (?<repeatTime>\d{0,11}))?.*$",
+        @"(?<key>\S+) \- (?<solves>\d+) solves \((?<completedOn>\d{0,11})\)\s*""?((?<description>.*)"" (?<maxSolves>-?\d+) (?<repeatTime>\d{0,11}))?.*$",
         RegexOptions.Compiled);
 
     private readonly RynthCoreHost _host;

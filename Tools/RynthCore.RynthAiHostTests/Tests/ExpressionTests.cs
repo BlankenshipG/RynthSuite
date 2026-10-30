@@ -903,6 +903,16 @@ internal static class ExpressionTests
         Is(e, "isrefreshingquests[]", "1");
         Is(e, "getqueststatus[templeattributestrengthwait]", "0");   // just handed in: on cooldown
         Check.True(qt.TryGetFlag("TempleAttributeStrengthWait", out var strength) && strength.Solves == 4, "the unasked reply updates the flag");
+
+        // Infinite Leaftide's format: a space after the timestamp (2026-10-30: the Guardian rows all read "Ready now").
+        long iltDone = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 3600;
+        qt.OnChatLine($"templeattributefocuswait - 42 solves ({iltDone}) \"TempleAttributeFocusWait\" -1 571000");
+        Check.True(qt.TryGetFlag("templeattributefocuswait", out var focus), "the ILT line is read");
+        Check.True(focus!.MaxSolves == -1 && focus.RepeatTime == TimeSpan.FromSeconds(571000), $"its max solves and repeat time are read ({focus.MaxSolves}, {focus.RepeatTime})");
+        Check.True(focus.Description == "TempleAttributeFocusWait", $"and its description ({focus.Description})");
+        Check.True(!focus.IsReady() && focus.TimeUntilReady() > TimeSpan.FromDays(6), "handed in an hour ago: on its 6.6-day cooldown, not ready");
+        qt.OnChatLine("blankaug2 - 1 solves (1609459200)\"Blank Aug\" 1 0");
+        Check.True(qt.TryGetFlag("blankaug2", out var blank) && blank.MaxSolves == 1, "retail ACE's format (no space) still reads");
     }
 
     private static void FellowshipDefaults()
