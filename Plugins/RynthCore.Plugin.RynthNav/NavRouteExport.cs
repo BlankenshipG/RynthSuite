@@ -109,7 +109,7 @@ internal static class NavRouteExport
                 if (inside == null || exit == null || net == null)
                 {
                     trip.HubWalk(i, net, out string why);
-                    Stop(i, $"the walk inside the Town Network isn't known ({(why.Length > 0 ? why : "no townnet.json")})");
+                    Stop(i, $"the walk inside to the {s.Label} isn't known ({(why.Length > 0 ? why : "no townnet.json or learned dungeon")})");
                     return r;
                 }
                 List<WorldPt> walk = TripPathBuilder.StopShort(inside, HubStopShort);

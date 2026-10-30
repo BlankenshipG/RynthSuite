@@ -110,12 +110,12 @@ public sealed partial class RynthNavPlugin
                 else if (st.IsHub)
                 {
                     TownNetExit? hx = HubExitOf(i) ?? (_townNet != null && st.HubExit >= 0 && st.HubExit < _townNet.Exits.Count ? _townNet.Exits[st.HubExit] : null);
-                    parts.Add($"{hx?.Hub ?? "Town Network"} (exit {HubWhere(hx)})");
+                    parts.Add($"{TheHub(hx)} (exit {HubWhere(hx)})");
                 }
                 else
                 {
                     double d = NavCoords.Distance(pns, pew, st.Ns, st.Ew);
-                    parts.Add(nextHub ? $"walk {d:F0} yd to the Town Network portal"
+                    parts.Add(nextHub ? $"walk {d:F0} yd to the portal into {TheHub(HubExitOf(steps[i + 1]))}"
                         : st.UsePortal ? $"walk {d:F0} yd, portal {st.Label}"
                         : $"walk {d:F0} yd");
                 }

@@ -369,6 +369,8 @@ internal sealed class TownNet
                     hubName.TryAdd(dlb, l.Name);
         foreach (CustomPortal p in portals)
             if (p.OnMap && p.DestKnown && !p.DestOnMap && p.DestCell != 0) hubName.TryAdd(p.DestLandblock, p.Name);
+        foreach (CustomPortal p in portals)   // a dungeon only reached from another: named by the portal into it ("AC Storage")
+            if (!p.OnMap && p.DestKnown && !p.DestOnMap && p.DestCell != 0) hubName.TryAdd(p.DestLandblock, PlaceOfPortal(p.Name));
         string HubOf(uint lb) => hubName.TryGetValue(lb, out string? n) ? n : $"dungeon {lb:X4}";
 
         var walkedLbs = new HashSet<uint>();
@@ -497,6 +499,15 @@ internal sealed class TownNet
     }
 
     /// <summary>How many entries, exits and walks were learned (not townnet.json's).</summary>
+    /// <summary>"AC Storage" for the AC Storage Portal, "Lighthouse" for the Portal to Lighthouse.</summary>
+    public static string PlaceOfPortal(string name)
+    {
+        string s = (name ?? "").Trim();
+        if (s.StartsWith("Portal to ", StringComparison.OrdinalIgnoreCase)) s = s.Substring(10);
+        if (s.EndsWith(" Portal", StringComparison.OrdinalIgnoreCase)) s = s.Substring(0, s.Length - 7);
+        return s.Length > 0 ? s : name ?? "";
+    }
+
     /// <summary>How many walks were planned from the dats (not walked yet).</summary>
     public int PlannedWalks() { int n = 0; foreach (TownNetWalk w in Walks) if (w.Planned) n++; return n; }
 

@@ -125,7 +125,8 @@ internal static class PathMarkers
             if (s.UsePortal)
             {
                 bool intoHub = i + 1 < n && trip.Steps[i + 1].IsHub;
-                string label = intoHub ? "TOWN NETWORK"
+                int nx = intoHub ? trip.Steps[i + 1].HubExit : -1;
+                string label = intoHub ? (net != null && nx >= 0 && nx < net.Exits.Count ? net.Exits[nx].Hub : "Town Network")
                     : last && trip.EndsInEntrance ? "ENTER " + trip.EnterName
                     : "PORTAL " + s.Label;
                 end = new Mark(to, intoHub ? MarkKind.Town : MarkKind.Portal, Fit(label), i, false);

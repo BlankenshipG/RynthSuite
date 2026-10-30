@@ -141,6 +141,40 @@ public sealed partial class RynthNavPlugin
 
     private static string HubWhere(TownNetExit? x) => x?.Where ?? "the next town";
 
+    /// <summary>"the Town Network", "the Abandoned Mine": the place a hub step walks through, for what RynthNav says.</summary>
+    private static string TheHub(TownNetExit? x) => TheHub(x?.Hub ?? "Town Network");
+    private static string TheHub(string hub) =>
+        hub.StartsWith("the ", StringComparison.OrdinalIgnoreCase) || hub.StartsWith("dungeon ", StringComparison.Ordinal) ? hub : "the " + hub;
+
+    /// <summary>The exit of hub step <paramref name="s"/> in the route hub, or null.</summary>
+    private TownNetExit? HubExitOf(RouteStep s)
+    {
+        TownNet? t = _townNet;
+        return t != null && s.IsHub && s.HubExit >= 0 && s.HubExit < t.Exits.Count ? t.Exits[s.HubExit] : null;
+    }
+
+    /// <summary>Where a hub exit takes you: a spot on the map, or the dungeon it leads into.</summary>
+    private string HubExitDest(TownNetExit? x)
+    {
+        if (x == null) return "the next place";
+        if (x.DestOnMap) return NavCoords.Fmt(x.DestNs, x.DestEw) + (x.DestTown.Length > 0 ? $" ({x.DestTown})" : "");
+        return TheHub(DungeonName(x.DestLandblock));
+    }
+
+    /// <summary>A dungeon landblock's name: the route hub's (learned dungeons, the Atlas's), else "dungeon LLLL".</summary>
+    private string DungeonName(uint lb)
+    {
+        TownNet? t = _townNet;
+        if (t != null)
+            foreach (TownNetExit e in t.Exits)
+                if ((e.Cell >> 16) == lb && e.Hub.Length > 0 && !e.Hub.StartsWith("dungeon ", StringComparison.Ordinal)) return e.Hub;
+        if (_baseTownNet?.Contains(lb) == true) return "Town Network";
+        string hex = lb.ToString("X4", System.Globalization.CultureInfo.InvariantCulture);
+        foreach (AtlasLocation l in _atlas.Locations)
+            if (l.Type.Equals("Dungeon", StringComparison.Ordinal) && l.Lb.Equals(hex, StringComparison.OrdinalIgnoreCase)) return l.Name;
+        return $"dungeon {hex}";
+    }
+
     private void ResetHub()
     {
         _hubActive = false; _hubLanded = false; _hubWaitSaid = false; _hubSettleSince = 0;
@@ -159,7 +193,7 @@ public sealed partial class RynthNavPlugin
         long now = NowMs;
         TownNet? t = _townNet;
         TownNetExit? exit = HubExitOf(_routeIdx);
-        if (t == null || exit == null) { FinishGoto("stopped: the Town Network data isn't loaded"); return; }
+        if (t == null || exit == null) { FinishGoto("stopped: the walks inside aren't loaded (townnet.json or the learned dungeons)"); return; }
         string hubName = exit.Hub;
         if (!_hubActive)
         {
@@ -305,10 +339,10 @@ public sealed partial class RynthNavPlugin
     private string HubLine(double left)
     {
         TownNetExit? exit = HubExitOf(_routeIdx);
-        string name = exit?.Name ?? "exit portal", hub = exit?.Hub ?? "Town Network";
-        if (!_hubLanded) return $"taking {hub} to {HubWhere(exit)}";
-        if (HubIsWaiting) return $"{hub}: waiting for the {name} to let you through";
-        return $"{hub}: walking to the {name}{(left >= 0 ? $", {left:F0} yd left" : "")}";
+        string name = exit?.Name ?? "exit portal", hub = TheHub(exit);
+        if (!_hubLanded) return $"going into {hub} (then the {name})";
+        if (HubIsWaiting) return $"in {hub}: waiting for the {name} to let you through";
+        return $"in {hub}: walking to the {name}{(left >= 0 ? $", {left:F0} yd left" : "")}";
     }
 
     /// <summary>The route's first Town Network leg, for the goto's start line ("" = none).</summary>
@@ -320,12 +354,32 @@ public sealed partial class RynthNavPlugin
             if (!_route[i].IsHub) continue;
             TownNetExit? exit = HubExitOf(i);
             if (exit == null) return "";
-            if (i == 0) return $"taking {exit.Hub} to {exit.Where} (the {exit.Name})";
+            string hub = TheHub(exit), on = HubChainText(i);
+            if (i == 0) return $"through {hub}: walking to the {exit.Name}{on}";
             RouteStep entry = _route[i - 1];
             if (entry.IsHub) return "";
-            return $"taking {exit.Hub} to {exit.Where}: its portal at {NavCoords.Fmt(entry.Ns, entry.Ew)}, then the {exit.Name} inside";
+            if (entry.UseRecall) return $"{entry.Label} into {hub}, then the {exit.Name}{on}";
+            return $"through {hub}: its portal at {NavCoords.Fmt(entry.Ns, entry.Ew)}, then the {exit.Name} inside{on}";
         }
         return "";
+    }
+
+    /// <summary>
+    /// The rest of a run of hub steps from <paramref name="i"/>: ", into the Vault, then the Vault Exit to 40S, 40W"
+    /// (each dungeon it goes on into), or " to &lt;where the exit lands&gt;" for one step.
+    /// </summary>
+    private string HubChainText(int i)
+    {
+        if (_route == null) return "";
+        var sb = new System.Text.StringBuilder();
+        for (int k = i; k < _route.Count && _route[k].IsHub; k++)
+        {
+            TownNetExit? x = HubExitOf(_route[k]);
+            if (k > i) sb.Append($", then the {x?.Name ?? _route[k].Label}");
+            if (x != null && !x.DestOnMap && k + 1 < _route.Count && _route[k + 1].IsHub) sb.Append($" into {HubExitDest(x)}");
+            else if (x != null) sb.Append($" to {HubExitDest(x)}");
+        }
+        return sb.ToString();
     }
 
     /// <summary>

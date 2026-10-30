@@ -94,7 +94,7 @@ public sealed partial class RynthNavPlugin
                 return "casting " + (o != null ? o.Name : label.Length > 0 ? label : "a recall");
             }
             case "portal":
-                if (NextStepIsHub) return $"taking the Town Network to {HubWhere(HubExitOf(_routeIdx + 1))}";
+                if (NextStepIsHub) return $"going into {TheHub(HubExitOf(_routeIdx + 1))}";
                 return last && _enterName.Length > 0 ? "going into " + _enterName : "taking portal " + label;
             case "town":
                 return HubLine(left);
@@ -102,7 +102,7 @@ public sealed partial class RynthNavPlugin
         string far = left >= 0 ? ", " + NavCoords.FmtDistance(left) + " left" : "";
         if (hasStep && step.UseRecall) return "getting ready to cast " + label;
         if (hasStep && step.UsePortal && NextStepIsHub)
-            return $"walking to the Town Network portal{far} (to {HubWhere(HubExitOf(_routeIdx + 1))})";
+            return $"walking to the portal into {TheHub(HubExitOf(_routeIdx + 1))}{far}";
         if (hasStep && step.UsePortal)
             return last && _enterName.Length > 0 ? $"walking to {_enterName}'s portal{far}" : $"walking to the portal {label}{far}";
         return $"walking to {name}{far}";

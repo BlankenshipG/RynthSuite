@@ -211,9 +211,9 @@ internal sealed class PlannedTrip
         {
             double lx = Start.X - ((StartCell >> 24) & 0xFF) * 192.0, ly = Start.Y - ((StartCell >> 16) & 0xFF) * 192.0;
             pts = net.WayTo(exit, lx, ly, HubWalker.OffRouteUnits, out _);
-            if (pts == null) { why = "no Town Network walk to that exit passes where the trip started"; return null; }
+            if (pts == null) { why = "no walk to that exit passes where the trip started"; return null; }
         }
-        else { why = "the plan doesn't say how it gets into the Town Network"; return null; }
+        else { why = "the plan doesn't say how it gets in there"; return null; }
 
         var list = new List<WorldPt>(pts.Count);
         foreach (TownNetPoint p in pts)

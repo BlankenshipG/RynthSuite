@@ -57,6 +57,8 @@ internal static partial class Program
         int vault = net.Exits.FindIndex(x => x.Name == "Vault Door");
         Check(vault >= 0 && net.Exits[vault].DestArrival >= 0, "the vault door chains to an arrival in the vault");
         Check(net.Walk(net.Exits[vault].DestArrival, net.Exits.FindIndex(x => x.Name == "Vault Exit")) is { Planned: true }, "and on to the vault's exit, planned");
+        Check(net.Exits.Find(x => x.Name == "Vault Exit")?.Hub == "Vault Door", "a dungeon only reached from another is named by the portal into it");
+        Check(TownNet.PlaceOfPortal("AC Storage Portal") == "AC Storage" && TownNet.PlaceOfPortal("Portal to Lighthouse") == "Lighthouse", "portal names to place names");
         HubLinks hub = net.Links(0, false, null);
         List<RouteStep> steps = PortalRoute.Plan(new List<PortalLink>(), null, hub, 10.05, 10.0, -40.1, -40.0, out _, out int used);
         Check(used == 3 && steps[0].UsePortal && steps[1].IsHub && steps[2].IsHub, $"side door, through the mine, through the vault ({string.Join(" / ", steps.ConvertAll(z => z.Label))})");

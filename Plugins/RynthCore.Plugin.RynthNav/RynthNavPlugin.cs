@@ -25,7 +25,7 @@ namespace RynthCore.Plugin.RynthNav;
 public sealed partial class RynthNavPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthNav");
-    internal const string PluginVersion = "0.6.12";
+    internal const string PluginVersion = "0.6.13";
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi(PluginVersion);
 
     /// <summary>Lets PluginExports log through this plugin's host (the base Log is protected).</summary>
@@ -499,7 +499,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         _shownRoute = _route ?? new List<RouteStep> { new(tns, tew, false, false, "walk") };
         _shownRouteFor = name; _shownRouteEst = est; _shownRouteLive = true; _routeVersion++;
         SetSubGoalToCurrentLeg();
-        if (_route != null && portalsUsed > 0) _arrow.SetRoute(_route, name, type, tns, tew);
+        if (_route != null && portalsUsed > 0) _arrow.SetRoute(_route, name, type, tns, tew, s => TheHub(HubExitOf(s)));
         else _arrow.SetTarget(name, type, tns, tew);
         _openArrowSeq++;
 

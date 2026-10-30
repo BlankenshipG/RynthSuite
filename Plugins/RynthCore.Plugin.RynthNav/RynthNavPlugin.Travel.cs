@@ -1140,7 +1140,7 @@ public sealed partial class RynthNavPlugin
             List<RouteStep>? steps = PlanAndShow(n, rns, rew, out int used, out double est, out string refusal);
             if (refusal.Length > 0) Note("arrow route: " + refusal);
             if (steps == null || used == 0) { SetArrow(n, t, rns, rew, announce: true); return; }
-            _arrow.SetRoute(steps, n, t, rns, rew);
+            _arrow.SetRoute(steps, n, t, rns, rew, s => TheHub(HubExitOf(s)));
             _store.Touch(new SavedPlace { Name = n, Type = t, Ns = rns, Ew = rew });
             _openArrowSeq++;
             Say($"arrow route to {n}: {used} teleport(s). First: {StepText(_arrow.Current!)}.");
@@ -1209,8 +1209,10 @@ public sealed partial class RynthNavPlugin
         {
             RouteStep s = steps[i];
             string act = s.UseRecall ? $"recall: {s.Label}"
-                : s.IsHub ? $"in the Town Network, walk to the {s.Label} and take it to {NavCoords.Fmt(s.LandNs, s.LandEw)}"
-                : s.UsePortal ? $"walk to {NavCoords.Fmt(s.Ns, s.Ew)}, take '{Trunc(s.Label)}'" : $"walk to {NavCoords.Fmt(s.Ns, s.Ew)}";
+                : s.IsHub ? $"in {TheHub(HubExitOf(s))}, walk to the {s.Label} and take it to {HubExitDest(HubExitOf(s))}"
+                : s.UsePortal ? $"walk to {NavCoords.Fmt(s.Ns, s.Ew)}, take '{Trunc(s.Label)}'" + (i + 1 < steps.Count && steps[i + 1].IsHub ? $" into {TheHub(HubExitOf(steps[i + 1]))}" : "")
+                : $"walk to {NavCoords.Fmt(s.Ns, s.Ew)}";
+            if (s.UseRecall && i + 1 < steps.Count && steps[i + 1].IsHub) act += $" (lands in {TheHub(HubExitOf(steps[i + 1]))})";
             Say($"  {i + 1}. {act}");
         }
     }
