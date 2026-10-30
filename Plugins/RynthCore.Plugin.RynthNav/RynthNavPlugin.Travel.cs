@@ -166,6 +166,7 @@ public sealed partial class RynthNavPlugin
     {
         _recallWait = false;
         _trkHaveLast = false; _trkPortaling = false;
+        StopLearn("logged out");
         _known = null; _charKey = ""; _server = ""; _usedPortalSeen = false;
         SaveStores(force: true);
         TickCustomPortals(force: true);
@@ -204,6 +205,7 @@ public sealed partial class RynthNavPlugin
 
         bool teleported = TrackTeleport(now);
         UpdateArrow(teleported);
+        TickLearn(teleported);
 
         if (now >= _nextSaveMs) { _nextSaveMs = now + 3000; SaveStores(force: false); TickCustomPortals(); }
         else if (!_customLoaded) TickCustomPortals();
@@ -718,7 +720,7 @@ public sealed partial class RynthNavPlugin
     /// <summary>The recalls this character can use right now, and notes on the ones left out.</summary>
     private List<RecallOption> CurrentRecalls(List<string>? notes)
     {
-        if (!_recallsEnabled) { notes?.Add("Recalls are off (/rnav recalls on)."); return new List<RecallOption>(); }
+        if (!RecallsRouting) { notes?.Add("Recalls are off (/rnav recalls on)."); return new List<RecallOption>(); }
         if (_charKey.Length == 0) { notes?.Add("Not logged in yet."); return new List<RecallOption>(); }
         return RecallPlanner.Build(_atlas, _known, _memory, _charKey, notes);
     }
@@ -1011,6 +1013,7 @@ public sealed partial class RynthNavPlugin
         "/rnav atlas <search> — find places | fav [place] — favorite | recalls [on|off] | tie 1|2|lifestone\n" +
         "/rnav goto <coords> | preview <coords> | portals on|off | stop | here | load | test | navdata\n" +
         "/rnav portals scan [yd] | list | forget <name> | clear confirm — this server's own portals (a landing is learned the first time you take one)\n" +
+        "/rnav portals learn | learn stop | learn range <yd> — try every portal in range by itself, learn each landing, come back, repeat\n" +
         "/rnav avoid — show; avoid portals on|off|<m> | walls on|off|<m> | corners <m>\n" +
         "/rnav markers on|off | markers labels on|off | markers guide on|off — the trip on the ground\n" +
         "/rnav mesh on|off | floor on|off | walls on|off | radius <m> | triangles <n> — draw the navmesh: green floor, red walls\n" +

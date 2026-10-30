@@ -61,6 +61,7 @@ public sealed partial class RynthNavPlugin
             _savedCustomVersion = _custom.Version;
             WriteLater(CustomPortalsFile, _custom.Serialize());
         }
+        RefreshCustomCounts();
     }
 
     /// <summary>The server key for the custom portals: the world name, or "" before it's known.</summary>
@@ -201,6 +202,22 @@ public sealed partial class RynthNavPlugin
                 Say($"portal and recall routing {(_portalsEnabled ? "ON" : "OFF")} for walking (go/goto)"
                   + (server.Length > 0 ? $"; {server}: {_custom.Links(server).Count} custom portal(s) in routes" : ""));
                 break;
+            case "learn":
+            {
+                string l = tail.ToLowerInvariant();
+                if (l is "" or "start" or "on") StartLearn();
+                else if (l is "stop" or "off") { if (LearningPortals) StopLearn("stopped", stopWalk: true); else Say("not learning portals"); }
+                else if (l.StartsWith("range", StringComparison.Ordinal))
+                {
+                    string n = l.Substring(5).Trim();
+                    if (n.Length == 0) { Say($"learn range {_learnRange:0} yd ({LearnRangeMin:0}-{LearnRangeMax:0})"); break; }
+                    if (!double.TryParse(n, NumberStyles.Float, CultureInfo.InvariantCulture, out double r))
+                    { Say($"portals learn range <yards {LearnRangeMin:0}-{LearnRangeMax:0}>"); break; }
+                    SetLearnRange(r);
+                }
+                else Say("portals learn | learn stop | learn range <yd> — try every portal in range, learn where each lands, come back, repeat");
+                break;
+            }
             case "scan":
                 double yd = 0;
                 if (tail.Length > 0 && (!double.TryParse(tail, NumberStyles.Float, CultureInfo.InvariantCulture, out yd) || yd < 5 || yd > 1000))
@@ -234,7 +251,7 @@ public sealed partial class RynthNavPlugin
                 Say($"forgot all {_custom.Clear(server)} custom portal(s) for {server}");
                 break;
             default:
-                Say("portals on|off | scan [yd] | list | forget <name> | clear confirm — custom portals are kept per server");
+                Say("portals on|off | scan [yd] | learn [stop | range <yd>] | list | forget <name> | clear confirm — custom portals are kept per server");
                 break;
         }
     }

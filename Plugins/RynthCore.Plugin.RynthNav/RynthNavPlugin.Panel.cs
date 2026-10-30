@@ -166,6 +166,7 @@ public sealed partial class RynthNavPlugin
         sb.Append(",\"save\":{\"can\":").Append(trip != null ? 1 : 0).Append(",\"for\":\"").Append(Esc(trip?.Goal ?? ""))
           .Append("\",\"name\":\"").Append(Esc(_saveDefault)).Append("\",\"conflict\":\"").Append(Esc(_saveConflict))
           .Append("\",\"busy\":").Append(_saveBusy ? 1 : 0).Append(",\"last\":\"").Append(Esc(_saveLast)).Append("\"}");
+        AppendLearnJson(sb);   // learning portals (RynthNavPlugin.LearnPortals.cs)
     }
 
     // ── The character's own recall spots, for the Recalls section (travel JSON) ──

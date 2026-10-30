@@ -262,7 +262,7 @@ public sealed partial class RynthNavPlugin
         List<RouteStep>? best = null;
         double bestCost = double.MaxValue;
         int bestUsed = 0;
-        if (_portalsEnabled) EnsurePortalsLoaded();
+        if (PortalsRouting) EnsurePortalsLoaded();
         foreach (HubExit hx in links.Exits)
         {
             List<TownNetPoint>? way = t.WayTo(hx.Id, px, py, HubOffRouteUnits, out _);
@@ -271,7 +271,7 @@ public sealed partial class RynthNavPlugin
             List<RouteStep> rest;
             double restCost;
             int used = 0;
-            if (_portalsEnabled && RoutePortals() is { Count: > 0 } routePortals)
+            if (PortalsRouting && RoutePortals() is { Count: > 0 } routePortals)
                 rest = PortalRoute.Plan(routePortals, null, hx.DstNs, hx.DstEw, goalNs, goalEw, out restCost, out used);
             else
             {

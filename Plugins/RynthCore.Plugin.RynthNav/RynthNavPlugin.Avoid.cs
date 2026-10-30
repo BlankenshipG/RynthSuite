@@ -136,7 +136,7 @@ public sealed partial class RynthNavPlugin
         double ns = NavCoords.NsFromWorld(_finalTns), ew = NavCoords.EwFromWorld(_finalTew);
         string type = _gotoType, enter = _enterName, enterType = _enterType;
         bool onFinalLeg = _route == null || _routeIdx >= _route.Count - 1;
-        if (_portalsEnabled && !_landReplanned)
+        if (PortalsRouting && !_landReplanned)
         {
             _landReplanned = true;
             Host.Log($"[RynthNav] no route over land to {name}: planning again with portals and recalls");
@@ -145,7 +145,7 @@ public sealed partial class RynthNavPlugin
             return;
         }
         string why = $"no walking route to {(onFinalLeg ? name : "the next step")} (water or cliffs in the way)";
-        FinishGoto(_portalsEnabled
+        FinishGoto(PortalsRouting
             ? $"stopped: {why}, and no portal, recall or the Town Network I know of gets there"
             : $"stopped: {why}; turn on Use portals and recalls");
     }
