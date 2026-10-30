@@ -90,6 +90,7 @@ public sealed partial class RynthLuaPlugin : RynthPluginBase
 
     public override int Initialize()
     {
+        _ = Reply;
         _ai = new RynthAiBridge(Host);
         // Every use logged (Plugins/Shared/UseAudit.cs). Scripts are the player's: no guard.
         RynthCore.Plugin.Shared.UseAudit.Reset("RynthLua", null);
@@ -133,8 +134,9 @@ public sealed partial class RynthLuaPlugin : RynthPluginBase
         while (_chatCommands.TryDequeue(out string? line))
         {
             try { HandleLuaChatCommand(line); }
-            catch (Exception ex) { ChatLine("error: " + ex.Message); }
+            catch (Exception ex) { ChatFail("error: " + ex.Message); }
         }
+        Reply.Flush();
         // Script windows are kept apart from the scripts: a fault in the window steps is logged
         // (at most every 10 s) and can't stop every script's threads from running.
         try { PollHudEvents(); }   // script windows: input first, so this tick's passes see it
@@ -291,10 +293,16 @@ public sealed partial class RynthLuaPlugin : RynthPluginBase
             _chatCommands.Enqueue("/lua " + value);
     }
 
-    internal void ChatLine(string text)
-    {
-        if (Host.HasWriteToChat) Host.WriteToChat("[RynthLua] " + text, 1);
-    }
+    // Chat lines wait in the shared reply queue (Plugins/Shared/CommandReply.cs): the host drops a line
+    // within 100 ms of another plugin's, so /lua's two-line usage used to lose its second line.
+    private RynthCore.Plugin.Shared.CommandReply? _reply;
+    private RynthCore.Plugin.Shared.CommandReply Reply => _reply ??= new RynthCore.Plugin.Shared.CommandReply("[RynthLua]",
+        (t, c) => Host.HasWriteToChat && Host.WriteToChat(t, c), t => Log(t));
+
+    internal void ChatLine(string text) => Reply.Ok(text);
+
+    /// <summary>A /lua command that didn't work: why, and the usage (the failure colour).</summary>
+    internal void ChatFail(string text) => Reply.Fail(text);
 
     // ── Panel ───────────────────────────────────────────────────────────────
 

@@ -28,6 +28,7 @@ internal static partial class Program
         StableOrder();
         Vitals();
         WindowChecks();
+        Replies();
 
         Console.WriteLine($"{_checks} checks, {_failed} failed");
         return _failed == 0 ? 0 : 1;

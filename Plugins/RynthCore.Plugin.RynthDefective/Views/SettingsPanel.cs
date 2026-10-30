@@ -32,7 +32,7 @@ internal sealed class SettingsPanel
         }
 
         w.SeparatorText("Settings");
-        w.SliderInt("Slots", "set.slots", st.SlotCount, DefSettings.SlotsMin, DefSettings.SlotsMax, v => { st.SlotCount = v; Changed(true); });
+        w.SliderInt("Slots", "set.slots", st.SlotCount, DefSettings.SlotsMin, DefSettings.SlotCountMax, v => { st.SlotCount = v; Changed(true); });
         w.SliderInt("Slots per row", "set.perrow", st.SlotsPerRow, DefSettings.PerRowMin, DefSettings.PerRowMax, v => { st.SlotsPerRow = v; Changed(true); });
         w.SliderInt("Button size", "set.button", st.ButtonSize, DefSettings.ButtonMin, DefSettings.ButtonMax, v => { st.ButtonSize = v; Changed(true); });
         w.SliderInt("Picker row icon", "set.picker", st.PickerIconSize, DefSettings.PickerIconMin, DefSettings.PickerIconMax, v => { st.PickerIconSize = v; Changed(false); });

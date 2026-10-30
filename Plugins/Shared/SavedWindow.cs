@@ -1,7 +1,7 @@
 // ============================================================================
 //  RynthSuite - Plugins/Shared/SavedWindow.cs
 //  Keeps a plugin's own floating ImGui window where the player left it, per
-//  character, through the engine (plugin API v91, Get/SetWindowPlacement).
+//  character, through the engine (plugin API v93, Get/SetWindowPlacement).
 //
 //  Plugin windows saved their spot only in imgui.ini, which every running client
 //  shares and rewrites whole, so a window moved in one client came back where
@@ -16,7 +16,7 @@
 //      if (ImGui.Begin(...)) { _spot.Track(); ... }   // after Begin, before End
 //      _spot.Reset();                      // when the window is hidden (optional)
 //  trackSize false: a window that sizes itself (AlwaysAutoResize); only its spot is kept.
-//  An engine older than v91 has no store: the window keeps imgui.ini's behaviour.
+//  An engine older than v93 has no store: the window keeps imgui.ini's behaviour.
 //  Render thread only.
 // ============================================================================
 

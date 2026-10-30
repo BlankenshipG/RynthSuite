@@ -20,6 +20,7 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavCoords.cs" Link="Linked\NavCoords.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\Atlas.cs" Link="Linked\Atlas.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\AtlasStore.cs" Link="Linked\AtlasStore.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavReplies.cs" Link="Linked\NavReplies.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\ArrowGuide.cs" Link="Linked\ArrowGuide.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RecallMemory.cs" Link="Linked\RecallMemory.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RecallPlanner.cs" Link="Linked\RecallPlanner.cs" />

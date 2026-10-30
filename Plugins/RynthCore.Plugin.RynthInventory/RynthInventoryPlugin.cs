@@ -74,7 +74,6 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     private bool _identityKnown;
     private long _loginMs;
     private long _nextIdentityTryMs;
-    private bool _noUiLogged;
     private bool _oldAccountChecked;
     private bool _forceWrite;
 
@@ -101,6 +100,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     public override int Initialize()
     {
         _c.Host = Host;
+        _c.Reply = new CommandReply("[RynthInventory]", (t, c) => Host.WriteToChat(t, c), t => Host.Log(t));
         _c.Settings.Load();
         _c.RequestRescan = () => { _scheduler.RequestFullScan(); _forceWrite = true; };
         _c.RequestReload = () => { _reloadWanted = true; _files.Clear(); };
@@ -323,31 +323,35 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
             if (_window != null) { _window.Visible = true; _window.NeedsPass = true; }
             return;
         }
-        string lower = arg.ToLowerInvariant();
-        switch (lower)
+        // Every /ginv answers in chat (2026-10-28, InventoryCommand.cs; Plugins/Shared/CommandReply.cs).
+        // RynthInventory can't tell a typed /ginv from a meta's, so each one does.
+        InventoryCommand c = InventoryCommand.Parse(arg);
+        switch (c.Verb)
         {
-            case "":
-                if (_window != null) { _window.Visible = !_window.Visible; _window.NeedsPass = true; }
+            case InventoryVerb.Window:
+                if (_window != null)
+                {
+                    _window.Visible = !_window.Visible; _window.NeedsPass = true;
+                    if (Host.HasUi) _c.Print(InventoryCommand.Window(_window.Visible));
+                }
                 break;
-            case "scan":
-            case "rescan":
+            case InventoryVerb.Scan:
                 _scheduler.RequestFullScan();
                 _forceWrite = true;
                 _c.Print("Rescanning this character; it saves within a few seconds.");
                 break;
-            case "keep":
+            case InventoryVerb.Keep:
                 KeepOpenContainer();
                 break;
-            case "reload":
+            case InventoryVerb.Reload:
                 _reloadWanted = true;
                 _files.Clear();
                 _c.Print("Reading the inventory files again.");
                 break;
-            case "status":
+            case InventoryVerb.Status:
                 PrintStatus();
                 break;
-            case "bank":
-            case "banking":
+            case InventoryVerb.Bank:
                 // The Banking tab: every character's Infinite Leaftide bank (RynthILT), Infinite Leaftide only.
                 if (!_c.Ilt)
                 {
@@ -358,26 +362,24 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
                 _nextBankReadMs = 0;
                 if (_window != null) { _window.Visible = true; _window.NeedsPass = true; }
                 break;
-            case "trade":
+            case InventoryVerb.Trade:
                 // Toggle the trade list window and start a new trade if none is active.
                 if (_c.Trade == null)
                     _c.Trade = new TradeList();
                 if (_tradeWindow != null) { _tradeWindow.Visible = !_tradeWindow.Visible; _tradeWindow.NeedsPass = true; }
                 break;
-            case "help":
-            case "?":
-                _c.Print("/ginv (window), /ginv <text> (search), /ginv trade (trade list), /ginv bank (every character's bank, Infinite Leaftide), /ginv scan (rescan and save now), /ginv keep (record the open container as storage), /ginv reload, /ginv status. To find items like one you carry, right-click it in the Inventory panel: Find like this in Global Inventory (/ginv like clear removes that filter).");
+            case InventoryVerb.Help:
+                _c.Print(InventoryCommand.Usage);
                 break;
             default:
-                _view?.SetSearch(arg);
+                _view?.SetSearch(c.Text);
                 if (_window != null) { _window.Visible = true; _window.NeedsPass = true; }
+                if (Host.HasUi) _c.Print(InventoryCommand.Searching(c.Text));
                 break;
         }
-        if (_window != null && _window.Visible && !Host.HasUi && !_noUiLogged)
-        {
-            _noUiLogged = true;
-            _c.Print("This RynthCore engine can't show plugin windows (it needs script windows, API v71, with ImGui on). Scanning and saving still work; /ginv status shows what was saved.");
-        }
+        // Without plugin windows the window verbs say why nothing shows (every time).
+        if (_window != null && _window.Visible && !Host.HasUi && c.Verb is InventoryVerb.Window or InventoryVerb.Search)
+            _c.PrintFail(InventoryCommand.NoWindows);
     }
 
     private void PrintStatus()
@@ -394,13 +396,13 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
     {
         if (!_identityKnown || _lastViewed == 0)
         {
-            _c.Print("Open the container first, then type /ginv keep while it is open.");
+            _c.PrintFail("Open the container first, then type /ginv keep while it is open.");
             return;
         }
         string name = Host.TryGetObjectName(_lastViewed, out string n) ? n : "container";
         if (!InventoryScanner.IsStorage(Host, _lastViewed, _c.Player, Array.Empty<string>(), kept: true, out name, out string why))
         {
-            _c.Print($"{name} can't be kept as storage ({why}).");
+            _c.PrintFail($"{name} can't be kept as storage ({why}).");
             return;
         }
         string key = InventorySettings.KeepKey(_c.Server, _lastViewed);
@@ -421,6 +423,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         _c.UtcNow = DateTime.UtcNow;
 
         while (_commands.TryDequeue(out string? cmd)) RunCommand(cmd);
+        _c.Reply?.Flush();
         _ui.Poll(Host);
 
         if (_c.InWorld)

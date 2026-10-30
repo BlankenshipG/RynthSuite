@@ -793,16 +793,17 @@ public sealed partial class RynthLuaPlugin
                 string arg = p.Length > 1 ? p[1].Trim() : "";
                 if (arg.Equals("off", StringComparison.OrdinalIgnoreCase) || arg.Equals("stop", StringComparison.OrdinalIgnoreCase))
                 {
-                    ChatLine(StopScript(BenchScript) ? "Bench stopped." : "The bench isn't running.");
+                    if (StopScript(BenchScript)) ChatLine("Bench stopped.");
+                    else ChatFail("The bench isn't running.");
                     break;
                 }
                 if (!int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) || n < 1)
                 {
-                    ChatLine("Usage: /lua hud bench <widgets 1-1500> | /lua hud bench off");
+                    ChatFail("Usage: /lua hud bench <widgets 1-1500> | /lua hud bench off");
                     break;
                 }
                 n = Math.Min(n, 1500);
-                if (!UiAvailable) { ChatLine("Script windows need RynthCore API v71 with ImGui on."); break; }
+                if (!UiAvailable) { ChatFail("Script windows need RynthCore API v71 with ImGui on."); break; }
                 RunCode(BenchScript, BenchCode(n));
                 ChatLine($"Bench: a hud with {n} widgets. Measurements go to the log every ~10 s ('hud passes:' and 'ScriptWindows replay:'). /lua hud bench off to stop.");
                 break;
@@ -818,7 +819,7 @@ public sealed partial class RynthLuaPlugin
                 ScriptHud? hud = FindHud(name, out string? problem);
                 if (hud == null)
                 {
-                    ChatLine((problem ?? $"No hud named '{name}'.") + " " + HudListLine());
+                    ChatFail((problem ?? $"No hud named '{name}'.") + " " + HudListLine());
                     break;
                 }
                 bool show = sub == "show" || sub == "toggle" && !hud.Visible;
@@ -828,7 +829,8 @@ public sealed partial class RynthLuaPlugin
                 break;
             }
             default:
-                ChatLine("/lua hud list | show|hide|toggle <script>/<hud> | bench <widgets 1-1500> | bench off");
+                if (sub is "" or "help") ChatLine("/lua hud list | show|hide|toggle <script>/<hud> | bench <widgets 1-1500> | bench off");
+                else ChatFail($"Unknown '/lua hud {sub}'. /lua hud list | show|hide|toggle <script>/<hud> | bench <widgets 1-1500> | bench off");
                 break;
         }
     }

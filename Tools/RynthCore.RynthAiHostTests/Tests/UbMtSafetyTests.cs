@@ -285,7 +285,10 @@ internal static class UbMtSafetyTests
             w.Meta("/mt trade accept");
             Check.Eq(FakeHost.TradeActions.Count, 0, "macro off or Meta off: no trade accept");
             Check.Eq(FakeHost.VendorSells.Count, 0, "macro off: no sale");
-            Check.Eq(w.ChatWith("only runs from a meta that is running"), 6, "all refused with the reason");
+            // A meta repeating the same refusal says it once a minute (CommandReply.cs): the second
+            // "/mt trade accept" refusal is in the log, not in chat again.
+            Check.Eq(w.ChatWith("only runs from a meta that is running"), 5, "all refused with the reason (a meta's repeat once)");
+            Check.Eq(w.LogWith("/mt trade accept only runs from a meta that is running"), 3, "every refusal is logged (one typed, two from the meta)");
         }
         finally { w.Dispose(); }
     }

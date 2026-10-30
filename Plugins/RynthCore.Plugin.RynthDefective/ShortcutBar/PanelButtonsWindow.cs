@@ -137,7 +137,7 @@ internal sealed class PanelButtonsWindow
     }
 
     /// <summary>A Phosphor glyph centred in the box, <paramref name="px"/> across its em (from Ui18's bake).</summary>
-    private static unsafe void DrawIcon(ImDrawListPtr dl, string glyph, Vector2 min, Vector2 size, float px, uint color)
+    internal static unsafe void DrawIcon(ImDrawListPtr dl, string glyph, Vector2 min, Vector2 size, float px, uint color)
     {
         if (string.IsNullOrEmpty(glyph)) return;
         ImFontPtr font = Font(RynthUiFont.Ui18);

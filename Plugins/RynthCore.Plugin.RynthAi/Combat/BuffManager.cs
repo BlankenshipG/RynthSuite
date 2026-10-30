@@ -398,6 +398,38 @@ public partial class BuffManager : IDisposable
         return Math.Min(reserve, cost + (max - cost) / 2);
     }
 
+    /// <summary>Logged once per stretch under Get Mana At: buffing goes on because nothing can refill
+    /// mana (CheckBuffs' mana floor).</summary>
+    private bool _manaFloorNoRefillLogged;
+
+    /// <summary>Heals the mana floor keeps mana for when nothing can refill it.</summary>
+    internal const int ManaFloorHeals = 2;
+
+    /// <summary>
+    /// The mana the Get Mana At floor keeps when nothing can refill it: ManaFloorHeals casts of the
+    /// Heal Self vitals would cast now (0 when none is known or Life Magic isn't usable).
+    /// </summary>
+    internal int ManaFloorHealReserve()
+    {
+        int heal = IsSkillUsable(AcSkillType.LifeMagic)
+            ? _spellManager.GetDynamicSelfBuffId("Heal Self", AcSkillType.LifeMagic, LevelLacksComponents)
+            : 0;
+        int cost = heal != 0 ? SpellManaCost(heal) : 0;
+        return cost > 0 ? ManaFloorHeals * cost : 0;
+    }
+
+    /// <summary>True when no mana potion could be drunk at all (Use Potions off, or none listed or
+    /// in the pack); false while one exists but waits (drunk under 2.5 s ago, a cast holds it).</summary>
+    private bool NoManaPotionToDrink()
+    {
+        if (!_settings.UsePotions || _worldObjectCache == null) return true;
+        if (HasListedPotion("ManaPotion")) return false;
+        foreach (var wo in _worldObjectCache.GetDirectInventory(forceRefresh: false))
+            if (!IsKitName(wo.Name) && string.Equals(RynthCore.Plugin.RynthAi.LegacyUi.LegacyWeaponsUi.PotionType(wo), "ManaPotion", StringComparison.OrdinalIgnoreCase))
+                return false;
+        return true;
+    }
+
     /// <summary>Combat fights with magic (CombatManager's chosen weapon is a wand; before it chose,
     /// the stance). A melee character's attacks don't spend mana, so the reserve doesn't hold them.</summary>
     private bool FightsWithMagic() => _combatManager?.FightsWithMagic ?? CurrentCombatMode == CombatMode.Magic;
@@ -914,6 +946,9 @@ public partial class BuffManager : IDisposable
                 var info = kvp.Value;
                 lines.Add($"item|{kvp.Key}|{info.CastAt.Ticks}|{info.ExpiresAt.Ticks}|{info.SpellLevel}|{info.SpellName}");
             }
+            // Last: a build from before the shield's lines reads them as old-style lines that
+            // expired long ago (no exception, so the lines above are loaded either way).
+            SaveShieldTimers(lines);
             // The "char doesn't know this spell" blacklist is NO LONGER persisted.
             // Persisting it meant one lag-induced no-chat timeout permanently
             // poisoned a KNOWN spell across all future sessions, collapsing the
@@ -932,9 +967,11 @@ public partial class BuffManager : IDisposable
         {
             _ramBuffTimers.Clear();
             _itemSpellTimers.Clear();
+            _shieldSpellTimers.Clear();
             foreach (string line in System.IO.File.ReadAllLines(_buffTimerPath))
             {
                 string[] p = line.Split('|');
+                if (LoadShieldTimer(p)) continue;
 
                 if (p[0] == "item" && p.Length >= 6)
                 {
@@ -971,9 +1008,10 @@ public partial class BuffManager : IDisposable
                         _ramBuffTimers[family] = new RamTimerInfo { Expiration = expiration, SpellLevel = level, SpellName = name };
                 }
             }
-            int total = _ramBuffTimers.Count + _itemSpellTimers.Count;
+            int total = _ramBuffTimers.Count + _itemSpellTimers.Count + _shieldSpellTimers.Count;
             if (total > 0)
-                _host.WriteToChat($"[RynthAi] Restored {_ramBuffTimers.Count} player + {_itemSpellTimers.Count} item spell timer(s).", 1);
+                _host.WriteToChat($"[RynthAi] Restored {_ramBuffTimers.Count} player + {_itemSpellTimers.Count} item spell timer(s)" +
+                                  (_shieldSpellTimers.Count > 0 ? $" + {_shieldSpellTimers.Count} on the shield." : "."), 1);
         }
         catch { }
     }
@@ -1018,6 +1056,7 @@ public partial class BuffManager : IDisposable
         _upgradeParkedUntil.Clear();
         _ramBuffTimers.Clear();
         _itemSpellTimers.Clear();
+        ResetShieldBuffs();             // the shield's timers, rests and park too
         EndPendingUpgrade(_pendingSpellId, "a new Force Rebuff");
         _pendingSpellId = 0;
         _lastCastAttempt = DateTime.MinValue;
@@ -1520,6 +1559,20 @@ public partial class BuffManager : IDisposable
                 // switch in mid-cast.
                 if (_pendingSpellId != 0) { TryEmergencyHealWhilePending(); Hold("buff cast in flight", pendingSpell.Name); return; }
             }
+            else if (pendingIsArmor && PendingIsShield)
+            {
+                // An armor spell aimed at the shield (BuffManager.Shield.cs): chat is authoritative,
+                // as for the armor, but a give-up counts against the shield only. No blacklist (the
+                // same spell just went on the armor) and no family park for the armor.
+                if (PendingGiveUpReached(NoChatResolveTimeoutMs))
+                {
+                    ShieldCastNoShow(pendingSpell);
+                    _pendingSpellId = 0;
+                    _pendingShieldId = 0;
+                    _onCastResolved?.Invoke("no-chat timeout (shield)");
+                }
+                if (_pendingSpellId != 0) { TryEmergencyHealWhilePending(); Hold("item spell in flight", pendingSpell?.Name ?? ""); return; }
+            }
             else if (pendingIsArmor)
             {
                 // ARMOR/ITEM: chat is authoritative. No-chat valve abandons a cast
@@ -1694,30 +1747,71 @@ public partial class BuffManager : IDisposable
             // Mana under Get Mana At left buffing waiting on natural regen - one buff every 1-2
             // minutes (tester, 10-01: 85 minutes of "buffing waits", Stamina to Mana never cast).
             // A low stamina is topped up first (kit, Revitalize, potion) so Stamina to Mana can run.
-            if (_vitals.StaminaPct > StaminaToManaFloorPct() && AttemptVitalCast("Stamina to Mana Self"))
+            // Each source's reason, for the log line below: it used to show only the last one tried
+            // (the potion's), so a missing Stamina to Mana read as "none in the Items list or the pack".
+            string s2mWhy, stamWhy = "-", potWhy;
+            _vitalWhy = "";
+            if (_vitals.StaminaPct > StaminaToManaFloorPct())
             {
-                _isRechargingMana = true;
-                return;
+                if (AttemptVitalCast("Stamina to Mana Self"))
+                {
+                    _isRechargingMana = true;
+                    return;
+                }
+                s2mWhy = Why(_vitalWhy);
             }
-            if (_vitals.StaminaPct <= 15 && (AttemptStaminaKitUse() || AttemptVitalCast("Revitalize Self")
-                                              || AttemptPotion("StaminaPotion", "Stamina")))
+            else s2mWhy = $"stamina {_vitals.StaminaPct}% is under its line ({StaminaToManaFloorPct()}%)";
+            if (_vitals.StaminaPct <= 15)
             {
-                _isRechargingStamina = true;
-                return;
+                _vitalWhy = "";
+                if (AttemptStaminaKitUse() || AttemptVitalCast("Revitalize Self")
+                    || AttemptPotion("StaminaPotion", "Stamina"))
+                {
+                    _isRechargingStamina = true;
+                    return;
+                }
+                stamWhy = Why(_vitalWhy);
             }
+            _vitalWhy = "";
             if (AttemptPotion("ManaPotion"))
             {
                 _isRechargingMana = true;
                 return;
             }
-            LastBuffSkipReason = $"mana {_vitals.ManaPct}% under Get Mana At {manaFloor}%";
-            if ((RynthClock.Now - _lastManaFloorLogAt).TotalSeconds >= 30)
+            potWhy = Why(_vitalWhy);
+
+            // Nothing can ever refill it (no Stamina to Mana known, no mana potion to drink): waiting
+            // only means natural regeneration, so buffing crawled one buff per regen climb. Worse, a
+            // rebuff raises max mana: the character logged in with full mana (209/207), the first
+            // buffs took max mana to 536, the same 209 read 39% under Get Mana At 40%, and every buff
+            // after waited (report R-20261029-103248-ce48, DreamWeave, 2026-10-29: "Buffing seems to
+            // be getting stuck"). The floor is there to keep mana for healing, so with no refill the
+            // buffs go on while mana keeps ManaFloorHealReserve after one (BuffWaitsForMana still
+            // holds any buff mana can't pay for). The same rule as the reserve: "With no Stamina to
+            // Mana at all nothing refills: the buff goes."
+            bool canRefill = TopStaminaToManaId() != 0 || !NoManaPotionToDrink();
+            int keep = ManaFloorHealReserve();
+            if (!canRefill && _vitals.CurrentMana >= keep + EstimatedManaCost(8))
             {
-                _lastManaFloorLogAt = RynthClock.Now;
-                _host.Log($"[RynthAi] Vitals: buffing waits: mana {_vitals.ManaPct}% is under Get Mana At {manaFloor}%, stamina {_vitals.StaminaPct}%, and nothing refilled it (Stamina to Mana / stamina / potion: {Why(_vitalWhy)})");
+                if (!_manaFloorNoRefillLogged)
+                {
+                    _manaFloorNoRefillLogged = true;
+                    _host.Log($"[RynthAi] Vitals: mana {_vitals.CurrentMana}/{_vitals.MaxMana} ({_vitals.ManaPct}%) is under Get Mana At {manaFloor}%, but nothing can refill it (Stamina to Mana: {s2mWhy}; mana potion: {potWhy}): buffing goes on, keeping {keep} mana for healing.");
+                }
             }
-            return;
+            else
+            {
+                LastBuffSkipReason = $"mana {_vitals.ManaPct}% under Get Mana At {manaFloor}%";
+                if ((RynthClock.Now - _lastManaFloorLogAt).TotalSeconds >= 30)
+                {
+                    _lastManaFloorLogAt = RynthClock.Now;
+                    _host.Log($"[RynthAi] Vitals: buffing waits: mana {_vitals.CurrentMana}/{_vitals.MaxMana} ({_vitals.ManaPct}%) is under Get Mana At {manaFloor}%, stamina {_vitals.StaminaPct}%, and nothing refilled it (Stamina to Mana: {s2mWhy}; stamina: {stamWhy}; mana potion: {potWhy})" +
+                              (canRefill ? "" : $"; keeping {keep} mana for healing"));
+                }
+                return;
+            }
         }
+        else _manaFloorNoRefillLogged = false;
 
         // Too-busy backoff gates BUFFING only, and sits after CheckVitals on
         // purpose: a refused heal is worth retrying hard, a refused buff is not.
@@ -2322,6 +2416,7 @@ public partial class BuffManager : IDisposable
         // ever come; setting pending anyway waited 2.5 s and counted a no-show
         // strike. Mirror the buff path: not handled, so the potion gets its turn.
         _pendingSpellId = spellId;
+        _pendingShieldId = 0;   // on the player, not the shield
         _pendingVitalSpellId = spellId;   // instant: confirmed by chat, never by the registry
         _pendingVitalLabel = label;
         _pendingVitalBase = what;
@@ -2812,7 +2907,8 @@ public partial class BuffManager : IDisposable
                 continue;
             if (!IsBuffActive(spellId, thresholdSec)) return true;
         }
-        return false;
+        // The shield's armor spells start a batch the same way (BuffManager.Shield.cs).
+        return ShieldBuffBelowThreshold(desiredBuffs, thresholdSec);
     }
 
     // "[FR] skip ..." lines while a rebuff runs: the selector runs every tick (~30 ms), and a
@@ -2939,6 +3035,7 @@ public partial class BuffManager : IDisposable
             int upgradeFrom = spellInfo != null && buffFamily != 0 ? ActiveLevelBelow(buffFamily, upgradeTo) : 0;
 
             _pendingSpellId = spellId;
+            _pendingShieldId = 0;   // on the player, not the shield
             if (buffFamily != 0)
             {
                 _lastCastSpellIdByFamily[buffFamily] = spellId;
@@ -2994,7 +3091,8 @@ public partial class BuffManager : IDisposable
             }
             return true;
         }
-        return false;
+        // Everything on the character is on: the shield's armor spells (BuffManager.Shield.cs).
+        return CastShieldBuffs(desiredBuffs, diagnose);
     }
 
     /// <summary>Casts that replaced an active buff of the same family at a lower level (tests, status).</summary>
@@ -3431,6 +3529,7 @@ public partial class BuffManager : IDisposable
     {
         _forceRebuffCastFamilies.Clear();
         _runConfirmedLevelByFamily.Clear();
+        _shieldRunLevels.Clear();
     }
 
     /// <summary>
@@ -3693,10 +3792,12 @@ public partial class BuffManager : IDisposable
         // left them "active" for up to an hour and the bot fought unbuffed (reported as
         // "buffing skips missile weapons"). The player's registry dropping to zero (a death,
         // or logging in after one) is the signal: forget them so they get recast.
-        if (count == 0 && _lastLivePlayerEnchantCount != 0 && _itemSpellTimers.Count > 0)
+        if (count == 0 && _lastLivePlayerEnchantCount != 0 && (_itemSpellTimers.Count > 0 || _shieldSpellTimers.Count > 0))
         {
-            _host.Log($"[BuffDiag] player enchantments dropped to 0 (was {_lastLivePlayerEnchantCount}) - clearing {_itemSpellTimers.Count} item-spell timer(s) so weapon/armor buffs recast");
+            _host.Log($"[BuffDiag] player enchantments dropped to 0 (was {_lastLivePlayerEnchantCount}) - clearing {_itemSpellTimers.Count} item-spell timer(s)" +
+                      $"{(_shieldSpellTimers.Count > 0 ? $" and {_shieldSpellTimers.Count} on the shield" : "")} so weapon/armor buffs recast");
             _itemSpellTimers.Clear();
+            _shieldSpellTimers.Clear();
         }
         _lastLivePlayerEnchantCount = count;
 
@@ -3929,7 +4030,7 @@ public partial class BuffManager : IDisposable
             _host.WriteToChat($"[RynthAi] ServerTime={Math.Round(serverNow)} (no live read: serverTime=0 or API missing)", 1);
         }
 
-        if (_ramBuffTimers.Count == 0 && _itemSpellTimers.Count == 0)
+        if (_ramBuffTimers.Count == 0 && _itemSpellTimers.Count == 0 && _shieldSpellTimers.Count == 0)
         {
             _host.WriteToChat("[RynthAi] No buff timers active.", 1);
             return;
@@ -3940,6 +4041,7 @@ public partial class BuffManager : IDisposable
             _host.WriteToChat($"[RynthAi] -- Item spells ({_itemSpellTimers.Count}) --", 1);
             PrintItemSpellTimers();
         }
+        PrintShieldSpellTimers();
 
         if (_ramBuffTimers.Count > 0)
         {
@@ -4003,13 +4105,17 @@ public partial class BuffManager : IDisposable
 
     public void PrintItemBuffDebug()
     {
-        if (_itemSpellTimers.Count == 0)
+        if (_itemSpellTimers.Count == 0 && _shieldSpellTimers.Count == 0)
         {
             _host.WriteToChat("[RynthAi] No item spell timers recorded yet.", 1);
             return;
         }
-        _host.WriteToChat($"[RynthAi] -- Item spells ({_itemSpellTimers.Count}) --", 1);
-        PrintItemSpellTimers();
+        if (_itemSpellTimers.Count > 0)
+        {
+            _host.WriteToChat($"[RynthAi] -- Item spells ({_itemSpellTimers.Count}) --", 1);
+            PrintItemSpellTimers();
+        }
+        PrintShieldSpellTimers();
     }
 
     private void PrintItemSpellTimers()
@@ -4349,8 +4455,9 @@ public partial class BuffManager : IDisposable
         // Only clear pending if this enchantment matches what we were casting.
         // Armor/item enchantments fire on the item, not the player — clearing
         // _pendingSpellId unconditionally would lose track of pending item casts
-        // and prevent the chat handler from recording their timers.
-        if (_pendingSpellId != 0)
+        // and prevent the chat handler from recording their timers. A cast at the shield never
+        // lands on the player: only its chat line resolves it.
+        if (_pendingSpellId != 0 && !PendingIsShield)
         {
             var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
             if (pendingSpell != null && pendingSpell.Family == spellInfo.Family)
@@ -4489,12 +4596,12 @@ public partial class BuffManager : IDisposable
             else if (_pendingSpellId != 0)
             {
                 var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
-                if (pendingSpell != null && IsItemEnchantment(pendingSpell.Name))
+                if (pendingSpell != null && IsItemEnchantment(pendingSpell.Name) && !PendingIsShield)   // the shield's refusal leaves the armor's timer
                 {
                     _itemSpellTimers.Remove(pendingSpell.Family);
                     SaveBuffTimers();
                 }
-                _host.Log($"[BuffChat] PARKED pending={_pendingSpellId} — AC too busy (cast gesture in progress); throttle kept, backing off before re-issue.");
+                _host.Log($"[BuffChat] PARKED pending={_pendingSpellId}{(PendingIsShield ? " (on the shield)" : "")} — AC too busy (cast gesture in progress); throttle kept, backing off before re-issue.");
                 if (_pendingSpellId != _pendingVitalSpellId)
                     _chain.TooBusyLine(_pendingSpellId, s => _host.Log(s));
             }
@@ -4569,7 +4676,7 @@ public partial class BuffManager : IDisposable
                     // A vital spell: pass over this level only; the next lower one goes next.
                     _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: using a lower level for {SpellManager.NoComponentsSec / 60:0} min.", 2);
                 }
-                else if (pendingSpell != null && noComps)
+                else if (pendingSpell != null && noComps && !PendingIsShield)
                 {
                     // A buff: the same. The picker (FindBestSpellId) passes over a level marked
                     // above, so the next lower level of this buff goes next; with none left the buff
@@ -4581,6 +4688,13 @@ public partial class BuffManager : IDisposable
                         SaveBuffTimers();
                     }
                     _host.WriteToChat($"[RynthAi] No components for {pendingSpell.Name}: buffing with a lower level for {SpellManager.NoComponentsSec / 60:0} min.", 2);
+                }
+                else if (pendingSpell != null && PendingIsShield)
+                {
+                    // Aimed at the shield: the family rests on the shield only; the armor's is on.
+                    ShieldCastRefused(pendingSpell, "hard rejection", BuffFailCooldownSec);
+                    _host.WriteToChat($"[RynthAi] Skipping {pendingSpell.Name} on the shield for {BuffFailCooldownSec / 60:0} min " +
+                                      $"({(noComps ? "no components for it" : "the server refused it")}).", 2);
                 }
                 else if (pendingSpell != null)
                 {
@@ -4629,7 +4743,9 @@ public partial class BuffManager : IDisposable
                 return;
             }
             double restSec = LowManaFamilyRestSec;
-            if (pendingSpell != null)
+            if (pendingSpell != null && PendingIsShield)
+                ShieldCastRefused(pendingSpell, "not enough mana", restSec);   // rests on the shield; the armor's timer stays
+            else if (pendingSpell != null)
             {
                 if (IsItemEnchantment(pendingSpell.Name))
                 {
@@ -4663,17 +4779,30 @@ public partial class BuffManager : IDisposable
             if (_pendingSpellId != 0)
             {
                 var pendingSpell = SpellTableStub.GetById(_pendingSpellId);
-                if (pendingSpell != null && IsItemEnchantment(pendingSpell.Name))
+                if (pendingSpell != null && IsItemEnchantment(pendingSpell.Name) && !PendingIsShield)   // a fizzle at the shield leaves the armor's timer
                 {
                     _itemSpellTimers.Remove(pendingSpell.Family);
                     SaveBuffTimers();
                 }
-                _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId} via soft-fail in '{text}'");
+                _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId}{(PendingIsShield ? " (on the shield)" : "")} via soft-fail in '{text}'");
             }
             _lastCastAttempt = DateTime.MinValue;
             EndPendingUpgrade(_pendingSpellId, "fizzled");
             _pendingSpellId = 0;
             _onCastResolved?.Invoke("soft-fail");
+            return;
+        }
+
+        // "Flame Bane VI cannot be cast on Kite Shield." (ACE IsInvalidTarget: an item that takes no
+        // spells). Read only for a cast at the shield: shield buffing rests; the armor carries on.
+        if (PendingIsShield && lower.Contains(" cannot be cast on "))
+        {
+            _cast.Result(null, "refused by the server", atStart: true);
+            _host.Log($"[BuffChat] CLEARED pending={_pendingSpellId} on the shield 0x{(uint)_pendingShieldId:X8} - '{text}'");
+            ParkShield(_pendingShieldId, "the server says these spells can't be cast on it");
+            _pendingSpellId = 0;
+            _pendingShieldId = 0;
+            _onCastResolved?.Invoke("can't be cast on the shield");
             return;
         }
 
@@ -4752,6 +4881,11 @@ public partial class BuffManager : IDisposable
             spellInfo = SpellTableStub.GetById(tracked.SpellId);
         if (spellInfo == null && _pendingSpellId != 0)
             spellInfo = SpellTableStub.GetById(_pendingSpellId);
+
+        // An armor spell's line for the shield (its own cast, a late line, or a self-cast that
+        // reached a worn shield) goes on the shield's timer, not the armor's (BuffManager.Shield.cs).
+        if (spellInfo != null && !viaDueToCasting && ShieldCastLine(spellInfo, afterCast))
+            return;
 
         // A result that names another spell than the pending one is not the pending cast's
         // result: the pending cast keeps waiting for its own (or its give-up time).
@@ -5576,7 +5710,7 @@ public partial class BuffManager : IDisposable
                     return WandSwapFailed(_wandSwap.Abandon("no pack with room"), forBuff, wandId, now);
                 }
                 bool offhand = hands.TryGetValue(step.Id, out int slot) && (slot & HandSwapSequence.ShieldSlot) != 0;
-                if (offhand) OffhandStowed?.Invoke(step.Id);   // combat puts it back after
+                if (offhand) OffhandPutAway(step.Id);   // combat puts it back after (and it is buffed in the pack)
                 _host.MoveItemInternal((uint)step.Id, (uint)pack, 0, 1);   // amount>=1 (engine rejects 0)
                 _wandSwap.Sent(step, now);
                 _wandSwapLastMoved = step.Id;
@@ -5702,7 +5836,7 @@ public partial class BuffManager : IDisposable
         if (!_host.ChangeCombatModeFor(CombatMode.NonCombat, "Buff", "wand swap burst: peace, the hands and the wand at once")) return 1;
         foreach (int id in moves)
         {
-            if (hands.TryGetValue(id, out int slot) && (slot & HandSwapSequence.ShieldSlot) != 0) OffhandStowed?.Invoke(id);
+            if (hands.TryGetValue(id, out int slot) && (slot & HandSwapSequence.ShieldSlot) != 0) OffhandPutAway(id);
             _host.PutItemInContainer(unchecked((uint)id), unchecked((uint)pack), 0);
         }
         _host.WieldItem(unchecked((uint)wandId), HeldSlot);

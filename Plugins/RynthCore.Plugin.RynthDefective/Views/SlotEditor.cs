@@ -57,11 +57,12 @@ internal sealed class SlotEditor
             DefSlot slot = _s.Data.Slots[n - 1];
             int number = n;
             string? key = _s.KeyOfSlot(n);
-            string name = slot.Item == null ? "(empty)" : slot.Item.FullName;
+            string name = slot.Empty ? "(empty)" : slot.Label;
             if (icons)
             {
                 CarriedItem? have = slot.Item == null ? null : ItemMatcher.Find(slot.Item, items, out _);
-                if (have != null) w.Image(UiFormat.IconKindObject, have.Id, RowIcon, RowIcon);
+                if (slot.IsSpell) w.Image(UiFormat.IconKindSpell, slot.SpellId, RowIcon, RowIcon);
+                else if (have != null) w.Image(UiFormat.IconKindObject, have.Id, RowIcon, RowIcon);
                 else if (slot.Item != null && slot.Item.Icon != 0) w.Image(UiFormat.IconKindIcon, slot.Item.Icon, RowIcon, RowIcon, UiFormat.Rgb(255, 255, 255, 90));
                 else w.Dummy(RowIcon, RowIcon);
                 w.SameLine();
@@ -78,7 +79,7 @@ internal sealed class SlotEditor
     {
         int n = _selected;
         DefSlot slot = _s.Data.Slots[n - 1];
-        w.TextColored(UiColors.Gold, $"Slot {n}: " + (slot.Item == null ? "(empty)" : slot.Item.FullName));
+        w.TextColored(UiColors.Gold, $"Slot {n}: " + (slot.Empty ? "(empty)" : slot.Label));
 
         w.Button("Set from selected", "ed.set", () => Say(_s.SetFromSelected(n)));
         w.Tooltip("Select an item in the game (click it in your pack), then press this: it goes in this slot.");
@@ -99,6 +100,13 @@ internal sealed class SlotEditor
 
         if (_picking) DrawPackPicker(w, items, n);
 
+        if (slot.IsSpell)
+        {
+            SpellInfo? info = SpellTable.TryGet(slot.SpellId, out SpellInfo si) ? si : null;
+            w.TextDisabled($"A spell: pressing the slot has it {SpellTargeting.Describe(info)} (Magic mode first). /rdef spell {n} <name> puts another in.");
+            DrawKey(w, n, slot);
+            return;
+        }
         if (slot.Item == null) return;
 
         int mode = (int)slot.Mode;

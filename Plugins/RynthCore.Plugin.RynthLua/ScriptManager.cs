@@ -285,13 +285,15 @@ public sealed partial class RynthLuaPlugin
             case "start":
             {
                 string? err = StartScript(rest);
-                ChatLine(err ?? $"Running {FindScript(rest)?.Name ?? rest}.");
+                if (err != null) ChatFail(err);
+                else ChatLine($"Running {FindScript(rest)?.Name ?? rest}.");
                 break;
             }
             case "restart":
             {
                 string? err = StartScript(rest);
-                ChatLine(err ?? $"Restarted {FindScript(rest)?.Name ?? rest}.");
+                if (err != null) ChatFail(err);
+                else ChatLine($"Restarted {FindScript(rest)?.Name ?? rest}.");
                 break;
             }
             case "stop":
@@ -301,18 +303,25 @@ public sealed partial class RynthLuaPlugin
                     StopAll("stopped");
                     ChatLine(n == 0 ? "No script is running." : $"Stopped {n} script(s).");
                 }
-                else ChatLine(StopScript(FindScript(rest)?.Name ?? rest) ? $"Stopped {rest}." : $"{rest} isn't running.");
+                else if (StopScript(FindScript(rest)?.Name ?? rest)) ChatLine($"Stopped {rest}.");
+                else ChatFail($"{rest} isn't running.");
                 break;
             case "exec":
-                if (rest.Length == 0) { ChatLine("Usage: /lua exec <code>"); break; }
-                RunCode("exec", rest);
+            {
+                if (rest.Length == 0) { ChatFail("Usage: /lua exec <code>"); break; }
+                ScriptContext ran = RunCode("exec", rest);
+                // Its output and errors go to the script console (the Lua window); chat says whether it started.
+                if (ran.Host.Loaded) ChatLine("exec: started (its output is in the Lua window's console).");
+                else ChatFail("exec: the code didn't run" + LastConsoleError(ran));
                 break;
+            }
             case "execin":
             {
                 string[] p = rest.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-                if (p.Length < 2) { ChatLine("Usage: /lua execin <script> <code>"); break; }
-                if (!_scripts.TryGetValue(p[0], out var ctx) || !ctx.Host.Loaded) { ChatLine($"{p[0]} isn't running."); break; }
-                ctx.Host.Exec(p[1]);
+                if (p.Length < 2) { ChatFail("Usage: /lua execin <script> <code>"); break; }
+                if (!_scripts.TryGetValue(p[0], out var ctx) || !ctx.Host.Loaded) { ChatFail($"{p[0]} isn't running."); break; }
+                if (ctx.Host.Exec(p[1])) ChatLine($"execin {ctx.Name}: started (its output is in {ctx.Name}'s console).");
+                else ChatFail($"execin {ctx.Name}: the code didn't run" + LastConsoleError(ctx));
                 break;
             }
             case "autostart":
@@ -321,7 +330,7 @@ public sealed partial class RynthLuaPlugin
                 string mode = p.Length > 1 ? p[1].ToLowerInvariant() : "";
                 var e = p.Length > 0 ? FindScript(p[0]) : null;
                 if (e == null || mode is not ("none" or "global" or "character"))
-                { ChatLine("Usage: /lua autostart <script> none|global|character"); break; }
+                { ChatFail("Usage: /lua autostart <script> none|global|character"); break; }
                 SetAutostart(e.Name, mode);
                 ChatLine($"{e.Name}: autostart {mode}.");
                 break;
@@ -340,10 +349,24 @@ public sealed partial class RynthLuaPlugin
                 HandleHudCommand(rest);
                 break;
             default:
-                ChatLine("/lua list | start <script> | stop <script>|all | restart <script> | exec <code> | execin <script> <code> | autostart <script> none|global|character | hud list|show|hide|toggle <script>/<hud>|bench <n>|bench off");
+            {
+                // Bare /lua and /lua help: the usage. A word that is neither a verb nor a script's command: why, then the usage.
+                const string usage = "/lua list | start <script> | stop <script>|all | restart <script> | exec <code> | execin <script> <code> | autostart <script> none|global|character | hud list|show|hide|toggle <script>/<hud>|bench <n>|bench off";
+                if (sub is "" or "help" or "?") ChatLine(usage);
+                else ChatFail($"Unknown '/lua {sub}'. {usage}");
                 ChatLine("/lua <command> [args] runs a script command (game.RegisterCommand) - " + ScriptCommandsSummary());
                 break;
+            }
         }
+    }
+
+    /// <summary>": " and the last error line in the script's console (why its code didn't run), or ".".</summary>
+    private static string LastConsoleError(ScriptContext ctx)
+    {
+        string[] lines = ctx.Host.ConsoleText().Split('\n');
+        for (int i = lines.Length - 1; i >= 0; i--)
+            if (lines[i].StartsWith("error", StringComparison.OrdinalIgnoreCase)) return ": " + lines[i].Trim();
+        return ".";
     }
 
     /// <summary>The registered script commands for the /lua usage text.</summary>

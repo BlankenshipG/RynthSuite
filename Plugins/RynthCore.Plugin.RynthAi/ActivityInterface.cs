@@ -57,7 +57,7 @@ internal static unsafe class ActivityInterface
 
     /// <summary>The bits from RynthAi's state (pure, so the host tests check the mapping).</summary>
     internal static RynthAiActivity Compose(BotActivity activity, bool macroRunning, bool corpseInHand, bool salvageBusy,
-                                            bool serverWait, bool crafting, bool autoCram)
+                                            bool serverWait, bool crafting, bool autoCram, bool pacedWait = false)
     {
         RynthAiActivity f = RynthAiActivity.None;
         if (macroRunning) f |= RynthAiActivity.MacroRunning;
@@ -74,6 +74,7 @@ internal static unsafe class ActivityInterface
         if (serverWait) f |= RynthAiActivity.ServerAction;
         if (crafting) f |= RynthAiActivity.Crafting;
         if (autoCram) f |= RynthAiActivity.AutoCram;
+        if (pacedWait) f |= RynthAiActivity.PacedAction;
         return f;
     }
 }
@@ -85,7 +86,8 @@ public sealed partial class RynthAiPlugin
     {
         var st = _dashboard?.Settings;
         if (st == null || !_loginComplete) return null;
-        bool serverWait = _busyCount > 0 || (ActionPacer.Enabled && ActionPacer.Current(Host) != null);
+        bool pacedWait = ActionPacer.Enabled && ActionPacer.Current(Host) != null;
+        bool serverWait = _busyCount > 0 || pacedWait;
         return ActivityInterface.Compose(
             st.IsMacroRunning ? _activity : BotActivity.Idle,
             st.IsMacroRunning,
@@ -93,6 +95,7 @@ public sealed partial class RynthAiPlugin
             salvageBusy: _salvageManager?.IsBusy == true,
             serverWait: serverWait,
             crafting: _missileCraftingManager?.IsCrafting == true,
-            autoCram: st.EnableAutocram);
+            autoCram: st.EnableAutocram,
+            pacedWait: pacedWait);
     }
 }

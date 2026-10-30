@@ -60,4 +60,11 @@ public enum RynthAiActivity : uint
     Crafting = 1u << 7,
     /// <summary>The AutoCram setting is on: RynthAi itself moves loose items out of the main pack.</summary>
     AutoCram = 1u << 8,
+    /// <summary>
+    /// A use, cast or stance change RynthAi sent has no answer from the server yet: its pacer's one
+    /// outstanding action (Shared/ActionPacer.cs). Unlike <see cref="ServerAction"/>, not the client's
+    /// busy count, which can stay up with nothing in flight (a death, a login, a corpse open).
+    /// Reported by a RynthAi that has RynthAi.Yield (2026-10-29), with its pacing on.
+    /// </summary>
+    PacedAction = 1u << 9,
 }

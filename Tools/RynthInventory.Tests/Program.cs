@@ -68,6 +68,7 @@ namespace RynthInventory.Tests
                 Run("storage from other plugins (StorageFeed)", StorageFeedTests);
                 Run("like filter: spec, facts, matcher, query", LikeFilterTests);
                 Run("checklist filter: spell lists, window limits", ChecklistTests);
+                Run("replies: every /ginv word answers", Replies);
             }
             finally
             {

@@ -36,7 +36,9 @@ public sealed partial class RynthAiPlugin
         string args = parts.Length > argsFrom ? string.Join(" ", parts, argsFrom, parts.Length - argsFrom) : "";
         string command = "/rc videopatch" + (args.Length > 0 ? " " + args : "");
         if (!Host.HasInvokeChatParser || !Host.InvokeChatParser(command))
-            ChatLine("[RynthAi] The video patch is RynthCore's: type " + command + " (this engine can't run it for RynthAi).");
+            ReplyFail("[RynthAi] The video patch is RynthCore's: type " + command + " (this engine can't run it for RynthAi).");
+        else
+            Reply.Answered();   // the engine's /rc videopatch answers
     }
 
     /// <summary>The VTank-style /ra commands; false when <paramref name="cmd"/> isn't one of them.</summary>
@@ -70,7 +72,7 @@ public sealed partial class RynthAiPlugin
             case "lootprio":      HandlePriorityCommand(parts, nav: false, loot: true); return true;
             case "navlootprio":   HandlePriorityCommand(parts, nav: true, loot: true); return true;
             case "lootthis":
-            case "lootthiscont":  RequestLootThisContainer(); return true;
+            case "lootthiscont":  RequestLootThisContainer(); Reply.Answered(); return true;   // the loot tick says what it took
             default:              return false;
         }
     }
@@ -110,12 +112,12 @@ public sealed partial class RynthAiPlugin
     private void HandleSetMetaStateCommand(string[] parts)
     {
         var s = _dashboard?.Settings;
-        if (s == null || _metaManager == null) { ChatLine("[RynthAi] Meta not ready (log in first)."); return; }
+        if (s == null || _metaManager == null) { ReplyFail("[RynthAi] Meta not ready (log in first)."); return; }
         List<string> states = LoadedMetaStates();
         if (parts.Length < 3)
         {
             ChatLine($"[RynthAi] Meta state: {s.CurrentState}. States: {(states.Count == 0 ? "(no meta loaded)" : string.Join(", ", states))}.");
-            ChatLine("[RynthAi] Usage: /ra setmetastate <state>");
+            ReplyFail("[RynthAi] Usage: /ra setmetastate <state>");
             return;
         }
         string want = string.Join(" ", parts, 2, parts.Length - 2);
@@ -123,7 +125,7 @@ public sealed partial class RynthAiPlugin
         string? known = states.FirstOrDefault(x => x.Equals(want, StringComparison.OrdinalIgnoreCase));
         _metaManager.TryHandleVtCommand("/vt setmetastate " + (known ?? want));
         if (known == null && states.Count > 0)
-            ChatLine($"[RynthAi] Note: the loaded meta has no state '{want}' (states: {string.Join(", ", states)}).");
+            ReplyFail($"[RynthAi] Note: the loaded meta has no state '{want}' (states: {string.Join(", ", states)}).");
     }
 
     // ── Target lock ───────────────────────────────────────────────────────────
@@ -131,13 +133,13 @@ public sealed partial class RynthAiPlugin
     private void HandleTargetLockCommand(string[] parts)
     {
         var cm = _combatManager;
-        if (cm == null) { ChatLine("[RynthAi] Combat not ready (log in first)."); return; }
+        if (cm == null) { ReplyFail("[RynthAi] Combat not ready (log in first)."); return; }
         string arg = parts.Length >= 3 ? parts[2].ToLowerInvariant() : "";
         int current = cm.ForcedTargetId;
         if (arg is "off" or "clear" or "release" or "0")
         {
             cm.ClearForcedTarget();
-            ChatLine(current == 0 ? "[RynthAi] Target lock: none set." : "[RynthAi] Target lock released.");
+            ReplyOk(current == 0 ? "[RynthAi] Target lock: none set." : "[RynthAi] Target lock released.");
             return;
         }
 
@@ -146,13 +148,13 @@ public sealed partial class RynthAiPlugin
         if (id != 0 && id == current)
         {
             cm.ClearForcedTarget();
-            ChatLine($"[RynthAi] Target lock on {_objectCache?[id]?.Name ?? $"0x{selected:X8}"} released.");
+            ReplyOk($"[RynthAi] Target lock on {_objectCache?[id]?.Name ?? $"0x{selected:X8}"} released.");
             return;
         }
         string? refusal = cm.ForcedTargetRefusal(id);
         if (refusal != null)
         {
-            ChatLine($"[RynthAi] Target lock: {refusal}.");
+            ReplyFail($"[RynthAi] Target lock: {refusal}.");
             return;
         }
         cm.SetForcedTarget(id);
@@ -160,7 +162,7 @@ public sealed partial class RynthAiPlugin
         string name = _objectCache?[id]?.Name ?? $"0x{selected:X8}";
         string note = s == null ? "" : !s.IsMacroRunning ? " (the macro is off: it attacks once started)"
             : !s.EnableCombat ? " (Combat is off: it attacks once Combat is on)" : "";
-        ChatLine($"[RynthAi] Target lock: attacking {name}{note}.");
+        ReplyOk($"[RynthAi] Target lock: attacking {name}{note}.");
     }
 
     // ── Melee attack height ──────────────────────────────────────────────────
@@ -168,10 +170,10 @@ public sealed partial class RynthAiPlugin
     private void SetMeleeAttackHeight(int height)
     {
         var dash = _dashboard;
-        if (dash?.Settings == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (dash?.Settings == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
         dash.Settings.MeleeAttackHeight = Math.Clamp(height, 0, 2);
         dash.SaveSettings();
-        ChatLine($"[RynthAi] Melee attack height: {MeleeHeightNames[dash.Settings.MeleeAttackHeight]}.");
+        ReplyOk($"[RynthAi] Melee attack height: {MeleeHeightNames[dash.Settings.MeleeAttackHeight]}.");
     }
 
     // ── Boost Nav / Loot Priority ─────────────────────────────────────────────
@@ -196,12 +198,12 @@ public sealed partial class RynthAiPlugin
     {
         var dash = _dashboard;
         var s = dash?.Settings;
-        if (s == null) { ChatLine("[RynthAi] Settings not ready."); return; }
+        if (s == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
         string arg = parts.Length >= 3 ? parts[2].ToLowerInvariant() : "";
         (s.BoostNavPriority, s.BoostLootPriority) = NextPriority(s.BoostNavPriority, s.BoostLootPriority, nav, loot, arg);
         dash!.SaveSettings();
         string On(bool b) => b ? "on" : "off";
-        ChatLine(nav && loot ? $"[RynthAi] Boost Nav Priority {On(s.BoostNavPriority)}, Boost Loot Priority {On(s.BoostLootPriority)}."
+        ReplyOk(nav && loot ? $"[RynthAi] Boost Nav Priority {On(s.BoostNavPriority)}, Boost Loot Priority {On(s.BoostLootPriority)}."
                  : nav ? $"[RynthAi] Boost Nav Priority {On(s.BoostNavPriority)}."
                  : $"[RynthAi] Boost Loot Priority {On(s.BoostLootPriority)}.");
     }
@@ -210,16 +212,18 @@ public sealed partial class RynthAiPlugin
 
     private void HandleRechargeCommand()
     {
-        if (_buffManager == null) { ChatLine("[RynthAi] Buff manager not ready (log in first)."); return; }
+        if (_buffManager == null) { ReplyFail("[RynthAi] Buff manager not ready (log in first)."); return; }
         _buffManager.RequestRecharge();   // runs on the pump's next heartbeat, says what it did
+        Reply.Answered();
     }
 
     // ── One-touch heal / stamina / mana ───────────────────────────────────────
 
     private void HandleOneTouchCommand(OneTouchVital vital)
     {
-        if (_buffManager == null) { ChatLine("[RynthAi] Buff manager not ready (log in first)."); return; }
+        if (_buffManager == null) { ReplyFail("[RynthAi] Buff manager not ready (log in first)."); return; }
         _buffManager.RequestOneTouch(vital);   // runs on the pump's next heartbeat, says what it did
+        Reply.Answered();
     }
 
     // ── LootThisCont ──────────────────────────────────────────────────────────

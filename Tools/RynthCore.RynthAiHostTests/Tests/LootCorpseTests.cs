@@ -757,6 +757,7 @@ internal static class LootCorpseTests
         FakeHost.CastBusy = 0;
         TickFor(bot, retryWindowMs / 2);
         Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "the retry window counts from when the character is still");
+        // (Also past the 4 s answer wait from the send by now: R-20261029-122319-321f.)
         TickFor(bot, retryWindowMs);
         Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 2, "then one retry");
     }
@@ -765,6 +766,8 @@ internal static class LootCorpseTests
     // contents unknown to the client), 3 tries each, and every item on every corpse was skipped.
     // A pack that takes none of an item's tries now counts as full for a while: the item gets one
     // more round into another pack, and with none left looting stops with the pack-full message.
+    // 2026-10-29 (R-20261029-122319-321f): only the server's refusals mark a pack full, so the
+    // refusals are given here (unanswered tries: LootRetryTimingTests).
     private static void RefusingPackIsLeftOut()
     {
         var refusals = new RynthCore.Plugin.RynthAi.Loot.PackRefusals();
@@ -776,6 +779,7 @@ internal static class LootCorpseTests
         Check.False(refusals.IsRefused(8, 1), "an item landing there ends the hold");
 
         BaseWorld(corpsePositioned: true);
+        FakeHost.WeenieErrorCalls = true;   // the server's refusals (2026-10-29: only they mark a pack full)
         var host = FakeHost.Create(Player);
         var bot = new Bot(host);
         bot.Cache.OnCreateObject(Corpse);
@@ -785,10 +789,25 @@ internal static class LootCorpseTests
         bot.Cache.Tick();
         bot.P.OnViewObjectContents(Corpse);
 
-        // The main pack (the only destination here) never takes the gem: it stays on the corpse.
-        int retryWindowMs = bot.S.LootRetryTimeoutMs;
-        TickFor(bot, retryWindowMs * 4 + 600);
-        Check.True(FakeHost.ExternalMoves.Count(m => m.Id == Gem) >= 3, "three tries into the main pack");
+        // The main pack (the only destination here) never takes the gem: it stays on the corpse,
+        // and the server refuses each move once its pickup has run (~0.8 s: "Unable to put X into
+        // container" + InventoryServerSaveFailed with no error code).
+        int seen = 0;
+        var refuseAt = new List<long>();
+        long end = Environment.TickCount64 + 6000;
+        while (Environment.TickCount64 < end && !FakeHost.Logs.Any(l => l.Contains("no pack has a free slot")))
+        {
+            for (; seen < FakeHost.ExternalMoves.Count; seen++)
+                if (FakeHost.ExternalMoves[seen].Id == Gem) refuseAt.Add(Environment.TickCount64 + 800);
+            while (refuseAt.Count > 0 && Environment.TickCount64 >= refuseAt[0])
+            {
+                refuseAt.RemoveAt(0);
+                FakeHost.WeenieError(0, 0x00A0, Gem);
+            }
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 3, "three tries into the main pack, each after the last one's refusal");
         Check.True(FakeHost.ExternalMoves.Where(m => m.Id == Gem).All(m => m.Target == Player), "all into the main pack");
         Check.True(FakeHost.Logs.Any(l => l.Contains("took none of 3 tries") && l.Contains("trying another pack")), "the refusing pack is left out, said once");
         Check.True(FakeHost.Logs.Any(l => l.Contains("no pack has a free slot")), "no other pack: the corpse is left");
@@ -827,9 +846,10 @@ internal static class LootCorpseTests
             for (int i = 0; i < 100 && !FakeHost.ExternalMoves.Any(m => m.Id == Gem); i++) { t += 50; bot.Tick(BotActivity.Looting); Thread.Sleep(10); }
             Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "the pickup goes on the cast's UseDone");
 
-            // The item stays on the corpse (refused); the next cast is unanswered when a retry is due.
+            // The item stays on the corpse (no answer); the next cast is unanswered when a retry is
+            // due (after the answer wait, 2026-10-29: R-20261029-122319-321f).
             ActionPacer.Begin(host, PacedKind.Cast, 0, "Bloodstone Bolt I", "Combat", FakeHost.UseDoneSeq);
-            TickFor(bot, 1_500);
+            TickFor(bot, (int)RynthAiPlugin.PickupAnswerWaitMinMs + bot.S.LootRetryTimeoutMs + 500);
             Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "no retry while a cast is unanswered");
             FakeHost.UseDone(0);
             TickFor(bot, 300);

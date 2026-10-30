@@ -6,6 +6,7 @@ using System.Text.Json;
 using RynthCore.Plugin.RynthSort.Sorting;
 using RynthCore.Plugin.RynthSort.Ui;
 using RynthCore.Plugin.RynthSort.Views;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginCore;
 
 namespace RynthCore.Plugin.RynthSort;
@@ -52,7 +53,6 @@ public sealed class RynthSortPlugin : RynthPluginBase
     private string _character = string.Empty;
     private long _saveDueMs;
     private bool _vendorOpen;
-    private bool _noUiLogged;
     private bool _backupOnSave;
     private readonly List<string> _warnings = new();
     private volatile int _autoState = -1;
@@ -75,6 +75,7 @@ public sealed class RynthSortPlugin : RynthPluginBase
 
     public override int Initialize()
     {
+        _reply = new CommandReply("[RynthSort]", (t, c) => Host.WriteToChat(t, c), t => Host.Log(t));
         _ui.Log = msg => Host.Log(msg);
         _world = new HostSortWorld(Host, _reader, _loot, () => _vendorOpen);
         _sort.SettingsChanged = RequestSave;
@@ -144,49 +145,50 @@ public sealed class RynthSortPlugin : RynthPluginBase
 
     private void RunCommand(string arg)
     {
-        string[] words = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        string word = words.Length > 0 ? words[0].ToLowerInvariant() : string.Empty;
-        if (word.Length > 0 && !_identityKnown && word is not ("help" or "?"))
+        // Every /rsort answers in chat (2026-10-28, SortCommand.cs; Plugins/Shared/CommandReply.cs). RynthSort
+        // can't tell a typed /rsort from a meta's or RynthAi's /ub packsort, so each one does; only the
+        // dashboard's "on quiet" / "off quiet" (it shows the state itself) is logged instead.
+        SortCommand c = SortCommand.Parse(arg);
+        if (c.NeedsLogin && !_identityKnown)
         {
-            Print("Log in first.");
+            PrintFail("Log in first.");
             return;
         }
-        switch (word)
+        switch (c.Verb)
         {
-            case "":
-                if (_window != null) { _window.Visible = !_window.Visible; _window.NeedsPass = true; }
-                if (_window != null && _window.Visible && !Host.HasUi && !_noUiLogged)
+            case SortVerb.Window:
+                if (_window != null)
                 {
-                    _noUiLogged = true;
-                    Print("This RynthCore engine can't show plugin windows (it needs script windows, API v71, with ImGui on). Sorting still runs: /rsort on|off|now|tidy|clean|unpack.");
+                    _window.Visible = !_window.Visible; _window.NeedsPass = true;
+                    if (Host.HasUi) Print(SortCommand.Window(_window.Visible));
+                    else PrintFail(SortCommand.NoWindows);
                 }
                 break;
-            case "on":
-            case "off":
-                _sort.SetAuto(word == "on");
-                // "quiet": the dashboard's toggle, which shows the state itself.
-                if (!(words.Length > 1 && words[1].Equals("quiet", StringComparison.OrdinalIgnoreCase)))
-                    Print("Auto-sort " + word);
+            case SortVerb.On:
+            case SortVerb.Off:
+                _sort.SetAuto(c.Verb == SortVerb.On);
+                _reply.Ok("Auto-sort " + (c.Verb == SortVerb.On ? "on" : "off"), quiet: c.Quiet);
                 break;
-            case "now":
-            case "tidy":
+            case SortVerb.Now:
                 _sort.StartJob(SortScope.All);
+                Print(SortCommand.Started(c.Verb));
                 break;
-            case "clean":
+            case SortVerb.Clean:
                 _sort.StartJob(SortScope.Clean);
+                Print(SortCommand.Started(c.Verb));
                 break;
-            case "unpack":
-            {
-                int? n = words.Length > 1 && int.TryParse(words[1], out int p) && p > 0 ? p : null;
-                _sort.StartUnpack(n);
-                Print((n != null ? $"Emptying pack {n}" : "Emptying your side packs") + " into the main pack; auto-sort is off (/rsort on when done).");
+            case SortVerb.Unpack:
+                _sort.StartUnpack(c.Pack);
+                Print(SortCommand.Unpacking(c.Pack));
                 break;
-            }
-            case "status":
+            case SortVerb.Status:
                 PrintStatus();
                 break;
+            case SortVerb.Help:
+                Print(SortCommand.Usage);
+                break;
             default:
-                Print("/rsort [on | off | now | tidy | clean | unpack [pack] | status]");
+                PrintFail(SortCommand.Unknown(c.Word));
                 break;
         }
         if (_window != null) _window.NeedsPass = true;
@@ -199,11 +201,13 @@ public sealed class RynthSortPlugin : RynthPluginBase
               + $"{v.Packs.Count} side packs, main pack {v.MainUsed}/{v.MainCapacity}; moved {_sort.Moved}, failed {_sort.Failed} this session.");
     }
 
-    private void Print(string text)
-    {
-        if (!Host.WriteToChat("[RynthSort] " + text, 1))
-            Host.Log("[RynthSort] " + text);
-    }
+    // Chat lines wait in the shared reply queue (the host drops a line within 100 ms of another
+    // plugin's); the tick writes them.
+    private CommandReply _reply = null!;
+
+    private void Print(string text) => _reply.Ok(text);
+
+    private void PrintFail(string text) => _reply.Fail(text);
 
     // ── Tick ────────────────────────────────────────────────────────────────
 
@@ -211,6 +215,7 @@ public sealed class RynthSortPlugin : RynthPluginBase
     {
         long now = Environment.TickCount64;
         while (_commands.TryDequeue(out string? cmd)) RunCommand(cmd);
+        _reply.Flush();
         _ui.Poll(Host);
 
         if (_inWorld)

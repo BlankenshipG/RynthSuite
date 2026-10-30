@@ -18,7 +18,9 @@ public static unsafe class PluginExports
     // "RynthAi.Activity" v1 for RynthSort (what the bot is doing, so pack moves stay out of its way),
     // "RynthAi.Combat" v1 for RynthLua (a script choosing attack and heal spells, Shared/RynthAiCombatApi.cs),
     // "RynthAi.Hub" v1 for RynthILT (the Mini Remote hosting its ILT tabs, /myquests, spell names, loot
-    // matching, the .usd importer, session stats; Shared/RynthAiHubApi.cs, HubInterface.cs).
+    // matching, the .usd importer, session stats; Shared/RynthAiHubApi.cs, HubInterface.cs),
+    // "RynthAi.Yield" v1 for RynthDefective (the player's key press goes before RynthAi's next action;
+    // Shared/RynthAiYieldApi.cs, YieldInterface.cs).
     // Fixed signature: void* (const char* iface, uint version).
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginQueryInterface", CallConvs = new[] { typeof(CallConvCdecl) })]
     private static IntPtr QueryInterface(IntPtr ifaceAnsi, uint version)
@@ -30,6 +32,7 @@ public static unsafe class PluginExports
             if (table == IntPtr.Zero) table = StatusInterface.Query(iface, version);
             if (table == IntPtr.Zero) table = ActivityInterface.Query(iface, version);
             if (table == IntPtr.Zero) table = HubInterface.Query(iface, version);
+            if (table == IntPtr.Zero) table = YieldInterface.Query(iface, version);
             return table != IntPtr.Zero ? table : CombatHookInterface.Query(iface, version);
         }
         catch
@@ -53,6 +56,8 @@ public static unsafe class PluginExports
         catch (Exception ex) { LogShutdownError(plugin, "StatusInterface.Release", ex); }
         try { ActivityInterface.Release(); }
         catch (Exception ex) { LogShutdownError(plugin, "ActivityInterface.Release", ex); }
+        try { YieldInterface.Release(); }
+        catch (Exception ex) { LogShutdownError(plugin, "YieldInterface.Release", ex); }
         try { HubInterface.Release(); }   // Version 0; the table stays (RynthILT's render thread may hold it)
         catch (Exception ex) { LogShutdownError(plugin, "HubInterface.Release", ex); }
         try { CombatHookInterface.Shutdown(); }   // the hook goes native at once (RynthLua re-claims after a reload)

@@ -7,6 +7,11 @@
 //  this plugin's slots. On an engine without v90's shortcuts the old script
 //  window bar stays.
 //
+//  Independent bar (DefSettings.IndependentBar, 2026-10-27): every slot is this
+//  plugin's own (ShortcutBar/BarMapping.cs): AC's 18 aren't shown or mapped.
+//  A healing kit in one of AC's slots is used on yourself by this plugin when
+//  the slot is clicked (DefSession.UseRetailSlot).
+//
 //  The tick: the window's clicks (queued from the render thread), the snapshot
 //  it draws (4 times a second while it shows).
 // ============================================================================
@@ -59,7 +64,12 @@ public sealed partial class RynthDefectivePlugin : IBarActions
             "\",\"icon\":\"\\u" + ((int)RynthIcons.Crosshair[0]).ToString("X4", CultureInfo.InvariantCulture) +
             "\",\"width\":280,\"height\":46,\"minWidth\":120,\"minHeight\":24,\"bar\":false,\"edgeToEdge\":true," +
             "\"chrome\":\"none\",\"fitHeight\":true,\"corner\":\"top\",\"scale\":\"draw\"}";
-        return "{\"version\":1,\"windows\":[" + bar + panels + selection + "]}";
+        // Where your corpses are (a bar button of its own).
+        string corpses = ",{\"id\":\"corpses\",\"title\":\"" + Corpses.CorpsesWindow.Title + "\",\"surface\":\"" + CorpsesSurface +
+            "\",\"icon\":\"\\u" + ((int)RynthIcons.Skull[0]).ToString("X4", CultureInfo.InvariantCulture) +
+            "\",\"width\":290,\"height\":80,\"minWidth\":140,\"minHeight\":30,\"bar\":true,\"edgeToEdge\":true," +
+            "\"chrome\":\"none\",\"fitHeight\":true,\"scale\":\"draw\"}";
+        return "{\"version\":1,\"windows\":[" + bar + panels + selection + corpses + "]}";
     }
 
     /// <summary>RynthPluginRenderEmbed "window:panels". 1 drawn, 0 not ready, -2 failed (three in a row). Render thread.</summary>
@@ -122,7 +132,58 @@ public sealed partial class RynthDefectivePlugin : IBarActions
         if (_barActions.Count < 32) _barActions.Enqueue(action);
     }
 
-    private static bool IsRetail(int number) => number <= DefSettings.RetailSlots;
+    /// <summary>Bar slot <paramref name="number"/> is one of AC's 18 (never on an independent bar).</summary>
+    private bool IsRetail(int number) => BarMapping.IsRetail(number, _session.Settings.IndependentBar);
+
+    /// <summary>RynthDefective's own slot bar slot <paramref name="number"/> is (BarMapping).</summary>
+    private int OwnOf(int number) => BarMapping.OwnSlot(number, _session.Settings.IndependentBar);
+
+    private readonly uint[] _retailIds = new uint[DefSettings.RetailSlots], _retailSpells = new uint[DefSettings.RetailSlots];
+
+    /// <summary>The object in AC's slot <paramref name="number"/> (1-18) now; 0 = empty, a spell, or out of the world.</summary>
+    private uint RetailObject(int number) =>
+        Host.GetShortcuts(_retailIds, _retailSpells) >= number && number >= 1 ? _retailIds[number - 1] : 0;
+
+    /// <summary>AC's 18 slots for the session (the independent bar's copy).</summary>
+    private bool ReadRetail(uint[] ids, uint[] spells) => Host.GetShortcuts(ids, spells) >= DefSettings.RetailSlots;
+
+    // ── Keys of RynthDefective's own slots: the one seam ─────────────────────
+    //
+    // Every key bound to or taken off one of RynthDefective's own slots from the bar goes through
+    // these three: the bar's "Add a key" / "Remove" (usual bar slots past 18, every slot of an
+    // independent bar) and the keys the independent bar's copy moves with their slots. On the usual
+    // bar they are BindActionKey's command keys: the key also comes off AC's own actions in AC's
+    // keymap (so no key shows on two slots), which rewrites the keymap file and every client follows.
+    // An independent bar's keys are engine hotkeys only (BindCommandKeyOnly, plugin API v92): AC's
+    // keymap is never touched and no client changes its keys; the engine's hotkey takes the key
+    // before AC sees it. (/rdef bind and /rdef unbind type "/rc hotkey add|remove", unchanged.)
+
+    /// <summary>What binding <paramref name="key"/> to own slot <paramref name="own"/> would take from others.
+    /// On an independent bar AC's actions keep the key in AC's keymap, but the hotkey still takes it
+    /// first, so naming them is still the right warning.</summary>
+    private RynthKeyCheck CheckOwnSlotKey(int own, string key, out string message) =>
+        Host.CheckActionKey(DefCommandParser.UseCommand(own), key, out message);
+
+    /// <summary>Gives own slot <paramref name="own"/> ("/rdef use N") the key <paramref name="key"/>; it comes off whatever had it.</summary>
+    private bool BindOwnSlotKey(int own, string key, out string message) =>
+        _session.Settings.IndependentBar
+            ? Host.BindCommandKeyOnly(DefCommandParser.UseCommand(own), key, out message)
+            : Host.BindActionKey(DefCommandParser.UseCommand(own), key, out message);
+
+    /// <summary>Takes <paramref name="key"/> off own slot <paramref name="own"/>.</summary>
+    private bool UnbindOwnSlotKey(int own, string key, out string message) =>
+        _session.Settings.IndependentBar
+            ? Host.UnbindCommandKeyOnly(DefCommandParser.UseCommand(own), key, out message)
+            : Host.UnbindActionKey(DefCommandParser.UseCommand(own), key, out message);
+
+    RynthKeyCheck IBarActions.CheckKey(BarSlot slot, string key, out string message) =>
+        slot.Retail ? Host.CheckActionKey("UseQuickSlot_" + slot.Number, key, out message) : CheckOwnSlotKey(slot.Own, key, out message);
+
+    bool IBarActions.BindKey(BarSlot slot, string key, out string message) =>
+        slot.Retail ? Host.BindActionKey("UseQuickSlot_" + slot.Number, key, out message) : BindOwnSlotKey(slot.Own, key, out message);
+
+    bool IBarActions.UnbindKey(BarSlot slot, string key, out string message) =>
+        slot.Retail ? Host.UnbindActionKey("UseQuickSlot_" + slot.Number, key, out message) : UnbindOwnSlotKey(slot.Own, key, out message);
 
     // ── IBarActions (render thread: queue only) ─────────────────────────────
 
@@ -130,10 +191,15 @@ public sealed partial class RynthDefectivePlugin : IBarActions
     {
         if (IsRetail(number))
         {
+            // A healing kit in AC's slot: used on yourself here (the use controller, one touch, nothing
+            // selected), not handed to AC. Everything else is AC's own toolbar use. This is the bar's
+            // click only: the slot's key (AC's UseQuickSlot_N) is read by AC itself and still goes
+            // straight to AC, unchanged.
+            if (_session.UseRetailSlot(number, RetailObject(number))) return;
             if (!Host.ShortcutAction(RynthShortcutOp.Use, number - 1)) _session.SetStatus($"Slot {number} can't be used now.", warning: true);
             return;
         }
-        string? problem = _session.UseSlot(number - DefSettings.RetailSlots);
+        string? problem = _session.UseSlot(OwnOf(number));
         if (problem != null) { _session.SetStatus(problem, warning: true); Print(problem); }
     });
 
@@ -147,7 +213,7 @@ public sealed partial class RynthDefectivePlugin : IBarActions
             _nextBarBuildMs = 0;
             return;
         }
-        Print(_session.SetFromSelected(number - DefSettings.RetailSlots));
+        Print(_session.SetFromSelected(OwnOf(number)));
         _nextBarBuildMs = 0;
     });
 
@@ -159,7 +225,7 @@ public sealed partial class RynthDefectivePlugin : IBarActions
             _nextBarBuildMs = 0;
             return;
         }
-        Print(_session.ClearSlot(number - DefSettings.RetailSlots));
+        Print(_session.ClearSlot(OwnOf(number)));
         _nextBarBuildMs = 0;
     });
 
@@ -170,7 +236,15 @@ public sealed partial class RynthDefectivePlugin : IBarActions
             // The retail toolbar's own "make a shortcut": AC checks the item (and says why not).
             if (!Host.ShortcutAction(RynthShortcutOp.Set, number - 1, objectId)) Print($"Slot {number} can't be changed now.");
         }
-        else Print(_session.SetFromId(number - DefSettings.RetailSlots, objectId));
+        else Print(_session.SetFromId(OwnOf(number), objectId));
+        _nextBarBuildMs = 0;
+    });
+
+    public void SetSpell(int number, uint spellId) => QueueBar(() =>
+    {
+        // The game's own slots take spells from the game's spellbook (drag one onto the retail toolbar).
+        if (IsRetail(number)) { Print($"Slot {number} is the game's own: drag the spell onto it from the game's spellbook."); return; }
+        Print(_session.SetSpell(OwnOf(number), spellId));
         _nextBarBuildMs = 0;
     });
 
@@ -190,6 +264,8 @@ public sealed partial class RynthDefectivePlugin : IBarActions
     });
 
     public void ShowWeapons() => QueueBar(() => ShowPicker(true));
+
+    public void ShowSettings() => QueueBar(() => ShowSettingsWindow(true));
 
     public void Hide() => QueueBar(() => Host.SetPanelOpen(ShortcutBarWindow.Title, RynthPanelOpen.Close));
 }

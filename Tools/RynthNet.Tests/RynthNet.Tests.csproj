@@ -24,6 +24,8 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNet\Characters\CharactersRows.cs" Link="RynthNet\CharactersRows.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNet\Characters\AtlasNames.cs" Link="RynthNet\AtlasNames.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNet\Characters\CharactersManifest.cs" Link="RynthNet\CharactersManifest.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNet\CommandParser.cs" Link="RynthNet\CommandParser.cs" />
+    <Compile Include="..\..\Plugins\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthUi\RynthIcons.cs" Link="Shared\RynthIcons.cs" />
   </ItemGroup>
 

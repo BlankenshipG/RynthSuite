@@ -1,6 +1,7 @@
 using System;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthOracle.Data;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginSdk;
 
 namespace RynthCore.Plugin.RynthOracle;
@@ -95,11 +96,24 @@ internal sealed class OracleContext
 
     public Func<uint, int> Props => id => Character.Int(Host, id);
 
+    /// <summary>
+    /// The plugin's chat lines, queued and written by the tick (Plugins/Shared/CommandReply.cs: the host
+    /// drops a line within 100 ms of another plugin's, so a quest's several lines used to go missing).
+    /// Null before Initialize (and in the offline tests, which use <see cref="PrintSink"/>).
+    /// </summary>
+    public CommandReply? Reply;
+
     /// <summary>A line in the player's chat window only (nothing is sent to the server).</summary>
-    public void Print(string text)
+    public void Print(string text) => Print(text, ok: true);
+
+    /// <summary>A line saying a command didn't work (the failure colour).</summary>
+    public void PrintFail(string text) => Print(text, ok: false);
+
+    private void Print(string text, bool ok)
     {
         if (PrintSink != null) { PrintSink(text); return; }
-        if (!Host.WriteToChat("[RynthOracle] " + text, 1))
+        if (Reply != null) { Reply.Say(ok, text); return; }
+        if (!Host.WriteToChat("[RynthOracle] " + text, ok ? CommandReply.OkChatType : CommandReply.FailChatType))
             Host.Log("[RynthOracle] " + text);
     }
 

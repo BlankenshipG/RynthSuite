@@ -1065,6 +1065,10 @@ internal sealed partial class LegacyDashboardRenderer
             // Same for kite (2026-10-16): an older Monsters panel omits Kite and would wipe PullAway.
             if (json.IndexOf("\"Kite\"", StringComparison.OrdinalIgnoreCase) < 0)
                 CarryKite(_settings.MonsterRules, incoming);
+            // And the Void debuffs (2026-10-27): an engine without them would turn them all off.
+            // The colon makes it the key: a typed-in debuff "Corrosion" is a value.
+            if (json.IndexOf("\"Corrosion\":", StringComparison.OrdinalIgnoreCase) < 0)
+                CarryVoidDebuffs(_settings.MonsterRules, incoming);
 
             _settings.MonsterRules = incoming;
             SaveMonstersFile();
@@ -1095,6 +1099,24 @@ internal sealed partial class LegacyDashboardRenderer
                 string.Equals(o.Name, r.Name, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(o.MatchExpression ?? "", r.MatchExpression ?? "", StringComparison.OrdinalIgnoreCase));
             if (old != null) r.Kite = old.Kite;
+        }
+    }
+
+    /// <summary>Copies the five Void debuff switches from <paramref name="current"/> onto the
+    /// matching rules of <paramref name="incoming"/> (same Name and MatchExpression, case-insensitive).</summary>
+    internal static void CarryVoidDebuffs(List<MonsterRule> current, List<MonsterRule> incoming)
+    {
+        foreach (var r in incoming)
+        {
+            var old = current.FirstOrDefault(o =>
+                string.Equals(o.Name, r.Name, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(o.MatchExpression ?? "", r.MatchExpression ?? "", StringComparison.OrdinalIgnoreCase));
+            if (old == null) continue;
+            r.Corrosion = old.Corrosion;
+            r.Corruption = old.Corruption;
+            r.DestructiveCurse = old.DestructiveCurse;
+            r.WeakeningCurse = old.WeakeningCurse;
+            r.FesteringCurse = old.FesteringCurse;
         }
     }
 
@@ -2037,7 +2059,8 @@ internal sealed partial class LegacyDashboardRenderer
         dst.SkipUnusableBuffs        = tmp.SkipUnusableBuffs;
         dst.UseFellowshipBuffs       = tmp.UseFellowshipBuffs;
         dst.DisabledBuffs            = tmp.DisabledBuffs;
-        dst.BlacklistAttempts             = tmp.BlacklistAttempts;
+        dst.BuffShield               = tmp.BuffShield;
+        dst.BlacklistAttempts           = tmp.BlacklistAttempts;
         dst.BlacklistTimeoutSec           = tmp.BlacklistTimeoutSec;
         // 0 is never meant (every UI floors it at 250+) and is what the Settings-panel bug
         // saved into profiles: it judges each cast before its damage can land.
@@ -2852,6 +2875,7 @@ internal sealed partial class LegacyDashboardRenderer
             switch (cmd.Cmd)
             {
                 case "startNav":
+                    _settings.RearmFinishedNavRoute();   // the player's Start Navigation re-runs a finished Once route
                     _settings.IsMacroRunning  = true;
                     _settings.EnableNavigation = true;
                     if (_settings.BotAction != "Navigating")
@@ -3184,7 +3208,12 @@ internal sealed partial class LegacyDashboardRenderer
         {
             case 0: _settings.EnableCombat = enabled; break;
             case 1: _settings.EnableBuffing = enabled; break;
-            case 2: _settings.EnableNavigation = enabled; break;
+            case 2:
+                // The player switching nav on over a finished Once route re-runs it (a meta's
+                // enablenav doesn't, NavigationEngine.HandleRouteEnd).
+                if (enabled && !_settings.EnableNavigation) _settings.RearmFinishedNavRoute();
+                _settings.EnableNavigation = enabled;
+                break;
             case 3: _settings.EnableLooting = enabled; break;
             case 4: _settings.EnableMeta = enabled; break;
         }

@@ -5,6 +5,7 @@ using System.Linq;
 using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 using RynthCore.Plugin.RynthOracle.Views;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginCore;
 
 namespace RynthCore.Plugin.RynthOracle;
@@ -56,7 +57,6 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private int _stampFlagRevision = -1, _stampIltRevision = -1;
     // RynthCore's server list (ServerStateClient.Revision) last applied to the server identity.
     private int _seenServerStateRevision = -1;
-    private bool _noUiLogged;
     private string? _catalogKey;          // what the catalog was loaded for (QuestPackSource.Key; "" = retail only)
     private int _seenPackRevision = -1;   // the active server plugin's quest pack (ServerQuestPackClient.Revision)
     private int _titleCount = -2;
@@ -65,6 +65,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     public override int Initialize()
     {
         _c.Host = Host;
+        _c.Reply = new CommandReply("[RynthOracle]", (t, c) => Host.WriteToChat(t, c), t => Host.Log(t));
         _c.Settings.Load();
         _c.RequestQuests = RequestQuests;
         _c.RereadCharacter = RereadCharacter;
@@ -391,112 +392,69 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
     private void RunCommand(string arg)
     {
-        switch (arg)
+        // Every /ro answers in chat (2026-10-28, OracleCommand.cs; Plugins/Shared/CommandReply.cs). RynthOracle
+        // can't tell a typed /ro from a meta's or another plugin's menu (they all come through chat), so
+        // each one does.
+        OracleCommand c = OracleCommand.Parse(arg);
+        // A window shown: says so, or (an engine without plugin windows) why nothing shows.
+        void Shown(string text)
         {
-            case "":
-                if (_main != null) { _main.Visible = !_main.Visible; _main.NeedsPass = true; }
+            if (Host.HasUi) _c.Print(text);
+            else _c.PrintFail(OracleCommand.NoWindows);
+        }
+        switch (c.Verb)
+        {
+            case OracleVerb.Window:
+                if (_main != null) { _main.Visible = !_main.Visible; _main.NeedsPass = true; Shown(OracleCommand.Shown("Oracle window", _main.Visible)); }
                 break;
-            case "void":
-                if (_void != null) { _void.Visible = !_void.Visible; _void.NeedsPass = true; }
+            case OracleVerb.Void:
+                if (_void != null) { _void.Visible = !_void.Visible; _void.NeedsPass = true; Shown(OracleCommand.Shown("Void window", _void.Visible)); }
                 break;
-            case "timers":
-            case "timer":
-                if (_timers != null) SetQuestTimers(!_timers.Visible);
+            case OracleVerb.Timers:
+                if (_timers != null) { SetQuestTimers(!_timers.Visible); Shown(OracleCommand.Shown("Quest Timers window", _timers.Visible)); }
                 break;
-            case "quests":
-            case "refresh":
-                RequestQuests();
-                break;
-            case "fellowship":
-            case "fellow":
-            case "fship":
-                // The main window on its Fellowship tab (RynthCore's Char menu and RynthAi's Mini Remote use this).
-                ShowTab(OracleView.TabFellowship);
-                break;
-            case "character":
-            case "char":
-                // The Character tab: the character overview and RynthAi's session.
-                // RynthAi, the server plugins and RynthCore's menus link here; it shows, never toggles off.
-                ShowTab(OracleView.TabCharacter);
-                break;
-            case "legendary":
-            case "legend":
-            case "john":
-                // John's 30 Legendary Key quests: the Quests tab's Legendary rows.
-                ShowTrackers(QuestKind.Legendary);
-                break;
-            case "markers":
-            case "marker":
-                // The 100 exploration markers: the Quests tab's marker rows (the old Markers tab).
-                ShowTrackers(QuestKind.Marker);
-                break;
-            case "dynamic":
-            case "stamps":
-            case "dyn":
-            case "guardian":
-            case "guardians":
+            case OracleVerb.Quests:
             {
-                // Infinite Leaftide's trackers: the Dynamic Stamps and RynthILT's Temple guardians.
-                bool guardians = arg is "guardian" or "guardians";
-                if (!_c.Server.IsIlt)
-                {
-                    _c.Print((guardians ? "The Temple guardians are" : "Dynamic stamps are")
-                             + " an Infinite Leaftide quest line; the active server isn't Infinite Leaftide.");
-                    ShowTrackers(null);
-                }
-                else ShowTrackers(guardians ? QuestKind.Guardian : QuestKind.Dynamic);
+                bool sent = RequestQuests();
+                var (ok, text) = OracleCommand.Quests(_c.InWorld, sent, _c.Flags.ThrottleSecondsLeft(Environment.TickCount64));
+                if (ok) _c.Print(text); else _c.PrintFail(text);
                 break;
             }
-            case "trackers":
-                // Every tracker: the Legendary Key quests and the exploration markers. A server's own
-                // trackers and tabs are its server plugin's pages (since 2026-10-21).
-                ShowTrackers(null);
+            case OracleVerb.Tab:
+                // RynthAi, the server plugins and RynthCore's menus link to these; they show, never toggle off.
+                ShowTab(c.Tab);
+                Shown(OracleCommand.OnTab(c.Tab));
                 break;
-            case "gear":
-            case "overlap":
-                // The Gear tab: spell overlap on the worn gear, wards and banes, ratings (any server).
-                ShowTab(OracleView.TabGear);
+            case OracleVerb.Trackers:
+                // A server's own trackers and tabs are its server plugin's pages (since 2026-10-21).
+                if (c.Trackers is QuestKind.Dynamic or QuestKind.Guardian && !_c.Server.IsIlt)
+                {
+                    // Infinite Leaftide's trackers (the Dynamic Stamps, RynthILT's Temple guardians).
+                    _c.PrintFail((c.Trackers == QuestKind.Guardian ? "The Temple guardians are" : "Dynamic stamps are")
+                                 + " an Infinite Leaftide quest line; the active server isn't Infinite Leaftide.");
+                    ShowTrackers(null);
+                    break;
+                }
+                ShowTrackers(c.Trackers);
+                Shown(OracleCommand.OnTrackers(c.Trackers));
                 break;
-            case "skills":
-            case "skill":
-                // The Skills tab: RynthCore's skills panel (raise and train) inside this window.
-                ShowTab(OracleView.TabSkills);
-                break;
-            case "attributes":
-            case "attrs":
-            case "attribute":
-            case "vitals":
-                ShowTab(OracleView.TabAttributes);
-                break;
-            case "progress":
-            case "progression":
-                ShowTab(OracleView.TabProgress);
-                break;
-            case "status":
+            case OracleVerb.Status:
                 string titles = _c.TitlesKnown ? $", {_c.EarnedTitles.Count} titles held" : "";
                 _c.Print($"Server: {_c.Server.DisplayName} ({_c.Server.Source}). "
                          + $"{_c.Flags.Flags.Count} quest flags read, {_c.Catalog.RetailCount} retail quests{PackText()}, {_c.Void.Dots.Count} Void spells tracked{titles}.");
                 break;
-            case "about":
+            case OracleVerb.About:
                 // The About tab (settings, the server RynthCore says this is, the quest list).
                 _c.Print("Based on Oracle of Dereth by Advis Eveldan - thank you! github.com/advis61/OracleOfDereth (MIT)");
-                ShowTab(OracleView.TabAbout);
+                ShowTab(c.Tab);
+                if (!Host.HasUi) _c.PrintFail(OracleCommand.NoWindows);
+                break;
+            case OracleVerb.Help:
+                _c.Print(OracleCommand.Usage);
                 break;
             default:
-                _c.Print("Commands: /ro (window), /ro character (Character tab: status, session), "
-                         + "/ro gear (Gear tab: spell overlap, wards and banes, ratings), /ro skills|attributes|progress (those tabs), /ro void (Void window), "
-                         + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), "
-                         + "/ro trackers (Quests tab, trackers only), /ro legendary (John's 30 key quests), /ro markers, "
-                         + "/ro quests (read quest flags), /ro status, "
-                         + "/ro about (About tab: settings, server, quest list). A server's own pages are its server plugin's (/rserver).");
+                _c.PrintFail(OracleCommand.Unknown(c.Word));
                 break;
-        }
-        if (arg is "" or "void" or "timers" or "timer" or "fellowship" or "fellow" or "fship" or "character" or "char"
-                or "gear" or "overlap" or "skills" or "skill" or "attributes" or "attrs" or "attribute" or "vitals" or "progress" or "progression"
-                or "legendary" or "legend" or "john" or "markers" or "marker" or "trackers" or "about" && !Host.HasUi && !_noUiLogged)
-        {
-            _noUiLogged = true;
-            _c.Print("This RynthCore engine can't show plugin windows (it needs script windows, API v71, with ImGui on). /ro status still works.");
         }
     }
 
@@ -569,6 +527,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.UtcNow = DateTime.UtcNow;
 
         while (_commands.TryDequeue(out string? cmd)) RunCommand(cmd);
+        _c.Reply?.Flush();
 
         _ui.Poll(Host);
         TickData(now);

@@ -769,8 +769,9 @@ internal sealed class NavigationEngine
     /// Points the route at the waypoint nearest the player (macro start). Circular
     /// and Linear routes pick from the whole route; a Once route only from the
     /// current waypoint onward, so finished steps (a recall, a portal) aren't
-    /// repeated. Only plain waypoints are candidates; if the current one is a
-    /// Recall/Portal/Chat/Pause step it is kept. With <c>NavResumeNearest</c> off the
+    /// repeated, and a finished Once route stays finished. Only plain waypoints are
+    /// candidates; if the current one is a Recall/Portal/Chat/Pause step it is kept.
+    /// A Linear route keeps its direction. With <c>NavResumeNearest</c> off the
     /// route keeps its last waypoint, unless <paramref name="always"/> (hazard escapes
     /// and corpse runs, which leave the route behind).
     /// </summary>
@@ -787,6 +788,9 @@ internal sealed class NavigationEngine
         var route = _settings.CurrentRoute;
         if (route == null || route.Points.Count == 0) return;
         if (route.RouteType == NavRouteType.Follow) return;
+        // A finished Once route (index left past its end) is done: picking from [0] here
+        // used to turn it back on at the nearest point, so a stop + start re-ran it.
+        if (_settings.NavRouteFinished()) return;
         if (!TryGetPos(out double ns, out double ew)) return;
 
         int cur = _settings.ActiveNavIndex;
@@ -926,6 +930,23 @@ internal sealed class NavigationEngine
         _watchdogNs     = double.NaN;
         _watchdogEw     = double.NaN;
         _hasGoodHeading = false;
+    }
+
+    /// <summary>
+    /// /ra nav restart: the loaded route starts over from its first point, as when it was
+    /// loaded with NavResumeNearest off (a Linear route heading out again, a finished Once
+    /// route running again). Nav is switched on; the macro is left as it is. False (nothing
+    /// done) with no waypoints to walk (none loaded, or a Follow route).
+    /// </summary>
+    public bool RestartRoute()
+    {
+        var route = _settings.CurrentRoute;
+        if (route == null || route.Points.Count == 0 || route.RouteType == NavRouteType.Follow) return false;
+        ResetRouteState();
+        _settings.ActiveNavIndex   = 0;
+        _settings.EnableNavigation = true;
+        _host.Log($"Nav: route restarted from [0] ({route.RouteType}, {route.Points.Count} pts)");
+        return true;
     }
 
     /// <summary>
@@ -1460,14 +1481,17 @@ internal sealed class NavigationEngine
     /// A finite (Once) route ran off its last point: stop and disable nav, but leave
     /// the points intact. This used to <c>Points.Clear()</c> the in-memory route, so
     /// re-enabling nav was a silent no-op until the profile was reloaded
-    /// (2026-06-03 audit P2). The index is left past the end; re-enabling nav lands
-    /// in <see cref="HandleRouteEnd"/>, which rewinds it for a genuine re-run.
+    /// (2026-06-03 audit P2). The index is left past the end, which marks the route
+    /// finished (<see cref="LegacyUiSettings.NavRouteFinished"/>): it stays finished
+    /// over a macro stop/start and a meta turning nav on, and runs again when it is
+    /// loaded again, edited, or restarted (/ra nav restart, or the player's Nav switch /
+    /// Start Navigation button, <see cref="LegacyUiSettings.RearmFinishedNavRoute"/>).
     /// </summary>
     private void CompleteOnceRoute(NavRouteParser route)
     {
         _settings.EnableNavigation = false;
         StopMovement();
-        _host.Log($"Nav: Once route complete ({route.Points.Count} pts) — nav disabled, route retained for re-run");
+        _host.Log($"Nav: Once route complete ({route.Points.Count} pts) — nav disabled, route retained (load it again or /ra nav restart to re-run)");
     }
 
     private void HandleRouteEnd(NavRouteParser route)
@@ -1478,16 +1502,19 @@ internal sealed class NavigationEngine
             return;
         }
 
-        // Nav was re-enabled on a finished Once route (CompleteOnceRoute leaves the
-        // index past the end). Rewind so the re-run actually walks instead of
-        // silently doing nothing. Cannot loop: completion always disables nav, and
-        // Tick returns early while it is disabled.
-        if (route.RouteType == NavRouteType.Once
-            && _settings.ActiveNavIndex >= route.Points.Count
-            && route.Points.Count > 0)
+        // Nav was switched on over a finished Once route (CompleteOnceRoute leaves the
+        // index past the end). This used to rewind it to [0], so anything that turned nav
+        // on re-ran the route: a meta's "/vt opt set enablenav true" replayed by a macro
+        // start, an expression. It stays finished, as a finished VTank Once route (its
+        // points used up) does; the player's Nav switch / Start Navigation button and
+        // /ra nav restart rewind it before nav gets here. Nav goes off again so the
+        // arbiter doesn't hold "Navigating" (above combat with BoostNavPriority) for a
+        // route with nothing left to walk.
+        if (_settings.NavRouteFinished())
         {
-            _host.Log("Nav: Once route re-armed — restarting from point [0]");
-            _settings.ActiveNavIndex = 0;
+            _settings.EnableNavigation = false;
+            StopMovement();
+            _host.Log($"Nav: the Once route is finished ({route.Points.Count} pts) — nav stays off; load it again or /ra nav restart to re-run it");
             return;
         }
 

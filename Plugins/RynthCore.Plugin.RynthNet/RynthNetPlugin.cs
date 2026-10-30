@@ -17,6 +17,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using RynthCore.Plugin.RynthNet.Transport;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginCore;
 
 namespace RynthCore.Plugin.RynthNet;
@@ -58,6 +59,7 @@ public sealed partial class RynthNetPlugin : RynthPluginBase
 
     public override int Initialize()
     {
+        _ = Reply;
         // The Characters window draws with ImGui.NET bound to the engine's cimgui, in the engine's look.
         RynthCore.Plugin.Shared.ImGuiNativeBinding.Ensure(msg => Host.Log("[RynthNet] " + msg));
         RynthCore.Plugin.Shared.RynthUi.RynthUi.Init(Host);
@@ -153,6 +155,7 @@ public sealed partial class RynthNetPlugin : RynthPluginBase
 
     public override void OnTick()
     {
+        Reply.Flush();
         NetNode? node = _node;
         if (node == null) return;
         long now = NetNode.NowMs;
@@ -184,7 +187,7 @@ public sealed partial class RynthNetPlugin : RynthPluginBase
             // A typed /ub bc: RynthAi, when loaded, saw the same line and forwards its own copy.
             if (queued.TypedUb && RynthAiLoaded()) continue;
             try { HandleLocal(node, queued.Line); }
-            catch (Exception ex) { ChatLine($"'{queued.Line}' failed: {ex.Message}"); }
+            catch (Exception ex) { ChatFail($"'{queued.Line}' failed: {ex.Message}"); }
         }
 
         RunScheduled(now);
@@ -250,18 +253,29 @@ public sealed partial class RynthNetPlugin : RynthPluginBase
         });
     }
 
-    private void ChatLine(string text)
+    // Chat lines wait in the shared reply queue (Plugins/Shared/CommandReply.cs): the host drops a line
+    // within 100 ms of another plugin's, so /rn help's and /rn list's later lines used to go missing.
+    private CommandReply? _reply;
+    private CommandReply Reply => _reply ??= new CommandReply("[RynthNet]",
+        (t, c) => Host.HasWriteToChat ? Host.WriteToChat(t, c) : LogInstead(t), t => Host.Log(t));
+
+    private bool LogInstead(string line)
     {
-        if (Host.HasWriteToChat) Host.WriteToChat("[RynthNet] " + text, 1);
-        else Host.Log("[RynthNet] " + text);
+        Host.Log(line);
+        return true;
     }
+
+    private void ChatLine(string text) => Reply.Ok(text);
+
+    /// <summary>A command that didn't work: why, and the usage (the failure colour).</summary>
+    private void ChatFail(string text) => Reply.Fail(text);
 
     /// <summary>Applies one change to the shared settings file (merged with the other clients'), then pushes tags.</summary>
     private bool UpdateSettings(Action<RynthNetSettings> change)
     {
         if (!RynthNetSettings.Update(change, out RynthNetSettings current, out string? error))
         {
-            ChatLine("couldn't save settings: " + error);
+            ChatFail("couldn't save settings: " + error);
             return false;
         }
         _settings = current;
@@ -316,7 +330,7 @@ public sealed partial class RynthNetPlugin : RynthPluginBase
                 if (!e.Ok)
                 {
                     string what = _sent.TryGetValue(e.Id, out string? t) ? $"'{t}'" : "the command";
-                    ChatLine($"{e.From} didn't run {what}: {e.Text}");
+                    ChatFail($"{e.From} didn't run {what}: {e.Text}");
                 }
                 break;
             case NetEventKind.Data:
@@ -373,7 +387,7 @@ public sealed partial class RynthNetPlugin : RynthPluginBase
         }
         if (!Host.HasInvokeChatParser)
         {
-            ChatLine("this engine can't run chat commands for plugins (no InvokeChatParser).");
+            ChatFail("this engine can't run chat commands for plugins (no InvokeChatParser).");
             return;
         }
         // Same as typing it: plugins (/ra, /ub, /lua...) get it first, then AC.
@@ -391,11 +405,11 @@ public sealed partial class RynthNetPlugin : RynthPluginBase
     {
         NetNode? node = _node;
         command = (command ?? "").Trim();
-        if (command.Length == 0) { if (!quiet) ChatLine("no command given."); return null; }
-        if (command.Length > Wire.MaxText) { if (!quiet) ChatLine($"command too long (max {Wire.MaxText})."); return null; }
+        if (command.Length == 0) { if (!quiet) ChatFail("no command given."); return null; }
+        if (command.Length > Wire.MaxText) { if (!quiet) ChatFail($"command too long (max {Wire.MaxText})."); return null; }
         if (CommandPolicy.Rebroadcasts(command))
         {
-            if (!quiet) ChatLine("a broadcast can't contain another broadcast (/rn, /ub bc, /ub bct).");
+            if (!quiet) ChatFail("a broadcast can't contain another broadcast (/rn, /ub bc, /ub bct).");
             return null;
         }
         delayMs = Math.Clamp(delayMs, 0, 600_000);

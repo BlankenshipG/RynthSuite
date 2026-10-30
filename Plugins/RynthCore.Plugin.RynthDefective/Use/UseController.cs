@@ -16,16 +16,33 @@ internal interface IDefWorld
     bool InWorld { get; }
     uint PlayerId { get; }
     uint SelectedId { get; }
-    /// <summary>The client's busy count is above zero (an item action it sent has not been answered).</summary>
-    bool ClientBusy { get; }
+    /// <summary>
+    /// The client's busy count (0 = idle): the item actions and casts it sent that the server hasn't
+    /// answered. It can read above zero with nothing in flight (BusyGate says when it holds a use).
+    /// </summary>
+    int BusyCount { get; }
     /// <summary>A cast or use gesture is animating.</summary>
     bool Animating { get; }
     /// <summary>RynthAi is waiting on the server for an action it sent (null = RynthAi isn't there).</summary>
     bool? BotWaitingOnServer { get; }
     /// <summary>RynthAi's macro is running (null = RynthAi isn't there).</summary>
     bool? BotMacroRunning { get; }
+    /// <summary>
+    /// A use, cast or stance change RynthAi sent has no answer yet (its pacer's; not the busy count).
+    /// Null = can't tell: RynthAi isn't there or is from before RynthAi.Yield.
+    /// </summary>
+    bool? BotPaced { get; }
+    /// <summary>
+    /// The player's turn: RynthAi starts nothing new for <paramref name="ms"/> (RynthAi.Yield). True when
+    /// it holds; false when it can't (not there, from before, its pacing off): BotPaced means nothing then.
+    /// </summary>
+    bool HoldBot(uint ms);
+    /// <summary>Ends the player's turn.</summary>
+    void ReleaseBot();
     /// <summary>Count of the server's UseDone events; 0 when the engine can't report them.</summary>
     int UseDoneSeq { get; }
+    /// <summary>The error of the server's first UseDone after <paramref name="seqAtSend"/> (0x1D: "You're too busy"); 0 = none or unknown.</summary>
+    uint UseDoneError(int seqAtSend);
     /// <summary>1 NonCombat, 2 Melee, 4 Missile, 8 Magic.</summary>
     int CombatMode { get; }
     /// <summary>The server's refusals so far (0x028A / 0x00A0 ... count), to tell a new one.</summary>
@@ -41,18 +58,40 @@ internal interface IDefWorld
     bool UseObject(uint id);
     bool UseObjectOn(uint id, uint target);
     bool SetCombatMode(int mode);
+
+    /// <summary>The engine can cast (CastSpell).</summary>
+    bool CanCast { get; }
+    /// <summary>Whether the character knows the spell; null = can't tell (the server refuses one it doesn't).</summary>
+    bool? KnowsSpell(uint spellId);
+    /// <summary>Casts the spell at <paramref name="target"/> (the player id for yourself).</summary>
+    bool CastSpell(uint target, uint spellId);
 }
 
-/// <summary>One thing the player asked to use: an exact item (a slot's) or a name typed in a command.</summary>
+/// <summary>
+/// One thing the player asked to use: an exact item (a slot's), a name typed in a command, or a spell
+/// to cast (<see cref="Spell"/>, a spell slot's; Item and Name are null then).
+/// </summary>
 internal sealed record UseRequest(ItemRef? Item, string? Name, UseMode Mode, string Source, long AtMs)
 {
-    /// <summary>Same item, same way: pressing the key again must not queue a second one.</summary>
+    /// <summary>Sent once already and answered "You're too busy": this is the one more try.</summary>
+    public bool Retry { get; init; }
+    /// <summary>The spell to cast (2026-10-28); 0 = an item.</summary>
+    public uint Spell { get; init; }
+    /// <summary>The spell's name as the slot has it.</summary>
+    public string SpellName { get; init; } = string.Empty;
+
+    /// <summary>A spell slot's cast for <paramref name="spellId"/>.</summary>
+    public static UseRequest Cast(uint spellId, string name, string source, long atMs) =>
+        new(null, null, UseMode.Auto, source, atMs) { Spell = spellId, SpellName = name };
+
+    /// <summary>Same item (or spell), same way: pressing the key again must not queue a second one.</summary>
     public bool SameAs(UseRequest o) =>
         Mode == o.Mode
         && ((Item != null && o.Item != null && Item.SameAs(o.Item))
-            || (Name != null && o.Name != null && string.Equals(Name, o.Name, StringComparison.OrdinalIgnoreCase)));
+            || (Name != null && o.Name != null && string.Equals(Name, o.Name, StringComparison.OrdinalIgnoreCase))
+            || (Spell != 0 && Spell == o.Spell));
 
-    public string Label => Item?.FullName ?? Name ?? "item";
+    public string Label => Item?.FullName ?? (Spell != 0 ? (SpellName.Length > 0 ? SpellName : SpellTable.Name(Spell)) : Name) ?? "item";
 }
 
 /// <summary>The combat stance a weapon swap leaves the character in.</summary>
@@ -104,8 +143,23 @@ internal static class Stance
 ///                is put right (<see cref="Stance.Wanted"/>) once the character is still.
 /// Busy: nothing is sent while the client's busy count is up, a gesture animates, RynthAi waits on
 /// the server, the last action is unanswered, or for <see cref="MinGapMs"/> after it - the "one item
-/// action at a time" rule RynthAi's ActionPacer keeps. Weapon swaps also wait out a running RynthAi
-/// macro unless the player allowed them (it would swap straight back).
+/// action at a time" rule RynthAi's ActionPacer keeps. A busy reading that has sat unchanged with
+/// nothing in flight (a count left by a death, a login or an interrupted action) is a leftover and
+/// holds nothing (<see cref="BusyGate"/>, logged once); if the server really is busy it answers
+/// "You're too busy" and the use is tried once more after <see cref="RetryAfterMs"/>. Weapon swaps
+/// also wait out a running RynthAi macro unless the player allowed them (it would swap straight back).
+///
+/// The player's turn (2026-10-29): while a request waits, and for the first <see cref="FlightHoldMs"/>
+/// of its flight, RynthAi is asked to start nothing new (RynthAi.Yield, renewed every tick, let go
+/// when done). After a death or a login RynthAi rebuffs and re-wields, and a press used to wait
+/// behind that stream until it gave up. While RynthAi holds, it also says exactly what it has in
+/// flight, so only that and our own last use hold a press: the busy count beyond them is a leftover.
+///
+/// After a portal (2026-10-29): the engine takes no game action until 5 s after portal space ends
+/// (its world-transition gate: AC is still loading the new place), so a press then was refused and
+/// reported as "the client didn't take the request". Within <see cref="PortalRetryWindowMs"/> of
+/// coming out of portal space a refused use or cast waits instead and is tried again every
+/// <see cref="RefusedRetryMs"/>; it goes the moment the engine takes it.
 /// </summary>
 internal sealed class UseController
 {
@@ -119,25 +173,69 @@ internal sealed class UseController
     public const long MinGapMs = 250;
     public const long StanceSettleMs = 500;
     public const long StanceTimeoutMs = 4000;
+    /// <summary>A cast waits this long after the client reads Magic mode (RynthAi's ActionPacer.ModeSettleMs: a cast
+    /// sent into the stance animation hangs).</summary>
+    public const long MagicSettleMs = 800;
+    /// <summary>A use the server answered "You're too busy" is tried once more after this.</summary>
+    public const long RetryAfterMs = 1000;
+    /// <summary>ACE's YoureTooBusy, as a UseDone error.</summary>
+    public const uint TooBusyError = 0x1D;
+    /// <summary>Each ask for the player's turn lasts this long (asked again every tick while it is wanted).</summary>
+    public const uint BotHoldAskMs = 1500;
+    /// <summary>RynthAi is held this long into our use's flight (a stance change of its own would cancel the use on the server).</summary>
+    public const long FlightHoldMs = 3000;
+    /// <summary>A use or cast the client refuses this soon after portal space ends waits and is tried again (the engine's gate holds 5 s).</summary>
+    public const long PortalRetryWindowMs = 6000;
+    /// <summary>How often a refused use or cast is tried again after a portal.</summary>
+    public const long RefusedRetryMs = 250;
 
-    private enum Stage { Sent, WaitWield, Stance }
+    private enum Stage { Sent, WaitWield, Stance, Magic }
 
     private sealed class Flight
     {
         public UseRequest Request = null!;
+        /// <summary>The item used (null for a cast).</summary>
         public CarriedItem Item = null!;
+        /// <summary>What the player reads ("Peerless Healing Kit", "Heal Self VI") and what the log reads.</summary>
+        public string Name = string.Empty, What = string.Empty;
         public UseAction Action;
         public ItemKind Kind;
         public long SentMs;
         public int UseDoneAtSend, RefusalAtSend, ModeBefore;
         public Stage Stage;
         public long StageMs;
+        // A cast: the spell, its target, and the Magic stance it waits for.
+        public uint SpellId, Target;
+        public bool ModeAsked;
+        /// <summary>A cast the client refused after a portal is tried again from this time.</summary>
+        public long CastRetryAtMs;
+        public bool CastWaitSaid;
+        public long MagicSeenMs;
     }
 
     private UseRequest? _pending;
     private Flight? _flight;
     private long _lastDoneMs = long.MinValue / 4;
+    private long _retryNotBeforeMs = long.MinValue / 4;
     private string _lastWait = string.Empty;
+    private readonly BusyGate _busy = new();
+    /// <summary>RynthAi holds for us (the last ask was taken): its PacedAction bit is what it has in flight.</summary>
+    private bool _botHeld;
+    // When the character last came out of portal space (or logged in): a refused send soon after waits.
+    // Starts "in the world" so a plugin load in the world doesn't count as an arrival.
+    private bool _wasInWorld = true;
+    private long _worldBackMs = long.MinValue / 4;
+    private long _refusedRetryAtMs = long.MinValue / 4;
+    private UseRequest? _refusedSaid;
+
+    /// <summary>The engine refused sends this soon after the character came out of portal space: they are tried again.</summary>
+    private bool JustArrived(long now) => now - _worldBackMs < PortalRetryWindowMs;
+
+    /// <summary>RynthAi holds its next action for the press now (tests).</summary>
+    internal bool BotHeld => _botHeld;
+
+    /// <summary>The busy readings' clocks (tests look at the leftover).</summary>
+    internal BusyGate Busy => _busy;
 
     /// <summary>Plain information ("Using Peerless Healing Kit ..."): the status line, not the chat.</summary>
     public Action<string>? Say;
@@ -155,6 +253,10 @@ internal sealed class UseController
     public bool Involves(ItemRef r) =>
         (_pending?.Item != null && _pending.Item.SameAs(r)) || (_flight?.Request.Item != null && _flight.Request.Item.SameAs(r));
 
+    /// <summary>The spell a cast in flight or waiting is about.</summary>
+    public bool InvolvesSpell(uint spellId) =>
+        spellId != 0 && (_pending?.Spell == spellId || _flight?.Request.Spell == spellId);
+
     public DefSettings Settings = new();
 
     /// <summary>Queues a request. False when it is the one already waiting or in flight (a held key).</summary>
@@ -167,22 +269,73 @@ internal sealed class UseController
         return true;
     }
 
-    /// <summary>Drops what is waiting and forgets what is in flight (logout, portal space, shutdown).</summary>
+    /// <summary>Drops what is waiting and forgets what is in flight (portal space).</summary>
     public void Reset()
     {
         _pending = null;
         _flight = null;
         _lastWait = string.Empty;
+        _retryNotBeforeMs = long.MinValue / 4;
+        _refusedRetryAtMs = long.MinValue / 4;
+    }
+
+    /// <summary>
+    /// <see cref="Reset"/>, and the busy readings' clocks start again (login, logout, shutdown). Not on
+    /// portal space: a count a death left has read the same all through the death portal, and that is
+    /// what shows it is a leftover once the character lands.
+    /// </summary>
+    public void ResetSession()
+    {
+        Reset();
+        _busy.Reset();
     }
 
     public void Tick(IDefWorld w)
     {
-        if (!w.InWorld)
+        long now = w.NowMs;
+        _busy.Observe(w.BusyCount, w.Animating, w.BotWaitingOnServer, w.BotPaced, now);
+        try
         {
+            TickInner(w, now);
+        }
+        finally
+        {
+            KeepBotHeld(w, now, ask: false);   // let RynthAi go the tick the press is done
+        }
+    }
+
+    /// <summary>
+    /// The player's turn: asked for while a request waits or its flight is young (ask), let go when
+    /// neither. RynthAi's hold ends by itself within <see cref="BotHoldAskMs"/> if we stop asking.
+    /// </summary>
+    private void KeepBotHeld(IDefWorld w, long now, bool ask)
+    {
+        bool want = _pending != null || (_flight != null && now - _flight.SentMs < FlightHoldMs);
+        if (want)
+        {
+            if (ask) _botHeld = w.HoldBot(BotHoldAskMs);
+        }
+        else if (_botHeld)
+        {
+            w.ReleaseBot();
+            _botHeld = false;
+        }
+    }
+
+    private void TickInner(IDefWorld w, long now)
+    {
+        bool inWorld = w.InWorld;
+        if (inWorld && !_wasInWorld) _worldBackMs = now;
+        _wasInWorld = inWorld;
+        if (!inWorld)
+        {
+            // Portal space (a death's too): what was waiting is dropped, and said so (a key pressed in the
+            // portal did nothing). A use in flight is the server's now; nothing to say about it.
+            if (_pending != null) Warn?.Invoke($"{_pending.Label}: not used, the character is in portal space.");
             if (_pending != null || _flight != null) Reset();
             return;
         }
-        long now = w.NowMs;
+        KeepBotHeld(w, now, ask: true);
         if (_flight != null && !AdvanceFlight(w, now)) return;   // still in flight: nothing new goes out
         if (_pending == null) return;
 
@@ -205,16 +358,37 @@ internal sealed class UseController
     private string? WaitReason(IDefWorld w, long now)
     {
         if (now - _lastDoneMs < MinGapMs) return "the last action just finished";
-        if (w.ClientBusy) return "the character is busy";
-        if (w.Animating) return "an animation is playing";
-        if (w.BotWaitingOnServer == true) return "RynthAi is waiting on the server";
-        return null;
+        if (now < _retryNotBeforeMs) return "the server said the character was busy";
+        if (now < _refusedRetryAtMs) return "the game is still loading after the portal";
+        return Hold(now) switch
+        {
+            BusyHold.Busy => "the character is busy",
+            BusyHold.Animation => "an animation is playing",
+            BusyHold.Bot => "RynthAi is waiting on the server",
+            _ => null,
+        };
     }
+
+    /// <summary>The busy gate's verdict now; a leftover it ignores for the first time is logged.</summary>
+    private BusyHold Hold(long now)
+    {
+        BusyHold hold = _busy.Judge(now, _botHeld, out BusyStale ignored);
+        if (ignored != BusyStale.None) Log?.Invoke(_busy.Describe(ignored, now, _botHeld));
+        return hold;
+    }
+
+    /// <summary>The client's count or a gesture holds the character (RynthAi's bit doesn't: it is about RynthAi's own actions).</summary>
+    private bool CharacterHeld(long now) => Hold(now) is BusyHold.Busy or BusyHold.Animation;
 
     // ── Sending ─────────────────────────────────────────────────────────────
 
     private void Send(IDefWorld w, UseRequest req, long now)
     {
+        if (req.Spell != 0)
+        {
+            SendSpell(w, req, now);
+            return;
+        }
         IReadOnlyList<CarriedItem> items = w.Items();
         CarriedItem? item = req.Item != null
             ? ItemMatcher.Find(req.Item, items, out _)
@@ -265,14 +439,18 @@ internal sealed class UseController
         bool sent = target != 0 ? w.UseObjectOn(item.Id, target) : w.UseObject(item.Id);
         if (!sent)
         {
+            if (WaitOutRefusal(req, name, now)) return;
             Warn?.Invoke($"{name}: the client didn't take the request (nothing was sent).");
             return;
         }
+        _busy.NoteOwnSend(now);
 
         _flight = new Flight
         {
             Request = req,
             Item = item,
+            Name = name,
+            What = item.ToString(),
             Action = action,
             Kind = kind,
             SentMs = now,
@@ -282,8 +460,154 @@ internal sealed class UseController
             ModeBefore = w.CombatMode,
             Stage = action == UseAction.Equip ? Stage.WaitWield : Stage.Sent,
         };
-        Log?.Invoke($"[RynthDefective] {req.Source}: {(action == UseAction.Equip ? "wield" : target != 0 ? "use on " + (target == w.PlayerId ? "you" : "0x" + target.ToString("X8")) : "use")} {item} (stack {item.Stack}, mode {Stance.Name(w.CombatMode)})");
+        Log?.Invoke($"[RynthDefective] {req.Source}: {(action == UseAction.Equip ? "wield" : target != 0 ? "use on " + (target == w.PlayerId ? "you" : "0x" + target.ToString("X8")) : "use")} {item} (stack {item.Stack}, mode {Stance.Name(w.CombatMode)}{(req.Retry ? ", the one more try" : "")})");
         Say?.Invoke(action == UseAction.Equip ? $"Wielding {name}..." : $"Using {name}...");
+    }
+
+    /// <summary>
+    /// The client refused to send <paramref name="req"/>: just after a portal the engine takes no game
+    /// action yet, so the request waits and is tried again (its wait limit still counts from the press).
+    /// Said once per request. False when it isn't just after a portal: a refusal is reported as before.
+    /// </summary>
+    private bool WaitOutRefusal(UseRequest req, string name, long now)
+    {
+        if (!JustArrived(now) || _pending != null) return false;   // a newer press waits already: the newest wish wins
+        _pending = req;
+        _refusedRetryAtMs = now + RefusedRetryMs;
+        if (!ReferenceEquals(_refusedSaid, req))
+        {
+            _refusedSaid = req;
+            Log?.Invoke($"[RynthDefective] {req.Source}: the client doesn't take {name} yet ({now - _worldBackMs} ms after the portal); trying again");
+            Say?.Invoke($"{name}: waiting for the game to finish the portal...");
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// The server answered "You're too busy" (UseDone 0x1D) to <paramref name="f"/>'s use: it is tried
+    /// once more after <see cref="RetryAfterMs"/>, unless a newer request is waiting (the newest wish
+    /// wins) or this was the one more try already. Returns whether it was queued again.
+    /// </summary>
+    private bool RetryTooBusy(Flight f, long now)
+    {
+        string name = f.Name;
+        if (f.Request.Retry)
+        {
+            Warn?.Invoke($"{name}: not {(f.SpellId != 0 ? "cast" : "used")}, the server says the character is busy. Try again in a moment.");
+            return false;
+        }
+        if (_pending != null) return false;
+        _pending = f.Request with { Retry = true, AtMs = now };
+        _retryNotBeforeMs = now + RetryAfterMs;
+        Log?.Invoke($"[RynthDefective] {f.Request.Source}: the server answered 'too busy' to {f.What}; trying once more in {RetryAfterMs} ms");
+        Say?.Invoke($"{name}: the server said busy, trying again...");
+        return true;
+    }
+
+    // ── Casting (a spell slot) ──────────────────────────────────────────────
+
+    /// <summary>
+    /// A spell slot's cast: refused when the character doesn't know the spell or it needs a target
+    /// (SpellTargeting); else into Magic mode first (the client's stance for casting; RynthAi buffs the
+    /// same way), then cast once the stance has settled, answered by the server's UseDone like a use.
+    /// </summary>
+    private void SendSpell(IDefWorld w, UseRequest req, long now)
+    {
+        uint id = req.Spell;
+        SpellInfo? info = SpellTable.TryGet(id, out SpellInfo s) ? s : null;
+        string name = info?.Name ?? req.Label;
+        if (!w.CanCast)
+        {
+            Warn?.Invoke($"{name}: not cast, this RynthCore can't cast spells for a plugin.");
+            return;
+        }
+        if (w.KnowsSpell(id) == false)
+        {
+            Warn?.Invoke($"{name}: not cast, you don't know that spell.");
+            return;
+        }
+        if (SpellTargeting.Decide(info, w.SelectedId, w.PlayerId, out uint target, out string why) == CastAt.Refused)
+        {
+            Warn?.Invoke($"{name}: not cast, {why}.");
+            return;
+        }
+        var f = new Flight
+        {
+            Request = req,
+            Name = name,
+            What = $"spell {id} '{name}'",
+            Action = UseAction.Use,
+            SpellId = id,
+            Target = target,
+            SentMs = now,
+            StageMs = now,
+            ModeBefore = w.CombatMode,
+            Stage = Stage.Magic,
+        };
+        _flight = f;
+        if (w.CombatMode == Stance.Magic)
+        {
+            f.MagicSeenMs = now - MagicSettleMs;   // already there and settled (nothing holds the character: WaitReason)
+            AdvanceMagic(w, f, now);
+            return;
+        }
+        f.ModeAsked = w.SetCombatMode(Stance.Magic);
+        Log?.Invoke($"[RynthDefective] {req.Source}: {f.What}: {Stance.Name(w.CombatMode)} -> magic first{(f.ModeAsked ? "" : " (the client turned it away; asking again)")}");
+        Say?.Invoke($"Magic mode for {name}...");
+    }
+
+    /// <summary>A cast waiting for Magic mode: cast once it has settled. True when finished (cast refused or failed).</summary>
+    private bool AdvanceMagic(IDefWorld w, Flight f, long now)
+    {
+        long age = now - f.StageMs;
+        if (w.CombatMode == Stance.Magic)
+        {
+            if (f.MagicSeenMs == 0) f.MagicSeenMs = now;
+            bool settling = now - f.MagicSeenMs < MagicSettleMs || CharacterHeld(now);
+            if (settling && age < WaitLimitMs) return false;
+            return Cast(w, f, now);
+        }
+        if (age >= StanceTimeoutMs)
+        {
+            Warn?.Invoke($"{f.Name}: not cast, the character didn't go into magic mode ({Stance.Name(w.CombatMode)} now). "
+                         + "A weapon in your hands? Wield a wand, or nothing, and try again.");
+            Finish(now);
+            return true;
+        }
+        if (!f.ModeAsked && !CharacterHeld(now)) f.ModeAsked = w.SetCombatMode(Stance.Magic);
+        return false;
+    }
+
+    private bool Cast(IDefWorld w, Flight f, long now)
+    {
+        if (now < f.CastRetryAtMs) return false;
+        f.UseDoneAtSend = w.UseDoneSeq;
+        f.RefusalAtSend = w.RefusalSeq;
+        if (!w.CastSpell(f.Target, f.SpellId))
+        {
+            // Just after a portal the engine takes no game action yet: the cast is tried again.
+            if (JustArrived(now) && now - f.Request.AtMs < WaitLimitMs)
+            {
+                f.CastRetryAtMs = now + RefusedRetryMs;
+                if (!f.CastWaitSaid)
+                {
+                    f.CastWaitSaid = true;
+                    Log?.Invoke($"[RynthDefective] {f.Request.Source}: the client doesn't take the cast of {f.What} yet ({now - _worldBackMs} ms after the portal); trying again");
+                    Say?.Invoke($"{f.Name}: waiting for the game to finish the portal...");
+                }
+                return false;
+            }
+            Warn?.Invoke($"{f.Name}: the client didn't take the cast (nothing was sent).");
+            Finish(now);
+            return true;
+        }
+        _busy.NoteOwnSend(now);
+        f.Stage = Stage.Sent;
+        f.SentMs = now;
+        f.StageMs = now;
+        Log?.Invoke($"[RynthDefective] {f.Request.Source}: cast {f.What} on {(f.Target == w.PlayerId ? "you" : "0x" + f.Target.ToString("X8"))} (mode {Stance.Name(w.CombatMode)}{(f.Request.Retry ? ", the one more try" : "")})");
+        Say?.Invoke(f.Target == w.PlayerId ? $"Casting {f.Name}..." : $"Casting {f.Name} on the selection...");
+        return false;
     }
 
     // ── In flight ───────────────────────────────────────────────────────────
@@ -298,11 +622,12 @@ internal sealed class UseController
             case Stage.Sent:
             {
                 bool answered = w.UseDoneSeq != f.UseDoneAtSend;
-                bool quiet = age >= UseQuietMs && !w.ClientBusy && !w.Animating;
+                bool quiet = !answered && age >= UseQuietMs && !CharacterHeld(now);
                 if (answered || quiet || age >= UseTimeoutMs)
                 {
-                    if (!answered && age >= UseTimeoutMs) Log?.Invoke($"[RynthDefective] no UseDone for {f.Item} after {age} ms; carrying on");
+                    if (!answered && age >= UseTimeoutMs) Log?.Invoke($"[RynthDefective] no UseDone for {f.What} after {age} ms; carrying on");
                     Finish(now);
+                    if (answered && w.UseDoneError(f.UseDoneAtSend) == TooBusyError) RetryTooBusy(f, now);
                     return true;
                 }
                 return false;
@@ -332,6 +657,8 @@ internal sealed class UseController
                 }
                 return false;
             }
+            case Stage.Magic:
+                return AdvanceMagic(w, f, now);
             default:
                 return AdvanceStance(w, f, now);
         }
@@ -354,7 +681,7 @@ internal sealed class UseController
             Finish(now);
             return true;
         }
-        if (since < StanceSettleMs || w.ClientBusy || w.Animating) return false;
+        if (since < StanceSettleMs || CharacterHeld(now)) return false;
         if (w.SetCombatMode(want))
         {
             Log?.Invoke($"[RynthDefective] stance {Stance.Name(w.CombatMode)} -> {Stance.Name(want)} for {f.Item}");

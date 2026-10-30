@@ -50,6 +50,12 @@
 //  the character animates, and nothing while a use's turn is unanswered, keeps every
 //  server motion out of every server turn.
 //
+//  The player's turn (2026-10-29, RynthAi.Yield): another plugin acting for the player (the
+//  Shortcuts bar's key press) holds every start (MayStart, GestureHolds, ChangeCombatModeFor) for
+//  a moment, so the player's action goes next instead of waiting behind RynthAi's own. What is
+//  already out still finishes. Each ask lasts at most PlayerHoldMaxMs; the asker asks again
+//  every tick while its action waits or is in flight.
+//
 //  Opt-in (Enabled, RynthAi sets it at Init); off = every call goes through as before.
 //  Linked into RynthAi only. UseAudit reports its sends through UseAudit.AfterSend.
 // ============================================================================
@@ -139,6 +145,8 @@ internal static class ActionPacer
     public const long AttackAfterModeReadMs = 300;
     /// <summary>An engine without UseDone: an action counts as answered after this (no real pacing).</summary>
     public const long NoUseDoneFallbackMs = 600;
+    /// <summary>The longest one ask for the player's turn holds RynthAi (RynthAiYieldApiV1.MaxHoldMs).</summary>
+    public const long PlayerHoldMaxMs = 3000;
 
     private static readonly object Gate = new();
     private static PacedAction? _cur;
@@ -155,6 +163,10 @@ internal static class ActionPacer
     private static readonly Dictionary<string, int> _holdsByWho = new();
     private static string _lastTimeout = "";
 
+    // The player's turn (RynthAi.Yield): starts are held until _playerHoldUntil (0 = no hold).
+    private static long _playerHoldUntil, _playerHoldSince, _playerHolds, _playerHeldStarts;
+    private static readonly HashSet<string> _playerHoldLogged = new();
+
     public static long Started => _started;
     public static long Answered => _answered;
     public static long TimedOut => _timedOut;
@@ -166,6 +178,9 @@ internal static class ActionPacer
     public static long HealsAhead => _healsAhead;
     public static long GestureHoldCount => _gestureHolds;
     public static long GestureLimits => _gestureLimits;
+    /// <summary>Times another plugin took the player's turn, and the starts it held.</summary>
+    public static long PlayerHolds => _playerHolds;
+    public static long PlayerHeldStarts => _playerHeldStarts;
 
     /// <summary>Back to a fresh load (Init, logout, tests). Enabled is left as it is.</summary>
     public static void Reset()
@@ -184,6 +199,8 @@ internal static class ActionPacer
             _maxWaitMs = 0;
             _maxWaitWhat = "";
             _holdsByWho.Clear();
+            _playerHoldUntil = _playerHoldSince = _playerHolds = _playerHeldStarts = 0;
+            _playerHoldLogged.Clear();
             _lastTimeout = "";
             ClearBusyLocked();
             _stuckBreaks = 0;
@@ -362,6 +379,72 @@ internal static class ActionPacer
         return action != null;
     }
 
+    // ── The player's turn ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Another plugin acting for the player (RynthAi.Yield): no start for <paramref name="ms"/> from now
+    /// (at most <see cref="PlayerHoldMaxMs"/>), the newest ask setting the end. False when pacing is off:
+    /// RynthAi then knows nothing about what it has in flight, so the asker goes by its old rules.
+    /// </summary>
+    public static bool HoldForPlayer(RynthCoreHost host, long ms)
+    {
+        if (!Enabled) return false;
+        long now = NowMs();
+        bool began;
+        lock (Gate)
+        {
+            began = _playerHoldUntil == 0 || now >= _playerHoldUntil;
+            if (began)
+            {
+                _playerHoldSince = now;
+                _playerHolds++;
+                _playerHoldLogged.Clear();
+            }
+            _playerHoldUntil = now + Math.Clamp(ms, 1, PlayerHoldMaxMs);
+        }
+        if (began) Log(host, "[Pace] the player's turn: a key press from another plugin goes first; RynthAi starts nothing new until it has gone");
+        return true;
+    }
+
+    /// <summary>Ends the player's turn now (the asker's action was answered, or dropped).</summary>
+    public static void ReleasePlayerHold(RynthCoreHost host)
+    {
+        long held;
+        lock (Gate)
+        {
+            if (_playerHoldUntil == 0) return;
+            held = NowMs() - _playerHoldSince;
+            _playerHoldUntil = 0;
+            _playerHoldLogged.Clear();
+        }
+        Log(host, $"[Pace] the player's turn is over after {held} ms; RynthAi goes on");
+    }
+
+    /// <summary>True (with why) while another plugin has the player's turn. One log line per hold and subsystem.</summary>
+    private static bool PlayerHoldsStart(RynthCoreHost host, string who, out string why)
+    {
+        why = "";
+        if (!Enabled) return false;
+        long now = NowMs();
+        bool log;
+        lock (Gate)
+        {
+            if (_playerHoldUntil == 0) return false;
+            if (now >= _playerHoldUntil)
+            {
+                // The asker stopped asking (unloaded, stuck): the hold ends by itself.
+                _playerHoldUntil = 0;
+                _playerHoldLogged.Clear();
+                return false;
+            }
+            _playerHeldStarts++;
+            log = _playerHoldLogged.Add(who);
+        }
+        why = "the player's key press goes first";
+        if (log) Log(host, $"[Pace] {who} waits: {why}");
+        return true;
+    }
+
     // ── Gates ───────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -382,6 +465,7 @@ internal static class ActionPacer
         bool animationGate = true, bool settleGate = true, bool attackRepeat = false)
     {
         if (!Enabled) { why = ""; return true; }
+        if (PlayerHoldsStart(host, who, out why)) return false;
         if (ServerBusyHolds(host, who, attackRepeat, out why, out bool tryAfterBusy, heal)) return false;
         // An emergency heal does not wait for the movement settle (150-600 ms): at Emergency Heal At
         // the heal comes first; it still obeys the in-flight rules below (OutstandingAllows, GestureHolds).
@@ -472,6 +556,7 @@ internal static class ActionPacer
     {
         why = "";
         if (!Enabled) return false;
+        if (PlayerHoldsStart(host, who, out why)) return true;   // the item managers' moves wait too
         bool busy;
         try { busy = host.HasGetCastBusyState && host.GetCastBusyState() != 0; } catch { busy = false; }
         long now = NowMs();
@@ -1165,6 +1250,7 @@ internal static class ActionPacer
         {
             lines.Add($"  Sent {_started}, answered {_answered}, no answer in time {_timedOut}{(_lastTimeout.Length > 0 ? $" (last: {_lastTimeout})" : "")}");
             lines.Add($"  Starts held {_heldStarts}, moves held {_heldMoves}, heals let ahead {_healsAhead}, sent over an unanswered one {_sentOverOutstanding}");
+            lines.Add($"  The player's turn (key presses from other plugins): {_playerHolds}, starts held for them {_playerHeldStarts}");
             lines.Add($"  Mode changes refused while waiting {_modeRefused}, skipped (already in that mode) {_modeSkipped}");
             lines.Add($"  Held while the character was animating {_gestureHolds}, animation time limits {_gestureLimits}");
             lines.Add($"  Held after a 'too busy' answer {_refusalHolds}, held casts turned to {_heldTurns}, stuck casts broken {_stuckBreaks} ({_forcedBreaks} by the HP failsafe; limit {StuckCastMs} ms)");
@@ -1252,6 +1338,7 @@ internal static class ActionPacer
                 lock (Gate) _modeSkipped++;
                 return false;
             }
+            if (PlayerHoldsStart(host, "mode:" + who, out _)) return false;
             PacedAction? a = Current(host);
             if (a != null)
             {

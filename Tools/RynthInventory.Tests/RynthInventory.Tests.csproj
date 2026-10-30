@@ -34,6 +34,7 @@
     <Compile Include="..\..\Plugins\Shared\StorageFeed.cs" Link="Shared\StorageFeed.cs" />
     <Compile Include="..\..\Plugins\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\RynthServers\Plugins\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
+    <Compile Include="..\..\Plugins\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
   </ItemGroup>
 
   <ItemGroup>

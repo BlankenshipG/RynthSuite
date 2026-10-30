@@ -35,14 +35,20 @@
   <ItemGroup>
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthDefective\**\*.cs" Exclude="..\..\Plugins\RynthCore.Plugin.RynthDefective\obj\**;..\..\Plugins\RynthCore.Plugin.RynthDefective\bin\**" Link="RynthDefective\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\..\Plugins\Shared\RynthAiActivityApi.cs" Link="Shared\RynthAiActivityApi.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthAiYieldApi.cs" Link="Shared\RynthAiYieldApi.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthAiStatusApi.cs" Link="Shared\RynthAiStatusApi.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <Compile Include="..\..\Plugins\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
     <!-- The shortcut bar, panel buttons and Selection windows (2026-10-22) draw with the shared ImGui look. -->
     <Compile Include="..\..\Plugins\Shared\ImGuiNativeBinding.cs" Link="Shared\ImGuiNativeBinding.cs" />
     <Compile Include="..\..\Plugins\Shared\SafeImGui.cs" Link="Shared\SafeImGui.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthUi\RynthUi.cs" Link="Shared\RynthUi\RynthUi.cs" />
     <Compile Include="..\..\Plugins\Shared\RynthUi\RynthIcons.cs" Link="Shared\RynthUi\RynthIcons.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The plugin's spell table, under the name the plugin reads it by (spell slots). -->
+    <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthDefective.SpellData.txt" Link="Shared\SpellData.txt" />
   </ItemGroup>
 
 </Project>

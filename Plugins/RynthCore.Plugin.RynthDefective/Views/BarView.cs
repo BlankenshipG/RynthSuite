@@ -121,6 +121,24 @@ internal sealed class BarView
         color = SlotText.Plain;
         bool icons = _s.Settings.ShowIcons && _s.IconsAvailable;
 
+        if (slot.IsSpell)
+        {
+            // A spell slot (set with /rdef spell or on the Shortcuts bar): its picture, or its initials.
+            string spell = slot.SpellLabel;
+            SpellInfo? info = SpellTable.TryGet(slot.SpellId, out SpellInfo si) ? si : null;
+            bool casting = _s.Use.InvolvesSpell(slot.SpellId);
+            if (icons) w.ImageButton(UiFormat.IconKindSpell, slot.SpellId, id, () => Press(number), size, size, 0xFFFFFFFFu, casting ? SlotText.Waiting : 0u);
+            else
+            {
+                if (casting) w.PushStyleColor(UiFormat.ColButton, SlotText.Waiting);
+                w.Button(SlotText.Abbreviation(spell), id, () => Press(number), size + 8f, size + 8f);
+                if (casting) w.PopStyleColor();
+            }
+            w.Tooltip($"Slot {number}: {spell}, a spell.\nClick or press the key: {SpellTargeting.Describe(info)} (Magic mode first)."
+                      + (keyFull != null ? "\nKey: " + keyFull : "\nNo key yet (Edit slots)."));
+            return;
+        }
+
         if (slot.Item == null)
         {
             w.Button("+", id, () => Choose(number), size + 8f, size + 8f);

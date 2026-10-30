@@ -271,5 +271,7 @@ public sealed partial class RynthAiPlugin
         return !_raycast.IsTargetBlocked(Host, id, TargetingFSM.AttackType.Linear);
     }
 
-    internal void ScriptSubmitCommand(string text) => HandleRynthChatSubmit(text);
+    /// <summary>A RynthLua script's ai.Command(text): handled as a typed line, but it answers as a script's
+    /// (quiet when it works, errors in chat; CommandReply.cs).</summary>
+    internal void ScriptSubmitCommand(string text) => Reply.AsScript(() => { HandleRynthChatSubmit(text); return true; });
 }

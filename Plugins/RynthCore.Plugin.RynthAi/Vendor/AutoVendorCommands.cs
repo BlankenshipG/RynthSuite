@@ -25,15 +25,24 @@ public sealed partial class RynthAiPlugin
         var av = _autoVendor;
         if (av == null)
         {
-            ChatLine("[RynthAi] AutoVendor isn't ready yet (log in first).");
+            ReplyFail("[RynthAi] AutoVendor isn't ready yet (log in first).");
             return true;
         }
 
         string rest = AfterWords(fullCommand, 2);   // everything after "/ub <verb>"
 
+        // Run on the tick, they answer there as this line would have (typed: in chat; a meta's: quiet
+        // when it works). Every queued command says what it did, so the line itself is answered.
+        bool fromScript = Reply.FromScript;
+        void Queue(Action command)
+        {
+            Reply.Answered();
+            av.Enqueue(() => Reply.RunQueued(fromScript, command));
+        }
+
         if (cmd == "autovendor")
         {
-            av.Enqueue(() => av.CommandAutoVendor(rest));
+            Queue(() => av.CommandAutoVendor(rest));
             return true;
         }
 
@@ -50,24 +59,24 @@ public sealed partial class RynthAiPlugin
         switch (action)
         {
             case "buy":
-            case "buyall":    av.Enqueue(av.CommandBuyAll); break;
+            case "buyall":    Queue(av.CommandBuyAll); break;
             case "sell":
-            case "sellall":   av.Enqueue(av.CommandSellAll); break;
-            case "clearbuy":  av.Enqueue(av.CommandClearBuy); break;
-            case "clearsell": av.Enqueue(av.CommandClearSell); break;
+            case "sellall":   Queue(av.CommandSellAll); break;
+            case "clearbuy":  Queue(av.CommandClearBuy); break;
+            case "clearsell": Queue(av.CommandClearSell); break;
             // UB: "open" with no name picks the nearest vendor, like openp.
-            case "open":      av.Enqueue(() => av.CommandOpen(args, partial: args.Length == 0)); break;
-            case "openp":     av.Enqueue(() => av.CommandOpen(args, partial: true)); break;
-            case "opencancel": av.Enqueue(av.CommandOpenCancel); break;
+            case "open":      Queue(() => av.CommandOpen(args, partial: args.Length == 0)); break;
+            case "openp":     Queue(() => av.CommandOpen(args, partial: true)); break;
+            case "opencancel": Queue(av.CommandOpenCancel); break;
             case "addbuy":
             case "addbuyp":
                 if (args.Length == 0) { VendorUsage(); break; }
-                av.Enqueue(() => av.CommandAddBuy(args, partial: action == "addbuyp"));
+                Queue(() => av.CommandAddBuy(args, partial: action == "addbuyp"));
                 break;
             case "addsell":
             case "addsellp":
                 if (args.Length == 0) { VendorUsage(); break; }
-                av.Enqueue(() => av.CommandAddSell(args, partial: action == "addsellp"));
+                Queue(() => av.CommandAddSell(args, partial: action == "addsellp"));
                 break;
             default:
                 VendorUsage();
@@ -90,5 +99,5 @@ public sealed partial class RynthAiPlugin
     }
 
     private void VendorUsage()
-        => ChatLine("[RynthAi] Usage: /ub vendor {open[p] <vendorname,vendorid,vendorhex> | buyall | sellall | clearbuy | clearsell | opencancel | addbuy[p] [count] <item> | addsell[p] [count] <item>}");
+        => ReplyFail("[RynthAi] Usage: /ub vendor {open[p] <vendorname,vendorid,vendorhex> | buyall | sellall | clearbuy | clearsell | opencancel | addbuy[p] [count] <item> | addsell[p] [count] <item>}");
 }

@@ -47,6 +47,8 @@ internal static class VTankLootTests
         r.Add("loot keep#: counts whole stacks of what the rule matches", KeepCapCountsStacks);
         r.Add("loot keep#: pending approvals and merged stacks", KeepCapPending);
         r.Add("loot keep#: the cap boundary, zero and missing counts", KeepCapBoundary);
+        r.Add("loot keep#: a pack stack is judged by one unit's value and burden", KeepCapOneUnit);
+        r.Add("loot keep#: the one-unit view of a stack", KeepCapOneUnitView);
     }
 
     private static VTankLootCondition C(int node, params string[] data) => new(node, "0", data);
@@ -564,5 +566,74 @@ internal static class VTankLootTests
         // Note the cap compares what the player has BEFORE the new item: with 4 of 5, a stack of 10 is still looted.
         Check.True(LootKeepCap.UnderCap(4, 5) && LootKeepCap.StackOf(new Item("Healing Kit").Int(12, 10)) == 10,
             "a whole stack is taken while under the cap, even if it overshoots");
+    }
+
+    private static void KeepCapOneUnit()
+    {
+        // A sellables rule: Keep # 25 of anything worth over 10,000 that weighs under 400. A stack's
+        // value is the whole stack's, so a pack of pyreals and components used to read as "have
+        // 25128/25" with none of the rule's items in it; each stack is now judged by one unit.
+        var sellables = Rule("Sellables", VTankLootAction.KeepUpTo,
+            C(N.LongValKeyGE, "10001", "19"), C(N.LongValKeyLE, "399", "5"));
+        sellables.KeepCount = 25;
+        bool Sells(WorldObject wo) => VTankLootEvaluator.Match(sellables, wo);
+
+        var pyreals = new Item("Pyreal", AcObjectClass.Money).Int(12, 25000).Int(19, 25000).Int(5, 0);
+        var tapers  = new Item("Prismatic Taper", AcObjectClass.SpellComponent).Int(12, 1500).Int(19, 15000).Int(5, 300);
+        var notes   = new Item("Trade Note (250,000)", AcObjectClass.TradeNote).Int(12, 3).Int(19, 750000).Int(5, 6);
+        var pack = new List<WorldObject>
+        {
+            pyreals,                                                                        // 1 each
+            tapers,                                                                         // 10 each
+            notes,                                                                          // 250,000 each
+            new Item("Leather Gauntlets", AcObjectClass.Armor).Int(19, 12000).Int(5, 350),  // one, worth 12,000
+            new Item("Leather Gauntlets", AcObjectClass.Armor).Int(19, 900).Int(5, 350),    // too cheap
+            new Item("Leather Gauntlets", AcObjectClass.Armor).Int(19, 15000).Int(5, 500),  // too heavy
+        };
+        Check.True(Sells(pyreals) && Sells(tapers), "as whole stacks, the pyreals and tapers pass the rule");
+        Check.Eq(LootKeepCap.CountHave(pack, Sells, NoPending, _ => true), 4, "3 notes + 1 pair of gauntlets; no pyreals, no tapers");
+        Check.True(LootKeepCap.UnderCap(LootKeepCap.CountHave(pack, Sells, NoPending, _ => true), sellables.KeepCount ?? 0),
+            "4 of 25: the rule loots again");
+
+        // A rule by name still counts every unit of the stack.
+        Check.Eq(LootKeepCap.CountHave(pack, wo => wo.Name == "Prismatic Taper", NoPending, _ => true), 1500, "Keep # tapers by name: 1500");
+        Check.Eq(LootKeepCap.CountHave(pack, wo => wo.ObjectClass == AcObjectClass.Money, NoPending, _ => true), 25000, "by class: the whole stack");
+
+        // A value floor a single unit still clears counts the whole stack.
+        var cheap = Rule("Notes", VTankLootAction.KeepUpTo, C(N.ObjectClass, "15"), C(N.LongValKeyGE, "100000", "19"));
+        Check.Eq(LootKeepCap.CountHave(pack, wo => VTankLootEvaluator.Match(cheap, wo), NoPending, _ => true), 3, "three 250,000 notes");
+
+        // Approved items not in the pack yet are counted as before (they were judged on the corpse).
+        var pending = new Dictionary<int, int> { [0x7000AAAA] = 2 };
+        Check.Eq(LootKeepCap.CountHave(pack, Sells, pending, _ => true), 6, "4 in the pack + 2 on the way");
+    }
+
+    private static void KeepCapOneUnitView()
+    {
+        var single = new Item("Leather Gauntlets", AcObjectClass.Armor).Int(19, 12000).Int(5, 350);
+        Check.True(ReferenceEquals(LootKeepCap.OneUnit(single), single.Wo), "a single item is itself");
+        var unpriced = new Item("Prismatic Taper", AcObjectClass.SpellComponent).Int(12, 40);
+        Check.True(ReferenceEquals(LootKeepCap.OneUnit(unpriced), unpriced.Wo), "a stack with no value or burden is itself");
+
+        var stack = new Item("Prismatic Taper", AcObjectClass.SpellComponent, id: 0x7000BBBB)
+            .Int(12, 1500).Int(19, 15000).Int(5, 1500).Int(105, 3).Str(16, "A taper.");
+        var unit = LootKeepCap.OneUnit(stack);
+        Check.False(ReferenceEquals(unit, stack.Wo), "a stack gets a view");
+        Check.Eq(unit.Id, 0x7000BBBB, "same id");
+        Check.Eq(unit.Name, "Prismatic Taper", "same name");
+        Check.Eq((int)unit.ObjectClass, (int)AcObjectClass.SpellComponent, "same class");
+        Check.Eq(unit.Values(19, 0), 10, "value of one");
+        Check.Eq(unit.Values(5, 0), 1, "burden of one");
+        Check.Eq(unit.Values(LongValueKey.StackCount, 0), 1500, "stack size kept");
+        Check.Eq(unit.Values(105, 0), 3, "other keys kept");
+        Check.Eq(unit.Values((StringValueKey)16, ""), "A taper.", "strings kept");
+        Check.Eq(unit.Values(131, -7), -7, "a key the item doesn't have still reads the default");
+        Check.Eq(stack.Wo.Values(19, 0), 15000, "the pack item itself is unchanged");
+
+        var valueOnly = LootKeepCap.OneUnit(new Item("Pyreal", AcObjectClass.Money).Int(12, 100).Int(19, 100));
+        Check.Eq(valueOnly.Values(19, 0), 1, "value divided");
+        Check.Eq(valueOnly.Values(5, -1), -1, "no burden stays absent");
+        var rounding = LootKeepCap.OneUnit(new Item("x").Int(12, 3).Int(19, 10));
+        Check.Eq(rounding.Values(19, 0), 3, "rounds down, as UB's Value / Stack");
     }
 }

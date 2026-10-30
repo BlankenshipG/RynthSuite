@@ -60,6 +60,7 @@ internal static class UiFormat
     // Image icon kinds (op level 2)
     public const byte IconKindIcon = 0;            // a 0x06 texture id
     public const byte IconKindObject = 1;          // a live object's icon with underlay and overlay
+    public const byte IconKindSpell = 2;           // a spell id: the spell's icon
 
     // Selectable flags
     public const uint SelectableAllowDoubleClick = 4;

@@ -23,7 +23,8 @@ public sealed partial class RynthAiPlugin
     // Chat-bar events and /ra metamgr may arrive off the pump: flags and a queue, drained on it.
     private int _mmTypedQuery;      // a "/myquests" passed through the chat bar (maybe our own echo)
     private int _mmShownQuery;      // RynthAi's quest refresh sent /myquests: show that reply
-    private readonly ConcurrentQueue<string[]> _metaMgrCommands = new();
+    // FromScript: a meta (or script) sent the line, so its answer is quiet when it works (CommandReply.cs).
+    private readonly ConcurrentQueue<(string[] Parts, bool FromScript)> _metaMgrCommands = new();
 
     /// <summary>OnLoginComplete: hook the dashboard (panel snapshot and ops) and the quest refresh.</summary>
     private void WireMetaSchedule()
@@ -104,9 +105,9 @@ public sealed partial class RynthAiPlugin
         }
         if (folder.Length == 0) return;   // no character settings yet: nothing to save to
 
-        while (_metaMgrCommands.TryDequeue(out var parts))
+        while (_metaMgrCommands.TryDequeue(out var queued))
         {
-            try { HandleMetaMgrCommand(parts); }
+            try { Reply.RunQueued(queued.FromScript, () => HandleMetaMgrCommand(queued.Parts)); }
             catch (Exception ex) { Host.Log($"[RynthAi] /ra metamgr failed: {ex.Message}"); }
         }
 
@@ -184,7 +185,7 @@ public sealed partial class RynthAiPlugin
     //  /ra metamgr (queued to the pump by DispatchRaCommand)
     // =====================================================================
 
-    private void QueueMetaMgrCommand(string[] parts) => _metaMgrCommands.Enqueue(parts);
+    private void QueueMetaMgrCommand(string[] parts) => _metaMgrCommands.Enqueue((parts, Reply.FromScript));
 
     private void HandleMetaMgrCommand(string[] parts)
     {
@@ -196,7 +197,7 @@ public sealed partial class RynthAiPlugin
             case "on":
             case "off":
                 _metaScheduler.SetEnabled(sub == "on");
-                ChatLine(sub == "on"
+                ReplyOk(sub == "on"
                     ? $"[RynthAi] Meta Manager ON ({_metaScheduler.Config.Rules.Count} rule(s))."
                     : "[RynthAi] Meta Manager OFF.");
                 break;
@@ -206,9 +207,9 @@ public sealed partial class RynthAiPlugin
                     if (int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out int m))
                     {
                         _metaScheduler.SetPollMinutes(m);
-                        ChatLine($"[RynthAi] Meta Manager: /myquests every {_metaScheduler.Config.PollMinutes} min.");
+                        ReplyOk($"[RynthAi] Meta Manager: /myquests every {_metaScheduler.Config.PollMinutes} min.");
                     }
-                    else ChatLine("[RynthAi] Usage: /ra metamgr poll [minutes]");
+                    else ReplyFail("[RynthAi] Usage: /ra metamgr poll [minutes]");
                     break;
                 }
                 _metaScheduler.RequestPoll();
@@ -220,17 +221,17 @@ public sealed partial class RynthAiPlugin
             case "stop":
             case "reset":
             {
-                if (parts.Length < 4) { ChatLine($"[RynthAi] Usage: /ra metamgr {sub} <rule #>{(sub == "start" ? " [minutes]" : sub == "reset" ? "|all" : "")}"); break; }
+                if (parts.Length < 4) { ReplyFail($"[RynthAi] Usage: /ra metamgr {sub} <rule #>{(sub == "start" ? " [minutes]" : sub == "reset" ? "|all" : "")}"); break; }
                 if (sub == "reset" && parts[3].Equals("all", StringComparison.OrdinalIgnoreCase))
                 {
                     for (int i = 0; i < _metaScheduler.Config.Rules.Count; i++) _metaScheduler.ResetRule(i);
-                    ChatLine("[RynthAi] Meta Manager: every rule re-armed.");
+                    ReplyOk("[RynthAi] Meta Manager: every rule re-armed.");
                     break;
                 }
                 if (!int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out int n)
                     || n < 1 || n > _metaScheduler.Config.Rules.Count)
                 {
-                    ChatLine($"[RynthAi] Meta Manager: no rule #{parts[3]} (there are {_metaScheduler.Config.Rules.Count}).");
+                    ReplyFail($"[RynthAi] Meta Manager: no rule #{parts[3]} (there are {_metaScheduler.Config.Rules.Count}).");
                     break;
                 }
                 int idx = n - 1;
@@ -238,18 +239,18 @@ public sealed partial class RynthAiPlugin
                 {
                     double? mins = null;
                     if (parts.Length >= 5 && double.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out double mm) && mm > 0) mins = mm;
-                    ChatLine(_metaScheduler.StartCountdown(idx, mins, now)
+                    ReplyOk(_metaScheduler.StartCountdown(idx, mins, now)
                         ? $"[RynthAi] Meta Manager: rule #{n} countdown started ({(mins ?? _metaScheduler.Config.Rules[idx].Minutes).ToString("0.##", CultureInfo.InvariantCulture)} min)."
                         : $"[RynthAi] Meta Manager: rule #{n} is not a countdown.");
                 }
                 else if (sub == "stop")
-                    ChatLine(_metaScheduler.StopCountdown(idx)
+                    ReplyOk(_metaScheduler.StopCountdown(idx)
                         ? $"[RynthAi] Meta Manager: rule #{n} countdown stopped."
                         : $"[RynthAi] Meta Manager: rule #{n} has no countdown running.");
                 else
                 {
                     _metaScheduler.ResetRule(idx);
-                    ChatLine($"[RynthAi] Meta Manager: rule #{n} re-armed.");
+                    ReplyOk($"[RynthAi] Meta Manager: rule #{n} re-armed.");
                 }
                 break;
             }
@@ -257,7 +258,7 @@ public sealed partial class RynthAiPlugin
                 foreach (string line in _metaScheduler.StatusLines(now, meta)) ChatLine("[RynthAi] " + line);
                 break;
             default:
-                ChatLine("[RynthAi] Usage: /ra metamgr on|off|status|poll [minutes]|start <#> [min]|stop <#>|reset <#|all>");
+                ReplyFail("[RynthAi] Usage: /ra metamgr on|off|status|poll [minutes]|start <#> [min]|stop <#>|reset <#|all>");
                 break;
         }
         SaveMetaScheduleIfDirty();

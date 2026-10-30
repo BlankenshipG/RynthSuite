@@ -46,6 +46,7 @@ internal static class ActionPacingTests
     public static void Register(Runner r)
     {
         r.Add("pacing: a use is the server action until its UseDone; a refusal answers it too; a wield answers by wielding", UseAnswers);
+        r.Add("pacing: the player's turn (RynthAi.Yield) holds every start, mode change and move, ends by itself, and lets what is out finish", PlayersTurn);
         r.Add("pacing: the stall onset replayed - the idle peace swap waits for the corpse use's answer, then goes; no swap to the mode you're in", OnsetModeChangeHeld);
         r.Add("pacing: moves and turns wait while the server answers; a stop with nothing of ours moving waits too, is never dropped; a real stop and the cast nudge go through", MovesHeld);
         r.Add("pacing (stop burst, flight 63260): a held stop goes out once the server answers, before the next start", HeldStopSentAfterAnswer);
@@ -150,6 +151,65 @@ internal static class ActionPacingTests
     private static bool Logged(string part) => FakeHost.Logs.Any(l => l.Contains(part, StringComparison.Ordinal));
 
     // ── The pacer ───────────────────────────────────────────────────────────────
+
+    private static void PlayersTurn()
+    {
+        PaceOff();
+        var off = World();
+        Check.False(ActionPacer.HoldForPlayer(off, 1500), "pacing off: RynthAi can't hold (it doesn't know what it has in flight)");
+        Check.True(ActionPacer.MayStart(off, "Combat", HealNeed.None, out _), "and nothing is held");
+
+        Paced(() =>
+        {
+            var host = World();
+            Check.True(ActionPacer.MayStart(host, "Buff", HealNeed.None, out _), "free before the ask");
+            Check.True(ActionPacer.HoldForPlayer(host, 1500), "the ask is taken");
+            Check.False(ActionPacer.MayStart(host, "Buff", HealNeed.None, out string why), "a buff cast waits");
+            Check.True(why.Contains("key press"), "and says why: " + why);
+            Check.False(ActionPacer.MayStart(host, "Combat", HealNeed.Emergency, out _), "an emergency heal waits too (the press is the player's choice)");
+            Check.False(ActionPacer.MayStart(host, "Combat", HealNeed.None, out _, animationGate: false, settleGate: false, attackRepeat: true), "an attack repeat waits");
+            Check.True(ActionPacer.GestureHolds(host, "Loot", HealNeed.None, out _), "the item managers' moves wait");
+            FakeHost.CombatModeRequests.Clear();
+            Check.False(host.ChangeCombatModeFor(CombatMode.Magic, "Buff", "wand"), "a stance change is held");
+            Check.Eq(FakeHost.CombatModeRequests.Count, 0, "and not sent");
+            Check.Eq(FakeHost.Logs.Count(l => l.Contains("the player's turn: a key press")), 1, "the hold logged once");
+            Check.Eq(FakeHost.Logs.Count(l => l.Contains("[Pace] Buff waits: the player's key press goes first")), 1, "each subsystem's wait logged once");
+            Check.Eq(FakeHost.Logs.Count(l => l.Contains("[Pace] mode:Buff waits: the player's key press")), 1, "the held stance change its own line");
+            Check.False(ActionPacer.MayStart(host, "Buff", HealNeed.None, out _), "asked again: still held");
+            Check.Eq(FakeHost.Logs.Count(l => l.Contains("[Pace] Buff waits: the player's key press")), 1, "not logged again");
+
+            // Renewed: the newest ask sets the end.
+            _t += 1000;
+            Check.True(ActionPacer.HoldForPlayer(host, 1500), "asked again a second later");
+            Check.Eq(FakeHost.Logs.Count(l => l.Contains("the player's turn: a key press")), 1, "a renewal is the same hold");
+            _t += 1400;
+            Check.False(ActionPacer.MayStart(host, "Buff", HealNeed.None, out _), "2.4 s in, 1.4 s after the renewal: held");
+            _t += 200;
+            Check.True(ActionPacer.MayStart(host, "Buff", HealNeed.None, out _), "the asker stopped asking: the hold ends by itself");
+            Check.Eq(ActionPacer.PlayerHolds, 1L, "one hold counted");
+
+            // Capped at PlayerHoldMaxMs whatever is asked.
+            Check.True(ActionPacer.HoldForPlayer(host, 60_000), "a long ask");
+            _t += ActionPacer.PlayerHoldMaxMs - 1;
+            Check.False(ActionPacer.MayStart(host, "Buff", HealNeed.None, out _), "held up to the cap");
+            _t += 2;
+            Check.True(ActionPacer.MayStart(host, "Buff", HealNeed.None, out _), "free past it");
+
+            // Released early: free at once, logged.
+            Check.True(ActionPacer.HoldForPlayer(host, 1500), "a third hold");
+            ActionPacer.ReleasePlayerHold(host);
+            Check.True(ActionPacer.MayStart(host, "Buff", HealNeed.None, out _), "released: free at once");
+            Check.True(Logged("the player's turn is over"), "the release logged");
+            int lines = FakeHost.Logs.Count;
+            ActionPacer.ReleasePlayerHold(host);
+            Check.Eq(FakeHost.Logs.Count, lines, "a second release says nothing");
+
+            // What is already out finishes: a hold doesn't touch the outstanding action.
+            Check.True(host.UseFor(Corpse, "Loot", "open the claimed corpse"), "a corpse open goes out");
+            Check.True(ActionPacer.HoldForPlayer(host, 1500), "then the press takes the turn");
+            Check.True(ActionPacer.Current(host) != null, "the corpse open is still RynthAi's outstanding action");
+        });
+    }
 
     private static void UseAnswers() => Paced(() =>
     {

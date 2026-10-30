@@ -56,6 +56,8 @@ namespace RynthDefective.Tests
                 Run("picker: favourites and recent weapons first", PickerShortcuts);
                 Run("pack list: one line per kind of item", PackLists);
                 Run("commands: /rdef parsing", Commands);
+                Run("replies: the shared queue (tag, colours, retry, drop, quiet)", ReplyQueue);
+                Run("replies: every /rdef verb answers, typed right or wrong", ReplyEveryVerb);
                 Run("store: save and load", StoreRoundTrip);
                 Run("store: odd files", StoreOddFiles);
                 Run("hotkeys: the engine's file read for the key under a slot", HotkeyFile);
@@ -65,6 +67,18 @@ namespace RynthDefective.Tests
                 Run("use: a kit on yourself, answered by UseDone", UseKit);
                 Run("use: one at a time, the newest wish wins, a held key queues once", UseQueue);
                 Run("use: busy, animating and RynthAi waiting hold a request, then it gives up", UseBusy);
+                Run("busy rule: a leftover count, our own use, animation, a count that just changed", BusyRuleDecisions);
+                Run("use: a busy count left by a death or a login doesn't hold the bar", UseStaleBusy);
+                Run("use: 'You're too busy' from the server: one more try", UseTooBusyRetry);
+                Run("busy rule with RynthAi holding: its own action and our last use hold, the rest of the count doesn't", BusyRulePaced);
+                Run("use: the player's turn - after a death the press goes next, RynthAi holds and is let go", UsePlayersTurn);
+                Run("use: just after a portal the client takes nothing for a few seconds - the press waits and goes when it can", UseAfterPortal);
+                Run("spells: the table's names and flags, the name search", SpellTableAndSearch);
+                Run("spells: whom a cast goes to", SpellCastTarget);
+                Run("spells: a slot casts, Magic mode first, refusals", SpellUse);
+                Run("spells: putting a spell in a slot (by id, by name), the command", SpellSession);
+                Run("store: a spell slot saved and read; files from before read unchanged", SpellStore);
+                Run("window: a spell slot on the script-window bar and in its editor", SpellWindow);
                 Run("use: no UseDone, the quiet release and the time limit", UseUnanswered);
                 Run("use: a slot whose object is gone uses the next of its name", UseRebind);
                 Run("use: by name, missing items, target needed", UseByNameAndTargets);
@@ -79,6 +93,17 @@ namespace RynthDefective.Tests
                 Run("window: a bar button of its own, one-shot size request", WindowHeader);
                 Run("window: slot clicks and editor events reach their code", WindowEvents);
                 Run("window: lists stay inside the engine's limits", WindowLimits);
+                Run("bar: the game's slots and own slots, usual and independent", BarMappingUsualAndIndependent);
+                Run("bar: a healing kit in one of the game's slots is used on you here", BarRetailKit);
+                Run("bar: making it independent offers to copy the game's 18 slots", BarIndependentCopy);
+                Run("store: the independent bar setting; files from before read it off", BarStoreIndependent);
+                Run("window: the settings window parses and its switches reach their code", BarSettingsWindow);
+                Run("corpses: the server's lines", CorpseLinesParse);
+                Run("corpses: a death, the server's line before or after it, nothing dropped", CorpseDeaths);
+                Run("corpses: a corpse in view is the death beside it, else one found", CorpseSeen);
+                Run("corpses: gone, rotted, at most 20, forget", CorpseGoneAndExpiry);
+                Run("corpses: the files, this character's and the others'", CorpseStoreFiles);
+                Run("corpses: rows: places, times, distance and the arrow", CorpseRowText);
             }
             finally
             {
@@ -191,19 +216,46 @@ namespace RynthDefective.Tests
             public bool InWorld { get; set; } = true;
             public uint PlayerId => Me;
             public uint SelectedId { get; set; }
-            public bool ClientBusy { get; set; }
+            public int BusyCount { get; set; }
+            /// <summary>The busy count above zero (1) or idle; set BusyCount for a count of its own.</summary>
+            public bool ClientBusy { get => BusyCount > 0; set => BusyCount = value ? Math.Max(1, BusyCount) : 0; }
             public bool Animating { get; set; }
             public bool? BotWaitingOnServer { get; set; }
             public bool? BotMacroRunning { get; set; }
+            /// <summary>RynthAi has RynthAi.Yield with its pacing on (off: a RynthAi from before, as the older tests assume).</summary>
+            public bool YieldOn;
+            /// <summary>RynthAi's own action is unanswered (read only while YieldOn).</summary>
+            public bool BotOwnAction;
+            public bool? BotPaced => YieldOn ? BotOwnAction : null;
+            /// <summary>The asks for the player's turn, the releases, and whether RynthAi holds now.</summary>
+            public int HoldAsks, Releases;
+            public bool BotHeldNow;
+            public long HeldUntil;
+            public bool HoldBot(uint ms)
+            {
+                if (!YieldOn) return false;
+                HoldAsks++;
+                BotHeldNow = true;
+                HeldUntil = NowMs + ms;
+                return true;
+            }
+            public void ReleaseBot()
+            {
+                Releases++;
+                BotHeldNow = false;
+            }
             public int UseDoneSeq { get; set; } = 1;
             public int CombatMode { get; set; } = Stance.NonCombat;
             public int RefusalSeq { get; set; }
             public uint RefusedObject;
+            /// <summary>The error of the newest UseDone (Answer sets it).</summary>
+            public uint LastUseDoneError;
             public List<CarriedItem> Inventory = new();
             public bool RefuseSends;
             public readonly List<string> Sent = new();
 
             public bool RefusalNamed(uint objectId) => RefusedObject == objectId;
+            public uint UseDoneError(int seqAtSend) => UseDoneSeq == seqAtSend + 1 ? LastUseDoneError : 0;
             public IReadOnlyList<CarriedItem> Items() => Inventory;
             public CarriedItem? Live(uint id) => Inventory.FirstOrDefault(i => i.Id == id);
 
@@ -224,12 +276,30 @@ namespace RynthDefective.Tests
             public bool SetCombatMode(int mode)
             {
                 Sent.Add("mode " + mode);
-                CombatMode = mode;
+                if (!ModeRefused) CombatMode = mode;
+                return true;
+            }
+
+            /// <summary>The client asked for a mode but stays where it is (a weapon that can't cast in hand).</summary>
+            public bool ModeRefused;
+            public bool CanCast { get; set; } = true;
+            /// <summary>The spells the character knows; null = the spellbook can't be read.</summary>
+            public HashSet<uint>? Known;
+            public bool? KnowsSpell(uint spellId) => Known == null ? null : Known.Contains(spellId);
+
+            public bool CastSpell(uint target, uint spellId)
+            {
+                if (RefuseSends) return false;
+                Sent.Add($"cast {spellId} {(target == Me ? "me" : target.ToString("X"))}");
                 return true;
             }
 
             public void Advance(long ms) => NowMs += ms;
-            public void Answer() => UseDoneSeq++;
+            public void Answer(uint error = 0)
+            {
+                UseDoneSeq++;
+                LastUseDoneError = error;
+            }
         }
 
         private sealed class Harness

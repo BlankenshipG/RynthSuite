@@ -68,6 +68,7 @@ internal static class Program
         MetaSchedulerTests.Register(runner);
         NavEngineTests.Register(runner);
         NavReachTests.Register(runner);
+        NavResumeTests.Register(runner);
         PatrolDoorwayTests.Register(runner);
         PatrolSettingsTests.Register(runner);
         PatrolPocketTests.Register(runner);
@@ -84,6 +85,7 @@ internal static class Program
         FloodPerfTests.Register(runner);
         LootSalvageTests.Register(runner);
         LootCorpseTests.Register(runner);
+        LootRetryTimingTests.Register(runner);
         ChestLootTests.Register(runner);
         OwnCorpseTests.Register(runner);
         UseRefusalTests.Register(runner);
@@ -122,6 +124,7 @@ internal static class Program
         ManaStoneChoiceTests.Register(runner);
         CustomDebuffTests.Register(runner);
         DebuffRenewTests.Register(runner);
+        VoidDebuffTests.Register(runner);
         ProfileLoadTests.Register(runner);
         ActivityInterfaceTests.Register(runner);
         CastNoDamageTests.Register(runner);
@@ -142,6 +145,7 @@ internal static class Program
         HpFailsafeTests.Register(runner);
         PluginFixTests.Register(runner);
         BuffChainTests.Register(runner);
+        ShieldBuffTests.Register(runner);
         LootPacingTests.Register(runner);
         CorpseCloseTests.Register(runner);
         VTankHotkeyTests.Register(runner);
@@ -162,6 +166,7 @@ internal static class Program
         DifficultyTierTests.Register(runner);
         TickIsolationTests.Register(runner);
         ChoresInFightTests.Register(runner);
+        CommandReplyTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }

@@ -568,7 +568,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         EnsureSpellsUi();
         _navigationEngine = new NavigationEngine(Host, _dashboard.Settings)
         {
-            ChatSubmit = HandleRynthChatSubmit,
+            // A route's chat waypoint answers as a script's line: quiet when it works (CommandReply.cs).
+            ChatSubmit = line => Reply.AsScript(() => { HandleRynthChatSubmit(line); return true; }),
             // Jump waypoints go through the UB-style jumper (turn, charge, jump, then
             // it hands navigation back). Forward jump; shift = walking jump.
             Jump = (heading, shift, ms) => _jumper?.Start(shift ? "ws" : "w", heading, ms),
@@ -793,6 +794,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _metaManager.SetPlayerId(_playerId);
         _metaManager.SetMtCommandHandler(HandleMetaChatCommand);
         _metaManager.SetRaCommandHandler(HandleRaCommand);
+        _metaManager.Reply = Reply;   // /vt lines answer by the same rule as every command (CommandReply.cs)
         if (_objectCache != null) _metaManager.SetObjectCache(_objectCache);
         _metaManager.SetFellowshipTracker(_fellowshipTracker);
         _metaManager.SetQuestTracker(_questTracker);
@@ -836,13 +838,15 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
 
         _scrollLearner = CreateScrollLearner(_dashboard.Settings);
 
-        _jumper = new Jumper(Host, _dashboard.Settings, s => Host.WriteToChat(s, 1));
+        // The jumper's own lines are refusals (busy, a bad heading or hold time, no jump hook).
+        _jumper = new Jumper(Host, _dashboard.Settings, ReplyFail);
 
         if (_objectCache != null)
         {
             var dashForAv = _dashboard;
             _autoVendor = new AutoVendorManager(Host, _dashboard.Settings, _objectCache, _playerId,
                 () => dashForAv?.CharFolder ?? string.Empty);
+            _autoVendor.Reply = Reply;   // its /ub vendor answers follow the command rule (CommandReply.cs)
             var avForUi = _autoVendor;
             _dashboard.SetAutoVendorStatusProvider(() => avForUi.Status);
             _dashboard.SetVendorProfilePathProvider(() => avForUi.OpenVendorProfilePath);
@@ -1799,7 +1803,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     // The hold timer keys off wantBuffRaw, NOT off the decision: keying it
                     // off the decision would reset it on the bypass tick itself and the
                     // ~10s retry cadence would silently become "once every 5 minutes".
-                    if (!wantBuffRaw)
+                    // Only while the macro runs (2026-10-28): stopped mid-heal, buffing still "wanted"
+                    // a vital recharge nothing acts on, and 5 min later a stopped character was told
+                    // buffing was stuck (stance wedge?) with nothing wrong.
+                    if (!wantBuffRaw || !settings.IsMacroRunning)
                     {
                         _buffingHeldSince = DateTime.MinValue;
                         _buffComaWarned = false;
@@ -3426,13 +3433,19 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
         NoteChatBarLineForMetaSchedule(trimmed);
 
+        // Every command answers (CommandReply.cs): a typed line in one chat line, a meta's quietly
+        // when it works. Unknown verbs and wrong argument counts answer with the usage.
+
         // Mag-Tools /mt command compatibility
         if (trimmed.StartsWith("/mt ", StringComparison.OrdinalIgnoreCase)
             || trimmed.Equals("/mt", StringComparison.OrdinalIgnoreCase))
         {
             eat = 1;
-            if (!HandleMtCommand(trimmed))
-                ChatLine($"[RynthAi] Unrecognized /mt command. Try /mt opt list");
+            Reply.Run(trimmed, () =>
+            {
+                if (!HandleMtCommand(trimmed))
+                    ReplyFail(MtUsageFor(trimmed));
+            });
             return;
         }
 
@@ -3440,8 +3453,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (trimmed.StartsWith("/ub ", StringComparison.OrdinalIgnoreCase))
         {
             eat = 1;
-            if (!HandleUbCommand(trimmed))
-                ChatLine("[RynthAi] Unrecognized /ub command.");
+            Reply.Run(trimmed, () =>
+            {
+                if (!HandleUbCommand(trimmed))
+                    ReplyFail(UbUsageFor(trimmed));
+            });
             return;
         }
 
@@ -3453,8 +3469,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             || trimmed.Equals("/vt", StringComparison.OrdinalIgnoreCase))
         {
             eat = 1;
-            if (!(_metaManager?.TryHandleVtCommand(trimmed) ?? false))
-                ChatLine("[RynthAi] Unrecognized /vt command.");
+            Reply.Run(trimmed, () =>
+            {
+                if (_metaManager == null) ReplyFail("[RynthAi] /vt commands aren't ready yet (log in first).");
+                else if (!_metaManager.TryHandleVtCommand(trimmed)) ReplyFail(MetaManager.VtUsageFor(trimmed));
+            });
             return;
         }
 
@@ -3467,13 +3486,15 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (parts.Length < 2 || parts[1].Equals("help", StringComparison.OrdinalIgnoreCase))
         {
             eat = 1;
-            HandleHelpCommand();
+            Reply.Run(trimmed, HandleHelpCommand);
             return;
         }
 
         string cmd = parts[1].ToLower();
         eat = 1;
-        DispatchRaCommand(cmd, parts, ref eat);
+        int raEat = 1;
+        Reply.Run(trimmed, () => DispatchRaCommand(cmd, parts, ref raEat));
+        eat = raEat;
     }
 
     /// <summary>
@@ -3516,7 +3537,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         int count = _pendingGives.Count + (redo.HasValue ? 1 : 0);
         _pendingGives.Clear();
         ResetGiveState();
-        ChatLine(count > 0
+        ReplyOk(count > 0
             ? $"[RynthAi] Give queue cancelled ({count} item(s) remaining)."
             : "[RynthAi] Give queue is already empty.");
     }
@@ -3905,7 +3926,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "cache":        HandleCacheCommand(); break;
             case "cache2":       HandleCache2Command(); break;
             case "buffs":
-                if (_buffManager == null) { ChatLine("[RynthAi] BuffManager not ready (not logged in yet)."); break; }
+                if (_buffManager == null) { ReplyFail("[RynthAi] BuffManager not ready (not logged in yet)."); break; }
                 if (parts.Length >= 3 && parts[2].Equals("item", StringComparison.OrdinalIgnoreCase))
                     _buffManager.PrintItemBuffDebug();
                 else if (parts.Length >= 3 && parts[2].Equals("tiers", StringComparison.OrdinalIgnoreCase))
@@ -3937,8 +3958,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "pets":
                 // The Mini Remote's verbs; "/ra guardian", "/ra bounty" and the like are the server
                 // plugin's (default below), as is any "/ra hub ..." verb RynthAi doesn't have.
-                if (_miniRemote == null) { ChatLine("[RynthAi] The Mini Remote isn't ready (log in first)."); break; }
+                if (_miniRemote == null) { ReplyFail("[RynthAi] The Mini Remote isn't ready (log in first)."); break; }
                 _miniRemote.HandleCommand(cmd, parts.Length > 2 ? parts[2..] : Array.Empty<string>());
+                Reply.Answered();   // the Mini Remote (or the server plugin it hands the verb to) says what it did
                 break;
             case "itemhud" when parts.Length > 2 && parts[2].Equals("add", StringComparison.OrdinalIgnoreCase):
                 HandleItemHudAdd(string.Join(" ", parts, 3, parts.Length - 3));
@@ -3962,7 +3984,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "lua":          ForwardLuaCommand(parts); break;
             case "items":
                 if (parts.Length >= 3 && parts[2].Equals("fill", StringComparison.OrdinalIgnoreCase))
-                    ChatLine(_dashboard?.FillItemsFromPack(_objectCache, _playerId) ?? "[RynthAi] Settings not ready.");
+                    ReplyResult(_dashboard?.FillItemsFromPack(_objectCache, _playerId) ?? "[RynthAi] Settings not ready.");
                 else if (parts.Length >= 3 && parts[2].Equals("clean", StringComparison.OrdinalIgnoreCase))
                     CleanMissingItems();
                 else
@@ -3973,8 +3995,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 break;
             case "follow":       HandleFollowCommand(parts); break;
             case "myquests":
-            case "refreshquests": _questTracker?.Refresh(); ChatLine("[RynthAi] Quest flag refresh requested."); break;
-            case "metamgr":       QueueMetaMgrCommand(parts); break;   // Meta Manager: applied on the next tick
+            case "refreshquests": _questTracker?.Refresh(); ReplyOk("[RynthAi] Quest flag refresh requested."); break;
+            case "metamgr":       QueueMetaMgrCommand(parts); Reply.Answered(); break;   // Meta Manager: applied (and answered) on the next tick
             case "dunnav":        HandleDungeonNavCommand(parts); break;
             case "dunnav-patrol": HandleDungeonNavPatrolCommand(parts); break;
             case "hazard":        HandleHazardCommand(parts); break;
@@ -4010,21 +4032,22 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "cancelforcebuff":  HandleCancelForceBuff(); break;
             case "buff":             HandleBuffCommand(parts); break;
             case "swaptest":
-                if (_buffManager == null) { ChatLine("[RynthAi] BuffManager not ready (not logged in yet)."); break; }
+                if (_buffManager == null) { ReplyFail("[RynthAi] BuffManager not ready (not logged in yet)."); break; }
                 _buffManager.RequestSwapTest(parts.Length > 2 ? string.Join(" ", parts, 2, parts.Length - 2) : "");
+                Reply.Answered();   // the swap test says what it does on the next heartbeat
                 break;
             case "bufftest":
-                if (_buffManager == null) { ChatLine("[RynthAi] BuffManager not ready (not logged in yet)."); break; }
+                if (_buffManager == null) { ReplyFail("[RynthAi] BuffManager not ready (not logged in yet)."); break; }
                 _buffManager.EnableCastRegistryDiagnostic = !_buffManager.EnableCastRegistryDiagnostic;
                 if (_buffManager.EnableCastRegistryDiagnostic)
                 {
-                    ChatLine("[RynthAi] BuffTest ON — fires on next item-spell cast.");
-                    ChatLine("[RynthAi]   Cast an Impen/Bane (via macro or manually). Diff logs to RynthCore.log with [BuffTest] tag.");
-                    ChatLine("[RynthAi]   Auto-disables after one cast/diff.");
+                    ReplyOk("[RynthAi] BuffTest ON — fires on next item-spell cast.");
+                    ReplyOk("[RynthAi]   Cast an Impen/Bane (via macro or manually). Diff logs to RynthCore.log with [BuffTest] tag.");
+                    ReplyOk("[RynthAi]   Auto-disables after one cast/diff.");
                 }
                 else
                 {
-                    ChatLine("[RynthAi] BuffTest OFF.");
+                    ReplyOk("[RynthAi] BuffTest OFF.");
                 }
                 break;
             case "settings":     HandleSettingsCommand(parts); break;
@@ -4035,7 +4058,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "busyinfo":     HandleBusyInfoCommand(); break;
             // /ra quit | /ra exit: close the client (the engine's /rc quit: as its close button)
             case "quit":
-            case "exit":         if (Host.HasInvokeChatParser) Host.InvokeChatParser("/rc quit"); break;
+            case "exit":
+                if (Host.HasInvokeChatParser) { Host.InvokeChatParser("/rc quit"); Reply.Answered(); }   // the client closes
+                else ReplyFail("[RynthAi] Can't close the client: the chat parser isn't available.");
+                break;
             // give variants — first-match (with optional count prefix)
             case "give":         HandleGiveCommand(parts, GiveItemMatch.Exact,   partialPlayer: false); break;
             case "givep":        HandleGiveCommand(parts, GiveItemMatch.Partial, partialPlayer: false); break;
@@ -4089,8 +4115,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 }
                 // A verb RynthAi doesn't have may be the server plugin's ("/ra t11", "/ra guardian", "/ra bounty"
                 // are RynthILT's on Infinite Leaftide); without one it goes on to the server, as any unknown "/ra".
-                if (TryForwardToServerPlugin(parts)) break;
+                if (TryForwardToServerPlugin(parts)) { Reply.Answered(); break; }   // the server plugin answers
                 eat = 0;
+                ReplyFail($"[RynthAi] Unknown command: /ra {cmd}. /ra help lists RynthAi's.");
                 break;
         }
     }

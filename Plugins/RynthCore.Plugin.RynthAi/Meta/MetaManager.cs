@@ -76,6 +76,22 @@ internal sealed class MetaManager
     private long _evalChatSeq;       // newest chat line its condition matched
     private Match? _lastChatMatch;
 
+    // ── Macro stop/start replay ──────────────────────────────────────────────
+    // Starting the macro re-arms every rule of the state it is in (so a meta puts back a
+    // route the player changed or cleared while it was stopped). The rules that had already
+    // fired in that state before the stop "replay" when they fire again. A replayed nav load
+    // (EmbedNav, /vt nav load, /ra nav load) of the route that is still loaded and unchanged
+    // keeps the route where it was: its waypoint, a Linear route's direction, a finished
+    // Once route finished; a replayed "/ra nav restart" is skipped. Reloading here restarted
+    // Once routes on every stop/start (2026-10-28). Cleared by the next real state entry; a
+    // rule that first fires after the start is not a replay, and its nav load starts the
+    // route fresh as before.
+    private readonly HashSet<MetaRule> _replayRules = new(ReferenceEqualityComparer.Instance);
+    private bool _replaying;   // the action running now belongs to a replayed rule
+
+    /// <summary>Where a meta's nav names are looked for as .nav files. Tests point it at a scratch folder.</summary>
+    internal string NavFolder { get; set; } = Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "NavProfiles");
+
     // ── Call stack (CallMetaState / ReturnFromCall) ──────────────────────────
     private readonly Stack<string> _stateStack = new();
 
@@ -135,6 +151,16 @@ internal sealed class MetaManager
 
     public void SetMtCommandHandler(Func<string, bool> handler) => _mtCommandHandler = handler;
     public void SetRaCommandHandler(Action<string> handler) => _raCommandHandler = handler;
+
+    private CommandReply? _reply;
+
+    /// <summary>What /vt commands say back (CommandReply.cs). The plugin hands over its own, so a /vt
+    /// line answers like every other command; on its own (tests) a meta's action is the "sent by a meta" test.</summary>
+    internal CommandReply Reply
+    {
+        get => _reply ??= new CommandReply((text, color) => _host.WriteToChat(text, color), line => _host.Log(line), () => IsExecutingAction);
+        set => _reply = value;
+    }
 
     /// <summary>Embedded Nav Route's "Patrol" (any case): the dungeon patrol instead of a route,
     /// unless the meta or NavProfiles has a route by that name.</summary>
@@ -236,6 +262,73 @@ internal sealed class MetaManager
             ? 0
             : FindNearestWaypoint(route);
 
+    /// <summary>
+    /// A replayed nav load (see <see cref="_replayRules"/>): true, and nothing reloaded, when
+    /// <paramref name="path"/> is the route loaded now and it still has the points of its source
+    /// <paramref name="source"/> (not edited, reversed or swapped for another since). The route
+    /// keeps its waypoint and a Linear route its direction (the engine sees the same route
+    /// object); nav is switched on as the load would, except for a finished Once route, which
+    /// stays finished. False: the caller loads the route fresh, as before.
+    /// </summary>
+    private bool KeepRunningRoute(string path, NavRouteParser source, string what)
+    {
+        var cur = _settings.CurrentRoute;
+        if (cur == null || cur.Points.Count == 0 || source.Points.Count == 0) return false;
+        if (!SameNavPath(_settings.CurrentNavPath, path)) return false;
+        if (!SameLines(cur.ToLines(), source.ToLines())) return false;
+
+        bool finished = _settings.NavRouteFinished();
+        if (!finished) _settings.EnableNavigation = true;
+        RynthLog.Write(LogCat.Meta, finished
+            ? $"[Meta] {what}: the macro started again on the same route, which is finished - it stays finished (/ra nav restart re-runs it)"
+            : $"[Meta] {what}: the macro started again on the same route - it carries on at [{_settings.ActiveNavIndex}] instead of starting over");
+        return true;
+    }
+
+    /// <summary>A replayed "/vt nav load" or "/ra nav load" of the .nav file that is still the loaded, unchanged route.</summary>
+    private bool KeepRunningNavFile(string rawName)
+    {
+        string name = NewProfileFiles.Tidy(rawName, NewProfileFiles.NavExtensions, out _);
+        if (NewProfileFiles.Validate(name) != null) return false;
+        string path = Path.Combine(NavFolder, name + ".nav");
+        if (!File.Exists(path)) return false;
+        return KeepRunningRoute(path, NavRouteParser.Load(path), $"nav load '{name}'");
+    }
+
+    /// <summary>
+    /// A replayed /ra nav command that would start the route over: "/ra nav load" of the running,
+    /// unchanged route, or "/ra nav restart". True: skipped, the nav stays where it was.
+    /// </summary>
+    private bool SkipReplayedNavCommand(string cmd)
+    {
+        string[] parts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 3 || !parts[1].Equals("nav", StringComparison.OrdinalIgnoreCase)) return false;
+        if (parts[2].Equals("restart", StringComparison.OrdinalIgnoreCase))
+        {
+            RynthLog.Write(LogCat.Meta, "[Meta] /ra nav restart: not run again for the macro start (it ran when the rule first fired)");
+            return true;
+        }
+        return parts[2].Equals("load", StringComparison.OrdinalIgnoreCase) && parts.Length >= 4
+            && KeepRunningNavFile(string.Join(" ", parts, 3, parts.Length - 3));
+    }
+
+    private static bool SameNavPath(string? a, string? b)
+    {
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+        if (string.Equals(a, b, StringComparison.OrdinalIgnoreCase)) return true;
+        if (a.StartsWith('<') || b.StartsWith('<')) return false;   // "<embedded:...>" is not a file
+        try { return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
+    }
+
+    private static bool SameLines(List<string> a, List<string> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+            if (!string.Equals(a[i], b[i], StringComparison.Ordinal)) return false;
+        return true;
+    }
+
     public ExpressionEngine Expressions => _expressions ??= CreateExpressionEngine();
 
     private ExpressionEngine CreateExpressionEngine()
@@ -312,7 +405,10 @@ internal sealed class MetaManager
         // Macro just started — force reset so rules re-evaluate even if state
         // name matches where we stopped. Otherwise HasFired stays latched across
         // a stop/start cycle and IF:Always rules like EmbedNav never re-fire.
-        if (!_lastMacroRunning)
+        // The rules that had already fired replay (see _replayRules): a replayed nav
+        // load of the route still running keeps its place instead of starting it over.
+        bool macroStarted = !_lastMacroRunning;
+        if (macroStarted)
             _settings.ForceStateReset = true;
         _lastMacroRunning = true;
 
@@ -343,9 +439,21 @@ internal sealed class MetaManager
                 _statePStartTime = _statePResume is double resumed ? Clock().AddSeconds(-resumed) : Clock();
             _statePResume = null;
             _settings.ForceStateReset = false;
+            // A bare stop/start (no state entry, no meta load pending) replays the rules that
+            // had fired; any other reset is a real state entry and nothing is a replay.
+            bool replay = macroStarted && !realStateEntry && !metaReloaded;
             lock (_settings.MetaRulesLock)
-                foreach (var r in _settings.MetaRules) r.HasFired = false;
+            {
+                _replayRules.Clear();
+                foreach (var r in _settings.MetaRules)
+                {
+                    if (replay && r.HasFired) _replayRules.Add(r);
+                    r.HasFired = false;
+                }
+            }
         }
+        else if (stateChanged)
+            _replayRules.Clear();
         _lastState = _settings.CurrentState;
 
         double secondsInState = (Clock() - _stateStartTime).TotalSeconds;
@@ -434,7 +542,9 @@ internal sealed class MetaManager
                 if (_settings.MetaDebug)
                     _host.WriteToChat($"[Meta] {rule.State} | {DescribeCondition(rule)} → {DescribeAction(rule)}", 1);
 
-                ExecuteAction(rule);
+                _replaying = _replayRules.Contains(rule);
+                try { ExecuteAction(rule); }
+                finally { _replaying = false; }
 
                 // If state changed during this action, stop evaluating further rules this tick
                 if (_settings.CurrentState != _lastState || _settings.ForceStateReset)
@@ -888,7 +998,10 @@ internal sealed class MetaManager
                         if (cmd.StartsWith("/ra ", StringComparison.OrdinalIgnoreCase)
                             || cmd.Equals("/ra", StringComparison.OrdinalIgnoreCase))
                         {
-                            _raCommandHandler?.Invoke(cmd);
+                            // A replayed "/ra nav load" of the route still running, or "/ra nav restart",
+                            // would start the route over: skipped.
+                            if (!(_replaying && SkipReplayedNavCommand(cmd)))
+                                _raCommandHandler?.Invoke(cmd);
                         }
                         else if (_host.HasInvokeChatParser)
                             _host.InvokeChatParser(cmd);
@@ -977,7 +1090,7 @@ internal sealed class MetaManager
                     // circular hunt through every cell of this dungeon, no nav file). The Meta panel
                     // offers it first in Embedded Nav Route's list. A real route called Patrol wins.
                     if (IsPatrolRoute(routeName) && !_settings.EmbeddedNavs.ContainsKey(routeName)
-                        && !File.Exists(Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "NavProfiles", routeName + ".nav")))
+                        && !File.Exists(Path.Combine(NavFolder, routeName + ".nav")))
                     {
                         _host.Log("[Meta] EmbedNav: Patrol -> /ra dunnav-patrol");
                         if (_raCommandHandler != null) _raCommandHandler("/ra dunnav-patrol");
@@ -1002,6 +1115,8 @@ internal sealed class MetaManager
                     if (_settings.EmbeddedNavs.TryGetValue(routeName, out var embedded))
                     {
                         var newRoute = NavRouteParser.LoadFromLines(embedded);
+                        // The macro was started again: the route still running keeps its place.
+                        if (_replaying && KeepRunningRoute($"<embedded:{routeName}>", newRoute, $"EmbedNav '{routeName}'")) break;
                         _settings.CurrentNavPath   = $"<embedded:{routeName}>";
                         _settings.CurrentRoute     = newRoute;
                         _settings.ActiveNavIndex   = StartIndexForRoute(newRoute);
@@ -1012,11 +1127,11 @@ internal sealed class MetaManager
                     }
 
                     // Fallback: a standalone .nav file in NavProfiles.
-                    string navFolder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "NavProfiles");
-                    string fullPath = Path.Combine(navFolder, routeName + ".nav");
+                    string fullPath = Path.Combine(NavFolder, routeName + ".nav");
                     if (File.Exists(fullPath))
                     {
                         var newRoute = NavRouteParser.Load(fullPath);
+                        if (_replaying && KeepRunningRoute(fullPath, newRoute, $"EmbedNav file '{routeName}'")) break;
                         _settings.CurrentNavPath   = fullPath;
                         _settings.CurrentRoute     = newRoute;
                         _settings.ActiveNavIndex   = StartIndexForRoute(newRoute);
@@ -1171,7 +1286,9 @@ internal sealed class MetaManager
         {
             string optName = parts[3].ToLower();
             string optVal = parts[4];
-            return TrySetVtOption(optName, optVal);
+            bool set = TrySetVtOption(optName, optVal);
+            ReplyVtOption(parts[3], optVal);
+            return set;
         }
 
         // /vt opt get <option> — show one option's value.
@@ -1179,7 +1296,7 @@ internal sealed class MetaManager
             parts[2].Equals("get", StringComparison.OrdinalIgnoreCase))
         {
             string optName = parts[3];
-            _host.WriteToChat($"[RynthAi] {optName} = {GetVtOption(optName) ?? "(not set)"}", 1);
+            Reply.Info($"[RynthAi] {optName} = {GetVtOption(optName) ?? "(not set)"}");
             return true;
         }
 
@@ -1191,11 +1308,11 @@ internal sealed class MetaManager
             foreach (string name in System.Linq.Enumerable.OrderBy(VtOptionMap.Keys, k => k, StringComparer.OrdinalIgnoreCase))
             {
                 string item = $"{name}={GetVtOption(name) ?? "?"}";
-                if (line.Length + item.Length > 180) { _host.WriteToChat("[RynthAi] " + line, 1); line.Clear(); }
+                if (line.Length + item.Length > 180) { Reply.Info("[RynthAi] " + line); line.Clear(); }
                 if (line.Length > 0) line.Append(", ");
                 line.Append(item);
             }
-            if (line.Length > 0) _host.WriteToChat("[RynthAi] " + line, 1);
+            if (line.Length > 0) Reply.Info("[RynthAi] " + line);
             return true;
         }
 
@@ -1227,8 +1344,8 @@ internal sealed class MetaManager
         // /vt tapjump — a quick jump with no charge.
         if (sub == "tapjump")
         {
-            if (!(_host.HasTapJump && _host.TapJump()))
-                _host.WriteToChat("[RynthAi] /vt tapjump: the engine's jump isn't available.", 1);
+            if (_host.HasTapJump && _host.TapJump()) Reply.Ok("[RynthAi] Tap jump.");
+            else Reply.Fail("[RynthAi] /vt tapjump: the engine's jump isn't available.");
             return true;
         }
 
@@ -1257,6 +1374,12 @@ internal sealed class MetaManager
              || parts[2].Equals("save", StringComparison.OrdinalIgnoreCase)))
         {
             string name = string.Join(" ", parts, 3, parts.Length - 3);
+            // The macro was started again: the route still running keeps its place.
+            if (_replaying && parts[2].Equals("load", StringComparison.OrdinalIgnoreCase) && KeepRunningNavFile(name))
+            {
+                Reply.Ok($"[RynthAi] Nav '{name}' is the route already running; it keeps its place.");
+                return true;
+            }
             _raCommandHandler?.Invoke($"/ra nav {parts[2].ToLowerInvariant()} {name}");
             return true;
         }
@@ -1281,11 +1404,11 @@ internal sealed class MetaManager
             }
             if (!File.Exists(path))
             {
-                _host.WriteToChat($"[RynthAi] Loot profile not found: {name}", 1);
+                Reply.Fail($"[RynthAi] Loot profile not found: {name}");
                 return true;
             }
             _settings.CurrentLootPath = path;
-            _host.WriteToChat($"[RynthAi] Loot profile set: {Path.GetFileName(path)}", 1);
+            Reply.Ok($"[RynthAi] Loot profile set: {Path.GetFileName(path)}");
             return true;
         }
 
@@ -1295,7 +1418,7 @@ internal sealed class MetaManager
             string state = string.Join(" ", parts, 2, parts.Length - 2);
             _settings.CurrentState = state;
             _settings.ForceStateReset = true;
-            _host.WriteToChat($"[RynthAi] Meta state set: {state}", 1);
+            Reply.Ok($"[RynthAi] Meta state set: {state}");
             return true;
         }
 
@@ -1306,13 +1429,19 @@ internal sealed class MetaManager
             if (parts.Length >= 4 && (parts[2].Equals("loadchar", StringComparison.OrdinalIgnoreCase)
                                       || parts[2].Equals("savechar", StringComparison.OrdinalIgnoreCase)))
                 _raCommandHandler?.Invoke($"/ra settings {parts[2].ToLowerInvariant()} {string.Join(" ", parts, 3, parts.Length - 3)}");
+            else
+                Reply.Ignored("[RynthAi] Usage: /vt settings loadchar|savechar <name> (other /vt settings verbs are VTank's own; ignored).");
             return true;
         }
 
         // /vt <option> <value> — an option written as a verb (DerethExploration: "/vt navclosestoprange
         // 0.005"): the same as /vt opt set, for the VTank options RynthAi maps.
         if (parts.Length == 3 && (VtOptionMap.ContainsKey(sub) || IsSpecialVtOption(sub)))
-            return TrySetVtOption(sub, parts[2]);
+        {
+            bool set = TrySetVtOption(sub, parts[2]);
+            ReplyVtOption(parts[1], parts[2]);
+            return set;
+        }
 
         // /vt <verb> aliases → existing /ra handlers (Phase 1.3 VTank-meta migration).
         // Re-dispatch through the /ra path (_raCommandHandler → HandleRaCommand).
@@ -1343,6 +1472,7 @@ internal sealed class MetaManager
                 _deleteMonsterLogged = true;
                 RynthLog.Write(LogCat.Meta, "[Meta] /vt deletemonster accepted and ignored (no RynthAi equivalent).");
             }
+            Reply.Ignored("[RynthAi] /vt deletemonster has no RynthAi equivalent; accepted and ignored.");
             return true;
         }
 
@@ -1356,15 +1486,16 @@ internal sealed class MetaManager
                 int n = route.Points.Count;
                 route.Points.Reverse();
                 _settings.ActiveNavIndex = Math.Clamp(n - 1 - _settings.ActiveNavIndex, 0, n - 1);
-                _host.WriteToChat($"[RynthAi] Route reversed ({n} pts).", 1);
+                Reply.Ok($"[RynthAi] Route reversed ({n} pts).");
             }
+            else Reply.Fail("[RynthAi] /vt reverseroute: no route is loaded.");
             return true;
         }
 
         // /vt echo <text> — local chat echo (no server send).
         if (sub == "echo" && parts.Length >= 3)
         {
-            _host.WriteToChat(string.Join(" ", parts, 2, parts.Length - 2), 1);
+            Reply.Info(string.Join(" ", parts, 2, parts.Length - 2));
             return true;
         }
 
@@ -1376,6 +1507,49 @@ internal sealed class MetaManager
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// After a /vt opt set (or "/vt &lt;option&gt; &lt;value&gt;"): the option's value now, and whether RynthAi
+    /// has a setting by that name (otherwise it is only kept for metas to read back).
+    /// </summary>
+    private void ReplyVtOption(string vtName, string asked)
+    {
+        bool known = IsSpecialVtOption(vtName) || VtOptionMap.ContainsKey(vtName)
+                     || Expressions.BuildSettingsMapPublic().ContainsKey(vtName);
+        string now = GetVtOption(vtName) ?? "(not set)";
+        // A switch asked for as true/false/on/off reads back as 1/0: shown the way it was asked.
+        if (asked.ToLowerInvariant() is "true" or "false" or "on" or "off" && now is "1" or "0" or "true" or "false")
+            now = now is "1" or "true" ? "True" : "False";
+        Reply.Ok($"[RynthAi] {vtName} = {now}"
+                 + (known ? "" : " (no RynthAi setting by that name: kept only as an option metas can read)"));
+    }
+
+    /// <summary>The /vt verbs RynthAi takes, for the usage line.</summary>
+    internal const string VtVerbList = "opt set|get|list, <option> <value>, start, stop, e, jump, tapjump, equipitemsfor, "
+        + "meta load, nav load|save, loot load, setmetastate, settings loadchar|savechar, setattackbar, forcebuff, "
+        + "cancelforcebuff, cancelbuff, addnavpt, mexec, clearbusy, testitem, propertydump, reverseroute, echo";
+
+    /// <summary>The usage line for a /vt line RynthAi didn't take (an unknown verb or the wrong arguments).</summary>
+    internal static string VtUsageFor(string line)
+    {
+        string[] w = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string verb = w.Length > 1 ? w[1].ToLowerInvariant() : "";
+        string? usage = verb switch
+        {
+            "opt" => "/vt opt set <option> <value> | /vt opt get <option> | /vt opt list",
+            "meta" => "/vt meta load <name>",
+            "nav" => "/vt nav load <name> | /vt nav save <name>",
+            "loot" or "lootprofile" or "looting" => "/vt loot load <profile>",
+            "setmetastate" => "/vt setmetastate <state>",
+            "equipitemsfor" => "/vt equipitemsfor <monster name>",
+            "setattackbar" => "/vt setattackbar <0 to 1>",
+            "echo" => "/vt echo <text>",
+            _ => null,
+        };
+        return usage != null
+            ? "[RynthAi] Usage: " + usage
+            : $"[RynthAi] Unknown /vt command{(verb.Length > 0 ? $" '{verb}'" : "")}. RynthAi takes: {VtVerbList}.";
     }
 
     /// <summary>The RynthAi setting a VTank option name maps to (EnableNav → EnableNavigation).</summary>

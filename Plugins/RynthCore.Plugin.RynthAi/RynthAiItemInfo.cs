@@ -69,7 +69,7 @@ public sealed partial class RynthAiPlugin
             PrintSelectedItemInfo();
             return;
         }
-        if (s == null) { ChatLine("[RynthAi] Settings not ready (log in first)."); return; }
+        if (s == null) { ReplyFail("[RynthAi] Settings not ready (log in first)."); return; }
 
         switch (sub)
         {
@@ -83,40 +83,40 @@ public sealed partial class RynthAiPlugin
             case "gui":
             case "window":
                 s.ShowWindow = !s.ShowWindow;
-                ChatLine($"[RynthAi] Item info window {(s.ShowWindow ? "opened" : "closed")}.");
+                ReplyOk($"[RynthAi] Item info window {(s.ShowWindow ? "opened" : "closed")}.");
                 return;
 
             case "value":
                 if (ParseOnOff(arg3) is bool v) s.ShowValueAndBurden = v;
-                ChatLine($"[RynthAi] Item info value/burden: {OnOff(s.ShowValueAndBurden)}");
+                ReplyOk($"[RynthAi] Item info value/burden: {OnOff(s.ShowValueAndBurden)}");
                 return;
 
             case "verbose":
                 if (ParseOnOff(arg3) is bool all)
                     s.SpellMode = all ? MagItemInfoSettings.SpellModeAll : MagItemInfoSettings.SpellModeMag;
-                ChatLine($"[RynthAi] Item info all spells: {OnOff(s.SpellMode == MagItemInfoSettings.SpellModeAll)}");
+                ReplyOk($"[RynthAi] Item info all spells: {OnOff(s.SpellMode == MagItemInfoSettings.SpellModeAll)}");
                 return;
 
             case "field":
                 if (!MagItemInfoCatalog.TryFindField(arg3, out MagItemInfoField field))
                 {
-                    ChatLine($"[RynthAi] Unknown field '{arg3}'. /ra iteminfo fields lists them.");
+                    ReplyFail($"[RynthAi] Unknown field '{arg3}'. /ra iteminfo fields lists them.");
                     return;
                 }
                 if (ParseOnOff(arg4) is bool fieldOn) s.SetHidden(field, !fieldOn);
-                ChatLine($"[RynthAi] Item info field {field}: {OnOff(!s.IsHidden(field))}");
+                ReplyOk($"[RynthAi] Item info field {field}: {OnOff(!s.IsHidden(field))}");
                 return;
 
             case "rating":
                 int r = MagItemInfoCatalog.FindRating(arg3);
                 if (r < 0)
                 {
-                    ChatLine($"[RynthAi] Unknown rating '{arg3}'. /ra iteminfo fields lists them.");
+                    ReplyFail($"[RynthAi] Unknown rating '{arg3}'. /ra iteminfo fields lists them.");
                     return;
                 }
                 if (ParseOnOff(arg4) is bool ratingOn) s.SetRatingHidden(r, !ratingOn);
                 var rating = MagItemInfoCatalog.Ratings[r];
-                ChatLine($"[RynthAi] Item info rating {rating.Tag} ({rating.Name}): {OnOff(!s.IsRatingHidden(r))}");
+                ReplyOk($"[RynthAi] Item info rating {rating.Tag} ({rating.Name}): {OnOff(!s.IsRatingHidden(r))}");
                 return;
 
             case "fields":
@@ -131,10 +131,10 @@ public sealed partial class RynthAiPlugin
                     case "off":   case "none": s.ClickTrigger = MagItemInfoSettings.ClickOff;  break;
                     case "": break;
                     default:
-                        ChatLine("[RynthAi] Usage: /ra iteminfo click left|right|off");
+                        ReplyFail("[RynthAi] Usage: /ra iteminfo click left|right|off");
                         return;
                 }
-                ChatLine($"[RynthAi] Item info on click: {MagItemInfoCatalog.ClickTriggers[s.ClickTrigger]}");
+                ReplyOk($"[RynthAi] Item info on click: {MagItemInfoCatalog.ClickTriggers[s.ClickTrigger]}");
                 return;
 
             case "layout":
@@ -144,22 +144,22 @@ public sealed partial class RynthAiPlugin
                     case "line": case "mag": case "one":   s.Layout = MagItemInfoSettings.LayoutOneLine;  break;
                     case "": break;
                     default:
-                        ChatLine("[RynthAi] Usage: /ra iteminfo layout pet|line");
+                        ReplyFail("[RynthAi] Usage: /ra iteminfo layout pet|line");
                         return;
                 }
-                ChatLine($"[RynthAi] Item info layout: {MagItemInfoCatalog.Layouts[s.Layout]}");
+                ReplyOk($"[RynthAi] Item info layout: {MagItemInfoCatalog.Layouts[s.Layout]}");
                 return;
 
             case "reset":
                 s.ResetToDefaults();
-                ChatLine("[RynthAi] Item info settings reset to defaults.");
+                ReplyOk("[RynthAi] Item info settings reset to defaults.");
                 return;
         }
 
         if (ParseOnOff(sub) is bool onSelect)
         {
             s.OnSelect = onSelect;
-            ChatLine($"[RynthAi] Item info on select: {OnOff(onSelect)}");
+            ReplyOk($"[RynthAi] Item info on select: {OnOff(onSelect)}");
             return;
         }
         if (sub is not ("help" or "?"))
@@ -168,9 +168,9 @@ public sealed partial class RynthAiPlugin
             string name = string.Join(" ", parts, 2, parts.Length - 2).Trim();
             uint found = FindInventoryItemByName(name);
             if (found != 0) { QueueItemInfo(unchecked((int)found), requestId: true); return; }
-            ChatLine($"[RynthAi] Item info: no \"{name}\" in your inventory.");
+            ReplyFail($"[RynthAi] Item info: no \"{name}\" in your inventory.");
         }
-        ChatLine("[RynthAi] Usage: /ra iteminfo [<item name>|me|on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|reset]");
+        ReplyFail("[RynthAi] Usage: /ra iteminfo [<item name>|me|on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|reset]");
     }
 
     /// <summary>
@@ -244,9 +244,9 @@ public sealed partial class RynthAiPlugin
     /// <summary>/ra iteminfo and the window's "Print to chat" button.</summary>
     private void PrintSelectedItemInfo()
     {
-        if (!Host.HasGetSelectedItemId) { ChatLine("[RynthAi] Host does not expose the selected item."); return; }
+        if (!Host.HasGetSelectedItemId) { ReplyFail("[RynthAi] Host does not expose the selected item."); return; }
         uint selected = Host.GetSelectedItemId();
-        if (selected == 0) { ChatLine("[RynthAi] No item selected. Click an item first."); return; }
+        if (selected == 0) { ReplyFail("[RynthAi] No item selected. Click an item first."); return; }
         if (IsSelf(selected)) { QueueSelfRatings(auto: false); return; }
         QueueItemInfo(unchecked((int)selected), requestId: true);
     }
@@ -276,6 +276,7 @@ public sealed partial class RynthAiPlugin
         }
         if (requestId && Host.HasRequestId) Host.RequestId(uid);
         ItemInfoLog($"0x{uid:X8}: waiting for ID data (requested={requestId && Host.HasRequestId})");
+        Reply.Answered();   // a command's item info follows when the ID data arrives
         _itemInfoPendingId = itemId;
         _itemInfoPendingSince = Environment.TickCount64;
     }

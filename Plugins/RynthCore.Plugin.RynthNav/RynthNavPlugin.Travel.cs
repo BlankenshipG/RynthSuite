@@ -1058,6 +1058,7 @@ public sealed partial class RynthNavPlugin
             case "fav": CmdFav(rest); break;
             case "recent":
                 if (rest.Equals("clear", StringComparison.OrdinalIgnoreCase)) { _store.ClearRecent(); Say("recent places cleared"); }
+                else Say(NavReplies.Recent(_store.Recent));
                 break;
             case "recalls": CmdRecalls(rest); break;
             case "tie": CmdTie(rest); break;
@@ -1065,10 +1066,11 @@ public sealed partial class RynthNavPlugin
             case "mesh": CmdMesh(rest); break;
             case "saveroute": CmdSaveRoute(rest); break;
             case "arrive":
-                if (double.TryParse(rest, NumberStyles.Float, CultureInfo.InvariantCulture, out double yd) && yd >= 2 && yd <= 200)
-                { _arrow.ArriveUnits = yd; Say($"the arrow counts you as arrived within {yd:F0} yd"); }
+                if (NavReplies.TryArrive(rest, out double yd)) { _arrow.ArriveUnits = yd; Say(NavReplies.Arrived(yd)); }
+                else if (rest.Length == 0) Say(NavReplies.ArriveUsage(rest, _arrow.ArriveUnits));
+                else SayFail(NavReplies.ArriveUsage(rest, _arrow.ArriveUnits));
                 break;
-            default: Say($"unknown '{cmd}' — /rnav help"); break;
+            default: SayFail(NavReplies.Unknown(cmd)); break;
         }
     }
 

@@ -31,16 +31,24 @@
          pictures) are checked first; so are the UseDone count (v63), wield/refusal info (v70) and
          the chat parser the key binding goes through. Below v71 it still uses items (/rdef use). -->
     <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
-    <RynthPluginDescription>Item bar: one-touch use of kits, potions and weapons by slot or key, and a fast weapon picker.</RynthPluginDescription>
+    <RynthPluginDescription>Draws the Shortcuts bar (the game's 18 slots and its own), the Game Panels buttons and the Selection window: one-touch kits, potions, weapons and spells by slot or key, and a fast weapon picker. Settings: the bar's gear or /rdef settings.</RynthPluginDescription>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- What RynthAi is doing (read only), so a weapon swap stays out of its way. -->
     <Compile Include="..\Shared\RynthAiActivityApi.cs" Link="Shared\RynthAiActivityApi.cs" />
+    <Compile Include="..\Shared\RynthAiYieldApi.cs" Link="Shared\RynthAiYieldApi.cs" />
     <!-- An older RynthAi without RynthAi.Activity: its RynthAi.Status macro bit instead. -->
     <Compile Include="..\Shared\RynthAiStatusApi.cs" Link="Shared\RynthAiStatusApi.cs" />
     <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file as RynthCore src\Shared. -->
     <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- How a chat command answers (2026-10-28): the shared reply queue and colours. -->
+    <Compile Include="..\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Spell slots (2026-10-28): spell names and whom a spell is cast on, from RynthAi's spell table
+         (linked as RynthInventory and RynthOracle link it; Model/Spells.cs reads it). -->
+    <EmbeddedResource Include="..\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthDefective.SpellData.txt" Link="Shared\SpellData.txt" />
   </ItemGroup>
   <ItemGroup>
     <!-- The shortcut bar (2026-10-22): drawn with ImGui.NET bound to the engine's cimgui, in the

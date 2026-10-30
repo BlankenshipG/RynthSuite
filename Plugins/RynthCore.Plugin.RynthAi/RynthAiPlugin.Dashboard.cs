@@ -36,7 +36,8 @@ public sealed partial class RynthAiPlugin
     private readonly ConcurrentQueue<Action> _dashActions = new();
     private readonly DateTime _dashLoadedUtc = DateTime.UtcNow;
     private long _dashDrawnMs = long.MinValue / 2;                      // render thread writes, tick reads
-    private long _nextDashVitalsMs, _nextDashClassicMs, _dashSaveAtMs;
+    private long _nextDashVitalsMs, _nextDashClassicMs, _dashSaveAtMs, _nextDashSortMs;
+    private volatile int _dashSort = -1;                                // RynthSort's auto-sort (tick writes, render reads)
     private volatile bool _classicLook;                                 // the engine's look is Classic (its file)
     private long _classicAskedMs;                                       // "Classic look" clicked: the window steps aside now
     private volatile FightTarget? _dashFight;                           // tick writes, render reads
@@ -104,6 +105,11 @@ public sealed partial class RynthAiPlugin
             _dashboard?.RefreshDashboardVitals();
             _dashFight = ReadFightTarget(_dashFight);
         }
+        if (shown && now >= _nextDashSortMs)
+        {
+            _nextDashSortMs = now + 500;
+            _dashSort = ReadAutoSort();
+        }
         if (now >= _nextDashClassicMs)
         {
             _nextDashClassicMs = now + 2000;
@@ -167,6 +173,36 @@ public sealed partial class RynthAiPlugin
         QueueDashCommand("/rc dashboard classic");
     }
 
+    /// <summary>RynthSort's auto-sort for the dashboard's key: -1 not loaded / not logged in / too old, 0 off, 1 on.</summary>
+    internal int DashAutoSort => _dashSort;
+
+    /// <summary>
+    /// RynthSort's auto-sort state, through the engine's JSON broker (RynthSort's
+    /// RynthPluginGetAutoSortJson, {"auto":-1|0|1}); -1 when RynthSort isn't loaded or predates
+    /// the export. Plugin tick.
+    /// </summary>
+    private int ReadAutoSort()
+    {
+        if (!Host.HasGetPluginExportJson) return -1;
+        string? json = Host.GetPluginExportJson("RynthSort", "RynthPluginGetAutoSortJson");
+        if (json == null) return -1;
+        return json.Contains("\"auto\":1", StringComparison.Ordinal) ? 1
+             : json.Contains("\"auto\":0", StringComparison.Ordinal) ? 0 : -1;
+    }
+
+    /// <summary>The dashboard's auto-sort key: RynthSort on or off, quietly (the key shows it). Plugin tick.</summary>
+    internal void SetDashAutoSort(bool on)
+    {
+        if (!SendSortCommand(on ? "on quiet" : "off quiet")) return;
+        // Lit at once; RynthSort runs the command on its own tick, so the next read waits a little.
+        _dashSort = on ? 1 : 0;
+        _nextDashSortMs = Environment.TickCount64 + 1000;
+    }
+
+    /// <summary>An /rsort command (without "/rsort") to RynthSort; false when it isn't loaded. Plugin tick.</summary>
+    internal bool SendSortCommand(string arg) =>
+        Host.HasSendPluginCommand && Host.SendPluginCommand("RynthSort", "rsort", arg);
+
     internal void QueueDashAction(Action action)
     {
         if (_dashActions.Count < 64) _dashActions.Enqueue(action);
@@ -215,6 +251,9 @@ internal sealed class DashboardBridge : IDashboardHost
     public void AdjustOpacity(float delta) => Queue(() => { _p.DashboardRenderer?.AdjustOpacity(delta); _p.ScheduleDashSave(); });
     public void ToggleLock() => Queue(() => { _p.DashboardRenderer?.TogglePanelLock(); _p.ScheduleDashSave(); });
     public void SelectProfile(int kind, int index) => Queue(() => _p.DashboardRenderer?.SelectProfileAtIndex(kind, index));
+    public int AutoSort => _p.DashAutoSort;
+    public void SetAutoSort(bool on) => Queue(() => _p.SetDashAutoSort(on));
+    public void ToggleSortWindow() => Queue(() => _p.SendSortCommand(string.Empty));
     public void StartPatrol() => Queue(_p.HandleDungeonNavPatrol);
     public void ToggleSpells() => _p.EnqueueRemoteCommand("spells", "toggle");
     public void UseClassicLook() => _p.UseClassicLook();

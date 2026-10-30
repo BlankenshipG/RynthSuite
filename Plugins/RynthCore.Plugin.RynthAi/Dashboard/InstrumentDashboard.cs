@@ -17,16 +17,17 @@
 //    activity   an inset line: what the bot is doing (coloured, with its icon) and
 //               the meta's state.
 //    controls   RUN / STOP, the five subsystem keys (lit LED = on; right-click:
-//               their settings), Force rebuff.
+//               their settings), then RynthSort's auto-sort key (when it's loaded;
+//               right-click: its window) and Force rebuff.
 //    launchers  a tray of window buttons (lit while open), labels when wide.
 //    footer     FPS (coloured by rate), RynthAi's version, bot and client uptime.
 //    bars       the vitals and the target (15 segments, coloured by health).
 //  Minimized keeps the header, the activity line, the controls and the bars.
-//  Drawers on the edges (docked only): Ranges, Loaded files, Patrol and the Mini
+//  Drawers on the edges, docked or popped out: Ranges, Loaded files, Patrol and the Mini
 //  Remote on the left, My settings on the right; a tab's right-click moves its
 //  drawer to the other edge. Ranges, Patrol and My settings show the Settings
 //  panel's rows, which RynthCore draws into them (RenderSettingsDrawer, v90).
-//  Popped out the pickers are in the options.
+//  Popped out the pickers are in the options as well.
 //
 //  Colours: the player's theme (GetUiColor v90: Background, KeyFace, Hairline,
 //  Inset, Text, Muted, Faint, Accent, Highlight); health, stamina, mana and the
@@ -68,6 +69,11 @@ internal interface IDashboardHost
     void AdjustOpacity(float delta);
     void ToggleLock();
     void SelectProfile(int kind, int index);
+    /// <summary>RynthSort's auto-sort: -1 RynthSort not loaded (or not logged in, or too old to say), 0 off, 1 on.</summary>
+    int AutoSort { get; }
+    void SetAutoSort(bool on);
+    /// <summary>RynthSort's own window, shown or hidden.</summary>
+    void ToggleSortWindow();
     void StartPatrol();
     void ToggleSpells();
     /// <summary>The Classic (retail) look: RynthCore's own face comes back for it.</summary>
@@ -195,7 +201,10 @@ internal sealed unsafe class InstrumentDashboard
 
         OptionsMenu(prefs);
         CharMenu();
-        if (!popped) Drawers(prefs, origin, new Vector2(width, height));
+        // Popped out too (Tom 2026-10-24: "many of the settings are built into the drawers"): the
+        // pop-out's picture grows past the panel to hold them, and RynthCore's pop-outs take clicks
+        // on a window drawn there, not only on a menu.
+        Drawers(prefs, origin, new Vector2(width, height));
         return new Vector2(width, height);
     }
 
@@ -428,18 +437,31 @@ internal sealed unsafe class InstrumentDashboard
             Tracked(dl, bf, bf.FontSize, new Vector2(gx + glyph + Px(6), MathF.Round(rp.Y + (h - bf.FontSize) * 0.5f)), fg, word, track);
         }
 
-        // The subsystem keys.
+        // The subsystem keys. With RynthSort loaded its auto-sort key sits at the right beside Force
+        // rebuff, and at the narrowest window every key gives up a pixel for it.
+        int sort = _d.AutoSort;
+        float kw = Px(KeyW);
+        if (sort >= 0)
+            kw = MathF.Min(kw, MathF.Floor((w - Px(RunW) - 2 * Px(Gap) - Subsystems.Length * Px(KeyGap) - Px(FrW)) / (Subsystems.Length + 1)));
         float kx = x0 + Px(RunW) + Px(Gap);
         bool[] on = { _r.Combat, _r.Buffing, _r.Navigation, _r.Looting, _r.Meta };
         for (int i = 0; i < Subsystems.Length; i++)
         {
-            Key(dl, i, on[i], new Vector2(kx, y), new Vector2(Px(KeyW), h));
-            kx += Px(KeyW) + Px(KeyGap);
+            Key(dl, i, on[i], new Vector2(kx, y), new Vector2(kw, h));
+            kx += kw + Px(KeyGap);
         }
+        float keysEnd = kx - Px(KeyGap);
 
-        // Force rebuff, set apart at the right.
+        // Auto-sort, then Force rebuff, set apart at the right.
         Vector2 fp = new(x0 + w - Px(FrW), y), fs = new(Px(FrW), h);
-        dl.AddLine(new Vector2(fp.X - Px(Gap) - 0.5f, y + (h - Px(18)) * 0.5f), new Vector2(fp.X - Px(Gap) - 0.5f, y + (h + Px(18)) * 0.5f), _line);
+        float group = fp.X;
+        if (sort >= 0)
+        {
+            group = fp.X - Px(KeyGap) - kw;
+            SortKey(dl, sort == 1, new Vector2(group, y), new Vector2(kw, h));
+        }
+        float lx = MathF.Round(MathF.Max(group - Px(Gap), keysEnd + (group - keysEnd) * 0.5f)) - 0.5f;
+        dl.AddLine(new Vector2(lx, y + (h - Px(18)) * 0.5f), new Vector2(lx, y + (h + Px(18)) * 0.5f), _line);
         ImGui.SetCursorScreenPos(fp);
         if (ImGui.InvisibleButton("##fr", fs, ImGuiButtonFlags.MouseButtonLeft | ImGuiButtonFlags.MouseButtonRight)
             && ImGui.IsMouseReleased(ImGuiMouseButton.Left))
@@ -467,6 +489,29 @@ internal sealed unsafe class InstrumentDashboard
         bool right = ImGui.IsItemClicked(ImGuiMouseButton.Right);
         bool hot = ImGui.IsItemHovered();
         SafeImGui.SetItemTooltip((on ? s.Name + " on. Click to turn it off." : s.Name + " off. Click to turn it on.") + "\nRight-click: " + s.Right + ".");
+        KeyFace(dl, s.Icon, on, hot, pos, size);
+        if (clicked) _d.SetSubsystem(i, !on);
+        if (right) SubsystemSettings(i);
+    }
+
+    /// <summary>RynthSort's auto-sort, a key like the subsystems'. Click: on/off; right-click: RynthSort's window.</summary>
+    private void SortKey(ImDrawListPtr dl, bool on, Vector2 pos, Vector2 size)
+    {
+        ImGui.SetCursorScreenPos(pos);
+        bool clicked = ImGui.InvisibleButton("##key_sort", size, ImGuiButtonFlags.MouseButtonLeft | ImGuiButtonFlags.MouseButtonRight)
+                       && ImGui.IsMouseReleased(ImGuiMouseButton.Left);
+        bool right = ImGui.IsItemClicked(ImGuiMouseButton.Right);
+        bool hot = ImGui.IsItemHovered();
+        SafeImGui.SetItemTooltip(on ? "Auto-sort (RynthSort) on. Click to turn it off.\nRight-click: RynthSort's window."
+                                    : "Auto-sort (RynthSort) off. Click to turn it on.\nRight-click: RynthSort's window.");
+        KeyFace(dl, RynthIcons.SortAscending, on, hot, pos, size);
+        if (clicked) _d.SetAutoSort(!on);
+        if (right) _d.ToggleSortWindow();
+    }
+
+    /// <summary>A key's face: raised with its LED lit when on, flat and dim when off.</summary>
+    private void KeyFace(ImDrawListPtr dl, string icon, bool on, bool hot, Vector2 pos, Vector2 size)
+    {
         float r = Px(3);
         if (on)
         {
@@ -478,7 +523,7 @@ internal sealed unsafe class InstrumentDashboard
         {
             dl.AddRect(pos, pos + size, Mix(_bg, _line, 0.55f), r);
         }
-        DrawIcon(dl, s.Icon, pos, size, Px(15), on || hot ? _text : _faint);
+        DrawIcon(dl, icon, pos, size, Px(15), on || hot ? _text : _faint);
         // The LED, top right: lit in the accent with a glow, or dark.
         Vector2 led = new(pos.X + size.X - Px(6), pos.Y + Px(6));
         if (on)
@@ -491,8 +536,6 @@ internal sealed unsafe class InstrumentDashboard
             dl.AddCircleFilled(led, Px(2), _inset, 12);
             dl.AddCircle(led, Px(2), _line, 12, 1f);
         }
-        if (clicked) _d.SetSubsystem(i, !on);
-        if (right) SubsystemSettings(i);
     }
 
     /// <summary>A key's right-click: its settings.</summary>
@@ -543,7 +586,7 @@ internal sealed unsafe class InstrumentDashboard
             Vector2 p = new(bx, y), s = new(ex - bx, h);
             bool lit = l.Label switch
             {
-                "Patrol" => !_popped && prefs.IsOpen(DashboardPrefs.PatrolDrawer),
+                "Patrol" => prefs.IsOpen(DashboardPrefs.PatrolDrawer),
                 "Char" => host.SetPanelOpen(OracleKey, RynthPanelOpen.Ask) == 1 || host.SetPanelOpen("Mini Remote", RynthPanelOpen.Ask) == 1,
                 _ => host.SetPanelOpen(l.Key, RynthPanelOpen.Ask) == 1,
             };
@@ -598,7 +641,7 @@ internal sealed unsafe class InstrumentDashboard
     {
         if (label == "Patrol")
         {
-            if (!_popped) prefs.ToggleDrawer(DashboardPrefs.PatrolDrawer);
+            prefs.ToggleDrawer(DashboardPrefs.PatrolDrawer);
         }
         else if (label == "Char")
         {
@@ -887,7 +930,8 @@ internal sealed unsafe class InstrumentDashboard
             }
             if (_popped)
             {
-                // No drawers popped out: the pickers are here.
+                // Popped out the pickers are here as well (an older RynthCore's pop-out lets clicks
+                // beside the panel through, so its drawers can't be used).
                 p.Y += Px(4);
                 dl.AddLine(new Vector2(p.X, p.Y + 0.5f), new Vector2(p.X + w, p.Y + 0.5f), _line);
                 p.Y += Px(5);
@@ -1059,7 +1103,7 @@ internal sealed unsafe class InstrumentDashboard
         if (ImGui.MenuItem(key, command, state == 1)) host.SetPanelOpen(key, RynthPanelOpen.Toggle);
     }
 
-    // ── Drawers (docked): tabs on both edges, one panel open per side ───
+    // ── Drawers: tabs on both edges, one panel open per side ────────────
     //
     // Ranges, Loaded files, Patrol and the Mini Remote start on the left edge, My settings on the
     // right; a tab's right-click moves its drawer to the other edge (DashboardPrefs keeps the sides,
@@ -1214,7 +1258,7 @@ internal sealed unsafe class InstrumentDashboard
             ImGui.End();
         }
 
-        if (si >= 0 && shown >= 1f) DrawerPanel(prefs, DrawerDefs[si], si, panelW, shown, winX, panelX, dashPos.Y, right);
+        if (si >= 0 && shown >= 1f) DrawerPanel(prefs, DrawerDefs[si], si, panelW, shown, winX, panelX, dashPos.Y, dashSize.Y, right);
     }
 
     private int TabsOn(DashboardPrefs prefs, bool right)
@@ -1225,6 +1269,7 @@ internal sealed unsafe class InstrumentDashboard
     }
 
     private const float SlideSeconds = 0.16f;
+    private const float PopOutReach = 600f;
     private readonly float[] _slideT = new float[2];                          // left, right: 0 closed .. 1 open
     private readonly string[] _slideKey = { string.Empty, string.Empty };     // the drawer whose panel draws
 
@@ -1272,12 +1317,15 @@ internal sealed unsafe class InstrumentDashboard
     /// pixels of <paramref name="panelW"/>, from <paramref name="winX"/>), the panel drawn whole at
     /// <paramref name="x"/> and clipped to it.
     /// </summary>
-    private void DrawerPanel(DashboardPrefs prefs, DrawerDef def, int di, float panelW, float shown, float winX, float x, float top, bool right)
+    private void DrawerPanel(DashboardPrefs prefs, DrawerDef def, int di, float panelW, float shown, float winX, float x, float top, float dashH, bool right)
     {
         Vector2 display = ImGui.GetIO().DisplaySize;
         // The frame around the body: padding, the title row, the gap under it.
         float chrome = Px(7) + Px(20) + Px(5) + Px(8);
         float maxBody = display.Y > 1 ? Math.Max(Px(60), display.Y - top - chrome - Px(8)) : Px(600);
+        // Popped out, the picture reaches at most PopOutReach pixels past the panel (RynthCore's
+        // ImGuiPopOuts.MaxMargin is 640): a longer drawer scrolls.
+        if (_popped) maxBody = Math.Max(Px(60), Math.Min(maxBody, dashH + PopOutReach - chrome));
         float body = def.Key switch
         {
             DashboardPrefs.FilesDrawer => FilesHeight(),

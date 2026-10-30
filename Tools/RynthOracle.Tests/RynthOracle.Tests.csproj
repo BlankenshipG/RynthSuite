@@ -42,6 +42,7 @@
     <!-- "RynthServer.QuestPack": the active server plugin's quest pack (as in the plugin's csproj). -->
     <Compile Include="..\..\Plugins\Shared\RynthServerQuestPackApi.cs" Link="RynthOracle\Shared\RynthServerQuestPackApi.cs" />
     <Compile Include="..\..\Plugins\Shared\ServerQuestPackClient.cs" Link="RynthOracle\Shared\ServerQuestPackClient.cs" />
+    <Compile Include="..\..\Plugins\Shared\CommandReply.cs" Link="RynthOracle\Shared\CommandReply.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
   </ItemGroup>
 

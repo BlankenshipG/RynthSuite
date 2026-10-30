@@ -49,6 +49,8 @@
     <Compile Include="..\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
     <!-- RynthILT's "RynthILT.Data" interface (RynthServers): the Banking page's balances for every character on the server. -->
     <Compile Include="$(RynthServersRoot)Plugins\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
+    <!-- How a chat command answers (2026-10-28): the shared reply queue and colours. -->
+    <Compile Include="..\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
   </ItemGroup>
 
 </Project>

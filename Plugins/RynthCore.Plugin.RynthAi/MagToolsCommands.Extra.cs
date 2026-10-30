@@ -55,12 +55,10 @@ public sealed partial class RynthAiPlugin
     private bool KeystrokesAllowed(string verb)
     {
         if (_dashboard?.Settings.AllowMetaKeystrokes == true) return true;
-        if (_keystrokeRefusalSaid.Add(verb))
-        {
-            string msg = $"[RynthAi] {verb} ignored: it sends keys or clicks to the game window, and 'Allow metas to send keystrokes (/mt send)' is off (Settings, Advanced). Said once.";
-            Log(msg);
-            ChatLine(msg);
-        }
+        string why = $"[RynthAi] {verb} ignored: it sends keys or clicks to the game window, and 'Allow metas to send keystrokes (/mt send)' is off (Settings, Advanced).";
+        // Typed: said every time (a typed command always answers). A meta: said once per verb.
+        if (!Reply.FromScript) ReplyFail(why);
+        else if (_keystrokeRefusalSaid.Add(verb)) ReplyFail(why + " Said once.");
         return false;
     }
 
@@ -72,9 +70,7 @@ public sealed partial class RynthAiPlugin
     private bool RequireRunningMeta(string verb)
     {
         if (MetaCommandActive) return true;
-        string msg = $"[RynthAi] {verb} only runs from a meta that is running (macro and Meta on); refused.";
-        Log(msg);
-        ChatLine(msg);
+        ReplyFail($"[RynthAi] {verb} only runs from a meta that is running (macro and Meta on); refused.");
         return false;
     }
 
@@ -95,13 +91,13 @@ public sealed partial class RynthAiPlugin
             case "autopack":
                 // Mag-Tools packs by its own rules; RynthAi's equivalent is a cram + stack pass.
                 _inventoryManager?.RunManual(cram: true, stack: true);
-                ChatLine("[RynthAi] Autopack: cramming items into side packs and stacking them.");
+                ReplyOk("[RynthAi] Autopack: cramming items into side packs and stacking them.");
                 return true;
             case "dumpspells": return HandleMtDumpSpells();
             case "click":      return HandleMtClick(parts);
             case "get":
                 if (parts.Length >= 3 && parts[2].Equals("xy", StringComparison.OrdinalIgnoreCase)) return HandleMtCursor();
-                ChatLine("[RynthAi] Usage: /mt get xy");
+                ReplyFail("[RynthAi] Usage: /mt get xy");
                 return true;
             case "cursor":     return HandleMtCursor();
             case "movement":   return HandleMtMovement(parts);
@@ -124,36 +120,43 @@ public sealed partial class RynthAiPlugin
     /// </summary>
     private bool HandleMtSend(string[] parts, string fullCommand)
     {
-        if (parts.Length < 3) { ChatLine("[RynthAi] Usage: /mt send enter|pause|del|space|f4|f12|cntrl+<letter>|msg <text>"); return true; }
+        const string usage = "[RynthAi] Usage: /mt send enter|pause|del|space|f4|f12|cntrl+<letter>|msg <text>";
+        if (parts.Length < 3) { ReplyFail(usage); return true; }
         string arg = parts[2].ToLowerInvariant();
         if (parts[2].StartsWith('/'))
         {
-            if (Host.HasInvokeChatParser) Host.InvokeChatParser(string.Join(" ", parts, 2, parts.Length - 2));
+            // The command answers for itself.
+            if (Host.HasInvokeChatParser) { Host.InvokeChatParser(string.Join(" ", parts, 2, parts.Length - 2)); Reply.Answered(); }
+            else ReplyFail("[RynthAi] /mt send: the chat parser isn't available.");
             return true;
         }
         if (!KeystrokesAllowed("/mt send")) return true;
-        if (!GameInput.Available) { ChatLine("[RynthAi] /mt send: the game window wasn't found."); return true; }
-        Log($"[RynthAi] /mt send {string.Join(" ", parts, 2, Math.Min(parts.Length - 2, 2))}: keys posted to the game window");
+        if (!GameInput.Available) { ReplyFail("[RynthAi] /mt send: the game window wasn't found."); return true; }
+        string what = string.Join(" ", parts, 2, Math.Min(parts.Length - 2, 2));
+        Log($"[RynthAi] /mt send {what}: keys posted to the game window");
+        string sent = $"[RynthAi] /mt send {what}: sent to the game window.";
         switch (arg)
         {
-            case "enter": GameInput.SendEnter(); return true;
-            case "pause": GameInput.SendPause(); return true;
-            case "del":   GameInput.SendDel(); return true;
-            case "space": GameInput.SendSpace(); return true;
-            case "f4":    GameInput.SendF4(); return true;
-            case "f12":   GameInput.SendF12(); return true;
+            case "enter": GameInput.SendEnter(); ReplyOk(sent); return true;
+            case "pause": GameInput.SendPause(); ReplyOk(sent); return true;
+            case "del":   GameInput.SendDel(); ReplyOk(sent); return true;
+            case "space": GameInput.SendSpace(); ReplyOk(sent); return true;
+            case "f4":    GameInput.SendF4(); ReplyOk(sent); return true;
+            case "f12":   GameInput.SendF12(); ReplyOk(sent); return true;
             case "msg":
                 int at = fullCommand.IndexOf(" msg ", StringComparison.OrdinalIgnoreCase);
-                if (at < 0 || at + 5 >= fullCommand.Length) { ChatLine("[RynthAi] Usage: /mt send msg <text>"); return true; }
+                if (at < 0 || at + 5 >= fullCommand.Length) { ReplyFail("[RynthAi] Usage: /mt send msg <text>"); return true; }
                 GameInput.SendMsg(fullCommand[(at + 5)..]);
+                ReplyOk("[RynthAi] /mt send msg: typed into the game window.");
                 return true;
         }
         if (arg.StartsWith("cntrl+", StringComparison.Ordinal) && arg.Length >= 7)
         {
             GameInput.SendCntrl(arg[6]);
+            ReplyOk(sent);
             return true;
         }
-        ChatLine("[RynthAi] Usage: /mt send enter|pause|del|space|f4|f12|cntrl+<letter>|msg <text>");
+        ReplyFail(usage);
         return true;
     }
 
@@ -171,11 +174,12 @@ public sealed partial class RynthAiPlugin
         ms = Math.Clamp(ms, 0, 1000);
 
         string letters = (w ? "w" : "") + (x ? "x" : "") + (z ? "z" : "") + (c ? "c" : "") + (shift ? "s" : "");
-        if (_jumper != null && _jumper.Start(letters, null, ms)) return true;
+        if (_jumper != null && _jumper.Start(letters, null, ms)) { ReplyOk(JumpLine(letters, null, ms)); return true; }
         if (_jumper?.IsBusy == true) return true;   // it said so in chat
         if (!KeystrokesAllowed("/mt jump (keys)")) return true;
-        if (!GameInput.Available) { ChatLine("[RynthAi] /mt jump: no jump hook and no game window."); return true; }
+        if (!GameInput.Available) { ReplyFail("[RynthAi] /mt jump: no jump hook and no game window."); return true; }
         GameInput.SendSpace(ms, shift, w, z, x, c);
+        ReplyOk(JumpLine(letters, null, ms) + " (the space key)");
         return true;
     }
 
@@ -184,35 +188,42 @@ public sealed partial class RynthAiPlugin
     /// <summary>/mt trade add|addp &lt;item&gt; | accept | decline | reset | end.</summary>
     private bool HandleMtTrade(string[] parts)
     {
-        if (parts.Length < 3) { ChatLine("[RynthAi] Usage: /mt trade add|addp <item> | accept | decline | reset | end"); return true; }
+        if (parts.Length < 3) { ReplyFail("[RynthAi] Usage: /mt trade add|addp <item> | accept | decline | reset | end"); return true; }
         string sub = parts[2].ToLowerInvariant();
         // Completing a trade is only ever a running meta's doing (checked before anything else).
         if (sub == "accept" && !RequireRunningMeta("/mt trade accept")) return true;
-        if (!Host.HasTrade) { ChatLine("[RynthAi] Trading needs a newer RynthCore engine."); return true; }
+        if (!Host.HasTrade) { ReplyFail("[RynthAi] Trading needs a newer RynthCore engine."); return true; }
         switch (sub)
         {
             case "add":
             case "addp":
             {
-                if (parts.Length < 4) { ChatLine($"[RynthAi] Usage: /mt trade {sub} <item>"); return true; }
+                if (parts.Length < 4) { ReplyFail($"[RynthAi] Usage: /mt trade {sub} <item>"); return true; }
                 string name = string.Join(" ", parts, 3, parts.Length - 3);
                 var item = FindObject(name, inv: true, land: false, partial: sub == "addp");
-                if (item == null) { ChatLine($"[RynthAi] Item not found: '{name}'"); return true; }
-                ChatLine(Host.TradeAdd(unchecked((uint)item.Id))
-                    ? $"[RynthAi] Added {item.Name} to the trade." : "[RynthAi] Could not add it to the trade.");
+                if (item == null) { ReplyFail($"[RynthAi] Item not found: '{name}'"); return true; }
+                if (Host.TradeAdd(unchecked((uint)item.Id))) ReplyOk($"[RynthAi] Added {item.Name} to the trade.");
+                else ReplyFail("[RynthAi] Could not add it to the trade.");
                 return true;
             }
             case "accept":
                 Log("[RynthAi] /mt trade accept (from the running meta)");
-                Host.TradeAccept();
+                TradeSaid(Host.TradeAccept(), "Accepting the trade.", "accept");
                 return true;
-            case "decline": Host.TradeDecline(); return true;
-            case "reset":   Host.TradeReset(); return true;
-            case "end":     Host.TradeClose(); return true;
+            case "decline": TradeSaid(Host.TradeDecline(), "Declining the trade.", "decline"); return true;
+            case "reset":   TradeSaid(Host.TradeReset(), "Clearing the trade window.", "reset"); return true;
+            case "end":     TradeSaid(Host.TradeClose(), "Closing the trade.", "close"); return true;
             default:
-                ChatLine("[RynthAi] Usage: /mt trade add|addp <item> | accept | decline | reset | end");
+                ReplyFail("[RynthAi] Usage: /mt trade add|addp <item> | accept | decline | reset | end");
                 return true;
         }
+    }
+
+    /// <summary>A trade action's answer: what it does, or that it couldn't be sent.</summary>
+    private void TradeSaid(bool sent, string ok, string what)
+    {
+        if (sent) ReplyOk("[RynthAi] " + ok);
+        else ReplyFail($"[RynthAi] Could not send the trade {what}.");
     }
 
     // ── vendor ───────────────────────────────────────────────────────────────────
@@ -224,15 +235,15 @@ public sealed partial class RynthAiPlugin
     private bool HandleMtVendor(string[] parts)
     {
         const string usage = "[RynthAi] Usage: /mt vendor addbuy|addbuyp <item> [count] | addsell|addsellp <item> | buy | clearbuy | sell | clearsell";
-        if (parts.Length < 3) { ChatLine(usage); return true; }
+        if (parts.Length < 3) { ReplyFail(usage); return true; }
         // Spending or selling is only ever a running meta's doing (checked before anything else).
         string verb = parts[2].ToLowerInvariant();
         if (verb == "buy" && !RequireRunningMeta("/mt vendor buy")) return true;
         if (verb == "sell" && !RequireRunningMeta("/mt vendor sell")) return true;
-        if (!Host.HasVendorTrade) { ChatLine("[RynthAi] Vendor trading needs a newer RynthCore engine."); return true; }
+        if (!Host.HasVendorTrade) { ReplyFail("[RynthAi] Vendor trading needs a newer RynthCore engine."); return true; }
         if (!Host.TryGetVendorInfo(out VendorInfo info) || info.VendorId == 0)
         {
-            ChatLine("[RynthAi] No vendor is open.");
+            ReplyFail("[RynthAi] No vendor is open.");
             return true;
         }
         string sub = parts[2].ToLowerInvariant();
@@ -241,7 +252,7 @@ public sealed partial class RynthAiPlugin
             case "addbuy":
             case "addbuyp":
             {
-                if (parts.Length < 4) { ChatLine($"[RynthAi] Usage: /mt vendor {sub} <item> [count]"); return true; }
+                if (parts.Length < 4) { ReplyFail($"[RynthAi] Usage: /mt vendor {sub} <item> [count]"); return true; }
                 var words = parts.Skip(3).ToList();
                 int count = 1;
                 if (words.Count > 1 && int.TryParse(words[^1], out int n) && n > 0) { count = n; words.RemoveAt(words.Count - 1); }
@@ -250,42 +261,42 @@ public sealed partial class RynthAiPlugin
                 VendorItem? item = Host.GetVendorItems().FirstOrDefault(v => partial
                     ? v.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
                     : string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
-                if (item == null) { ChatLine($"[RynthAi] {info.Name} doesn't sell '{name}'."); return true; }
+                if (item == null) { ReplyFail($"[RynthAi] {info.Name} doesn't sell '{name}'."); return true; }
                 _mtBuyList.Add((item.ObjectId, item.Name, count));
-                ChatLine($"[RynthAi] Buy list: {count} x {item.Name} ({_mtBuyList.Count} entr{(_mtBuyList.Count == 1 ? "y" : "ies")}).");
+                ReplyOk($"[RynthAi] Buy list: {count} x {item.Name} ({_mtBuyList.Count} entr{(_mtBuyList.Count == 1 ? "y" : "ies")}).");
                 return true;
             }
             case "addsell":
             case "addsellp":
             {
-                if (parts.Length < 4) { ChatLine($"[RynthAi] Usage: /mt vendor {sub} <item>"); return true; }
+                if (parts.Length < 4) { ReplyFail($"[RynthAi] Usage: /mt vendor {sub} <item>"); return true; }
                 string name = string.Join(" ", parts, 3, parts.Length - 3);
                 var item = FindObject(name, inv: true, land: false, partial: sub == "addsellp");
-                if (item == null) { ChatLine($"[RynthAi] Item not found: '{name}'"); return true; }
+                if (item == null) { ReplyFail($"[RynthAi] Item not found: '{name}'"); return true; }
                 uint id = unchecked((uint)item.Id);
                 if (!_mtSellList.Any(s => s.Id == id)) _mtSellList.Add((id, item.Name));
-                ChatLine($"[RynthAi] Sell list: {item.Name} ({_mtSellList.Count} item(s)).");
+                ReplyOk($"[RynthAi] Sell list: {item.Name} ({_mtSellList.Count} item(s)).");
                 return true;
             }
             case "buy":
             {
-                if (_mtBuyList.Count == 0) { ChatLine("[RynthAi] The buy list is empty (/mt vendor addbuy <item> [count])."); return true; }
+                if (_mtBuyList.Count == 0) { ReplyFail("[RynthAi] The buy list is empty (/mt vendor addbuy <item> [count])."); return true; }
                 var entries = _mtBuyList.Select(b => new VendorTradeEntryNative(b.Id, b.Amount)).ToList();
                 Log($"[RynthAi] /mt vendor buy (from the running meta): {_mtBuyList.Count} entr{(_mtBuyList.Count == 1 ? "y" : "ies")} from {info.Name} 0x{info.VendorId:X8}: "
                     + string.Join(", ", _mtBuyList.Select(b => $"{b.Amount} x {b.Name}")));
                 uint sent = Host.VendorBuy(info.VendorId, entries);
-                ChatLine(sent != 0 ? $"[RynthAi] Buying {_mtBuyList.Count} entr{(_mtBuyList.Count == 1 ? "y" : "ies")} from {info.Name}."
-                                   : "[RynthAi] The buy could not be sent.");
+                if (sent != 0) ReplyOk($"[RynthAi] Buying {_mtBuyList.Count} entr{(_mtBuyList.Count == 1 ? "y" : "ies")} from {info.Name}.");
+                else ReplyFail("[RynthAi] The buy could not be sent.");
                 if (sent != 0) _mtBuyList.Clear();
                 return true;
             }
             case "clearbuy":
                 _mtBuyList.Clear();
-                ChatLine("[RynthAi] Buy list cleared.");
+                ReplyOk("[RynthAi] Buy list cleared.");
                 return true;
             case "sell":
             {
-                if (_mtSellList.Count == 0) { ChatLine("[RynthAi] The sell list is empty (/mt vendor addsell <item>)."); return true; }
+                if (_mtSellList.Count == 0) { ReplyFail("[RynthAi] The sell list is empty (/mt vendor addsell <item>)."); return true; }
                 // Checked again now, not only when the item was listed: it may have been worn since,
                 // and RynthAi's own gear and consumables are never sold by a meta.
                 var toSell = new List<(uint Id, string Name)>();
@@ -299,22 +310,23 @@ public sealed partial class RynthAiPlugin
                 if (toSell.Count == 0)
                 {
                     _mtSellList.Clear();
-                    ChatLine("[RynthAi] Nothing left to sell: every listed item is protected.");
+                    ReplyFail("[RynthAi] Nothing left to sell: every listed item is protected.");
                     return true;
                 }
                 Log($"[RynthAi] /mt vendor sell (from the running meta): {toSell.Count} item(s) to {info.Name} 0x{info.VendorId:X8}: "
                     + string.Join(", ", toSell.Select(s => s.Name)));
                 uint sent = Host.VendorSell(info.VendorId, toSell.Select(s => s.Id).ToList());
-                ChatLine(sent != 0 ? $"[RynthAi] Selling {toSell.Count} item(s) to {info.Name}." : "[RynthAi] The sell could not be sent.");
+                if (sent != 0) ReplyOk($"[RynthAi] Selling {toSell.Count} item(s) to {info.Name}.");
+                else ReplyFail("[RynthAi] The sell could not be sent.");
                 if (sent != 0) _mtSellList.Clear();
                 return true;
             }
             case "clearsell":
                 _mtSellList.Clear();
-                ChatLine("[RynthAi] Sell list cleared.");
+                ReplyOk("[RynthAi] Sell list cleared.");
                 return true;
             default:
-                ChatLine(usage);
+                ReplyFail(usage);
                 return true;
         }
     }
@@ -374,9 +386,9 @@ public sealed partial class RynthAiPlugin
                     w.WriteLine($"{id}\t{name}\t{family}\t{difficulty}");
                 }
             }
-            ChatLine($"[RynthAi] {rows.Count} spells written to {path}");
+            ReplyOk($"[RynthAi] {rows.Count} spells written to {path}");
         }
-        catch (Exception ex) { ChatLine($"[RynthAi] /mt dumpspells failed: {ex.Message}"); }
+        catch (Exception ex) { ReplyFail($"[RynthAi] /mt dumpspells failed: {ex.Message}"); }
         return true;
     }
 
@@ -390,9 +402,9 @@ public sealed partial class RynthAiPlugin
     /// </summary>
     private void HandleEquipForCommand(string[] parts)
     {
-        if (parts.Length < 3) { ChatLine("[RynthAi] Usage: /ra equipfor <monster name>"); return; }
+        if (parts.Length < 3) { ReplyFail("[RynthAi] Usage: /ra equipfor <monster name>"); return; }
         var rules = _dashboard?.Settings?.MonsterRules;
-        if (rules == null || rules.Count == 0) { ChatLine("[RynthAi] No monster rules loaded."); return; }
+        if (rules == null || rules.Count == 0) { ReplyFail("[RynthAi] No monster rules loaded."); return; }
         string monster = string.Join(" ", parts, 2, parts.Length - 2).Trim();
 
         var rule = rules.FirstOrDefault(r => string.Equals(r.Name, monster, StringComparison.OrdinalIgnoreCase))
@@ -400,28 +412,28 @@ public sealed partial class RynthAiPlugin
                                        && r.Name.Length > 0 && monster.IndexOf(r.Name, StringComparison.OrdinalIgnoreCase) >= 0)
                            .OrderByDescending(r => r.Name.Length).FirstOrDefault()
                    ?? rules.FirstOrDefault(r => string.Equals(r.Name, "Default", StringComparison.OrdinalIgnoreCase));
-        if (rule == null) { ChatLine($"[RynthAi] No monster rule for '{monster}'."); return; }
+        if (rule == null) { ReplyFail($"[RynthAi] No monster rule for '{monster}'."); return; }
 
         var ids = new List<int>();
         if (rule.WeaponId != 0) ids.Add(rule.WeaponId);
         if (rule.OffhandId != 0) ids.Add(rule.OffhandId);
         if (ids.Count == 0)
         {
-            ChatLine($"[RynthAi] '{rule.Name}' has no set weapon (combat picks one when it fights '{monster}').");
+            ReplyOk($"[RynthAi] '{rule.Name}' has no set weapon (combat picks one when it fights '{monster}').");
             return;
         }
-        if (!Host.HasUseObject) { ChatLine("[RynthAi] UseObject not available."); return; }
+        if (!Host.HasUseObject) { ReplyFail("[RynthAi] UseObject not available."); return; }
 
         int sent = 0;
         foreach (int id in ids)
         {
             var wo = _objectCache?[id];
-            if (wo == null) { ChatLine($"[RynthAi] '{rule.Name}': item 0x{(uint)id:X8} isn't carried."); continue; }
+            if (wo == null) { ReplyFail($"[RynthAi] '{rule.Name}': item 0x{(uint)id:X8} isn't carried."); continue; }
             if (wo.Values(LongValueKey.CurrentWieldedLocation, 0) > 0) continue;   // already wielded
             Host.UseFor(unchecked((uint)id), "Command", "/ra equipfor", UseKind.Asked);
             sent++;
         }
-        ChatLine(sent > 0 ? $"[RynthAi] Equipping for '{monster}' ({rule.Name}): {sent} item(s)."
+        ReplyOk(sent > 0 ? $"[RynthAi] Equipping for '{monster}' ({rule.Name}): {sent} item(s)."
                           : $"[RynthAi] '{rule.Name}' gear for '{monster}' is already wielded.");
     }
 
@@ -430,21 +442,22 @@ public sealed partial class RynthAiPlugin
     /// <summary>/mt click ok|yes|no|&lt;x&gt; &lt;y&gt;: a click in the game window (window coordinates).</summary>
     private bool HandleMtClick(string[] parts)
     {
-        if (parts.Length < 3) { ChatLine("[RynthAi] Usage: /mt click ok|yes|no|<x> <y>"); return true; }
+        if (parts.Length < 3) { ReplyFail("[RynthAi] Usage: /mt click ok|yes|no|<x> <y>"); return true; }
         if (!KeystrokesAllowed("/mt click")) return true;
-        if (!GameInput.Available) { ChatLine("[RynthAi] /mt click: the game window wasn't found."); return true; }
+        if (!GameInput.Available) { ReplyFail("[RynthAi] /mt click: the game window wasn't found."); return true; }
         switch (parts[2].ToLowerInvariant())
         {
-            case "ok":  GameInput.ClickOK(); return true;
-            case "yes": GameInput.ClickYes(); return true;
-            case "no":  GameInput.ClickNo(); return true;
+            case "ok":  GameInput.ClickOK(); ReplyOk("[RynthAi] Clicked OK."); return true;
+            case "yes": GameInput.ClickYes(); ReplyOk("[RynthAi] Clicked Yes."); return true;
+            case "no":  GameInput.ClickNo(); ReplyOk("[RynthAi] Clicked No."); return true;
         }
         if (parts.Length >= 4 && int.TryParse(parts[2], out int x) && int.TryParse(parts[3], out int y))
         {
             GameInput.SendMouseClick(x, y);
+            ReplyOk($"[RynthAi] Clicked at {x},{y} in the game window.");
             return true;
         }
-        ChatLine("[RynthAi] Usage: /mt click ok|yes|no|<x> <y>");
+        ReplyFail("[RynthAi] Usage: /mt click ok|yes|no|<x> <y>");
         return true;
     }
 
@@ -462,12 +475,13 @@ public sealed partial class RynthAiPlugin
     {
         if (parts.Length != 4 || parts[2].Length != 1 || !int.TryParse(parts[3], out int ms) || ms < 0)
         {
-            ChatLine("[RynthAi] Usage: /mt movement <key> <ms>   (e.g. /mt movement w 1500)");
+            ReplyFail("[RynthAi] Usage: /mt movement <key> <ms>   (e.g. /mt movement w 1500)");
             return true;
         }
         if (!KeystrokesAllowed("/mt movement")) return true;
-        if (!GameInput.Available) { ChatLine("[RynthAi] /mt movement: the game window wasn't found."); return true; }
+        if (!GameInput.Available) { ReplyFail("[RynthAi] /mt movement: the game window wasn't found."); return true; }
         GameInput.SendMovement(parts[2][0], ms);
+        ReplyOk($"[RynthAi] Holding '{parts[2][0]}' for {ms} ms.");
         return true;
     }
 
@@ -476,14 +490,15 @@ public sealed partial class RynthAiPlugin
     {
         if (parts.Length != 4 || !int.TryParse(parts[3], out int ms) || ms < 0)
         {
-            ChatLine("[RynthAi] Usage: /mt strafe left|l|right|r <ms>");
+            ReplyFail("[RynthAi] Usage: /mt strafe left|l|right|r <ms>");
             return true;
         }
         char key = parts[2].ToLowerInvariant() switch { "left" or "l" => 'z', "right" or "r" => 'c', _ => '\0' };
-        if (key == '\0') { ChatLine("[RynthAi] /mt strafe: left, l, right or r."); return true; }
+        if (key == '\0') { ReplyFail("[RynthAi] Usage: /mt strafe left|l|right|r <ms>"); return true; }
         if (!KeystrokesAllowed("/mt strafe")) return true;
-        if (!GameInput.Available) { ChatLine("[RynthAi] /mt strafe: the game window wasn't found."); return true; }
+        if (!GameInput.Available) { ReplyFail("[RynthAi] /mt strafe: the game window wasn't found."); return true; }
         GameInput.SendMovement(key, ms);
+        ReplyOk($"[RynthAi] Strafing {(key == 'z' ? "left" : "right")} for {ms} ms.");
         return true;
     }
 
@@ -493,13 +508,13 @@ public sealed partial class RynthAiPlugin
         string sub = parts.Length >= 3 ? parts[2].ToLowerInvariant() : "";
         switch (sub)
         {
-            case "minimize": if (KeystrokesAllowed("/mt client")) GameInput.Minimize(); return true;
-            case "restore":  if (KeystrokesAllowed("/mt client")) GameInput.Restore(); return true;
+            case "minimize": if (KeystrokesAllowed("/mt client")) { GameInput.Minimize(); ReplyOk("[RynthAi] Game window minimized."); } return true;
+            case "restore":  if (KeystrokesAllowed("/mt client")) { GameInput.Restore(); ReplyOk("[RynthAi] Game window restored."); } return true;
             case "frame":
-                ChatLine("[RynthAi] The window frame is RynthCore's: Settings > Display (Borderless Windowed, Reset Window Borders) or /rc window reset.");
+                ChatLine("[RynthAi] The window frame is RynthCore's: Settings > Display, Borderless Windowed (there is no chat command for it).");
                 return true;
             default:
-                ChatLine("[RynthAi] Usage: /mt client minimize | restore");
+                ReplyFail("[RynthAi] Usage: /mt client minimize | restore");
                 return true;
         }
     }

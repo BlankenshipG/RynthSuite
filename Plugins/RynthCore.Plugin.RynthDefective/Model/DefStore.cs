@@ -66,6 +66,8 @@ internal sealed class DefStore
             st.ShowCounts = Bool(s, "showCounts", st.ShowCounts);
             st.PreferredKind = (KindFilter)Int(s, "preferredKind", (int)st.PreferredKind);
             st.SwapWhileBotRuns = Bool(s, "swapWhileBotRuns", st.SwapWhileBotRuns);
+            st.WeaponsButtonOnBar = Bool(s, "weaponsButtonOnBar", st.WeaponsButtonOnBar);   // missing (a file from before 2026-10-29): off
+            st.IndependentBar = Bool(s, "independentBar", st.IndependentBar);   // missing (a file from before 2026-10-27): off
             st.BarOpen = Bool(s, "barOpen", st.BarOpen);
             st.PickerOpen = Bool(s, "pickerOpen", st.PickerOpen);
             st.Clamp();
@@ -82,6 +84,12 @@ internal sealed class DefStore
                 slot.Item = ParseRef(e, "item");
                 int mode = Int(e, "mode", 0);
                 slot.Mode = mode >= 0 && mode <= (int)UseMode.Equip ? (UseMode)mode : UseMode.Auto;
+                // A spell (2026-10-28; a file from before has none): only in a slot without an item.
+                if (slot.Item == null && e.TryGetProperty("spell", out JsonElement sp) && sp.ValueKind == JsonValueKind.Object)
+                {
+                    slot.SpellId = UInt(sp, "id");
+                    slot.SpellName = slot.SpellId != 0 ? Str(sp, "name") : string.Empty;
+                }
             }
         }
         ParseRefs(root, "favourites", d.Favourites, DefData.MaxFavourites);
@@ -156,6 +164,8 @@ internal sealed class DefStore
             w.WriteBoolean("showCounts", s.ShowCounts);
             w.WriteNumber("preferredKind", (int)s.PreferredKind);
             w.WriteBoolean("swapWhileBotRuns", s.SwapWhileBotRuns);
+            w.WriteBoolean("weaponsButtonOnBar", s.WeaponsButtonOnBar);
+            w.WriteBoolean("independentBar", s.IndependentBar);
             w.WriteBoolean("barOpen", s.BarOpen);
             w.WriteBoolean("pickerOpen", s.PickerOpen);
             w.WriteEndObject();
@@ -165,6 +175,13 @@ internal sealed class DefStore
             {
                 w.WriteStartObject();
                 if (slot.Item != null) WriteRef(w, "item", slot.Item);
+                else if (slot.SpellId != 0)
+                {
+                    w.WriteStartObject("spell");
+                    w.WriteNumber("id", slot.SpellId);
+                    w.WriteString("name", slot.SpellLabel);
+                    w.WriteEndObject();
+                }
                 w.WriteNumber("mode", (int)slot.Mode);
                 w.WriteEndObject();
             }
