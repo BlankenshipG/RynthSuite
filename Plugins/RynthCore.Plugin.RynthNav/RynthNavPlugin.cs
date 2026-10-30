@@ -25,7 +25,7 @@ namespace RynthCore.Plugin.RynthNav;
 public sealed partial class RynthNavPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthNav");
-    internal const string PluginVersion = "0.6.8";
+    internal const string PluginVersion = "0.6.9";
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi(PluginVersion);
 
     /// <summary>Lets PluginExports log through this plugin's host (the base Log is protected).</summary>
@@ -462,12 +462,19 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         // legs; otherwise StepGoto just navmesh-walks straight to the final target.
         // Inside the Town Network there is no navmesh: the way on is one of its exits.
         ResetHub();
+        // In a dungeon RynthNav learned (custom portals): its walks to an exit, or whatever the plan
+        // says from a dungeon (a recall), whichever costs less.
         bool inHub = _townNet?.Contains(CurrentLandblock) == true;
+        bool inTownNet = _baseTownNet?.Contains(CurrentLandblock) == true;
         int portalsUsed; double est; List<RecallOption> recalls;
-        if (inHub)
+        List<RouteStep>? hubRoute = null;
+        double hubEst = double.PositiveInfinity;
+        int hubUsed = 0;
+        if (inHub) hubRoute = PlanFromInsideHub(tns, tew, out hubEst, out hubUsed);
+        if (inHub && inTownNet)
         {
             recalls = new List<RecallOption>();
-            _route = PlanFromInsideHub(tns, tew, out est, out portalsUsed);
+            _route = hubRoute; est = hubEst; portalsUsed = hubUsed;
             if (_route == null)
             {
                 Note("goto: you're in the Town Network and none of its exit portals is open to you");
@@ -477,14 +484,20 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         else
         {
             TravelPlan.Result plan = PlanRoute(name, tns, tew, out recalls);
-            if (plan.Refusal.Length > 0)
+            if (hubRoute != null && (plan.Refusal.Length > 0 || hubEst < plan.Est))
+            {
+                Host.Log($"[RynthNav] route to {name}: out through this dungeon's learned walk (~{hubEst:F0}u) rather than {(plan.Refusal.Length > 0 ? "no plan" : $"~{plan.Est:F0}u")}");
+                recalls = new List<RecallOption>();
+                _route = hubRoute; est = hubEst; portalsUsed = hubUsed;
+            }
+            else if (plan.Refusal.Length > 0)
             {
                 Note("goto: " + plan.Refusal);
                 lock (_gate) _status = "no way there";
                 _route = null;
                 return;
             }
-            _route = plan.Steps; portalsUsed = plan.Teleports; est = plan.Est;
+            else { _route = plan.Steps; portalsUsed = plan.Teleports; est = plan.Est; }
         }
         _routeRecalls = recalls;
 
@@ -934,7 +947,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         if (_charKey.Length == 0) recallNotes.Add("not logged in yet");
         var hubNotes = new List<string>();
         HubLinks? hub = PortalsRouting ? CurrentHubLinks(hubNotes) : null;
-        if (hub != null && _preferAphus && RecallsRouting) hub = ViaAphus(hub, recalls, hubNotes);
+        if (hub != null && _preferAphus && RecallsRouting) hub = ViaAphus(hub, recalls, hubNotes, _baseTownNet?.Arrivals.Count ?? 0);
         if (PortalsRouting) EnsurePortalsLoaded();
         // Walks that can't be done over land (another landmass) are left out, so an island or the
         // far side of water is only reached by a portal, a recall or the Town Network.

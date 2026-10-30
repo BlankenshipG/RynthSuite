@@ -21,6 +21,13 @@ namespace RynthCore.Plugin.RynthNav;
 //   Landed    a short settle after the teleport (the landing is learned in OnTeleported);
 //   Return    the route back to the home spot; arriving there goes back to Pick. Two failed returns
 //             stop learning (no route back from where the portal went: a recall it doesn't have).
+//
+// Inside dungeons (2026-10-29, later): landing in a dungeon, it writes down the portals there and
+// walks straight to the nearest one it hasn't tried (DungeonGoing; dungeons have no navmesh, so a
+// portal round a corner may not be reachable this way and is given up when the walk sticks). The
+// walk is recorded (DungeonWalks), so a portal taken this way makes the dungeon routable. Up to
+// three dungeon portals in a row (one dungeon into the next), then back home. From home, a dungeon
+// with portals still untried is gone back into through its learned entry portal (a revisit).
 public sealed partial class RynthNavPlugin
 {
     public const double LearnRangeMin = 20, LearnRangeMax = 2000, LearnRangeDefault = 200;
@@ -30,7 +37,22 @@ public sealed partial class RynthNavPlugin
     private const long LearnReturnTimeoutMs = 600_000; // one way back
     private const int LearnMaxPortals = 150;           // a session's cap, so nothing runs forever
 
-    private enum LearnState { Off, Pick, Going, Landed, Return }
+    private enum LearnState { Off, Pick, Going, Landed, Return, DungeonGoing }
+
+    private const double LearnDungeonReach = 60.0;   // a dungeon portal this far (straight line) is tried
+    private const double LearnDungeonHeight = 8.0;   // ...on about this floor
+    private const int LearnDungeonHops = 3;          // dungeon portals taken in a row before going home
+    private const int LearnDungeonTries = 6;         // dungeon portals tried on one visit
+    private const int LearnMaxRevisits = 6;          // times one entry portal is gone back into
+
+    private HubWalker? _dunWalker;
+    private double _dunLastX, _dunLastY;
+    private int _dunHops, _dunTries;
+    private bool _learnTargetInDungeon, _learnRevisit;
+    private uint _learnTargetLb;
+    private double _learnTargetX, _learnTargetY;
+    private readonly HashSet<uint> _learnDeadDungeons = new();
+    private readonly Dictionary<string, int> _learnRevisits = new(StringComparer.OrdinalIgnoreCase);
 
     private LearnState _learn = LearnState.Off;
     private bool LearningPortals => _learn != LearnState.Off;
@@ -72,6 +94,9 @@ public sealed partial class RynthNavPlugin
         if (!PlayerMapPos(out double ns, out double ew)) { Note("learn portals: stand somewhere on the map (not in a dungeon) to start"); return; }
         _homeNs = ns; _homeEw = ew; _homeLabel = NearLabel(ns, ew);
         _learnDone.Clear();
+        _learnDeadDungeons.Clear();
+        _learnRevisits.Clear();
+        _dunWalker = null; _dunHops = _dunTries = 0; _learnRevisit = false;
         _learnTried = _learnLearned = _learnFailed = _learnReturnFails = 0;
         _learn = LearnState.Pick;
         _learnStepMs = NowMs;
@@ -84,6 +109,8 @@ public sealed partial class RynthNavPlugin
     private void StopLearn(string why, bool stopWalk = false)
     {
         if (!LearningPortals) return;
+        if (_learn == LearnState.DungeonGoing) AutoRun.Halt();
+        _dunWalker = null;
         _learn = LearnState.Off;
         if (stopWalk && _gotoActive) FinishGoto("stopped (learning portals ended)");
         string summary = $"learning portals ended: {why} — tried {_learnTried}, learned {_learnLearned} landing(s), {_learnFailed} wouldn't take you";
@@ -134,9 +161,21 @@ public sealed partial class RynthNavPlugin
                 break;
 
             case LearnState.Landed:
+                // Portal space can follow the jump by a moment and last a while: settle from its end.
+                if (_trkPortaling || (Host.HasIsPortaling && Host.IsPortaling())) { _learnStepMs = now; return; }
                 if (now - _learnStepMs < LearnSettleMs || _gotoActive) return;
-                CountLearned();
+                if (!_learnRevisit) CountLearned();
+                _learnRevisit = false;
+                if (InLearnableDungeon() && _dunHops < LearnDungeonHops)
+                {
+                    _dunTries = 0;
+                    if (TryDungeonPortal(now)) return;
+                }
                 BeginReturn(now);
+                break;
+
+            case LearnState.DungeonGoing:
+                StepDungeonTry(now, teleported);
                 break;
 
             case LearnState.Return:
@@ -163,9 +202,14 @@ public sealed partial class RynthNavPlugin
     private void CountLearned()
     {
         foreach (CustomPortal p in _custom.For(CurrentServer()))
-            if (p.DestKnown && p.Name.Equals(_learnTarget, StringComparison.OrdinalIgnoreCase)
-                && NavCoords.Distance(p.Ns, p.Ew, _learnTargetNs, _learnTargetEw) <= CustomPortalStore.SameUnits * 2)
-            { _learnLearned++; return; }
+        {
+            if (!p.DestKnown || !p.Name.Equals(_learnTarget, StringComparison.OrdinalIgnoreCase)) continue;
+            bool same = _learnTargetInDungeon
+                ? !p.OnMap && p.Landblock == _learnTargetLb
+                  && Math.Sqrt((p.X - _learnTargetX) * (p.X - _learnTargetX) + (p.Y - _learnTargetY) * (p.Y - _learnTargetY)) <= CustomPortalStore.SameDungeonUnits * 2
+                : p.OnMap && NavCoords.Distance(p.Ns, p.Ew, _learnTargetNs, _learnTargetEw) <= CustomPortalStore.SameUnits * 2;
+            if (same) { _learnLearned++; return; }
+        }
         // Taken, but it wasn't written down: the world data has it, or the portal wasn't seen as portal space began.
         Host.Log($"[RynthNav] learn: took '{_learnTarget}' but no landing was saved for it (the world data has it, or it wasn't the portal beside you)");
     }
@@ -208,6 +252,16 @@ public sealed partial class RynthNavPlugin
         foreach (CustomPortal p in _custom.For(server))
             if (p.OnMap && !p.DestKnown && NavCoords.Distance(p.Ns, p.Ew, _homeNs, _homeEw) <= _learnRange)
                 cands.Add((p.Name, p.Ns, p.Ew));
+        // Entry portals in range into a dungeon that still has portals nobody tried: go back in.
+        var revisits = new List<(string Name, double Ns, double Ew)>();
+        foreach (CustomPortal p in _custom.For(server))
+        {
+            if (!p.OnMap || !p.DestKnown || p.DestOnMap || p.DestCell == 0 || _learnDeadDungeons.Contains(p.DestLandblock)) continue;
+            if (NavCoords.Distance(p.Ns, p.Ew, _homeNs, _homeEw) > _learnRange) continue;
+            string rk = LearnKey(p.Name, p.Ns, p.Ew);
+            if (_learnRevisits.TryGetValue(rk, out int rv) && rv >= LearnMaxRevisits) continue;
+            if (UntriedIn(server, p.DestLandblock)) revisits.Add((p.Name, p.Ns, p.Ew));
+        }
 
         PlayerMapPos(out double hereNs, out double hereEw);
         (string Name, double Ns, double Ew)? best = null;
@@ -223,9 +277,32 @@ public sealed partial class RynthNavPlugin
             double d = NavCoords.Distance(hereNs, hereEw, c.Ns, c.Ew);
             if (d < bestD) { bestD = d; best = c; }
         }
+        bool revisit = false;
+        foreach (var c in revisits)
+        {
+            left++;
+            if (best != null) continue;   // a portal not yet tried comes first
+            double d = NavCoords.Distance(hereNs, hereEw, c.Ns, c.Ew);
+            if (d < bestD) { bestD = d; best = c; revisit = true; }
+        }
         if (best is not { } next)
         {
             StopLearn($"every portal within {_learnRange:0} yd of the start has been tried");
+            return;
+        }
+        _dunHops = 0;
+        _learnRevisit = revisit;
+        _learnTargetInDungeon = false;
+        if (revisit)
+        {
+            string rk = LearnKey(next.Name, next.Ns, next.Ew);
+            _learnRevisits[rk] = (_learnRevisits.TryGetValue(rk, out int rv) ? rv : 0) + 1;
+            _learnTarget = next.Name; _learnTargetNs = next.Ns; _learnTargetEw = next.Ew;
+            _learn = LearnState.Going;
+            _learnStepMs = now;
+            SetLearnLine($"back into the dungeon by '{next.Name}' for the portals inside it not tried yet");
+            Host.Log($"[RynthNav] learn: back into the dungeon by '{next.Name}' at {NavCoords.Fmt(next.Ns, next.Ew)} (portals inside not tried yet)");
+            StartWalk(next.Name, "Portal", next.Ns, next.Ew, next.Name, "Portal");
             return;
         }
         _learnDone.Add(LearnKey(next.Name, next.Ns, next.Ew));
@@ -238,21 +315,134 @@ public sealed partial class RynthNavPlugin
         StartWalk(next.Name, "Portal", next.Ns, next.Ew, next.Name, "Portal");
     }
 
+    // ── Inside a dungeon ───────────────────────────────────────────────────
+
+    private static string DungeonKey(string name, uint lb, double x, double y) =>
+        string.Create(CultureInfo.InvariantCulture, $"{name}|{lb:X4}|{x:0}|{y:0}");
+
+    /// <summary>In a dungeon (not the Town Network, which townnet.json maps already).</summary>
+    private bool InLearnableDungeon() =>
+        _hasPose && !IsOnMap(_cellId) && (_cellId & 0xFFFF) >= 0x100 && _baseTownNet?.Contains(CurrentLandblock) != true;
+
+    /// <summary>A dungeon portal saved in <paramref name="lb"/> that no one has taken and this run hasn't tried.</summary>
+    private bool UntriedIn(string server, uint lb)
+    {
+        foreach (CustomPortal p in _custom.For(server))
+            if (!p.OnMap && p.Landblock == lb && !p.DestKnown && !Entrance.IsDestroyed(p.Name)
+                && !_learnDone.Contains(DungeonKey(p.Name, lb, p.X, p.Y)))
+                return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Writes down this dungeon's portals and walks straight to the nearest untried one in reach.
+    /// False when there's none (the dungeon is done for this run as far as a straight walk goes).
+    /// </summary>
+    private bool TryDungeonPortal(long now)
+    {
+        if (_dunTries >= LearnDungeonTries || _learnTried >= LearnMaxPortals || !Host.HasGetLiveObjectIds) return false;
+        string server = CurrentServer();
+        uint lb = CurrentLandblock;
+        DateTime utc = DateTime.UtcNow;
+        double hx = LocalX, hy = LocalY;
+        (string Name, uint Cell, double X, double Y, double Z)? best = null;
+        double bestD = double.MaxValue;
+        int left = 0;
+        foreach (uint id in Host.GetLiveObjectIds())
+        {
+            if (!LivePortalAt(id, out uint pc, out double wx, out double wy, out double wz, out string name)) continue;
+            if ((pc >> 16) != lb) continue;
+            double lx = wx - ((pc >> 24) & 0xFF) * 192.0, ly = wy - ((pc >> 16) & 0xFF) * 192.0;
+            Host.TryGetObjectWcid(id, out uint wcid);
+            _custom.SawInDungeon(server, name, wcid, pc, lx, ly, wz, utc);
+            if (Entrance.IsDestroyed(name)) continue;
+            if (_custom.FindInDungeon(server, name, pc, lx, ly, wz) is { DestKnown: true }) continue;
+            if (_learnDone.Contains(DungeonKey(name, lb, lx, ly))) continue;
+            double d = Math.Sqrt((lx - hx) * (lx - hx) + (ly - hy) * (ly - hy));
+            if (d > LearnDungeonReach || Math.Abs(wz - _wz) > LearnDungeonHeight) continue;
+            left++;
+            if (d < bestD) { bestD = d; best = (name, pc, lx, ly, wz); }
+        }
+        if (best is not { } t)
+        {
+            _learnDeadDungeons.Add(lb);   // nothing left, or the rest are out of a straight walk's reach from the landing
+            Host.Log($"[RynthNav] learn: no untried portal within {LearnDungeonReach:0} m in dungeon 0x{lb:X4}");
+            return false;
+        }
+        _learnDone.Add(DungeonKey(t.Name, lb, t.X, t.Y));
+        _learnTried++; _dunTries++;
+        _learnTarget = t.Name; _learnTargetInDungeon = true; _learnTargetLb = lb; _learnTargetX = t.X; _learnTargetY = t.Y;
+        _learnRevisit = false;
+        var way = new List<TownNetPoint>
+        {
+            new() { Cell = _cellId, X = hx, Y = hy, Z = _wz },
+            new() { Cell = t.Cell, X = t.X, Y = t.Y, Z = t.Z },
+        };
+        _dunWalker = new HubWalker(way, LastTeleportMs > 0 ? LastTeleportMs : now - HubWalker.CooldownMs, now);
+        _dunLastX = hx; _dunLastY = hy;
+        AutoRun.Forget();
+        _learn = LearnState.DungeonGoing;
+        _learnStepMs = now;
+        SetLearnLine($"in the dungeon: trying '{t.Name}' ({bestD:0} m away, {left - 1} more in reach)");
+        Host.Log($"[RynthNav] learn: dungeon 0x{lb:X4}: trying '{t.Name}' at {t.X:F1},{t.Y:F1} ({bestD:0} m straight, {left - 1} more in reach)");
+        return true;
+    }
+
+    /// <summary>One tick walking straight to a dungeon portal: taken (a teleport), or given up (stuck, no teleport).</summary>
+    private void StepDungeonTry(long now, bool teleported)
+    {
+        HubWalker? w = _dunWalker;
+        bool portaling = _trkPortaling || (Host.HasIsPortaling && Host.IsPortaling());
+        double jump = Math.Sqrt((LocalX - _dunLastX) * (LocalX - _dunLastX) + (LocalY - _dunLastY) * (LocalY - _dunLastY));
+        _dunLastX = LocalX; _dunLastY = LocalY;
+        if (w == null || teleported || portaling || LastTeleportMs >= _learnStepMs || CurrentLandblock != _learnTargetLb || jump > 15.0)
+        {
+            AutoRun.Halt();
+            _dunWalker = null;
+            _dunHops++;
+            _learn = LearnState.Landed;
+            _learnStepMs = now;
+            SetLearnLine($"took '{_learnTarget}' in the dungeon: learning where it lands");
+            return;
+        }
+        switch (w.Step(LocalX, LocalY, now, out double heading, out string why))
+        {
+            case HubWalker.Act.Run:
+                DriveTo(heading);
+                return;
+            case HubWalker.Act.Hold:
+                AutoRun.Halt();
+                return;
+            default:
+                AutoRun.Halt();
+                _dunWalker = null;
+                _learnFailed++;
+                Host.Log($"[RynthNav] learn: dungeon portal '{_learnTarget}' not reached or didn't take you ({(why.Length > 0 ? why : "no teleport")})");
+                if (!TryDungeonPortal(now)) BeginReturn(now);
+                return;
+        }
+    }
+
     // ── Panel ──────────────────────────────────────────────────────────────
 
     // This server's custom portal counts for the panel (tick writes, the pump thread reads).
     private volatile int _customSaved, _customRoutable;
-    private (string Server, int Version) _customCountKey = ("", -1);
+    private (string Server, int Version, TownNet? Net) _customCountKey = ("", -1, null);
 
-    /// <summary>Recounts this server's custom portals when the server or the store changed. Tick thread.</summary>
+    /// <summary>
+    /// Recounts this server's custom portals when the server, the store or the route hub changed:
+    /// routable = map-to-map links plus learned dungeon entries and exits the planner can use. Tick thread.
+    /// </summary>
     private void RefreshCustomCounts()
     {
         string server = _server;
-        if (_customCountKey == (server, _custom.Version)) return;
-        _customCountKey = (server, _custom.Version);
+        TownNet? net = _townNet;
+        if (_customCountKey == (server, _custom.Version, net)) return;
+        _customCountKey = (server, _custom.Version, net);
         IReadOnlyList<CustomPortal> list = server.Length > 0 ? _custom.For(server) : Array.Empty<CustomPortal>();
         int routable = 0;
         foreach (CustomPortal p in list) if (p.Routable) routable++;
+        if (net != null) { var (e, x, _) = net.LearnedCounts(); routable += e + x; }
         _customSaved = list.Count;
         _customRoutable = routable;
     }

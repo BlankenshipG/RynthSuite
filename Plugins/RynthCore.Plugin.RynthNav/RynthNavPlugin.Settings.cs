@@ -38,14 +38,19 @@ public sealed partial class RynthNavPlugin
     /// network portal, when that recall is known: town network portals stand among other portals
     /// and are harder to take (Tom's call, 10-01). Without the recall, every entry stays.
     /// </summary>
-    private static HubLinks ViaAphus(HubLinks hub, List<RecallOption> recalls, List<string> notes)
+    /// <param name="learnedFrom">Arrivals from this index on are learned dungeons' (TownNet.Merge): their entries always stay.</param>
+    private static HubLinks ViaAphus(HubLinks hub, List<RecallOption> recalls, List<string> notes, int learnedFrom = int.MaxValue)
     {
         RecallOption? aphus = recalls.Find(r => r.Name.IndexOf("Aphus", StringComparison.OrdinalIgnoreCase) >= 0);
         if (aphus == null) return hub;
         var only = new HubLinks { Name = hub.Name, Arrivals = hub.Arrivals };
+        int townEntries = 0;
         foreach (HubEntry e in hub.Entries)
-            if (Math.Abs(e.SrcNs - aphus.Ns) < 0.3 && Math.Abs(e.SrcEw - aphus.Ew) < 0.3) only.Entries.Add(e);
-        if (only.Entries.Count == 0) return hub;   // no entry beside the landing: keep them all
+        {
+            if (e.Arrival >= learnedFrom) { only.Entries.Add(e); continue; }
+            if (Math.Abs(e.SrcNs - aphus.Ns) < 0.3 && Math.Abs(e.SrcEw - aphus.Ew) < 0.3) { only.Entries.Add(e); townEntries++; }
+        }
+        if (townEntries == 0) return hub;   // no entry beside the landing: keep them all
         only.Exits.AddRange(hub.Exits);
         notes.Add($"Town Network: entered by {aphus.Name} only (prefer Aphus)");
         return only;

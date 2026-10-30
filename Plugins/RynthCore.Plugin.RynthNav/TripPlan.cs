@@ -191,6 +191,15 @@ internal sealed class PlannedTrip
             pts = net.Walk(best.Arrival, exit)?.Points;
             if (pts == null) { why = $"townnet.json has no walk from {best.Name}'s arrival to the {net.Exits[exit].Name}"; return null; }
         }
+        else if (i > 0 && Steps[i - 1].IsHub)
+        {
+            // Chained from the hub step before: its exit lands at an arrival here (a learned dungeon's portal into another).
+            int prevExit = Steps[i - 1].HubExit;
+            int arrival = prevExit >= 0 && prevExit < net.Exits.Count ? net.Exits[prevExit].DestArrival : -1;
+            if (arrival < 0) { why = "the portal before it doesn't say where it lands"; return null; }
+            pts = net.Walk(arrival, exit)?.Points;
+            if (pts == null) { why = $"no walk is known from where the {net.Exits[prevExit].Name} lands to the {net.Exits[exit].Name}"; return null; }
+        }
         else if (i == 0 && !StartOnMap && net.Contains((StartCell >> 16) & 0xFFFF))
         {
             double lx = Start.X - ((StartCell >> 24) & 0xFF) * 192.0, ly = Start.Y - ((StartCell >> 16) & 0xFF) * 192.0;

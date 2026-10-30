@@ -107,7 +107,11 @@ public sealed partial class RynthNavPlugin
                 RouteStep st = steps[i];
                 bool nextHub = i + 1 < steps.Count && steps[i + 1].IsHub;
                 if (st.UseRecall) parts.Add("recall " + st.Label);
-                else if (st.IsHub) parts.Add($"Town Network (exit {HubWhere(HubExitOf(i) ?? (_townNet != null && st.HubExit >= 0 && st.HubExit < _townNet.Exits.Count ? _townNet.Exits[st.HubExit] : null))})");
+                else if (st.IsHub)
+                {
+                    TownNetExit? hx = HubExitOf(i) ?? (_townNet != null && st.HubExit >= 0 && st.HubExit < _townNet.Exits.Count ? _townNet.Exits[st.HubExit] : null);
+                    parts.Add($"{hx?.Hub ?? "Town Network"} (exit {HubWhere(hx)})");
+                }
                 else
                 {
                     double d = NavCoords.Distance(pns, pew, st.Ns, st.Ew);

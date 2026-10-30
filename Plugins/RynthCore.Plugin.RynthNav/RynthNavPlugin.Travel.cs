@@ -84,6 +84,11 @@ public sealed partial class RynthNavPlugin
     private double _trkLastWx, _trkLastWy, _trkPreWx, _trkPreWy;
     private long _trkLastTeleportMs, _trkPortalStartMs;
     private bool _trkPortalBeside;                   // a live portal stood right beside you as portal space began
+    // Portal space that began just after a position jump already counted as the teleport (the client
+    // often moves you a moment BEFORE portal space): its end isn't another teleport.
+    private bool _trkTail;
+    private double _trkLastWz;
+    private const long TeleportTailMs = 3000;
 
     // Route planning with recalls: the recalls the current route can use (by RouteStep.RecallIndex).
     private List<RecallOption> _routeRecalls = new();
@@ -203,12 +208,16 @@ public sealed partial class RynthNavPlugin
             && Host.TryGetPlayerVitals(out uint hp, out uint maxHp, out _, out _, out _, out _) && maxHp > 0 && hp == 0)
             _selfCastDied = true;   // died mid-cast: the trip to the lifestone that follows isn't a recall
 
+        TickNearPortal();
         bool teleported = TrackTeleport(now);
+        TickDungeonTrail(teleported);
         UpdateArrow(teleported);
         TickLearn(teleported);
 
         if (now >= _nextSaveMs) { _nextSaveMs = now + 3000; SaveStores(force: false); TickCustomPortals(); }
         else if (!_customLoaded) TickCustomPortals();
+        RefreshMergedNet();
+        RefreshCustomCounts();
         RebuildTravelJson();
     }
 
@@ -289,11 +298,13 @@ public sealed partial class RynthNavPlugin
             {
                 _trkPortaling = true;
                 _trkPortalStartMs = now;
+                _trkTail = _trkLastTeleportMs > 0 && now - _trkLastTeleportMs < TeleportTailMs;
+                if (_trkTail) return false;   // the jump before it was the teleport; nothing beside you here was taken
                 // Only worth the look after your own spell words (a hand-cast recall, or a portal used standing at it?).
                 _trkPortalBeside = _selfCastMs != 0 && now - _selfCastMs < HandCastWindowMs && _trkHaveLast && LivePortalWithin(_trkLastWx, _trkLastWy, PortalBesideUnits);
                 _trkHavePre = _trkHaveLast;
                 _trkPreCell = _trkLastCell; _trkPreWx = _trkLastWx; _trkPreWy = _trkLastWy;
-                NoteUsedPortal(_trkHaveLast, _trkLastCell, _trkLastWx, _trkLastWy);   // a custom portal's landing (CustomPortals.cs)
+                NoteUsedPortal(_trkHaveLast, _trkLastCell, _trkLastWx, _trkLastWy, _trkLastWz);   // a custom portal's landing (CustomPortals.cs)
             }
             return false;
         }
@@ -307,7 +318,22 @@ public sealed partial class RynthNavPlugin
             double preWx = _trkPortaling ? _trkPreWx : _trkLastWx, preWy = _trkPortaling ? _trkPreWy : _trkLastWy;
             long startMs = _trkPortaling ? _trkPortalStartMs : now;
             bool portalBeside = _trkPortaling && _trkPortalBeside;
-            if (!_trkPortaling) _usedPortalSeen = false;   // a jump with no portal space seen: no portal is known
+            if (_trkPortaling && _trkTail)
+            {
+                // The end of the portal space that followed a jump: the same teleport. The landing counts from here.
+                _trkPortaling = false; _trkTail = false;
+                _trkLastTeleportMs = now;
+                _trkHaveLast = true; _trkLastCell = _cellId; _trkLastWx = _wx; _trkLastWy = _wy; _trkLastWz = _wz;
+                return false;
+            }
+            if (!_trkPortaling)
+            {
+                // A jump with no portal space seen (yet): the portal you stood at, if any, unless you were recalling.
+                bool recalling = (_selfCastMs != 0 && now - _selfCastMs < HandCastWindowMs)
+                    || (_castRecallSpell != 0 && now - _castRecallMs < RecallCastWindowMs) || _pendingRecallSlot != null || _recallWait;
+                if (!recalling && now - _trkLastTeleportMs > 2000) NoteUsedPortal(_trkHaveLast, _trkLastCell, _trkLastWx, _trkLastWy, _trkLastWz);
+                else _usedPortalSeen = false;
+            }
             _trkPortaling = false;
             if (now - _trkLastTeleportMs > 2000)
             {
@@ -316,7 +342,7 @@ public sealed partial class RynthNavPlugin
                 OnTeleported(havePre, preCell, preWx, preWy, startMs, portalBeside);
             }
         }
-        _trkHaveLast = true; _trkLastCell = _cellId; _trkLastWx = _wx; _trkLastWy = _wy;
+        _trkHaveLast = true; _trkLastCell = _cellId; _trkLastWx = _wx; _trkLastWy = _wy; _trkLastWz = _wz;
         return teleported;
     }
 

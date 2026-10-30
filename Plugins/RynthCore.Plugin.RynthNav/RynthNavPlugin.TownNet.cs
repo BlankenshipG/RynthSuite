@@ -22,13 +22,22 @@ public sealed partial class RynthNavPlugin
     private const long HubPortalSpaceTimeoutMs = 60000; // ...or never ends
     private const long HubSettleMs = 1500;           // out of portal space and inside this long = landed
 
+    /// <summary>townnet.json as loaded (null: none, or it failed its checks).</summary>
+    private volatile TownNet? _baseTownNet;
+    /// <summary>What routes and the walker use: townnet.json plus this server's learned dungeons (TownNet.Merge). Null: neither.</summary>
     private volatile TownNet? _townNet;
+    private (TownNet? Base, int Version, string Server) _mergedKey = (null, -1, "");
     private volatile string _townNetStatus = "loading…";
     private HubLinks? _hubLinks;
     private (TownNet? Net, int Level, bool Olthoi) _hubLinksKey;
 
     // The hub step being walked (tick thread).
     private bool _hubActive, _hubLanded, _hubWaitSaid;
+    // Leaving by a portal into another dungeon (a chain): the jump and portal space seen, still inside a hub landblock.
+    private bool _hubLeaving, _hubLeftPortal;
+    private long _hubLeaveMs;
+    private uint _hubLb;
+    private double _hubLastX, _hubLastY;
     private long _hubSettleSince;                   // when the landing settled (inside, out of portal space); 0 = not yet
     private long _hubStepMs;
     private HubWalker? _hubWalker;
@@ -49,7 +58,7 @@ public sealed partial class RynthNavPlugin
                     Host.Log($"[RynthNav] {_townNetStatus}");
                     return;
                 }
-                _townNet = t;
+                _baseTownNet = t;
                 _townNetStatus = $"{t.Entries.Count} entry portals, {t.Exits.Count} exits (set {t.SetId[..Math.Min(8, t.SetId.Length)]})";
                 Host.Log($"[RynthNav] Town Network: {t}");
             }
@@ -59,6 +68,26 @@ public sealed partial class RynthNavPlugin
                 Host.Log($"[RynthNav] {_townNetStatus}");
             }
         });
+    }
+
+    /// <summary>
+    /// Rebuilds the route hub when townnet.json loads, the custom portals change, or the server does:
+    /// the Town Network plus this server's learned dungeons. A running hub step keeps its exit number
+    /// (learned exits are only ever appended while walking). Tick thread.
+    /// </summary>
+    private void RefreshMergedNet()
+    {
+        if (!_customLoaded) { if (_townNet == null && _baseTownNet != null) _townNet = _baseTownNet; return; }
+        TownNet? b = _baseTownNet;
+        string server = _server;
+        var key = (b, _custom.Version, server);
+        if (key == _mergedKey) return;
+        _mergedKey = key;
+        if (server.Length == 0 || _custom.WalksFor(server).Count == 0) { _townNet = b; return; }
+        TownNet merged = TownNet.Merge(b, _custom, server);
+        var (e, x, w) = merged.LearnedCounts();
+        _townNet = merged.Exits.Count == 0 ? b : merged;
+        Host.Log($"[RynthNav] learned dungeons for {server}: {e} entry portal(s), {x} exit portal(s), {w} walk(s) inside");
     }
 
     /// <summary>The character's level (0 = not known) and whether they're an Olthoi. Tick thread.</summary>
@@ -105,6 +134,7 @@ public sealed partial class RynthNavPlugin
     {
         _hubActive = false; _hubLanded = false; _hubWaitSaid = false; _hubSettleSince = 0;
         _hubWalker = null;
+        _hubLeaving = false; _hubLeftPortal = false; _hubLeaveMs = 0; _hubLb = 0;
     }
 
     private double LocalX => _wx - ((_cellId >> 24) & 0xFF) * 192.0;
@@ -119,12 +149,13 @@ public sealed partial class RynthNavPlugin
         TownNet? t = _townNet;
         TownNetExit? exit = HubExitOf(_routeIdx);
         if (t == null || exit == null) { FinishGoto("stopped: the Town Network data isn't loaded"); return; }
+        string hubName = exit.Hub;
         if (!_hubActive)
         {
             ResetHub();
             _hubActive = true;
             _hubStepMs = now;
-            lock (_gate) _status = $"Town Network → {exit.Where}";
+            lock (_gate) _status = $"{hubName} → {exit.Where}";
         }
         bool portaling = Host.HasIsPortaling && Host.IsPortaling();
         uint lb = CurrentLandblock;
@@ -142,12 +173,14 @@ public sealed partial class RynthNavPlugin
             {
                 HubHalt();
                 if (!portaling && now - _hubStepMs > HubLandTimeoutMs)
-                    FinishGoto($"stopped: the portal didn't take you into the Town Network (you're in landblock 0x{lb:X4})");
+                    FinishGoto($"stopped: the portal didn't take you into {hubName} (you're in landblock 0x{lb:X4})");
                 else if (now - _hubStepMs > HubPortalSpaceTimeoutMs)
-                    FinishGoto("stopped: still in portal space a minute after taking the Town Network portal");
+                    FinishGoto($"stopped: still in portal space a minute after taking the portal into {hubName}");
                 return;
             }
             _hubLanded = true;
+            _hubLb = lb;
+            _hubLastX = LocalX; _hubLastY = LocalY;
             // Normally the landing is now. A goto started inside the network: the last teleport we
             // saw (none seen: assume the cooldown is long over).
             long landMs = _routeIdx > 0 ? _hubSettleSince : _trkLastTeleportMs > 0 ? Math.Min(now, _trkLastTeleportMs) : now - HubWalker.CooldownMs;
@@ -155,20 +188,50 @@ public sealed partial class RynthNavPlugin
             List<TownNetPoint>? way = t.WayTo(_route![_routeIdx].HubExit, x, y, HubOffRouteUnits, out string from);
             if (way == null)
             {
-                FinishGoto($"stopped in the Town Network: you landed at {x:F1}, {y:F1}, away from every walk to the {exit.Name}");
+                FinishGoto($"stopped in {hubName}: you landed at {x:F1}, {y:F1}, away from every walk to the {exit.Name}");
                 return;
             }
             _hubWalker = new HubWalker(way, landMs, now);
-            Say($"Town Network: walking to the {exit.Name} ({_hubWalker.Length:F0} m).");
-            Host.Log($"[RynthNav] Town Network: landed at {x:F1},{y:F1} (lb 0x{lb:X4}), walk from {from}: {way.Count} points, {_hubWalker.Length:F1} m to {exit.Name}");
+            Say($"{hubName}: walking to the {exit.Name} ({_hubWalker.Length:F0} m).");
+            Host.Log($"[RynthNav] {hubName}: landed at {x:F1},{y:F1} (lb 0x{lb:X4}), walk from {from}: {way.Count} points, {_hubWalker.Length:F1} m to {exit.Name}");
         }
+
+        // An exit into another learned dungeon: still "inside" afterwards, so the teleport is the
+        // landblock changing, a jump, or portal space (the jump can come a moment before it).
+        bool chain = !exit.DestOnMap && exit.DestArrival >= 0;
+        if (chain && inside && !_hubLeaving)
+        {
+            double jump = Math.Sqrt((LocalX - _hubLastX) * (LocalX - _hubLastX) + (LocalY - _hubLastY) * (LocalY - _hubLastY));
+            if (portaling || lb != _hubLb || jump > 15.0) { _hubLeaving = true; _hubLeaveMs = now; }
+        }
+        _hubLastX = LocalX; _hubLastY = LocalY;
 
         // The exit portal's teleport (portal space can't last for ever: the walker's limit still runs).
         if (portaling)
         {
             HubHalt();
             _hubWalker!.Pause(now);   // portal space isn't being stuck
-            if (now > _hubWalker!.LimitMs + HubPortalSpaceTimeoutMs) FinishGoto("stopped: still in portal space a minute after the Town Network's exit");
+            _hubLeftPortal |= _hubLeaving;
+            if (now > _hubWalker!.LimitMs + HubPortalSpaceTimeoutMs) FinishGoto($"stopped: still in portal space a minute after {hubName}'s exit");
+            return;
+        }
+        if (_hubLeaving)
+        {
+            HubHalt();
+            _hubWalker!.Pause(now);
+            // Out of portal space (or none came in 3 s): landed at the next dungeon's arrival.
+            if (!_hubLeftPortal && now - _hubLeaveMs < 3000) return;
+            if (exit.DestCell != 0 && lb != exit.DestLandblock)
+            {
+                FinishGoto($"stopped: the {exit.Name} sent you to landblock 0x{lb:X4}, not to 0x{exit.DestLandblock:X4}: wrong portal");
+                return;
+            }
+            Say($"{hubName}: took the {exit.Name}.");
+            Host.Log($"[RynthNav] {hubName}: took {exit.Name} into lb 0x{lb:X4} (a chained dungeon)");
+            ResetHub();
+            _lastLandMs = NowMs;
+            if (_routeIdx >= _route!.Count - 1) { FinishGoto("arrived"); return; }
+            AdvanceRoute();
             return;
         }
         if (!inside)
@@ -177,11 +240,11 @@ public sealed partial class RynthNavPlugin
             RefreshTiles(lb);
             if (exit.DestCell != 0 && lb != exit.DestLandblock)
             {
-                FinishGoto($"stopped: the Town Network sent you to landblock 0x{lb:X4}, not to {exit.Where} (0x{exit.DestLandblock:X4}): wrong portal");
+                FinishGoto($"stopped: {hubName} sent you to landblock 0x{lb:X4}, not to {exit.Where} (0x{exit.DestLandblock:X4}): wrong portal");
                 return;
             }
-            Say($"Town Network: took the {exit.Name}.");
-            Host.Log($"[RynthNav] Town Network: took {exit.Name} (lb 0x{lb:X4})");
+            Say($"{hubName}: took the {exit.Name}.");
+            Host.Log($"[RynthNav] {hubName}: took {exit.Name} (lb 0x{lb:X4})");
             ResetHub();
             _lastLandMs = NowMs;   // the exit's own portal space may still follow (see StepGoto)
             if (_routeIdx >= _route!.Count - 1) { FinishGoto("arrived"); return; }
@@ -199,13 +262,13 @@ public sealed partial class RynthNavPlugin
                 if (_hubWalker.JustStartedWaiting && !_hubWaitSaid)
                 {
                     _hubWaitSaid = true;
-                    Say($"Town Network: waiting {_hubWalker.WaitSeconds} s for the portal to let you through.");
+                    Say($"{hubName}: waiting {_hubWalker.WaitSeconds} s for the portal to let you through.");
                 }
                 return;
             case HubWalker.Act.NoTeleport:
             {
                 string need = exit.Rules.MinLevel > 0 ? $" (it needs level {exit.Rules.MinLevel})" : " (level or quest requirement?)";
-                FinishGoto($"stopped in the Town Network: the {exit.Name} didn't take you{need}");
+                FinishGoto($"stopped in {hubName}: the {exit.Name} didn't take you{need}");
                 return;
             }
             default:
@@ -215,7 +278,7 @@ public sealed partial class RynthNavPlugin
     }
 
     private void HubStop(TownNetExit exit, string why) =>
-        FinishGoto($"stopped in the Town Network: {why} on the way to the {exit.Name}");
+        FinishGoto($"stopped in {exit.Hub}: {why} on the way to the {exit.Name}");
 
     /// <summary>Metres left on the walk inside (to the exit's centre); -1 before landing.</summary>
     private double HubLeft() => _hubLanded && _hubWalker != null ? _hubWalker.Left(LocalX, LocalY) : -1;
@@ -224,10 +287,10 @@ public sealed partial class RynthNavPlugin
     private string HubLine(double left)
     {
         TownNetExit? exit = HubExitOf(_routeIdx);
-        string name = exit?.Name ?? "exit portal";
-        if (!_hubLanded) return $"taking the Town Network to {HubWhere(exit)}";
-        if (HubIsWaiting) return $"Town Network: waiting for the {name} to let you through";
-        return $"Town Network: walking to the {name}{(left >= 0 ? $", {left:F0} yd left" : "")}";
+        string name = exit?.Name ?? "exit portal", hub = exit?.Hub ?? "Town Network";
+        if (!_hubLanded) return $"taking {hub} to {HubWhere(exit)}";
+        if (HubIsWaiting) return $"{hub}: waiting for the {name} to let you through";
+        return $"{hub}: walking to the {name}{(left >= 0 ? $", {left:F0} yd left" : "")}";
     }
 
     /// <summary>The route's first Town Network leg, for the goto's start line ("" = none).</summary>
@@ -239,9 +302,10 @@ public sealed partial class RynthNavPlugin
             if (!_route[i].IsHub) continue;
             TownNetExit? exit = HubExitOf(i);
             if (exit == null) return "";
-            if (i == 0) return $"taking the Town Network to {exit.Where} (the {exit.Name})";
+            if (i == 0) return $"taking {exit.Hub} to {exit.Where} (the {exit.Name})";
             RouteStep entry = _route[i - 1];
-            return $"taking the Town Network to {exit.Where}: its portal at {NavCoords.Fmt(entry.Ns, entry.Ew)}, then the {exit.Name} inside";
+            if (entry.IsHub) return "";
+            return $"taking {exit.Hub} to {exit.Where}: its portal at {NavCoords.Fmt(entry.Ns, entry.Ew)}, then the {exit.Name} inside";
         }
         return "";
     }
@@ -265,6 +329,7 @@ public sealed partial class RynthNavPlugin
         if (PortalsRouting) EnsurePortalsLoaded();
         foreach (HubExit hx in links.Exits)
         {
+            if (hx.ToArrival >= 0) continue;   // into another dungeon: only planned from a landing
             List<TownNetPoint>? way = t.WayTo(hx.Id, px, py, HubOffRouteUnits, out _);
             if (way == null) continue;
             double inside = TownNet.PathLength(way, 0) + PortalRoute.PortalPenaltyUnits;

@@ -33,3 +33,31 @@ RynthNav can map a server's portals by itself:
   rynthnav.json (`learnRange`, 200 by default). **Scan here** writes down the portals in that range.
 - The panel shows this server's saved and routable counts and what learning is doing.
 - Engine: `RynthNavFace` draws the section (shown only with a RynthNav that sends `learn`).
+
+## Inside dungeons (the same day, later)
+
+Dungeons have no navmesh, so RynthNav now keeps the way walked inside them and routes through them.
+
+- **Walks inside dungeons**: from each landing in a dungeon RynthNav keeps the way you walk (loops
+  cut out). Taking a portal there keeps that walk with the portal and where it lands, whoever did
+  the walking (you, a goto, or learning). A shorter walk between the same landing and portal
+  replaces a longer one. Saved per server in `NavData\custom-dungeon-walks.txt`; dungeon portals
+  (where they stand inside) and dungeon landings (where you were set down) go in
+  `custom-portals.txt`.
+- **Routes through dungeons**: a learned dungeon is used like the Town Network. A map portal into
+  it, the walk inside to an exit portal, then out onto the map, or into another learned dungeon and
+  on through that one. The walker follows the kept walk inside (stuck or off the walk stops it, the
+  same as in the Town Network). A goto started inside a learned dungeon takes its walk out when that
+  costs less than a recall.
+- **Learn portals goes into dungeons**: landing in a dungeon, it writes down the portals there and
+  walks straight to the nearest one it hasn't tried (within 60 m, on about the same floor); a
+  portal round a corner it can't reach that way is given up when the walk sticks. Up to three
+  dungeon portals in a row, then back to the start. From the start it goes back into a dungeon
+  through its entry portal while portals inside are still untried.
+- `/rnav portals scan` now writes down portals inside the dungeon you're in, and `/rnav portals
+  list` shows them and the number of walks learned. The panel's routable count includes learned
+  dungeon entries and exits.
+- Portal learning now also works when the client moves you a moment before portal space (seen on
+  portals): the portal you stood at is the one taken, and the portal space after the jump isn't a
+  second teleport.
+- Tests: `Tools/RynthNav.RouteTests/DungeonWalkTests.cs`.

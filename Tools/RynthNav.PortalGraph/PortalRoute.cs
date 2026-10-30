@@ -64,6 +64,8 @@ public readonly struct HubEntry
 /// <summary>
 /// A hub's exit portal: where it lands you on the map, and the walk to it from each arrival point
 /// (units; NaN = no walk). Id is the caller's own number for it (RouteStep.HubExit).
+/// ToArrival >= 0: it lands at that arrival point of the same hub instead (one learned dungeon's
+/// portal into another); DstNs/DstEw are then NaN.
 /// </summary>
 public readonly struct HubExit
 {
@@ -71,8 +73,12 @@ public readonly struct HubExit
     public readonly string Name;
     public readonly int Id;
     public readonly double[] WalkUnits;
+    private readonly int _toArrival1;   // ToArrival + 1, so default(HubExit) has none
+    public int ToArrival => _toArrival1 - 1;
     public HubExit(double dstNs, double dstEw, string name, int id, double[] walkUnits)
-    { DstNs = dstNs; DstEw = dstEw; Name = name; Id = id; WalkUnits = walkUnits; }
+        : this(dstNs, dstEw, name, id, walkUnits, -1) { }
+    public HubExit(double dstNs, double dstEw, string name, int id, double[] walkUnits, int toArrival)
+    { DstNs = dstNs; DstEw = dstEw; Name = name; Id = id; WalkUnits = walkUnits; _toArrival1 = toArrival + 1; }
 }
 
 /// <summary>One leg of a route: walk to (Ns,Ew); if UsePortal, trigger the portal on arrival.</summary>
@@ -131,7 +137,7 @@ public static class PortalRoute
         return Math.Sqrt(dn * dn + de * de);
     }
 
-    private enum EdgeKind { Walk, Portal, Recall, HubIn, HubOut }
+    private enum EdgeKind { Walk, Portal, Recall, HubIn, HubOut, HubChain }
     private readonly struct Edge { public readonly int To; public readonly double Cost; public readonly EdgeKind Kind; public readonly string Label; public readonly int Index;
         public Edge(int to, double cost, EdgeKind kind, string label, int index = -1) { To = to; Cost = cost; Kind = kind; Label = label; Index = index; } }
 
@@ -278,6 +284,12 @@ public static class PortalRoute
                     if (double.IsNaN(walk) || walk < 0) continue;
                     adj[arrivalBase + a].Add(new Edge(xn, walk + PortalPenaltyUnits, EdgeKind.HubOut, hx.Name, hx.Id));
                 }
+                if (hx.ToArrival >= 0)
+                {
+                    // Lands inside again (another arrival): no map position, nothing to walk from.
+                    if (hx.ToArrival < hubArrivals) adj[xn].Add(new Edge(arrivalBase + hx.ToArrival, 0, EdgeKind.HubChain, hx.Name));
+                    continue;
+                }
                 AddWalk(xn, 1, Dist(hx.DstNs, hx.DstEw, goalNs, goalEw));
                 for (int j = 0; j < portals.Count; j++)
                 {
@@ -345,6 +357,10 @@ public static class PortalRoute
                 // lands (inside) has no map position.
                 if (steps.Count > 0)
                     steps[steps.Count - 1] = new RouteStep(steps[^1].Ns, steps[^1].Ew, true, false, prevLabel[to]);
+            }
+            else if (kind == EdgeKind.HubChain)
+            {
+                // Its teleport was counted on the hub step before (it lands at the next arrival).
             }
             else if (kind == EdgeKind.HubOut)
             {
