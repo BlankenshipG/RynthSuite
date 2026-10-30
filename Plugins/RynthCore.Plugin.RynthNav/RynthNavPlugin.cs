@@ -25,7 +25,7 @@ namespace RynthCore.Plugin.RynthNav;
 public sealed partial class RynthNavPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthNav");
-    internal const string PluginVersion = "0.6.9";
+    internal const string PluginVersion = "0.6.10";
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi(PluginVersion);
 
     /// <summary>Lets PluginExports log through this plugin's host (the base Log is protected).</summary>
@@ -144,6 +144,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         _portalsEnabled = NavDataConfig.ReadSwitch("portals", false);
         _recallsEnabled = NavDataConfig.ReadSwitch("recalls", true);
         InitLearn();
+        InitGems();
         LoadAvoidSettings();
         LoadMarkerSettings();
         LoadMeshSettings();
@@ -943,7 +944,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         double startNs = NavCoords.NsFromWorld(_wy), startEw = NavCoords.EwFromWorld(_wx);
         bool startOnMap = IsOnMap(_cellId);
         var recallNotes = new List<string>();
-        recalls = _charKey.Length == 0 ? new List<RecallOption>() : RecallPlanner.Build(_atlas, _known, _memory, _charKey, recallNotes);
+        recalls = _charKey.Length == 0 ? new List<RecallOption>() : RecallsRouting ? AllRecalls(_atlas, recallNotes) : RecallPlanner.Build(_atlas, _known, _memory, _charKey, recallNotes);
         if (_charKey.Length == 0) recallNotes.Add("not logged in yet");
         var hubNotes = new List<string>();
         HubLinks? hub = PortalsRouting ? CurrentHubLinks(hubNotes) : null;

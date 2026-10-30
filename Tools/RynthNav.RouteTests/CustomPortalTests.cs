@@ -19,6 +19,7 @@ internal static partial class Program
         Run(nameof(CustomPortalsRoundTrip), CustomPortalsRoundTrip);
         Run(nameof(CustomForgetAndClear), CustomForgetAndClear);
         RunDungeonWalks();
+        RunGems();
     }
 
     private static readonly DateTime T0 = new(2026, 10, 29, 12, 0, 0, DateTimeKind.Utc);

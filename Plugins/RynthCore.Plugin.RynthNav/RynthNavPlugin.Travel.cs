@@ -175,6 +175,8 @@ public sealed partial class RynthNavPlugin
         _known = null; _charKey = ""; _server = ""; _usedPortalSeen = false;
         SaveStores(force: true);
         TickCustomPortals(force: true);
+        TickGems(NowMs, force: true);
+        _packGems = new List<PackGem>(); _packSnap = new(); _gemSpentWcid = 0;
     }
 
     // ── Tick ─────────────────────────────────────────────────────────────────
@@ -214,6 +216,7 @@ public sealed partial class RynthNavPlugin
         UpdateArrow(teleported);
         TickLearn(teleported);
 
+        TickGems(now);
         if (now >= _nextSaveMs) { _nextSaveMs = now + 3000; SaveStores(force: false); TickCustomPortals(); }
         else if (!_customLoaded) TickCustomPortals();
         RefreshMergedNet();
@@ -359,6 +362,8 @@ public sealed partial class RynthNavPlugin
             && Math.Sqrt((preWx - _selfCastWx) * (preWx - _selfCastWx) + (preWy - _selfCastWy) * (preWy - _selfCastWy)) < HandCastStillUnits;
         _selfCastMs = 0; _selfCastDied = false;
         if (who.Length == 0) return;
+        // A portal gem used up just before (by you or a route's gem step): its landing (RynthNavPlugin.Gems.cs).
+        if (TryLearnGem(landing, now)) { _usedPortalSeen = false; _pendingRecallSlot = null; return; }
 
         if (_pendingRecallSlot is RecallSlot slot && now - _pendingRecallMs < RecallAnnounceWindowMs)
         {
@@ -748,7 +753,7 @@ public sealed partial class RynthNavPlugin
     {
         if (!RecallsRouting) { notes?.Add("Recalls are off (/rnav recalls on)."); return new List<RecallOption>(); }
         if (_charKey.Length == 0) { notes?.Add("Not logged in yet."); return new List<RecallOption>(); }
-        return RecallPlanner.Build(_atlas, _known, _memory, _charKey, notes);
+        return AllRecalls(_atlas, notes);
     }
 
     // ── Recall steps of a route ──────────────────────────────────────────────
@@ -759,6 +764,7 @@ public sealed partial class RynthNavPlugin
         _recallStartMs = NowMs;
         _recallLastCastMs = 0; _recallLastStanceMs = 0;
         _recallWandTried = false; _recallChangedStance = false; _recallSent = false; _recallWasPortaling = false;
+        _gemLastUseMs = 0;
         _recallPreLb = CurrentLandblock; _recallPreWx = _wx; _recallPreWy = _wy;
         BeginWand();
         AutoRun.Stop();
@@ -807,6 +813,12 @@ public sealed partial class RynthNavPlugin
             return;
         }
 
+        if (o.IsGem)
+        {
+            // A portal gem from the pack: use it (no stance, no wand), again after a while.
+            if (!UseRouteGem(o, now)) { EndRecall(); FinishGoto($"stopped: no {o.ItemName} left in your pack"); }
+            return;
+        }
         if (o.SpellId == 0)
         {
             // A command recall (@lifestone, @house recall): send it once, again after 20 s.
@@ -990,7 +1002,7 @@ public sealed partial class RynthNavPlugin
 
         // Recalls this character can use, and why others are left out
         var notes = new List<string>();
-        List<RecallOption> recalls = _charKey.Length == 0 ? new List<RecallOption>() : RecallPlanner.Build(atlas, _known, _memory, _charKey, notes);
+        List<RecallOption> recalls = _charKey.Length == 0 ? new List<RecallOption>() : AllRecalls(atlas, notes);
         if (_charKey.Length == 0) notes.Add("Not logged in yet.");
         sb.Append(",\"recalls\":[");
         for (int i = 0; i < recalls.Count; i++)
@@ -1040,6 +1052,7 @@ public sealed partial class RynthNavPlugin
         "/rnav goto <coords> | preview <coords> | portals on|off | stop | here | load | test | navdata\n" +
         "/rnav portals scan [yd] | list | forget <name> | clear confirm — this server's own portals (a landing is learned the first time you take one)\n" +
         "/rnav portals learn | learn stop | learn range <yd> — try every portal in range by itself, learn each landing, come back, repeat\n" +
+        "/rnav gems [list] | on | off | cost <yd> | forget <name> — portal/recall gems in your pack as route steps (a gem's landing is learned the first time you use one)\n" +
         "/rnav avoid — show; avoid portals on|off|<m> | walls on|off|<m> | corners <m>\n" +
         "/rnav markers on|off | markers labels on|off | markers guide on|off — the trip on the ground\n" +
         "/rnav mesh on|off | floor on|off | walls on|off | radius <m> | triangles <n> — draw the navmesh: green floor, red walls\n" +
@@ -1073,6 +1086,7 @@ public sealed partial class RynthNavPlugin
             case "avoid": CmdAvoid(rest); break;
             case "aphus": CmdAphus(rest.Trim().ToLowerInvariant()); break;
             case "portals": CmdPortals(rest); break;
+            case "gems": CmdGems(rest); break;
             case "stop": DoMove(5); Say("stopped"); break;
             case "goto":
             case "go":

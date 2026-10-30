@@ -24,6 +24,7 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\ArrowGuide.cs" Link="Linked\ArrowGuide.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RecallMemory.cs" Link="Linked\RecallMemory.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RecallPlanner.cs" Link="Linked\RecallPlanner.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PackGems.cs" Link="Linked\PackGems.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavDataConfig.cs" Link="Linked\NavDataConfig.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\Entrance.cs" Link="Linked\Entrance.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TownNet.cs" Link="Linked\TownNet.cs" />

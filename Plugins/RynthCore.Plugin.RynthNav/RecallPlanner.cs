@@ -16,8 +16,17 @@ internal sealed class RecallOption
     public double CastSeconds;
     /// <summary>Learned in game (RecallMemory), not fixed by the world data.</summary>
     public bool Learned;
+    /// <summary>Planner cost on top of the cast time (a portal gem is spent: GemPlanner).</summary>
+    public double ExtraCostUnits;
+    /// <summary>A portal gem from the pack (PackGems.cs): used with UseObject instead of cast. 0 = not a gem.</summary>
+    public uint ItemWcid;
+    public string ItemName = "";
+    public int ItemCount;
+    /// <summary>For a gem: where its landing comes from ("learned", the recall it casts...).</summary>
+    public string Via = "";
+    public bool IsGem => ItemWcid != 0;
 
-    public RecallLink ToLink() => new(Ns, Ew, Name, PortalRoute.RecallCostUnits(CastSeconds));
+    public RecallLink ToLink() => new(Ns, Ew, Name, PortalRoute.RecallCostUnits(CastSeconds) + ExtraCostUnits);
 }
 
 /// <summary>
