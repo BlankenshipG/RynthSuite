@@ -525,7 +525,12 @@ public sealed partial class RynthNavPlugin
     {
         var s = new RecallSpot();
         if (PlayerMapPos(out double ns, out double ew)) { s.OnMap = true; s.Ns = Math.Round(ns, 2); s.Ew = Math.Round(ew, 2); s.Label = NearLabel(ns, ew); }
-        else s.Label = $"a dungeon (landblock {(_cellId >> 16):X4})";
+        else
+        {
+            s.Label = $"a dungeon (landblock {(_cellId >> 16):X4})";
+            // Where in it: a recall or gem landing here routes on through the dungeon's learned walks.
+            if (_hasPose) { s.Cell = _cellId; s.HasPos = true; s.X = Math.Round(LocalX, 2); s.Y = Math.Round(LocalY, 2); s.Z = Math.Round(_wz, 2); }
+        }
         return s;
     }
 
@@ -1011,7 +1016,7 @@ public sealed partial class RynthNavPlugin
             if (i > 0) sb.Append(',');
             sb.Append("{\"n\":\"").Append(Esc(r.Name)).Append("\",\"ns\":").Append(r.Ns.ToString("F2", ci))
               .Append(",\"ew\":").Append(r.Ew.ToString("F2", ci)).Append(",\"how\":\"")
-              .Append(Esc(r.SpellId != 0 ? "spell " + r.SpellId.ToString(ci) : r.Command)).Append("\",\"learned\":").Append(r.Learned ? 1 : 0).Append('}');
+              .Append(Esc((r.SpellId != 0 ? "spell " + r.SpellId.ToString(ci) : r.Command) + (r.ToArrival >= 0 ? " → " + r.Where : ""))).Append("\",\"learned\":").Append(r.Learned ? 1 : 0).Append('}');
         }
         sb.Append("],\"recallNotes\":[");
         for (int i = 0; i < notes.Count; i++) { if (i > 0) sb.Append(','); sb.Append('"').Append(Esc(notes[i])).Append('"'); }
@@ -1261,7 +1266,7 @@ public sealed partial class RynthNavPlugin
         var notes = new List<string>();
         List<RecallOption> list = CurrentRecalls(notes);
         Say(list.Count == 0 ? "no recall can be used for routes yet" : $"{list.Count} recall(s) for routes:");
-        foreach (var o in list) Say($"  {o.Name} → {NavCoords.Fmt(o.Ns, o.Ew)}{(o.SpellId == 0 ? " (" + o.Command + ")" : "")}");
+        foreach (var o in list) Say($"  {o.Name} → {o.Where}{(o.ToArrival >= 0 ? " (then out through its learned portals)" : "")}{(o.SpellId == 0 ? " (" + o.Command + ")" : "")}");
         foreach (string n in notes) Say("  " + n);
     }
 

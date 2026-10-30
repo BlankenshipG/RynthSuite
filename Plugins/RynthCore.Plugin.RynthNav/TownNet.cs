@@ -287,7 +287,7 @@ internal sealed class TownNet
     // ── Learned dungeons (custom portals) ────────────────────────────────────
 
     /// <summary>A landing within this of a learned arrival (and the height check) is that arrival.</summary>
-    public const double LearnedArrivalUnits = 3.0;
+    public const double LearnedArrivalUnits = 5.0;
     public const double LearnedArrivalHeight = 3.0;
 
     /// <summary>Adds a walk; one already kept for the same arrival and exit stays if it is no longer.</summary>
@@ -314,15 +314,23 @@ internal sealed class TownNet
         return -1;
     }
 
+    /// <summary>A learned arrival (index from <paramref name="first"/> on) in exactly that cell, or -1.</summary>
+    public int LearnedArrivalByCell(int first, uint cell)
+    {
+        for (int i = first; i < Arrivals.Count; i++) if (Arrivals[i].Cell == cell) return i;
+        return -1;
+    }
+
     /// <summary>
     /// The Town Network (townnet.json, may be null) with this server's learned dungeons added as more of
     /// the same hub: each walk recorded inside a dungeon gives an arrival (where it began) and an exit
     /// (the portal it ended at, with its landing), each map portal that lands at a learned arrival is an
     /// entry, and a learned exit that lands at another learned arrival chains into it. Exits keep
     /// townnet.json's numbers; learned ones follow. A landblock townnet.json has is never learned over.
-    /// The result is read-only once returned.
+    /// With the Atlas, its map portals into a learned dungeon (the world data's own, landing in the
+    /// cell a learned walk starts in) are entries too. The result is read-only once returned.
     /// </summary>
-    public static TownNet Merge(TownNet? baseNet, CustomPortalStore store, string server)
+    public static TownNet Merge(TownNet? baseNet, CustomPortalStore store, string server, Atlas? atlas = null)
     {
         var t = new TownNet { Version = SupportedVersion };
         if (baseNet != null)
@@ -341,6 +349,10 @@ internal sealed class TownNet
 
         // A dungeon's name: the first map portal learned to lead into it.
         var hubName = new Dictionary<uint, string>();
+        if (atlas != null)   // the world data's name for the dungeon first ("Abandoned Mine")
+            foreach (AtlasLocation l in atlas.Locations)
+                if (l.Type.Equals("Dungeon", StringComparison.Ordinal) && uint.TryParse(l.Lb, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint dlb))
+                    hubName.TryAdd(dlb, l.Name);
         foreach (CustomPortal p in portals)
             if (p.OnMap && p.DestKnown && !p.DestOnMap && p.DestCell != 0) hubName.TryAdd(p.DestLandblock, p.Name);
         string HubOf(uint lb) => hubName.TryGetValue(lb, out string? n) ? n : $"dungeon {lb:X4}";
@@ -400,6 +412,28 @@ internal sealed class TownNet
                 Name = p.Name, Place = HubOf(p.DestLandblock), OnMap = true, Ns = p.Ns, Ew = p.Ew, Arrival = a, Learned = true,
             });
         }
+
+        // The world data's map portals into a learned dungeon (the Atlas: dest cell = a learned arrival's cell).
+        if (atlas != null)
+            foreach (AtlasLocation l in atlas.Locations)
+            {
+                if (!l.OnMap || !l.HasDest || l.DestOnMap || l.Closed || l.Quest || !l.Type.Equals("Portal", StringComparison.Ordinal)) continue;
+                if (!uint.TryParse(l.DestCell, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint dc) || baseLbs.Contains(dc >> 16)) continue;
+                int a = t.LearnedArrivalByCell(firstArrival, dc);
+                if (a < 0) continue;
+                bool dup = false;
+                foreach (TownNetEntry en in t.Entries)
+                    if (en.Learned && en.Arrival == a && NavCoords.Distance(en.Ns, en.Ew, l.Ns, l.Ew) < 2.0) { dup = true; break; }
+                if (dup) continue;
+                var entry = new TownNetEntry
+                {
+                    Guid = string.Create(CultureInfo.InvariantCulture, $"atlas:{l.Id}"),
+                    Name = l.Name, Place = l.DestName.Length > 0 ? l.DestName : HubOf(dc >> 16), OnMap = true, Ns = l.Ns, Ew = l.Ew, Arrival = a, Learned = true,
+                };
+                entry.Rules.MinLevel = l.MinLevel; entry.Rules.MaxLevel = l.MaxLevel;
+                t.Entries.Add(entry);
+                hubName.TryAdd(dc >> 16, l.DestName.Length > 0 ? l.DestName : l.Name);
+            }
 
         // A learned exit into another learned dungeon: lands at that arrival (a chain).
         foreach (var (p, x) in exitOf)

@@ -110,10 +110,28 @@ public sealed partial class RynthNavPlugin
     /// <summary>The recalls the planner may use: spells and commands (RecallPlanner), plus the pack's gems.</summary>
     private List<RecallOption> AllRecalls(Atlas atlas, List<string>? notes)
     {
-        List<RecallOption> list = RecallPlanner.Build(atlas, _known, _memory, _charKey, notes);
+        List<RecallOption> list = RecallPlanner.Build(atlas, _known, _memory, _charKey, notes, ArrivalFor);
         if (!_gemsEnabled) { if (_packGems.Count > 0) notes?.Add("Portal gems are off (/rnav gems on)."); return list; }
-        list.AddRange(GemPlanner.Build(_packGems, atlas, _memory, _charKey, _gemMemory, CurrentServer(), _gemCostUnits, notes));
+        list.AddRange(GemPlanner.Build(_packGems, atlas, _memory, _charKey, _gemMemory, CurrentServer(), _gemCostUnits, notes, ArrivalFor));
         return list;
+    }
+
+    /// <summary>
+    /// A landing in a dungeon RynthNav learned walks in: that arrival of the route hub (_townNet), so a
+    /// recall or gem into it goes on by the dungeon's portals. By position when known (within 3 m),
+    /// else by the exact cell. -1: not a learned arrival.
+    /// </summary>
+    private int ArrivalFor(uint cell, bool hasPos, double x, double y, double z)
+    {
+        TownNet? t = _townNet;
+        if (t == null || cell == 0) return -1;
+        int first = _baseTownNet?.Arrivals.Count ?? 0;
+        if (hasPos)
+        {
+            int a = t.LearnedArrival(first, cell >> 16, x, y, z);
+            if (a >= 0) return a;
+        }
+        return t.LearnedArrivalByCell(first, cell);
     }
 
     /// <summary>
@@ -193,9 +211,9 @@ public sealed partial class RynthNavPlugin
             {
                 ScanPackGems(NowMs);
                 var notes = new List<string>();
-                List<RecallOption> usable = GemPlanner.Build(_packGems, _atlas, _memory, _charKey, _gemMemory, server, _gemCostUnits, notes);
+                List<RecallOption> usable = GemPlanner.Build(_packGems, _atlas, _memory, _charKey, _gemMemory, server, _gemCostUnits, notes, ArrivalFor);
                 Say($"portal gems in routes: {(_gemsEnabled ? "ON" : "OFF")} (cost {_gemCostUnits:0} yd each); {_packGems.Count} kind(s) in your pack, {usable.Count} with a known landing:");
-                foreach (RecallOption o in usable) Say($"  {o.ItemName} x{o.ItemCount} → {NavCoords.Fmt(o.Ns, o.Ew)} ({o.Via})");
+                foreach (RecallOption o in usable) Say($"  {o.ItemName} x{o.ItemCount} → {o.Where}{(o.ToArrival >= 0 ? ", then out through its learned portals" : "")} ({o.Via})");
                 foreach (string n in notes) Say("  " + n);
                 return;
             }

@@ -25,9 +25,23 @@ internal sealed class RecallOption
     /// <summary>For a gem: where its landing comes from ("learned", the recall it casts...).</summary>
     public string Via = "";
     public bool IsGem => ItemWcid != 0;
+    /// <summary>
+    /// >= 0: it lands in a dungeon RynthNav learned, at that arrival of the route hub (TownNet.Merge);
+    /// the route goes on by the dungeon's walks. Ns/Ew are then 0 and <see cref="Where"/> says where.
+    /// </summary>
+    public int ToArrival = -1;
+    public string Into = "";
 
-    public RecallLink ToLink() => new(Ns, Ew, Name, PortalRoute.RecallCostUnits(CastSeconds) + ExtraCostUnits);
+    public string Where => ToArrival >= 0 ? (Into.Length > 0 ? Into : "a dungeon RynthNav learned") : NavCoords.Fmt(Ns, Ew);
+
+    public RecallLink ToLink() => ToArrival >= 0
+        ? new(double.NaN, double.NaN, Name, PortalRoute.RecallCostUnits(CastSeconds) + ExtraCostUnits, ToArrival)
+        : new(Ns, Ew, Name, PortalRoute.RecallCostUnits(CastSeconds) + ExtraCostUnits);
 }
+
+/// <summary>The route hub's arrival a landing in a dungeon is (cell; and landblock-local x, y, z when hasPos), or -1.</summary>
+internal delegate int ArrivalResolver(uint cell, bool hasPos, double x, double y, double z);
+
 
 /// <summary>
 /// Which recalls this character can use, and where they land: the fixed recall spells
@@ -52,7 +66,9 @@ internal static class RecallPlanner
     public const double CommandRecallSeconds = 14.0;
 
     /// <param name="known">The character's spellbook; null while it hasn't been read.</param>
-    public static List<RecallOption> Build(Atlas atlas, ISet<int>? known, RecallMemory memory, string charKey, List<string>? notes)
+    /// <param name="arrivalOf">A landing in a dungeon RynthNav learned: its hub arrival (the recall is then routed through the dungeon). Null: dungeon landings are left out.</param>
+    public static List<RecallOption> Build(Atlas atlas, ISet<int>? known, RecallMemory memory, string charKey, List<string>? notes,
+        ArrivalResolver? arrivalOf = null)
     {
         var list = new List<RecallOption>();
 
@@ -69,7 +85,13 @@ internal static class RecallPlanner
                 if (!known.Contains(r.SpellId) || !seen.Add(r.SpellId)) continue;
                 if (!r.OnMap)
                 {
-                    notes?.Add(r.Name + " lands " + (r.In.Length > 0 ? "in " + r.In : "in a dungeon") + ": not used for routes.");
+                    int a = r.Cell != 0 && arrivalOf != null ? arrivalOf(r.Cell, false, 0, 0, 0) : -1;
+                    if (a >= 0)
+                    {
+                        list.Add(new RecallOption { Name = r.Name, SpellId = r.SpellId, CastSeconds = SpellCastSeconds, ToArrival = a, Into = r.In.Length > 0 ? r.In : $"dungeon {r.Cell >> 16:X4}" });
+                        continue;
+                    }
+                    notes?.Add(r.Name + " lands " + (r.In.Length > 0 ? "in " + r.In : "in a dungeon") + ": not used for routes (no walk out of it learned yet).");
                     continue;
                 }
                 list.Add(new RecallOption { Name = r.Name, SpellId = r.SpellId, Ns = r.Ns, Ew = r.Ew, CastSeconds = SpellCastSeconds });
@@ -79,13 +101,13 @@ internal static class RecallPlanner
         // Personal recall spells: the landing is the character's own.
         if (known != null)
         {
-            AddLearnedSpell(list, notes, known, memory, charKey, LifestoneRecall, "Lifestone Recall", RecallSlot.Lifestone,
+            AddLearnedSpell(list, notes, known, memory, charKey, arrivalOf, LifestoneRecall, "Lifestone Recall", RecallSlot.Lifestone,
                 "cast Lifestone Tie on a lifestone, cast Lifestone Recall once, or /rnav tie lifestone at the tied lifestone");
-            AddLearnedSpell(list, notes, known, memory, charKey, PortalRecall, "Portal Recall", RecallSlot.LastPortal,
+            AddLearnedSpell(list, notes, known, memory, charKey, arrivalOf, PortalRecall, "Portal Recall", RecallSlot.LastPortal,
                 "walk through a portal");
-            AddLearnedSpell(list, notes, known, memory, charKey, PrimaryPortalTieRecall, "Primary Portal Tie Recall", RecallSlot.Tie1,
+            AddLearnedSpell(list, notes, known, memory, charKey, arrivalOf, PrimaryPortalTieRecall, "Primary Portal Tie Recall", RecallSlot.Tie1,
                 "cast Primary Portal Tie on a portal, cast Primary Portal Tie Recall once, or /rnav tie 1 at the tied portal");
-            AddLearnedSpell(list, notes, known, memory, charKey, SecondaryPortalTieRecall, "Secondary Portal Tie Recall", RecallSlot.Tie2,
+            AddLearnedSpell(list, notes, known, memory, charKey, arrivalOf, SecondaryPortalTieRecall, "Secondary Portal Tie Recall", RecallSlot.Tie2,
                 "cast Secondary Portal Tie on a portal, cast Secondary Portal Tie Recall once, or /rnav tie 2 at the tied portal");
         }
 
@@ -100,12 +122,22 @@ internal static class RecallPlanner
     }
 
     private static void AddLearnedSpell(List<RecallOption> list, List<string>? notes, ISet<int> known, RecallMemory memory,
-        string charKey, int spellId, string name, RecallSlot slot, string howToLearn)
+        string charKey, ArrivalResolver? arrivalOf, int spellId, string name, RecallSlot slot, string howToLearn)
     {
         if (!known.Contains(spellId)) return;
         RecallSpot? spot = memory.Get(charKey, slot);
         if (spot == null) { notes?.Add(name + ": where it lands isn't known yet (" + howToLearn + ")."); return; }
-        if (!spot.OnMap) { notes?.Add(name + " lands " + Where(spot) + ": not used for routes."); return; }
+        if (!spot.OnMap)
+        {
+            int a = spot.Cell != 0 && arrivalOf != null ? arrivalOf(spot.Cell, spot.HasPos, spot.X, spot.Y, spot.Z) : -1;
+            if (a >= 0)
+            {
+                list.Add(new RecallOption { Name = name, SpellId = spellId, CastSeconds = SpellCastSeconds, Learned = true, ToArrival = a, Into = spot.Label });
+                return;
+            }
+            notes?.Add(name + " lands " + Where(spot) + ": not used for routes (no walk out of it learned yet).");
+            return;
+        }
         list.Add(new RecallOption
         {
             Name = name, SpellId = spellId, Ns = spot.Ns, Ew = spot.Ew, CastSeconds = SpellCastSeconds, Learned = true,

@@ -20,6 +20,7 @@ internal static partial class Program
         Run(nameof(CustomForgetAndClear), CustomForgetAndClear);
         RunDungeonWalks();
         RunGems();
+        RunGemDungeons();
     }
 
     private static readonly DateTime T0 = new(2026, 10, 29, 12, 0, 0, DateTimeKind.Utc);

@@ -32,9 +32,16 @@ public readonly struct RecallLink
     public readonly double DstNs, DstEw;
     public readonly string Name;
     public readonly double CostUnits;
+    private readonly int _toArrival1;   // ToArrival + 1, so default(RecallLink) has none
+    /// <summary>
+    /// >= 0: it lands inside the hub, at that arrival point (a recall or portal gem into a dungeon
+    /// RynthNav learned); DstNs/DstEw are then NaN and the way on is the hub's walks.
+    /// </summary>
+    public int ToArrival => _toArrival1 - 1;
     public RecallLink(double dstNs, double dstEw, string name) : this(dstNs, dstEw, name, PortalRoute.RecallPenaltyUnits) { }
-    public RecallLink(double dstNs, double dstEw, string name, double costUnits)
-    { DstNs = dstNs; DstEw = dstEw; Name = name; CostUnits = costUnits; }
+    public RecallLink(double dstNs, double dstEw, string name, double costUnits) : this(dstNs, dstEw, name, costUnits, -1) { }
+    public RecallLink(double dstNs, double dstEw, string name, double costUnits, int toArrival)
+    { DstNs = dstNs; DstEw = dstEw; Name = name; CostUnits = costUnits; _toArrival1 = toArrival + 1; }
 }
 
 /// <summary>
@@ -164,7 +171,9 @@ public static class PortalRoute
     /// over land (an island, the far side of water), so the plan never walks it; null = every walk
     /// is possible. With no possible plan the result is empty and estUnits is +infinity.
     /// <paramref name="startOnMap"/> false: the start is in a dungeon (its coordinates aren't map
-    /// coordinates), so nothing walks from it; only a recall leaves it.
+    /// coordinates), so nothing walks from it; only a recall leaves it, or (<paramref name="startHubWalks"/>)
+    /// a walk inside the hub you stand in to one of its exits: units per hub exit, NaN = no walk.
+    /// A recall with RecallLink.ToArrival lands inside the hub and goes on by its walks.
     /// </summary>
     public static List<RouteStep> Plan(
         IReadOnlyList<PortalLink> portals,
@@ -174,7 +183,8 @@ public static class PortalRoute
         double goalNs, double goalEw,
         out double estUnits, out int portalsUsed,
         Func<double, double, double, double, bool>? canWalk = null,
-        bool startOnMap = true)
+        bool startOnMap = true,
+        IReadOnlyList<double>? startHubWalks = null)
     {
         recalls ??= Array.Empty<RecallLink>();
         int hubEntries = hub?.Entries.Count ?? 0, hubArrivals = hub?.Arrivals ?? 0, hubExits = hub?.Exits.Count ?? 0;
@@ -194,7 +204,11 @@ public static class PortalRoute
             ns[s] = portals[i].SrcNs; ew[s] = portals[i].SrcEw;
             ns[d] = portals[i].DstNs; ew[d] = portals[i].DstEw;
         }
-        for (int i = 0; i < recalls.Count; i++) { ns[recallBase + i] = recalls[i].DstNs; ew[recallBase + i] = recalls[i].DstEw; }
+        for (int i = 0; i < recalls.Count; i++)
+        {
+            bool inside = recalls[i].ToArrival >= 0;
+            ns[recallBase + i] = inside ? double.NaN : recalls[i].DstNs; ew[recallBase + i] = inside ? double.NaN : recalls[i].DstEw;
+        }
         for (int i = 0; i < hubEntries; i++) { ns[entryBase + i] = hub!.Entries[i].SrcNs; ew[entryBase + i] = hub.Entries[i].SrcEw; }
         for (int i = 0; i < hubArrivals; i++) { ns[arrivalBase + i] = double.NaN; ew[arrivalBase + i] = double.NaN; }
         for (int i = 0; i < hubExits; i++) { ns[exitBase + i] = hub!.Exits[i].DstNs; ew[exitBase + i] = hub.Exits[i].DstEw; }
@@ -239,6 +253,13 @@ public static class PortalRoute
         for (int i = 0; i < recalls.Count; i++)
         {
             int r = recallBase + i;
+            if (recalls[i].ToArrival >= 0)
+            {
+                // Into the hub (a learned dungeon): straight to that arrival point; on by the hub's walks.
+                if (hub != null && recalls[i].ToArrival < hubArrivals)
+                    adj[0].Add(new Edge(arrivalBase + recalls[i].ToArrival, recalls[i].CostUnits, EdgeKind.Recall, recalls[i].Name, i));
+                continue;
+            }
             adj[0].Add(new Edge(r, recalls[i].CostUnits, EdgeKind.Recall, recalls[i].Name, i));
             AddWalk(r, 1, Dist(ns[r], ew[r], goalNs, goalEw));
             for (int j = 0; j < portals.Count; j++)
@@ -278,6 +299,9 @@ public static class PortalRoute
             {
                 int xn = exitBase + x;
                 HubExit hx = hub.Exits[x];
+                // Standing inside the hub: the walk from here to this exit, then its teleport.
+                if (startHubWalks != null && x < startHubWalks.Count && !double.IsNaN(startHubWalks[x]) && startHubWalks[x] >= 0)
+                    adj[0].Add(new Edge(xn, startHubWalks[x] + PortalPenaltyUnits, EdgeKind.HubOut, hx.Name, hx.Id));
                 for (int a = 0; a < hubArrivals && a < hx.WalkUnits.Length; a++)
                 {
                     double walk = hx.WalkUnits[a];

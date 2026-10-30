@@ -26,7 +26,7 @@ public sealed partial class RynthNavPlugin
     private volatile TownNet? _baseTownNet;
     /// <summary>What routes and the walker use: townnet.json plus this server's learned dungeons (TownNet.Merge). Null: neither.</summary>
     private volatile TownNet? _townNet;
-    private (TownNet? Base, int Version, string Server) _mergedKey = (null, -1, "");
+    private (TownNet? Base, int Version, string Server, Atlas? Atlas) _mergedKey = (null, -1, "", null);
     private volatile string _townNetStatus = "loading…";
     private HubLinks? _hubLinks;
     private (TownNet? Net, int Level, bool Olthoi) _hubLinksKey;
@@ -80,11 +80,12 @@ public sealed partial class RynthNavPlugin
         if (!_customLoaded) { if (_townNet == null && _baseTownNet != null) _townNet = _baseTownNet; return; }
         TownNet? b = _baseTownNet;
         string server = _server;
-        var key = (b, _custom.Version, server);
+        Atlas atlas = _atlas;
+        var key = (b, _custom.Version, server, (Atlas?)atlas);
         if (key == _mergedKey) return;
         _mergedKey = key;
         if (server.Length == 0 || _custom.WalksFor(server).Count == 0) { _townNet = b; return; }
-        TownNet merged = TownNet.Merge(b, _custom, server);
+        TownNet merged = TownNet.Merge(b, _custom, server, atlas);
         var (e, x, w) = merged.LearnedCounts();
         _townNet = merged.Exits.Count == 0 ? b : merged;
         Host.Log($"[RynthNav] learned dungeons for {server}: {e} entry portal(s), {x} exit portal(s), {w} walk(s) inside");
@@ -308,6 +309,26 @@ public sealed partial class RynthNavPlugin
             return $"taking {exit.Hub} to {exit.Where}: its portal at {NavCoords.Fmt(entry.Ns, entry.Ew)}, then the {exit.Name} inside";
         }
         return "";
+    }
+
+    /// <summary>
+    /// Standing in a learned dungeon: per exit of <paramref name="hub"/> (its order), the walk from
+    /// where you stand to that portal (a learned walk passing within HubOffRouteUnits), NaN for none.
+    /// </summary>
+    private double[]? StartHubWalks(HubLinks hub, out int walkable)
+    {
+        walkable = 0;
+        TownNet? t = _townNet;
+        if (t == null || !t.Contains(CurrentLandblock) || hub.Exits.Count == 0) return null;
+        var walks = new double[hub.Exits.Count];
+        double x = LocalX, y = LocalY;
+        for (int i = 0; i < hub.Exits.Count; i++)
+        {
+            List<TownNetPoint>? way = t.WayTo(hub.Exits[i].Id, x, y, HubOffRouteUnits, out _);
+            walks[i] = way == null ? double.NaN : TownNet.PathLength(way, 0);
+            if (way != null) walkable++;
+        }
+        return walkable > 0 ? walks : null;
     }
 
     /// <summary>

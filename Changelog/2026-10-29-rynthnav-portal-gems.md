@@ -22,3 +22,22 @@ the landing of is a recall the route planner can take (`/rnav go`, `/rnav route`
 - Save as nav route: a gem step is written as `/mt usei <gem name>` (RynthAi's MagTools use) and a pause.
 - A gem's teleport is never taken for a portal (custom portals) or a hand-cast recall.
 - Tests: `Tools/RynthNav.RouteTests/GemTests.cs`.
+
+## Gems and recalls into learned dungeons (the same evening)
+
+From the logs: the Abandoned Mines Portal Sending Gem was left out ("where it lands isn't known
+yet"), and even known, a gem or recall landing in a dungeon was never routed, so the Abandoned
+Mine's learned portals (Dark Isle, AC Storage → Snowy Valley, ...) went unused.
+
+- A gem or recall that lands in a dungeon RynthNav has learned walks in now lands the plan at that
+  dungeon's arrival, and the route goes on through its portals (and on through further learned
+  dungeons). This covers Portal Recall, portal ties and fixed recall spells too.
+- A gem's landing is guessed from its name when nothing better is known: "Abandoned Mines Portal
+  Sending Gem" is the Atlas's dungeon "Abandoned Mine" (landing where the world data's portal into
+  it does), "Timaru Portal Sending Gem" the town. Using it learns the real landing, which wins.
+- Starting a goto inside a learned dungeon, the plan weighs walking to each of its portals (through
+  further learned dungeons too) against your recalls, instead of only recalls.
+- The world data's map portals into a learned dungeon (the Abandoned Mine portal) are entries too,
+  and learned dungeons take the Atlas's name.
+- Landings in dungeons are now kept with their cell and spot (recalls.txt, gems.txt).
+- Tests: `Tools/RynthNav.RouteTests/GemDungeonTests.cs`.

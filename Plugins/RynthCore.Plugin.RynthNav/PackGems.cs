@@ -12,7 +12,12 @@ namespace RynthCore.Plugin.RynthNav;
 //      weenie class, so the same gem on another character is known too);
 //   2. its spell is a personal recall (Lifestone Recall, Portal Recall, a portal tie recall): the
 //      character's own landing (RecallMemory);
-//   3. its spell is a fixed recall the Atlas knows (Aerlinthe Recall...): the Atlas's landing.
+//   3. its spell is a fixed recall the Atlas knows (Aerlinthe Recall...): the Atlas's landing;
+//   4. guessed from its name: "Abandoned Mines Portal Sending Gem" is the Atlas's dungeon "Abandoned
+//      Mine", landing where the world data's portal into it does; "Timaru Portal Sending Gem" the town.
+//      Using one teaches its real landing, which wins from then on.
+// A gem landing in a dungeon is routed when RynthNav has learned walks there (TownNet.Merge): the
+// planner lands at that dungeon's arrival and goes on by its portals.
 // A gem costs the planner its use plus GemCostUnits on top (rynthnav.json "gemCostYards"), so the
 // same recall cast as a spell, which spends nothing, comes first, and a gem is only spent when it
 // saves real walking. Saved in NavData\gems.txt. No host calls: the offline tests compile this file.
@@ -63,7 +68,8 @@ internal sealed class GemMemory
 
     private static string Clean(string s) => (s ?? "").Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ').Trim();
 
-    // gems.txt: server, wcid, name, where (map|dungeon), ns, ew, label — tab-separated, '#' comments.
+    // gems.txt: server, wcid, name, where (map|dungeon), ns, ew, label, cell (hex), x, y, z (in a dungeon; - = not known)
+    // — tab-separated, '#' comments.
     public string Serialize()
     {
         var ci = CultureInfo.InvariantCulture;
@@ -74,7 +80,9 @@ internal sealed class GemMemory
             sb.Append(k, 0, bar).Append('\t').Append(k, bar + 1, k.Length - bar - 1).Append('\t').Append(v.Name).Append('\t')
               .Append(v.Spot.OnMap ? "map" : "dungeon").Append('\t')
               .Append(v.Spot.Ns.ToString("0.##", ci)).Append('\t').Append(v.Spot.Ew.ToString("0.##", ci)).Append('\t')
-              .Append(Clean(v.Spot.Label)).Append('\n');
+              .Append(Clean(v.Spot.Label)).Append('\t').Append(v.Spot.Cell.ToString("X8", ci)).Append('\t')
+              .Append(v.Spot.HasPos ? v.Spot.X.ToString("0.##", ci) + "\t" + v.Spot.Y.ToString("0.##", ci) + "\t" + v.Spot.Z.ToString("0.##", ci) : "-\t-\t-")
+              .Append('\n');
         }
         return sb.ToString();
     }
@@ -91,6 +99,12 @@ internal sealed class GemMemory
             if (f.Length < 6 || !uint.TryParse(f[1], NumberStyles.Integer, ci, out uint wcid)) continue;
             var spot = new RecallSpot { OnMap = f[3].Trim().Equals("map", StringComparison.OrdinalIgnoreCase), Label = f.Length > 6 ? f[6] : "" };
             if (spot.OnMap && (!double.TryParse(f[4], NumberStyles.Float, ci, out spot.Ns) || !double.TryParse(f[5], NumberStyles.Float, ci, out spot.Ew))) continue;
+            if (f.Length > 7) uint.TryParse(f[7], NumberStyles.HexNumber, ci, out spot.Cell);
+            if (f.Length > 10 && double.TryParse(f[8], NumberStyles.Float, ci, out spot.X) && double.TryParse(f[9], NumberStyles.Float, ci, out spot.Y))
+            {
+                double.TryParse(f[10], NumberStyles.Float, ci, out spot.Z);
+                spot.HasPos = true;
+            }
             m._map[Key(f[0], wcid)] = (f[2].Trim(), spot);
         }
         m.Version = 0;
@@ -123,7 +137,7 @@ internal static class GemPlanner
     /// lands; a gem whose landing isn't known, or is in a dungeon, is left out with a note.
     /// </summary>
     public static List<RecallOption> Build(IReadOnlyList<PackGem> gems, Atlas atlas, RecallMemory memory, string charKey,
-        GemMemory learned, string server, double gemCostUnits, List<string>? notes)
+        GemMemory learned, string server, double gemCostUnits, List<string>? notes, ArrivalResolver? arrivalOf = null)
     {
         var list = new List<RecallOption>();
         var seen = new HashSet<uint>();
@@ -142,20 +156,106 @@ internal static class GemPlanner
                 foreach (AtlasRecall r in atlas.Recalls)
                     if (r.SpellId == g.SpellId)
                     {
-                        spot = new RecallSpot { OnMap = r.OnMap, Ns = r.Ns, Ew = r.Ew, Label = r.Name };
+                        spot = new RecallSpot { OnMap = r.OnMap, Ns = r.Ns, Ew = r.Ew, Label = r.OnMap ? r.Name : (r.In.Length > 0 ? r.In : r.Name), Cell = r.Cell };
                         from = r.Name;
                         break;
                     }
+            if (spot == null && GuessFromName(g.Name, atlas, out RecallSpot? guess, out string what))
+            {
+                spot = guess;
+                from = "guessed from its name: " + what;
+            }
             if (spot == null) { notes?.Add($"{g.Name} (gem): where it lands isn't known yet (use one once)."); continue; }
-            if (!spot.OnMap) { notes?.Add($"{g.Name} (gem) lands in a dungeon: not used for routes."); continue; }
-            list.Add(new RecallOption
+            var o = new RecallOption
             {
                 Name = g.Name + " (gem)", Command = UseCommand(g.Name), Ns = spot.Ns, Ew = spot.Ew,
                 CastSeconds = GemUseSeconds, ExtraCostUnits = Math.Max(0, gemCostUnits),
                 ItemWcid = g.Wcid, ItemName = g.Name, ItemCount = g.Count, Learned = from == "learned", Via = from,
-            });
+            };
+            if (!spot.OnMap)
+            {
+                int a = spot.Cell != 0 && arrivalOf != null ? arrivalOf(spot.Cell, spot.HasPos, spot.X, spot.Y, spot.Z) : -1;
+                if (a < 0)
+                {
+                    notes?.Add($"{g.Name} (gem) lands in {(spot.Label.Length > 0 ? spot.Label : "a dungeon")}: not used for routes until RynthNav has learned a way out of it (walk to one of its portals and take it).");
+                    continue;
+                }
+                o.Ns = o.Ew = 0;
+                o.ToArrival = a;
+                o.Into = spot.Label.Length > 0 ? spot.Label : $"dungeon {spot.Cell >> 16:X4}";
+            }
+            list.Add(o);
         }
         return list;
+    }
+
+    // Words a gem's name adds to the place it sends you to.
+    private static readonly string[] GemWords = { "gem", "gems", "portal", "sending", "recall", "orb", "everlasting", "summoning", "attuned" };
+    private static readonly string[] GemLeadWords = { "unlimited", "infinite", "everlasting", "attuned" };
+
+    /// <summary>The place a gem's name points at: "Abandoned Mines Portal Sending Gem" → "Abandoned Mines".</summary>
+    public static string PlaceInName(string gemName)
+    {
+        var words = new List<string>((gemName ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        while (words.Count > 0 && Array.IndexOf(GemWords, words[^1].ToLowerInvariant()) >= 0) words.RemoveAt(words.Count - 1);
+        while (words.Count > 0 && Array.IndexOf(GemLeadWords, words[0].ToLowerInvariant()) >= 0) words.RemoveAt(0);
+        if (words.Count > 0 && words[0].Equals("to", StringComparison.OrdinalIgnoreCase)) words.RemoveAt(0);
+        return string.Join(" ", words);
+    }
+
+    /// <summary>A name for matching: lower case, letters and digits only, each word's trailing s dropped ("Mines" = "Mine").</summary>
+    public static string Norm(string s)
+    {
+        var sb = new StringBuilder();
+        foreach (string w0 in (s ?? "").ToLowerInvariant().Split(new[] { ' ', '-', '_' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var w = new StringBuilder();
+            foreach (char c in w0) if (char.IsLetterOrDigit(c)) w.Append(c);
+            string x = w.ToString();
+            if (x.Length > 3 && x.EndsWith('s')) x = x[..^1];
+            if (x.Length == 0) continue;
+            if (sb.Length > 0) sb.Append(' ');
+            sb.Append(x);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// A gem's landing guessed from its name and the Atlas: a dungeon of that name (where the world
+    /// data's portal into it lands: its cell), else a town of that name (the town's spot). False when
+    /// the name matches nothing, or several dungeon landings.
+    /// </summary>
+    public static bool GuessFromName(string gemName, Atlas atlas, out RecallSpot? spot, out string what)
+    {
+        spot = null; what = "";
+        string place = PlaceInName(gemName);
+        string key = Norm(place);
+        if (key.Length < 3) return false;
+        foreach (AtlasLocation d in atlas.Locations)
+        {
+            if (!d.Type.Equals("Dungeon", StringComparison.Ordinal) || Norm(d.Name) != key) continue;
+            // Where the world data's portal into it lands: a portal whose landing is named this dungeon, in its landblock.
+            uint cell = 0;
+            foreach (AtlasLocation p in atlas.Locations)
+            {
+                if (!p.Type.Equals("Portal", StringComparison.Ordinal) || !p.HasDest || p.DestOnMap) continue;
+                if (!uint.TryParse(p.DestCell, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint dc)) continue;
+                if (!d.Lb.Equals(((dc >> 16) & 0xFFFF).ToString("X4", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)) continue;
+                if (p.OnMap || Norm(p.DestName) == key) { cell = dc; if (p.OnMap) break; }
+            }
+            if (cell == 0) continue;
+            spot = new RecallSpot { OnMap = false, Cell = cell, Label = d.Name };
+            what = d.Name;
+            return true;
+        }
+        foreach (AtlasLocation tl in atlas.Locations)
+        {
+            if (!tl.Type.Equals("Town", StringComparison.Ordinal) || !tl.OnMap || Norm(tl.Name) != key) continue;
+            spot = new RecallSpot { OnMap = true, Ns = tl.Ns, Ew = tl.Ew, Label = tl.Name };
+            what = tl.Name;
+            return true;
+        }
+        return false;
     }
 
     /// <summary>

@@ -43,6 +43,10 @@ internal sealed class RecallSpot
     public string Label = "";
     /// <summary>The chat command that does this recall, when it's a command (@lifestone, @house recall).</summary>
     public string Command = "";
+    /// <summary>The landing's cell (0 = not known); off the map, where in the dungeon (landblock-local) when HasPos.</summary>
+    public uint Cell;
+    public bool HasPos;
+    public double X, Y, Z;
 }
 
 /// <summary>What a chat line tells RynthNav about recalls.</summary>
@@ -169,7 +173,10 @@ internal sealed class RecallMemory
                 sb.Append(Clean(c)).Append('\t').Append(SlotName(slot)).Append('\t')
                   .Append(s.OnMap ? s.Ns.ToString("F2", ci) : "-").Append('\t')
                   .Append(s.OnMap ? s.Ew.ToString("F2", ci) : "-").Append('\t')
-                  .Append(Clean(s.Label)).Append('\t').Append(Clean(s.Command)).Append("\r\n");
+                  .Append(Clean(s.Label)).Append('\t').Append(Clean(s.Command)).Append('\t')
+                  .Append(s.Cell.ToString("X8", ci)).Append('\t')
+                  .Append(s.HasPos ? s.X.ToString("0.##", ci) + "\t" + s.Y.ToString("0.##", ci) + "\t" + s.Z.ToString("0.##", ci) : "-\t-\t-")
+                  .Append("\r\n");
             }
         }
         return sb.ToString();
@@ -192,6 +199,13 @@ internal sealed class RecallMemory
             };
             s.OnMap = double.TryParse(f[2], NumberStyles.Float, CultureInfo.InvariantCulture, out s.Ns)
                     & double.TryParse(f[3], NumberStyles.Float, CultureInfo.InvariantCulture, out s.Ew);
+            if (f.Length > 6) uint.TryParse(f[6], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out s.Cell);
+            if (f.Length > 9 && double.TryParse(f[7], NumberStyles.Float, CultureInfo.InvariantCulture, out s.X)
+                && double.TryParse(f[8], NumberStyles.Float, CultureInfo.InvariantCulture, out s.Y))
+            {
+                double.TryParse(f[9], NumberStyles.Float, CultureInfo.InvariantCulture, out s.Z);
+                s.HasPos = true;
+            }
             m.Set(f[0], slot, s);
         }
         m.Version = 0;

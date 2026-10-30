@@ -25,7 +25,7 @@ namespace RynthCore.Plugin.RynthNav;
 public sealed partial class RynthNavPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthNav");
-    internal const string PluginVersion = "0.6.10";
+    internal const string PluginVersion = "0.6.11";
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi(PluginVersion);
 
     /// <summary>Lets PluginExports log through this plugin's host (the base Log is protected).</summary>
@@ -463,19 +463,14 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         // legs; otherwise StepGoto just navmesh-walks straight to the final target.
         // Inside the Town Network there is no navmesh: the way on is one of its exits.
         ResetHub();
-        // In a dungeon RynthNav learned (custom portals): its walks to an exit, or whatever the plan
-        // says from a dungeon (a recall), whichever costs less.
-        bool inHub = _townNet?.Contains(CurrentLandblock) == true;
+        // In a dungeon RynthNav learned (custom portals) the plan itself weighs its walks to each of
+        // its portals (and on through other learned dungeons) against your recalls (PlanRoute).
         bool inTownNet = _baseTownNet?.Contains(CurrentLandblock) == true;
         int portalsUsed; double est; List<RecallOption> recalls;
-        List<RouteStep>? hubRoute = null;
-        double hubEst = double.PositiveInfinity;
-        int hubUsed = 0;
-        if (inHub) hubRoute = PlanFromInsideHub(tns, tew, out hubEst, out hubUsed);
-        if (inHub && inTownNet)
+        if (inTownNet)
         {
             recalls = new List<RecallOption>();
-            _route = hubRoute; est = hubEst; portalsUsed = hubUsed;
+            _route = PlanFromInsideHub(tns, tew, out est, out portalsUsed);
             if (_route == null)
             {
                 Note("goto: you're in the Town Network and none of its exit portals is open to you");
@@ -485,13 +480,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         else
         {
             TravelPlan.Result plan = PlanRoute(name, tns, tew, out recalls);
-            if (hubRoute != null && (plan.Refusal.Length > 0 || hubEst < plan.Est))
-            {
-                Host.Log($"[RynthNav] route to {name}: out through this dungeon's learned walk (~{hubEst:F0}u) rather than {(plan.Refusal.Length > 0 ? "no plan" : $"~{plan.Est:F0}u")}");
-                recalls = new List<RecallOption>();
-                _route = hubRoute; est = hubEst; portalsUsed = hubUsed;
-            }
-            else if (plan.Refusal.Length > 0)
+            if (plan.Refusal.Length > 0)
             {
                 Note("goto: " + plan.Refusal);
                 lock (_gate) _status = "no way there";
@@ -959,8 +948,12 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         bool? land = startOnMap && g != null ? g.SameLand(CurrentLandblock, NavGraph.LandblockAt(NavCoords.WorldX(goalEw), NavCoords.WorldY(goalNs))) : null;
 
         List<PortalLink>? portals = PortalsRouting ? RoutePortals() : null;
+        // Standing in a dungeon RynthNav learned walks in: the walk from here to each of its portals.
+        int walkable = 0;
+        double[]? startWalks = !startOnMap && hub != null ? StartHubWalks(hub, out walkable) : null;
+        if (startWalks != null) Host.Log($"[RynthNav] plan: in a learned dungeon (0x{CurrentLandblock:X4}): {walkable} of its portal(s) reachable by a learned walk from here");
         TravelPlan.Result r = TravelPlan.Plan(portals, RecallPlanner.Links(recalls), hub,
-            PortalsRouting, RecallsRouting, startOnMap, startNs, startEw, goalNs, goalEw, canWalk, land, name);
+            PortalsRouting, RecallsRouting, startOnMap, startNs, startEw, goalNs, goalEw, canWalk, land, name, startWalks);
 
         Host.Log($"[RynthNav] plan {name}: {r.Basis}; {(PortalsRouting ? $"{portals?.Count ?? 0} portals ({(portals?.Count ?? 0) - (_portals?.Count ?? 0)} custom for {(_server.Length > 0 ? _server : "?")})" : "no portals")}, "
                + $"{recalls.Count} recall(s) ready" + (recalls.Count > 0 ? " (" + string.Join(", ", recalls.ConvertAll(o => o.Name)) + ")" : "")

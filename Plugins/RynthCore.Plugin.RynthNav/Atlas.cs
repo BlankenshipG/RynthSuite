@@ -34,6 +34,8 @@ internal sealed class AtlasRecall
     public string Name = "", In = "";
     public bool OnMap;
     public double Ns, Ew;
+    /// <summary>Where it lands (0 = not given): a dungeon landing's cell matches a learned dungeon's arrival.</summary>
+    public uint Cell;
 }
 
 internal sealed class Atlas
@@ -141,6 +143,7 @@ internal sealed class Atlas
             foreach (JsonElement e in arr.EnumerateArray())
             {
                 var r = new AtlasRecall { SpellId = Int(e, "spell"), Name = Str(e, "name"), In = Str(e, "in") };
+                uint.TryParse(Str(e, "cell"), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out r.Cell);
                 r.OnMap = TryNum(e, "ns", out r.Ns) & TryNum(e, "ew", out r.Ew);
                 recalls.Add(r);
             }
