@@ -112,6 +112,7 @@ internal static class Program
         MonsterEditorTests.Register(runner);
         InstallPathsTests.Register(runner);
         PetRefillTests.Register(runner);
+        PetDamageTintTests.Register(runner);
         AutoStackTests.Register(runner);
         BackAwayTests.Register(runner);
         RingEscapeTests.Register(runner);
