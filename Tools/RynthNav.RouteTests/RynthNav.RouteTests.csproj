@@ -29,6 +29,7 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\Entrance.cs" Link="Linked\Entrance.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TownNet.cs" Link="Linked\TownNet.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\WalkDoors.cs" Link="Linked\WalkDoors.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripFollow.cs" Link="Linked\TripFollow.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PortalAvoid.cs" Link="Linked\PortalAvoid.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TravelPlan.cs" Link="Linked\TravelPlan.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\CustomPortals.cs" Link="Linked\CustomPortals.cs" />

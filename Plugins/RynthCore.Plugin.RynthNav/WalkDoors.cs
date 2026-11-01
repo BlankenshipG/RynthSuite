@@ -41,6 +41,26 @@ internal static class WalkDoors
         return -1;
     }
 
+    /// <summary>A door this close (metres, flat) in front of us is what a blocked walk ran into.</summary>
+    public const double InFrontUnits = 4.5;
+    /// <summary>...within this angle either side of the heading (degrees).</summary>
+    public const double InFrontHalfAngle = 65.0;
+
+    /// <summary>
+    /// The door at (dx, dy, dz) is in front of us at (x, y, z) facing (hx, hy) (a unit vector): within
+    /// InFrontUnits, InFrontHalfAngle of the heading and LevelUnits up or down; <paramref name="dist"/> how far.
+    /// </summary>
+    public static bool InFront(double x, double y, double z, double hx, double hy, double dx, double dy, double dz, out double dist)
+    {
+        double vx = dx - x, vy = dy - y;
+        dist = Math.Sqrt(vx * vx + vy * vy);
+        if (dist > InFrontUnits) return false;
+        if (!double.IsNaN(z) && !double.IsNaN(dz) && Math.Abs(dz - z) >= LevelUnits) return false;
+        if (dist < 0.5) return true;   // on top of it
+        double cos = (vx * hx + vy * hy) / dist;
+        return cos >= Math.Cos(InFrontHalfAngle * Math.PI / 180.0);
+    }
+
     /// <summary>What a pack item can do to a lock.</summary>
     public enum Unlocker { None, Key, Lockpick }
 

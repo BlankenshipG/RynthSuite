@@ -17,6 +17,61 @@ internal static partial class Program
         Run(nameof(WalkerKeepsToItsLevel), WalkerKeepsToItsLevel);
         Run(nameof(WalkerDropsOffALedge), WalkerDropsOffALedge);
         Run(nameof(DungeonWayCarriesDrops), DungeonWayCarriesDrops);
+        Run(nameof(DoorInFrontWhenBlocked), DoorInFrontWhenBlocked);
+        Run(nameof(FollowKeepsToTheTripPath), FollowKeepsToTheTripPath);
+        Run(nameof(FollowRejoinsAndNeverCutsBack), FollowRejoinsAndNeverCutsBack);
+    }
+
+    // 2026-11-01: a goto over land ran into a town's closed door and only jumped and stepped aside.
+    private static void DoorInFrontWhenBlocked()
+    {
+        // Facing north (0, 1).
+        Check(WalkDoors.InFront(0, 0, 0, 0, 1, 0.5, 3, 0, out double d) && Math.Abs(d - 3.04) < 0.05, "a door 3 m straight ahead");
+        Check(WalkDoors.InFront(0, 0, 0, 0, 1, 2, 2.5, 0, out _), "a door ahead and a little to the side (39 degrees)");
+        Check(!WalkDoors.InFront(0, 0, 0, 0, 1, 3, 1, 0, out _), "a door off to the side (72 degrees) isn't what we ran into");
+        Check(!WalkDoors.InFront(0, 0, 0, 0, 1, 0, -2, 0, out _), "nor one behind");
+        Check(!WalkDoors.InFront(0, 0, 0, 0, 1, 0, 6, 0, out _), "nor one 6 m away");
+        Check(!WalkDoors.InFront(0, 0, 0, 0, 1, 0, 3, 5, out _), "nor one on the floor above");
+        Check(WalkDoors.InFront(0, 0, double.NaN, 0, 1, 0, 3, 5, out _), "height unknown: it counts");
+        Check(WalkDoors.InFront(0, 0, 0, 0, 1, 0.2, -0.2, 0, out _), "standing on it counts");
+    }
+
+    private static WorldPt W(double x, double y) => new(x, y, double.NaN);
+
+    // 2026-11-01: walks planned their own way to the route graph's crossings and wandered off the path the markers drew.
+    private static void FollowKeepsToTheTripPath()
+    {
+        // North 100, then east 100 (an L round a building).
+        var f = new TripFollow(1, 0, new[] { W(0, 0), W(0, 100), W(100, 100) });
+        Near(f.Length, 200, 0.01, "length");
+        var (ax, ay) = f.Aim(0, 10, out double off, out bool end);
+        Check(!end && Math.Abs(off) < 0.01 && Math.Abs(ax) < 0.01 && Math.Abs(ay - (10 + TripFollow.LookAhead)) < 0.01, $"aims {TripFollow.LookAhead} along the path: ({ax:F1}, {ay:F1})");
+        (ax, ay) = f.Aim(0, 90, out _, out _);
+        Check(Math.Abs(ax - (90 + TripFollow.LookAhead - 100)) < 0.01 && Math.Abs(ay - 100) < 0.01, $"round the corner along the path, not across it: ({ax:F1}, {ay:F1})");
+        var f2 = new TripFollow(1, 0, new[] { W(0, 0), W(0, 100), W(100, 100) });
+        (ax, ay) = f2.Aim(3, 50, out off, out _);
+        Check(Math.Abs(off - 3) < 0.01 && Math.Abs(ax) < 0.01 && ay > 50, "3 u to the side still follows the path ahead");
+        f.Aim(90, 100, out _, out end);
+        Check(end, "near the end the aim is the end (the leg's own goal logic takes over)");
+        Near(f.At(150).X, 50, 0.01, "At: half way along the second leg");
+    }
+
+    private static void FollowRejoinsAndNeverCutsBack()
+    {
+        var f = new TripFollow(1, 0, new[] { W(0, 0), W(0, 100), W(100, 100) });
+        f.Aim(0, 40, out _, out _);
+        var (ax, ay) = f.Aim(30, 45, out double off, out _);
+        Check(off > TripFollow.OffPathUnits && Math.Abs(ax) < 0.01 && Math.Abs(ay - (45 + TripFollow.RejoinAhead)) < 0.5, $"30 u off: back to the path just ahead of the nearest point: ({ax:F1}, {ay:F1}), off {off:F0}");
+        Check(f.Progress >= 39.9 && f.Progress < 41, "progress isn't moved by an off-path point");
+
+        // A hairpin: north 100, east 10, south 100. Standing at the start of the way back, the far leg is close by.
+        var h = new TripFollow(2, 0, new[] { W(0, 0), W(0, 100), W(10, 100), W(10, 0) });
+        h.Aim(0, 5, out _, out _);
+        (ax, ay) = h.Aim(5, 6, out off, out _);
+        Check(ay > 6 + 10 && ax < 1, $"halfway between the two legs near the start: still the first leg ahead ({ax:F1}, {ay:F1}), not the way back");
+        Check(h.Progress < 10, "progress stays on the first leg");
+        try { _ = new TripFollow(1, 0, new[] { W(0, 0) }); Check(false, "one point is no walk"); }
+        catch (ArgumentException) { Check(true, ""); }
     }
 
     private static TownNetPoint P(double x, double y, double z = 0, bool drop = false) => new() { X = x, Y = y, Z = z, Drop = drop };

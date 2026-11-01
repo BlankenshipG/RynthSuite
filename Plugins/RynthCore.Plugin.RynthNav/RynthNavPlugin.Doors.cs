@@ -93,6 +93,18 @@ public sealed partial class RynthNavPlugin
     /// </summary>
     private DoorAct WalkDoor(HubWalker w, long now, out string why)
     {
+        var ahead = new List<TownNetPoint>();
+        foreach (var (_, p) in w.Ahead()) ahead.Add(p);
+        return WalkDoor(ahead, w.Levels, (n, held) => w.Hold(n, held), now, out why);
+    }
+
+    /// <summary>
+    /// The same for any walk (2026-11-01: the goto's own walk over land and through towns, not only the
+    /// dungeon walks): <paramref name="ahead"/> are the walk's points still ahead in this landblock's
+    /// local coordinates, <paramref name="hold"/> pauses the walk's clocks while a door is worked.
+    /// </summary>
+    private DoorAct WalkDoor(List<TownNetPoint> ahead, bool levels, Action<long, long> hold, long now, out string why)
+    {
         why = "";
         if (!_doorsEnabled || !Host.HasUseObject || !Host.HasGetLiveObjectIds) return DoorAct.None;
         if (!Host.HasGetObjectState && !Host.HasGetObjectMotionOn)
@@ -107,18 +119,18 @@ public sealed partial class RynthNavPlugin
         {
             if (now < _nextDoorScanMs) { _doorLastTickMs = 0; return DoorAct.None; }
             _nextDoorScanMs = now + DoorScanMs;
-            uint id = ClosedDoorAhead(w, now, out double along, out string name);
+            uint id = ClosedDoorAhead(ahead, levels, now, out double along, out string name);
             if (id == 0 || along > DoorUseUnits) { _doorLastTickMs = 0; return DoorAct.None; }
             _doorId = id; _doorName = name;
             _doorUses = 0; _doorUnlockTried = false; _doorUnlockers = null; _doorUnlockIdx = 0; _doorPickUses = 0;
             Host.Log($"[RynthNav] door: '{name}' (0x{id:X8}) is closed across the walk {along:F1} m ahead: opening it");
             lock (_gate) _status = $"opening the {name}";
             if (!SendDoorUse(now)) { ResetDoor(); return DoorAct.None; }
-            w.Hold(now, 0);
+            hold(now, 0);
             return DoorAct.Busy;
         }
 
-        w.Hold(now, held);
+        hold(now, held);
         AutoRun.Halt();
         if (DoorOpen(_doorId))
         {
@@ -240,12 +252,10 @@ public sealed partial class RynthNavPlugin
         || n.Contains("hatch", StringComparison.OrdinalIgnoreCase) || n.Contains("portcullis", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The nearest closed door standing across the walk ahead (0: none), and how far along the walk it is.</summary>
-    private uint ClosedDoorAhead(HubWalker w, long now, out double bestAlong, out string bestName)
+    private uint ClosedDoorAhead(List<TownNetPoint> ahead, bool levels, long now, out double bestAlong, out string bestName)
     {
         bestAlong = double.MaxValue; bestName = "";
         uint best = 0;
-        var ahead = new List<TownNetPoint>();
-        foreach (var (_, p) in w.Ahead()) ahead.Add(p);
         if (ahead.Count == 0) return 0;
         uint lb = CurrentLandblock;
         double x = LocalX, y = LocalY;
@@ -253,7 +263,9 @@ public sealed partial class RynthNavPlugin
         {
             if (id >= 0x80000000u) continue;   // doors are static objects
             if (_doorSkipUntil.TryGetValue(id, out long until) && now < until) continue;
-            if (!Host.TryGetObjectPosition(id, out uint cell, out float dx, out float dy, out float dz) || ((cell >> 16) & 0xFFFF) != lb) continue;
+            if (!Host.TryGetObjectPosition(id, out uint cell, out float dxf, out float dyf, out float dz)) continue;
+            double dx = dxf, dy = dyf;
+            if (!SameFrame(cell, lb, ref dx, ref dy)) continue;
             if (Math.Abs(dx - x) > WalkDoors.LookAheadUnits + 2 || Math.Abs(dy - y) > WalkDoors.LookAheadUnits + 2) continue;
             Host.TryGetObjectName(id, out string name);
             name ??= "";
@@ -261,11 +273,85 @@ public sealed partial class RynthNavPlugin
                 ? Host.TryGetObjectBitfield(id, out uint bf) && (bf & BitfieldDoor) != 0
                 : LooksLikeDoorName(name);
             if (!door || DoorOpen(id)) continue;
-            double along = WalkDoors.AlongWalk(x, y, _wz, ahead, w.Levels, dx, dy, dz);
+            double along = WalkDoors.AlongWalk(x, y, _wz, ahead, levels, dx, dy, dz);
             if (along < 0 || along >= bestAlong) continue;
             bestAlong = along; best = id; bestName = name.Length > 0 ? name : "door";
         }
         return best;
+    }
+
+    /// <summary>
+    /// A position in <paramref name="cell"/>'s landblock as coordinates local to landblock <paramref name="lb"/>:
+    /// the same landblock as it is; on the map, a neighbouring landblock shifted by 192 a block (a door
+    /// just over the line). False: a dungeon elsewhere, or too far.
+    /// </summary>
+    private bool SameFrame(uint cell, uint lb, ref double x, ref double y)
+    {
+        uint olb = (cell >> 16) & 0xFFFF;
+        if (olb == lb) return true;
+        if (!IsOnMap(_cellId)) return false;   // a dungeon has no neighbours
+        int ox = (int)(olb >> 8), oy = (int)(olb & 0xFF), cx = (int)(lb >> 8), cy = (int)(lb & 0xFF);
+        if (Math.Abs(ox - cx) > 1 || Math.Abs(oy - cy) > 1) return false;
+        x += (ox - cx) * 192.0;
+        y += (oy - cy) * 192.0;
+        return true;
+    }
+
+    /// <summary>
+    /// Doors on the goto's own walk (the navmesh path over land, through towns and buildings), each tick
+    /// before it steers: the path's points still ahead, in this landblock's local coordinates.
+    /// </summary>
+    private DoorAct GotoDoor(long now, out string why)
+    {
+        why = "";
+        if (!_doorsEnabled) return DoorAct.None;
+        List<(double ew, double ns)>? path; int idx;
+        lock (_gotoGate) { path = _gotoPath; idx = _gotoIdx; }
+        if (path == null || idx >= path.Count) { if (_doorStep == DoorStep.None) return DoorAct.None; path ??= new(); }
+        double ox = ((_cellId >> 24) & 0xFF) * 192.0, oy = ((_cellId >> 16) & 0xFF) * 192.0;
+        var ahead = new List<TownNetPoint>(Math.Max(0, path.Count - idx));
+        for (int i = idx; i < path.Count; i++)
+            ahead.Add(new TownNetPoint { X = path[i].ew - ox, Y = path[i].ns - oy, Z = double.NaN });
+        return WalkDoor(ahead, false, (n, held) => { _bestTick = _legTicks; _stuckWinMs = 0; }, now, out why);
+    }
+
+    /// <summary>
+    /// Blocked with no door on the path ahead (the mesh may go round a door it was baked without): a closed
+    /// door within reach in front of us, used before jumping or stepping round (2026-11-01).
+    /// </summary>
+    private bool OpenDoorInFront()
+    {
+        if (!_doorsEnabled || !Host.HasUseObject || !Host.HasGetLiveObjectIds) return false;
+        if (!Host.HasGetObjectState && !Host.HasGetObjectMotionOn) return false;
+        long now = NowMs;
+        uint lb = CurrentLandblock;
+        double x = LocalX, y = LocalY;
+        double hx = Math.Sin(_lastDriveDeg * Math.PI / 180.0), hy = Math.Cos(_lastDriveDeg * Math.PI / 180.0);
+        uint best = 0; double bestD = double.MaxValue; string bestName = "";
+        foreach (uint id in Host.GetLiveObjectIds())
+        {
+            if (id >= 0x80000000u) continue;
+            if (_doorSkipUntil.TryGetValue(id, out long until) && now < until) continue;
+            if (!Host.TryGetObjectPosition(id, out uint cell, out float dxf, out float dyf, out float dz)) continue;
+            double dx = dxf, dy = dyf;
+            if (!SameFrame(cell, lb, ref dx, ref dy)) continue;
+            if (!WalkDoors.InFront(x, y, _wz, hx, hy, dx, dy, dz, out double d) || d >= bestD) continue;
+            Host.TryGetObjectName(id, out string name);
+            name ??= "";
+            bool door = Host.HasGetObjectBitfield
+                ? Host.TryGetObjectBitfield(id, out uint bf) && (bf & BitfieldDoor) != 0
+                : LooksLikeDoorName(name);
+            if (!door || DoorOpen(id)) continue;
+            best = id; bestD = d; bestName = name.Length > 0 ? name : "door";
+        }
+        if (best == 0) return false;
+        _doorId = best; _doorName = bestName;
+        _doorUses = 0; _doorUnlockTried = false; _doorUnlockers = null; _doorUnlockIdx = 0; _doorPickUses = 0;
+        Host.Log($"[RynthNav] door: blocked by '{bestName}' (0x{best:X8}) {bestD:F1} m in front: opening it");
+        lock (_gate) _status = $"opening the {bestName}";
+        if (!SendDoorUse(now)) { ResetDoor(); return false; }
+        _doorLastTickMs = now;
+        return true;
     }
 
     /// <summary>The items in your pack (main pack and side packs), by id and name.</summary>
@@ -306,7 +392,7 @@ public sealed partial class RynthNavPlugin
             case "off":
                 _doorsEnabled = sub == "on";
                 NavDataConfig.WriteSwitch("doors", _doorsEnabled);
-                Say($"doors on dungeon walks {(_doorsEnabled ? "ON: closed doors across the walk are opened" : "OFF")}");
+                Say($"doors on walks {(_doorsEnabled ? "ON: closed doors across the walk, or in the way, are opened" : "OFF")}");
                 return;
             case "unlock":
                 if (arg is not ("on" or "off")) { SayFail("doors unlock on|off — use keys and lockpicks from your pack on a locked door"); return; }
@@ -329,7 +415,7 @@ public sealed partial class RynthNavPlugin
                 Say($"forgot {n} locked door(s): walks may try them again");
                 return;
             case "":
-                Say($"doors: {(_doorsEnabled ? "opened on dungeon walks" : "OFF")}; unlock: {(_unlockEnabled ? "keys, then lockpicks" : "OFF")}; drops: {DropText()}; " +
+                Say($"doors: {(_doorsEnabled ? "opened on walks (dungeons, towns, buildings)" : "OFF")}; unlock: {(_unlockEnabled ? "keys, then lockpicks" : "OFF")}; drops: {DropText()}; " +
                     $"{_lockedDoors.Count} locked door(s) gone round this session; jumps: when a walk stops making progress");
                 return;
             default:

@@ -696,6 +696,20 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
             FinishGoto($"stopped: no progress for 30 s, {toGoal:F0}u short ({why})");
             return;
         }
+        // A closed door across the path ahead, or one we ran into: open it, unlock it, or go round it
+        // (RynthNavPlugin.Doors.cs; until 2026-11-01 only the dungeon walks opened doors).
+        switch (GotoDoor(NowMs, out string doorWhy))
+        {
+            case DoorAct.Busy:
+                AutoRun.Halt();
+                return;
+            case DoorAct.Blocked:
+                Host.Log($"[RynthNav] walk: {doorWhy}; planning again round it");
+                lock (_gotoGate) _gotoPath = null;
+                _replanTick = 0;
+                break;
+        }
+
         // Running into something (RynthNavPlugin.Blocked.cs): turn away, plan again, or stop and say where.
         if (StepBlocked()) return;
 
@@ -741,7 +755,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
             {
                 _blindTicks++;
                 // Straight at the goal, or along the route at its next crossing.
-                double bh = (_coarse != null ? Math.Atan2(_aimEw - _wx, _aimNs - _wy) : Math.Atan2(fdew, fdns)) * 180.0 / Math.PI;
+                double bh = (_coarse != null || _aimOnTrip ? Math.Atan2(_aimEw - _wx, _aimNs - _wy) : Math.Atan2(fdew, fdns)) * 180.0 / Math.PI;
                 bh = SteerRoundPortals(bh < 0 ? bh + 360.0 : bh, 10.0);
                 WalkDrive(bh);
                 if (_blindTicks % 10 == 0) lock (_gotoGate) _gotoPath = null; // re-plan soon
@@ -996,11 +1010,31 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         var steer = CoarseSteer(sRef, sPt, ref loadedMore);
         if (loadedMore) _query = new DtNavMeshQuery(_navMesh!);
 
+        // The trip's own path (TripFollow.cs, 2026-11-01): when this step has one, plan a few metres
+        // along it rather than to the route graph's next crossing, so the walk keeps to the path the
+        // markers show instead of finding its own way round.
+        bool onTrip = false;
+        if (CurrentFollow() is TripFollow follow)
+        {
+            var (fx, fy) = follow.Aim(_wx, _wy, out double off, out bool nearEnd);
+            if (!nearEnd)
+            {
+                steer = ((float)fx, (float)_wz, (float)fy);
+                onTrip = true;
+                if (off > TripFollow.OffPathUnits && !_offTripSaid)
+                {
+                    _offTripSaid = true;
+                    Host.Log($"[RynthNav] walk: {off:F0}u off the trip's path at {NavCoords.Fmt(NavCoords.NsFromWorld(_wy), NavCoords.EwFromWorld(_wx))}: heading back to it");
+                }
+                else if (off <= TripFollow.OffPathUnits) _offTripSaid = false;
+            }
+        }
+
         // Prefer a DIRECT path to the actual target when its tile is loaded — one stable
         // corridor we follow steadily. Only fall back to the 500u line-probe leapfrog when
         // the target is too far to be loaded yet (that probe jitters and must stay a last resort).
         double aimEw = steer?.Ew ?? _gotoTew, aimNs = steer?.Ns ?? _gotoTns;
-        _aimEw = aimEw; _aimNs = aimNs;
+        _aimEw = aimEw; _aimNs = aimNs; _aimOnTrip = onTrip;
         var targetP = steer is { } st ? new RcVec3f(st.Ew, st.Up, st.Ns) : new RcVec3f((float)_gotoTew, (float)_wz, (float)_gotoTns);
         AvoidFilter avoid = WalkFilter();
         avoid.AllowA = sRef; avoid.AllowB = 0;
@@ -1008,7 +1042,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         // (AllowB below). Through the avoid filter, a big open-ground polygon that also reaches
         // another portal's circle hid the goal: 10-02 16:05, Lucy at the Lady Maila Estates Portal
         // in a cluster of housing portals: "no tile ahead", 74u short, on the collision-built tiles.
-        _query.FindNearestPoly(targetP, steer != null ? new RcVec3f(8, 32, 8) : new RcVec3f(12, 256, 12), filter, out long gRef, out RcVec3f gPt, out _);
+        _query.FindNearestPoly(targetP, steer != null ? new RcVec3f(8, onTrip ? 64 : 32, 8) : new RcVec3f(12, 256, 12), filter, out long gRef, out RcVec3f gPt, out _);
         bool direct = gRef != 0 && steer == null;
         if (gRef == 0) gRef = FindGoalToward(aimEw, aimNs, out gPt);
         if (gRef == 0) { lock (_gate) _status = "no tile ahead — bake the route"; lock (_gotoGate) _gotoPath = null; return; }

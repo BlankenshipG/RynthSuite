@@ -58,6 +58,7 @@ public sealed partial class RynthNavPlugin
     /// <summary>A new leg (or goto): nothing blocked yet.</summary>
     private void ResetBlocked()
     {
+        if (_doorStep != DoorStep.None) ResetDoor();
         _ranLastTick = false;
         _stuckWinMs = 0; _unstickUntilMs = 0; _stuckTries = 0; _stuckJumped = false;
     }
@@ -93,6 +94,13 @@ public sealed partial class RynthNavPlugin
         if (moved >= StuckMoveUnits) { _stuckJumped = false; return false; }
 
         string at = NavCoords.Fmt(NavCoords.NsFromWorld(_wy), NavCoords.EwFromWorld(_wx));
+        // A closed door in front of us: open it first (GotoDoor works it from the next tick).
+        if (OpenDoorInFront())
+        {
+            AutoRun.Halt();
+            lock (_gate) _status = "blocked: opening a door";
+            return true;
+        }
         // First, jump on the same heading (2026-10-30): a fence, a step or a low wall the mesh
         // smooths over is often cleared by a running jump; only then step round it.
         if (!_stuckJumped && Host.HasTapJump)

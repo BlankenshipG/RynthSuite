@@ -1059,7 +1059,8 @@ public sealed partial class RynthNavPlugin
         "/rnav portals scan [yd] | list | forget <name> | clear confirm — this server's own portals (a landing is learned the first time you take one)\n" +
         "/rnav portals learn | learn stop | learn range <yd> — try every portal in range by itself, learn each landing, come back, repeat\n" +
         "/rnav gems [list] | on | off | cost <yd> | forget <name> — portal/recall gems in your pack as route steps (a gem's landing is learned the first time you use one)\n" +
-        "/rnav doors [on|off] | unlock on|off | drops <m>|off | forget — dungeon walks: open doors, unlock with keys/lockpicks, drop down ledges\n" +
+        "/rnav doors [on|off] | unlock on|off | drops <m>|off | forget — walks open doors (dungeons, towns, buildings), unlock with keys/lockpicks, drop down ledges\n" +
+        "/rnav follow [on|off] — walks keep to the trip's path (the markers); off: plan to the route's crossings\n" +
         "/rnav avoid — show; avoid portals on|off|<m> | walls on|off|<m> | corners <m>\n" +
         "/rnav markers on|off | markers labels on|off | markers guide on|off — the trip on the ground\n" +
         "/rnav mesh on|off | floor on|off | walls on|off | radius <m> | triangles <n> — draw the navmesh: green floor, red walls\n" +
@@ -1095,6 +1096,7 @@ public sealed partial class RynthNavPlugin
             case "portals": CmdPortals(rest); break;
             case "gems": CmdGems(rest); break;
             case "doors": CmdDoors(rest); break;
+            case "follow": CmdFollow(rest); break;
             case "stop": DoMove(5); Say("stopped"); break;
             case "goto":
             case "go":

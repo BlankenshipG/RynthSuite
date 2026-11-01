@@ -47,6 +47,7 @@ public sealed partial class RynthNavPlugin
         _markersOn = NavDataConfig.ReadSwitch("markers", true);
         _markerLabels = NavDataConfig.ReadSwitch("markerLabels", true);
         _markerGuide = NavDataConfig.ReadSwitch("markerGuide", false);
+        _followTrip = NavDataConfig.ReadSwitch("followTrip", true);
     }
 
     // ── The walking path, for the engine's World Map ─────────────────────
@@ -96,6 +97,47 @@ public sealed partial class RynthNavPlugin
             _pathJson = segs.Count == 0 ? "" : sb.ToString();
             return _pathJson;
         }
+    }
+
+    // ── Following the trip's path (TripFollow.cs) ────────────────────────
+    private TripFollow? _follow;
+    private bool _aimOnTrip, _offTripSaid;
+    private volatile bool _followTrip = true;
+
+    /// <summary>/rnav follow [on|off]: walk along the trip's path (the markers), or plan to the route graph's crossings as before.</summary>
+    private void CmdFollow(string rest)
+    {
+        string a = rest.Trim().ToLowerInvariant();
+        if (a is "on" or "off")
+        {
+            _followTrip = a == "on";
+            NavDataConfig.WriteSwitch("followTrip", _followTrip);
+            _follow = null;
+        }
+        else if (a.Length > 0) { SayFail("follow [on|off] — keep the walk on the trip's path (the markers)"); return; }
+        Say(_followTrip ? "follow ON: walks keep to the trip's path (the markers)" : "follow OFF: walks plan their own way to the route's crossings");
+    }
+
+    /// <summary>
+    /// The running goto's step's walk to follow, or null: no live trip, its path not worked out yet, no
+    /// walk for this step, or a walk that is only a straight line (the path finder had nothing there).
+    /// Tick thread.
+    /// </summary>
+    private TripFollow? CurrentFollow()
+    {
+        PlannedTrip? trip = _trip;
+        TripPath? path = _tripPath;
+        if (!_followTrip || trip == null || !trip.Live || path == null || path.TripId != trip.Id || !IsOnMap(_cellId)) return null;
+        int step = _route != null ? _routeIdx : 0;
+        if (step < 0 || step >= path.Walks.Length || path.Walks[step] is not WorldPt[] walk || walk.Length < 2) return null;
+        if (_follow != null && _follow.TripId == trip.Id && _follow.Step == step) return _follow;
+        string tag = $"step {step + 1}:";
+        foreach (string n in path.Notes)
+            if (n.StartsWith(tag, StringComparison.Ordinal) && n.Contains("straight line", StringComparison.Ordinal)) return null;
+        _follow = new TripFollow(trip.Id, step, walk);
+        _offTripSaid = false;
+        Host.Log($"[RynthNav] walk: following the trip's path for step {step + 1} ({_follow.Length:F0}u, {walk.Length} points)");
+        return _follow;
     }
 
     // ── The trip ─────────────────────────────────────────────────────────
