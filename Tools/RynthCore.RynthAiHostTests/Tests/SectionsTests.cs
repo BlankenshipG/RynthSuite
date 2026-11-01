@@ -23,16 +23,20 @@ internal static class SectionsTests
         r.Add("sections: RynthAi's manifest passes the engine parser unchanged", ManifestRoundTrip);
         r.Add("sections: the engine catalog places RynthAi's views by server", CatalogPlacement);
         r.Add("sections: tab surfaces map back to their tabs; foreign ids are refused", SurfaceRoundTrip);
-        r.Add("sections: Character redirects to RynthOracle; Charms and Banking stay RynthILT's tabs", MovedTabRedirects);
+        r.Add("sections: Character and Charms redirect to RynthOracle, Banking to Global Inventory", MovedTabRedirects);
         r.Add("mini remote: Options left-click runs the Settings command with a chat parser, else the popup", OptionsClickRouting);
         r.Add("mini remote: the header row (V/H, Options, gear) fits the narrowest remote", HeaderRowFits);
     }
 
     private static void MovedTabRedirects()
     {
-        foreach (string tab in new[] { "character", "Char", " rates " })
+        // Upstream's 2026.10.19 MovedTabs sends Charms to RynthOracle's Character tab and Banking to Global
+        // Inventory too; these checks follow it (2026-11-01: they had failed since that merge).
+        foreach (string tab in new[] { "character", "Char", " rates ", "charms", "charm" })
             Check.Eq(MovedTabs.CommandFor(tab), MovedTabs.OracleCharacter, tab + " -> RynthOracle's Character tab");
-        foreach (string tab in new[] { "charms", "banking", "gear", "games", "pets", "crafting", "", null })
+        foreach (string tab in new[] { "banking", "bank" })
+            Check.Eq(MovedTabs.CommandFor(tab), MovedTabs.GlobalBank, tab + " -> Global Inventory");
+        foreach (string tab in new[] { "gear", "games", "pets", "crafting", "", null })
             Check.True(MovedTabs.CommandFor(tab) == null, (tab ?? "null") + " is still a Mini Remote tab (or none)");
         Check.Eq(MovedTabs.OracleCharacter, "/ro character", "the Oracle command");
         Check.Eq(MovedTabs.Diagnostics, "/rc diagnostics", "the engine's Diagnostics command");
