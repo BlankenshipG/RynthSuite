@@ -18,6 +18,7 @@ internal static partial class Program
         Run(nameof(CustomPortalRoutesATrip), CustomPortalRoutesATrip);
         Run(nameof(CustomPortalsRoundTrip), CustomPortalsRoundTrip);
         Run(nameof(CustomForgetAndClear), CustomForgetAndClear);
+        Run(nameof(KnownPortalTakenAgainIsNotRelearned), KnownPortalTakenAgainIsNotRelearned);
         RunDungeonWalks();
         RunGems();
         RunGemDungeons();
@@ -111,5 +112,32 @@ internal static partial class Program
         Check(s.Version > v, "a change bumps the version (saved)");
         Check(s.For(Other).Count == 1, "another server's untouched");
         Check(s.Clear(Ilt) == 1 && s.For(Ilt).Count == 0, "clear the server");
+    }
+
+    // 2026-11-01: every portal a route took said "learned portal ..." and rewrote the file and the
+    // route hub, though it and its landing were known. Known + same landing: nothing is written.
+    private static void KnownPortalTakenAgainIsNotRelearned()
+    {
+        var s = new CustomPortalStore();
+        CustomPortal? p = s.Learned(Ilt, "Portal to Sanamar", 42835, 0xA9B40001, 30.0, 40.0, true, 72.07, -60.9, 0x33D90015, null, T0);
+        Check(p != null && s.LastLearn == CustomLearnResult.New, "the first time: learned");
+        int v = s.Version;
+        s.Learned(Ilt, "Portal to Sanamar", 42835, 0xA9B40001, 30.0, 40.0, true, 72.08, -60.91, 0x33D90015, null, T0.AddHours(1));
+        Check(s.LastLearn == CustomLearnResult.AlreadyKnown && s.Version == v, "taken again, same landing (a few yards off): already known, nothing written");
+        s.Learned(Ilt, "Portal to Sanamar", 42835, 0xA9B40001, 30.0, 40.0, true, 10.0, 10.0, 0x11110001, null, T0.AddHours(2));
+        Check(s.LastLearn == CustomLearnResult.LandingChanged && s.Version > v && s.For(Ilt).Count == 1, "a new landing: updated, still one portal");
+
+        CustomPortal d = s.LearnedInDungeon(Ilt, "AC Storage Portal", 6844, 0x01C901E2, 79.9, -106.2, -6.06, false, 0, 0, 0x01110108, true, 10, -10, 0, T0);
+        Check(s.LastLearn == CustomLearnResult.New, "a dungeon portal: learned");
+        v = s.Version;
+        s.LearnedInDungeon(Ilt, "AC Storage Portal", 6844, 0x01C901E2, 79.9, -106.2, -6.06, false, 0, 0, 0x01110109, true, 11, -9, 0, T0.AddHours(1));
+        Check(s.LastLearn == CustomLearnResult.AlreadyKnown && s.Version == v, "taken again, landing 1.4 m off in the same dungeon: already known");
+        s.LearnedInDungeon(Ilt, "AC Storage Portal", 6844, 0x01C901E2, 79.9, -106.2, -6.06, false, 0, 0, 0x02220108, true, 11, -9, 0, T0.AddHours(2));
+        Check(s.LastLearn == CustomLearnResult.LandingChanged, "another dungeon: updated");
+
+        s.Saw(Ilt, "Portal to Sanamar", 42835, 0xA9B40001, true, 30.0, 40.0, null, T0.AddHours(3));
+        int before = s.Version;
+        s.Saw(Ilt, "Portal to Sanamar", 42835, 0xA9B40001, true, 30.0, 40.0, null, T0.AddHours(4));
+        Check(s.Version == before, "a scan seeing a saved portal where it was: nothing written");
     }
 }

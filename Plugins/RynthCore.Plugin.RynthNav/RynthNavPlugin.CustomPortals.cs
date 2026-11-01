@@ -260,16 +260,30 @@ public sealed partial class RynthNavPlugin
                 Host.Log($"[RynthNav] dungeon walk ({server}, lb 0x{w.Landblock:X4}): {w.Count} points, {w.Length:F0} m to {d.Name}{(walked ? "" : " (a shorter one is kept)")}");
             }
             _usedTrail = null;
-            Host.Log($"[RynthNav] custom portal learned ({server}): {d.Name} in dungeon 0x{d.Landblock:X4} at {d.X:F1},{d.Y:F1} → {where}");
-            Say($"learned portal '{d.Name}' inside the dungeon → {where}"
+            CustomLearnResult dr = _custom.LastLearn;
+            if (dr == CustomLearnResult.AlreadyKnown)
+            {
+                // Taken before, same landing: nothing new (a shorter walk to it is still worth a word).
+                Host.Log($"[RynthNav] custom portal: {d.Name} in dungeon 0x{d.Landblock:X4} → {where}: already known{(walked ? "; a shorter walk to it is kept" : "")}");
+                if (walked) Say($"portal '{d.Name}': a shorter walk to it is kept");
+                return;
+            }
+            Host.Log($"[RynthNav] custom portal {(dr == CustomLearnResult.New ? "learned" : "landing updated")} ({server}): {d.Name} in dungeon 0x{d.Landblock:X4} at {d.X:F1},{d.Y:F1} → {where}");
+            Say($"{(dr == CustomLearnResult.New ? "learned" : "updated")} portal '{d.Name}' inside the dungeon → {where}"
               + (walked ? " — the walk to it is kept, so routes can go through this dungeon" : ""));
             return;
         }
         CustomPortal? p = _custom.Learned(server, _usedPortalName, _usedPortalWcid, _usedPortalCell, _usedPortalNs, _usedPortalEw,
             landing.OnMap, landing.Ns, landing.Ew, _cellId, destPos, dx, dy, dz, _portals, now);
         if (p == null) return;   // the world data routes it already
-        Host.Log($"[RynthNav] custom portal learned ({server}): {p.Name} at {NavCoords.Fmt(p.Ns, p.Ew)} → {where}");
-        Say($"learned portal '{p.Name}' → {where}" + (p.Routable ? " — routes can use it now"
+        CustomLearnResult r = _custom.LastLearn;
+        if (r == CustomLearnResult.AlreadyKnown)
+        {
+            Host.Log($"[RynthNav] custom portal: {p.Name} at {NavCoords.Fmt(p.Ns, p.Ew)} → {where}: already known");
+            return;
+        }
+        Host.Log($"[RynthNav] custom portal {(r == CustomLearnResult.New ? "learned" : "landing updated")} ({server}): {p.Name} at {NavCoords.Fmt(p.Ns, p.Ew)} → {where}");
+        Say($"{(r == CustomLearnResult.New ? "learned" : "updated")} portal '{p.Name}' → {where}" + (p.Routable ? " — routes can use it now"
             : " (lands in a dungeon: routes go through it once a walk inside to one of its portals is learned)"));
     }
 

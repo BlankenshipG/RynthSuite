@@ -89,6 +89,9 @@ internal sealed class DungeonWalk
 /// <summary>What a scan did with one portal object.</summary>
 internal enum CustomScanResult { Added, Updated, BuiltIn, OffMap }
 
+/// <summary>What a portal taken told the store (2026-11-01): new, a landing that changed, or nothing new.</summary>
+internal enum CustomLearnResult { New, LandingChanged, AlreadyKnown }
+
 internal sealed class CustomPortalStore
 {
     /// <summary>A portal object this close (world units) to a saved one of the same name is that one.</summary>
@@ -108,6 +111,18 @@ internal sealed class CustomPortalStore
 
     /// <summary>Bumped on every change (the plugin saves, and rebuilds its route list, when it moves).</summary>
     public int Version { get; private set; }
+
+    /// <summary>
+    /// What the last Learned / LearnedInDungeon call did. AlreadyKnown: the portal and its landing were
+    /// known (within LandingSameUnits / LandingSameMeters), and nothing was rewritten: taking a known
+    /// portal used to say "learned" and rewrite the file and the route hub every time (2026-11-01).
+    /// </summary>
+    public CustomLearnResult LastLearn { get; private set; }
+
+    /// <summary>A map landing this close (yards, NavCoords.Distance; landings scatter a little) is the same landing.</summary>
+    public const double LandingSameUnits = 30.0;
+    /// <summary>A dungeon landing this close (metres, same landblock) is the same landing.</summary>
+    public const double LandingSameMeters = 6.0;
 
     public IReadOnlyList<CustomPortal> For(string server) =>
         _byServer.TryGetValue(Key(server), out var l) ? l : Array.Empty<CustomPortal>();
@@ -192,10 +207,12 @@ internal sealed class CustomPortalStore
         if (p == null && IsBuiltIn(builtIn, name, ns, ew)) return CustomScanResult.BuiltIn;
         if (p != null)
         {
-            p.SeenUtc = nowUtc;
+            p.SeenUtc = nowUtc;   // kept in memory; written with the next change
+            bool changed = (wcid != 0 && p.Wcid != wcid) || p.Cell != cell
+                           || Math.Abs(p.Ns - ns) > 0.0005 || Math.Abs(p.Ew - ew) > 0.0005;
             if (wcid != 0) p.Wcid = wcid;
             p.Cell = cell; p.Ns = ns; p.Ew = ew;   // the live object is exact; the first sighting may not be
-            Version++;
+            if (changed) Version++;
             return CustomScanResult.Updated;
         }
         var list = ListFor(server);
@@ -212,10 +229,12 @@ internal sealed class CustomPortalStore
         CustomPortal? p = FindInDungeon(server, name, cell, x, y, z);
         if (p != null)
         {
-            p.SeenUtc = nowUtc;
+            p.SeenUtc = nowUtc;   // kept in memory; written with the next change
+            bool changed = (wcid != 0 && p.Wcid != wcid) || p.Cell != cell
+                           || Math.Abs(p.X - x) > 0.05 || Math.Abs(p.Y - y) > 0.05 || Math.Abs(p.Z - z) > 0.05;
             if (wcid != 0) p.Wcid = wcid;
             p.Cell = cell; p.X = x; p.Y = y; p.Z = z;
-            Version++;
+            if (changed) Version++;
             return CustomScanResult.Updated;
         }
         var list = ListFor(server);
@@ -241,16 +260,18 @@ internal sealed class CustomPortalStore
     {
         name = Clean(name);
         CustomPortal? p = Find(server, name, cell, true, ns, ew);
+        bool added = false;
         if (p == null)
         {
             // portals.tsv holds map-to-map portals only: a landing in a dungeon is never one of them.
-            if (destOnMap && IsBuiltIn(builtIn, name, ns, ew)) return null;
+            if (destOnMap && IsBuiltIn(builtIn, name, ns, ew)) { LastLearn = CustomLearnResult.AlreadyKnown; return null; }
             var list = ListFor(server);
             if (list.Count >= MaxPerServer) list.RemoveAt(0);
             p = new CustomPortal { Name = name, Wcid = wcid, Cell = cell, OnMap = true, Ns = ns, Ew = ew, SeenUtc = nowUtc };
             list.Add(p);
+            added = true;
         }
-        SetLanding(p, destOnMap, destNs, destEw, destCell, destHasPos, destX, destY, destZ, nowUtc);
+        SetLanding(p, added, destOnMap, destNs, destEw, destCell, destHasPos, destX, destY, destZ, nowUtc);
         return p;
     }
 
@@ -260,21 +281,31 @@ internal sealed class CustomPortalStore
     {
         name = Clean(name);
         CustomPortal? p = FindInDungeon(server, name, cell, x, y, z);
+        bool added = false;
         if (p == null)
         {
             var list = ListFor(server);
             if (list.Count >= MaxPerServer) list.RemoveAt(0);
             p = new CustomPortal { Name = name, Wcid = wcid, Cell = cell, OnMap = false, X = x, Y = y, Z = z, SeenUtc = nowUtc };
             list.Add(p);
+            added = true;
         }
         else if (wcid != 0) p.Wcid = wcid;
-        SetLanding(p, destOnMap, destNs, destEw, destCell, destHasPos, destX, destY, destZ, nowUtc);
+        SetLanding(p, added, destOnMap, destNs, destEw, destCell, destHasPos, destX, destY, destZ, nowUtc);
         return p;
     }
 
-    private void SetLanding(CustomPortal p, bool destOnMap, double destNs, double destEw, uint destCell,
+    private void SetLanding(CustomPortal p, bool added, bool destOnMap, double destNs, double destEw, uint destCell,
         bool destHasPos, double destX, double destY, double destZ, DateTime nowUtc)
     {
+        p.SeenUtc = nowUtc;
+        // Known already, landing and all: nothing to write (and nothing to tell the player).
+        if (!added && SameLanding(p, destOnMap, destNs, destEw, destCell, destHasPos, destX, destY, destZ))
+        {
+            LastLearn = CustomLearnResult.AlreadyKnown;
+            return;
+        }
+        LastLearn = added || !p.DestKnown ? CustomLearnResult.New : CustomLearnResult.LandingChanged;
         p.DestKnown = true;
         p.DestOnMap = destOnMap;
         p.DestNs = destOnMap ? Math.Round(destNs, 2) : 0;
@@ -286,6 +317,19 @@ internal sealed class CustomPortalStore
         p.DestZ = p.DestHasPos ? Math.Round(destZ, 2) : 0;
         p.LearnedUtc = nowUtc;
         Version++;
+    }
+
+    /// <summary>The landing <paramref name="p"/> already has is this one (map: within LandingSameUnits; dungeon: same landblock, within LandingSameMeters).</summary>
+    internal static bool SameLanding(CustomPortal p, bool destOnMap, double destNs, double destEw, uint destCell,
+        bool destHasPos, double destX, double destY, double destZ)
+    {
+        if (!p.DestKnown || p.DestOnMap != destOnMap) return false;
+        if (destOnMap) return NavCoords.Distance(p.DestNs, p.DestEw, destNs, destEw) <= LandingSameUnits;
+        if ((p.DestCell >> 16) != (destCell >> 16)) return false;
+        if (!destHasPos) return true;                 // nothing more precise to compare
+        if (!p.DestHasPos) return false;              // the known one had no spot: this one adds it
+        double dx = p.DestX - destX, dy = p.DestY - destY, dz = p.DestZ - destZ;
+        return Math.Sqrt(dx * dx + dy * dy + dz * dz) <= LandingSameMeters;
     }
 
     /// <summary>
