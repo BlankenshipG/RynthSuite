@@ -2776,6 +2776,15 @@ public sealed partial class RynthAiPlugin
         ruleLabel   = string.Empty;
         builtIn     = string.Empty;
 
+        // The quest loot list (RynthOracle's Run this quest, /ra questloot): a quest item by name, first.
+        if (QuestLootList.Wants(item.Name))
+        {
+            actionLabel = "Keep";
+            ruleLabel   = QuestLootList.RuleLabel;
+            builtIn     = "Quest loot list (RynthOracle's Run this quest) - /ra questloot remove <name> or clear";
+            return true;
+        }
+
         // Learn unknown spells (VTank ReadUnknownScrolls): a built-in rule ahead of the loot
         // profile, as in VTank. A scroll of a spell we don't know and can learn is looted to read.
         if (_scrollLearner != null && _scrollLearner.ShouldLootFromCorpse(item, out string learnRule, out string learnWhy, preview))

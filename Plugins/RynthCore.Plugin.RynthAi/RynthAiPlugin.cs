@@ -992,6 +992,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             Huds.ServerCommandModel.Apply(value);
             return;
         }
+        // RynthOracle's Run this quest: the quest's items on the quest loot list ("add <name>", "remove <name>", "clear").
+        if (action.Equals("questloot", StringComparison.OrdinalIgnoreCase))
+        {
+            var (ok, text) = QuestLootList.Apply(value);
+            Host.Log(text);
+            if (!ok) ReplyFail(text);
+            return;
+        }
         var dash = _dashboard;
         if (dash == null) return;
         bool on = value is "1" or "true" or "on" or "True" or "TRUE"
@@ -4025,6 +4033,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "lootcheckinv": HandleLootCheckInventoryCommand(trimmed); break;
             case "lootcheck":    HandleLootCheckSelectedCommand(parts); break;
             case "loot":         HandleLootCommand(parts); break;
+            case "questloot":
+            {
+                var (ok, text) = QuestLootList.Apply(parts.Length > 2 ? string.Join(" ", parts, 2, parts.Length - 2) : "list");
+                if (ok) ReplyOk(text); else ReplyFail(text);
+                break;
+            }
             case "corpseinfo":   HandleCorpseInfoCommand(); break;
             case "pace":         HandlePaceCommand(); break;
             case "corpsecheck":  HandleCorpseCheckCommand(parts); break;

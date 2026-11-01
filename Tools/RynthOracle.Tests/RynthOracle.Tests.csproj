@@ -54,6 +54,10 @@
     <EmbeddedResource Include="TestData\quests.conquest.csv" LogicalName="TestPack.conquest.csv" />
     <EmbeddedResource Include="TestData\quests.levistras.csv" LogicalName="TestPack.levistras.csv" />
     <EmbeddedResource Include="TestData\quests.aelrynth.csv" LogicalName="TestPack.aelrynth.csv" />
+    <!-- Leaftide wiki quest pages (WikiGuideTests): the Mistreated Virindi page as the player sent it, and a
+         page shaped like his "Pistol" Pete sample. Never shipped. -->
+    <EmbeddedResource Include="TestData\wiki.mistreated-virindi.txt" LogicalName="TestWiki.mistreated-virindi.txt" />
+    <EmbeddedResource Include="TestData\wiki.pistol-pete.txt" LogicalName="TestWiki.pistol-pete.txt" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\augmentations.csv" LogicalName="RynthOracle.augmentations.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\augquests.csv" LogicalName="RynthOracle.augquests.csv" />
     <EmbeddedResource Include="..\..\Plugins\RynthCore.Plugin.RynthOracle\Resources\society.csv" LogicalName="RynthOracle.society.csv" />

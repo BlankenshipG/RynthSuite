@@ -80,6 +80,19 @@ internal static class NavTargets
         return label.Length > 60 ? label.Substring(0, 60).TrimEnd() : label;
     }
 
+    /// <summary>Every coordinate pair in <paramref name="text"/>, in order, written "8.8S, 53.1E" (the same pair once).</summary>
+    public static List<string> AllCoords(string? text)
+    {
+        var list = new List<string>();
+        if (string.IsNullOrEmpty(text)) return list;
+        foreach (Match m in CoordsRx.Matches(text))
+        {
+            string c = Format(m);
+            if (!list.Contains(c)) list.Add(c);
+        }
+        return list;
+    }
+
     private static string Format(Match m) =>
         string.Create(CultureInfo.InvariantCulture,
             $"{m.Groups["ns"].Value}{char.ToUpperInvariant(m.Groups["nsc"].Value[0])}, {m.Groups["ew"].Value}{char.ToUpperInvariant(m.Groups["ewc"].Value[0])}");

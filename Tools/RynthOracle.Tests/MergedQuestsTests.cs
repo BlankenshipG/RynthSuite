@@ -295,11 +295,14 @@ namespace RynthOracle.Tests
         /// <summary>The Quests list's columns follow the window's width (the engine's Geometry events).</summary>
         private static void QuestColumnsFollowWidth()
         {
-            Check(QuestColumns.For(0f) == QuestColumns.Fixed && QuestColumns.For(float.NaN) == QuestColumns.Fixed && QuestColumns.For(500f) == QuestColumns.Fixed,
+            // Upstream's column scaling (5c51ce6, 2026-10): a 500-wide window lays out too, and the name gets at
+            // most half the room, so the Ready column stays near it. These checks follow that rule now.
+            Check(QuestColumns.For(0f) == QuestColumns.Fixed && QuestColumns.For(float.NaN) == QuestColumns.Fixed && QuestColumns.For(300f) == QuestColumns.Fixed,
                   "columns: no width (or a narrow window) is the old fixed layout");
             QuestColumns wide = QuestColumns.For(1200f);
-            Check(wide.LabelWidth > QuestColumns.Fixed.LabelWidth * 2 && wide.LabelChars > QuestColumns.Fixed.LabelChars * 2,
-                  $"columns: a wide window gives the name the room ({wide.LabelWidth}, {wide.LabelChars} chars)");
+            float roomAfterLeft = 1200f - 34f - QuestColumns.Fixed.Label - 8f;
+            Check(wide.LabelWidth > QuestColumns.Fixed.LabelWidth * 1.3f && wide.LabelWidth <= roomAfterLeft * 0.5f + 0.5f && wide.LabelChars > QuestColumns.Fixed.LabelChars,
+                  $"columns: a wide window gives the name more room, at most half ({wide.LabelWidth}, {wide.LabelChars} chars)");
             Check(wide.Label + wide.LabelWidth <= wide.Ready && wide.Ready < wide.Solves && wide.Solves < wide.Extra && wide.Extra < 1200f,
                   "columns: in order, inside the window");
             float last = 0f;

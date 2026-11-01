@@ -23,6 +23,16 @@ internal sealed class OracleContext
     public readonly ServerIdentity Server = new();
     /// <summary>RynthILT's profile with the /qb lists (Infinite Leaftide only: polled while Server.IsIlt).</summary>
     public readonly IltServerLink Ilt = new();
+    /// <summary>The Leaftide wiki quest guide RynthILT keeps (Infinite Leaftide only: polled while Server.IsIlt).</summary>
+    public readonly QuestGuideClient Guide = new();
+    /// <summary>"Run this quest": the wiki quest RynthNav is walking (set up by the plugin's Initialize).</summary>
+    public QuestRunner? Runner;
+    /// <summary>Stamps the server gave this session ("You've stamped X!"), as GuideStamp keys: done before /myquests says so.</summary>
+    public readonly System.Collections.Generic.HashSet<string> SessionStamps = new(StringComparer.Ordinal);
+    /// <summary>Goes up when <see cref="SessionStamps"/> grows.</summary>
+    public int SessionStampRevision;
+    /// <summary>Sends a RynthAi command through the plugin-command broker (action, value); false without RynthAi.</summary>
+    public Func<string, string, bool> SendAi = (_, _) => false;
     /// <summary>RynthILT's data interface: the Temple guardians (Infinite Leaftide only).</summary>
     public readonly RynthCore.Plugin.Shared.RynthIltDataClient IltData = new();
     /// <summary>The Temple guardians as RynthILT last reported them (None off Infinite Leaftide).</summary>

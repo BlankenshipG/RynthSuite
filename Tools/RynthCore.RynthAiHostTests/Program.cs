@@ -116,6 +116,7 @@ internal static class Program
         AutoStackTests.Register(runner);
         BackAwayTests.Register(runner);
         RingEscapeTests.Register(runner);
+        QuestLootTests.Register(runner);
         RingEvadeTests.Register(runner);
         DungeonDropTests.Register(runner);
         ServerPluginForwardTests.Register(runner);

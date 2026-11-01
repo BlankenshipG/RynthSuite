@@ -1,0 +1,51 @@
+<!-- Test data for RynthOracle.Tests (WikiGuideTests): shaped like the "Pistol" Pete Trophy Hunts page the
+     player pasted on 2026-11-01 (paragraph walkthrough, one paragraph per creature, stamps listed apart in
+     QB Stamps). Abridged and re-typed for the tests; not the wiki's text. -->
+{{Leaftide Content}}
+
+{{Quest Summary
+ |                Level = 275+
+ | Recommended Aug Level = 
+ |           Quest Type = Solo
+ |            Kill Task = 
+ |          Starts With = [["Pistol" Pete]][[File:Pistol Pete.png|20px]]
+ |            Starts At = [[Candeth Keep]]
+ |                Route = 
+ |         Repeat Timer = 7 Days
+ |     Time to Complete = 1-2 Hours
+ |            Contracts = 
+ |                   QB = 15
+}}
+== Discord Description ==
+Pete wants trophies from the rarest beasts of Dereth.
+
+== Overview ==
+"Pistol" Pete in Candeth Keep collects trophies. Hunt each beast and bring him its trophy.
+
+== Walkthrough & Notes ==
+Talk to [["Pistol" Pete]] in Candeth Keep to get the list of trophies.
+
+The Nephrite Golem roams the hills at 85.4N 6.4W. Kill it and loot its {{Itemlink|Nephrite Tooth}}.
+
+Winston the Mattekar wanders near 62.8S, 97.9E. Kill him for {{Itemlink|Winston's Leg}}.
+
+The Frost Wyrm sleeps in a cave at 62.7s 66.6W; the cave's exit is at 85.8s,78.8w. Kill it and take its {{Itemlink|Frozen Wyrm Scale}}.
+
+Return to Pete with all three trophies.
+
+== QB Stamps ==
+* {{stamped|NephriteTooth}}
+* {{stamped|WinstonsLeg}}
+* {{stamped|FrostWyrmScale}}
+* {{stamped|PeteTrophiesDone}}
+
+== Rewards ==
+{{Rewards Table
+ |       Quest Task = All three trophies
+ |      Item Reward = 
+* {{Icon Link|Enlightened Coin}} (x50)
+ | Luminance Reward = 2,000,000
+}}
+
+[[Category:Enlightened Coin Quests]]
+[[Category:Weekly Quests]]

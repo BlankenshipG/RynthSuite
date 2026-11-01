@@ -1,0 +1,85 @@
+{{Leaftide Content}}
+
+{{Quest Summary
+ |               Level = 180+
+ |   Recommended Level = 275+
+ |          Quest Type = Solo/Fellowship
+ |           Kill Task = 
+ |         Starts With = [[Mistreated Virindi]]
+ |           Starts At = [[Zaikhal]]
+ |               Route = 
+ |        Repeat Timer = 20 Hours
+ |    Time to Complete = 30-60 Minutes
+ |           Contracts = 
+ |                  QB =
+}}
+== Overview ==
+Quest to upgrade Imbued Asteliary items from the old retail quest [[Simulacra Infiltrators]].
+
+== Walkthrough & Notes ==
+# Talk to [[Mistreated Virindi]] in [[Zaikhal]] to start the quest.
+#* {{stamped|Sneaky_Virindi}}
+# Run to the [[Hidden Infiltrator Keep]] dungeon at 28.5S, 90.9W (layout is a clone of [[Northern Infiltrator Keep]]).
+#* Run from [[Mount Lethe]] or [[Ayan Baqur]]. Dungeon is tieable/recallable if you die.
+# Inside the dungeon, kill [[Tortured Ravener]]s and [[Damaged Doll]]s for a {{Itemlink|Shiny Red Stone}}.
+#* {{stamped|Shiny_Red_Stone_Found}}
+# Head to the end of the dungeon, where Guardian of the Asteliary is guarded by Alarming and Dark Simulacrum. He drops several {{Itemlink|Guardian of the Asteliary's Message Shard}} for QB.
+#* {{stamped|Guardian_of_the_Asteliary_Message_Shard}}
+# Head through the portal to the next dungeon, Asteliary Contentment.
+#* From this point forward, if you die you'll have to run through the first dungeon again.
+# Proceed through this linear dungeon to the end and take the portal to the final dungeon, Asteliary Pique.
+#* In this dungeon you'll find Asteliary Counselors and Dark Simulacrum. Be careful of the Dark Simulacrum missile attacks, as they hit hard.
+# Inside Asteliary Pique, kill [[The Architect]] and loot {{Itemlink|Vial of The Architect's Blood}}.
+#* {{stamped|Powerful_Blood_Obtained}}
+# Return the {{Itemlink|Vial of The Architect's Blood}} to the Mistreated Virindi in Zaikhal for 80 Enlightened Coins and a Hero Token.
+#* {{stamped|Blind_Revenge}}
+# Return the {{Itemlink|Shiny Red Stone}} to Ellie in Crater for 30 Enlightened Coins and 5 Mythical Keys.
+#* {{stamped|Shiny_Red_Stone_Turnin}}
+# Instead of turning in the {{Itemlink|Vial of The Architect's Blood}} to the Mistreated Virindi, you can upgrade an {{Itemlink|Imbued Helm of the Simulacra}}, {{Itemlink|Imbued Shield of the Simulacra}}, or {{Itemlink|Imbued Asteliary Orb}} to upgrade those items.
+
+== Rewards ==
+{{Rewards Table
+ |       Quest Task = {{Itemlink|Vial of The Architect's Blood}}
+ |      Item Reward = 
+* {{Icon Link|Enlightened Coin}} (x80)
+* {{Icon Link|Hero Token}} (x1)
+* {{Icon Link|Enlightenment Token}} (x2)
+OR the blood can instead be used to create one of the following:
+* {{Icon Link|Blood Soaked Helm of the Simulacra}}
+* {{Icon Link|Blood Soaked Shield of the Simulacra}}
+* {{Icon Link|Blood Soaked Asteliary Orb}}
+}}
+{{Rewards Table
+ |       Quest Task = {{Itemlink|Shiny Red Stone}}
+ |      Item Reward = 
+* {{Icon Link|Enlightened Coin}} (x30)
+* {{Icon Link|Mythical Key}} (x5)
+}}
+
+== Images ==
+Click image for full size version.
+
+== Dialog ==
+{{Dialog|
+=== Opening Dialog ===
+|Mistreated Virindi tells you, "Hello Isparian...Hopefully you're not one of those evil ones?"
+|Mistreated Virindi tells you, "My apologies, I just have a hard time trusting your type. However, if you'll assist me, I believe I can actually help you too.."
+|Mistreated Virindi tells you, "I once despised your kind, Isparian. I served under a very powerful being who only reported to Aerbax himself. You may not know of him, but his creations.. I believe you call them Simulacrum."
+|Mistreated Virindi tells you, "With his power, we made these imposters and learned so much from your kind...Good, and evil. However, most of my kind believe to be the superior race, so once I began to question the morality of what we were doing..."
+|Mistreated Virindi tells you, "Well...I'm lucky to still be here.. But, I'll make you a deal! Go to the Direlands, by the west shore.. stop the evil creations and architect himself and i'll give you all that I have left, if you choose not to use the blood on something else... "
+
+=== Rewards Dialog ===
+|Mistreated Virindi tells you, "It's funny that for so long our kind are fooled into thinking we are superior to all. You stand here as proof for your people..Thank you, warrior."
+|Ellie tells you, "Oh wow, it's so shiny! I could almost just just stare righ...uhh..  Wait, what was I saying? Oh right! Awesome find! Here!!"
+
+=== Other Interactions ===
+|Guardian of the Asteliary tells you, "What!? A human enters my chambers? After all this time you finally found us... Now prepare to die!"
+}}
+
+== Update History ==
+
+04/26/2025:
+* Quest introduced.
+
+
+[[Category:Enlightened Coin Quests]]

@@ -49,6 +49,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     // automatic /myquests; the flags' last reply counts too (TickData).
     private DateTime _autoQuestSinceUtc = DateTime.MinValue;
     private int _seenFlagRevision = -1, _seenCatalogRevision = -1, _seenVoidRevision = -1, _seenIltRevision = -1;
+    private int _seenGuideRevision = -1, _seenRunnerRevision = -1;
     // Infinite Leaftide (ServerIdentity.IsIlt): RynthILT's Temple guardian JSON last read, and when next.
     private long _nextGuardianMs;
     private string _guardianJson = "";
@@ -75,6 +76,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.RunCommand = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
         _c.GuardianCommand = GuardianCommand;
         _c.SendNav = line => Host.HasSendPluginCommand && Host.SendPluginCommand("RynthNav", "rnav", line);
+        _c.SendAi = (action, value) => Host.HasSendPluginCommand && Host.SendPluginCommand("RynthAi", action, value);
+        // Run this quest (the wiki quest guide): RynthNav walks the steps, RynthAi picks up the quest's items.
+        _c.Runner = new QuestRunner(line => _c.SendNav(line), line => _c.SendAi("questloot", line), t => _c.Print(t));
         _ui.Log = msg => Host.Log(msg);
 
         _mainView = new OracleView(_c);
@@ -183,6 +187,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.EarnedTitles.Clear();
         _c.Gear.Clear();
         ClearCharacterExtras();
+        _c.Runner?.Stop("ended at logout");
+        _c.SessionStamps.Clear();
         ClearIlt();
     }
 
@@ -190,6 +196,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private void ClearIlt()
     {
         _c.Ilt.Clear();
+        _c.Guide.Clear();
         _guardianJson = "";
         _nextGuardianMs = 0;
         if (!ReferenceEquals(_c.Guardian, Shared.IltGuardianView.None))
@@ -347,6 +354,15 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             return;
         }
         if (!_c.InWorld) return;
+
+        // The quest guide: a stamp counts as done at once (before /myquests is read again), and Run this quest
+        // follows the stamps and RynthNav's arrival.
+        if (GuideStamp.FromChat(line) is string stamp && _c.SessionStamps.Add(GuideStamp.Key(stamp)))
+        {
+            _c.SessionStampRevision++;
+            if (_main != null) _main.NeedsPass = true;
+        }
+        _c.Runner?.OnChat(line);
 
         // A server's own command replies (Conquest's /b, Aelrynth's /top, ...) are its server plugin's.
         // A server's own Void DoT duration rule comes from its plugin's profile (RynthConquest's for
@@ -566,6 +582,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         if (_c.Flags.Revision != _seenFlagRevision)
         {
             _seenFlagRevision = _c.Flags.Revision;
+            _c.Runner?.OnFlagsChanged();
             _c.Catalog.SyncDiscoveries(_c.Flags);
             if (_main != null) _main.NeedsPass = true;
             if (_timers != null) _timers.NeedsPass = true;
@@ -609,6 +626,17 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 if (_main != null) _main.NeedsPass = true;
             }
             ReadGuardian(now);
+            _c.Guide.Poll(Host, now);
+            if (_c.Guide.Revision != _seenGuideRevision)
+            {
+                _seenGuideRevision = _c.Guide.Revision;
+                if (_main != null) _main.NeedsPass = true;
+            }
+        }
+        if (_c.Runner != null && _c.Runner.Revision != _seenRunnerRevision)
+        {
+            _seenRunnerRevision = _c.Runner.Revision;
+            if (_main != null) _main.NeedsPass = true;
         }
         // The Gear tab's Check runs on (appraisals spaced out) whichever tab is showing.
         if (_c.Gear.Tick(Host, now, _c.Character.Name) && _main != null) _main.NeedsPass = true;

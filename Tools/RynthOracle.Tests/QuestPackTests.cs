@@ -134,6 +134,8 @@ namespace RynthOracle.Tests
             {
                 "OracleContext.cs", "RynthOraclePlugin.cs", Path.Combine("Data", "ServerIdentity.cs"), Path.Combine("Data", "IltServerProfile.cs"),
                 Path.Combine("Data", "DynamicStamps.cs"), Path.Combine("Views", "DynamicStampsTab.cs"), Path.Combine("Views", "QuestsTab.cs"),
+                // 2026-11-01: the Leaftide wiki quest guide RynthILT keeps, read only while the server is Infinite Leaftide.
+                Path.Combine("Data", "QuestGuideClient.cs"),
             };
             int files = 0;
             var found = new System.Collections.Generic.List<string>();

@@ -43,6 +43,12 @@ internal sealed class OracleSettings
     public string GearView = "Overlap";
     /// <summary>Gear, Overlap: hide the families where spells compete.</summary>
     public bool GearHideOverlap;
+    /// <summary>The Quests tab shows the quest guide (two panes: the list, the steps) rather than the flag list.</summary>
+    public bool QuestGuideView = DefaultQuestGuideView;
+    /// <summary>The guide view is the default (the offline tests of the flag list turn it off).</summary>
+    internal static bool DefaultQuestGuideView = true;
+    /// <summary>The quest guide hides quests whose stamps are all held.</summary>
+    public bool GuideHideCollected;
     /// <summary>Gear, Ratings: list the packs' gear as well as what is worn.</summary>
     public bool GearIncludePack;
     /// <summary>Gear, Ratings: each item as a Mag-Tools ItemInfo line (true) or in columns (false).</summary>
@@ -59,6 +65,9 @@ internal sealed class OracleSettings
     {
         "readQuestsAtLogin", "hideOwnQuestReplies", "checkQuestListDaily", "lastQuestListCheck", "autoShowVoidWindow",
         "mainWindowOpen", "questTimersOpen", "alertTimers", "alertAllTimers", "tabName",
+        // Written by Save too: without them here each save wrote them twice (2026-11-01).
+        "questRefreshMinutes", "gearHideOverlap", "gearIncludePack", "gearRatingsMag", "gearView",
+        "questGuideView", "guideHideCollected",
     };
     // "conquestAutoDeposit" moved to RynthConquest (2026-10-20), which takes it over from this file once;
     // it is kept here (as any value this version doesn't use) until then.
@@ -91,6 +100,8 @@ internal sealed class OracleSettings
             AlertTimers = Bool(r, "alertTimers", AlertTimers);
             AlertAllTimers = Bool(r, "alertAllTimers", AlertAllTimers);
             GearHideOverlap = Bool(r, "gearHideOverlap", GearHideOverlap);
+            QuestGuideView = Bool(r, "questGuideView", QuestGuideView);
+            GuideHideCollected = Bool(r, "guideHideCollected", GuideHideCollected);
             GearIncludePack = Bool(r, "gearIncludePack", GearIncludePack);
             GearRatingsMag = Bool(r, "gearRatingsMag", GearRatingsMag);
             if (r.TryGetProperty("tabName", out JsonElement t) && t.ValueKind == JsonValueKind.String) TabName = t.GetString() ?? TabName;
@@ -122,6 +133,8 @@ internal sealed class OracleSettings
             sb.Append("  \"alertTimers\": ").Append(AlertTimers ? "true" : "false").Append(",\n");
             sb.Append("  \"alertAllTimers\": ").Append(AlertAllTimers ? "true" : "false").Append(",\n");
             sb.Append("  \"gearHideOverlap\": ").Append(GearHideOverlap ? "true" : "false").Append(",\n");
+            sb.Append("  \"questGuideView\": ").Append(QuestGuideView ? "true" : "false").Append(",\n");
+            sb.Append("  \"guideHideCollected\": ").Append(GuideHideCollected ? "true" : "false").Append(",\n");
             sb.Append("  \"gearIncludePack\": ").Append(GearIncludePack ? "true" : "false").Append(",\n");
             sb.Append("  \"gearRatingsMag\": ").Append(GearRatingsMag ? "true" : "false").Append(",\n");
             sb.Append("  \"gearView\": \"").Append(JsonEncodedText.Encode(GearView).ToString()).Append("\",\n");

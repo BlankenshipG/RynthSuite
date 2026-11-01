@@ -120,6 +120,15 @@ internal sealed partial class OracleView
 
     private void DrawQuests(UiWindow w)
     {
+        // The guide (2026-11-01, QuestGuideTab.cs): two panes, the quests and the opened one's steps; or this flag list.
+        DrawQuestViewSwitch(w);
+        if (_c.Settings.QuestGuideView)
+        {
+            w.SameLine();
+            DrawQuestFlagStatus(w);
+            DrawGuide(w);
+            return;
+        }
         QuestFlagStore flags = _c.Flags;
         _cols = QuestColumns.For(w.ContentWidth);
         if (_c.Server.IsIlt) RefreshAfterHandIn(flags);
@@ -241,6 +250,16 @@ internal sealed partial class OracleView
         w.EndChild();
 
         if (selected) DrawSelection(w);
+    }
+
+    /// <summary>The flags' state in one short line (the guide view's top row).</summary>
+    private void DrawQuestFlagStatus(UiWindow w)
+    {
+        QuestFlagStore flags = _c.Flags;
+        if (flags.ServerDisabled) w.TextColored(UiColors.Red, "/myquests is off on this server: no quest flags.");
+        else if (flags.Loading) w.TextColored(UiColors.Yellow, "Reading your quest flags...");
+        else if (flags.LastReadUtc == DateTime.MinValue) w.TextDisabled("Quest flags not read yet (Refresh).");
+        else w.TextDisabled($"{flags.Flags.Count} flags, read {flags.LastReadUtc.ToLocalTime():HH:mm}");
     }
 
     /// <summary>One list row: a quest (track, done, timer, solves, rewards) or a tracker (kind, status, its own columns).</summary>

@@ -261,8 +261,10 @@ internal sealed unsafe class IltServerLink
         _table = null;
         if (now < _nextQueryAt || !host.HasGetPluginInterface) return null;
         _nextQueryAt = now + RequeryMs;
-        var p = (RynthIltServerApiV1*)host.GetPluginInterface(RynthIltServer.PluginName, RynthIltServerApiV1.InterfaceName, RynthIltServerApiV1.InterfaceVersion);
-        if (p != null && p->Version >= 1 && p->StructSize >= (uint)sizeof(RynthIltServerApiV1) && p->GetProfileJson != null)
+        // v1 is all the profile needs (v2 added the quest guide's calls after it: QuestGuideClient), so an
+        // older RynthILT's shorter table still serves.
+        var p = (RynthIltServerApiV1*)host.GetPluginInterface(RynthIltServer.PluginName, RynthIltServerApiV1.InterfaceName, 1);
+        if (p != null && p->Version >= 1 && p->StructSize >= (uint)(8 + sizeof(IntPtr)) && p->GetProfileJson != null)
             _table = p;
         return _table;
     }

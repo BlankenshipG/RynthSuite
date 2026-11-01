@@ -40,6 +40,9 @@ namespace RynthOracle.Tests
         private static int Main()
         {
             // Tab clicks save the settings: into a scratch file, never the player's %APPDATA% copy.
+            // The flag-list tests below were written for the Quests tab before the guide view (2026-11-01): the
+            // flag list is their default; WikiGuide opens the guide itself.
+            OracleSettings.DefaultQuestGuideView = false;
             OracleSettings.PathOverride = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RynthOracleTests-" + Guid.NewGuid().ToString("N") + "-settings.json");
             Lists();
             QuestLines();
@@ -69,6 +72,7 @@ namespace RynthOracle.Tests
             Gear();
             AutoRefresh();
             Replies();
+            WikiGuide();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;
         }
