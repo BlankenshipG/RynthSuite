@@ -20,7 +20,7 @@ internal sealed partial class OracleView
 {
     private static readonly string[] GuideTabNames = { "All", "Story", "Dailies", "Weekly", "QB", "ILT Wiki", "Stamps" };
     private const int GuidePageSize = 60;
-    private const int GuideLabelChars = 34;
+    private const int GuideLabelChars = 48;
     private const int ColText = 0;   // ImGuiCol_Text
 
     private GuideTab _gTab;
@@ -142,7 +142,8 @@ internal sealed partial class OracleView
 
         List<GuideRow> rows = GuideRows();
         float total = w.ContentWidth > 0f ? w.ContentWidth : 680f;
-        float leftW = Math.Clamp(total * 0.38f, 210f, 360f);
+        // The list gets enough room for the names (2026-11-01: at 38% they were cut to ~15 letters).
+        float leftW = Math.Clamp(total * 0.45f, 260f, 440f);
 
         w.BeginChild("g.list", leftW, 0f, border: true);
         if (rows.Count > GuidePageSize)
@@ -151,8 +152,8 @@ internal sealed partial class OracleView
         }
         else _gPage = 0;
         int start = _gPage * GuidePageSize;
-        float statusX = Math.Max(120f, leftW - 86f);
-        int chars = Math.Max(14, Math.Min(GuideLabelChars, (int)((statusX - 16f) / 7f)));
+        float statusX = Math.Max(150f, leftW - 84f);
+        int chars = Math.Max(18, Math.Min(GuideLabelChars, (int)((statusX - 14f) / 6.2f)));
         for (int i = start; i < rows.Count && i < start + GuidePageSize; i++)
         {
             GuideRow r = rows[i];
