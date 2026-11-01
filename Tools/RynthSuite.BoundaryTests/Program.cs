@@ -43,6 +43,14 @@ internal static class Program
         ["Plugins/RynthCore.Plugin.RynthInventory/InventoryContext.cs"] = "ILT-gated: RynthILT's bank",
         ["Plugins/RynthCore.Plugin.RynthInventory/Views/BankingTab.cs"] = "ILT-gated: the Banking page",
         ["Plugins/RynthCore.Plugin.RynthInventory/Data/BankRoster.cs"] = "ILT-gated: the Banking page's characters",
+        // 2026-11-01, the first full Run-AllTests on Windows: files from the test branch that name a server on
+        // purpose, listed with why (the test had never run on them).
+        ["Plugins/RynthCore.Plugin.RynthOracle/Data/QuestGuideClient.cs"] = "ILT-gated: RynthILT's Leaftide wiki quest guide",
+        ["Plugins/RynthCore.Plugin.RynthInventory/InventoryCommand.cs"] = "usage text: /ginv bank is the ILT-gated Banking page",
+        ["Plugins/RynthCore.Plugin.RynthChat/ChatClassifier.cs"] = "reads a typed /bank or /b to file the server's reply (sends nothing)",
+        ["Plugins/ub-Rythai/RynthCore.Plugin.UbRythai/UbRythaiPlugin.cs"] = "UbRythai is ub-IT's Infinite Leaftide port: a Leaftide plugin by design",
+        ["Plugins/ub-Rythai/RynthCore.Plugin.UbRythai/UbRythaiPlugin.IltBanking.cs"] = "UbRythai: ILT banking",
+        ["Plugins/ub-Rythai/RynthCore.Plugin.UbRythai/UbRythaiSettings.cs"] = "UbRythai: its Leaftide settings",
     };
 
     /// <summary>Projects that may link these server-only contracts (the ILT-gated readers above).</summary>

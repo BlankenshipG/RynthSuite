@@ -32,6 +32,10 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripPath.cs" Link="Linked\TripPath.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavCoords.cs" Link="Linked\NavCoords.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TownNet.cs" Link="Linked\TownNet.cs" />
+    <!-- TownNet.Merge takes the learned portals and the Atlas (2026-10-29); without them this project
+         stopped building (found 2026-11-01, the first full Run-AllTests on Windows). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\Atlas.cs" Link="Linked\Atlas.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\CustomPortals.cs" Link="Linked\CustomPortals.cs" />
     <Compile Include="..\RynthNav.PortalGraph\PortalRoute.cs" Link="Linked\PortalRoute.cs" />
   </ItemGroup>
 

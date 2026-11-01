@@ -173,7 +173,7 @@ internal static class MissileCraftingTests
     /// <summary>One crafting tick, the phase clock moved past EQUIP_DELAY_MS (inside the 15 s timeout).</summary>
     private static void Step(MissileCraftingManager cm)
     {
-        PhaseStart.SetValue(cm, DateTime.Now.AddSeconds(-1));
+        PhaseStart.SetValue(cm, RynthClock.Now.AddSeconds(-1));
         ForceRescan();
         cm.ProcessCrafting();
     }
@@ -241,7 +241,7 @@ internal static class MissileCraftingTests
     private static void WalkStep(MissileCraftingManager cm)
     {
         if (cm.State == MissileCraftingManager.CraftState.Idle) LastAmmoCheck.SetValue(cm, DateTime.MinValue);
-        else PhaseStart.SetValue(cm, DateTime.Now.AddSeconds(-1));   // past EQUIP_DELAY_MS, well inside the 15 s timeout
+        else PhaseStart.SetValue(cm, RynthClock.Now.AddSeconds(-1));   // past EQUIP_DELAY_MS, well inside the 15 s timeout
         ForceRescan();
         cm.ProcessCrafting();
     }
@@ -425,12 +425,12 @@ internal static class MissileCraftingTests
             if (cm.State == MissileCraftingManager.CraftState.Idle)
             {
                 // The back-off moves _lastAmmoCheck into the future; only an expired check is reset.
-                if ((DateTime)LastAmmoCheck.GetValue(cm)! <= DateTime.Now)
+                if ((DateTime)LastAmmoCheck.GetValue(cm)! <= RynthClock.Now)   // the manager's clock (DateTime.Now drifts from it: flaky on Windows, 2026-11-01)
                     LastAmmoCheck.SetValue(cm, DateTime.MinValue);
             }
             else
             {
-                PhaseStart.SetValue(cm, DateTime.Now.AddSeconds(-1));   // past EQUIP_DELAY_MS
+                PhaseStart.SetValue(cm, RynthClock.Now.AddSeconds(-1));   // past EQUIP_DELAY_MS
             }
             ForceRescan();
             cm.ProcessCrafting();
