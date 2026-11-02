@@ -101,6 +101,67 @@ internal sealed partial class OracleView
 
     private bool StampHeld(string stamp) => HeldStamps().Contains(GuideStamp.Key(stamp));
 
+    /// <summary>Where a quest's stamp stands for this run of the quest (2026-11-01).</summary>
+    internal enum StampState
+    {
+        /// <summary>Never stamped.</summary>
+        Missing,
+        /// <summary>Stamped, and it counts now: a one-time quest's, or a repeatable one's still inside its timer.</summary>
+        Done,
+        /// <summary>Stamped on an earlier run of a repeatable quest whose timer has run out: it can be had again.</summary>
+        Earlier,
+    }
+
+    /// <summary>
+    /// A stamp of <paramref name="q"/> for this run. Before 2026-11-01 any stamp ever held was ticked, so a
+    /// daily done yesterday showed every step done though it was ready again. Now a repeatable quest's stamp
+    /// counts while its flag's timer runs (or, with no timer on the flag, while the quest's repeat time since
+    /// it was stamped hasn't passed); after that it is Earlier. A stamp seen in chat this session is Done.
+    /// </summary>
+    private StampState StateOf(GuideQuest q, string stamp)
+    {
+        if (_c.SessionStamps.Contains(GuideStamp.Key(stamp))) return StampState.Done;
+        QuestFlag? f = StampFlag(stamp);
+        bool repeats = q.RepeatSec != 0;
+        if (f != null)
+        {
+            if (!repeats) return StampState.Done;
+            if (f.RepeatTime > TimeSpan.Zero) return f.NextAvailableTime(_c.UtcNow) > TimeSpan.Zero ? StampState.Done : StampState.Earlier;
+            if (q.RepeatSec > 0 && f.CompletedOnUtc != DateTime.MinValue)
+                return f.CompletedOnUtc.AddSeconds(q.RepeatSec) > _c.UtcNow ? StampState.Done : StampState.Earlier;
+            return StampState.Done;
+        }
+        // The /qb list (Infinite Leaftide) says only that it was ever stamped.
+        if (StampHeld(stamp)) return repeats ? StampState.Earlier : StampState.Done;
+        return StampState.Missing;
+    }
+
+    /// <summary>A step is done when it has stamps and each one counts now.</summary>
+    private bool StepDone(GuideQuest q, GuideStep s) => s.Stamps.Count > 0 && s.Stamps.TrueForAll(st => StateOf(q, st) == StampState.Done);
+
+    /// <summary>
+    /// Each step's state: done (its stamps count now), done by the steps after it (no stamp of its own, but a
+    /// later step is done: the quest went past it), or not done; and the first step not done (-1: none).
+    /// </summary>
+    private (bool[] Done, bool[] Implied, int Next) StepStates(GuideQuest q)
+    {
+        int n = q.Steps.Count;
+        var done = new bool[n];
+        var implied = new bool[n];
+        int lastDone = -1;
+        for (int i = 0; i < n; i++)
+        {
+            done[i] = StepDone(q, q.Steps[i]);
+            if (done[i]) lastDone = i;
+        }
+        for (int i = 0; i < lastDone; i++)
+            if (!done[i] && q.Steps[i].Stamps.Count == 0) implied[i] = true;
+        int next = -1;
+        for (int i = 0; i < n; i++)
+            if (!done[i] && !implied[i]) { next = i; break; }
+        return (done, implied, next);
+    }
+
     /// <summary>The flag a stamp is in /myquests (any spelling of it), or null.</summary>
     private QuestFlag? StampFlag(string stamp)
     {
@@ -316,32 +377,31 @@ internal sealed partial class OracleView
 
     private GuideRow WikiRow(GuideQuest q)
     {
-        int held = 0, all = 0;
+        int done = 0, earlier = 0, all = 0;
         foreach (string st in q.AllStamps())
         {
             all++;
-            if (StampHeld(st)) held++;
+            switch (StateOf(q, st))
+            {
+                case StampState.Done: done++; break;
+                case StampState.Earlier: earlier++; break;
+            }
         }
         var r = new GuideRow { Key = "w:" + q.Title, Label = q.Title, W = q };
-        if (all == 0) { r.Status = ""; return r; }
-        r.Done = held == all;
-        if (!r.Done)
+        if (all == 0) { r.Status = "no stamps"; r.Color = UiColors.Grey; return r; }
+        r.Done = done == all;
+        if (r.Done)
         {
-            r.Status = $"{held} / {all}";
-            r.Color = held > 0 ? UiColors.Yellow : UiColors.Grey;
+            TimeSpan wait = WikiWait(q);
+            if (q.RepeatSec != 0 && wait > TimeSpan.Zero) { r.Status = "Done " + Short(wait); r.Color = UiColors.Yellow; }
+            else { r.Status = "Completed"; r.Color = UiColors.Green; }
             return r;
         }
-        TimeSpan wait = WikiWait(q);
-        if (q.RepeatSec != 0 && wait > TimeSpan.Zero) { r.Status = "Done " + Short(wait); r.Color = UiColors.Yellow; }
-        else if (q.RepeatSec != 0 && wait == TimeSpan.Zero && AnyStampFlag(q)) { r.Status = "Ready"; r.Color = UiColors.Green; }
-        else { r.Status = "Completed"; r.Color = UiColors.Green; }
+        // A repeatable quest done before, its timer up and nothing stamped this run yet: ready again.
+        if (done == 0 && earlier > 0) { r.Status = "Ready"; r.Color = UiColors.Green; return r; }
+        r.Status = $"{done} / {all}";
+        r.Color = done > 0 ? UiColors.Yellow : UiColors.Grey;
         return r;
-    }
-
-    private bool AnyStampFlag(GuideQuest q)
-    {
-        foreach (string st in q.AllStamps()) if (StampFlag(st) != null) return true;
-        return false;
     }
 
     /// <summary>How long until the quest's stamps can be had again (the longest wait on any of them), zero when ready.</summary>
@@ -411,7 +471,7 @@ internal sealed partial class OracleView
         {
             w.Button("Run this quest", "g.run", () =>
             {
-                _c.Runner?.Start(q, StampHeld, loot: true);
+                _c.Runner?.Start(q, st => StateOf(q, st) == StampState.Done, loot: true);
                 _gMsg = "";
             });
             w.Tooltip("RynthNav walks to each step you haven't been stamped for, in order; the step's instructions go to chat\n"
@@ -459,12 +519,14 @@ internal sealed partial class OracleView
         if (q.KillTask.Length > 0) w.TextDisabled("Kill task: " + q.KillTask);
         if (q.Overview.Length > 0) w.TextWrapped(q.Overview);
 
+        DrawWikiProgress(w, q);
+        var (stepDone, implied, next) = StepStates(q);
         w.SeparatorText(q.Steps.Count > 0 ? "Steps" : "Steps (the page has no walkthrough)");
-        for (int i = 0; i < q.Steps.Count; i++) DrawWikiStep(w, q, i, runningThis ? run!.Step : -1);
+        for (int i = 0; i < q.Steps.Count; i++) DrawWikiStep(w, q, i, runningThis ? run!.Step : -1, stepDone[i], implied[i], i == next);
         if (q.ExtraStamps.Count > 0)
         {
-            w.TextDisabled("Also stamps:");
-            foreach (string st in q.ExtraStamps) StampLine(w, st);
+            w.TextDisabled("Also stamps (the wiki doesn't say which step):");
+            foreach (string st in q.ExtraStamps) StampLine(w, q, st);
         }
         if (q.Loot.Count > 0)
         {
@@ -476,14 +538,53 @@ internal sealed partial class OracleView
                 if (r.EndsWith(':')) w.Text(r); else w.BulletText(r);
     }
 
-    private void DrawWikiStep(UiWindow w, GuideQuest q, int i, int current)
+    /// <summary>
+    /// What the quest stands at, above the steps: how many stamps count now, and each one still to get with
+    /// its step, so nothing missing has to be hunted for in the list (2026-11-01).
+    /// </summary>
+    private void DrawWikiProgress(UiWindow w, GuideQuest q)
+    {
+        var missing = new List<string>();
+        int all = 0, done = 0, earlier = 0;
+        var stepOf = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int i = 0; i < q.Steps.Count; i++)
+            foreach (string st in q.Steps[i].Stamps) stepOf.TryAdd(GuideStamp.Key(st), i + 1);
+        foreach (string st in q.AllStamps())
+        {
+            all++;
+            StampState state = StateOf(q, st);
+            if (state == StampState.Done) { done++; continue; }
+            if (state == StampState.Earlier) earlier++;
+            string where = stepOf.TryGetValue(GuideStamp.Key(st), out int n) ? $"step {n}" : "no step";
+            missing.Add($"{st} ({where}{(state == StampState.Earlier ? ", done before: ready again" : "")})");
+        }
+        if (all == 0)
+        {
+            w.TextDisabled("The wiki lists no stamps for this quest, so its progress can't be read: the steps are only a guide.");
+            return;
+        }
+        if (missing.Count == 0)
+        {
+            w.TextColored(UiColors.Green, $"All {all} stamps done{(q.RepeatSec != 0 ? " this run" : "")}.");
+            return;
+        }
+        w.TextColored(done > 0 ? UiColors.Yellow : UiColors.Grey, $"{done} of {all} stamps done{(q.RepeatSec != 0 ? " this run" : "")}. Still to get:");
+        foreach (string m in missing) w.TextColored(m.Contains("ready again", StringComparison.Ordinal) ? UiColors.Yellow : UiColors.Red, "   - " + m);
+        if (earlier > 0 && done == 0)
+            w.TextDisabled("   (A repeatable quest: the stamps from your last run don't count once its timer is up.)");
+    }
+
+    private void DrawWikiStep(UiWindow w, GuideQuest q, int i, int current, bool done, bool implied, bool isNext)
     {
         GuideStep s = q.Steps[i];
-        bool done = s.Stamps.Count > 0 && s.Stamps.TrueForAll(StampHeld);
-        uint color = i == current ? UiColors.Yellow : done ? UiColors.Green : 0;
+        // [x] done, [~] done by the steps after it (no stamp of its own), [>] the next one to do, [ ] still to do.
+        string mark = done ? "[x]" : implied ? "[~]" : isNext ? "[>]" : "[ ]";
+        uint color = i == current || (isNext && current < 0) ? UiColors.Yellow : done ? UiColors.Green : implied ? UiColors.Grey : 0;
         if (color != 0) w.PushStyleColor(ColText, color);
-        w.TextWrapped($"{i + 1}. {s.Text}");
+        w.TextWrapped($"{mark} {i + 1}. {s.Text}");
         if (color != 0) w.PopStyleColor();
+        if (implied) w.Tooltip("No stamp of its own; a step after it is done, so the quest went past it.");
+        else if (isNext) w.Tooltip("The next step to do.");
         for (int k = 0; k < s.Coords.Count; k++)
         {
             string c = s.Coords[k];
@@ -495,7 +596,7 @@ internal sealed partial class OracleView
         {
             w.SameLine();
             int step = i;
-            w.SmallButton("Run from here", $"g.s{i}.from", () => _c.Runner?.Start(q, StampHeld, loot: true, fromStep: step));
+            w.SmallButton("Run from here", $"g.s{i}.from", () => _c.Runner?.Start(q, st => StateOf(q, st) == StampState.Done, loot: true, fromStep: step));
         }
         foreach (string n in s.Notes)
         {
@@ -503,13 +604,42 @@ internal sealed partial class OracleView
             w.TextWrapped("   " + n);
             w.PopStyleColor();
         }
-        foreach (string st in s.Stamps) StampLine(w, st);
+        foreach (string st in s.Stamps) StampLine(w, q, st);
     }
 
-    private void StampLine(UiWindow w, string stamp)
+    private void StampLine(UiWindow w, GuideQuest q, string stamp)
     {
-        if (StampHeld(stamp)) w.TextColored(UiColors.Green, "   [x] You've stamped " + stamp + "!");
-        else w.TextDisabled("   [ ] Stamp: " + stamp);
+        switch (StateOf(q, stamp))
+        {
+            case StampState.Done:
+                w.TextColored(UiColors.Green, "      [x] You've stamped " + stamp + "!");
+                break;
+            case StampState.Earlier:
+                w.TextColored(UiColors.Yellow, "      [ ] " + stamp + " - done on an earlier run; ready again");
+                break;
+            default:
+                w.TextColored(UiColors.Red, "      [ ] " + stamp + " - not stamped yet");
+                break;
+        }
+        w.Tooltip(StampWhy(q, stamp));
+    }
+
+    /// <summary>Why a stamp reads the way it does: the flag it matched and its times, or that none did.</summary>
+    private string StampWhy(GuideQuest q, string stamp)
+    {
+        if (_c.SessionStamps.Contains(GuideStamp.Key(stamp))) return "Stamped this session (\"You've stamped " + stamp + "!\").";
+        if (StampFlag(stamp) is QuestFlag f)
+        {
+            string when = f.CompletedOnUtc == DateTime.MinValue ? "" : $", last {f.CompletedOnUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
+            string timer = f.RepeatTime > TimeSpan.Zero
+                ? (f.NextAvailableTime(_c.UtcNow) > TimeSpan.Zero ? $"; again in {Short(f.NextAvailableTime(_c.UtcNow))}" : "; its timer is up")
+                : "";
+            return $"Your quest flag '{f.Key}': {f.Solves} solve(s){when}{timer}.";
+        }
+        if (StampHeld(stamp)) return "In your /qb list (the server's quest bonus list): stamped at some time.";
+        return _c.Flags.LastReadUtc == DateTime.MinValue
+            ? "Your quest flags haven't been read yet (Refresh)."
+            : $"No quest flag named like '{stamp}' in your /myquests ({_c.Flags.Flags.Count} flags, read {_c.Flags.LastReadUtc.ToLocalTime():HH:mm}).";
     }
 
     // ── The opened master-list quest ────────────────────────────────────────
