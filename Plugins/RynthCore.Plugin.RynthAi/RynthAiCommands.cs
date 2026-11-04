@@ -124,10 +124,13 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra lootparse     — inspect the selected loot profile");
         ChatLine("[RynthAi] /ra lootcheckinv  — test the loot profile against inventory");
         ChatLine("[RynthAi] /ra lootcheck     — classify selected item (on|off = auto on click)");
+        ChatLine("[RynthAi] /ra loot why      — which loot rule takes the selected item, and why the rules above it didn't");
+        ChatLine("[RynthAi] /ra loot mode [profile|rares] — loot by the loot profile, or rares and needed mana stones only");
         ChatLine("[RynthAi] /ra loot add [keep|keep N|salvage|sell|read] [name|like] [preview] — add a loot rule for the selected item");
         ChatLine("[RynthAi] /ra questloot add <name>|remove <name>|clear|list|on|off — items to pick up by name for a quest (RynthOracle's Run this quest fills it; this session only)");
         ChatLine("[RynthAi] /ra dumpinv       — dump all inventory items (cache + direct)");
         ChatLine("[RynthAi] /ra combat        — dump combat state machine snapshot");
+        ChatLine("[RynthAi] /ra mstats [monster] — its evades, resists, hits, spells and kills this session (list | reset | show | hide)");
         ChatLine("[RynthAi] /ra why           — one-glance diagnosis of why the bot is idle/attacking");
         ChatLine("[RynthAi] /ra start | stop   — start/stop the macro from chat");
         ChatLine("[RynthAi] /ra pause [sec]    — stop the macro, auto-resume after sec (default 60)");
@@ -1149,6 +1152,48 @@ public sealed partial class RynthAiPlugin
         }
     }
 
+    /// <summary>
+    /// /ra navheading &lt;degrees&gt; &lt;yards&gt;: run to the point that far from here on that compass heading
+    /// (0 north, 90 east). Loads a one-point run-once route and turns navigation on. Lets a meta follow a
+    /// direction (a treasure map's "the site is to the northwest") with the nav engine, no keystrokes.
+    /// </summary>
+    private void HandleNavHeadingCommand(string[] parts)
+    {
+        var settings = _dashboard?.Settings;
+        if (settings == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
+        if (parts.Length < 4
+            || !double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double deg)
+            || !double.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double yards)
+            || yards <= 0 || yards > 2000)
+        {
+            ReplyFail("[RynthAi] Usage: /ra navheading <degrees: 0 north, 90 east> <yards, up to 2000>");
+            return;
+        }
+        if (!Host.HasGetPlayerPose || !Host.TryGetPlayerPose(out _, out _, out _, out float z, out _, out _, out _, out _)
+            || !NavCoordinateHelper.TryGetNavCoords(Host, out double ns, out double ew))
+        {
+            ReplyFail("[RynthAi] navheading: couldn't read where you are.");
+            return;
+        }
+
+        double rad = deg * Math.PI / 180.0;
+        double unit = yards / 240.0;   // nav coordinates are 240-yard units
+        var route = new NavRouteParser { RouteType = NavRouteType.Once };
+        route.Points.Add(new NavPoint
+        {
+            Type = NavPointType.Point,
+            NS = ns + Math.Cos(rad) * unit,
+            EW = ew + Math.Sin(rad) * unit,
+            Z = z / 240.0,
+        });
+        settings.CurrentNavPath = "<navheading>";
+        settings.CurrentRoute = route;
+        settings.ActiveNavIndex = 0;
+        settings.EnableNavigation = true;
+        Host.Log($"[RynthAi] navheading: {yards:0} yd on {deg:0}° -> NS {route.Points[0].NS:0.0000} EW {route.Points[0].EW:0.0000}");
+        ReplyOk($"[RynthAi] Navigating {yards:0} yd on heading {deg:0}° (to NS {route.Points[0].NS:0.000} EW {route.Points[0].EW:0.000}).");
+    }
+
     private void HandleAddNavPointCommand()
     {
         var settings = _dashboard?.Settings;
@@ -1510,6 +1555,25 @@ public sealed partial class RynthAiPlugin
             RynthLog.Write(LogCat.Looting, countMessage);
         }
 
+        // A rule with no conditions is unconditional (VTank's too): it takes every item that reaches
+        // it. R-20261101-133624-7eeb (Conquest, 2026-11-01): every item on every corpse was kept by
+        // 'Trade Note', which in LootSnob is a Name match; one that has lost its condition does
+        // exactly that, silently. Said at load, with where it stands, so it can be fixed.
+        var unconditional = profile.Rules
+            .Select((r, i) => (Rule: r, Index: i))
+            .Where(x => x.Rule.Conditions.Count == 0)   // a disabled rule carries a DisabledRule node, so it isn't one
+            .ToList();
+        if (unconditional.Count > 0)
+        {
+            var first = unconditional[0];
+            string names = string.Join(", ", unconditional.Take(3).Select(x => $"'{(string.IsNullOrWhiteSpace(x.Rule.Name) ? "#" + (x.Index + 1) : x.Rule.Name.Trim())}' (rule {x.Index + 1}, {x.Rule.Action})"));
+            string uncMessage = $"[RynthAi] Loot profile '{fileName}': {unconditional.Count} rule(s) have no conditions, so they take every item that reaches them: {names}"
+                             + (unconditional.Count > 3 ? $" and {unconditional.Count - 3} more" : "")
+                             + $". Every item that no rule above rule {first.Index + 1} takes will be {first.Rule.Action}. Add a condition in the Loot Editor, or disable the rule.";
+            ChatLine(uncMessage);
+            RynthLog.Write(LogCat.Looting, uncMessage);
+        }
+
         var bad = new List<string>();
         foreach (VTankLootRule rule in profile.Rules)
         {
@@ -1735,11 +1799,29 @@ public sealed partial class RynthAiPlugin
     private void HandleLootCommand(string[] parts)
     {
         string sub = parts.Length >= 3 ? parts[2].ToLowerInvariant() : string.Empty;
+        if (sub == "why")
+        {
+            string how = parts.Length >= 4 ? parts[3].ToLowerInvariant() : string.Empty;
+            if (how.Length > 0 && how is not ("window" or "show"))
+            {
+                ReplyFail($"[RynthAi] loot why: '{parts[3]}'? Usage: /ra loot why [window] (window: the answer in the Loot why window).");
+                return;
+            }
+            HandleLootWhyCommand(window: how.Length > 0);
+            return;
+        }
+        if (sub == "mode")
+        {
+            HandleLootModeCommand(parts);
+            return;
+        }
         if (sub != "add")
         {
+            ChatLine("[RynthAi] /ra loot mode [profile|rares] — what is looted: the loot profile, or rares and needed mana stones only");
+            ChatLine("[RynthAi] /ra loot why [window] — which loot rule takes the selected item, and why the rules above it didn't (window: in the Loot why window)");
             ChatLine("[RynthAi] /ra loot add [keep|keep N|salvage|sell|read] [name|like] [t11] [preview] — add a loot rule for the selected item to the loot profile in use");
             ChatLine("[RynthAi]   default: exact name + class; Read for scrolls, Keep # (one full stack) for stacks, else Keep. name = name only, like = items like this. t11 = also require its T11 tier, grade and modifiers (at least this good). preview = show it, add nothing.");
-            ChatLine("[RynthAi]   Also: right-click an item in the Inventory panel, or 'Add selected item' in the Loot Editor.");
+            ChatLine("[RynthAi]   Also: right-click an item in the Inventory panel, or 'Add selected item' in the Loot Editor; 'Why this loot rule?' there and on the Selection window's right-click.");
             return;
         }
 
@@ -1785,6 +1867,131 @@ public sealed partial class RynthAiPlugin
         else if (preview) ChatLine("[RynthAi] (preview only; /ra loot add without 'preview' adds it)");
         else if (d.Added && d.OrderNote.Length > 0) ChatLine("[RynthAi]   " + d.OrderNote);
         // An add's own chat line comes from OnLootRuleAdded.
+    }
+
+    /// <summary>
+    /// /ra loot mode [profile|rares]: the Loot Mode (Loot.LootModes), saved with the settings
+    /// profile. No word: says the mode now.
+    /// </summary>
+    private void HandleLootModeCommand(string[] parts)
+    {
+        const string usage = "/ra loot mode profile|rares (profile: the loot profile; rares: rares and needed mana stones only)";
+        var dash = _dashboard;
+        LegacyUiSettings? s = dash?.Settings;
+        if (s == null) { ReplyFail("[RynthAi] loot mode: settings aren't loaded yet (log in first). Usage: " + usage); return; }
+        if (parts.Length < 4)
+        {
+            ChatLine($"[RynthAi] Loot Mode: {LootModeLine(s)}. Usage: {usage}");
+            return;
+        }
+        string arg = string.Join(" ", parts, 3, parts.Length - 3);
+        if (!Loot.LootModes.TryParse(arg, out int mode))
+        {
+            ReplyFail($"[RynthAi] loot mode: '{arg}'? Loot Mode is still {LootModeLine(s)}. Usage: {usage}");
+            return;
+        }
+        s.LootMode = mode;
+        dash!.SaveSettings();
+        ReplyOk($"[RynthAi] Loot Mode: {LootModeLine(s)}.");
+    }
+
+    /// <summary>The dashboard's LOOT picker set the Loot Mode. Plugin tick.</summary>
+    internal void SetLootModeFromPanel(int mode)
+    {
+        var dash = _dashboard;
+        LegacyUiSettings? s = dash?.Settings;
+        if (s == null) return;
+        mode = Loot.LootModes.Clamp(mode);
+        if (s.LootMode == mode) return;
+        s.LootMode = mode;
+        dash!.SaveSettings();
+        ChatLine($"[RynthAi] Loot Mode: {LootModeLine(s)}.");
+    }
+
+    /// <summary>The mode for a chat line, with what it means for the loot profile.</summary>
+    private static string LootModeLine(LegacyUiSettings s)
+    {
+        int mode = Loot.LootModes.Clamp(s.LootMode);
+        if (!Loot.LootModes.IsRares(mode)) return Loot.LootModes.Describe(mode);
+        string profile = string.IsNullOrEmpty(s.CurrentLootPath) ? "" : $"; the loot profile {System.IO.Path.GetFileName(s.CurrentLootPath)} is not used";
+        return $"{Loot.LootModes.Describe(mode)} (mana stones up to the keep count, {s.ManaStoneKeepCount}{profile})";
+    }
+
+    private const int LootWhyChatLines = 10;
+
+    /// <summary>
+    /// /ra loot why [window]: the selected item's loot decision (<see cref="BuildLootWhyReport"/>) in
+    /// chat, or (<paramref name="window"/>: window, the "Why this loot rule?" buttons) in the Loot why
+    /// window, which then says it all instead.
+    /// </summary>
+    private void HandleLootWhyCommand(bool window = false)
+    {
+        Loot.LootWhy.Report report = BuildLootWhyReport(window);
+        if (window)
+        {
+            // The window is the answer ("Why this loot rule?" buttons, /ra loot why window).
+            ShowLootWhyWindow(report);
+            return;
+        }
+        List<string> lines = Loot.LootWhy.ChatLines(report, LootWhyChatLines);
+        if (!report.Ok)
+        {
+            ReplyFail(lines[0]);
+            return;
+        }
+        foreach (string line in lines) ChatLine(line);
+    }
+
+    /// <summary>
+    /// The selected item's loot decision, from the looter itself (built-in keeps and Keep # caps
+    /// included), then, for a VTank profile, the rule that takes it and the rules above it that came
+    /// close (all of them in the log, [LootWhy] lines). An item without its ID: asks for it.
+    /// <paramref name="window"/>: for the window, so a failure says what to do there. Pump thread.
+    /// </summary>
+    private Loot.LootWhy.Report BuildLootWhyReport(bool window)
+    {
+        if (!Host.HasGetSelectedItemId) return Loot.LootWhy.Report.Fail("this engine can't tell RynthAi the selected item.");
+        uint selected = Host.GetSelectedItemId();
+        if (selected == 0)
+            return Loot.LootWhy.Report.Fail(window
+                ? "select an item first (on a corpse, the ground or in a pack), then Check again."
+                : "select an item first (on a corpse, the ground or in a pack), then /ra loot why.");
+        WorldObject? item = _objectCache?[unchecked((int)selected)];
+        if (item == null) return Loot.LootWhy.Report.Fail($"item 0x{selected:X8} isn't known yet; select it again in a moment.");
+        LegacyUiSettings? settings = _dashboard?.Settings;
+        if (settings == null) return Loot.LootWhy.Report.Fail("settings aren't loaded yet (log in first).");
+        string path = (settings.CurrentLootPath ?? string.Empty).Trim().Trim('"');
+        if (path.Length == 0) return Loot.LootWhy.Report.Fail("no loot profile is selected. Pick one on the dashboard (Loot).");
+        if (!System.IO.File.Exists(path)) return Loot.LootWhy.Report.Fail("the loot profile in use isn't there: " + path);
+
+        bool hasId = !Host.HasHasAppraisalData || Host.HasAppraisalData(selected);
+        bool taken = ClassifyLootItem(item, settings, preview: true, out string action, out _, out string ruleLabel, out string builtIn);
+        string looter = taken ? $"[{action}] {ruleLabel}" : "left";
+        if (builtIn.Length > 0) looter += " (" + builtIn + ")";
+
+        // Rares mode: its verdict is the whole answer (the loot profile isn't used).
+        if (Loot.LootModes.IsRares(settings.LootMode))
+        {
+            Host.Log($"[LootWhy] '{item.Name}' 0x{selected:X8} {Loot.LootWhy.IdNote(hasId)} -> {looter}; Loot Mode rares");
+            return Loot.LootWhy.ModeOnly(item.Name, hasId, looter, $"Loot Mode: {LootModeLine(settings)} (the loot profile isn't used)");
+        }
+
+        if (TryLoadNativeLootProfile(out _, out _))
+            return Loot.LootWhy.Describe(item.Name, hasId, looter, string.Empty, 0, null, false);
+        if (!TryLoadLootProfile(string.Empty, out VTankLootProfile profile, out path))
+            return Loot.LootWhy.Report.Fail("the loot profile in use couldn't be read (chat says why).");
+
+        VTankLootContext ctx = new(Host, _playerId) { Cache = _objectCache };
+        Loot.LootWhy.Result why = Loot.LootWhy.Explain(profile, item, ctx, hasId);
+        bool asked = why.Verdict == VTankLootVerdict.NeedsId && Host.HasRequestId && Host.RequestId(selected);
+        Loot.LootWhy.Report report = Loot.LootWhy.Describe(item.Name, hasId, looter, System.IO.Path.GetFileName(path),
+            profile.Rules.Count, why, asked);
+        Host.Log($"[LootWhy] '{item.Name}' 0x{selected:X8} {Loot.LootWhy.IdNote(hasId)} -> {looter}; {report.Decision}");
+        if (report.SwitchedOff.Length > 0)
+            Host.Log("[LootWhy]   " + Loot.LootWhy.SwitchedOffLine(report.SwitchedOff));
+        foreach (Loot.LootWhy.NearMiss m in report.NearMisses)
+            Host.Log("[LootWhy]   " + Loot.LootWhy.NearMissLine(m));
+        return report;
     }
 
     private bool TryLoadNativeLootProfile(out RynthCore.Loot.LootProfile profile, out string loadedPath)
@@ -1850,11 +2057,27 @@ public sealed partial class RynthAiPlugin
         ChatLine($"[RynthAi] enableCombat={s.EnableCombat}  busy={s.BusyCount}  facing={s.FacingTarget}");
         ChatLine($"[RynthAi] targets: total={total} ring={ring} possible={poss} losBlk={losBlk}  scanned={s.ScannedCount}");
         ChatLine($"[RynthAi] active=0x{(uint)s.ActiveTargetId:X8}  locked=0x{(uint)s.LockedTargetId:X8}");
+        int forced = _combatManager.ForcedTargetId;
+        bool bySelection = _combatManager.ForcedBySelection;
+        if (forced != 0)
+        {
+            string forcedName = _objectCache?[forced]?.Name ?? $"0x{(uint)forced:X8}";
+            ChatLine(bySelection
+                ? $"[RynthAi] fighting the monster you selected: {forcedName} (Fight the monster I select{(forced == s.ActiveTargetId ? "" : "; not in reach yet")})"
+                : $"[RynthAi] target lock (/ra targetlock): {forcedName}{(forced == s.ActiveTargetId ? "" : " (not in reach yet)")}");
+        }
         // D4 record-only skip reasons: why the last combat/buff cycle did (or didn't) cast.
         ChatLine($"[RynthAi] combatSkip='{s.LastCombatSkipReason}'"
                  + (_buffManager != null ? $"  buffSkip='{_buffManager.GetStateSnapshot().LastBuffSkipReason}'" : ""));
         if (s.ScannedCount > 0)
             ChatLine($"[RynthAi] closest: '{s.ClosestScannedName}' @ {s.ClosestScannedDist:0.0}yd");
+        // A higher-priority monster the target was picked over, and why: often just Monster Range
+        // (a setting), sometimes a wall. Only monsters inside Monster Range are candidates.
+        string? passedOver = _combatManager.DescribeHigherPriorityPassedOver();
+        if (passedOver != null)
+            ChatLine($"[RynthAi] higher priority not targeted: {passedOver}"
+                     + (passedOver.Contains("beyond Monster Range", StringComparison.Ordinal)
+                        ? " - raise Monster Range (Advanced settings, Ranges) to fight it from farther" : ""));
         ChatLine($"[RynthAi] melee/missile: lastSwing={_combatManager.LastSwingEvidenceDescription}  attackRebinds={_combatManager.AttackRebinds}  "
                  + $"stallWatch episodes={_combatManager.StallEpisodes} recovered={_combatManager.StallRecoveries}");
 
@@ -1887,9 +2110,17 @@ public sealed partial class RynthAiPlugin
         // Interpretation — the point of D2/D3: name the most likely reason it isn't attacking.
         string why =
             !s.IsMacroRunning        ? "macro is STOPPED (start it from the panel / command)." :
+            // Owner's corrected rule (2026-11-02, R-20261103-000159-a65e): Boost Nav Priority only
+            // while a nav route runs; with no route it changes nothing, so it is no reason then.
+            _dashboard?.Settings is { } boostSettings && BoostNavRule.Active(boostSettings)
+                                     ? "Boost Nav Priority is on and a nav route runs: RynthAi only follows it (no hunting, no looting). Turn it off to hunt along the route." :
             !s.EnableCombat          ? "combat is disabled in settings." :
             s.BusyCount > 0          ? "AC busy>0 — waiting on a server action (cast/use/move); try /ra clearbusy if stuck." :
-            total < 0                ? "no combat scan has run yet (cold start / just logged in)." :
+            forced != 0 && forced == s.ActiveTargetId && bySelection
+                                     ? "fighting the monster you selected (Fight the monster I select: Settings > Ranges)." :
+            forced != 0 && forced == s.ActiveTargetId
+                                     ? "fighting the target-locked monster (/ra targetlock; /ra targetlock off releases it)." :
+            total < 0              ? "no combat scan has run yet (cold start / just logged in)." :
             total == 0               ? "no monsters in the object cache (respawn-blind, or wrong area)." :
             ring  == 0               ? "monsters exist but ALL out of engage range (nav not closing distance?)." :
             poss == 0 && losBlk > 0  ? "monsters in range but LOS-blocked (behind walls)." :
@@ -2955,6 +3186,7 @@ public sealed partial class RynthAiPlugin
     private void StopPatrolForServer()
     {
         _dunPatrolActive = false;
+        _dunPatrolRoute = null;
         var s = _dashboard?.Settings;
         if (s == null) return;
         s.EnableNavigation = false;
@@ -3017,7 +3249,7 @@ public sealed partial class RynthAiPlugin
         }
     }
 
-    private void BuildDunPatrol(bool isRebuild, bool settingsChanged = false, bool portalAppeared = false)
+    private void BuildDunPatrol(bool isRebuild, bool settingsChanged = false, bool portalAppeared = false, bool followedIn = false)
     {
         // The one way into the dungeon patrol (the command, the dashboard button, a meta's "Patrol", the hazard
         // reroute): where a server's owners asked for it to be off (a Thread on DreamWeave) nothing is built (ServerPolicy).
@@ -3213,7 +3445,9 @@ public sealed partial class RynthAiPlugin
         // and the hazard generation it already accounts for. OnTick rebuilds when a newer
         // hazard is sighted in this same landblock.
         _dunPatrolActive        = true;
+        _dunPatrolRoute         = route;
         _dunPatrolLandblock     = landblockKey;
+        _dunPatrolFollowTriedLb = uint.MaxValue;
         _dunPatrolHazardVersion = _objectCache?.HazardVersion ?? 0;
         _dunPatrolSettings.MarkBuilt(patrolOptions);
         MarkPatrolPortals(portals);
@@ -3221,7 +3455,11 @@ public sealed partial class RynthAiPlugin
         int hazardCount = hazards?.Count ?? 0;
         string hazardNote = hazardCount > 0 ? $", {hazardCount} hazard cell(s) avoided" : "";
         string portalNote = portals.Count > 0 ? $", kept out of {portals.Count} portal(s)" : "";
-        if (isRebuild && settingsChanged)
+        if (isRebuild && followedIn)
+        {
+            ChatLine($"[RynthAi] DunNav-Patrol: followed you into dungeon 0x{landblockKey:X4} → {route.Points.Count} waypoints, patrolling here{hazardNote}{portalNote}. Stop the macro or load a route to end it.");
+        }
+        else if (isRebuild && settingsChanged)
         {
             ChatLine($"[RynthAi] DunNav-Patrol: patrol settings changed → rebuilt from here, {route.Points.Count} waypoints ({patrolOptions.Describe()}).");
         }
@@ -3258,18 +3496,40 @@ public sealed partial class RynthAiPlugin
         // A patrol running when the character enters a Thread on DreamWeave (or one that began before the world name
         // was known): stopped the moment it is (ServerPolicy).
         if (ServerPolicy.PatrolOff(Host)) { StopPatrolForServer(); ChatLine(ServerPolicy.PatrolOffMessage); return; }
-        if (_objectCache == null) return;
 
         var settings = _dashboard?.Settings;
-        // Patrol stopped, navigation disabled, or a different (recorded) route was loaded —
-        // stand down; we only own the auto-generated, file-less circular patrol.
-        if (settings == null || !settings.IsMacroRunning || !settings.EnableNavigation
+        // A different route was loaded in the patrol's place (a nav file, a meta's route, Save As
+        // made it a recorded route): stand down, and say so when it was replaced. We only own the
+        // auto-generated, file-less circular patrol.
+        bool replaced = settings != null && _dunPatrolRoute != null && !ReferenceEquals(settings.CurrentRoute, _dunPatrolRoute);
+        if (settings == null || replaced
             || !string.IsNullOrEmpty(settings.CurrentNavPath)
             || settings.CurrentRoute?.RouteType != NavRouteType.Circular)
         {
+            if (settings != null && (replaced || !string.IsNullOrEmpty(settings.CurrentNavPath)))
+            {
+                string what = PatrolReplacementName(settings);
+                Host.Log($"[RynthAi] DunNav-Patrol: ended - {what} is the route now.");
+                if (settings.CurrentRoute?.Points.Count > 0)
+                    ChatLine($"[RynthAi] Dungeon Patrol ended: {what} is the route now. Press Patrol to patrol again.");
+            }
             _dunPatrolActive = false;
+            _dunPatrolRoute = null;
             return;
         }
+        // Macro stopped or navigation switched off: the patrol is paused, not ended. It stays the
+        // route, and starting again carries on with it (2026-11-01: a stop used to stand it down,
+        // so after a restart the patrol ran without its hazard reroutes or keep-the-waypoint rule).
+        if (!settings.IsMacroRunning || !settings.EnableNavigation)
+        {
+            _dunPatrolPrevRunningLb = uint.MaxValue;
+            _dunPatrolArrivedRunning = false;
+            return;
+        }
+
+        // The character went into another dungeon while patrolling: the patrol follows (not after a death).
+        if (TickPatrolFollow(settings)) return;
+        if (_objectCache == null) return;
 
         var patrolOptions = PatrolOptionsFrom(settings);
         bool settingsChanged = _dunPatrolSettings.ShouldRebuild(patrolOptions, Environment.TickCount64);
@@ -3293,6 +3553,87 @@ public sealed partial class RynthAiPlugin
         // A rebuild that gave up (graph not loaded, ...) keeps the old route: don't retry every tick.
         if (settingsChanged) _dunPatrolSettings.MarkBuilt(patrolOptions);
         if (portalAppeared && _dunPatrolActive) MarkPatrolPortals(PatrolPortalsIn(_dunPatrolLandblock));
+    }
+
+    /// <summary>What the patrol was replaced with, for the chat line: "nav route 'X'", "the meta's route 'X'", "another route".</summary>
+    private static string PatrolReplacementName(LegacyUiSettings s)
+    {
+        string path = s.CurrentNavPath ?? string.Empty;
+        if (path.StartsWith("<embedded:", StringComparison.Ordinal)) return $"the meta's route '{path.Substring(10).TrimEnd('>')}'";
+        if (path.Length > 0) return $"nav route '{System.IO.Path.GetFileNameWithoutExtension(path)}'";
+        return "another route";
+    }
+
+    /// <summary>What the Dungeon Patrol does when the character is in another dungeon than the one it was built for.</summary>
+    internal enum PatrolFollow
+    {
+        /// <summary>Nothing to do (same dungeon, not a dungeon, in portal space, already tried here).</summary>
+        None,
+        /// <summary>Build the patrol again here.</summary>
+        Follow,
+        /// <summary>Sent here by a death: say so, and leave it to the Patrol button.</summary>
+        AfterDeath,
+        /// <summary>Came here with the macro (or nav) off: say so, and leave it to the Patrol button.</summary>
+        CameWhileStopped,
+    }
+
+    internal const long PatrolFollowDeathMs = 120_000;
+
+    /// <summary>
+    /// The decision half of <see cref="TickPatrolFollow"/>. The patrol follows the character through a
+    /// portal (or a recall) taken while it runs into another dungeon: patrolling is the mode, and the
+    /// patrol it had is for a dungeon it is no longer in (nav would only hold on it). Never into a
+    /// building on the landscape (not a dungeon landblock), never mid-portal, once per dungeon. Not
+    /// when a death sent the character there (a lifestone dungeon is no place to start hunting on its
+    /// own), nor when it got there with the macro off (an HP-failsafe recall, travelling by hand):
+    /// those say how to patrol here instead.
+    /// </summary>
+    internal static PatrolFollow DecidePatrolFollow(uint patrolLb, uint playerCell, bool isDungeonLandblock,
+                                                    bool portaling, uint triedLb, long msSinceDeath, bool arrivedWhileRunning)
+    {
+        uint lb = playerCell >> 16;
+        if (playerCell == 0 || lb == patrolLb || (playerCell & 0xFFFF) < 0x0100) return PatrolFollow.None;
+        if (portaling || !isDungeonLandblock || lb == triedLb) return PatrolFollow.None;
+        if (msSinceDeath >= 0 && msSinceDeath < PatrolFollowDeathMs) return PatrolFollow.AfterDeath;
+        return arrivedWhileRunning ? PatrolFollow.Follow : PatrolFollow.CameWhileStopped;
+    }
+
+    /// <summary>
+    /// Running patrol, character in another dungeon: builds the patrol there (or, after a death, says
+    /// how to). True when it acted (the caller's hazard/settings checks are for the old dungeon).
+    /// </summary>
+    private bool TickPatrolFollow(LegacyUiSettings settings)
+    {
+        if (!Host.HasGetPlayerPose || !Host.TryGetPlayerPose(out uint cell, out _, out _, out _, out _, out _, out _, out _)) return false;
+        uint lb = cell >> 16;
+        if (_dunPatrolPrevRunningLb != uint.MaxValue && _dunPatrolPrevRunningLb != lb) _dunPatrolArrivedRunning = true;
+        _dunPatrolPrevRunningLb = lb;
+        if (lb == _dunPatrolLandblock) { _dunPatrolArrivedRunning = false; return false; }
+        if ((cell & 0xFFFF) < 0x0100) return false;
+        var cellDat = _raycast?.GeometryLoader?.CellDat;
+        if (cellDat == null || !cellDat.IsLoaded || _navPlanner == null) return false;   // asked again next tick
+        bool portaling = (Host.HasIsPortaling && Host.IsPortaling()) || _deathHolding;
+        long sinceDeath = _lastDeathAt == 0 ? -1 : Environment.TickCount64 - _lastDeathAt;
+        var what = DecidePatrolFollow(_dunPatrolLandblock, cell, _navPlanner.IsDungeonLandblock(lb, cellDat), portaling,
+                                      _dunPatrolFollowTriedLb, sinceDeath, _dunPatrolArrivedRunning);
+        if (what == PatrolFollow.None) return false;
+
+        uint was = _dunPatrolLandblock;
+        _dunPatrolFollowTriedLb = lb;
+        _dunPatrolArrivedRunning = false;
+        if (what != PatrolFollow.Follow)
+        {
+            string how = what == PatrolFollow.AfterDeath ? "after a death" : "with the macro off on the way";
+            Host.Log($"[RynthAi] DunNav-Patrol: in dungeon 0x{lb:X4} {how}; the patrol was for 0x{was:X4} - not following.");
+            ChatLine($"[RynthAi] Dungeon Patrol: you are in dungeon 0x{lb:X4} ({how}); the patrol was for dungeon 0x{was:X4}. Press Patrol to patrol here.");
+            return true;
+        }
+
+        Host.Log($"[RynthAi] DunNav-Patrol: the character went from dungeon 0x{was:X4} into 0x{lb:X4} - building the patrol here.");
+        BuildDunPatrol(isRebuild: true, followedIn: true);
+        if (!_dunPatrolActive || _dunPatrolLandblock != lb)
+            ChatLine($"[RynthAi] Dungeon Patrol: couldn't lay a patrol in dungeon 0x{lb:X4} from here. Press Patrol to try again.");
+        return true;
     }
 
     // ── Patrol-management info / actions (engine-side right-click flyout) ──────

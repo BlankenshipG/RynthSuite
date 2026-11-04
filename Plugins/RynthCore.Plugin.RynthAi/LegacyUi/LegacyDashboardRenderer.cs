@@ -45,6 +45,8 @@ internal sealed partial class LegacyDashboardRenderer
     private readonly LegacyNavigationUi _navigationUi;
     private readonly LegacyWeaponsUi _weaponsUi;
     private readonly LegacyMetaUi _metaUi;
+    /// <summary>Every write of the meta file and its result (both editors; the engine panel reads it).</summary>
+    private readonly MetaSaver _metaSaver;
     private readonly DungeonMapUi _dungeonMapUi;
     private readonly RynthRadarUi _rynthRadarUi;
     private readonly RynthChatUi _rynthChatUi;
@@ -245,10 +247,16 @@ internal sealed partial class LegacyDashboardRenderer
     public LegacyDashboardRenderer(RynthCoreHost host)
     {
         _host = host;
-        _advancedSettingsUi = new LegacyAdvancedSettingsUi(_settings);
+        _advancedSettingsUi = new LegacyAdvancedSettingsUi(_settings)
+        {
+            // Settings > Looting shows the loot profile picker beside Loot Mode.
+            LootProfiles = () => { lock (_profileListsLock) return _lootFiles.ToArray(); },
+            SelectLootProfile = index => SelectProfileAtIndex(1, index),
+        };
         _navigationUi = new LegacyNavigationUi(_settings, host);
         _weaponsUi = new LegacyWeaponsUi(_settings, host);
-        _metaUi = new LegacyMetaUi(_settings, _navFiles);
+        _metaSaver = new MetaSaver(_settings, line => _host.Log(line));
+        _metaUi = new LegacyMetaUi(_settings, _navFiles) { Saver = _metaSaver };
         _dungeonMapUi = new DungeonMapUi();
         _rynthRadarUi = new RynthRadarUi(host, _settings);
         _rynthRadarUi.SetMapData(_dungeonMapUi);
@@ -339,6 +347,13 @@ internal sealed partial class LegacyDashboardRenderer
     {
         get => _rynthChatUi.OnSubmit;
         set => _rynthChatUi.OnSubmit = value;
+    }
+
+    /// <summary>The nav window's "Patrol this dungeon" button (shown while an area hold offers it).</summary>
+    public Action? StartPatrolHandler
+    {
+        get => _navigationUi.StartPatrol;
+        set => _navigationUi.StartPatrol = value;
     }
     public void SetWorldObjectCache(WorldObjectCache cache)
     {
@@ -434,6 +449,9 @@ internal sealed partial class LegacyDashboardRenderer
         _settings.CurrentState   = "Default";
         _settings.BotAction      = "Default";
 
+        // The meta's rules come from its file, not from the copy this profile saved (2026-11-01).
+        if (!freshProfile && !holdUnreadable) SyncMetaWithFile("login");
+
         // Reload nav route from saved path
         if (!string.IsNullOrEmpty(_settings.CurrentNavPath) && File.Exists(_settings.CurrentNavPath))
         {
@@ -503,6 +521,65 @@ internal sealed partial class LegacyDashboardRenderer
         _settings.IsMacroRunning = false;
         _settings.CurrentState   = "Default";
         _settings.BotAction      = "Default";
+    }
+
+    /// <summary>
+    /// The meta named by the profile (CurrentMetaPath) runs with its FILE's rules (2026-11-01). A settings
+    /// profile keeps its own copy of the meta's rules (MetaRules), and that copy, not the file, used to
+    /// be what ran after a login, a plugin reload or a profile switch. A meta changed anywhere else (in
+    /// another client, by the rmeta tool, in a text editor, by a save from another profile) kept running
+    /// the old rules here, and this client's next edit wrote that old copy, plus the edit, over the
+    /// newer file. Kept: the profile's copy when the file is missing or doesn't read, and when the last
+    /// save of an edit here failed (<see cref="LegacyUiSettings.MetaUnsaved"/>), so that edit isn't lost.
+    /// </summary>
+    internal void SyncMetaWithFile(string when)
+    {
+        string path = _settings.CurrentMetaPath ?? string.Empty;
+        if (path.Length == 0) return;
+        int mine;
+        lock (_settings.MetaRulesLock) mine = _settings.MetaRules.Count;
+        try
+        {
+            if (!File.Exists(path))
+            {
+                _host.Log($"[RynthAi] Meta ({when}): {path} isn't there; running the copy of its rules kept with these settings ({mine} rules).");
+                return;
+            }
+            if (_settings.MetaUnsaved)
+            {
+                _host.Log($"[RynthAi] Meta ({when}): the last change to {path} wasn't saved to the file; running the copy kept with these settings ({mine} rules). The next successful save writes it.");
+                _host.WriteToChat($"[RynthAi] Your last change to meta {Path.GetFileName(path)} wasn't saved to its file; using the copy kept with your settings. It is saved with your next change (or Save As).", 1);
+                return;
+            }
+            string ext = Path.GetExtension(path);
+            LoadedMeta loaded = ext.Equals(".met", StringComparison.OrdinalIgnoreCase) ? MetFileParser.Load(path)
+                : ext.Equals(".af", StringComparison.OrdinalIgnoreCase) ? AfFileParser.Load(path)
+                : new LoadedMeta();
+            if (loaded.Rules.Count == 0 && !loaded.IsBlank)
+            {
+                _host.Log($"[RynthAi] Meta ({when}): {path} didn't read ({(loaded.Warnings.Count > 0 ? loaded.Warnings[0] : "no rules")}); running the copy kept with these settings ({mine} rules).");
+                return;
+            }
+            var noNavs = new Dictionary<string, List<string>>();
+            string fileText = AfFileWriter.SaveToString(loaded.Rules, noNavs);
+            string mineText;
+            lock (_settings.MetaRulesLock) mineText = AfFileWriter.SaveToString(_settings.MetaRules, noNavs);
+            lock (_settings.MetaRulesLock)
+            {
+                if (fileText != mineText) _settings.MetaRules = loaded.Rules;
+                _settings.EmbeddedNavs.Clear();
+                foreach (var kvp in loaded.EmbeddedNavs) _settings.EmbeddedNavs[kvp.Key] = kvp.Value;
+            }
+            if (fileText != mineText)
+            {
+                _settings.MetaRulesStructuralVersion++;
+                _host.Log($"[RynthAi] Meta ({when}): {path} differs from the copy kept with these settings ({mine} rules); running the file's {loaded.Rules.Count} rules.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _host.Log($"[RynthAi] Meta ({when}): reading {path} failed ({ex.GetType().Name}: {ex.Message}); running the copy kept with these settings ({mine} rules).");
+        }
     }
 
     public void SaveSettings()
@@ -1183,6 +1260,7 @@ internal sealed partial class LegacyDashboardRenderer
                 UseKitsInMagicMode         = s.UseKitsInMagicMode,
                 PeaceModeForKits           = s.PeaceModeForKits,
                 KitMinSuccessPct           = s.KitMinSuccessPct,
+                StaminaKitMinSuccessPct    = s.StaminaKitMinSuccessPct,
                 EmergencyHealAt            = s.EmergencyHealAt,
                 StaminaToHealthAt          = s.StaminaToHealthAt,
                 StaminaToHealthMinStamina  = s.StaminaToHealthMinStamina,
@@ -1254,6 +1332,7 @@ internal sealed partial class LegacyDashboardRenderer
                 MonsterDisengageRange      = s.MonsterDisengageRange,
                 TargetSelection            = s.TargetSelection,
                 TargetLock                 = s.TargetLock,
+                FightSelectedTarget        = s.FightSelectedTarget,
                 RingRange                  = s.RingRange,
                 ApproachRange              = s.ApproachRange,
                 CorpseApproachRangeMax     = s.CorpseApproachRangeMax,
@@ -1292,6 +1371,8 @@ internal sealed partial class LegacyDashboardRenderer
                 DunPatrolWallDistance      = s.DunPatrolWallDistance,
                 DunPatrolLookInSize        = s.DunPatrolLookInSize,
                 DunPatrolSightYd           = s.DunPatrolSightYd,
+                OutdoorHuntRange           = s.OutdoorHuntRange,
+                OutdoorHuntRadius          = s.OutdoorHuntRadius,
                 T2Speed                    = s.T2Speed,
                 T2WalkWithinYd             = s.T2WalkWithinYd,
                 T2DistanceTo               = s.T2DistanceTo,
@@ -1303,6 +1384,7 @@ internal sealed partial class LegacyDashboardRenderer
                 RebuffWhenIdle             = s.RebuffWhenIdle,
                 RebuffSecondsRemaining     = s.RebuffSecondsRemaining,
                 RebuffTopOffSecondsRemaining = s.RebuffTopOffSecondsRemaining,
+                RebuffIdleMarginMinutes    = s.RebuffIdleMarginMinutes,
                 CastBuffsOverItemBuffs     = s.CastBuffsOverItemBuffs,
                 SkipUnusableBuffs          = s.SkipUnusableBuffs,
                 UseFellowshipBuffs         = s.UseFellowshipBuffs,
@@ -1325,11 +1407,14 @@ internal sealed partial class LegacyDashboardRenderer
                 BoostLootPriority          = s.BoostLootPriority,
                 LootOnlyRareCorpses        = s.LootOnlyRareCorpses,
                 LootJumpEnabled            = s.LootJumpEnabled,
+                LootChestsMacroOff         = s.LootChestsMacroOff,
+                LootChestsMacroOffLeaveOpen = s.LootChestsMacroOffLeaveOpen,
                 LootJumpHeight             = s.LootJumpHeight,
                 LootOwnership              = s.LootOwnership,
                 LootOwnCorpse              = s.LootOwnCorpse,
                 EscapeHazards              = s.EscapeHazards,
                 TravelToOwnCorpse          = s.TravelToOwnCorpse,
+                LootMode                   = s.LootMode,
                 ItemInfoOnSelect           = s.ItemInfoSettings.OnSelect,
                 EnableAutostack            = s.EnableAutostack,
                 ReadUnknownScrolls         = s.ReadUnknownScrolls,
@@ -1441,6 +1526,7 @@ internal sealed partial class LegacyDashboardRenderer
             s.UseKitsInMagicMode         = p.UseKitsInMagicMode;
             s.PeaceModeForKits           = p.PeaceModeForKits;
             s.KitMinSuccessPct           = Math.Clamp(p.KitMinSuccessPct, 0, 100);
+            s.StaminaKitMinSuccessPct    = Math.Clamp(p.StaminaKitMinSuccessPct, 0, 100);
             s.EmergencyHealAt            = Math.Clamp(p.EmergencyHealAt, 0, 100);
             s.StaminaToHealthAt          = Math.Clamp(p.StaminaToHealthAt, 0, 100);
             s.StaminaToHealthMinStamina  = Math.Clamp(p.StaminaToHealthMinStamina, 0, 100);
@@ -1515,6 +1601,7 @@ internal sealed partial class LegacyDashboardRenderer
             if (p.MonsterDisengageRange >= 0) s.MonsterDisengageRange = p.MonsterDisengageRange;   // -1 = not sent
             if (p.TargetSelection is int targeting) s.TargetSelection = Math.Clamp(targeting, 0, 3);   // absent = unchanged
             if (p.TargetLock is bool targetLock) s.TargetLock = targetLock;                           // absent = unchanged
+            if (p.FightSelectedTarget is bool fightSel) s.FightSelectedTarget = fightSel;             // absent = unchanged
             s.RingRange                  = p.RingRange;
             s.ApproachRange              = p.ApproachRange;
             s.CorpseApproachRangeMax     = p.CorpseApproachRangeMax;
@@ -1555,6 +1642,9 @@ internal sealed partial class LegacyDashboardRenderer
             if (p.DunPatrolWallDistance is float patrolWalls) s.DunPatrolWallDistance = (float)Math.Clamp(patrolWalls, DungeonPatrolOptions.WallClearanceMin, DungeonPatrolOptions.WallClearanceMax);
             if (p.DunPatrolLookInSize is float patrolLookIn)  s.DunPatrolLookInSize   = (float)Math.Clamp(patrolLookIn, DungeonPatrolOptions.LookInRoomMin, DungeonPatrolOptions.LookInRoomMax);
             if (p.DunPatrolSightYd is float patrolSight)      s.DunPatrolSightYd      = (float)Math.Clamp(patrolSight, DungeonPatrolOptions.SightMin, DungeonPatrolOptions.SightMax);
+            // Outdoor hunt: absent (an older engine) = unchanged.
+            if (p.OutdoorHuntRange is float huntRange)       s.OutdoorHuntRange      = (float)Math.Clamp(huntRange, RynthAiPlugin.OutdoorHuntRangeMin, RynthAiPlugin.OutdoorHuntRangeMax);
+            if (p.OutdoorHuntRadius is float huntRadius)     s.OutdoorHuntRadius     = (float)Math.Clamp(huntRadius, 0, RynthAiPlugin.OutdoorHuntRadiusMax);
             s.T2Speed                    = p.T2Speed;
             s.T2WalkWithinYd             = p.T2WalkWithinYd;
             s.T2DistanceTo               = p.T2DistanceTo;
@@ -1566,6 +1656,7 @@ internal sealed partial class LegacyDashboardRenderer
             s.RebuffWhenIdle             = p.RebuffWhenIdle;
             s.RebuffSecondsRemaining     = p.RebuffSecondsRemaining;
             if (p.RebuffTopOffSecondsRemaining > 0) s.RebuffTopOffSecondsRemaining = p.RebuffTopOffSecondsRemaining;
+            if (p.RebuffIdleMarginMinutes is int idleMargin) s.RebuffIdleMarginMinutes = Math.Max(0, idleMargin);   // absent = unchanged
             if (p.CastBuffsOverItemBuffs is bool castOverItems) s.CastBuffsOverItemBuffs = castOverItems;   // absent = unchanged
             if (p.SkipUnusableBuffs is bool skipUnusable) s.SkipUnusableBuffs = skipUnusable;   // absent = unchanged
             if (p.UseFellowshipBuffs is bool fellowBuffs) s.UseFellowshipBuffs = fellowBuffs;    // absent = unchanged
@@ -1585,11 +1676,14 @@ internal sealed partial class LegacyDashboardRenderer
             s.BoostLootPriority          = p.BoostLootPriority;
             s.LootOnlyRareCorpses        = p.LootOnlyRareCorpses;
             s.LootJumpEnabled            = p.LootJumpEnabled;
+            s.LootChestsMacroOff         = p.LootChestsMacroOff;
+            s.LootChestsMacroOffLeaveOpen = p.LootChestsMacroOffLeaveOpen;
             s.LootJumpHeight             = p.LootJumpHeight;
             s.LootOwnership              = p.LootOwnership;
             if (p.EscapeHazards is bool escape) s.EscapeHazards = escape;                 // absent = unchanged
             if (p.LootOwnCorpse is bool lootOwn) s.LootOwnCorpse = lootOwn;               // absent = unchanged
             if (p.TravelToOwnCorpse is bool travelOwn) s.TravelToOwnCorpse = travelOwn;   // absent = unchanged
+            if (p.LootMode is int lootMode) s.LootMode = Loot.LootModes.Clamp(lootMode);  // absent = unchanged
             if (p.ItemInfoOnSelect is bool infoOnSelect) s.ItemInfoSettings.OnSelect = infoOnSelect; // absent = unchanged
             s.EnableAutostack            = p.EnableAutostack;
             s.ReadUnknownScrolls         = p.ReadUnknownScrolls;
@@ -1830,6 +1924,7 @@ internal sealed partial class LegacyDashboardRenderer
                 CopySettings(loaded!, _settings);
                 _settings.SelectedProfile = newProfile;
                 _lastSavedJson = json;
+                SyncMetaWithFile("profile " + newProfile);
             }
             else
             {
@@ -1927,6 +2022,8 @@ internal sealed partial class LegacyDashboardRenderer
         dst.DunPatrolWallDistance    = tmp.DunPatrolWallDistance;
         dst.DunPatrolLookInSize      = tmp.DunPatrolLookInSize;
         dst.DunPatrolSightYd         = tmp.DunPatrolSightYd;
+        dst.OutdoorHuntRange         = tmp.OutdoorHuntRange;
+        dst.OutdoorHuntRadius        = tmp.OutdoorHuntRadius;
         dst.T2Speed                  = tmp.T2Speed;
         dst.T2DistanceTo             = tmp.T2DistanceTo;
         dst.T2ReissueMs              = tmp.T2ReissueMs;
@@ -1936,6 +2033,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.CurrentNavPath           = tmp.CurrentNavPath;
         dst.CurrentLootPath          = tmp.CurrentLootPath;
         dst.CurrentMetaPath          = tmp.CurrentMetaPath;
+        dst.MetaUnsaved              = tmp.MetaUnsaved;
         dst.MacroSettingsIdx         = tmp.MacroSettingsIdx;
         dst.NavProfileIdx            = tmp.NavProfileIdx;
         dst.LootProfileIdx           = tmp.LootProfileIdx;
@@ -1967,6 +2065,8 @@ internal sealed partial class LegacyDashboardRenderer
         dst.LootOpenRetryMs          = tmp.LootOpenRetryMs;
         dst.LootCorpseTimeoutMs      = tmp.LootCorpseTimeoutMs;
         dst.LootJumpEnabled          = tmp.LootJumpEnabled;
+        dst.LootChestsMacroOff       = tmp.LootChestsMacroOff;
+        dst.LootChestsMacroOffLeaveOpen = tmp.LootChestsMacroOffLeaveOpen;
         dst.LootJumpHeight           = tmp.LootJumpHeight;
         dst.SalvageOpenDelayFirstMs  = tmp.SalvageOpenDelayFirstMs;
         dst.SalvageOpenDelayFastMs   = tmp.SalvageOpenDelayFastMs;
@@ -1986,6 +2086,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.UseKitsInMagicMode       = tmp.UseKitsInMagicMode;
         dst.PeaceModeForKits         = tmp.PeaceModeForKits;
         dst.KitMinSuccessPct         = tmp.KitMinSuccessPct;
+        dst.StaminaKitMinSuccessPct  = tmp.StaminaKitMinSuccessPct;
         dst.EmergencyHealAt          = tmp.EmergencyHealAt;
         dst.StaminaToHealthAt        = tmp.StaminaToHealthAt;
         dst.StaminaToHealthMinStamina= tmp.StaminaToHealthMinStamina;
@@ -2012,6 +2113,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.MonsterDisengageRange    = tmp.MonsterDisengageRange;
         dst.TargetSelection          = Math.Clamp(tmp.TargetSelection, 0, 3);
         dst.TargetLock               = tmp.TargetLock;
+        dst.FightSelectedTarget      = tmp.FightSelectedTarget;
         dst.RingRange                = tmp.RingRange;
         dst.HandlerRingEvade         = tmp.HandlerRingEvade;   // obsolete (RynthILT's now): carried so the profile keeps it for RynthILT's one-time import
         dst.ApproachRange            = tmp.ApproachRange;
@@ -2047,6 +2149,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.EscapeHazards            = tmp.EscapeHazards;
         dst.TravelToOwnCorpse        = tmp.TravelToOwnCorpse;
         dst.LootOnlyRareCorpses      = tmp.LootOnlyRareCorpses;
+        dst.LootMode                 = tmp.LootMode;   // read through LootModes (an unknown value = Profile)
         dst.EnableGroundLoot         = tmp.EnableGroundLoot;
         dst.PeaceModeWhenIdle        = tmp.PeaceModeWhenIdle;
         dst.RearmAfterVitals         = tmp.RearmAfterVitals;
@@ -2054,6 +2157,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.RebuffWhenIdle           = tmp.RebuffWhenIdle;
         dst.RebuffSecondsRemaining   = tmp.RebuffSecondsRemaining;
         dst.RebuffTopOffSecondsRemaining = tmp.RebuffTopOffSecondsRemaining;
+        dst.RebuffIdleMarginMinutes  = tmp.RebuffIdleMarginMinutes;
         dst.CastBuffsOverItemBuffs   = tmp.CastBuffsOverItemBuffs;
         dst.FastBuffChain            = tmp.FastBuffChain;
         dst.SkipUnusableBuffs        = tmp.SkipUnusableBuffs;
@@ -3085,8 +3189,12 @@ internal sealed partial class LegacyDashboardRenderer
         AppendInt(sb, "selectedBuffIdx", _settings.BuffProfileIdx); sb.Append(',');
         AppendString(sb, "currentNavName",
             string.IsNullOrEmpty(_settings.CurrentNavPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentNavPath)); sb.Append(',');
+        // Rares mode says so where the profile's name would be (the Classic look and the status
+        // agent show it, cut to 16 characters).
         AppendString(sb, "currentLootName",
-            string.IsNullOrEmpty(_settings.CurrentLootPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentLootPath)); sb.Append(',');
+            Loot.LootModes.IsRares(_settings.LootMode) ? "Rares + stones"
+            : string.IsNullOrEmpty(_settings.CurrentLootPath) ? "None" : Path.GetFileNameWithoutExtension(_settings.CurrentLootPath)); sb.Append(',');
+        AppendString(sb, "lootMode", Loot.LootModes.Word(_settings.LootMode)); sb.Append(',');
         // Full paths for the dashboard's Edit (✎) button, which opens the Loot Editor.
         AppendString(sb, "currentLootPath", _settings.CurrentLootPath ?? string.Empty); sb.Append(',');
         AppendString(sb, "vendorProfilePath", _vendorProfilePath?.Invoke() ?? string.Empty); sb.Append(',');
@@ -3405,6 +3513,14 @@ internal sealed partial class LegacyDashboardRenderer
         AppendString(sb, "text", _metaApplyText);
         sb.Append('}');
 
+        // The last write of the meta file, or the edit that wasn't applied (MetaSaver). The engine
+        // panel's "Saved" indicator follows this, not a timer. Seq 0 = nothing tried this session.
+        sb.Append(",\"saveResult\":{\"seq\":").Append(_metaSaver.Seq).Append(',');
+        AppendBool(sb, "ok", _metaSaver.LastOk); sb.Append(',');
+        AppendString(sb, "text", _metaSaver.LastText); sb.Append(',');
+        AppendString(sb, "path", _metaSaver.LastPath);
+        sb.Append('}');
+
         // The Meta Manager's rules and timers (built on the plugin tick; see MetaScheduler).
         string? schedule = ScheduleJsonProvider?.Invoke();
         if (!string.IsNullOrEmpty(schedule))
@@ -3513,10 +3629,16 @@ internal sealed partial class LegacyDashboardRenderer
     private void ApplyMetaCommand(string json)
     {
         if (string.IsNullOrWhiteSpace(json)) return;
+        string op = "?";
         try
         {
             var cmd = JsonSerializer.Deserialize(json, RynthAiJsonContext.Default.MetaCommand);
-            if (cmd == null) return;
+            if (cmd == null)
+            {
+                _metaSaver.Refuse("Edit not applied: the Meta panel's command didn't read.", "command");
+                return;
+            }
+            op = cmd.Op ?? "?";
 
             // The Meta Manager (schedule) owns its own state; not the meta's rules.
             if (cmd.Op.StartsWith("mm_", System.StringComparison.Ordinal))
@@ -3559,22 +3681,22 @@ internal sealed partial class LegacyDashboardRenderer
                     break;
 
                 case "save_file":
-                    if (!string.IsNullOrEmpty(cmd.Path))
+                    if (string.IsNullOrEmpty(cmd.Path))
+                    {
+                        _metaSaver.Refuse("Not saved: no file name was given.", "save_file");
+                        break;
+                    }
                     {
                         string savePath = cmd.Path;
-                        bool saved;
-                        string why;
-                        lock (_settings.MetaRulesLock)
-                            saved = DataWriteGuard.TrySave("the meta", savePath,
-                                () => AfFileWriter.Save(savePath, _settings.MetaRules, _settings.EmbeddedNavs), out why, callerShows: true);
-                        if (saved)
+                        if (_metaSaver.SaveTo(savePath, "Save As", callerShows: true))
                         {
                             _settings.CurrentMetaPath = savePath;
+                            RefreshMetaFiles();   // the picker lists (and selects) the new file
                             SaveSettings();
                         }
                         else
                         {
-                            ReportMetaApply(false, $"Meta not saved to {savePath}: {why}");
+                            ReportMetaApply(false, "Meta " + _metaSaver.LastText);
                         }
                     }
                     break;
@@ -3596,7 +3718,7 @@ internal sealed partial class LegacyDashboardRenderer
                             _settings.EmbeddedNavs.Clear();
                             foreach (var kvp in loaded.EmbeddedNavs) _settings.EmbeddedNavs[kvp.Key] = kvp.Value;
                             _settings.ForceStateReset = true;
-                            TryAutoSaveMetaCmd();
+                            TryAutoSaveMetaCmd("set_source");
                             ReportMetaApply(true, $"Applied source: {loaded.Rules.Count} rules{w}");
                         }
                         else
@@ -3611,27 +3733,27 @@ internal sealed partial class LegacyDashboardRenderer
                     break;
 
                 case "add_rule":
-                    if (cmd.Rule != null)
-                    {
-                        _settings.MetaRules.Add(DtoToMetaRule(cmd.Rule));
-                        TryAutoSaveMetaCmd();
-                    }
+                    if (cmd.Rule == null) { RefuseEdit(op, "the command carried no rule"); break; }
+                    _settings.MetaRules.Add(DtoToMetaRule(cmd.Rule));
+                    TryAutoSaveMetaCmd($"add_rule (now {_settings.MetaRules.Count} rules)");
                     break;
 
                 case "update_rule":
                     // The engine's editor saves every change (2026-10-05): keep the running rule's
                     // latch (no re-fire) and the fields the panel can't send (MetaRuleEdits).
-                    if (cmd.Rule != null && MetaRuleEdits.Replace(_settings.MetaRules, cmd.Index, DtoToMetaRule(cmd.Rule),
-                            keepName: cmd.Rule.Name == null))
-                        TryAutoSaveMetaCmd();
+                    if (cmd.Rule == null) { RefuseEdit(op, "the command carried no rule"); break; }
+                    if (!MetaRuleEdits.Replace(_settings.MetaRules, cmd.Index, DtoToMetaRule(cmd.Rule), keepName: cmd.Rule.Name == null))
+                    {
+                        RefuseEdit(op, NoSuchRule(cmd.Index));
+                        break;
+                    }
+                    TryAutoSaveMetaCmd($"update_rule {cmd.Index + 1}");
                     break;
 
                 case "delete_rule":
-                    if (cmd.Index >= 0 && cmd.Index < _settings.MetaRules.Count)
-                    {
-                        _settings.MetaRules.RemoveAt(cmd.Index);
-                        TryAutoSaveMetaCmd();
-                    }
+                    if (!HasRule(cmd.Index)) { RefuseEdit(op, NoSuchRule(cmd.Index)); break; }
+                    _settings.MetaRules.RemoveAt(cmd.Index);
+                    TryAutoSaveMetaCmd($"delete_rule {cmd.Index + 1}");
                     break;
 
                 case "move_up":
@@ -3640,40 +3762,58 @@ internal sealed partial class LegacyDashboardRenderer
                     // state, so "up" is the previous rule of the SAME state, not
                     // the previous list entry (which may belong to another state).
                     {
+                        if (!HasRule(cmd.Index)) { RefuseEdit(op, NoSuchRule(cmd.Index)); break; }
                         int other = SameStateNeighbour(cmd.Index, cmd.Op == "move_up" ? -1 : 1);
                         if (other >= 0)
                         {
                             var tmp = _settings.MetaRules[other];
                             _settings.MetaRules[other] = _settings.MetaRules[cmd.Index];
                             _settings.MetaRules[cmd.Index] = tmp;
-                            TryAutoSaveMetaCmd();
+                            TryAutoSaveMetaCmd($"{op} {cmd.Index + 1}");
                         }
+                        else   // already first / last in its state: nothing to write
+                            _metaSaver.Note("Nothing to move: the rule is already at that end of its state.", _settings.CurrentMetaPath ?? "");
                     }
                     break;
 
                 case "duplicate_rule":
-                    if (cmd.Rule != null && cmd.Index >= 0 && cmd.Index < _settings.MetaRules.Count)
+                    if (cmd.Rule == null) { RefuseEdit(op, "the command carried no rule"); break; }
+                    if (!HasRule(cmd.Index)) { RefuseEdit(op, NoSuchRule(cmd.Index)); break; }
                     {
                         var copy = DtoToMetaRule(cmd.Rule);
                         MetaRuleEdits.KeepHidden(_settings.MetaRules[cmd.Index], copy);   // CallState return / ChatCapture colours
                         if (cmd.Rule.Name == null) copy.Name = _settings.MetaRules[cmd.Index].Name;
                         _settings.MetaRules.Insert(cmd.Index + 1, copy);
-                        TryAutoSaveMetaCmd();
+                        TryAutoSaveMetaCmd($"duplicate_rule {cmd.Index + 1}");
                     }
                     break;
 
                 case "set_rule_enabled":
-                    if (cmd.Index >= 0 && cmd.Index < _settings.MetaRules.Count)
-                    {
-                        _settings.MetaRules[cmd.Index].Enabled =
-                            string.Equals(cmd.Value, "true", System.StringComparison.OrdinalIgnoreCase);
-                        TryAutoSaveMetaCmd();
-                    }
+                    if (!HasRule(cmd.Index)) { RefuseEdit(op, NoSuchRule(cmd.Index)); break; }
+                    _settings.MetaRules[cmd.Index].Enabled =
+                        string.Equals(cmd.Value, "true", System.StringComparison.OrdinalIgnoreCase);
+                    TryAutoSaveMetaCmd($"set_rule_enabled {cmd.Index + 1}");
+                    break;
+
+                default:
+                    _host.Log($"[RynthAi] Meta: unknown command '{op}' from the Meta panel ignored.");
                     break;
             }
         }
-        catch { }
+        catch (System.Exception ex)
+        {
+            // Used to be swallowed: an edit that threw looked like one that saved.
+            _metaSaver.Refuse($"Edit not applied ({op}): {ex.GetType().Name}: {ex.Message}", op);
+        }
     }
+
+    private bool HasRule(int index) => index >= 0 && index < _settings.MetaRules.Count;
+
+    private string NoSuchRule(int index) =>
+        $"rule {index + 1} isn't in the meta any more (it has {_settings.MetaRules.Count}); the list was out of date, reopen the rule";
+
+    /// <summary>A rule command that changed nothing: said in the panel's status and the log, never silent.</summary>
+    private void RefuseEdit(string op, string why) => _metaSaver.Refuse($"Edit not applied: {why}.", op);
 
     /// <summary>The nearest rule before (-1) or after (+1) <paramref name="index"/> in the same state, or -1.</summary>
     private int SameStateNeighbour(int index, int direction)
@@ -3687,23 +3827,15 @@ internal sealed partial class LegacyDashboardRenderer
         return -1;
     }
 
-    private void TryAutoSaveMetaCmd()
+    /// <summary>Writes the meta file after a rule command changed the rules (MetaSaver: logged, and the
+    /// result goes to the panel in the snapshot's saveResult).</summary>
+    private void TryAutoSaveMetaCmd(string change)
     {
         _settings.MetaRulesStructuralVersion++;   // editor mutation → rebuild meta index
-        if (string.IsNullOrEmpty(_settings.CurrentMetaPath)) return;
-        try
-        {
-            string path = _settings.CurrentMetaPath;
-            if (System.IO.Path.GetExtension(path).Equals(".met", System.StringComparison.OrdinalIgnoreCase))
-            {
-                path = System.IO.Path.ChangeExtension(path, ".af");
-                _settings.CurrentMetaPath = path;
-                _host.WriteToChat($"[RynthAi] Converted .met → {System.IO.Path.GetFileName(path)} for editing (original .met left untouched).", 1);
-            }
-            lock (_settings.MetaRulesLock)
-                DataWriteGuard.TrySave("the meta", path, () => AfFileWriter.Save(path, _settings.MetaRules, _settings.EmbeddedNavs));
-        }
-        catch { }
+        bool wasMet = System.IO.Path.GetExtension(_settings.CurrentMetaPath ?? "").Equals(".met", System.StringComparison.OrdinalIgnoreCase);
+        _metaSaver.SaveCurrent(change);
+        if (wasMet && _metaSaver.LastOk)
+            _host.WriteToChat($"[RynthAi] Converted .met → {System.IO.Path.GetFileName(_settings.CurrentMetaPath)} for editing (original .met left untouched).", 1);
     }
 
     private static MetaRule DtoToMetaRule(MetaRuleDto dto)

@@ -26,6 +26,8 @@ namespace RynthCore.Plugin.RynthAi;
 ///   /ra iteminfo verbose on|off       list every spell instead of Mag's filter
 ///   /ra iteminfo click left|right|off print the selected item after a mouse click
 ///   /ra iteminfo layout pet|line      pet-roster style lines or the Mag one-liner
+///   /ra iteminfo loot on|off          describe what the looter takes in its "Looted" line
+///   /ra iteminfo loot salvage on|off  salvage too (material and workmanship only)
 ///   /ra iteminfo reset                restore defaults
 /// Every option is also editable in the "RynthAi Item Info" window (LegacyItemInfoUi).
 /// </summary>
@@ -150,6 +152,19 @@ public sealed partial class RynthAiPlugin
                 ReplyOk($"[RynthAi] Item info layout: {MagItemInfoCatalog.Layouts[s.Layout]}");
                 return;
 
+            case "loot":
+                if (arg3.Equals("salvage", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (ParseOnOff(arg4) is bool salvageOn) s.LootChatSalvage = salvageOn;
+                    else if (arg4.Length > 0) { ReplyFail("[RynthAi] Usage: /ra iteminfo loot salvage on|off"); return; }
+                    ReplyOk($"[RynthAi] Item info on loot, salvage: {OnOff(s.LootChatSalvage)}");
+                    return;
+                }
+                if (ParseOnOff(arg3) is bool lootOn) s.LootChat = lootOn;
+                else if (arg3.Length > 0) { ReplyFail("[RynthAi] Usage: /ra iteminfo loot on|off, or /ra iteminfo loot salvage on|off"); return; }
+                ReplyOk($"[RynthAi] Item info on loot: {OnOff(s.LootChat)} (salvage {OnOff(s.LootChatSalvage)})");
+                return;
+
             case "reset":
                 s.ResetToDefaults();
                 ReplyOk("[RynthAi] Item info settings reset to defaults.");
@@ -170,7 +185,7 @@ public sealed partial class RynthAiPlugin
             if (found != 0) { QueueItemInfo(unchecked((int)found), requestId: true); return; }
             ReplyFail($"[RynthAi] Item info: no \"{name}\" in your inventory.");
         }
-        ReplyFail("[RynthAi] Usage: /ra iteminfo [<item name>|me|on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|reset]");
+        ReplyFail("[RynthAi] Usage: /ra iteminfo [<item name>|me|on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|loot on|off|reset]");
     }
 
     /// <summary>
@@ -202,8 +217,11 @@ public sealed partial class RynthAiPlugin
         {
             LegacyUi.LegacyUiSettings? settings = _dashboard?.Settings;
             WorldObject? wo = _objectCache?[itemId];
-            if (!_lootInspectMode || settings == null || wo == null || string.IsNullOrEmpty(settings.CurrentLootPath)) return "";
-            if (!ClassifyLootItem(wo, settings, preview: true, out string action, out _, out string rule, out string builtIn))
+            bool rares = settings != null && Loot.LootModes.IsRares(settings.LootMode);
+            if (!_lootInspectMode || settings == null || wo == null || (!rares && string.IsNullOrEmpty(settings.CurrentLootPath))) return "";
+            bool taken = ClassifyLootItem(wo, settings, preview: true, out string action, out _, out string rule, out string builtIn);
+            if (!taken && rares) return " | Loot: leave" + (builtIn.Length > 0 ? " - " + builtIn : "");
+            if (!taken)
                 // A rule can match and still not take it (its Keep # reached, a Read rule on a non-scroll).
                 return rule.Length > 0 ? $" | Loot: leave ({rule} matched, not taken)" : " | Loot: no rule matched";
             if (builtIn.Length > 0) return $" | Loot: [{action}] built-in - {builtIn}";
@@ -468,6 +486,32 @@ public sealed partial class RynthAiPlugin
             lines[0] += " (not identified yet — Print to chat IDs it)";
         // The window adds the prefix to the first line; indent the rest like chat.
         return string.Join("\n  ", lines);
+    }
+
+    /// <summary>
+    /// The "Looted" line for a pickup, described when the Item Info loot setting wants it
+    /// (<see cref="LootChatLine"/>), with its chat type; null for the plain line. Corpse loot builds it
+    /// when the pickup goes out (the item and its ID are surely there then), ground loot on arrival.
+    /// </summary>
+    private (string Line, int ChatType)? DescribeLootPickup(int itemId, string action, string name, string rule,
+        bool isSalvage, bool stackable, string where = "")
+    {
+        MagItemInfoSettings? s = ItemInfoSettings;
+        WorldObject? wo = _objectCache?[itemId];
+        if (s == null || wo == null) return null;
+        LootChatLine.Detail detail = LootChatLine.DetailFor(s, action, isSalvage, stackable, wo.ObjectClass);
+        if (detail == LootChatLine.Detail.None) return null;
+        try
+        {
+            bool identified = !Host.HasHasAppraisalData || Host.HasAppraisalData(unchecked((uint)itemId));
+            string line = LootChatLine.Format(detail, s, new CacheItemPropertySource(Host, wo), action, name, rule, where, identified);
+            return (line, LootChatLine.ChatTypeOf(s));
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Exception(LogCat.General, ex, $"loot line 0x{(uint)itemId:X8}");
+            return null;
+        }
     }
 
     /// <summary>Item Info window "Test" button: sample line in the chosen chat type.</summary>

@@ -71,6 +71,11 @@ public sealed class LegacyUiSettings
     public float DunPatrolWallDistance = 1.0f;   // metres every patrol point keeps from walls where there is room
     public float DunPatrolLookInSize = 10.0f;    // rooms this big (m) the patrol only skirts get a walk to their middle
     public float DunPatrolSightYd = 20.0f;       // sweep: how far a monster notices you, so how far apart the lanes may be
+    // Outdoor hunt (/ra hunt, Settings > Navigation > Outdoor Hunt; OutdoorHunt, 2026-10-23): walk from monster to
+    // monster around obstacles on RynthNav's map, into buildings through their doors (2026-10-25).
+    // Hunt Range 192 by default since 2026-10-25: the radar's default range, so the hunt covers the radar.
+    public float OutdoorHuntRange = (float)OutdoorHunt.DefaultRangeYd;   // yd from the character: how far the next monster may be
+    public float OutdoorHuntRadius = 0f;         // yd from where the hunt started that its picks stay within (0 = anywhere)
     // On: macro start, loading a Circular or Linear route, and nav taking over again after a
     // pause that moved the character (combat, looting, buffing, doors) all head for the closest
     // waypoint on the route. Off: a pause carries on to the waypoint it was heading for, a macro
@@ -87,6 +92,10 @@ public sealed class LegacyUiSettings
     public string CurrentNavPath = string.Empty;
     public string CurrentLootPath = string.Empty;
     public string CurrentMetaPath = string.Empty;
+    /// <summary>The meta's rules here differ from its file: the last save of an edit failed
+    /// (MetaSaver). At login this profile's copy of the rules is then used instead of the file's,
+    /// so the edit isn't lost; the next successful save clears it.</summary>
+    public bool MetaUnsaved;
 
     public int MacroSettingsIdx = 1;
     public int NavProfileIdx = 1;
@@ -136,7 +145,19 @@ public sealed class LegacyUiSettings
     public int LootOpenRetryMs = LootBaseline.OpenRetryMs;
     public int LootCorpseTimeoutMs = LootBaseline.CorpseTimeoutMs;
     public bool LootJumpEnabled = false;
-    public int LootJumpHeight = 10; // 0–100; maps to 0.0–1.0 JumpNonAutonomous extent
+    /// <summary>
+    /// Pickup with macro off (2026-11-02, on by default): a chest the player opens is looted by the
+    /// loaded loot profile even with the macro or Looting off (like /ra lootthis). With both on the
+    /// macro's own chest looting takes it.
+    /// </summary>
+    public bool LootChestsMacroOff = true;
+    /// <summary>
+    /// Pickup with macro off > Leave the chest open (2026-11-02, off by default: the chest is closed when done, as before): when the pickup is done the
+    /// chest stays open and chat says so, instead of RynthAi closing it (a chest that locks itself on close
+    /// can't be opened again without its key or quest item).
+    /// </summary>
+    public bool LootChestsMacroOffLeaveOpen = false;
+    public int LootJumpHeight = 10; // kept for old profiles and metas; jump-loot uses the keyboard tap jump (fixed height)
 
     public int SalvageOpenDelayFirstMs = 400;
     public int SalvageOpenDelayFastMs = 50;
@@ -159,9 +180,12 @@ public sealed class LegacyUiSettings
     public int MakeRationsBelow = 5;   // 0 = don't cook field rations
     public bool UseKitsInMagicMode = true;
     public bool PeaceModeForKits = false;
-    // Use a healing/stamina kit only when its success chance (ACE's own skill check) is at
+    // Use a healing kit only when its success chance (ACE's own skill check) is at
     // least this %, else cast the spell instead, as VTank does. 0 = always use kits.
     public int KitMinSuccessPct = 70;
+    // The same for stamina kits (2026-11-03, its own setting): below it Revitalize Self (or a
+    // stamina potion) goes instead. 0 = always use stamina kits.
+    public int StaminaKitMinSuccessPct = 70;
     // Emergency heal: at or under this health %, a healing kit (out of Magic mode, ahead of Heal
     // At's chain) and, while a cast is pending, a kit or potion. 0 = off.
     public int EmergencyHealAt = 30;
@@ -215,6 +239,18 @@ public sealed class LegacyUiSettings
     // when another is clearly better by Targeting. On by default; a profile saved before this
     // setting loads it as on.
     public bool TargetLock = true;
+    // Fight the monster I select (2026-11-01): a monster the PLAYER selects in game (a click, the
+    // radar, another plugin's Selection window) becomes the fight target ahead of the Targeting
+    // setting and the Priority tiers, until it dies, can't be reached, or the player selects
+    // another monster / deselects. The automatic form of /ra targetlock (CombatManager.SelectedTarget.cs).
+    // Off by default; a profile saved before this setting loads it as off.
+    public bool FightSelectedTarget;
+    internal const string FightSelectedTargetTip =
+        "On: in a fight, a monster YOU select (click it, or pick it on the radar or in a Selection window)\n" +
+        "is fought first, ahead of Targeting and Priority, until it dies, can't be reached, or you select\n" +
+        "another monster or deselect. The bot's own selections never count. Ignored (Priority 0) and\n" +
+        "never-attack monsters are not followed (/ra targetlock still forces them). Out to Disengage Range.\n" +
+        "/ra fightselected [on|off]";
     public int RingRange = 5;
     // Obsolete since 2026-10-20 (unused here, kept so profiles still load and carry it): the Empyrean
     // Handler lethal-ring evade is Infinite Leaftide's and lives in RynthILT now (its ILT settings,
@@ -302,6 +338,12 @@ public sealed class LegacyUiSettings
     /// <summary>Not read by the corpse looting (no rare-corpse check exists); kept so saved profiles
     /// round-trip. Hidden in Advanced Settings. The meta/MagTools option of that name sets Mine Only.</summary>
     public bool LootOnlyRareCorpses;
+    /// <summary>
+    /// Loot Mode (Loot.LootModes): 0 = Profile (the loot profile, the default), 1 = Rares and needed
+    /// mana stones only (the loot profile is not used; rares, and mana stones while the mana stone
+    /// keep count wants them). Per settings profile; the meta setting LootMode; /ra loot mode.
+    /// </summary>
+    public int LootMode;
     /// <summary>Also pick up loose ground items that match the loot profile, within the corpse max range.</summary>
     public bool EnableGroundLoot;
     public bool PeaceModeWhenIdle = true;
@@ -319,7 +361,19 @@ public sealed class LegacyUiSettings
     /// </summary>
     [JsonPropertyName("FastWeaponSwapOn")]
     public bool FastWeaponSwap = true;
+    /// <summary>
+    /// Rebuff When Idle (VTank's "idlebufftopoff"): between fights, top buffs off early. When the bot
+    /// is idle (no fight target, no monster within Monster Range, no corpse to loot, no salvage), a
+    /// rebuff starts once a buff has RebuffSecondsRemaining + RebuffIdleMarginMinutes left instead of
+    /// waiting for RebuffSecondsRemaining. The regular rebuff is unchanged, in a fight or not.
+    /// Read by BuffManager.RebuffLineSec (nothing read it before 2026-10-30). Off by default.
+    /// </summary>
     public bool RebuffWhenIdle;
+    /// <summary>
+    /// Rebuff When Idle's margin, minutes: how much earlier than RebuffSecondsRemaining an idle
+    /// top-off may start. Default 2; 0 = the option adds nothing. A profile saved without it loads 2.
+    /// </summary>
+    public int RebuffIdleMarginMinutes = 2;
     /// <summary>
     /// Re-cast a self buff when its remaining duration drops below this many seconds.
     /// Default 300 (5 minutes). Lower values rebuff more eagerly; very low values
@@ -853,6 +907,12 @@ public sealed class LegacyUiSettings
     [JsonIgnore]
     public bool NavIsStuck = false;
 
+    /// <summary>Nav is held in a dungeon by a route none of whose waypoints is in it (a landscape
+    /// route, another dungeon's): the Dungeon Patrol is the way to run here, and the nav window
+    /// offers its button (NavigationEngine.AreaMismatchHold sets it, the hold ending clears it).</summary>
+    [JsonIgnore]
+    public bool NavAreaHoldOffersPatrol = false;
+
     // Runtime-only: the object id of the portal/NPC the nav engine is actively
     // using (resolved by FirePortalNpcUse), or 0 when not using one. Lets the
     // marker renderer draw a ring + line to the portal's REAL position, since
@@ -1134,6 +1194,9 @@ public sealed class SettingsBridgePayload
     public float? DunPatrolWallDistance { get; set; }
     public float? DunPatrolLookInSize { get; set; }
     public float? DunPatrolSightYd { get; set; }
+    // Outdoor hunt. Nullable: an engine that predates them doesn't send them.
+    public float? OutdoorHuntRange { get; set; }
+    public float? OutdoorHuntRadius { get; set; }
     // Absent from an older engine's payload: must not read as off.
     public bool YieldToVTank { get; set; } = true;
     public bool EnableRaycasting { get; set; }
@@ -1161,6 +1224,7 @@ public sealed class SettingsBridgePayload
     public bool UseKitsInMagicMode { get; set; }
     public bool PeaceModeForKits { get; set; }
     public int KitMinSuccessPct { get; set; } = 70;
+    public int StaminaKitMinSuccessPct { get; set; } = 70;   // an engine that doesn't know it keeps 70
     public int EmergencyHealAt { get; set; } = 30;
     public int StaminaToHealthAt { get; set; } = 30;
     public int StaminaToHealthMinStamina { get; set; } = 20;
@@ -1246,6 +1310,7 @@ public sealed class SettingsBridgePayload
     // Nullable: an engine that predates them doesn't send them, and its save must leave them alone.
     public int? TargetSelection { get; set; }
     public bool? TargetLock { get; set; }
+    public bool? FightSelectedTarget { get; set; }
     public int RingRange { get; set; }
     public int ApproachRange { get; set; }
     public double CorpseApproachRangeMax { get; set; }
@@ -1299,6 +1364,8 @@ public sealed class SettingsBridgePayload
     public bool RebuffWhenIdle { get; set; }
     public int RebuffSecondsRemaining { get; set; }
     public int RebuffTopOffSecondsRemaining { get; set; } = 1200;   // absent in older files
+    // Nullable: the engine's Settings face doesn't know it; absent = unchanged (0 is a real value).
+    public int? RebuffIdleMarginMinutes { get; set; }
     // Nullable: an engine that predates the setting doesn't send it, and a save from its
     // Settings face must leave the setting alone rather than force it either way.
     public bool? CastBuffsOverItemBuffs { get; set; }
@@ -1326,6 +1393,8 @@ public sealed class SettingsBridgePayload
     public bool BoostLootPriority { get; set; }
     public bool LootOnlyRareCorpses { get; set; }
     public bool LootJumpEnabled { get; set; }
+    public bool LootChestsMacroOff { get; set; } = true;   // an engine that doesn't know it leaves it on
+    public bool LootChestsMacroOffLeaveOpen { get; set; }   // off: an engine that doesn't know it closes, as before
     public int LootJumpHeight { get; set; }
     public int LootOwnership { get; set; }
     // Nullable, as CastBuffsOverItemBuffs: an engine that predates them doesn't send them,
@@ -1333,6 +1402,7 @@ public sealed class SettingsBridgePayload
     public bool? LootOwnCorpse { get; set; }
     public bool? EscapeHazards { get; set; }
     public bool? TravelToOwnCorpse { get; set; }
+    public int? LootMode { get; set; }
     // Item info: describe an item in chat when it is selected (ItemInfoSettings.OnSelect).
     public bool? ItemInfoOnSelect { get; set; }
     public bool EnableAutostack { get; set; }

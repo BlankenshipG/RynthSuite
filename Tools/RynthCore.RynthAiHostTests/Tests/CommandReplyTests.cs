@@ -95,6 +95,7 @@ internal static class CommandReplyTests
         new(null, "/ra igp NoSuchProfileHere", K.Act),
         new("/ra cast 1234", "/ra cast banana", K.Act),
         new("/ra targetlock off", null, K.Act),
+        new("/ra fightselected off", "/ra fightselected banana", K.Act),
         new("/ra meleelow", null, K.Act),
         new("/ra meleemid", null, K.Act),
         new("/ra meleehigh", null, K.Act),
@@ -124,6 +125,10 @@ internal static class CommandReplyTests
         new(null, "/ra settings", K.Act),
         new(null, "/ra settings loadchar", K.Act),
         new(null, "/ra loot add banana", K.Act),
+        new(null, "/ra loot why", K.Act),                       // nothing selected: says so
+        new("/ra loot mode rares", "/ra loot mode banana", K.Act),
+        new("/ra loot mode profile", null, K.Act),
+        new("/ra loot mode", null, K.Query),
         new(null, "/ra lootparse", K.Act),
         new(null, "/ra lootcheckinv", K.Act),
         new(null, "/ra autotrade", K.Act),
@@ -151,6 +156,8 @@ internal static class CommandReplyTests
         new(null, "/ra corpseopen", K.Act),
         new(null, "/ra fellow", K.Act),
         new(null, "/ra fellowship leader", K.Act),
+        new("/ra mstats reset", "/ra mstats", K.Act),           // no monster selected with stats: why, and the usage
+        new(null, "/ra mstats show", K.Act),                    // this rig's engine has no plugin windows: says so
         new(null, "/ra nosuchverb", K.Act),
         // ── /ra: output asked for ──
         new("/ra help", null, K.Query),
@@ -180,6 +187,8 @@ internal static class CommandReplyTests
         new("/ra fellowinfo", null, K.Query),
         new("/ra dumpinv", null, K.Query),
         new("/ra combat", null, K.Query),
+        new("/ra mstats list", "/ra mstats Nobody Here At All", K.Query),
+        new("/ra mstats help", null, K.Query),
         new("/ra why", null, K.Query),
         new("/ra ghosts", null, K.Query),
         new("/ra ghost", null, K.Query),

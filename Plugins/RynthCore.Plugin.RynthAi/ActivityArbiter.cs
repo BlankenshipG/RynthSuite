@@ -51,7 +51,11 @@ internal readonly struct ArbiterInputs
 
     /// <summary>Actively engaged (a live attack target), not merely "something is engageable".</summary>
     public readonly bool CombatEngaged;
-    /// <summary>BoostNavPriority — navigation preempts combat and looting.</summary>
+    /// <summary>
+    /// Boost Nav Priority is on AND a nav route runs (BoostNavRule.Active): RynthAi only follows the
+    /// route (no combat, no looting). False with no route, at the end of a Once route, and during the
+    /// Outdoor Hunt, so the flag changes nothing there (R-20261103-000159-a65e).
+    /// </summary>
     public readonly bool BoostNav;
     /// <summary>BoostLootPriority — looting preempts combat.</summary>
     public readonly bool BoostLoot;
@@ -68,12 +72,18 @@ internal readonly struct ArbiterInputs
     /// looted until the area emptied (2026-10-03).
     /// </summary>
     public readonly bool LootStarved;
+    /// <summary>
+    /// The loot work is a container the player flagged with /ra lootthis. The one kind of
+    /// looting Boost Nav Priority still lets through (it is the player's own ask).
+    /// </summary>
+    public readonly bool ForcedLoot;
 
     public ArbiterInputs(bool macroRunning, bool wantBuffing, bool wantCombat,
                          bool wantLooting, bool wantSalvaging, bool wantNav,
                          bool combatEngaged = false, bool boostNav = false, bool boostLoot = false,
-                         bool followActive = false, bool lootStarved = false)
+                         bool followActive = false, bool lootStarved = false, bool forcedLoot = false)
     {
+        ForcedLoot    = forcedLoot;
         MacroRunning  = macroRunning;
         WantBuffing   = wantBuffing;
         WantCombat    = wantCombat;
@@ -109,11 +119,24 @@ internal sealed class ActivityArbiter
         if (s.WantBuffing) return BotActivity.Buffing;
 
         // ── User priority overrides ────────────────────────────────────────
-        // BoostNavPriority: nav outranks combat and looting. Only meaningful
-        // when there is actually a route to run, hence the WantNav guard —
-        // without it the flag just starved combat and the bot stood among mobs
-        // without hunting.
-        if (s.BoostNav && s.WantNav) return BotActivity.Navigating;
+        // BoostNavPriority (owner's corrected rule, 2026-11-02, R-20261103-000159-a65e):
+        // "Boost nav priority should only run the nav route, not from mob to mob. So
+        // when no nav route is loaded it should fight." s.BoostNav is true only while
+        // a nav route (or a follow) runs (BoostNavRule.Active); then RynthAi only
+        // follows it: no hunting, no looting, no fighting back even with a monster on
+        // it. With no route, a Once route at its end, or the Outdoor Hunt, s.BoostNav
+        // is false and the default order below runs, as with the flag off. Buffing
+        // (above) still outranks it. Two things still get a slot: a container the
+        // player flagged with /ra lootthis (looted with Boost Nav on, as with the
+        // macro off), and the salvage queue (an inventory chore, no fight). Idle is
+        // left for the moment nav itself waits (travelling back to your corpse).
+        if (s.BoostNav)
+        {
+            if (s.WantNav) return BotActivity.Navigating;
+            if (s.ForcedLoot && s.WantLooting) return BotActivity.Looting;
+            if (s.WantSalvaging) return BotActivity.Salvaging;
+            return BotActivity.Idle;
+        }
 
         // BoostLootPriority: looting outranks combat — EXCEPT while actively
         // engaged. A mob already swinging at you gets fought whatever the flag

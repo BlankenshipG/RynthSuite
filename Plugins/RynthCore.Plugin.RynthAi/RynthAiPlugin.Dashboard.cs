@@ -251,10 +251,15 @@ internal sealed class DashboardBridge : IDashboardHost
     public void AdjustOpacity(float delta) => Queue(() => { _p.DashboardRenderer?.AdjustOpacity(delta); _p.ScheduleDashSave(); });
     public void ToggleLock() => Queue(() => { _p.DashboardRenderer?.TogglePanelLock(); _p.ScheduleDashSave(); });
     public void SelectProfile(int kind, int index) => Queue(() => _p.DashboardRenderer?.SelectProfileAtIndex(kind, index));
+    public void SetLootMode(int mode) => Queue(() => _p.SetLootModeFromPanel(mode));
     public int AutoSort => _p.DashAutoSort;
+    public bool FightSelectedTarget => _p.DashboardRenderer?.Settings.FightSelectedTarget == true;
     public void SetAutoSort(bool on) => Queue(() => _p.SetDashAutoSort(on));
     public void ToggleSortWindow() => Queue(() => _p.SendSortCommand(string.Empty));
     public void StartPatrol() => Queue(_p.HandleDungeonNavPatrol);
+    public void ToggleHunt() => Queue(_p.ToggleHunt);
+    public bool HuntActive => _p.HuntActive;
+    public void ToggleHuntPanel() => _p.ToggleHuntPanel();
     public void ToggleSpells() => _p.EnqueueRemoteCommand("spells", "toggle");
     public void UseClassicLook() => _p.UseClassicLook();
     public bool DrawMiniRemote(out Vector2 want) => _p.DrawDashMiniRemote(out want);

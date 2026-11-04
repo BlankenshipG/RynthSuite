@@ -197,8 +197,7 @@ public sealed partial class RynthAiPlugin
         _openedContainerAt = _chestCandidateSince != 0 ? _chestCandidateSince : now;
         _openedContainerInventoryObservedAt = _chestCandidateInvSeenAt;
         _lastLootActionAt = 0;
-        _corpseItemsEvaluated = 0;
-        _corpseItemsMatched = 0;
+        ResetLootTally();
         _corpseIdsRequested = false;
         ResetCurrentLootItem();
         _processedCorpseItems.Clear();
@@ -221,13 +220,22 @@ public sealed partial class RynthAiPlugin
     /// </summary>
     private void FinishChestLoot(int chestId, string why, bool close, bool sayNothingMatched)
     {
-        if (close)
+        // Pickup with macro off > Leave the chest open: a chest the player opened stays open, and chat says so.
+        bool leaveOpen = close && chestId == _manualChestLootId && (_dashboard?.Settings?.LootChestsMacroOffLeaveOpen ?? false);
+        if (chestId == _manualChestLootId)
+            _manualChestLootId = 0;
+        if (close && !leaveOpen)
             CloseCorpseContainer(chestId, why);
 
-        if (sayNothingMatched && _corpseItemsEvaluated > 0 && _corpseItemsMatched == 0)
+        string chestName = _objectCache?[chestId]?.Name is { Length: > 0 } cn ? cn : "the chest";
+        if (sayNothingMatched && NothingLootedLine(chestName, chest: true) is { } nothingLine)
+            ChatLine(nothingLine);
+        if (leaveOpen)
         {
-            string chestName = _objectCache?[chestId]?.Name ?? $"0x{(uint)chestId:X8}";
-            ChatLine($"[RynthAi] Nothing in {chestName} matches the loot profile.");
+            string done = why == "completed"
+                ? _corpseItemsLooted > 0 ? $"done with {chestName}: took {_corpseItemsLooted} item(s)." : $"done with {chestName}."
+                : $"stopped on {chestName} ({why}).";
+            ChatLine($"[RynthAi] Pickup with macro off: {done} Left it open: close it when you're done.");
         }
         LootDiag($"[RynthAi] Chest loot: done with chest 0x{(uint)chestId:X8} ({why}); not marked, so opening it again loots it again.");
 
@@ -271,5 +279,48 @@ public sealed partial class RynthAiPlugin
         LootDiag($"[RynthAi] Chest loot: chest 0x{(uint)id:X8} {how} before looting finished; not reopening it (open it again to loot the rest).");
         FinishChestLoot(id, how, close: false, sayNothingMatched: false);
         return true;
+    }
+
+    // ── Pickup with macro off (2026-11-02) ─────────────────────────────────────────────────────
+    // A chest the player opens is looted by the loaded loot profile with the macro or Looting off
+    // (LootChestsMacroOff, on by default), the way /ra lootthis would. With both on the macro's
+    // own chest looting (above) takes it. Only a chest JudgeChest would loot: never a corpse,
+    // a vendor, a player, house storage or a pack the character carries.
+
+    private const long ManualChestWaitMs = 3000;   // for the chest's owner and name to be readable
+    private int _manualChestId;
+    private long _manualChestSince;
+    /// <summary>The chest Pickup with macro off is looting (0 = none): FinishChestLoot leaves it open when set to.</summary>
+    private int _manualChestLootId;
+
+    /// <summary>OnViewObjectContents for a non-corpse container: a chest the player may have opened.</summary>
+    private void NoteManualChestOpened(int id)
+    {
+        _manualChestId = id;
+        _manualChestSince = CorpseNowMs;
+    }
+
+    /// <summary>TickCorpseOpening, every tick: hands a chest the player opened to the looter (see above).</summary>
+    private void TakeManualChest(LegacyUiSettings settings)
+    {
+        int id = _manualChestId;
+        if (id == 0) return;
+        if (!settings.LootChestsMacroOff || (settings.IsMacroRunning && settings.EnableLooting)
+            || _chestKey?.Running == true || _forcedLootContainerId == id)
+        {
+            _manualChestId = 0;   // off, the macro's own looting has it, or the chest looter does
+            return;
+        }
+        ChestVerdict verdict = JudgeChest(id, out string why);
+        if (verdict == ChestVerdict.Wait && CorpseNowMs - _manualChestSince < ManualChestWaitMs) return;
+        _manualChestId = 0;
+        if (verdict != ChestVerdict.Loot || LootThisRefusal(id) != null)
+        {
+            LootDiag($"[RynthAi] Pickup with macro off: not looting 0x{(uint)id:X8} ({(verdict == ChestVerdict.Loot ? LootThisRefusal(id) : why)}).");
+            return;
+        }
+        LootDiag($"[RynthAi] Pickup with macro off: looting the opened chest 0x{(uint)id:X8} by the loot profile.");
+        ForceLootOpenChest(id);
+        _manualChestLootId = id;
     }
 }

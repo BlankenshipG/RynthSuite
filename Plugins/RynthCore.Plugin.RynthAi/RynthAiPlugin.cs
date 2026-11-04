@@ -119,6 +119,18 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     // portalled to a different dungeon.
     private bool _dunPatrolActive;
     private uint _dunPatrolLandblock;
+    // The patrol's own route object: the patrol is the mode for as long as it is the loaded route
+    // (a macro stop or start leaves it; another route loaded in its place ends it, said in chat).
+    private NavRouteParser? _dunPatrolRoute;
+    // The dungeon the patrol last tried to follow the character into (once per dungeon).
+    private uint _dunPatrolFollowTriedLb = uint.MaxValue;
+    // The landblock seen on the last tick the patrol was running (MaxValue = not running then), and
+    // whether the character changed landblock while it ran: the patrol follows only through a
+    // portal taken while it runs, not to wherever the character went with the macro off.
+    private uint _dunPatrolPrevRunningLb = uint.MaxValue;
+    private bool _dunPatrolArrivedRunning;
+    // The nav engine's planner, for its dungeon-landblock test (null until login).
+    private NavRecoveryPlanner? _navPlanner;
     private int  _dunPatrolHazardVersion;
     // The patrol settings (Settings > Navigation > Dungeon Patrol) the running patrol was built
     // with: a change rebuilds it once the settings settle (TickDunPatrolHazardReroute).
@@ -246,13 +258,19 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         RynthCore.Plugin.Shared.UseAudit.WorldUseHold = SalvagePanelHold;
         // "The door is locked!" comes as a transient string (ACE Door.ActOnUse): the door logic picks a
         // lock only when the server says so (DoorInteractionController). The chat line is the fallback.
+        // The four combat events (hits and evades both ways, by name) feed the Monster Stats
+        // (RynthAiPlugin.MonsterStats.cs); without the stream melee and missile go uncounted there.
+        _combatEventsStreaming = false;
         try
         {
             if (Host.HasServerMessages)
             {
-                int sm = Host.SetServerMessageInterest(ReadOnlySpan<uint>.Empty,
-                    new uint[] { RynthCore.PluginSdk.Net.GameEventType.TransientString });
-                if (sm != 1) Host.Log($"[RynthAi] Server messages: not streaming ({sm}); locked doors are read from chat only.");
+                var events = new uint[1 + MonsterStats.CombatEvents.GameEvents.Length];
+                events[0] = RynthCore.PluginSdk.Net.GameEventType.TransientString;
+                MonsterStats.CombatEvents.GameEvents.CopyTo(events, 1);
+                int sm = Host.SetServerMessageInterest(ReadOnlySpan<uint>.Empty, events);
+                _combatEventsStreaming = sm == 1;
+                if (sm != 1) Host.Log($"[RynthAi] Server messages: not streaming ({sm}); locked doors are read from chat only, and the Monster Stats count no melee or missile attacks.");
             }
         }
         catch (Exception ex) { Host.Log($"[RynthAi] Server messages: {ex.Message}"); }
@@ -288,6 +306,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         long t0 = Environment.TickCount64;
         try { _dashboard?.SaveSettings(); } catch { }
         try { _sessionStats?.Shutdown(); } catch { }
+        try { ShutdownMonsterStats(); } catch { }   // kept for the next copy, with the session
         try { GameInput.Shutdown(); } catch { }   // keys still held for /mt movement | jump | strafe
         // Release the Monster Editor process handle (if the toggle button
         // launched one) rather than leaking it on plugin unload/hot-reload.
@@ -343,7 +362,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         Log("RynthAi: logout — tearing down session.");
         try { _dashboard?.SaveSettings(); } catch { }
         try { _sessionStats?.OnLogout(); } catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "session stats logout"); }
+        try { OnLogoutMonsterStats(); } catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "monster stats logout"); }
         Loot.T11ItemSupport.Reset();
+        _boostNavNoticeSaid = false;   // the Boost Nav Priority notice: once per session
         // A real logout: the next OnLoginComplete is a fresh login, not a hot reload.
         ClearInGameMarker();
         ServerPolicy.Forget();   // the next login's [REALM] line says whether the character is in a Thread
@@ -445,6 +466,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private void TeardownSession()
     {
         ObjectChangeTracker.Clear();
+        ResetItemTool();
         while (_engineCommands.TryDequeue(out _)) { }   // a fellowship button's command is for this character only
         // The server drops whatever it was doing for this character at logout.
         RynthCore.Plugin.Shared.ActionPacer.Forget("logout");
@@ -563,6 +585,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _killClock.SessionStarted();
         _dashboard.OnLoginComplete();
         _dashboard.ChatSubmitHandler = HandleRynthChatSubmit;
+        _dashboard.StartPatrolHandler = () => QueueDashAction(HandleDungeonNavPatrol);
         EnsureTranslator();
         EnsureItemInfoUi();
         EnsureSpellsUi();
@@ -590,7 +613,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // Plans the detours: the dungeon cell graph indoors, RynthNav's navmesh outdoors.
         // Reads the raycast geometry and hazards through the fields, so it follows their
         // (re)creation; dropped with the engine at teardown.
-        _navigationEngine.SetRecoveryPlanner(new NavRecoveryPlanner(Host, () => _raycast, () => _objectCache?.GetHazardCells()));
+        _navPlanner = new NavRecoveryPlanner(Host, () => _raycast, () => _objectCache?.GetHazardCells());
+        _navigationEngine.SetRecoveryPlanner(_navPlanner);
         if (_objectCache != null) _navigationEngine.SetWorldObjectCache(_objectCache);
         _navMarkerRenderer = new NavMarkerRenderer(Host, _dashboard.Settings)
         {
@@ -761,7 +785,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _combatManager.JumpBusy = () => _jumper?.IsBusy == true;
         _buffManager?.SetStaleBusyCallback(OnCombatBusyStale);   // a heal ahead of a leftover busy count
         if (_buffManager != null)
+        {
             _buffManager.OffhandStowed = id => _combatManager?.NoteOffhandStowed(id);
+            _buffManager.IdleForTopOff = IdleForBuffTopOff;   // Rebuff When Idle's early top-off (RynthAiPlugin.Chores.cs)
+        }
         _combatManager.SetCharacterSkills(_charSkills);
         _combatManager.SetPlayerId(_playerId);
         _combatManager.SetDamageStores(_creatureStore, _damageStore);
@@ -895,6 +922,27 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private const long LootGraceMs = 2000;
 
     /// <summary>
+    /// Fellowship-follow steers toward a live leader position and needs no route, so it counts
+    /// as nav work in its own right: without this, turning Follow on with no route loaded would
+    /// leave the arbiter's wantNav false and NavigationEngine.Tick would never do the following.
+    /// </summary>
+    internal static bool IsFollowActive(LegacyUiSettings settings)
+        => (settings.FollowMode && settings.FollowTargetId != 0)
+           || (settings.CurrentRoute != null && settings.CurrentRoute.RouteType == NavRouteType.Follow
+               && settings.CurrentRoute.FollowTargetName.Length > 0);
+
+    /// <summary>
+    /// The arbiter's WantNav input: the macro runs, navigation is on, and there is a route (or a
+    /// follow) to run. Travelling back to your corpse (RynthNav walks): RynthAi's own route waits.
+    /// The Outdoor Hunt's walks count here (nav walks them); Boost Nav Priority's own test of "a
+    /// nav route runs" is BoostNavRule.NavRouteRuns, which leaves them out.
+    /// </summary>
+    private bool NavWantsTick(LegacyUiSettings settings)
+        => settings.IsMacroRunning && settings.EnableNavigation
+           && ((settings.CurrentRoute != null && settings.CurrentRoute.Points.Count > 0) || IsFollowActive(settings))
+           && !OwnCorpseTravelHoldsNav;
+
+    /// <summary>
     /// Stop nav movement once, on the transition into a non-Navigating activity.
     /// Replaces the four _*PausedNav flags: each existed only to answer "have I
     /// already issued the Stop() for this owner?", and each had to be reset from
@@ -1022,11 +1070,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "settingsprofile": if (int.TryParse(value, out int si)) dash.SelectProfileAtIndex(3, si); break;
             case "buffprofile":     if (int.TryParse(value, out int bi)) dash.SelectProfileAtIndex(4, bi); break;
             case "spells":          HandleSpellsCommand(value); break;   // dashboard Spells button: toggle|show|hide
+            case LootWhyAction:     HandleLootWhyCommand(window: true); break;   // "Why this loot rule?" buttons
             case "forcerebuff":  dash.RequestForceRebuff(); break;
             case "cancelrebuff": dash.RequestCancelForceRebuff(); break;
             case "clearbusy":    HandleClearBusyCommand(); break;
             case "hideui":       _hideUi = on; dash.SetUiHidden(on); break;  // applied each tick in OnTick
-            case "sendchat":     if (!string.IsNullOrEmpty(value)) HandleRynthChatSubmit(value); break;
+            case "sendchat":     if (!string.IsNullOrEmpty(value)) RunItemToolUntrusted(() => HandleRynthChatSubmit(value)); break;   // a remote line is never the player at the keyboard
             case "setsetting":   ApplyRemoteSetting(value); break;   // one advanced setting from the phone (clamped + persisted)
             case "hub":
             case "quests":
@@ -1122,9 +1171,10 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         ["DunPatrolWallDistance"] = (DungeonPatrolOptions.WallClearanceMin, DungeonPatrolOptions.WallClearanceMax),
         ["DunPatrolLookInSize"] = (DungeonPatrolOptions.LookInRoomMin, DungeonPatrolOptions.LookInRoomMax),
         ["DunPatrolSightYd"] = (DungeonPatrolOptions.SightMin, DungeonPatrolOptions.SightMax),
+        ["OutdoorHuntRange"] = (OutdoorHuntRangeMin, OutdoorHuntRangeMax), ["OutdoorHuntRadius"] = (0, OutdoorHuntRadiusMax),
         ["T2Speed"] = (0.1, 5), ["T2WalkWithinYd"] = (1, 50), ["T2DistanceTo"] = (0.1, 10), ["T2ReissueMs"] = (100, 10000),
         ["T2MaxRangeYd"] = (50, 2000), ["T2MaxLandblocks"] = (1, 20),
-        ["RebuffSecondsRemaining"] = (30, 1800), ["RebuffTopOffSecondsRemaining"] = (30, 3600),
+        ["RebuffSecondsRemaining"] = (30, 1800), ["RebuffTopOffSecondsRemaining"] = (30, 3600), ["RebuffIdleMarginMinutes"] = (0, 60),
         ["AutoVendorTries"] = (1, 20), ["AutoVendorTriesTime"] = (500, 30000),
         ["BuffMinSkillLevelTier1"] = (1, 500), ["BuffMinSkillLevelTier2"] = (1, 500), ["BuffMinSkillLevelTier3"] = (1, 500), ["BuffMinSkillLevelTier4"] = (1, 500),
         ["BuffMinSkillLevelTier5"] = (1, 500), ["BuffMinSkillLevelTier6"] = (1, 500), ["BuffMinSkillLevelTier7"] = (1, 500), ["BuffMinSkillLevelTier8"] = (1, 500),
@@ -1621,6 +1671,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             Guard(TickStep.LocalFeatures, TickLocalFeatures);
             if (diag) Host.Log("[RynthAi] OnTick: after quest tracker");
             Guard(TickStep.GiveQueue, DrainGiveQueue);
+            Guard(TickStep.ItemTool, TickItemTool);   // the Item Tool: chest looter + Quick give (RynthAiPlugin.ItemTool.cs)
             if (diag) Host.Log("[RynthAi] OnTick: after drain give queue");
             Guard(TickStep.Jumper, () => _jumper?.Tick());
             if (diag) Host.Log("[RynthAi] OnTick: after jumper tick");
@@ -1773,6 +1824,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     // looping through it — or with the Dungeon Patrol settings changed since.
                     // Cheap no-op unless a new hazard cell was registered or a setting changed.
                     TickDunPatrolHazardReroute();
+                    // Outdoor hunting's next walk (no-op unless /ra hunt is on).
+                    TickOutdoorHunt();
                 });
 
                 // ── Activity arbiter — STEP 5: AUTHORITATIVE, full stop ──
@@ -1870,20 +1923,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     bool wantLoot = HasLootWork(settings, nowMs);
                     _lastWantLoot = wantLoot;
                     bool wantSalvage = _salvageManager != null && _salvageManager.IsBusy;
-                    bool routeLoaded = settings.CurrentRoute != null && settings.CurrentRoute.Points.Count > 0;
-
-                    // Fellowship-follow steers toward a live leader position and
-                    // needs no route, so it counts as nav work in its own right —
-                    // without this, turning Follow on with no route loaded would
-                    // leave wantNav false and NavigationEngine.Tick would never be
-                    // called to do the following.
-                    bool followActive = (settings.FollowMode && settings.FollowTargetId != 0)
-                        || (settings.CurrentRoute != null && settings.CurrentRoute.RouteType == NavRouteType.Follow
-                            && settings.CurrentRoute.FollowTargetName.Length > 0);
-                    // Travelling back to your corpse (RynthNav walks): RynthAi's own route waits.
-                    bool wantNav = settings.IsMacroRunning && settings.EnableNavigation
-                                && (routeLoaded || followActive)
-                                && !OwnCorpseTravelHoldsNav;
+                    bool followActive = IsFollowActive(settings);
+                    bool wantNav = NavWantsTick(settings);
                     // Loot starvation: a lootable corpse in range has waited LootStarveMs behind
                     // combat and no monster is within LootStarveCloseYards. A busy spawn always
                     // has a monster inside MonsterRange, so without this corpses waited until
@@ -1905,12 +1946,15 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     var inputs = new ArbiterInputs(
                         settings.IsMacroRunning, wantBuff, wantCombat, wantLoot, wantSalvage, wantNav,
                         combatEngaged: engaged,
-                        boostNav:      settings.BoostNavPriority && !ringEscape,
+                        boostNav:      BoostNavRule.Active(settings) && !ringEscape,   // only while a nav route runs (R-20261103-000159-a65e)
                         boostLoot:     settings.BoostLootPriority && !ringEscape,
                         followActive:  followActive,
-                        lootStarved:   lootStarved);
+                        lootStarved:   lootStarved,
+                        forcedLoot:    wantLoot && ForcedLootHolds());
                     _activity = _arbiter.Apply(in inputs, settings);
                     _lootStarveTurn = lootStarved && _activity == BotActivity.Looting;
+                    // Boost Nav Priority skipped a fight or a corpse: say so, once (RynthAiPlugin.BoostNav.cs).
+                    NoteBoostNavSkip(settings, wantCombat);
                     // Display only: what the Buffing slot is doing (ActivityArbiter.DisplayLabel),
                     // and the decision for [HealLatency]'s "arbiter gave the tick to" part.
                     if (_buffManager != null)
@@ -2335,6 +2379,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         _currentTargetId = currentTargetId;
         _dashboard?.SetSelectedTarget(currentTargetId);
+        // Fight the monster I select: the player's selection (not one RynthAi just made) of a
+        // monster becomes the fight target (CombatManager.SelectedTarget.cs). Off: nothing.
+        _combatManager?.OnSelectionChanged(currentTargetId, ItemInfo.SelfSelect.IsOurs(currentTargetId));
 
         if (currentTargetId != 0)
         {
@@ -2443,7 +2490,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (string.IsNullOrEmpty(text)) return;
         try { NoteServerPolicyChat(text); } catch { }   // DreamWeave's Thread lines (ServerPolicy)
         try { NoteDoorServerText(text); } catch { }   // "The door is locked!" (the door logic)
+        try { ItemToolChat(text); } catch { }   // the key's answers (chest looter)
         try { _sessionStats?.OnChatWindowText(text); } catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "session stats chat"); }
+        try { NoteMonsterStatsChat(text, chatType); } catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "monster stats chat"); }
         // The Meta Manager eats the reply to its own /myquests poll (only that).
         bool mmEat = false;
         try { mmEat = MetaScheduleChat(text); } catch { }
@@ -2476,6 +2525,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // Mini Remote stats count every notice, as RynthTracker does (an empty message is still a kill).
         try { _sessionStats?.OnKillNotification(deathMessage); }
         catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "session stats kill"); }
+        try { NoteMonsterStatsKill(deathMessage); }
+        catch (Exception ex) { RynthLog.Exception(LogCat.Huds, ex, "monster stats kill"); }
         if (string.IsNullOrEmpty(deathMessage)) return;
         _killClock.RecordKill();    // the only kill source: KillerNotification goes to the killer alone
         NoteBoostLootKill();        // before combat sees the kill: its next target waits for the corpse
@@ -2498,6 +2549,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     {
         try { _combatManager?.OnObjectCreated(objectId); } catch { }
         _sessionStats?.OnCreateObject(objectId);
+        _autoVendor?.OnCreateObject(objectId);   // a stack split's new stack
         try
         {
             _objectCache?.OnCreateObject(objectId);
@@ -2529,7 +2581,6 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     public override void OnUpdateHealth(uint targetId, float healthRatio, uint currentHealth, uint maxHealth)
     {
         float prevRatio = _objectCache?.GetHealthRatio(unchecked((int)targetId)) ?? -1f;
-        _sessionStats?.OnUpdateHealth(targetId, currentHealth, maxHealth);
         _objectCache?.OnUpdateHealth(targetId, healthRatio);
         _combatManager?.NoteServerHealth(unchecked((int)targetId), healthRatio);   // kill-shot evidence (fight target only)
         _dashboard?.OnUpdateHealth(targetId, healthRatio, currentHealth, maxHealth);
@@ -2821,6 +2872,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
               .Append("\"petLabel\":").Append(JsonStr(PetChoiceLabel(pet))).Append(',')
               .Append(WeakJson(wcid, name, wcids));
             if (wcids.Length > 1) sb.Append("\"wcids\":[").Append(string.Join(",", wcids)).Append("],");
+            // Its evades and resists both ways since login (RynthAiPlugin.MonsterStats.cs): the line under
+            // the monster on an engine that draws it; an older one ignores the field.
+            sb.Append(MonsterStatsJsonFor(name));
             sb.Append("\"key\":").Append(JsonStr(wcid.ToString())).Append(',')
               .Append("\"tiers\":[");
 
@@ -3257,9 +3311,11 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         return sb.ToString();
     }
 
-    /// <summary>Master reset from the Damage panel: zero all learned stats, keep names + manual overrides. Persists.</summary>
+    /// <summary>Master reset from the Damage panel: zero all learned stats, keep names + manual overrides. Persists.
+    /// The evades and resists under each monster (RynthAiPlugin.MonsterStats.cs) start over too.</summary>
     public void ClearMonsterStats()
     {
+        RequestMonsterStatsReset();
         if (_damageStore == null) return;
         _damageStore.ClearAllStats();
         _damageStore.SaveIfDirty();
@@ -3923,8 +3979,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         if (parts.Length < 2) return;
 
         string cmd = parts[1].ToLower();
-        int eat = 0; // not used for meta dispatch, but needed for shared helpers
-        DispatchRaCommand(cmd, parts, ref eat);
+        RunItemToolUntrusted(() => { int e = 0; DispatchRaCommand(cmd, parts, ref e); });   // a meta's line is never the player at the keyboard
     }
 
     /// <summary>
@@ -4008,6 +4063,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "buffprofile":  HandleBuffProfileCommand(parts); break;
             case "groundloot":   HandleGroundLootCommand(parts); break;
             case "addnavpt":     HandleAddNavPointCommand(); break;
+            case "navheading":   HandleNavHeadingCommand(parts); break;
             case "nav":          HandleNavCommand(parts); break;
             case "meta":         HandleMetaCommand(parts); break;
             case "lua":          ForwardLuaCommand(parts); break;
@@ -4028,6 +4084,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "metamgr":       QueueMetaMgrCommand(parts); Reply.Answered(); break;   // Meta Manager: applied (and answered) on the next tick
             case "dunnav":        HandleDungeonNavCommand(parts); break;
             case "dunnav-patrol": HandleDungeonNavPatrolCommand(parts); break;
+            case "hunt": HandleHuntCommand(parts); break;
             case "hazard":        HandleHazardCommand(parts); break;
             case "lootparse":    HandleLootParseCommand(trimmed); break;
             case "lootcheckinv": HandleLootCheckInventoryCommand(trimmed); break;
@@ -4050,6 +4107,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "fellowinfo":   HandleFellowshipInfoCommand(); break;
             case "dumpinv":      HandleDumpInventoryCommand(); break;
             case "combat":       HandleCombatStateCommand(); break;
+            case "mstats":       HandleMonsterStatsCommand(parts); break;   // RynthAiPlugin.MonsterStats.cs
             case "why":          HandleWhyCommand(); break;
             case "ghost":
             case "ghosts":       HandleGhostsCommand(cmd, parts); break;
@@ -4125,6 +4183,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 if (parts.Length >= 3 && parts[2].Equals("stop", StringComparison.OrdinalIgnoreCase)) CancelGiveQueue();
                 else HandleGiveCommand(parts, GiveItemMatch.Regex,   partialPlayer: false, allItems: true);
                 break;
+            case "itemtool":     HandleItemToolCommand(parts); break;
             case "ig":           HandleGiveProfileCommand(parts, partialPlayer: false); break;
             case "igp":          HandleGiveProfileCommand(parts, partialPlayer: true); break;
             // use variants

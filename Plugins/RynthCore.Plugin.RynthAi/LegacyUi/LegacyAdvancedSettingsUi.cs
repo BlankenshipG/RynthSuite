@@ -58,6 +58,10 @@ internal sealed class LegacyAdvancedSettingsUi
 
     public void SetMissileCraftingManager(MissileCraftingManager mgr) => _missileCraftingManager = mgr;
 
+    /// <summary>The loot profile files ("None" first) and picking one: Settings > Looting's Loot Profile.</summary>
+    public Func<string[]>? LootProfiles { get; init; }
+    public Action<int>? SelectLootProfile { get; init; }
+
     private Func<string>? _autoVendorStatus;
     public void SetAutoVendorStatusProvider(Func<string> status) => _autoVendorStatus = status;
 
@@ -767,6 +771,9 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Target Lock", ref _settings.TargetLock);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("On: keeps the target it picked until it dies, leaves Monster Range, or a higher-priority monster shows up.\nOff: switches whenever another monster is clearly better by the Targeting rule.");
+                ImGui.Checkbox("Fight the monster I select", ref _settings.FightSelectedTarget);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(LegacyUiSettings.FightSelectedTargetTip);
 
                 ImGui.Spacing();
                 ImGui.Text("Corpse Acquisition (Yards)");
@@ -779,6 +786,8 @@ internal sealed class LegacyAdvancedSettingsUi
 
             case "Navigation":
                 ImGui.Checkbox("Boost Nav Priority", ref _settings.BoostNavPriority);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("While a nav route runs (a loaded route or a follow), RynthAi only follows it: no hunting, no looting, no fighting back. With no route, at the end of a Once route, or during Outdoor Hunt it hunts and loots as usual. Buffing and healing always run.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.InputFloat("Nav point reach (yd)", ref _settings.FollowNavMin, 0.1f, 1.0f, "%.1f");
                 _settings.FollowNavMin = LegacyUiSettings.ClampFollowNavMin(_settings.FollowNavMin);
@@ -923,6 +932,26 @@ internal sealed class LegacyAdvancedSettingsUi
             case "Buffing":
                 ImGui.Checkbox("Enable Buffing", ref _settings.EnableBuffing);
                 ImGui.Checkbox("Rebuff When Idle", ref _settings.RebuffWhenIdle);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Top buffs off early between fights. When the bot is idle (no target, no\n" +
+                        "monster within Monster Range, no corpse to loot), it rebuffs as soon as a\n" +
+                        "buff has 'Rebuff With' + 'Idle Margin' left, instead of waiting for\n" +
+                        "'Rebuff With'. So fewer buffs run out in the next fight.\n" +
+                        "It never stops a rebuff: a buff under 'Rebuff With' (or dispelled) is\n" +
+                        "recast as always, in a fight too. An early top-off never starts in a\n" +
+                        "fight, and one under way stops when a fight starts.");
+                if (_settings.RebuffWhenIdle)
+                {
+                    ImGui.SetNextItemWidth(180);
+                    ImGui.SliderInt("Idle Margin (minutes)", ref _settings.RebuffIdleMarginMinutes, 0, 60);
+                    if (_settings.RebuffIdleMarginMinutes < 0) _settings.RebuffIdleMarginMinutes = 0;
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip(
+                            "How much earlier than 'Rebuff With' an idle top-off may start.\n" +
+                            "Default 2: with 'Rebuff With' 300 s, an idle bot rebuffs at 7 minutes\n" +
+                            "left instead of 5. 0 = Rebuff When Idle adds nothing.");
+                }
 
                 ImGui.Spacing();
                 ImGui.SetNextItemWidth(180);
@@ -1028,17 +1057,51 @@ internal sealed class LegacyAdvancedSettingsUi
 
             case "Looting":
                 ImGui.Checkbox("Enable Looting", ref _settings.EnableLooting);
+                // The loot profile picker (the dashboard's LOOT list), and beside it Loot Mode, which
+                // decides whether that profile is used at all.
+                string[]? lootFiles = LootProfiles?.Invoke();
+                if (lootFiles != null && lootFiles.Length > 0 && SelectLootProfile != null)
+                {
+                    int lootIdx = Math.Clamp(_settings.LootProfileIdx, 0, lootFiles.Length - 1);
+                    ImGui.SetNextItemWidth(200);
+                    if (ImGui.Combo("Loot Profile", ref lootIdx, lootFiles, lootFiles.Length) && lootIdx != _settings.LootProfileIdx)
+                        SelectLootProfile(lootIdx);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip(Loot.LootModes.IsRares(_settings.LootMode)
+                            ? "The loot profile. Not used while Loot Mode is Rares and needed mana stones only."
+                            : "The loot profile: what corpses, chests and ground items give up.");
+                    ImGui.SameLine();
+                }
+                _settings.LootMode = Loot.LootModes.Clamp(_settings.LootMode);
+                ImGui.SetNextItemWidth(240);
+                ImGui.Combo("Loot Mode", ref _settings.LootMode, Loot.LootModes.Labels, Loot.LootModes.Labels.Length);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Profile: the loot profile picked on the dashboard (LOOT), with RynthAi's built-in keeps.\n" +
+                                     "Rares and needed mana stones only: the loot profile is not used. Every rare is looted, and\n" +
+                                     "mana stones while you have fewer than the Items panel's keep count (Mana Stone Tapping);\n" +
+                                     "nothing else (no salvage, no Learn Unknown Spells, no Mana Tap). Recover My Corpse still works.\n" +
+                                     "Also /ra loot mode profile|rares, and the meta setting LootMode (0 or 1).");
                 ImGui.Checkbox("Boost Loot Priority", ref _settings.BoostLootPriority);
                 // "Loot Only Rare Corpses" is hidden: nothing reads LootOnlyRareCorpses.
                 ImGui.Checkbox("Learn Unknown Spells", ref _settings.ReadUnknownScrolls);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Loots scrolls of spells you don't know and can learn (magic school trained or\nspecialized, skill high enough), and reads them when it's safe. Scrolls already\nin your pack are read too.");
-                ImGui.Checkbox("Jump When Looting", ref _settings.LootJumpEnabled);
-                if (_settings.LootJumpEnabled)
+                ImGui.Checkbox("Pickup with macro off", ref _settings.LootChestsMacroOff);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("A chest you open is looted by the loaded loot profile\neven with the macro or Looting off.");
+                if (_settings.LootChestsMacroOff)
                 {
-                    ImGui.SetNextItemWidth(120);
-                    ImGui.SliderInt("Jump Height", ref _settings.LootJumpHeight, 1, 100);
+                    ImGui.Indent();
+                    ImGui.Checkbox("Leave the chest open", ref _settings.LootChestsMacroOffLeaveOpen);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("When the pickup is done the chest stays open and chat says what was taken,\n" +
+                                         "so you can check it and take anything your profile missed. Untick it and\n" +
+                                         "RynthAi closes the chest when it's done (some chests lock again on close).");
+                    ImGui.Unindent();
                 }
+                ImGui.Checkbox("Jump When Looting", ref _settings.LootJumpEnabled);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Hop (the keyboard jump) just before each pickup,\nso the server skips the bend-down. The hop has a fixed height.");
 
                 ImGui.Spacing();
                 ImGui.Text("Corpse Ownership");
@@ -1055,6 +1118,7 @@ internal sealed class LegacyAdvancedSettingsUi
                     _settings.ItemInfoSettings.ShowWindow = !_settings.ItemInfoSettings.ShowWindow;
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Open the RynthAi Item Info window (fields, ratings, click trigger, layout).");
+                LegacyItemInfoUi.RenderLootChat(_settings.ItemInfoSettings, "##advLoot");
                 ImGui.Checkbox("Travel Back To My Corpse", ref _settings.TravelToOwnCorpse);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("After a death, travel back to where you died with RynthNav (outdoors only),\nfighting on the way, recover the corpse, then carry on. Needs the macro running.");
