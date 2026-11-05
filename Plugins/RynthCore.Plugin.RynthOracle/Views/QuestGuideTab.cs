@@ -475,7 +475,8 @@ internal sealed partial class OracleView
                 _gMsg = "";
             });
             w.Tooltip("RynthNav walks to each step you haven't been stamped for, in order; the step's instructions go to chat\n"
-                      + "when you get there. A stamp moves it on (or Next). RynthAi picks up the quest's items meanwhile.");
+                      + "when you get there. A stamp moves it on (or Next). RynthAi picks up the quest's items meanwhile,\n"
+                      + "with the quest's own loot profile (base-quest-dynamic and its items) until the run ends.");
             if (q.Loot.Count > 0)
             {
                 w.SameLine();
@@ -486,6 +487,15 @@ internal sealed partial class OracleView
                                   : "RynthAi has them already, or isn't loaded.";
                 });
                 w.Tooltip("Have RynthAi pick up this quest's items (by name) on top of its loot profile, this session:\n" + string.Join("\n", q.Loot));
+                w.SameLine();
+                w.Button("Loot profile", "g.lootprofile", () =>
+                {
+                    bool ok = _c.Runner?.BuildProfile(q) ?? false;
+                    _gMsg = ok ? $"RynthAi wrote LootProfiles\\Quests\\{q.Title}.utl: base-quest-dynamic and this quest's {q.Loot.Count} item(s). Run this quest uses it."
+                               : "RynthAi isn't loaded: it writes the loot profile.";
+                });
+                w.Tooltip("Write this quest's loot profile: your base-quest-dynamic.utl with a Keep rule per quest item in front\n"
+                          + "(LootProfiles\\Quests). Run this quest switches to it while it runs, then back. /ro lootprofiles writes every quest's.");
             }
         }
         else

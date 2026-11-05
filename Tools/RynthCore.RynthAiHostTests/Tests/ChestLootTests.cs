@@ -48,6 +48,7 @@ internal static class ChestLootTests
         r.Add("chest loot: opened mid-fight it waits for combat, then is looted if still open", ChestWaitsForCombat);
         r.Add("chest loot: closed by the player mid-loot -> session ends, chest not reopened", ClosedMidLootNotReopened);
         r.Add("chest loot: a chest gets 2 minutes (not the 12 s corpse timeout), restarted by each pickup", ChestTimeoutLongAndRestarted);
+        r.Add("quest loot profiles: build, profile (the run's profile in use) and profile off (back to the one before)", QuestLootProfilesBroker);
     }
 
     // ── World set-up ──────────────────────────────────────────────────────────
@@ -331,6 +332,51 @@ internal static class ChestLootTests
         Check.False(FakeHost.Logs.Any(l => l.Contains("Chest loot:")), "no chest-loot lines at all");
         Check.True(FakeHost.Chat.Any(c => c.Contains("Black Opal") || c.Contains("Rusty Spoon") || c.Contains("loot profile")),
             "the old loot check of a natively opened container still runs (chat: " + string.Join(" | ", FakeHost.Chat) + ")");
+    }
+
+    // 2026-11-05: RynthOracle's quest guide builds each quest's loot profile from base-quest-dynamic.utl through the
+    // "questloot" broker action; Run this quest switches to it and back (RynthAiPlugin.QuestLootProfiles.cs).
+    private static void QuestLootProfilesBroker()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        string folder = Path.Combine(Program.TempRoot, "quest-loot-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        string saved = RynthAiPlugin.QuestLootFolder;
+        RynthAiPlugin.QuestLootFolder = folder;
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "base-quest-dynamic.utl"), "UTL\n1\n0\nSalvageCombine\n0\n1\n1-6, 7-8, 9, 10\n0\n0\n");
+            string before = bot.S.CurrentLootPath;
+            string quest = Path.Combine(folder, "Quests", "Mistreated Virindi.utl");
+
+            bot.Call("ApplyRemoteCommand", "questloot", "build Mistreated Virindi|Shiny Red Stone|Vial");
+            Check.True(File.Exists(quest) && File.ReadAllText(quest).Contains("Quest: Shiny Red Stone"), "build: the quest's profile is written");
+            Check.Eq(bot.S.CurrentLootPath, before, "build: the loot profile in use is not changed");
+
+            // RynthOracle before 2026-11-05 sent the verb with "questloot " in front: still understood.
+            bot.Call("ApplyRemoteCommand", "questloot", "questloot profile Mistreated Virindi|Shiny Red Stone");
+            Check.Eq(bot.S.CurrentLootPath, quest, "profile: the quest's profile is in use");
+            Check.True(FakeHost.Chat.Any(c => c.Contains("Loot profile for Mistreated Virindi") && c.Contains("Back to")), "profile: chat says so and how to go back");
+            Check.True(QuestLootList.Apply("list").Ok, "the quest loot list still answers its own verbs");
+
+            bot.Call("ApplyRemoteCommand", "questloot", "profile off");
+            Check.Eq(bot.S.CurrentLootPath, before, "profile off: back to the loot profile before");
+            bot.Call("ApplyRemoteCommand", "questloot", "profile off");
+            Check.Eq(bot.S.CurrentLootPath, before, "profile off again: nothing changes");
+
+            // A profile the player picks during the run stays when it ends.
+            bot.Call("ApplyRemoteCommand", "questloot", "profile Mistreated Virindi|Shiny Red Stone");
+            string picked = Path.Combine(folder, "Picked.utl");
+            bot.S.CurrentLootPath = picked;
+            bot.Call("ApplyRemoteCommand", "questloot", "profile off");
+            Check.Eq(bot.S.CurrentLootPath, picked, "profile off: a profile picked since is kept");
+
+            bot.Call("ApplyRemoteCommand", "questloot", "profile Mistreated Virindi");
+            Check.Eq(bot.S.CurrentLootPath, picked, "profile without items: refused, nothing changes");
+        }
+        finally { RynthAiPlugin.QuestLootFolder = saved; }
     }
 
     // Owner, 2026-11-02: "even with looting and the macro off, it should pick up items from a chest when

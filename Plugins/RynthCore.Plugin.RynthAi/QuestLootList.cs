@@ -58,7 +58,7 @@ internal static class QuestLootList
                     ? "[RynthAi] The quest loot list is empty. /ra questloot add <name> (RynthOracle's Run this quest fills it)."
                     : $"[RynthAi] Quest loot ({(Enabled ? "on" : "off")}): " + string.Join(", ", Names));
             default:
-                return (false, "[RynthAi] /ra questloot add <name> | remove <name> | clear | list | on | off");
+                return (false, "[RynthAi] /ra questloot add <name> | remove <name> | clear | list | on | off | profile [off]");
         }
     }
 }

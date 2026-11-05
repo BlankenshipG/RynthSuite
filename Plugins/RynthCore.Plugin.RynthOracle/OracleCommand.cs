@@ -3,7 +3,7 @@ using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthOracle;
 
-internal enum OracleVerb { Window, Void, Timers, Quests, Tab, Trackers, Status, About, Help, Unknown }
+internal enum OracleVerb { Window, Void, Timers, Quests, Tab, Trackers, Status, About, Help, LootProfiles, Unknown }
 
 /// <summary>A parsed "/ro ..." (the words after /ro, lower case): its verb, and the tab or the trackers it shows.</summary>
 internal readonly record struct OracleCommand(OracleVerb Verb, string Tab = "", QuestKind? Trackers = null, string Word = "")
@@ -15,6 +15,11 @@ internal readonly record struct OracleCommand(OracleVerb Verb, string Tab = "", 
     public static OracleCommand Parse(string? arg)
     {
         string a = (arg ?? string.Empty).Trim().ToLowerInvariant();
+        // "/ro lootprofiles [quest]" (2026-11-05): RynthAi writes the wiki quests' loot profiles
+        // (base-quest-dynamic.utl and each quest's items); Word is the quest, "" for every quest.
+        foreach (string v in new[] { "lootprofiles", "lootprofile" })
+            if (a == v || a.StartsWith(v + " ", System.StringComparison.Ordinal))
+                return new(OracleVerb.LootProfiles, Word: (arg ?? "").Trim().Substring(v.Length).Trim().Trim('"'));
         return a switch
         {
             "" => new(OracleVerb.Window),
@@ -52,7 +57,7 @@ internal readonly record struct OracleCommand(OracleVerb Verb, string Tab = "", 
         + "/ro gear (Gear tab: spell overlap, wards and banes, ratings), /ro skills|attributes|progress (those tabs), /ro void (Void window), "
         + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), "
         + "/ro trackers (Quests tab, trackers only), /ro legendary (John's 30 key quests), /ro markers, "
-        + "/ro quests (read quest flags), /ro status, "
+        + "/ro quests (read quest flags), /ro lootprofiles [quest] (each wiki quest's loot profile, from base-quest-dynamic), /ro status, "
         + "/ro about (About tab: settings, server, quest list). A server's own pages are its server plugin's (/rserver).";
 
     public const string NoWindows =

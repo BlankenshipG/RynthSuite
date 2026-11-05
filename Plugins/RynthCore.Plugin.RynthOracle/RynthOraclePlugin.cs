@@ -468,10 +468,43 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             case OracleVerb.Help:
                 _c.Print(OracleCommand.Usage);
                 break;
+            case OracleVerb.LootProfiles:
+                BuildLootProfiles(c.Word);
+                break;
             default:
                 _c.PrintFail(OracleCommand.Unknown(c.Word));
                 break;
         }
+    }
+
+    /// <summary>
+    /// "/ro lootprofiles [quest]": RynthAi writes each wiki quest's loot profile (LootProfiles\Quests\&lt;quest&gt;.utl,
+    /// base-quest-dynamic.utl and the quest's items; RynthAiPlugin.QuestLootProfiles.cs). A quest without loot has none.
+    /// </summary>
+    private void BuildLootProfiles(string quest)
+    {
+        QuestGuide g = _c.Guide.Guide;
+        if (g.Quests.Count == 0) { _c.PrintFail("No wiki quests yet: the quest guide comes from RynthILT (/ilt wiki)."); return; }
+        var list = new System.Collections.Generic.List<GuideQuest>();
+        if (quest.Length > 0)
+        {
+            GuideQuest? q = g.Find(quest);
+            if (q == null) { _c.PrintFail($"No wiki quest called '{quest}' (the name as the guide shows it)."); return; }
+            if (q.Loot.Count == 0) { _c.PrintFail($"{q.Title} has no loot on its wiki page, so no loot profile."); return; }
+            list.Add(q);
+        }
+        else
+            foreach (GuideQuest q in g.Quests) if (q.Loot.Count > 0) list.Add(q);
+        int sent = 0;
+        foreach (GuideQuest q in list)
+        {
+            if (_c.Runner == null || !_c.Runner.BuildProfile(q)) break;
+            sent++;
+        }
+        if (sent == 0) { _c.PrintFail("RynthAi isn't loaded: it writes the loot profiles."); return; }
+        _c.Print(list.Count == 1
+            ? $"RynthAi wrote the loot profile for {list[0].Title}: LootProfiles\\Quests\\ (base-quest-dynamic and its {list[0].Loot.Count} item(s))."
+            : $"RynthAi wrote {sent} quest loot profiles to LootProfiles\\Quests\\ (base-quest-dynamic and each quest's items; {g.Quests.Count - list.Count} quests have no loot). Run this quest uses them.");
     }
 
     /// <summary>Sends /myquests; false when nothing went out (not in the world, or one was sent moments ago).</summary>

@@ -4,8 +4,10 @@
 // step's instructions go to chat. The step is done when the server stamps it ("You've stamped X!") or its
 // flags show up, or with Next. A step without coordinates is shown and waits for its stamp or Next. The
 // quest's loot (the items its steps kill or loot for) goes on RynthAi's quest loot list while it runs
-// ("/ra questloot add <name>") and comes off again when it ends. Pump thread; no host calls here (the
-// tests drive it with fake senders).
+// ("questloot" broker action, "add <name>") and comes off again when it ends. Since 2026-11-05 the run also makes the
+// quest's own loot profile the one in use: RynthAi builds it from LootProfiles\base-quest-dynamic.utl and the
+// quest's items ("questloot profile <quest>|<item>..."), and goes back to the profile before when the run ends
+// ("questloot profile off"). Pump thread; no host calls here (the tests drive it with fake senders).
 using System;
 using System.Collections.Generic;
 
@@ -20,6 +22,7 @@ internal sealed class QuestRunner
     private readonly Func<string, bool> _ai;
     private readonly Action<string> _print;
     private readonly List<string> _lootAdded = new();
+    private bool _profileOn;   // RynthAi switched to this quest's loot profile
     private Func<string, bool> _stampDone = _ => false;
 
     public GuideQuest? Quest { get; private set; }
@@ -63,7 +66,11 @@ internal sealed class QuestRunner
         if (Active) Stop("switched quests");
         Quest = q;
         _stampDone = stampDone;
-        if (loot) AddLoot(q);
+        if (loot)
+        {
+            AddLoot(q);
+            if (q.Loot.Count > 0) _profileOn = _ai("profile " + ProfileLine(q));
+        }
         Step = -1;
         if (fromStep >= 0 && fromStep < q.Steps.Count) { Step = fromStep; Place = 0; GoStep(); }
         else Advance(first: true);
@@ -77,16 +84,32 @@ internal sealed class QuestRunner
         foreach (string item in q.Loot)
         {
             if (_lootAdded.Contains(item)) continue;
-            if (_ai("questloot add " + item)) { _lootAdded.Add(item); n++; }
+            if (_ai("add " + item)) { _lootAdded.Add(item); n++; }
         }
         return n;
     }
 
     private void RemoveLoot()
     {
-        foreach (string item in _lootAdded) _ai("questloot remove " + item);
+        foreach (string item in _lootAdded) _ai("remove " + item);
         _lootAdded.Clear();
+        if (_profileOn) _ai("profile off");
+        _profileOn = false;
     }
+
+    /// <summary>
+    /// "&lt;quest&gt;|&lt;item&gt;|&lt;item&gt;...": the quest and its loot for RynthAi's quest loot profile
+    /// ("questloot build ..." / "questloot profile ..."). A '|' in a name becomes '/'.
+    /// </summary>
+    public static string ProfileLine(GuideQuest q)
+    {
+        var parts = new List<string> { q.Title.Replace('|', '/') };
+        foreach (string item in q.Loot) parts.Add(item.Replace('|', '/'));
+        return string.Join("|", parts);
+    }
+
+    /// <summary>Has RynthAi write the quest's loot profile (LootProfiles\Quests); false without RynthAi or loot.</summary>
+    public bool BuildProfile(GuideQuest q) => q.Loot.Count > 0 && _ai("build " + ProfileLine(q));
 
     /// <summary>Next: the next place of this step, else the next step not done.</summary>
     public void Next()

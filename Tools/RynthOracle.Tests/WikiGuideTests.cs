@@ -201,7 +201,9 @@ namespace RynthOracle.Tests
             Click(host, main, "g.run");
             QuestRunner run = c.Runner!;
             Check(run.Active && run.Step == 1 && nav.Count == 1 && nav[0] == "go 28.5S, 90.9W", "run: step 1 is stamped, so RynthNav goes to step 2's place: " + string.Join(" | ", nav));
-            Check(ai.Count == 3 && ai[0] == "questloot add Shiny Red Stone" && ai[2] == "questloot add Vial of The Architect's Blood", "run: the loot goes to RynthAi: " + string.Join(" | ", ai));
+            Check(ai.Count == 4 && ai[0] == "add Shiny Red Stone" && ai[2] == "add Vial of The Architect's Blood", "run: the loot goes to RynthAi: " + string.Join(" | ", ai));
+            Check(ai[3].StartsWith("profile Mistreated Virindi|Shiny Red Stone|") && ai[3].EndsWith("|Vial of The Architect's Blood"),
+                "run: RynthAi uses the quest's own loot profile meanwhile: " + ai[3]);
             body = Frame(host, main, view, "guide, running");
             Check(body.Contains("###g.stop") && body.Contains("###g.next") && body.Contains("going to 28.5S, 90.9W"), "run: Stop / Next and what it is doing");
             run.OnChat("[RynthNav] goto: arrived at 28.5S, 90.9W");
@@ -213,7 +215,9 @@ namespace RynthOracle.Tests
             run.OnChat("You've stamped Someone_Elses_Stamp!");
             Check(run.Step == 3, "run: another stamp doesn't");
             run.Stop();
-            Check(!run.Active && ai.Count == 6 && ai[3] == "questloot remove Shiny Red Stone", "run: Stop takes the loot off RynthAi's list");
+            Check(!run.Active && ai.Count == 8 && ai[4] == "remove Shiny Red Stone" && ai[7] == "profile off",
+                "run: Stop takes the loot off RynthAi's list and goes back to the loot profile before: " + string.Join(" | ", ai));
+            Check(run.BuildProfile(v) && ai[^1].StartsWith("build Mistreated Virindi|Shiny Red Stone|"), "Loot profile: RynthAi writes the quest's profile");
 
             // Pete: the paragraph quest goes to each of the Frost Wyrm step's two places.
             nav.Clear();

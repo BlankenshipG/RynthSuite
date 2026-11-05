@@ -1043,9 +1043,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         // RynthOracle's Run this quest: the quest's items on the quest loot list ("add <name>", "remove <name>", "clear").
         if (action.Equals("questloot", StringComparison.OrdinalIgnoreCase))
         {
-            var (ok, text) = QuestLootList.Apply(value);
+            // "build|profile <quest>|<item>..." and "profile off": the quest loot profiles (RynthAiPlugin.QuestLootProfiles.cs).
+            // RynthOracle up to 2026-11-05 sent "questloot add X" as the value (the verb read as "questloot", refused).
+            value = (value ?? "").Trim();
+            if (value.StartsWith("questloot ", StringComparison.OrdinalIgnoreCase)) value = value.Substring(10).Trim();
+            var (ok, text) = TryQuestLootProfile(value) ?? QuestLootList.Apply(value);
             Host.Log(text);
             if (!ok) ReplyFail(text);
+            else if (value.TrimStart().StartsWith("profile", StringComparison.OrdinalIgnoreCase)) ChatLine(text);   // the loot profile changed: say so
             return;
         }
         var dash = _dashboard;
@@ -4092,7 +4097,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "loot":         HandleLootCommand(parts); break;
             case "questloot":
             {
-                var (ok, text) = QuestLootList.Apply(parts.Length > 2 ? string.Join(" ", parts, 2, parts.Length - 2) : "list");
+                string ql = parts.Length > 2 ? string.Join(" ", parts, 2, parts.Length - 2) : "list";
+                var (ok, text) = TryQuestLootProfile(ql) ?? QuestLootList.Apply(ql);
                 if (ok) ReplyOk(text); else ReplyFail(text);
                 break;
             }

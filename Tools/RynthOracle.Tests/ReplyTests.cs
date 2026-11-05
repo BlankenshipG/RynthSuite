@@ -29,6 +29,7 @@ namespace RynthOracle.Tests
                 ("gear", OracleVerb.Tab, OracleView.TabGear), ("overlap", OracleVerb.Tab, OracleView.TabGear),
                 ("dynamic", OracleVerb.Trackers, OracleView.TabQuests), ("stamps", OracleVerb.Trackers, OracleView.TabQuests),
                 ("guardian", OracleVerb.Trackers, OracleView.TabQuests), ("guardians", OracleVerb.Trackers, OracleView.TabQuests),
+                ("lootprofiles", OracleVerb.LootProfiles, ""), ("lootprofile", OracleVerb.LootProfiles, ""),
             };
             var seen = new HashSet<OracleVerb>();
             foreach (var (typed, verb, tab) in words)
@@ -38,6 +39,9 @@ namespace RynthOracle.Tests
                 seen.Add(c.Verb);
             }
             foreach (OracleVerb v in Enum.GetValues<OracleVerb>()) Check(seen.Contains(v), $"the table covers /ro's {v}");
+            OracleCommand lp = OracleCommand.Parse("lootprofile Mistreated Virindi");
+            Check(lp.Verb == OracleVerb.LootProfiles && lp.Word == "Mistreated Virindi", $"'/ro lootprofile <quest>': the quest as typed (got {lp.Verb} '{lp.Word}')");
+            Check(OracleCommand.Parse("lootprofiles").Word == "" && OracleCommand.Parse("lootprofilesx").Verb == OracleVerb.Unknown, "'/ro lootprofiles': every quest; a longer word isn't it");
             Check(OracleCommand.Parse("legendary").Trackers == QuestKind.Legendary && OracleCommand.Parse("markers").Trackers == QuestKind.Marker
                   && OracleCommand.Parse("trackers").Trackers == null, "the trackers each word shows");
             Check(OracleCommand.Parse("void").ShowsWindow && !OracleCommand.Parse("status").ShowsWindow && !OracleCommand.Parse("quests").ShowsWindow,
