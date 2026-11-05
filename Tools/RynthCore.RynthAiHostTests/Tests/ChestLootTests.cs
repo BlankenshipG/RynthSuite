@@ -42,7 +42,7 @@ internal static class ChestLootTests
         r.Add("chest loot: Looting off and Pickup with macro off off -> nothing taken, the loot check still runs", LootingOffNothing);
         r.Add("chest loot: Pickup with macro off (on by default) loots an opened chest with the macro off or Looting off", PickupWithMacroOff);
         r.Add("chest loot: Pickup with macro off never takes from house storage or your own side pack", PickupWithMacroOffRefuses);
-        r.Add("chest loot: Pickup with macro off leaves the chest open and says so with Leave the chest open (off by default: it closes it)", PickupLeavesChestOpen);
+        r.Add("chest loot: Pickup with macro off leaves the chest open with Leave the chest open, or while anything is left in it (off: an emptied chest is closed)", PickupLeavesChestOpen);
         r.Add("chest loot: reopening the chest loots it again (never marked done)", ReopenLootsAgain);
         r.Add("chest loot: a salvage-only item is left when no UST is carried, as on corpses", SalvageWithoutUstLeft);
         r.Add("chest loot: opened mid-fight it waits for combat, then is looted if still open", ChestWaitsForCombat);
@@ -360,31 +360,40 @@ internal static class ChestLootTests
     private static void PickupLeavesChestOpen()
     {
         Check.False(new LegacyUiSettings().LootChestsMacroOffLeaveOpen, "Leave the chest open is off by default (the chest is closed)");
-        foreach (bool leaveOpen in new[] { true, false })
+        // "leave open": the option on. "left over": the option off, the spoon (no rule) stays in it, so the
+        // chest stays open for the player (2026-11-05, a Standing Stone closed on its Bandit Rune Transcription
+        // every time it was opened). "close": the option off and the chest emptied: it is closed.
+        foreach (string what in new[] { "leave open", "left over", "close" })
         {
             BaseWorld();
             var host = FakeHost.Create(Player);
             var bot = new Bot(host);
             bot.S.IsMacroRunning = false;
-            bot.S.LootChestsMacroOffLeaveOpen = leaveOpen;
-            string what = leaveOpen ? "leave open" : "close";
-            bot.Create(Chest, Gem, Spoon);
+            bot.S.LootChestsMacroOffLeaveOpen = what == "leave open";
+            if (what == "close")
+            {
+                FakeHost.Containers[Spoon] = Player;   // only the gem is in the chest
+                bot.Create(Chest, Gem);
+            }
+            else bot.Create(Chest, Gem, Spoon);
 
             bot.ServerOpens(Chest);
             bot.TickUntil(() => bot.Moved(Gem));
             FakeHost.Containers[Gem] = Player; // it lands in the pack
-            if (leaveOpen)
+            if (what != "close")
             {
                 bot.TickUntil(() => FakeHost.Chat.Any(c => c.Contains("Left it open")));
                 Check.Eq(FakeHost.Closes.Count, 0, $"{what}: the chest is not closed");
                 Check.True(FakeHost.Chat.Any(c => c.Contains("Pickup with macro off: done with") && c.Contains("took 1 item(s)") && c.Contains("Left it open")),
                     $"{what}: chat says what was taken and that it's open (chat: {string.Join(" | ", FakeHost.Chat)})");
+                Check.True(FakeHost.Chat.Any(c => c.Contains("1 item(s) the loot profile doesn't take are still in it")),
+                    $"{what}: chat says what is still in it (chat: {string.Join(" | ", FakeHost.Chat)})");
                 Check.False(bot.HasLootWork(), $"{what}: the looter is done with it");
             }
             else
             {
                 bot.TickUntil(() => FakeHost.Closes.Count > 0);
-                Check.Eq(FakeHost.Closes.Count, 1, $"{what}: the chest is closed once when done");
+                Check.Eq(FakeHost.Closes.Count, 1, $"{what}: the emptied chest is closed once when done");
                 Check.False(FakeHost.Chat.Any(c => c.Contains("Left it open")), $"{what}: no left-open line");
             }
         }

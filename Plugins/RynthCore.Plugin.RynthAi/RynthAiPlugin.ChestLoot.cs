@@ -221,7 +221,14 @@ public sealed partial class RynthAiPlugin
     private void FinishChestLoot(int chestId, string why, bool close, bool sayNothingMatched)
     {
         // Pickup with macro off > Leave the chest open: a chest the player opened stays open, and chat says so.
-        bool leaveOpen = close && chestId == _manualChestLootId && (_dashboard?.Settings?.LootChestsMacroOffLeaveOpen ?? false);
+        // With that option off it still stays open while anything the profile didn't take is in it
+        // (2026-11-05): Silentkelpie opened a Standing Stone a dozen times for its Bandit Rune
+        // Transcription; the profile left it and the stone was closed 1 ms later every time.
+        bool manual = close && chestId == _manualChestLootId;
+        int left = why == "completed" ? Math.Max(0, _lootItemsLeftAtFinish) : 0;
+        _lootItemsLeftAtFinish = 0;
+        bool optionOpen = manual && (_dashboard?.Settings?.LootChestsMacroOffLeaveOpen ?? false);
+        bool leaveOpen = optionOpen || (manual && left > 0);
         if (chestId == _manualChestLootId)
             _manualChestLootId = 0;
         if (close && !leaveOpen)
@@ -235,7 +242,8 @@ public sealed partial class RynthAiPlugin
             string done = why == "completed"
                 ? _corpseItemsLooted > 0 ? $"done with {chestName}: took {_corpseItemsLooted} item(s)." : $"done with {chestName}."
                 : $"stopped on {chestName} ({why}).";
-            ChatLine($"[RynthAi] Pickup with macro off: {done} Left it open: close it when you're done.");
+            string leftNote = left > 0 ? $" {left} item(s) the loot profile doesn't take are still in it." : "";
+            ChatLine($"[RynthAi] Pickup with macro off: {done}{leftNote} Left it open: close it when you're done.");
         }
         LootDiag($"[RynthAi] Chest loot: done with chest 0x{(uint)chestId:X8} ({why}); not marked, so opening it again loots it again.");
 
@@ -292,6 +300,8 @@ public sealed partial class RynthAiPlugin
     private long _manualChestSince;
     /// <summary>The chest Pickup with macro off is looting (0 = none): FinishChestLoot leaves it open when set to.</summary>
     private int _manualChestLootId;
+    // How many items were still in the loot container when it was finished (CorpseOpenController).
+    private int _lootItemsLeftAtFinish;
 
     /// <summary>OnViewObjectContents for a non-corpse container: a chest the player may have opened.</summary>
     private void NoteManualChestOpened(int id)

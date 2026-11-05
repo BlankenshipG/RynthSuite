@@ -1804,6 +1804,7 @@ public sealed partial class RynthAiPlugin
             if (openAge >= Math.Max(200, settings.LootEmptyCorpseMs) && !LastPickupSettling(now))
             {
                 LootDiag($"[RynthAi] {LootTag}: no items on 0x{(uint)corpseId:X8} after {openAge}ms; marking complete.");
+                _lootItemsLeftAtFinish = 0;
                 MarkCorpseCompleted(corpseId);
             }
             return;
@@ -1933,6 +1934,7 @@ public sealed partial class RynthAiPlugin
         if (pendingDataCount == 0 && !LastPickupSettling(now))
         {
             LootDiag($"[RynthAi] {LootTag}: all {visibleItemCount} items on 0x{(uint)corpseId:X8} evaluated; marking complete.");
+            _lootItemsLeftAtFinish = visibleItemCount;   // what is still in it (a chest the player opened stays open for these)
             MarkCorpseCompleted(corpseId);
         }
     }
