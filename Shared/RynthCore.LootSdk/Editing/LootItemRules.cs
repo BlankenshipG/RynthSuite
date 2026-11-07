@@ -78,6 +78,11 @@ public sealed class LootItemRuleOptions
     /// <summary>BuildBlank makes a loot rule (the Loot Editor's Add rule), not a filter: its default name is the action and the conditions.</summary>
     public bool BlankRule { get; set; }
     /// <summary>
+    /// On Infinite Leaftide (ACECustom; 2026-11-07): the T11, weapon-card and pet rows. False elsewhere:
+    /// those rows aren't offered (a rule that has them keeps them as written).
+    /// </summary>
+    public bool Ilt { get; set; } = true;
+    /// <summary>
     /// Conditions kept as written after the checklist's (editing a rule: what no checklist row can say,
     /// LootItemAttributes.ChoicesFromRule's leftovers; 2026-11-07).
     /// </summary>
@@ -230,7 +235,7 @@ public static class LootItemRules
         }
 
         // The attribute checklist: defaults for this match, then the popup's choices.
-        List<LootItemAttribute> rows = LootItemAttributes.For(f, match == LootItemMatch.Like, o.IncludeT11);
+        List<LootItemAttribute> rows = LootItemAttributes.For(f, match == LootItemMatch.Like, o.IncludeT11, o.Ilt);
         LootItemAttributes.AddExtras(rows, o.Extras, o.Spells);
         LootItemAttributes.Apply(rows, o.Choices, notes);
         LootItemAttributes.FilterImbues(rows, f.ObjectClass);
@@ -257,7 +262,7 @@ public static class LootItemRules
     public static LootItemRuleDraft BuildBlank(LootItemRuleOptions o)
     {
         var notes = new List<string>();
-        List<LootItemAttribute> rows = LootItemAttributes.ForBlank();
+        List<LootItemAttribute> rows = LootItemAttributes.ForBlank(o.Ilt);
         LootItemAttributes.AddExtras(rows, o.Extras, o.Spells);
         LootItemAttributes.Apply(rows, o.Choices, notes);
         LootItemAttributes.FilterImbues(rows, LootItemAttributes.TickedClass(rows));

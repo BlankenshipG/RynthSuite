@@ -31,6 +31,7 @@ internal static partial class Program
         TestImbuesByClass();
         TestEditRoundTrip();
         TestCardText();
+        TestIltGate();
     }
 
     private static LootItemFacts Sword() => new()
@@ -333,5 +334,24 @@ internal static partial class Program
         Check(t.Phantom, "cards: phantom");
         var f = new LootItemFacts { Name = "T11 - Zealous Wand", ObjectClass = (int)AcObjectClass.WandStaffOrb, T11 = t };
         Eq(f.Int(T11Keys.SpellArmorRend), 35, "cards: the virtual key reads from the text");
+    }
+
+    // 2026-11-07: T11, weapon cards and pets only on Infinite Leaftide.
+    private static void TestIltGate()
+    {
+        var off = LootItemAttributes.ForBlank(ilt: false);
+        var on = LootItemAttributes.ForBlank(ilt: true);
+        Check(on.Any(r => r.Group == LootItemAttributes.GroupT11) && !off.Any(r => r.Group == LootItemAttributes.GroupT11), "gate: T11 rows only on Leaftide");
+        Check(on.Any(r => r.Group == LootItemAttributes.GroupPet) && !off.Any(r => r.Group == LootItemAttributes.GroupPet), "gate: pet rows only on Leaftide");
+        Check(!off.Any(r => r.Id == "L:" + T11Keys.SpellArmorRend) && on.Any(r => r.Id == "L:" + T11Keys.SpellArmorRend), "gate: text-only cards only on Leaftide");
+        Check(off.Any(r => r.Id == "D:147") && off.Any(r => r.Id == "L:179"), "gate: ACE's real cards and imbues stay everywhere");
+        var vOff = LootRuleText.BuildVocab(ilt: false);
+        Check(!vOff.Ilt && !vOff.LongKeys.Any(k => T11Keys.IsVirtual(k.Id) || k.Id == 9053), "gate: the pickers offer no T11 / pet keys off Leaftide");
+        Check(LootRuleText.BuildVocab(ilt: true).LongKeys.Any(k => T11Keys.IsVirtual(k.Id)), "gate: and do on Leaftide");
+        // A Leaftide rule edited elsewhere keeps its T11 test as written.
+        var rule = new VTankLootRule { Name = "t11", Action = VTankLootAction.Keep, CustomExpression = string.Empty };
+        rule.Conditions.Add(new VTankLootCondition(VTankNodeTypes.LongValKeyGE, "11", new[] { "11", T11Keys.EstimatedTier.ToString() }));
+        LootItemAttributes.ChoicesFromRule(off, rule.Conditions, out List<VTankLootCondition> kept);
+        Eq(kept.Count, 1, "gate: off Leaftide a T11 condition is kept as written");
     }
 }

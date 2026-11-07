@@ -40,6 +40,12 @@ internal sealed class DifficultyTier
     }
 
     private readonly ServerStateClient _server = new();
+
+    /// <summary>
+    /// RynthCore's active server is Infinite Leaftide (as of the last Refresh). True only with an engine
+    /// too old to say (no server list): the loot editors' T11 rows stay as they were there.
+    /// </summary>
+    internal bool OnIlt => _server.State is not EngineServerState st || st.IsActive(EngineServerState.IltId);
     private volatile Reading _reading = Reading.None;
     private volatile string _serverKey = string.Empty;
     private long _nextRefreshMs;

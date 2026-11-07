@@ -21,6 +21,12 @@ namespace RynthCore.Plugin.RynthInventory.Scanning;
 /// </summary>
 internal sealed class InventoryScanner
 {
+    /// <summary>
+    /// On Infinite Leaftide (2026-11-07, "make sure all t11 attributes stuff is gated behind infinite
+    /// leaftide"): only there is an item's text read for T11 attributes.
+    /// </summary>
+    public bool Ilt { get; set; }
+
     // STypeInt
     private const uint StackSize = 12, MaxStackSize = 11, Value = 19, EncumbranceVal = 5, ItemsCapacity = 6,
         CurrentWieldedLocation = 10, MaterialType = 131, ItemWorkmanship = 105, ArmorLevel = 28,
@@ -275,7 +281,7 @@ internal sealed class InventoryScanner
             if (doubles.Count > 0) it.Doubles = doubles;
         }
 
-        T11ItemInfo t = T11Of(host, id, it.Name);
+        T11ItemInfo t = Ilt ? T11Of(host, id, it.Name) : T11ItemInfo.None;
         if (t.IsT11)
         {
             foreach (var (key, _) in T11Keys.Names())

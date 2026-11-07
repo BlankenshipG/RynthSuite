@@ -177,6 +177,7 @@ public sealed class RynthInventoryPlugin : RynthPluginBase
         bool ilt = EngineServerState.Parse(json)?.IsActive(EngineServerState.IltId) == true;
         if (ilt == _c.Ilt) return;
         _c.Ilt = ilt;
+        _scanner.Ilt = ilt;   // T11 attributes are read only on Leaftide (2026-11-07)
         if (!ilt)
         {
             ClearBank();

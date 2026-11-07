@@ -569,9 +569,9 @@ public static class LootRuleText
     // ── Vocabulary for the face ──────────────────────────────────────────
 
     /// <summary>The vocabulary with the standard spell lists (<paramref name="spells"/>, from a spell table).</summary>
-    public static LootEditVocab BuildVocab(LootSpellCatalog? spells)
+    public static LootEditVocab BuildVocab(LootSpellCatalog? spells, bool ilt = true)
     {
-        LootEditVocab v = BuildVocab();
+        LootEditVocab v = BuildVocab(ilt);
         if (spells == null) return v;
         foreach (LootSpellFamily f in spells.Families)
             v.SpellFamilies.Add(new LootEditSpellFamily { Name = f.Name, School = f.School, MinLevel = f.MinLevel, MaxLevel = f.MaxLevel });
@@ -579,9 +579,13 @@ public static class LootRuleText
         return v;
     }
 
-    public static LootEditVocab BuildVocab()
+    /// <summary>
+    /// The pickers' vocabulary. Off Infinite Leaftide (<paramref name="ilt"/> false) the keys only
+    /// ACECustom has (T11, cards, pets, Zc) aren't offered; a rule that uses one still shows its name.
+    /// </summary>
+    public static LootEditVocab BuildVocab(bool ilt = true)
     {
-        var v = new LootEditVocab();
+        var v = new LootEditVocab { Ilt = ilt };
         foreach (VTankLootAction a in Actions) v.Actions.Add(new LootEditName { Id = (int)a, Name = ActionName(a) });
         foreach (int t in VTankNodeTypes.All)
         {
@@ -594,12 +598,13 @@ public static class LootRuleText
             });
         }
         Fill(v.ObjectClasses, ObjectClasses);
-        Fill(v.LongKeys, LongKeys);
+        Fill(v.LongKeys, ilt ? LongKeys : Array.FindAll(LongKeys, k => !LootItemAttributes.IsIltOnlyKey(k.Id)));
         Fill(v.DoubleKeys, DoubleKeys);
         Fill(v.StringKeys, StringKeys);
         Fill(v.Skills, Skills);
         foreach (int key in KeysWithValueTables)
         {
+            if (!ilt && LootItemAttributes.IsIltOnlyKey(key)) continue;
             var vt = new LootEditValueTable { Key = key, Flags = ValueTableIsFlags(key) };
             Fill(vt.Values, ValueTableFor(key)!);
             v.LongValueTables.Add(vt);

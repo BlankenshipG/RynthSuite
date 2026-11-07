@@ -1606,6 +1606,7 @@ public sealed partial class RynthAiPlugin
         Items = new LootItemHooks
         {
             SelectedItemId = () => Host.HasGetSelectedItemId ? Host.GetSelectedItemId() : 0,
+            IsIlt = () => _tier.OnIlt,
             Facts = BuildLootItemFacts,
             FirstMatchUtl = FirstLootRuleFor,
             FirstMatchNative = FirstLootRuleFor,

@@ -68,3 +68,17 @@
   third and later "as written"; they all read back as one "has all" now.
 - Casters list Armor Rending (ACECustom casters carry it).
 - The action "Keep #" showed as a second "Keep" in the popup; it reads "Keep up to".
+
+## Later: T11 only on Infinite Leaftide; one checklist look everywhere
+- T11 is Infinite Leaftide's (RynthCore's active server, as the Banking page and the quest
+  guide's Leaftide tabs already go by). Elsewhere:
+  - RynthAi reads no item as T11 (T11ItemSupport.Enabled): no T11 info lines, T11 keys read 0.
+  - RynthInventory's scan reads no T11 attributes.
+  - The checklists (Loot Editor, Filter inventory, Global Inventory) have no T11, pet essence or
+    text-only card rows, and the raw editor's pickers offer no T11 / pet / Zc keys. A Leaftide
+    rule opened elsewhere keeps those tests as written. ACE's own properties (imbues, Biting
+    Strike, Crushing Blow, cleaving) stay everywhere.
+  - The Loot Editor asks for its pickers again when the server changes.
+- One look for every checklist: groups fold (one open at a time, the others show their ticked
+  rows) with the ticked count and all / none, in the Loot Editor popup and the Global Inventory
+  window alike; the comparison is a list in both.

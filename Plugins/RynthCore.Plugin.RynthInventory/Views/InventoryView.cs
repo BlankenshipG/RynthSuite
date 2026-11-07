@@ -135,6 +135,7 @@ internal sealed partial class InventoryView
         if (_showChecklist)
         {
             w.BeginChild("checklist", 0f, 260f, border: true);
+            _checklist.SetIlt(_c.Ilt);
             _checklist.Draw(w);
             w.EndChild();
             w.SmallButton("Clear checklist", "cl.clear", () => _checklist.Clear());

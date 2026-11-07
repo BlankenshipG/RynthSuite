@@ -13,6 +13,8 @@ public sealed class LootEditState
 {
     /// <summary>Changes whenever anything below changes.</summary>
     public long Revision { get; set; }
+    /// <summary>On Infinite Leaftide (added 2026-11-07): the vocabulary to ask for (LootEditVocab.Ilt).</summary>
+    public bool Ilt { get; set; } = true;
 
     /// <summary>Full path of the open profile; empty when none is open.</summary>
     public string Path { get; set; } = string.Empty;
@@ -352,6 +354,8 @@ public sealed class LootEditVocab
     public List<LootEditName> Actions { get; set; } = new();
     public List<LootEditNodeType> NodeTypes { get; set; } = new();
     public List<LootEditName> ObjectClasses { get; set; } = new();
+    /// <summary>Built for Infinite Leaftide (ACECustom keys offered; added 2026-11-07).</summary>
+    public bool Ilt { get; set; } = true;
     public List<LootEditName> LongKeys { get; set; } = new();
     public List<LootEditName> DoubleKeys { get; set; } = new();
     public List<LootEditName> StringKeys { get; set; } = new();

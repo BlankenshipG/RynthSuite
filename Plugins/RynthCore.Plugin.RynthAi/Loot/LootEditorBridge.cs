@@ -80,12 +80,27 @@ internal sealed class LootEditorBridge
                 if (_followInUse && !_session.IsDirty && inUse.Length > 0 && !LootEditSession.SamePath(inUse, _session.Path))
                     _session.Open(inUse);
             }
+            CheckServer();
             return unchecked((int)StateRevision);
         }
     }
 
     // The session's revision plus the popup draft's and the filter's: all only grow, so the sum moves when any does.
     private long StateRevision => _session.Revision + _draftRevision + _findRevision;
+
+    /// <summary>On Infinite Leaftide now (the server RynthCore says is active).</summary>
+    private bool Ilt => Items.IsIlt?.Invoke() ?? true;
+    private bool _lastIlt = true;
+
+    /// <summary>The server changed to or from Leaftide: the vocabulary is built again and the state's revision moves.</summary>
+    private void CheckServer()
+    {
+        bool ilt = Ilt;
+        if (ilt == _lastIlt) return;
+        _lastIlt = ilt;
+        _vocabJson = null;
+        _draftRevision++;
+    }
 
     public string StateJson()
     {
@@ -95,6 +110,7 @@ internal sealed class LootEditorBridge
             if (!_session.IsOpen && _followInUse && inUse.Length > 0) _session.Open(inUse);
             LootEditState state = _session.BuildState(inUse, ListFiles());
             state.Revision = StateRevision;
+            state.Ilt = Ilt;
             state.ItemDraft = _draft;
             state.ItemFind = _find;
             return JsonSerializer.Serialize(state, LootEditJsonContext.Default.LootEditState);
@@ -115,7 +131,7 @@ internal sealed class LootEditorBridge
         if (_vocabJson != null) return _vocabJson;
         // Kept once the spell table is in (the popups' spell lists come with it).
         LootSpellCatalog? spells = Items.Spells();
-        string json = JsonSerializer.Serialize(LootRuleText.BuildVocab(spells), LootEditJsonContext.Default.LootEditVocab);
+        string json = JsonSerializer.Serialize(LootRuleText.BuildVocab(spells, Ilt), LootEditJsonContext.Default.LootEditVocab);
         if (spells != null) _vocabJson = json;
         return json;
     }
@@ -260,6 +276,7 @@ internal sealed class LootEditorBridge
             Choices = req.Choices,
             Extras = req.Extras,
             Spells = Items.Spells(),
+            Ilt = Ilt,
         };
         LootItemRuleDraft? draft = LootItemRules.Build(facts, options, out string error);
         if (draft == null) return Refuse(d, error);
@@ -354,7 +371,7 @@ internal sealed class LootEditorBridge
             if (editing == null || (editing.Name ?? string.Empty) != req.EditName)
                 return Refuse(d, "That rule is no longer there. The list has been refreshed.");
             List<VTankLootCondition> all = editing.Conditions;
-            List<LootEditItemChoice> fromRule = LootItemAttributes.ChoicesFromRule(LootItemAttributes.ForBlank(), all, out kept);
+            List<LootEditItemChoice> fromRule = LootItemAttributes.ChoicesFromRule(LootItemAttributes.ForBlank(Ilt), all, out kept);
             // The popup sends only the rows it changed: they go over the rule's own.
             if (req.Choices != null)
                 foreach (LootEditItemChoice c in req.Choices)
@@ -372,6 +389,7 @@ internal sealed class LootEditorBridge
             KeepCount = req.KeepCount >= 0 ? req.KeepCount : editing?.KeepCount,
             RuleName = req.RuleName.Length > 0 ? req.RuleName : editing?.Name,
             BlankRule = true,
+            Ilt = Ilt,
             Choices = choices,
             Extras = req.Extras,
             Spells = Items.Spells(),
@@ -447,6 +465,7 @@ internal sealed class LootEditorBridge
             Choices = req.Choices,
             Extras = req.Extras,
             Spells = Items.Spells(),
+            Ilt = Ilt,
         };
         string error = string.Empty;
         LootItemRuleDraft? draft = facts == null ? LootItemRules.BuildBlank(options) : LootItemRules.Build(facts, options, out error);
@@ -679,6 +698,11 @@ internal sealed class LootItemHooks
 {
     /// <summary>The item selected in the game, or 0.</summary>
     public Func<uint> SelectedItemId { get; set; } = () => 0;
+    /// <summary>
+    /// RynthCore's active server is Infinite Leaftide (2026-11-07): the checklists offer the T11, weapon-card
+    /// and pet rows and the pickers the ACECustom keys only there. Null: treated as Leaftide.
+    /// </summary>
+    public Func<bool>? IsIlt { get; set; }
     /// <summary>
     /// The item's facts from the object cache, or null. The bools: "items like this" and
     /// "include T11 attributes"; either asks for an ID when the item isn't identified.

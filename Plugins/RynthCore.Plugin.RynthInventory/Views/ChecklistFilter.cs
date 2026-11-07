@@ -36,6 +36,16 @@ internal sealed class ChecklistFilter
 
     public ChecklistFilter() => Rebuild();
 
+    private bool _ilt;
+
+    /// <summary>On Infinite Leaftide: the T11, weapon-card and pet rows are offered (2026-11-07). Rebuilds when it changes.</summary>
+    public void SetIlt(bool ilt)
+    {
+        if (ilt == _ilt) return;
+        _ilt = ilt;
+        Rebuild();
+    }
+
     public void Clear()
     {
         _choices.Clear();
@@ -47,6 +57,7 @@ internal sealed class ChecklistFilter
     {
         LootItemRuleDraft d = LootItemRules.BuildBlank(new LootItemRuleOptions
         {
+            Ilt = _ilt,
             Choices = new List<LootEditItemChoice>(_choices.Values),
             Extras = new List<LootEditItemExtra>(_extras.Values),
             Spells = Catalog,
@@ -70,6 +81,13 @@ internal sealed class ChecklistFilter
         Rebuild();
     }
 
+    private void SetQuiet(LootEditItemAttribute r, bool on)
+    {
+        if (!_choices.TryGetValue(r.Id, out LootEditItemChoice? c))
+            _choices[r.Id] = c = new LootEditItemChoice { Id = r.Id, On = r.On, Op = r.Op, Value = string.Empty };
+        c.On = on;
+    }
+
     private static string OpLabel(int op) => op switch
     {
         0 => "at least", 1 => "is", 2 => "at most", 3 => "is not", 4 => "has any", 5 => "any", 6 => "has all", 10 => "exact", 11 => "or better", 12 => "any tier", _ => "?",
@@ -88,6 +106,10 @@ internal sealed class ChecklistFilter
                 int ticked = _rows.FindAll(x => x.Group == g && x.On).Count;
                 w.ToggleButton((open ? "- " : "+ ") + g + (ticked > 0 ? " (" + ticked.ToString(CultureInfo.InvariantCulture) + ")" : ""),
                     "cl.g." + g, open, () => _openGroup = _openGroup == g ? string.Empty : g, small: true);
+                w.SameLine();
+                w.SmallButton("all", "cl.all." + g, () => TickGroup(g, true));
+                w.SameLine();
+                w.SmallButton("none", "cl.none." + g, () => TickGroup(g, false));
                 if (g == LootItemAttributes.GroupSpells && open) DrawSpellPickers(w);
             }
             if (_openGroup != r.Group && !r.On) continue;
@@ -99,14 +121,16 @@ internal sealed class ChecklistFilter
             });
             if (r.Tip.Length > 0) w.Tooltip(r.Tip);
             if (!r.On) continue;
-            // The comparison: one small toggle per choice, on the same line.
+            // The comparison: a list, as the Loot Editor's popup has it (2026-11-07: one look for all).
             if (r.Ops.Count > 1)
-                foreach (int op in r.Ops)
+            {
+                w.SameLine();
+                var opNames = r.Ops.ConvertAll(OpLabel);
+                w.Combo("##op" + r.Label, "cl.op." + r.Id, Math.Max(0, r.Ops.IndexOf(r.Op)), opNames, i =>
                 {
-                    int o = op;
-                    w.SameLine();
-                    w.ToggleButton(OpLabel(o), "cl.op." + r.Id + "." + o.ToString(CultureInfo.InvariantCulture), r.Op == o, () => Set(row, op: o), small: true);
-                }
+                    if (i >= 0 && i < row.Ops.Count) Set(row, op: row.Ops[i], on: true);
+                });
+            }
             else if (r.Ops.Count == 1)
             {
                 w.SameLine();
@@ -151,6 +175,18 @@ internal sealed class ChecklistFilter
                 w.InputText("##" + r.Label, "cl.v." + r.Id, r.Value, 16, v => Set(row, value: v.Trim(), on: true));
         }
         foreach (string n in _notes) w.TextColored(UiColors.Stale, n);
+    }
+
+    /// <summary>"all" / "none" on a group, as in the Loot Editor's popup.</summary>
+    private void TickGroup(string group, bool on)
+    {
+        foreach (LootEditItemAttribute r in _rows)
+            if (r.Group == group && r.On != on)
+            {
+                if (!on && _extras.Remove(r.Id)) { _choices.Remove(r.Id); continue; }
+                SetQuiet(r, on);
+            }
+        Rebuild();
     }
 
     private void DrawSpellPickers(UiWindow w)

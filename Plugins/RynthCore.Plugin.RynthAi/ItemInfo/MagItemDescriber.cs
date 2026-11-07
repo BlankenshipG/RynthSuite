@@ -299,7 +299,10 @@ internal static class MagItemDescriber
             Int(T11Catalog.PropZcTier),
             Int(T11Catalog.PropWeaponAugScaleTier),
             item.TryGetInt(T11Catalog.PropWeaponAugScaleQuality, out int quality) ? quality : -1);
-        T11ItemInfo t11 = T11ItemInfo.Parse(item.Name, longDesc, item.GetString(StringUse), t11Server);
+        // T11 is Infinite Leaftide's (T11ItemSupport.Enabled follows the active server).
+        T11ItemInfo t11 = RynthCore.Plugin.RynthAi.Loot.T11ItemSupport.Enabled
+            ? T11ItemInfo.Parse(item.Name, longDesc, item.GetString(StringUse), t11Server)
+            : T11ItemInfo.None;
 
         // ── Set ─────────────────────────────────────────────────────────────────
         int set = Int(IntEquipmentSet);

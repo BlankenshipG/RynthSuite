@@ -3421,6 +3421,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             bool wasActive = _tier.Active;
             int was = _tier.Current;
             _tier.Refresh(Host);
+            Loot.T11ItemSupport.Enabled = _tier.OnIlt;   // T11 only on Infinite Leaftide (2026-11-07)
             if (_damageStore != null) _damageStore.Difficulty = _tier.Current;
 
             if (_creatureStore != null && _tier.ServerKey.Length > 0

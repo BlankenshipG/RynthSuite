@@ -45,9 +45,17 @@ internal static class T11ItemSupport
     public static bool HasT11Name(string? name)
         => !string.IsNullOrEmpty(name) && name.StartsWith(T11Catalog.NamePrefix, StringComparison.Ordinal);
 
-    /// <summary>The parsed T11 view of <paramref name="item"/> (<see cref="T11ItemInfo.None"/> for other items).</summary>
+    /// <summary>
+    /// On Infinite Leaftide (2026-11-07, "make sure all t11 attributes stuff is gated behind infinite leaftide"):
+    /// set from the active server once a second. Off it every item reads as not T11 (its virtual keys 0, no T11
+    /// info lines, no T11 checklist rows), whatever its text says.
+    /// </summary>
+    public static volatile bool Enabled = true;
+
+    /// <summary>The parsed T11 view of <paramref name="item"/> (<see cref="T11ItemInfo.None"/> for other items, and off Leaftide).</summary>
     public static T11ItemInfo Get(WorldObject item)
     {
+        if (!Enabled) return T11ItemInfo.None;
         string name = item.Name.Length > 0 ? item.Name : item.Values(StringValueKey.Name, string.Empty);
         string longDesc = item.Values(StringValueKey.LongDesc, string.Empty);
         string use = item.Values(StringValueKey.Use, string.Empty);

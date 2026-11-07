@@ -237,6 +237,14 @@ public static class LootItemAttributes
     /// The item's rows with their defaults: ticked for "items like this" (<paramref name="like"/>)
     /// what that match always required, the T11 rows when <paramref name="includeT11"/>.
     /// </summary>
+    /// <summary>An item's checklist; off Infinite Leaftide (<paramref name="ilt"/> false) without the T11, card and pet rows.</summary>
+    public static List<LootItemAttribute> For(LootItemFacts f, bool like, bool includeT11, bool ilt)
+    {
+        List<LootItemAttribute> rows = For(f, like, includeT11 && ilt);
+        if (!ilt) rows.RemoveAll(r => r.Group == GroupT11 || r.Group == GroupPet || (r.Kind == LootItemAttribute.Shape.Long && IsIltOnlyKey(r.Key)));
+        return rows;
+    }
+
     public static List<LootItemAttribute> For(LootItemFacts f, bool like, bool includeT11)
     {
         var rows = new List<LootItemAttribute>();
@@ -707,7 +715,23 @@ public static class LootItemAttributes
     /// Class row first; named values pick from their lists; a row per cantrip tier; T11's
     /// summary keys. The spells come from the lists (<see cref="AddExtras"/>).
     /// </summary>
-    public static List<LootItemAttribute> ForBlank()
+    /// <summary>
+    /// An ACECustom / Infinite Leaftide-only key (2026-11-07, Silentkelpie: "make sure all t11 attributes
+    /// stuff is gated behind infinite leaftide"): RynthAi's virtual T11 and weapon-card keys, ACECustom's
+    /// own property range (9000+: pets, split arrows, T11 weapon quality) and its Zc keys (50000+).
+    /// Decal's and VTank's synthetic keys (0x0A..., 0x0D...) are retail.
+    /// </summary>
+    public static bool IsIltOnlyKey(int key) => T11Keys.IsVirtual(key) || (key >= 9000 && key < 0x0A000000);
+
+    /// <summary>The blank checklist (every attribute); off Infinite Leaftide without the T11, card and pet rows.</summary>
+    public static List<LootItemAttribute> ForBlank(bool ilt = true)
+    {
+        List<LootItemAttribute> all = ForBlankAll();
+        if (!ilt) all.RemoveAll(r => r.Group == GroupT11 || r.Group == GroupPet || (r.Kind == LootItemAttribute.Shape.Long && IsIltOnlyKey(r.Key)));
+        return all;
+    }
+
+    private static List<LootItemAttribute> ForBlankAll()
     {
         var rows = new List<LootItemAttribute>();
         var classes = Array.FindAll(LootRuleText.ObjectClasses, c => c.Id != (int)AcObjectClass.Unknown && !NotAnItem((AcObjectClass)c.Id));
