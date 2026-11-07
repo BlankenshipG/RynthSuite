@@ -72,7 +72,7 @@ internal sealed class ChecklistFilter
 
     private static string OpLabel(int op) => op switch
     {
-        0 => ">=", 1 => "=", 2 => "<=", 3 => "not", 4 => "has any", 5 => "any", 6 => "has all", 10 => "exact", 11 => "or better", 12 => "any tier", _ => "?",
+        0 => "at least", 1 => "is", 2 => "at most", 3 => "is not", 4 => "has any", 5 => "any", 6 => "has all", 10 => "exact", 11 => "or better", 12 => "any tier", _ => "?",
     };
 
     public void Draw(UiWindow w)

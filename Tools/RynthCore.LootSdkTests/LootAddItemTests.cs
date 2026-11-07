@@ -177,7 +177,7 @@ internal static partial class Program
     {
         Console.WriteLine("\n-- LootAdd: preview and placement --");
         List<string> p = LootItemRules.PreviewLines(BuildOk(Opal(), new() { Match = LootItemMatch.Like }).Rule);
-        Eq(string.Join(" / ", p), "Rule: Keep like Black Opal / Action: Keep / If: Class is Gem / and MaterialType = Black Opal / and ItemWorkmanship >= 6",
+        Eq(string.Join(" / ", p), "Rule: Keep like Black Opal / Action: Keep / If: Class is Gem / and Material is Black Opal / and Workmanship at least 6",
             "preview lines (values by name)");
         List<string> k = LootItemRules.PreviewLines(BuildOk(Pea()).Rule);
         Eq(k[1], "Action: Keep # 100", "Keep # preview");

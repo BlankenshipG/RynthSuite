@@ -46,3 +46,15 @@
   checklist on the rule; the rule's conditions come back as ticked rows (two Has Flag on a key as
   has all, >= 1 on a named key as any), what no row can say is kept as written, Save rule
   replaces it in place (old file kept as .bak). Raw condition is the old by-hand picker.
+
+## Later: readable names everywhere in the loot editors
+- Property names are words, not the server's variable names: "Imbue" (not ImbuedEffect),
+  "Weapon type", "Material", "Workmanship", "Wield skill", "Current mana", "Times tinkered",
+  "Slayer type", "Description" / "Use text" (LongDesc / Use), "T11 zone tier" ...
+- Condition types read as sentences ("Property is at least", "Text matches", "Your level is at
+  least") instead of "Long Key >=", and rule summaries say "Workmanship at least 6",
+  "Material is not Steel", "at least 2 spells matching ...".
+- Item classes are split into words ("Melee Weapon", "Wand / Staff / Orb", "Spell Component").
+- Pickers show names only (no "(45)" id after each), and the checklist's comparisons are words:
+  at least / is / at most / is not / has any / has all / any.
+- Display only: the files keep VTank's keys and numbers.

@@ -330,7 +330,7 @@ internal static class LootAddItemTests
         Check.Eq(d?.InsertAt, 2, "nothing takes it: the end");
         Check.Eq(d?.Format, "utl", "format");
         Check.True(d?.TargetInUse == true, "target is the profile in use");
-        Check.True(d?.Preview.Any(l => l.Contains("Class is SpellComponent")) == true, "preview lines");
+        Check.True(d?.Preview.Any(l => l.Contains("Class is Spell Component")) == true, "preview lines");
         Check.Eq(File.ReadAllText(path), SellGems, "preview saves nothing");
 
         // The popup changes its mind: Keep 10, own name. Then Add.

@@ -135,7 +135,7 @@ internal static partial class Program
         LootItemRuleDraft d = BuildOk(Sword(), new() { Choices = Pick(("cantrips:Epic", true, LootItemAttributeOp.AtLeast, "2"), ("spellcount", true, LootItemAttributeOp.AtLeast, "3")) });
         Check(d.Rule.Conditions.Any(x => Lines(x) == "9:^(Epic|Legendary|Paragon(?:'s)?) ||2"), "cantrips: Spell Match, Epic or Legendary, at least 2");
         Check(d.Rule.Conditions.Any(x => Lines(x) == "8:3"), "cantrips: spell count >= 3");
-        Check(LootItemRules.PreviewLines(d.Rule).Any(l => l.Contains(">= 2 spells matching")), "cantrips: preview in words");
+        Check(LootItemRules.PreviewLines(d.Rule).Any(l => l.Contains("at least 2 spells matching")), "cantrips: preview in words");
     }
 
     private static void TestAttrPetEssence()
@@ -194,8 +194,8 @@ internal static partial class Program
         Check(LootRuleText.ValueTableIsFlags(179) && !LootRuleText.ValueTableIsFlags(353), "imbue is flags, weapon type isn't");
         Eq(LootRuleText.ValueName(362, "3"), "Naturalist", "vocab: summoning mastery");
         Check(LootRuleText.LongKeys.Any(k => k.Id == 9053) && LootRuleText.LongKeys.Any(k => k.Id == 9075), "vocab: pet keys named");
-        Check(LootRuleText.LongKeys.Any(k => k.Id == 92 && k.Name.StartsWith("UsesRemaining")), "vocab: 92 is uses remaining");
-        Check(LootRuleText.LongKeys.Any(k => k.Id == 107 && k.Name == "ItemCurMana") && LootRuleText.LongKeys.Any(k => k.Id == 108 && k.Name == "ItemMaxMana"), "vocab: current and max mana");
+        Check(LootRuleText.LongKeys.Any(k => k.Id == 92 && k.Name == "Uses left"), "vocab: 92 is uses remaining");
+        Check(LootRuleText.LongKeys.Any(k => k.Id == 107 && k.Name == "Current mana") && LootRuleText.LongKeys.Any(k => k.Id == 108 && k.Name == "Max mana"), "vocab: current and max mana");
         var ids = LootRuleText.LongKeys.Select(k => k.Id).ToList();
         Eq(ids.Count, ids.Distinct().Count(), "vocab: no long key named twice");
     }
@@ -224,7 +224,7 @@ internal static partial class Program
         VTankLootCondition c = b.Rule.Conditions.Single();
         Eq(c.NodeType, VTankNodeTypes.LongValKeyFlagExists, "has any: Long Key Has Flag");
         Eq(string.Join(",", c.DataLines), "17400,179", "has any: the flags then the key");
-        Eq(LootRuleText.Condition(c), "ImbuedEffect (imbue) has Any elemental rend", "has any: in words");
+        Eq(LootRuleText.Condition(c), "Imbue has Any elemental rend", "has any: in words");
         bool Takes(LootItemFacts f) => LootFactsMatcher.Match(b.Rule.Conditions, f, true) == LootFactsVerdict.Match;
         Check(Takes(wand), "has any: a fire rend in ImbuedEffect2 counts");
         Check(!Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [179] = 4 } }), "has any: armor rending alone is no elemental rend");

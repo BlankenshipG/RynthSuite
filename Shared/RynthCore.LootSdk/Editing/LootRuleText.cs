@@ -32,7 +32,38 @@ public static class LootRuleText
     };
 
     /// <summary>A node type's name, ASCII.</summary>
-    public static string NodeName(int type) => Ascii(VTankNodeTypes.DisplayName(type));
+    /// <summary>A condition type in plain words (2026-11-07: no "Long Key" / "Double Key" jargon).</summary>
+    public static string NodeName(int type) => type switch
+    {
+        VTankNodeTypes.ObjectClass => "Item class is",
+        VTankNodeTypes.LongValKeyGE => "Property is at least",
+        VTankNodeTypes.LongValKeyLE => "Property is at most",
+        VTankNodeTypes.LongValKeyE => "Property equals",
+        VTankNodeTypes.LongValKeyNE => "Property is not",
+        VTankNodeTypes.LongValKeyFlagExists => "Property has",
+        VTankNodeTypes.DoubleValKeyGE => "Decimal property is at least",
+        VTankNodeTypes.DoubleValKeyLE => "Decimal property is at most",
+        VTankNodeTypes.BuffedLongValKeyGE => "Buffed property is at least",
+        VTankNodeTypes.BuffedDoubleValKeyGE => "Buffed decimal property is at least",
+        VTankNodeTypes.StringValueMatch => "Text matches",
+        VTankNodeTypes.SpellNameMatch => "Has a spell matching",
+        VTankNodeTypes.SpellCountGE => "Number of spells is at least",
+        VTankNodeTypes.SpellMatch => "Spells matching, at least",
+        VTankNodeTypes.MinDamageGE => "Min damage is at least",
+        VTankNodeTypes.DamagePercentGE => "Damage % is at least",
+        VTankNodeTypes.TotalRatingsGE => "Total ratings are at least",
+        VTankNodeTypes.BuffedMedianDamageGE => "Buffed median damage is at least",
+        VTankNodeTypes.BuffedMissileDamageGE => "Buffed missile damage is at least",
+        VTankNodeTypes.CalcdBuffedTinkedDamageGE => "Buffed tinked damage is at least",
+        VTankNodeTypes.CalcedBuffedTinkedTargetMeleeGE => "Tinked target melee is at least",
+        VTankNodeTypes.CharacterLevelGE => "Your level is at least",
+        VTankNodeTypes.CharacterLevelLE => "Your level is at most",
+        VTankNodeTypes.CharacterSkillGE => "Your buffed skill is at least",
+        VTankNodeTypes.CharacterBaseSkill => "Your base skill is between",
+        VTankNodeTypes.CharacterMainPackEmptySlotsGE => "Your free pack slots are at least",
+        VTankNodeTypes.DisabledRule => "Rule disabled",
+        _ => Ascii(VTankNodeTypes.DisplayName(type)),
+    };
 
     private static string Ascii(string s) => s.Replace("≥", ">=").Replace("≤", "<=").Replace("≠", "!=");
 
@@ -45,50 +76,50 @@ public static class LootRuleText
     {
         var keys = new List<(int, string)>
         {
-            (5, "EncumbVal"), (9, "Locations"), (19, "Value"), (25, "Level"), (28, "ArmorLevel"), (44, "Damage (max)"), (45, "DamageType"),
-            (48, "WeaponSkill"), (54, "WeaponEncumbrance"),   // 54 was labelled MaxDamage until 2026-10-07; max damage is 44
+            (5, "Burden"), (9, "Equip locations"), (19, "Value (pyreals)"), (25, "Level"), (28, "Armor level"), (44, "Max damage"), (45, "Damage type"),
+            (48, "Weapon skill"), (54, "Weapon burden"),   // 54 was labelled MaxDamage until 2026-10-07; max damage is 44
             // 87 / 88 were labelled MaxStructure / Structure until 2026-10-18; uses are 91 / 92
             // (what the Pets tab reads for an essence's uses), and 107 is the current mana.
-            (86, "MinLevelRestrict"), (87, "MaxLevelRestrict"), (88, "LockpickSkillBonus"),
-            (91, "UsesTotal (MaxStructure)"), (92, "UsesRemaining (Structure)"),
-            (105, "ItemWorkmanship"), (106, "ItemSpellcraft"), (107, "ItemCurMana"), (108, "ItemMaxMana"),
-            (109, "ItemDifficulty (Arcane Lore)"),
-            (131, "MaterialType"), (158, "WieldRequirements"), (159, "WieldSkilltype"), (160, "WieldDifficulty"),
+            (86, "Min level to use"), (87, "Max level to use"), (88, "Lockpick bonus"),
+            (91, "Total uses"), (92, "Uses left"),
+            (105, "Workmanship"), (106, "Spellcraft"), (107, "Current mana"), (108, "Max mana"),
+            (109, "Arcane lore difficulty"),
+            (131, "Material"), (158, "Wield requirement"), (159, "Wield skill"), (160, "Wield difficulty"),
             // ACECustom / ACE appraisal: slayer weapons (166) and combat-essence pet stats (9053-9075).
             // "Slayer Type" is the player-facing name; the ACE property is still SlayerCreatureType.
-            (166, "Slayer Type"), (9053, "Pet Bond Level"), (9054, "Pet Captured Damage Type"), (9056, "Pet Potency Stored"),
-            (9057, "Pet Breeding Charges"), (9070, "Pet Damage Mutations"), (9071, "Pet Damage Resist Mutations"),
-            (9072, "Pet Crit Mutations"), (9073, "Pet Vitality Mutations"), (9074, "Pet Potency Mutations"),
-            (9075, "Pet Mutation Count"),
-            (307, "Pet DamageRating"), (308, "Pet DamageResistRating"), (313, "Pet CritRating"),
-            (314, "Pet CritDamageRating"), (315, "Pet CritResistRating"), (316, "Pet CritDamageResistRating"),
-            (362, "SummoningMastery"), (364, "UseLevelRequirement"), (366, "UseRequiresSkill"),
-            (368, "UseRequiresSkillSpec"), (369, "UseRequiresLevel"),
-            (179, "ImbuedEffect (imbue)"), (265, "EquipmentSetId (armor set)"),
-            (218, "EquippedSlots"), (353, "WeaponType (mastery)"), (370, "DamageRating"), (371, "DamageResistRating"),
-            (372, "CritRating"), (373, "CritResistRating"), (374, "CritDamageRating"),
-            (375, "CritDamageResistRating"), (376, "HealBoostRating"), (377, "NetherResistRating"), (379, "VitalityRating"),
+            (166, "Slayer type"), (9053, "Pet bond level"), (9054, "Pet captured damage type"), (9056, "Pet potency stored"),
+            (9057, "Pet breeding charges"), (9070, "Pet damage mutations"), (9071, "Pet damage resist mutations"),
+            (9072, "Pet crit mutations"), (9073, "Pet vitality mutations"), (9074, "Pet potency mutations"),
+            (9075, "Pet mutation count"),
+            (307, "Pet damage rating"), (308, "Pet damage resist rating"), (313, "Pet crit rating"),
+            (314, "Pet crit damage rating"), (315, "Pet crit resist rating"), (316, "Pet crit damage resist rating"),
+            (362, "Summoning mastery"), (364, "Level to use"), (366, "Skill needed to use"),
+            (368, "Specialized skill needed to use"), (369, "Level needed to use"),
+            (179, "Imbue"), (265, "Armor set"),
+            (218, "Equipped slots"), (353, "Weapon type"), (370, "Damage rating"), (371, "Damage resist rating"),
+            (372, "Crit rating"), (373, "Crit resist rating"), (374, "Crit damage rating"),
+            (375, "Crit damage resist rating"), (376, "Heal boost rating"), (377, "Nether resist rating"), (379, "Vitality rating"),
             (0x0D000000, "Type (WCID)"),   // Decal's synthetic key: the weenie class id
             // Decal's other synthetic keys (Decal.Adapter LongValueKey), as VTank's editor names them;
             // RynthAi reads each as the game property it is (WorldObjectCache.GetDecalLongKey).
-            (0x0D000001, "Icon"), (0x0D000004, "ItemSlots"), (0x0D000005, "PackSlots"),
-            (0x0D000006, "StackCount"), (0x0D000007, "StackMax"), (0x0D000008, "AssociatedSpell"),
-            (0x0D00000B, "WieldingSlot"), (0x0D00000D, "Coverage"), (0x0D00000E, "EquipableSlots"),
-            (0x0D00000F, "EquipType"), (0x0D000010, "IconOutline"), (0x0D000011, "MissileType"),
-            (0x0D000012, "UsageMask"), (0x0D000014, "HookMask"), (0x0D000015, "HookType"),
-            (0x0D00001A, "Category"), (0x0D00001F, "WeapSpeed"), (0x0D000020, "EquipSkill"),
-            (0x0D000021, "DamageType (Decal)"), (0x0D000022, "MaxDamage"),
-            (0x0D000029, "IconOverlay"), (0x0D00002A, "IconUnderlay"),
+            (0x0D000001, "Icon"), (0x0D000004, "Item slots"), (0x0D000005, "Pack slots"),
+            (0x0D000006, "Stack size"), (0x0D000007, "Max stack"), (0x0D000008, "Associated spell"),
+            (0x0D00000B, "Wielding slot"), (0x0D00000D, "Coverage"), (0x0D00000E, "Equipable slots"),
+            (0x0D00000F, "Equip type"), (0x0D000010, "Icon outline"), (0x0D000011, "Missile type"),
+            (0x0D000012, "Usage mask"), (0x0D000014, "Hook mask"), (0x0D000015, "Hook type"),
+            (0x0D00001A, "Category"), (0x0D00001F, "Weapon speed"), (0x0D000020, "Equip skill"),
+            (0x0D000021, "Damage type (Decal)"), (0x0D000022, "Max damage (Decal)"),
+            (0x0D000029, "Icon overlay"), (0x0D00002A, "Icon underlay"),
             // ACECustom T11 properties sent in the appraisal: real keys, so VTank reads them too.
-            (T11.T11Catalog.PropWeaponAugScaleQuality, "WeaponAugScaleQuality"),
-            (T11.T11Catalog.PropWeaponAugScaleTier, "WeaponAugScaleTier"),
-            (T11.T11Catalog.PropZcTier, "ZcTier"),
+            (T11.T11Catalog.PropWeaponAugScaleQuality, "T11 weapon quality"),
+            (T11.T11Catalog.PropWeaponAugScaleTier, "T11 weapon quality tier"),
+            (T11.T11Catalog.PropZcTier, "T11 zone tier"),
             // More of ACECustom's appraisal ints (2026-11-07).
-            (17, "RareId"), (33, "Bonded"), (114, "Attuned"), (171, "NumTimesTinkered"), (204, "ElementalDamageBonus"),
-            (263, "ResistanceCleavingType"), (292, "Cleaving (targets)"), (303, "ImbuedEffect2"), (304, "ImbuedEffect3"),
-            (305, "ImbuedEffect4"), (306, "ImbuedEffect5"), (319, "ItemMaxLevel"), (352, "CloakWeaveProc"),
-            (378, "LifeResistRating"), (386, "Overpower"), (387, "OverpowerResist"), (388, "OverpowerRating"),
-            (389, "OverpowerResistRating"), (9031, "SplitArrowCount"), (51100, "ZcRare"), (51101, "ZcRareGateTier"),
+            (17, "Rare"), (33, "Bonded"), (114, "Attuned"), (171, "Times tinkered"), (204, "Elemental damage bonus"),
+            (263, "Resistance Cleaving element"), (292, "Cleaving targets"), (303, "Imbue 2"), (304, "Imbue 3"),
+            (305, "Imbue 4"), (306, "Imbue 5"), (319, "Max item level"), (352, "Cloak weave proc"),
+            (378, "Life resist rating"), (386, "Overpower"), (387, "Overpower resist"), (388, "Overpower rating"),
+            (389, "Overpower resist rating"), (9031, "Split arrows"), (51100, "T11 rare"), (51101, "T11 rare gate tier"),
         };
         keys.AddRange(T11.T11Keys.Names());
         return keys.ToArray();
@@ -102,20 +133,20 @@ public static class LootRuleText
     /// </summary>
     public static readonly (int Id, string Name)[] DoubleKeys =
     {
-        (5, "ManaRate"), (22, "DamageVariance"), (29, "WeaponDefense"), (62, "WeaponOffense"),
-        (63, "DamageMod"), (138, "Slayer Damage Bonus"), // often unset on ACE appraisal; prefer LongDesc / int 166
-        (144, "ManaConversionMod"), (149, "WeaponMissileDefense"),
-        (150, "WeaponMagicDefense"), (152, "ElementalDamageVsMonsters"), (167, "CooldownDuration"),
-        (136, "Crushing Blow (CriticalMultiplier)"), (147, "Biting Strike (CriticalFrequency)"), (155, "Armor Cleaving (IgnoreArmor)"),
-        (157, "Resistance Cleaving (ResistanceModifier)"), (159, "AbsorbMagicDamage"),
-        (0x0A000009, "SalvageWorkmanship"), (0x0A00000B, "Variance"),
-        (0x0A00000C, "AttackBonus"), (0x0A00000E, "DamageBonus"),
+        (5, "Mana rate"), (22, "Damage variance"), (29, "Melee defense bonus"), (62, "Attack bonus"),
+        (63, "Damage modifier"), (138, "Slayer damage bonus"), // often unset on ACE appraisal; prefer LongDesc / int 166
+        (144, "Mana conversion bonus"), (149, "Missile defense bonus"),
+        (150, "Magic defense bonus"), (152, "Elemental damage vs monsters"), (167, "Cooldown (seconds)"),
+        (136, "Crushing Blow"), (147, "Biting Strike"), (155, "Armor Cleaving"),
+        (157, "Resistance Cleaving"), (159, "Absorb magic damage"),
+        (0x0A000009, "Salvage workmanship"), (0x0A00000B, "Variance (VTank)"),
+        (0x0A00000C, "Attack bonus (VTank)"), (0x0A00000E, "Damage bonus (VTank)"),
     };
 
     /// <summary>String keys. Use (14) and LongDesc (16) hold the T11 "Modifiers:" / "Property Details:" text.</summary>
     public static readonly (int Id, string Name)[] StringKeys =
     {
-        (1, "Name"), (5, "Inscription"), (7, "Title"), (14, "Use"), (16, "LongDesc"),
+        (1, "Name"), (5, "Inscription"), (7, "Title"), (14, "Use text"), (16, "Description"),
     };
 
     /// <summary>
@@ -327,11 +358,11 @@ public static class LootRuleText
     {
         string? name = ValueName(longKey, raw);
         if (name != null && TryParseValue(raw, out int v)) return PickerLabel(v, name);
-        return "value " + (raw ?? string.Empty).Trim();
+        return (raw ?? string.Empty).Trim();
     }
 
     /// <summary>"Name (id)", the way the pickers list a named id.</summary>
-    public static string PickerLabel(int id, string name) => name + " (" + id.ToString(CultureInfo.InvariantCulture) + ")";
+    public static string PickerLabel(int id, string name) => name;   // names only (2026-11-07); the id stays in the file
 
     /// <summary>Object classes (Decal/VTank numbering, AcObjectClass).</summary>
     public static (int Id, string Name)[] ObjectClasses { get; } = BuildObjectClasses();
@@ -340,7 +371,7 @@ public static class LootRuleText
     {
         var list = new List<(int, string)>();
         foreach (AcObjectClass c in Enum.GetValues<AcObjectClass>())
-            list.Add(((int)c, c.ToString()));
+            list.Add(((int)c, ClassName(c)));
         return list.ToArray();
     }
 
@@ -438,6 +469,27 @@ public static class LootRuleText
 
     // ── Summaries ────────────────────────────────────────────────────────
 
+    /// <summary>An object class in words: "Melee Weapon", "Wand / Staff / Orb" (the enum's own name split).</summary>
+    public static string ClassName(AcObjectClass c) => c switch
+    {
+        AcObjectClass.WandStaffOrb => "Wand / Staff / Orb",
+        _ => SplitWords(c.ToString()),
+    };
+
+    /// <summary>"MeleeWeapon" as "Melee Weapon": a space before each capital that starts a word.</summary>
+    public static string SplitWords(string name)
+    {
+        var sb = new StringBuilder(name.Length + 8);
+        for (int i = 0; i < name.Length; i++)
+        {
+            char ch = name[i];
+            if (i > 0 && char.IsUpper(ch) && (char.IsLower(name[i - 1]) || (i + 1 < name.Length && char.IsLower(name[i + 1]) && char.IsUpper(name[i - 1]))))
+                sb.Append(' ');
+            sb.Append(ch);
+        }
+        return sb.ToString();
+    }
+
     /// <summary>A rule's conditions in words, joined with AND (DisabledRule nodes left out).</summary>
     public static string Summary(VTankLootRule rule, int maxLength = 160)
     {
@@ -480,35 +532,35 @@ public static class LootRuleText
         return c.NodeType switch
         {
             VTankNodeTypes.ObjectClass => $"Class is {Oc(0)}",
-            VTankNodeTypes.LongValKeyGE => $"{Lk(1)} >= {Lv()}",
-            VTankNodeTypes.LongValKeyLE => $"{Lk(1)} <= {Lv()}",
-            VTankNodeTypes.LongValKeyE => $"{Lk(1)} = {Lv()}",
-            VTankNodeTypes.LongValKeyNE => $"{Lk(1)} != {Lv()}",
+            VTankNodeTypes.LongValKeyGE => $"{Lk(1)} at least {Lv()}",
+            VTankNodeTypes.LongValKeyLE => $"{Lk(1)} at most {Lv()}",
+            VTankNodeTypes.LongValKeyE => $"{Lk(1)} is {Lv()}",
+            VTankNodeTypes.LongValKeyNE => $"{Lk(1)} is not {Lv()}",
             VTankNodeTypes.LongValKeyFlagExists => $"{Lk(1)} has {Lv()}",
-            VTankNodeTypes.DoubleValKeyGE => $"{Dk(1)} >= {G(0)}",
-            VTankNodeTypes.DoubleValKeyLE => $"{Dk(1)} <= {G(0)}",
-            VTankNodeTypes.BuffedLongValKeyGE => $"buffed {Lk(1)} >= {Lv()}",
-            VTankNodeTypes.BuffedDoubleValKeyGE => $"buffed {Dk(1)} >= {G(0)}",
+            VTankNodeTypes.DoubleValKeyGE => $"{Dk(1)} at least {G(0)}",
+            VTankNodeTypes.DoubleValKeyLE => $"{Dk(1)} at most {G(0)}",
+            VTankNodeTypes.BuffedLongValKeyGE => $"buffed {Lk(1)} at least {Lv()}",
+            VTankNodeTypes.BuffedDoubleValKeyGE => $"buffed {Dk(1)} at least {G(0)}",
             VTankNodeTypes.StringValueMatch => $"{Sk(1)} matches \"{Trunc(G(0), 30)}\"",
-            VTankNodeTypes.SpellNameMatch => $"spell matches \"{Trunc(G(0), 30)}\"",
-            VTankNodeTypes.SpellCountGE => $"spell count >= {G(0)}",
-            VTankNodeTypes.SpellMatch => $">= {G(2)} spells matching \"{Trunc(G(0), 20)}\"",
-            VTankNodeTypes.MinDamageGE => $"min dmg >= {G(0)}",
-            VTankNodeTypes.DamagePercentGE => $"dmg% >= {G(0)}",
-            VTankNodeTypes.TotalRatingsGE => $"total ratings >= {G(0)}",
-            VTankNodeTypes.BuffedMedianDamageGE => $"median dmg >= {G(0)}",
-            VTankNodeTypes.BuffedMissileDamageGE => $"missile dmg >= {G(0)}",
-            VTankNodeTypes.CalcdBuffedTinkedDamageGE => $"tinked dmg >= {G(0)}",
-            VTankNodeTypes.CharacterLevelGE => $"char level >= {G(0)}",
-            VTankNodeTypes.CharacterLevelLE => $"char level <= {G(0)}",
-            VTankNodeTypes.CharacterMainPackEmptySlotsGE => $"pack slots >= {G(0)}",
-            VTankNodeTypes.CharacterSkillGE => $"{Skl(1)} skill >= {G(0)}",
-            VTankNodeTypes.CharacterBaseSkill => $"{Skl(0)} base in [{G(1)}, {G(2)}]",
-            VTankNodeTypes.SlotExactPalette => $"palette slot {G(0)} = {G(1)}",
+            VTankNodeTypes.SpellNameMatch => $"has a spell matching \"{Trunc(G(0), 30)}\"",
+            VTankNodeTypes.SpellCountGE => $"at least {G(0)} spells",
+            VTankNodeTypes.SpellMatch => $"at least {G(2)} spells matching \"{Trunc(G(0), 20)}\"",
+            VTankNodeTypes.MinDamageGE => $"min damage at least {G(0)}",
+            VTankNodeTypes.DamagePercentGE => $"damage % at least {G(0)}",
+            VTankNodeTypes.TotalRatingsGE => $"total ratings at least {G(0)}",
+            VTankNodeTypes.BuffedMedianDamageGE => $"buffed median damage at least {G(0)}",
+            VTankNodeTypes.BuffedMissileDamageGE => $"buffed missile damage at least {G(0)}",
+            VTankNodeTypes.CalcdBuffedTinkedDamageGE => $"buffed tinked damage at least {G(0)}",
+            VTankNodeTypes.CharacterLevelGE => $"your level at least {G(0)}",
+            VTankNodeTypes.CharacterLevelLE => $"your level at most {G(0)}",
+            VTankNodeTypes.CharacterMainPackEmptySlotsGE => $"at least {G(0)} free pack slots",
+            VTankNodeTypes.CharacterSkillGE => $"your buffed {Skl(1)} at least {G(0)}",
+            VTankNodeTypes.CharacterBaseSkill => $"your base {Skl(0)} from {G(1)} to {G(2)}",
+            VTankNodeTypes.SlotExactPalette => $"palette slot {G(0)} is {G(1)}",
             VTankNodeTypes.AnySimilarColor => "color (any similar)",
             VTankNodeTypes.SimilarColorArmorType => "color (armor type)",
             VTankNodeTypes.SlotSimilarColor => "color (slot)",
-            VTankNodeTypes.CalcedBuffedTinkedTargetMeleeGE => "buffed tinked target melee",
+            VTankNodeTypes.CalcedBuffedTinkedTargetMeleeGE => "tinked target melee",
             VTankNodeTypes.DisabledRule => "(rule disabled)",
             _ => $"node {c.NodeType}",
         };

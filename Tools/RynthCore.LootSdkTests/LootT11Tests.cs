@@ -144,7 +144,7 @@ internal static partial class Program
         // A low stamped tier on a plain item doesn't make it T11.
         Check(!T11ItemInfo.Parse("Celdon Breastplate", null, null, new T11ServerProps(7, 0, -1)).IsT11, "server: tier 7 is not T11");
 
-        Check(LootRuleText.LongKeys.Any(k => k.Id == T11Catalog.PropZcTier && k.Name == "ZcTier"), "server: editor names ZcTier");
+        Check(LootRuleText.LongKeys.Any(k => k.Id == T11Catalog.PropZcTier && k.Name == "T11 zone tier"), "server: editor names ZcTier");
         Check(LootRuleText.LongKeys.Any(k => k.Id == T11Catalog.PropWeaponAugScaleQuality), "server: editor lists WeaponAugScaleQuality");
         Check(LootRuleText.LongKeys.Any(k => k.Id == T11Catalog.PropWeaponAugScaleTier), "server: editor lists WeaponAugScaleTier");
         Eq(LootRuleText.ValueName(T11Keys.GearGrade, "16"), "S", "server: gear grade value table");

@@ -47,7 +47,7 @@ internal static partial class Program
             Eq(table.Select(t => t.Name).Distinct().Count(), table.Length, $"{label}: names unique");
         }
         Check(ReferenceEquals(LootRuleText.ValueTableFor(166), LootRuleText.CreatureTypes), "166 Slayer Type -> creature types");
-        Eq(LootRuleText.LongKeys.First(k => k.Id == 166).Name, "Slayer Type", "166 player-facing name");
+        Eq(LootRuleText.LongKeys.First(k => k.Id == 166).Name, "Slayer type", "166 player-facing name");
         Eq(LootRuleText.ValueName(166, "1"), "Olthoi", "ValueName 166/1 Olthoi");
         Check(LootRuleText.CreatureTypes.Select(t => t.Name)
                 .SequenceEqual(LootRuleText.CreatureTypes.Select(t => t.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase)),
@@ -84,10 +84,10 @@ internal static partial class Program
         Eq(LootRuleText.ValueName(159, "999"), null, "ValueName unknown value");
         Eq(LootRuleText.ValueName(160, "45"), null, "ValueName key without a table");
         Eq(LootRuleText.ValueName(159, "abc"), null, "ValueName not a number");
-        Eq(LootRuleText.ValueLabel(159, "45"), "Light Weapons (45)", "ValueLabel named");
-        Eq(LootRuleText.ValueLabel(131, "999"), "value 999", "ValueLabel unknown");
-        Eq(LootRuleText.ValueLabel(45, "7"), "value 7", "ValueLabel flag combination not named");
-        Eq(LootRuleText.ValueLabel(160, "300"), "value 300", "ValueLabel plain key");
+        Eq(LootRuleText.ValueLabel(159, "45"), "Light Weapons", "ValueLabel named");
+        Eq(LootRuleText.ValueLabel(131, "999"), "999", "ValueLabel unknown");
+        Eq(LootRuleText.ValueLabel(45, "7"), "7", "ValueLabel flag combination not named");
+        Eq(LootRuleText.ValueLabel(160, "300"), "300", "ValueLabel plain key");
         Check(LootRuleText.TryParseValue("-3", out int neg) && neg == -3, "TryParseValue negative");
         Check(!LootRuleText.TryParseValue("4.5", out _), "TryParseValue refuses a fraction");
 
@@ -115,11 +115,11 @@ internal static partial class Program
 
         // Summaries name the value.
         var cond = new VTankLootCondition(VTankNodeTypes.LongValKeyE, "0", new[] { "45", "159" });
-        Eq(LootRuleText.Condition(cond), "WieldSkilltype = Light Weapons", "summary names the skill");
+        Eq(LootRuleText.Condition(cond), "Wield skill is Light Weapons", "summary names the skill");
         Eq(LootRuleText.Condition(new VTankLootCondition(VTankNodeTypes.LongValKeyGE, "0", new[] { "300", "160" })),
-            "WieldDifficulty >= 300", "summary of a plain key unchanged");
+            "Wield difficulty at least 300", "summary of a plain key unchanged");
         Eq(LootRuleText.Condition(new VTankLootCondition(VTankNodeTypes.LongValKeyE, "0", new[] { "999", "131" })),
-            "MaterialType = 999", "summary of an unknown value is the number");
+            "Material is 999", "summary of an unknown value is the number");
 
         // Round trip: values picked by name through the wire, saved, reopened: the same numbers.
         string Pick((int Id, string Name)[] table, string name) =>
@@ -153,7 +153,7 @@ internal static partial class Program
         Check(text.Contains("\n45\n159\n") && text.Contains("\n64\n131\n"), "file holds plain numbers (format unchanged)");
         Check(re.Encode().AsSpan().SequenceEqual(File.ReadAllBytes(s.Path)), "reopened file re-encodes byte for byte");
         string sum = LootRuleText.Summary(saved, 400);
-        Check(sum.Contains("WieldSkilltype = Light Weapons") && sum.Contains("MaterialType != Steel") && sum.Contains("WieldRequirements = Base Skill"),
+        Check(sum.Contains("Wield skill is Light Weapons") && sum.Contains("Material is not Steel") && sum.Contains("Wield requirement is Base Skill"),
             "summary: " + sum);
     }
 }
