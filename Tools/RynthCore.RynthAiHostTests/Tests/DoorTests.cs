@@ -36,6 +36,7 @@ internal static class DoorTests
         r.Add("door: still closed after an answered use, no 'locked' from the server: used again, never picked", NotLockedWithoutServer);
         r.Add("door: the server says locked: a lockpick goes on it, then the door is opened again", LockedUsesLockpick);
         r.Add("door: locked and no lockpick: cooldown, and the door is skipped a while", LockedNoPick);
+        r.Add("door: the server says locked: a carried key goes on it first (the quest run's keys first), then lockpicks", LockedUsesKeyFirst);
         r.Add("door: nothing in portal space, nor just after it", NothingInPortalSpace);
         r.Add("door: a door that opens is released at once (no fixed waits)", OpensFast);
         r.Add("door: 'locked' from chat counts only as the server's line, not a player's", LockedChatLine);
@@ -83,7 +84,7 @@ internal static class DoorTests
         public long Now = 50_000_000;
         public readonly RynthCoreHost Host;
 
-        public Bot(bool lockpick = true)
+        public Bot(bool lockpick = true, bool inventory = false, Action? beforeCreate = null)
         {
             FakeHost.Reset();
             FakeHost.WeaponCalls = true;      // UseObject
@@ -100,6 +101,8 @@ internal static class DoorTests
             FakeHost.ObjectStates[Door] = Closed;
             FakeHost.Names[Pick] = "Plain Lockpick";
             FakeHost.Names[Kit] = "Treated Healing Kit";
+            if (inventory) FakeHost.SalvageCalls = true;   // containers and wielders: what the pack holds
+            beforeCreate?.Invoke();
             Host = FakeHost.Create(Player);
 
             ActionPacer.Reset();
@@ -278,6 +281,50 @@ internal static class DoorTests
         b.Now += 50;
         Check.False(b.Tick(), "opened: nav released");
         Check.Eq(b.State, "None", "done");
+    });
+
+    // 2026-11-07: a quest run in a dungeon unlocks doors with the quest's keys ("Use the Cave Door Key on the door").
+    private const uint Key = 0x80000D13, OtherKey = 0x80000D14;
+    private static void LockedUsesKeyFirst() => With(() =>
+    {
+        var b = new Bot(lockpick: true, inventory: true, beforeCreate: () =>
+        {
+            FakeHost.Names[Key] = "Cave Door Key";
+            FakeHost.Names[OtherKey] = "Rusty Key";
+            FakeHost.Containers[Key] = Player;
+            FakeHost.Containers[OtherKey] = Player;
+        });
+        _ = b.Cache[unchecked((int)Key)];        // in the pack, as the lockpick is
+        _ = b.Cache[unchecked((int)OtherKey)];
+        b.Cache.Tick();
+        typeof(RynthAiPlugin).GetField("_questDungeonKeys", Any)!.GetValue(b.P).GetType().GetMethod("Add")!
+            .Invoke(typeof(RynthAiPlugin).GetField("_questDungeonKeys", Any)!.GetValue(b.P), new object[] { "Cave Door Key" });
+        b.Set("_questDungeonActive", true);
+        b.Tick();
+        b.Run(300);
+        b.Run(1500, 100);
+        b.Say("The door is locked!");
+        b.Answer(open: false);
+        b.Run(300);
+        Check.Eq(FakeHost.UsesOn.Count(u => u.Source == Key && u.Target == Door), 1, "the quest's key goes on the door first");
+        Check.Eq(Picks(), 0, "...not a lockpick yet");
+        FakeHost.UseDone(0);
+        b.Run(300);
+        Check.Eq(DoorUses(), 2, "opened again after the key");
+        b.Run(1500, 100);
+        b.Say("The door is locked!");   // the key didn't fit
+        b.Answer(open: false);
+        b.Run(300);
+        Check.Eq(FakeHost.UsesOn.Count(u => u.Source == OtherKey && u.Target == Door), 1, "still locked: the next carried key");
+        FakeHost.UseDone(0);
+        b.Run(300);
+        b.Run(1500, 100);
+        b.Say("The door is locked!");
+        b.Answer(open: false);
+        b.Run(300);
+        Check.Eq(Picks(), 1, "no key left: the lockpick");
+        Check.True(RynthAiPlugin.IsKeyName("Bonecrunch's Chest Key") && RynthAiPlugin.IsKeyName("Keyring") && !RynthAiPlugin.IsKeyName("Monkey Paw") && !RynthAiPlugin.IsKeyName("Keystone"),
+            "a key's name: Key, Keys, Keyring; not Monkey or Keystone");
     });
 
     private static void LockedNoPick() => With(() =>

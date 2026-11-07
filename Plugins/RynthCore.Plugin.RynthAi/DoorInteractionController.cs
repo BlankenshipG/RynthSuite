@@ -58,6 +58,10 @@ public sealed partial class RynthAiPlugin
     private int _doorRequestedId;        // asked for by the nav recovery detour; taken on the next idle tick
     private bool _doorTargetRequested;   // the current target came from a request
     private bool _doorWantLockpick;      // Pending sends a lockpick (the server said locked), not an open
+    // 2026-11-07: a key first. A quest run in a dungeon (RynthAiPlugin.QuestDungeon.cs), or Auto Unlock Doors,
+    // tries the carried keys on a door the server says is locked, the quest's own keys first, then lockpicks.
+    private int _doorWantKeyId;          // Pending sends this key on the door
+    private readonly System.Collections.Generic.HashSet<int> _doorKeysTried = new();
     private long _doorSentAt;            // when the last door use / lockpick went out
     private int _doorSeqAtSend;          // the UseDone count read just before it went out
     private uint _doorAnswerErr;         // the error of the UseDone that answered it (0 = done)
@@ -169,6 +173,8 @@ public sealed partial class RynthAiPlugin
             _doorAttempts = 0;
             _doorPicks = 0;
             _doorWantLockpick = false;
+            _doorWantKeyId = 0;
+            _doorKeysTried.Clear();
 
             _navigationEngine?.Stop();
             if (Host.HasStopCompletely) Host.StopCompletelyBy("Door");
@@ -239,6 +245,7 @@ public sealed partial class RynthAiPlugin
                     ? $"[RynthAi] Door: lockpick answered, opening 0x{(uint)_doorTargetId:X8} again"
                     : $"[RynthAi] Door: no answer to the lockpick in {now - _doorSentAt} ms, opening 0x{(uint)_doorTargetId:X8} again");
                 _doorWantLockpick = false;
+                _doorWantKeyId = 0;
                 EnterDoorPending(now);
                 return true;
             }
@@ -294,7 +301,21 @@ public sealed partial class RynthAiPlugin
 
         int seqBefore = ActionPacer.UseDoneSeqNow(Host);
         bool sent;
-        if (_doorWantLockpick)
+        if (_doorWantKeyId != 0)
+        {
+            int keyId = _doorWantKeyId;
+            _doorWantKeyId = 0;
+            if (!Host.TryGetObjectName(unchecked((uint)keyId), out string keyName))
+            {
+                Host.Log("[RynthAi] Door: the key is gone; opening it again");
+                EnterDoorPending(now);
+                return true;
+            }
+            Host.Log($"[RynthAi] Door: using key {keyName} on 0x{(uint)_doorTargetId:X8}");
+            sent = Host.UseOnFor(unchecked((uint)keyId), unchecked((uint)_doorTargetId), "Door", "the server says this door is locked: a key in the pack");
+            if (sent) _doorState = DoorState.Unlocking;
+        }
+        else if (_doorWantLockpick)
         {
             var lockpick = FindLockpickInConsumables();
             if (lockpick == null)
@@ -391,6 +412,15 @@ public sealed partial class RynthAiPlugin
     /// <summary>The server said the door is locked: a lockpick if allowed and carried, else leave it for a while.</summary>
     private bool OnDoorLocked(LegacyUiSettings settings, long now)
     {
+        // A key from the pack first: the quest's own keys, then any key (2026-11-07).
+        if ((_questDungeonActive || settings.AutoUnlockDoors) && NextDoorKey() is WorldObject key)
+        {
+            _doorKeysTried.Add(key.Id);
+            _doorWantKeyId = key.Id;
+            Host.Log($"[RynthAi] Door: the server says 0x{(uint)_doorTargetId:X8} is locked - trying {key.Name}");
+            EnterDoorPending(now);
+            return true;
+        }
         if (!settings.AutoUnlockDoors)
         {
             Host.Log($"[RynthAi] Door: the server says 0x{(uint)_doorTargetId:X8} is locked; Auto Unlock Doors is off, cooldown");
@@ -457,6 +487,8 @@ public sealed partial class RynthAiPlugin
         _doorAttempts = 0;
         _doorPicks = 0;
         _doorWantLockpick = false;
+        _doorWantKeyId = 0;
+        _doorKeysTried.Clear();
         _doorTargetRequested = false;
     }
 
@@ -702,6 +734,27 @@ public sealed partial class RynthAiPlugin
             return $"motionOn={on}";
         return "no-state";
     }
+
+    /// <summary>
+    /// The next carried key not tried on this door: the quest run's keys by name first
+    /// (<see cref="_questDungeonKeys"/>), then anything carried called a key or keyring; never a lockpick.
+    /// </summary>
+    private WorldObject? NextDoorKey()
+    {
+        if (_objectCache == null) return null;
+        var carried = GiveCandidates(n => n.IndexOf("key", StringComparison.OrdinalIgnoreCase) >= 0
+                                          && n.IndexOf("lockpick", StringComparison.OrdinalIgnoreCase) < 0);
+        foreach (string want in _questDungeonKeys)
+            foreach (WorldObject wo in carried)
+                if (!_doorKeysTried.Contains(wo.Id) && QuestItemNameMatches(wo.Name, want)) return wo;
+        foreach (WorldObject wo in carried)
+            if (!_doorKeysTried.Contains(wo.Id) && IsKeyName(wo.Name)) return wo;
+        return null;
+    }
+
+    /// <summary>"Cave Door Key", "Bonecrunch's Chest Key", "Keyring": a key (not "Keystone", "Monkey").</summary>
+    internal static bool IsKeyName(string name) =>
+        System.Text.RegularExpressions.Regex.IsMatch(name ?? "", @"(?<![\p{L}])(?:key|keys|keyring)(?![\p{L}])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     /// <summary>The first listed lockpick still carried: its own stack, else one of the same name (ConsumableLookup).</summary>
     private WorldObject? FindLockpickInConsumables()

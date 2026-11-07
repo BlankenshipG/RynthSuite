@@ -208,6 +208,7 @@ namespace RynthOracle.Tests
             Check(body.Contains("###g.stop") && body.Contains("###g.next") && body.Contains("going to 28.5S, 90.9W"), "run: Stop / Next and what it is doing");
             run.OnChat("[RynthNav] goto: arrived at 28.5S, 90.9W");
             Check(!run.Travelling && said.Exists(l => l.StartsWith("Step 2/10: Run to the Hidden Infiltrator Keep")), "run: arrival prints the step");
+            Check(ai[^1] == "dungeon enter", "run: the step goes into the Keep: RynthAi takes the portal there (2026-11-07)");
             run.Next();
             // A step without coordinates goes to what it names (2026-11-07); RynthNav doesn't know these two.
             Check(run.Step == 2 && nav.Count == 2 && nav[1] == "go Tortured Raveners || Damaged Dolls",
@@ -221,7 +222,7 @@ namespace RynthOracle.Tests
             run.OnChat("You've stamped Someone_Elses_Stamp!");
             Check(run.Step == 3, "run: another stamp doesn't");
             run.Stop();
-            Check(!run.Active && ai.Count == 8 && ai[4] == "remove Shiny Red Stone" && ai[7] == "profile off",
+            Check(!run.Active && ai.Count == 9 && ai[5] == "remove Shiny Red Stone" && ai[8] == "profile off",
                 "run: Stop takes the loot off RynthAi's list and goes back to the loot profile before: " + string.Join(" | ", ai));
             Check(run.BuildProfile(v) && ai[^1].StartsWith("build Mistreated Virindi|Shiny Red Stone|"), "Loot profile: RynthAi writes the quest's profile");
 

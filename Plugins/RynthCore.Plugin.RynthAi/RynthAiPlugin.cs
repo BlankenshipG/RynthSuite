@@ -1048,12 +1048,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             value = (value ?? "").Trim();
             if (value.StartsWith("questloot ", StringComparison.OrdinalIgnoreCase)) value = value.Substring(10).Trim();
             // "talk|handin <npc>..." (2026-11-07): the quest run's NPCs (RynthAiPlugin.QuestNpc.cs).
-            var (ok, text) = TryQuestLootProfile(value) ?? TryQuestNpc(value) ?? QuestLootList.Apply(value);
+            // "dungeon patrol|goto|stop" (2026-11-07): the quest run inside a dungeon (RynthAiPlugin.QuestDungeon.cs).
+            var (ok, text) = TryQuestLootProfile(value) ?? TryQuestNpc(value) ?? TryQuestDungeon(value) ?? QuestLootList.Apply(value);
             Host.Log(text);
             if (!ok) ReplyFail(text);
             else if (value.TrimStart().StartsWith("profile", StringComparison.OrdinalIgnoreCase)
                      || value.TrimStart().StartsWith("talk", StringComparison.OrdinalIgnoreCase)
-                     || value.TrimStart().StartsWith("handin", StringComparison.OrdinalIgnoreCase)) ChatLine(text);   // the loot profile changed, or an NPC is being talked to: say so
+                     || value.TrimStart().StartsWith("handin", StringComparison.OrdinalIgnoreCase)
+                     || value.TrimStart().StartsWith("dungeon", StringComparison.OrdinalIgnoreCase)) ChatLine(text);   // the loot profile changed, or an NPC is being talked to: say so
             return;
         }
         var dash = _dashboard;
@@ -4101,7 +4103,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "questloot":
             {
                 string ql = parts.Length > 2 ? string.Join(" ", parts, 2, parts.Length - 2) : "list";
-                var (ok, text) = TryQuestLootProfile(ql) ?? TryQuestNpc(ql) ?? QuestLootList.Apply(ql);
+                var (ok, text) = TryQuestLootProfile(ql) ?? TryQuestNpc(ql) ?? TryQuestDungeon(ql) ?? QuestLootList.Apply(ql);
                 if (ok) ReplyOk(text); else ReplyFail(text);
                 break;
             }

@@ -228,6 +228,14 @@ internal static class GiveTests
         w.Call("ApplyRemoteCommand", "questloot", "handin Town Crier | Darling's Collar (Quest Item)");
         Check.True(FakeHost.Gives.Count == 0 && FakeHost.Uses.Count == 1, "handin with nothing of it carried: talks instead");
         Check.True(w.ChatWith("is in your pack; talking to Town Crier") == 1, "handin: chat says nothing was carried");
+
+        // The quest run's dungeon verbs (2026-11-07) out in the open: nothing starts.
+        w.Call("ApplyRemoteCommand", "questloot", "dungeon patrol | Cave Door Key");
+        Check.True(w.ChatWith("Quest: not inside a dungeon") == 1, "dungeon patrol outdoors: says so, nothing starts");
+        w.Call("ApplyRemoteCommand", "questloot", "dungeon stop");
+        Check.True(w.ChatWith("no dungeon walk to stop") == 1, "dungeon stop with none: says so");
+        w.Call("ApplyRemoteCommand", "questloot", "dungeon enter");
+        Check.True(w.ChatWith("no portal within") == 1, "dungeon enter with no portal near: says so");
     }
 
     private static void UbGiveCount()

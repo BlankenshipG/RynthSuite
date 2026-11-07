@@ -580,6 +580,10 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
         _ui.Poll(Host);
         TickData(now);
+        // Run this quest inside a dungeon (2026-11-07): the run hears when the character goes in or out.
+        if (_c.Runner is { Active: true } run && Host.HasGetPlayerPose
+            && Host.TryGetPlayerPose(out uint cell, out _, out _, out _, out _, out _, out _, out _) && cell != 0)
+            run.OnWhere((cell & 0xFFFF) >= 0x0100);
 
         if (!Host.HasUi) return;
         // After the poll, so a tab clicked this tick is already selected.
