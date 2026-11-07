@@ -476,7 +476,9 @@ internal sealed partial class OracleView
             });
             w.Tooltip("RynthNav walks to each step you haven't been stamped for, in order; the step's instructions go to chat\n"
                       + "when you get there. A stamp moves it on (or Next). RynthAi picks up the quest's items meanwhile,\n"
-                      + "with the quest's own loot profile (base-quest-dynamic and its items) until the run ends.");
+                      + "with the quest's own loot profile (base-quest-dynamic and its items) until the run ends.\n"
+                      + "A step without coordinates goes to the people and places it names; there, RynthAi talks to\n"
+                      + "the person, or hands them the quest's items on a hand-in (\"Return the collar to Xsao\").");
             if (q.Loot.Count > 0)
             {
                 w.SameLine();

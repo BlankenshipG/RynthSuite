@@ -7,7 +7,11 @@
 // ("questloot" broker action, "add <name>") and comes off again when it ends. Since 2026-11-05 the run also makes the
 // quest's own loot profile the one in use: RynthAi builds it from LootProfiles\base-quest-dynamic.utl and the
 // quest's items ("questloot profile <quest>|<item>..."), and goes back to the profile before when the run ends
-// ("questloot profile off"). Pump thread; no host calls here (the tests drive it with fake senders).
+// ("questloot profile off"). Since 2026-11-07 a step without coordinates goes to the people and places it
+// names (QuestNames: "Talk to Xsao Lann in Fort Tethana" is "/rnav go Xsao Lann || Fort Tethana"), and at
+// a step's place RynthAi talks to the person it names ("questloot talk ...") or, on a hand-in ("Return the
+// collar to Xsao"), gives them the quest's items got so far ("questloot handin ..."). Pump thread; no host
+// calls here (the tests drive it with fake senders).
 using System;
 using System.Collections.Generic;
 
@@ -23,6 +27,12 @@ internal sealed class QuestRunner
     private readonly Action<string> _print;
     private readonly List<string> _lootAdded = new();
     private bool _profileOn;   // RynthAi switched to this quest's loot profile
+    private List<string> _targets = new();   // the step's people and places (QuestNames)
+
+    /// <summary>What the last arrival had RynthAi do: "talk", "handin" or "" (for the view and the tests).</summary>
+    public string LastNpc { get; private set; } = "";
+    /// <summary>The current step's people and places.</summary>
+    public IReadOnlyList<string> Targets => _targets;
     private Func<string, bool> _stampDone = _ => false;
 
     public GuideQuest? Quest { get; private set; }
@@ -173,6 +183,19 @@ internal sealed class QuestRunner
             Note = $"Step {Step + 1}: here. {s.Text}";
             _print($"Step {Step + 1}/{Quest.Steps.Count}: {s.Text}");
             foreach (string n in s.Notes) _print("  " + n);
+            DoNpc();
+            Changed();
+        }
+        else if (Travelling && line.Contains("[RynthNav]", StringComparison.Ordinal)
+                 && (line.Contains("none of these is a place on the map", StringComparison.OrdinalIgnoreCase)
+                     || line.Contains("on the map", StringComparison.OrdinalIgnoreCase) && line.Contains("no place called", StringComparison.OrdinalIgnoreCase)))
+        {
+            // RynthNav doesn't know where the step's names are: say so, and talk to them if they're here.
+            Travelling = false;
+            string who = _targets.Count > 0 ? string.Join(" or ", _targets) : "it";
+            Note = $"Step {Step + 1}: RynthNav doesn't know where {who} is - go there yourself, then Again (to talk) or Next.";
+            _print($"Step {Step + 1}/{Quest.Steps.Count}: {Quest.Steps[Step].Text}");
+            DoNpc();
             Changed();
         }
         else if (Travelling && line.Contains("[RynthNav] goto:", StringComparison.OrdinalIgnoreCase))
@@ -236,14 +259,43 @@ internal sealed class QuestRunner
         GuideQuest q = Quest!;
         GuideStep s = q.Steps[Step];
         if (!keepPlace) Place = 0;
+        _targets = QuestNames.TargetsAt(q, Step);
         if (s.Coords.Count > 0) { GoPlace(); return; }
-        // The first step with no coordinates: the quest's start place (RynthNav finds it on its Atlas).
-        if (Step == 0 && q.StartsAt.Length > 0 && Go(q.StartsAt, $"Step 1: going to {q.StartsAt}"))
+        // No coordinates: the people and places the step names, in order (RynthNav takes the first on its
+        // Atlas; the first step adds the quest's start place).
+        List<string> own = QuestNames.Candidates(q, s, Step == 0);
+        if (own.Count > 0 && Go(string.Join(" || ", own), $"Step {Step + 1}: going to {string.Join(" or ", own)}"))
             return;
         Travelling = false;
         Note = $"Step {Step + 1}: {s.Text} (Next when done)";
         _print($"Step {Step + 1}/{q.Steps.Count}: {s.Text}");
         foreach (string n in s.Notes) _print("  " + n);
+        // Naming nobody ("Hand her each note"): the person of the step before, where the run already is.
+        if (own.Count == 0) DoNpc();
+    }
+
+    /// <summary>
+    /// At the step's place: a hand-in step gives the quest's items got so far to the person it names, a step
+    /// that talks ("Talk to", "find", the quest's own people) talks to them (RynthAi, "questloot talk|handin").
+    /// </summary>
+    private void DoNpc()
+    {
+        GuideQuest q = Quest!;
+        if (Step < 0 || Step >= q.Steps.Count || _targets.Count == 0) return;
+        GuideStep s = q.Steps[Step];
+        string names = string.Join(" || ", _targets);
+        if (QuestNames.IsHandIn(s))
+        {
+            List<string> items = QuestNames.HandInItems(q, Step);
+            _ai("handin " + names + (items.Count > 0 ? " | " + string.Join(" | ", items) : ""));
+            LastNpc = "handin";
+        }
+        else if (QuestNames.IsTalk(q, s))
+        {
+            _ai("talk " + names);
+            LastNpc = "talk";
+        }
+        else LastNpc = "";
     }
 
     private void GoPlace()

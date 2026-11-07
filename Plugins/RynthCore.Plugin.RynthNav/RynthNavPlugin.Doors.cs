@@ -312,7 +312,7 @@ public sealed partial class RynthNavPlugin
         var ahead = new List<TownNetPoint>(Math.Max(0, path.Count - idx));
         for (int i = idx; i < path.Count; i++)
             ahead.Add(new TownNetPoint { X = path[i].ew - ox, Y = path[i].ns - oy, Z = double.NaN });
-        return WalkDoor(ahead, false, (n, held) => { _bestTick = _legTicks; _stuckWinMs = 0; }, now, out why);
+        return WalkDoor(ahead, false, (n, held) => { _bestTick = _legTicks; _stuck.Reset(); }, now, out why);
     }
 
     /// <summary>

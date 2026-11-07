@@ -20,10 +20,14 @@ namespace RynthCore.Plugin.RynthNav;
 // it turned 120 degrees off, alternating sides, ran 1.6 s, planned the same path again and ran back
 // into the same spot, four times in 20 s, then stopped. The remembered spots now make each new
 // plan go round what it ran into.
+//
+// 11-07 (Silentkelpie: "routes are still getting stuck at walls that could be jumped"): the jump was a
+// tap of the key, the smallest hop AC has, and the character had moved 0.0 u after it every time; and a
+// walk swinging between headings against a wall never counted as blocked. Now (WallStuck.cs) the stuck
+// watch counts turning too, and the jump is charged (0.6 s, then a full 1 s) and let go with run and
+// forward held. Both jumps at a spot come before stepping round it.
 public sealed partial class RynthNavPlugin
 {
-    private const long StuckWindowMs = 1200;       // running this long...
-    private const double StuckMoveUnits = 0.6;     // ...and moved less than this = blocked (a run covers 4+ u/s)
     private const long UnstickMs = 1600;           // then turn away from it and run this long (~0.5 s of it turning)
     private const int StuckMaxTries = 4;           // blocked this often on a leg without progress = stop
     private const double BlockedAheadUnits = 3.5;  // the remembered spot: this far ahead of where it stuck...
@@ -31,20 +35,34 @@ public sealed partial class RynthNavPlugin
     private const int BlockedMaxSpots = 12;
     private const double UnstickOpenUnits = 6.0;   // a way out is open ground this far along it
 
-    private bool _ranLastTick;                     // the walk asked to run last tick (not standing, not turning in place)
     private double _lastDriveDeg;
-    private long _stuckWinMs, _unstickUntilMs;
-    private double _stuckWx, _stuckWy, _unstickDeg;
+    private long _unstickUntilMs;
+    private double _unstickDeg, _jumpDeg;
     private int _stuckTries, _stuckSide = 1;
-    private bool _stuckJumped;                     // jumped at this blocked spot already (then step round it)
+    private readonly StuckWatch _stuck = new();
+    private readonly WallJump _jump = new();
     private readonly List<PortalAvoid.Spot> _blockedSpots = new();
 
-    /// <summary>DriveTo for the walk's own steering: remembers that it ran and which way.</summary>
+    /// <summary>DriveTo for the walk's own steering: remembers which way, and that it wanted to move.</summary>
     private void WalkDrive(double deg)
     {
         DriveTo(deg, _steerOpen);
         _lastDriveDeg = deg;
-        _ranLastTick = !_steerOpen.TurnInPlace;
+        _stuck.Wanted(NowMs, running: !_steerOpen.TurnInPlace);
+    }
+
+    /// <summary>Lets go of a charged jump: with run and forward held (the run's momentum), else a plain release.</summary>
+    private void ReleaseJump()
+    {
+        if (Host.HasLaunchJumpWithMotion) Host.LaunchJumpWithMotion(shift: true, holdW: true, holdX: false, holdZ: false, holdC: false);
+        else if (Host.HasDoJump) Host.DoJump(true);
+    }
+
+    /// <summary>A jump that is charging or in the air ends (a new leg, the goto over): let go of the key.</summary>
+    private void CancelJump()
+    {
+        if (_jump.Now == WallJump.Phase.Charging) ReleaseJump();
+        _jump.Reset();
     }
 
     /// <summary>
@@ -95,8 +113,9 @@ public sealed partial class RynthNavPlugin
     private void ResetBlocked()
     {
         if (_doorStep != DoorStep.None) ResetDoor();
-        _ranLastTick = false;
-        _stuckWinMs = 0; _unstickUntilMs = 0; _stuckTries = 0; _stuckJumped = false;
+        _stuck.Reset();
+        CancelJump();
+        _unstickUntilMs = 0; _stuckTries = 0;
         _blockedSpots.Clear();
     }
 
@@ -107,8 +126,22 @@ public sealed partial class RynthNavPlugin
     private bool StepBlocked()
     {
         long now = NowMs;
-        bool ran = _ranLastTick;
-        _ranLastTick = false;
+        // A jump under way: hold the heading, let go of the key when charged, look again once landed.
+        if (_jump.Busy)
+        {
+            DriveTo(_jumpDeg);
+            switch (_jump.Tick(now))
+            {
+                case WallJump.Step.Release:
+                    ReleaseJump();
+                    break;
+                case WallJump.Step.Landed:
+                    _stuck.Reset();
+                    return false;
+            }
+            lock (_gate) _status = $"blocked: jumping ({_jump.Tries}/{WallJump.ChargeMs.Length})";
+            return true;
+        }
         if (_unstickUntilMs > now)
         {
             DriveTo(_unstickDeg, _steerOpen);
@@ -121,14 +154,14 @@ public sealed partial class RynthNavPlugin
             _unstickUntilMs = 0;
             lock (_gotoGate) _gotoPath = null;
             _blindTicks = 0; _replanTick = 0;
-            _stuckWinMs = 0;
+            _stuck.Reset();
             return false;
         }
-        if (!ran || _stuckWinMs == 0) { _stuckWinMs = now; _stuckWx = _wx; _stuckWy = _wy; return false; }
-        if (now - _stuckWinMs < StuckWindowMs) return false;
-        double moved = Math.Sqrt((_wx - _stuckWx) * (_wx - _stuckWx) + (_wy - _stuckWy) * (_wy - _stuckWy));
-        _stuckWinMs = now; _stuckWx = _wx; _stuckWy = _wy;
-        if (moved >= StuckMoveUnits) { _stuckJumped = false; return false; }
+        if (!_stuck.Check(now, _wx, _wy, out double moved, out long windowMs))
+        {
+            if (windowMs > 0) _jump.Moved();   // a window ended with progress: the next spot gets its jumps
+            return false;
+        }
 
         string at = NavCoords.Fmt(NavCoords.NsFromWorld(_wy), NavCoords.EwFromWorld(_wx));
         // A closed door in front of us: open it first (GotoDoor works it from the next tick).
@@ -138,23 +171,30 @@ public sealed partial class RynthNavPlugin
             lock (_gate) _status = "blocked: opening a door";
             return true;
         }
-        // First, jump on the same heading (2026-10-30): a fence, a step or a low wall the mesh
-        // smooths over is often cleared by a running jump; only then step round it.
-        if (!_stuckJumped && Host.HasTapJump)
+        // First jump on the same heading, charged (a fence, a step, a low wall the mesh smooths over),
+        // twice at one spot (a medium jump, then a full one); only then step round it.
+        if (_jump.CanTry && (Host.HasCommenceJump || Host.HasTapJump))
         {
-            _stuckJumped = true;
-            DriveTo(_lastDriveDeg);
-            _ranLastTick = true;
-            Host.TapJump();
-            Host.Log($"[RynthNav] walk: blocked at {at} heading {_lastDriveDeg:F0} (moved {moved:F1}u): jumping first");
-            lock (_gate) _status = "blocked: jumping";
+            _jumpDeg = _lastDriveDeg;
+            DriveTo(_jumpDeg);
+            string how;
+            if (Host.HasCommenceJump && Host.CommenceJump())
+                how = $"a charged jump ({_jump.StartCharged(now)} ms)";
+            else
+            {
+                Host.TapJump();
+                _jump.StartTap(now);
+                how = "a tap jump (no charged jump in this engine)";
+            }
+            Host.Log($"[RynthNav] walk: blocked at {at} heading {_jumpDeg:F0} (moved {moved:F1}u in {windowMs / 1000.0:F1} s): {how}, try {_jump.Tries}/{WallJump.ChargeMs.Length}");
+            lock (_gate) _status = $"blocked: jumping ({_jump.Tries}/{WallJump.ChargeMs.Length})";
             return true;
         }
-        _stuckJumped = false;
+        _jump.Reset();
         if (++_stuckTries > StuckMaxTries)
         {
             string why; lock (_gate) why = _status;
-            FinishGoto($"stopped: blocked at {at} ({StuckMaxTries} tries to get round it; something in the way the map doesn't show) ({why})");
+            FinishGoto($"stopped: blocked at {at} ({StuckMaxTries} tries to get round it, jumping first each time; something in the way the map doesn't show) ({why})");
             return true;
         }
         // Remember what it ran into, so the next plans go round it (RefreshAvoid adds these).
@@ -171,7 +211,7 @@ public sealed partial class RynthNavPlugin
             return WalkableStraight(_wx, _wy, _wx + Math.Sin(r) * UnstickOpenUnits, _wy + Math.Cos(r) * UnstickOpenUnits);
         });
         _unstickUntilMs = now + UnstickMs;
-        Host.Log($"[RynthNav] walk: blocked at {at} heading {_lastDriveDeg:F0} (moved {moved:F1}u in {StuckWindowMs / 1000.0:F1} s); "
+        Host.Log($"[RynthNav] walk: blocked at {at} heading {_lastDriveDeg:F0} (moved {moved:F1}u in {windowMs / 1000.0:F1} s, jumped {WallJump.ChargeMs.Length}x); "
                + $"turning to {_unstickDeg:F0}, keeping out of that spot ({_blockedSpots.Count} so far) and planning again ({_stuckTries}/{StuckMaxTries})");
         DriveTo(_unstickDeg, _steerOpen);
         lock (_gate) _status = $"blocked: stepping round it ({_stuckTries}/{StuckMaxTries})";

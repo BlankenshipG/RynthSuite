@@ -1,0 +1,153 @@
+using System;
+using System.Collections.Generic;
+using RynthCore.Loot;
+using RynthCore.Plugin.Shared;
+
+namespace RynthCore.Plugin.RynthAi;
+
+// The quest run's NPCs (2026-11-07). RynthOracle's Run this quest goes to the person a wiki step names
+// ("Talk to Xsao Lann in Fort Tethana", "Return the collar to Xsao") and, there, sends through the
+// "questloot" broker action:
+//   "talk <name> || <name> ..."                      use the first of them standing near you (talk to them)
+//   "handin <name> || <name> ... | <item> | <item>"  give them every carried item of those names (AC's give,
+//                                                    the give queue); none carried: talk to them instead
+// The names are the step's candidates; the NPC that answers one best is taken (Mara al-Luq herself before a
+// "Yaraq Guard" for the name Yaraq), only an NPC, a vendor or a creature that can't be attacked, within QuestNpcRange
+// (a portal or a player of that name never is). An item's name matches as the wiki writes it or without
+// a note in brackets at the end ("Darling's Collar (Quest Item)" is "Darling's Collar" in the game).
+// RynthAi's own items, attuned and equipped ones are never handed over. Pump thread.
+public sealed partial class RynthAiPlugin
+{
+    /// <summary>How near the NPC must be (metres).</summary>
+    internal const double QuestNpcRange = 60.0;
+
+    /// <summary>A quest NPC verb's answer, or null when <paramref name="line"/> isn't one.</summary>
+    private (bool Ok, string Text)? TryQuestNpc(string line)
+    {
+        line = (line ?? "").Trim();
+        int sp = line.IndexOf(' ');
+        string verb = (sp < 0 ? line : line.Substring(0, sp)).ToLowerInvariant();
+        string rest = sp < 0 ? "" : line.Substring(sp + 1).Trim();
+        if (verb is not ("talk" or "handin")) return null;
+
+        ParseQuestNpcLine(rest, out List<string> names, out List<string> items);
+        if (names.Count == 0)
+            return (false, "[RynthAi] questloot talk <name> || <name> | questloot handin <name> || <name> | <item> | <item> (RynthOracle's quest run sends these)");
+        if (_objectCache == null) return (false, "[RynthAi] Quest: the object cache isn't ready.");
+
+        WorldObject? npc = FindQuestNpc(names);
+        if (npc == null)
+            return (false, $"[RynthAi] Quest: no {string.Join(" or ", names)} near you to {(verb == "talk" ? "talk to" : "hand the items to")}.");
+
+        if (verb == "handin" && items.Count > 0)
+        {
+            var given = new List<string>();
+            var seen = new HashSet<int>();
+            foreach (string item in items)
+            {
+                foreach (WorldObject wo in GiveCandidates(n => QuestItemNameMatches(n, item)))
+                {
+                    if (!seen.Add(wo.Id)) continue;
+                    string? why = ItemProtectionReason(wo, includeLootKeep: false);
+                    if (why != null) { Log($"[Quest] not handing 0x{(uint)wo.Id:X8} '{wo.Name}' to {npc.Name}: {why}"); continue; }
+                    EnqueueGive((uint)wo.Id, (uint)npc.Id, 0);   // the whole stack
+                    Log($"[Quest] queued 0x{(uint)wo.Id:X8} '{wo.Name}' -> {npc.Name}");
+                    given.Add(wo.Name);
+                }
+            }
+            if (given.Count > 0)
+                return (true, $"[RynthAi] Quest: handing {string.Join(", ", given)} to {npc.Name}.");
+            // Nothing of the quest's carried: talking is what's left to do there.
+            Host.UseFor((uint)npc.Id, "Quest", "quest talk", UseKind.Asked);
+            return (true, $"[RynthAi] Quest: none of {string.Join(", ", items)} is in your pack; talking to {npc.Name}.");
+        }
+        Host.UseFor((uint)npc.Id, "Quest", "quest talk", UseKind.Asked);
+        return (true, $"[RynthAi] Quest: talking to {npc.Name}.");
+    }
+
+    /// <summary>"A || B | item | item": the names before the first single '|', the items after it.</summary>
+    internal static void ParseQuestNpcLine(string rest, out List<string> names, out List<string> items)
+    {
+        names = new List<string>();
+        items = new List<string>();
+        string[] parts = (rest ?? "").Replace("||", "\u0001").Split('|');
+        foreach (string n in parts[0].Split('\u0001'))
+            if (n.Trim().Length > 0 && !names.Contains(n.Trim())) names.Add(n.Trim());
+        for (int i = 1; i < parts.Length; i++)
+        {
+            string it = parts[i].Replace("\u0001", "").Trim();
+            if (it.Length > 0 && !items.Contains(it)) items.Add(it);
+        }
+    }
+
+    /// <summary>An item's name as the game shows it against the name the wiki writes (any case; a bracketed note optional).</summary>
+    internal static bool QuestItemNameMatches(string gameName, string wikiName)
+    {
+        if (string.Equals(gameName, wikiName, StringComparison.OrdinalIgnoreCase)) return true;
+        string bare = BareQuestName(wikiName);
+        return bare.Length > 0 && string.Equals(BareQuestName(gameName), bare, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BareQuestName(string name)
+    {
+        name = (name ?? "").Trim();
+        int open = name.LastIndexOf(" (", StringComparison.Ordinal);
+        return open > 0 && name.EndsWith(")", StringComparison.Ordinal) ? name.Substring(0, open).Trim() : name;
+    }
+
+    /// <summary>
+    /// How well a landscape object's name answers a step's name: 3 the same, 2 the object's name starts with
+    /// it ("Xsao" is Xsao Lann), 1 it is a whole word of it, 0 no.
+    /// </summary>
+    internal static int QuestNpcScore(string objectName, string name)
+    {
+        if (string.Equals(objectName, name, StringComparison.OrdinalIgnoreCase)) return 3;
+        if (name.Length < 3) return 0;
+        if (objectName.StartsWith(name + " ", StringComparison.OrdinalIgnoreCase)) return 2;
+        int at = objectName.IndexOf(name, StringComparison.OrdinalIgnoreCase);
+        while (at >= 0)
+        {
+            bool startOk = at == 0 || !char.IsLetterOrDigit(objectName[at - 1]);
+            int end = at + name.Length;
+            bool endOk = end >= objectName.Length || !char.IsLetterOrDigit(objectName[end]);
+            if (startOk && endOk) return 1;
+            at = objectName.IndexOf(name, at + 1, StringComparison.OrdinalIgnoreCase);
+        }
+        return 0;
+    }
+
+    /// <summary>An NPC, a vendor, or a creature that can't be attacked (how AC files most quest givers).</summary>
+    private bool IsQuestPerson(WorldObject wo) =>
+        wo.ObjectClass is AcObjectClass.Npc or AcObjectClass.Vendor
+        || (wo.ObjectClass == AcObjectClass.Monster && Host.HasObjectIsAttackable && !Host.ObjectIsAttackable(unchecked((uint)wo.Id)));
+
+    /// <summary>
+    /// The NPC the names mean: the best match over all of them (the same name before one that starts with
+    /// it, before a word of it; then the earlier name, then the nearest), an NPC or a vendor in range.
+    /// </summary>
+    private WorldObject? FindQuestNpc(List<string> names)
+    {
+        if (_objectCache == null) return null;
+        WorldObject? best = null;
+        int bestScore = 0, bestOrder = int.MaxValue;
+        double bestDist = double.MaxValue;
+        foreach (WorldObject wo in _objectCache.GetLandscapeObjects())
+        {
+            if (!IsQuestPerson(wo)) continue;
+            int score = 0, order = int.MaxValue;
+            for (int i = 0; i < names.Count; i++)
+            {
+                int sc = QuestNpcScore(wo.Name, names[i]);
+                if (sc > score) { score = sc; order = i; }
+            }
+            if (score == 0) continue;
+            double dist = _playerId != 0 ? _objectCache.Distance((int)_playerId, wo.Id) : double.MaxValue;
+            if (dist != double.MaxValue && dist > QuestNpcRange) continue;
+            bool better = score > bestScore
+                || (score == bestScore && order < bestOrder)
+                || (score == bestScore && order == bestOrder && dist < bestDist);
+            if (better) { best = wo; bestScore = score; bestOrder = order; bestDist = dist; }
+        }
+        return best;
+    }
+}

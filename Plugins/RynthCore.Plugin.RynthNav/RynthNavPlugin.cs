@@ -778,7 +778,11 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
             // goal for a moment, which carries us over a seam, then stand and keep re-planning.
             // Before, autorun stayed on with the old heading and nothing steering: the bot
             // ran off in a straight line, or (no plan at all) stood forcing autorun off.
-            if (_blindTicks < BlindPushTicks)
+            // Following a trip's path (TripFollow: the aim is on the walk the markers draw), it keeps
+            // pushing along it (or the route graph's next crossing) rather than standing (2026-11-07: it stood 25 s against a wall at Yaraq
+            // until the progress watchdog stopped the goto): running into something there is what the
+            // stuck watch, the jumps and the stepping round are for.
+            if (_blindTicks < BlindPushTicks || _aimOnTrip || _coarse != null)
             {
                 _blindTicks++;
                 // Straight at the goal, or along the route at its next crossing.

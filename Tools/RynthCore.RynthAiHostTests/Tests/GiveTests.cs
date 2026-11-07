@@ -57,6 +57,8 @@ internal static class GiveTests
         r.Add("give: /ub givea queues a give-all (0), so an unreadable count there sends the whole object", GiveAllQueuesWholeStack);
         r.Add("give: a target that stays busy for a minute is skipped and counted", BusyGivesUpAfterAMinute);
         r.Add("give: a no-answer re-send that could not go out still counts as a try", FailedResendCountsAsATry);
+        r.Add("quest: handin gives the quest's items (a wiki note in brackets optional) to the best-named NPC; never worn gear", QuestHandIn);
+        r.Add("quest: talk uses the NPC; none near says so; nothing carried on a hand-in talks instead", QuestTalk);
     }
 
     private sealed class World
@@ -160,6 +162,46 @@ internal static class GiveTests
         Check.False(w.GivenItems.Contains(Other), "an exact name doesn't take 'Lesser Mana Mote'");
         Check.True(FakeHost.Gives.All(g => g.Target == Npc), "all to the NPC, with AC's give action");
         Check.Eq(FakeHost.ExternalMoves.Count, 0, "never MoveItemExternal (an NPC ignores it)");
+    }
+
+    // 2026-11-07: RynthOracle's Run this quest, at a step's place ("questloot talk|handin", RynthAiPlugin.QuestNpc.cs).
+    private static void QuestHandIn()
+    {
+        var w = new World();
+        w.Call("ApplyRemoteCommand", "questloot", "handin Nobody Here || Town Crier | Mana Mote (Quest Item) | Shiny Red Stone");
+        for (int i = 0; i < 20; i++) w.Call("DrainGiveQueue");
+        Check.Eq(FakeHost.Gives.Count, 3, "the three carried Mana Motes (the wiki's '(Quest Item)' left off); chat: " + string.Join(" / ", FakeHost.Chat));
+        Check.True(FakeHost.Gives.All(g => g.Target == Npc) && !w.GivenItems.Contains(WornMote) && !w.GivenItems.Contains(Other),
+            "to the Town Crier; not the worn one, not 'Lesser Mana Mote'");
+        Check.Eq(FakeHost.Uses.Count, 0, "handing over is giving, not using");
+        Check.True(w.ChatWith("Quest: handing Mana Mote, Mana Mote, Mana Mote to Town Crier") == 1, "chat says what goes to whom");
+
+        Check.True(RynthAiPlugin.QuestItemNameMatches("Darling's Collar", "Darling's Collar (Quest Item)")
+                   && RynthAiPlugin.QuestItemNameMatches("darling's collar", "Darling's Collar")
+                   && !RynthAiPlugin.QuestItemNameMatches("Darling's Collar Box", "Darling's Collar (Quest Item)"), "item names: any case, the note optional, nothing more");
+        Check.Eq(RynthAiPlugin.QuestNpcScore("Xsao Lann", "Xsao Lann"), 3, "the same name");
+        Check.Eq(RynthAiPlugin.QuestNpcScore("Xsao Lann", "Xsao"), 2, "'Xsao' is Xsao Lann");
+        Check.Eq(RynthAiPlugin.QuestNpcScore("Captain Burnja", "Burnja"), 1, "a whole word of it");
+        Check.Eq(RynthAiPlugin.QuestNpcScore("Burunjo", "Burun"), 0, "not part of a word");
+        RynthAiPlugin.ParseQuestNpcLine("A || B C | x | y", out var names, out var items);
+        Check.True(string.Join(",", names) == "A,B C" && string.Join(",", items) == "x,y", "the line: names before the first single '|', items after");
+    }
+
+    private static void QuestTalk()
+    {
+        var w = new World();
+        w.Call("ApplyRemoteCommand", "questloot", "talk Fort Tethana || Town");
+        Check.True(FakeHost.Uses.Count == 1 && FakeHost.Uses[0] == Npc, "talk: 'Town' is the Town Crier; used once");
+        Check.True(w.ChatWith("Quest: talking to Town Crier") == 1, "talk: chat says so");
+
+        FakeHost.Uses.Clear();
+        w.Call("ApplyRemoteCommand", "questloot", "talk Xsao Lann");
+        Check.Eq(FakeHost.Uses.Count, 0, "talk: nobody of that name near: nothing used");
+        Check.True(w.ChatWith("no Xsao Lann near you to talk to") == 1, "talk: chat says nobody is near");
+
+        w.Call("ApplyRemoteCommand", "questloot", "handin Town Crier | Darling's Collar (Quest Item)");
+        Check.True(FakeHost.Gives.Count == 0 && FakeHost.Uses.Count == 1, "handin with nothing of it carried: talks instead");
+        Check.True(w.ChatWith("is in your pack; talking to Town Crier") == 1, "handin: chat says nothing was carried");
     }
 
     private static void UbGiveCount()

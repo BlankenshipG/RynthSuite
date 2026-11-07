@@ -209,7 +209,13 @@ namespace RynthOracle.Tests
             run.OnChat("[RynthNav] goto: arrived at 28.5S, 90.9W");
             Check(!run.Travelling && said.Exists(l => l.StartsWith("Step 2/10: Run to the Hidden Infiltrator Keep")), "run: arrival prints the step");
             run.Next();
-            Check(run.Step == 2 && nav.Count == 1 && said.Exists(l => l.StartsWith("Step 3/10: Inside the dungeon")), "run: Next, a step without a place is shown and waits");
+            // A step without coordinates goes to what it names (2026-11-07); RynthNav doesn't know these two.
+            Check(run.Step == 2 && nav.Count == 2 && nav[1] == "go Tortured Raveners || Damaged Dolls",
+                "run: Next, a step without coordinates goes to the names in it: " + string.Join(" | ", nav));
+            run.OnChat("[RynthNav] none of these is a place on the map: Tortured Raveners , Damaged Dolls");
+            Check(!run.Travelling && said.Exists(l => l.StartsWith("Step 3/10: Inside the dungeon")) && run.Note.Contains("doesn't know where Tortured Raveners"),
+                "run: names RynthNav doesn't know: the step is shown and waits (" + run.Note + ")");
+            Check(run.LastNpc == "", "run: a kill step talks to nobody");
             run.OnChat("You've stamped Shiny_Red_Stone_Found!");
             Check(run.Step == 3, "run: its stamp moves it on");
             run.OnChat("You've stamped Someone_Elses_Stamp!");
@@ -224,13 +230,19 @@ namespace RynthOracle.Tests
             c.SessionStamps.Add(GuideStamp.Key("NephriteTooth"));
             c.SessionStamps.Add(GuideStamp.Key("WinstonsLeg"));
             run.Start(p, s => c.SessionStamps.Contains(GuideStamp.Key(s)), loot: false);
-            Check(run.Step == 0 && nav.Count == 1 && nav[0] == "go Candeth Keep", "pete: a first step without coordinates goes to where the quest starts: " + string.Join(" | ", nav));
+            Check(run.Step == 0 && nav.Count == 1 && nav[0] == "go \"Pistol\" Pete || Pistol Pete || Candeth Keep",
+                "pete: a first step without coordinates goes to the quest's person, then where it starts: " + string.Join(" | ", nav));
             run.Next();
             Check(run.Step == 3 && nav[^1] == "go 62.7S, 66.6W", "pete: the stamped steps are skipped");
             run.Next();
             Check(run.Step == 3 && run.Place == 1 && nav[^1] == "go 85.8S, 78.8W", "pete: Next goes to the step's second place");
             run.OnChat("You've stamped FrostWyrmScale!");
-            Check(run.Step == 4 && said.Exists(l => l.StartsWith("Step 5/5: Return to Pete")), "pete: the last step");
+            Check(run.Step == 4 && nav[^1] == "go \"Pistol\" Pete || Pistol Pete", "pete: the last step goes to Pete: " + string.Join(" | ", nav));
+            int aiBefore = ai.Count;
+            run.OnChat("[RynthNav] goto: arrived");
+            Check(said.Exists(l => l.StartsWith("Step 5/5: Return to Pete")) && run.LastNpc == "handin" && ai.Count == aiBefore + 1
+                  && ai[^1].StartsWith("handin \"Pistol\" Pete || Pistol Pete"),
+                "pete: there, RynthAi hands Pete the trophies: " + (ai.Count > aiBefore ? ai[^1] : "nothing sent"));
             run.Next();
             Check(!run.Active && said.Exists(l => l.Contains("Quest run done") && l.Contains("PeteTrophiesDone")), "pete: done, naming the stamps no step had");
 
