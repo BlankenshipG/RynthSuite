@@ -47,3 +47,17 @@ quest. routes are still getting stuck at walls that could be jumped."
 
 Tests: RynthOracle.Tests QuestNamesTests (Lost Pet, Note of Congratulation) and the runner. RynthNav.RouteTests
 WallStuck (the stuck watch, the charged jumps). RynthAiHostTests quest talk/handin.
+
+## Later the same day: more jump power (Graph.cs, WallStuck.cs)
+
+Silentkelpie: "when it needs to build a nav route it should use more power to jump if needed". At 10:05 a
+goto to 89.3S, 93.5W stopped three times before moving: "the route graph has no walking way to that spot".
+The target was on the same land, but the graph had no link across (a wall or a ledge the navmesh's 2 m agent
+doesn't cross).
+
+- On the same land, that no longer stops the goto. RynthNav heads for the spot along the trip's line,
+  jumping hard: three full jumps (1 s charge) at each place it is stuck, then it steps round. The stuck
+  tries and the 30 s progress watchdog still stop it where nothing gets it over. Another landmass still
+  plans with portals and recalls.
+- A walking way found later turns hard jumping off.
+- Ordinary walking jumps start stronger: 0.7 s (was 0.6 s), then a full 1 s.

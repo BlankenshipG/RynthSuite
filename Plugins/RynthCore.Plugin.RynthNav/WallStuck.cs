@@ -71,14 +71,26 @@ internal sealed class StuckWatch
 /// key: a tap is the smallest hop AC has (jump height is how long the key is held), and in every
 /// log the character had moved 0.0 u 1.2 s after it. Now it charges like a held spacebar
 /// (<see cref="ChargeMs"/>: a medium jump, then a full one), released with forward and run held so it
-/// carries the run's momentum (the engine's LaunchJumpWithMotion, as RynthAi's /mt jump does), then
+/// carries the run's momentum (the engine's LaunchJumpWithMotion, as RynthAi's /mt jump does; full
+/// jumps only, three of them, when jumping <see cref="Hard"/>), then
 /// <see cref="FlightMs"/> in the air before the stuck watch starts again. Only after both jumps at
 /// one spot does the walk step round it. Host-free: the route tests drive it.
 /// </summary>
 internal sealed class WallJump
 {
-    /// <summary>The charge of each try at one spot (ms; 1000 is a full bar).</summary>
-    public static readonly int[] ChargeMs = { 600, 1000 };
+    /// <summary>The charge of each try at one spot (ms; 1000 is a full bar): a strong jump, then a full one.</summary>
+    public static readonly int[] ChargeMs = { 700, 1000 };
+    /// <summary>
+    /// Jumping hard (2026-11-07, "it should use more power to jump if needed"): where the route graph has no
+    /// walking way to a spot on the same land (a wall or a ledge the navmesh doesn't cross), every jump is a
+    /// full one, three at each spot.
+    /// </summary>
+    public static readonly int[] HardChargeMs = { 1000, 1000, 1000 };
+
+    /// <summary>Jumping hard: <see cref="HardChargeMs"/> instead of <see cref="ChargeMs"/>.</summary>
+    public bool Hard { get; set; }
+    /// <summary>The charges tried at one spot, in order.</summary>
+    public int[] Plan => Hard ? HardChargeMs : ChargeMs;
     /// <summary>Time in the air before the walk looks again.</summary>
     public const long FlightMs = 900;
 
@@ -91,14 +103,14 @@ internal sealed class WallJump
     /// <summary>Jumps tried at this spot.</summary>
     public int Tries { get; private set; }
     public bool Busy => Now != Phase.Idle;
-    public bool CanTry => Tries < ChargeMs.Length;
+    public bool CanTry => Tries < Plan.Length;
     /// <summary>The charge of the jump under way (0 for a tap).</summary>
     public int Charge { get; private set; }
 
     /// <summary>A charged jump: the jump key is down from now. Returns the charge (ms).</summary>
     public int StartCharged(long now)
     {
-        Charge = ChargeMs[Math.Min(Tries, ChargeMs.Length - 1)];
+        Charge = Plan[Math.Min(Tries, Plan.Length - 1)];
         Tries++;
         Now = Phase.Charging;
         _releaseAt = now + Charge;

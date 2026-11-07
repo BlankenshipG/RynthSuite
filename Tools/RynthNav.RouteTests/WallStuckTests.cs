@@ -16,6 +16,7 @@ internal static partial class Program
         Run(nameof(NotTryingToMoveStartsTheWatchAgain), NotTryingToMoveStartsTheWatchAgain);
         Run(nameof(ChargedJumpThenFullThenStepRound), ChargedJumpThenFullThenStepRound);
         Run(nameof(TapJumpWithoutChargedJump), TapJumpWithoutChargedJump);
+        Run(nameof(JumpingHardIsFullPowerThreeTimes), JumpingHardIsFullPowerThreeTimes);
     }
 
     // Runs ticks of 33 ms from t, the character at (x, y), driving each tick (running or turning).
@@ -86,16 +87,16 @@ internal static partial class Program
         Check(j.CanTry && !j.Busy, "a new spot: a jump to try");
         long t = 0;
         int c1 = j.StartCharged(t);
-        Check(c1 == 600 && j.Now == WallJump.Phase.Charging && j.Tries == 1, $"first jump: charged {c1} ms (a medium jump)");
+        Check(c1 == 700 && j.Now == WallJump.Phase.Charging && j.Tries == 1, $"first jump: charged {c1} ms (a strong jump)");
         Check(j.Tick(t + 300) == WallJump.Step.Hold, "charging: the key stays down");
-        Check(j.Tick(t + 600) == WallJump.Step.Release && j.Now == WallJump.Phase.Flying, "charged: let go");
-        Check(j.Tick(t + 1000) == WallJump.Step.Hold, "in the air");
-        Check(j.Tick(t + 600 + WallJump.FlightMs) == WallJump.Step.Landed && !j.Busy, "landed: the walk looks again");
+        Check(j.Tick(t + 700) == WallJump.Step.Release && j.Now == WallJump.Phase.Flying, "charged: let go");
+        Check(j.Tick(t + 1100) == WallJump.Step.Hold, "in the air");
+        Check(j.Tick(t + 700 + WallJump.FlightMs) == WallJump.Step.Landed && !j.Busy, "landed: the walk looks again");
         j.Moved();   // the next window showed progress: it cleared the wall
         Check(j.Tries == 0 && j.CanTry, "it got over: the next spot gets its jumps again");
 
         t = 5000;
-        j.StartCharged(t); j.Tick(t + 600); j.Tick(t + 600 + WallJump.FlightMs);
+        j.StartCharged(t); j.Tick(t + 700); j.Tick(t + 700 + WallJump.FlightMs);
         int c2 = j.StartCharged(t + 3000);
         Check(c2 == 1000 && j.Tries == 2, $"still stuck at the same spot: a full jump ({c2} ms)");
         j.Tick(t + 4000); j.Tick(t + 4000 + WallJump.FlightMs);
@@ -110,5 +111,25 @@ internal static partial class Program
         j.StartTap(100);
         Check(j.Now == WallJump.Phase.Flying && j.Charge == 0, "no charged jump in the engine: a tap, already in the air");
         Check(j.Tick(100 + WallJump.FlightMs) == WallJump.Step.Landed, "the tap lands");
+    }
+
+    // "it should use more power to jump if needed": where the route graph has no walking way on the
+    // same land, every jump is a full one, three at each spot.
+    private static void JumpingHardIsFullPowerThreeTimes()
+    {
+        var j = new WallJump { Hard = true };
+        long t = 0;
+        var charges = new System.Collections.Generic.List<int>();
+        while (j.CanTry)
+        {
+            charges.Add(j.StartCharged(t));
+            j.Tick(t + 1000); j.Tick(t + 1000 + WallJump.FlightMs);
+            t += 3000;
+        }
+        Check(string.Join(",", charges) == "1000,1000,1000", "jumping hard: three full jumps at a spot (" + string.Join(",", charges) + ")");
+        j.Reset();
+        Check(j.Hard && j.CanTry, "a new spot keeps jumping hard; the walk turns it off when a walking way is found");
+        j.Hard = false;
+        Check(j.StartCharged(0) == 700 && j.Plan.Length == 2, "back to walking: a strong jump, then a full one");
     }
 }

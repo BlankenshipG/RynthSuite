@@ -139,7 +139,7 @@ public sealed partial class RynthNavPlugin
                     _stuck.Reset();
                     return false;
             }
-            lock (_gate) _status = $"blocked: jumping ({_jump.Tries}/{WallJump.ChargeMs.Length})";
+            lock (_gate) _status = $"blocked: jumping ({_jump.Tries}/{_jump.Plan.Length})";
             return true;
         }
         if (_unstickUntilMs > now)
@@ -179,18 +179,20 @@ public sealed partial class RynthNavPlugin
             DriveTo(_jumpDeg);
             string how;
             if (Host.HasCommenceJump && Host.CommenceJump())
-                how = $"a charged jump ({_jump.StartCharged(now)} ms)";
+                how = $"a charged jump ({_jump.StartCharged(now)} ms{(_jump.Hard ? ", jumping hard" : "")})";
             else
             {
                 Host.TapJump();
                 _jump.StartTap(now);
                 how = "a tap jump (no charged jump in this engine)";
             }
-            Host.Log($"[RynthNav] walk: blocked at {at} heading {_jumpDeg:F0} (moved {moved:F1}u in {windowMs / 1000.0:F1} s): {how}, try {_jump.Tries}/{WallJump.ChargeMs.Length}");
-            lock (_gate) _status = $"blocked: jumping ({_jump.Tries}/{WallJump.ChargeMs.Length})";
+            Host.Log($"[RynthNav] walk: blocked at {at} heading {_jumpDeg:F0} (moved {moved:F1}u in {windowMs / 1000.0:F1} s): {how}, try {_jump.Tries}/{_jump.Plan.Length}");
+            lock (_gate) _status = $"blocked: jumping ({_jump.Tries}/{_jump.Plan.Length})";
             return true;
         }
+        bool hard = _jump.Hard;
         _jump.Reset();
+        _jump.Hard = hard;
         if (++_stuckTries > StuckMaxTries)
         {
             string why; lock (_gate) why = _status;
@@ -211,7 +213,7 @@ public sealed partial class RynthNavPlugin
             return WalkableStraight(_wx, _wy, _wx + Math.Sin(r) * UnstickOpenUnits, _wy + Math.Cos(r) * UnstickOpenUnits);
         });
         _unstickUntilMs = now + UnstickMs;
-        Host.Log($"[RynthNav] walk: blocked at {at} heading {_lastDriveDeg:F0} (moved {moved:F1}u in {windowMs / 1000.0:F1} s, jumped {WallJump.ChargeMs.Length}x); "
+        Host.Log($"[RynthNav] walk: blocked at {at} heading {_lastDriveDeg:F0} (moved {moved:F1}u in {windowMs / 1000.0:F1} s, jumped {_jump.Plan.Length}x); "
                + $"turning to {_unstickDeg:F0}, keeping out of that spot ({_blockedSpots.Count} so far) and planning again ({_stuckTries}/{StuckMaxTries})");
         DriveTo(_unstickDeg, _steerOpen);
         lock (_gate) _status = $"blocked: stepping round it ({_stuckTries}/{StuckMaxTries})";

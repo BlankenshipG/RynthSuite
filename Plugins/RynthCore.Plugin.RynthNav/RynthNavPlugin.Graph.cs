@@ -108,6 +108,7 @@ public sealed partial class RynthNavPlugin
     private void ResetCoarse()
     {
         _coarse = null; _coarseRetry = 0; _coarseOff = 0; _coarseAnnounced = false; _coarseNoRouteSaid = false; _coarseGoalMovedSaid = false;
+        _jump.Hard = false;
         _coarseTask = null; _coarseVersion++;
     }
 
@@ -221,12 +222,25 @@ public sealed partial class RynthNavPlugin
             }
             // On open ground (the start links to its neighbours, on a real landmass) and still no
             // route though the goal end was already moved to ground a walk can end on: the graph
-            // knows of no way there. Heading straight for it then only runs into what's between
-            // (11-01: a bridge, then round in circles for minutes). Stop and say so. Standing in a
-            // pocket yourself (indoors, a roof), the way out may be narrower than the mesh shows:
-            // head for it as before.
+            // knows of no way there. Until 2026-11-07 that stopped the goto ("pick a spot nearby";
+            // 11-01: heading straight had run into a bridge, then round in circles). But on the same
+            // land what is between is often a wall, a fence or a ledge the navmesh's 2 m agent doesn't
+            // cross and a jump does (Silentkelpie: "it should use more power to jump if needed").
+            // Now it heads for the spot along the trip's straight line jumping hard: three full jumps
+            // at each place it is stuck before stepping round, and the stuck tries and the 30 s
+            // progress watchdog still stop it where nothing gets it over.
             if (g != null && g.RegionPortals(here).Length > 0 && g.ComponentSize(g.Component(here)) >= 8)
             {
+                if (land == true)
+                {
+                    if (!_jump.Hard)
+                    {
+                        _jump.Hard = true;
+                        Host.Log("[RynthNav] route: no walking way in the route graph, but the same land: heading straight for it, jumping hard where it is blocked");
+                        Say("goto: no walking way there on the map (a wall or a ledge between?); heading straight for it and jumping hard where it's blocked");
+                    }
+                    return;
+                }
                 FinishGoto("stopped: the route graph has no walking way to that spot (nothing walkable within 96 yd of it links to where you are); pick a spot nearby");
                 return;
             }
@@ -239,6 +253,7 @@ public sealed partial class RynthNavPlugin
         }
         _coarse = c;
         _coarseOff = 0;
+        _jump.Hard = false;   // a walking way after all
         // A new route measures progress differently: restart the watchdog's best.
         _bestDist = double.MaxValue; _bestTick = _legTicks;
         Host.Log($"[RynthNav] route: {c.Count} border crossing(s), ~{c.Cost:F0}u walking vs {straight:F0}u straight ({expanded} expanded, {ms} ms)");
