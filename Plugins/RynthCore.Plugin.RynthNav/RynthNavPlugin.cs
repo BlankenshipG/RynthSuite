@@ -733,6 +733,8 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
                 AutoRun.Halt();
                 return;
             case DoorAct.Blocked:
+                // A locked door in a wall this character jumps: over it (2026-11-07); else round it.
+                if (TryJumpLockedDoor()) return;
                 Host.Log($"[RynthNav] walk: {doorWhy}; planning again round it");
                 lock (_gotoGate) _gotoPath = null;
                 _replanTick = 0;

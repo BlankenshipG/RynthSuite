@@ -59,6 +59,7 @@ internal static class GiveTests
         r.Add("give: a no-answer re-send that could not go out still counts as a try", FailedResendCountsAsATry);
         r.Add("quest: handin gives the quest's items (a wiki note in brackets optional) to the best-named NPC; never worn gear", QuestHandIn);
         r.Add("quest: talk uses the NPC; none near says so; nothing carried on a hand-in talks instead", QuestTalk);
+        r.Add("obstacle ahead (RynthNav's jumps): the top of a wall in front from the dats' volumes; nothing; too high", ObstacleAheadMeasures);
     }
 
     private sealed class World
@@ -185,6 +186,31 @@ internal static class GiveTests
         Check.Eq(RynthAiPlugin.QuestNpcScore("Burunjo", "Burun"), 0, "not part of a word");
         RynthAiPlugin.ParseQuestNpcLine("A || B C | x | y", out var names, out var items);
         Check.True(string.Join(",", names) == "A,B C" && string.Join(",", items) == "x,y", "the line: names before the first single '|', items after");
+    }
+
+    // 2026-11-07: RynthNav asks how high what stopped it is (RynthAi.DungeonPath v3 ObstacleAhead).
+    private static void ObstacleAheadMeasures()
+    {
+        static RynthCore.Plugin.RynthAi.Raycasting.BoundingVolume Box(float x0, float y0, float z0, float x1, float y1, float z1) => new()
+        {
+            Type = RynthCore.Plugin.RynthAi.Raycasting.BoundingVolume.VolumeType.AxisAlignedBox,
+            Min = new RynthCore.Plugin.RynthAi.Raycasting.Vector3(x0, y0, z0),
+            Max = new RynthCore.Plugin.RynthAi.Raycasting.Vector3(x1, y1, z1),
+            Center = new RynthCore.Plugin.RynthAi.Raycasting.Vector3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2),
+            Dimensions = new RynthCore.Plugin.RynthAi.Raycasting.Vector3(x1 - x0, y1 - y0, z1 - z0),
+        };
+        const int Ok = RynthCore.Plugin.Shared.RynthAiDungeonPathApiV1.ResultOk, None = RynthCore.Plugin.Shared.RynthAiDungeonPathApiV1.ResultNoPath;
+        // A 1.5 m wall 0.4 m east of the walker (standing against it), walker's feet at z 10.
+        var fence = new System.Collections.Generic.List<RynthCore.Plugin.RynthAi.Raycasting.BoundingVolume> { Box(100.4f, 40f, 10f, 100.6f, 60f, 11.5f) };
+        int r = RynthAiPlugin.MeasureObstacle(fence, 100, 50, 10, 90, 3, 8, out double top);
+        Check.True(r == Ok && top >= 1.5 && top <= 1.75, $"a 1.5 m wall right in front: its top ({r}, {top:F2} m)");
+        r = RynthAiPlugin.MeasureObstacle(fence, 100, 50, 10, 270, 3, 8, out top);
+        Check.True(r == None, $"looking the other way: nothing ({r})");
+        var house = new System.Collections.Generic.List<RynthCore.Plugin.RynthAi.Raycasting.BoundingVolume> { Box(101f, 40f, 10f, 108f, 60f, 22f) };
+        r = RynthAiPlugin.MeasureObstacle(house, 100, 50, 10, 90, 3, 8, out top);
+        Check.True(r == Ok && top > 8, $"a house wall: higher than measured ({top:F1})");
+        r = RynthAiPlugin.MeasureObstacle(new(), 100, 50, 10, 90, 3, 8, out _);
+        Check.True(r == None, "no geometry: nothing in the way");
     }
 
     private static void QuestTalk()

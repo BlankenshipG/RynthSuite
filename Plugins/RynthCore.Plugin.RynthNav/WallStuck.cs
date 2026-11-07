@@ -89,8 +89,15 @@ internal sealed class WallJump
 
     /// <summary>Jumping hard: <see cref="HardChargeMs"/> instead of <see cref="ChargeMs"/>.</summary>
     public bool Hard { get; set; }
-    /// <summary>The charges tried at one spot, in order.</summary>
-    public int[] Plan => Hard ? HardChargeMs : ChargeMs;
+    private int[]? _spot;
+    /// <summary>The charges tried at one spot, in order: this spot's own plan (<see cref="SetSpot"/>), else the default.</summary>
+    public int[] Plan => _spot ?? (Hard ? HardChargeMs : ChargeMs);
+
+    /// <summary>
+    /// This spot's jumps, worked out from the character's jump and what is in the way (JumpModel.PlanFor):
+    /// empty when no jump clears it (too high, too burdened), so the walk steps round at once.
+    /// </summary>
+    public void SetSpot(int[] plan) { _spot = plan; }
     /// <summary>Time in the air before the walk looks again.</summary>
     public const long FlightMs = 900;
 
@@ -144,12 +151,93 @@ internal sealed class WallJump
     }
 
     /// <summary>It moved on: the next stuck spot gets its jumps again.</summary>
-    public void Moved() { if (!Busy) Tries = 0; }
+    public void Moved() { if (!Busy) { Tries = 0; _spot = null; } }
 
     public void Reset()
     {
         Now = Phase.Idle;
         Tries = 0;
         Charge = 0;
+        _spot = null;
     }
 }
+
+/// <summary>
+/// How high this character jumps right now (2026-11-07, Silentkelpie: "the jump on routes should take your
+/// buffed jump into account as well as your burden"). AC's jump, as the server works it out (ACE's
+/// MovementSystem.GetJumpHeight): height = burden factor x (Jump / (Jump + 1300) x 22.2 + 0.05) x power, at
+/// least 0.35 m, power being how full the bar is (held 0 to 1 s). The burden factor is 1 up to 100% burden,
+/// falls to 0 at 200%, where no jump leaves the ground. Jump is the buffed skill. Burden is what you carry over
+/// what your Strength carries (150 per point, 30 more per point for each carrying augmentation).
+/// Host-free: the route tests drive it.
+/// </summary>
+internal sealed class JumpModel
+{
+    /// <summary>The Jump skill's id.</summary>
+    public const uint JumpSkillId = 22;
+    /// <summary>Feet over the top of what is jumped (m).</summary>
+    public const double Clearance = 0.35;
+    /// <summary>The navmesh climbs 1 m (RynthNav.Baker agentMaxClimb): what stops the walk is higher.</summary>
+    public const double MeshClimb = 1.0;
+    /// <summary>The least charge sent (a shorter press is a tap).</summary>
+    public const int MinChargeMs = 200;
+
+    /// <summary>The buffed Jump skill (0: not known).</summary>
+    public int Skill { get; }
+    /// <summary>Burden over capacity (1.0 = 100%; NaN: not known).</summary>
+    public double Burden { get; }
+
+    public JumpModel(int skill, double burden) { Skill = Math.Max(0, skill); Burden = burden; }
+
+    public bool Known => Skill > 0;
+    public bool BurdenKnown => !double.IsNaN(Burden);
+    /// <summary>Too burdened to jump at all (200% or more).</summary>
+    public bool TooBurdened => BurdenKnown && Burden >= 2.0;
+
+    public static double BurdenFactor(double burden) =>
+        double.IsNaN(burden) || burden < 1.0 ? 1.0 : burden < 2.0 ? 2.0 - burden : 0.0;
+
+    /// <summary>The jump's height at <paramref name="power"/> (0..1), in metres.</summary>
+    public double Height(double power)
+    {
+        double p = Math.Clamp(power, 0, 1);
+        double h = BurdenFactor(Burden) * (Skill / (Skill + 1300.0) * 22.2 + 0.05) * p;
+        return Math.Max(h, 0.35);
+    }
+
+    /// <summary>A full jump's height.</summary>
+    public double FullHeight => Height(1.0);
+
+    /// <summary>The bar to fill (ms) for feet <see cref="Clearance"/> over something <paramref name="top"/> m high; 0 = none does.</summary>
+    public int ChargeFor(double top)
+    {
+        double need = top + Clearance;
+        double full = BurdenFactor(Burden) * (Skill / (Skill + 1300.0) * 22.2 + 0.05);
+        if (TooBurdened || full <= 0 || need > full) return 0;
+        return Math.Clamp((int)Math.Ceiling(need / full * 1000.0 / 50.0) * 50, MinChargeMs, 1000);
+    }
+
+    /// <summary>
+    /// The jumps for one stuck spot. <paramref name="top"/>: how high the thing in the way is (NaN: not known,
+    /// a live object or no geometry). Known and jumpable: just enough, then a full one. Too high or too
+    /// burdened: none (step round at once). Not known: from the mesh's climb up, then full ones.
+    /// </summary>
+    public int[] PlanFor(double top, bool hard, out string why)
+    {
+        if (TooBurdened) { why = $"too burdened to jump ({Burden * 100:F0}%)"; return Array.Empty<int>(); }
+        if (!double.IsNaN(top))
+        {
+            int c = ChargeFor(top);
+            if (c == 0) { why = $"{top:F1} m high; your jump clears about {FullHeight - Clearance:F1} m (Jump {Skill}{BurdenNote})"; return Array.Empty<int>(); }
+            why = $"{top:F1} m high; a {c} ms jump clears it (Jump {Skill}{BurdenNote})";
+            return c >= 1000 ? new[] { 1000, 1000 } : new[] { c, 1000 };
+        }
+        int first = Math.Max(ChargeFor(MeshClimb + 0.6), 700);
+        if (first == 0 || hard) first = 1000;
+        why = $"height not known; from {first} ms (Jump {Skill}{BurdenNote}: a full jump clears about {FullHeight - Clearance:F1} m)";
+        return hard ? new[] { 1000, 1000, 1000 } : new[] { first, 1000 };
+    }
+
+    private string BurdenNote => BurdenKnown ? $", burden {Burden * 100:F0}%" : "";
+}
+

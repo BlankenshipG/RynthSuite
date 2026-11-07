@@ -17,6 +17,7 @@ internal static partial class Program
         Run(nameof(ChargedJumpThenFullThenStepRound), ChargedJumpThenFullThenStepRound);
         Run(nameof(TapJumpWithoutChargedJump), TapJumpWithoutChargedJump);
         Run(nameof(JumpingHardIsFullPowerThreeTimes), JumpingHardIsFullPowerThreeTimes);
+        Run(nameof(JumpFromSkillAndBurden), JumpFromSkillAndBurden);
     }
 
     // Runs ticks of 33 ms from t, the character at (x, y), driving each tick (running or turning).
@@ -132,4 +133,38 @@ internal static partial class Program
         j.Hard = false;
         Check(j.StartCharged(0) == 700 && j.Plan.Length == 2, "back to walking: a strong jump, then a full one");
     }
+
+    // "the jump on routes should take your buffed jump into account as well as your burden".
+    private static void JumpFromSkillAndBurden()
+    {
+        var m = new JumpModel(300, 0.5);
+        Near(m.FullHeight, 300 / 1600.0 * 22.2 + 0.05, 1e-9, "Jump 300, half burden: AC's full jump height");
+        Near(m.Height(0.5), m.FullHeight / 2, 1e-9, "half a bar: half the height");
+        Near(new JumpModel(300, 1.5).FullHeight, m.FullHeight * 0.5, 1e-9, "150% burden: half the height");
+        Check(new JumpModel(300, 2.1).TooBurdened && new JumpModel(300, 2.1).PlanFor(1.0, false, out _).Length == 0, "200% burden and over: no jump");
+        Near(new JumpModel(10, 0.1).Height(0.1), 0.35, 1e-9, "never under 0.35 m");
+
+        int c = m.ChargeFor(1.5);
+        Check(c == 450, $"a 1.5 m fence, Jump 300: a 450 ms bar ({c})");
+        int[] p = m.PlanFor(1.5, false, out string why);
+        Check(p.Length == 2 && p[0] == 450 && p[1] == 1000 && why.Contains("1.5 m high"), $"just enough, then a full one ({string.Join(",", p)}: {why})");
+        p = m.PlanFor(5.0, false, out why);
+        Check(p.Length == 0 && why.Contains("your jump clears about"), $"a 5 m wall: no jump, step round ({why})");
+        Check(new JumpModel(300, 1.6).PlanFor(2.0, false, out _).Length == 0 && m.PlanFor(2.0, false, out _).Length == 2,
+            "the same 2 m wall: jumped light, not at 160% burden");
+        p = m.PlanFor(double.NaN, false, out _);
+        Check(p.Length == 2 && p[0] >= 700 && p[1] == 1000, $"height not known: a strong jump, then a full one ({string.Join(",", p)})");
+        Check(string.Join(",", m.PlanFor(double.NaN, true, out _)) == "1000,1000,1000", "not known, jumping hard: three full ones");
+        Check(!new JumpModel(0, 0.2).Known, "no skill read: not known (the default jumps)");
+
+        var j = new WallJump();
+        j.SetSpot(new[] { 450, 1000 });
+        Check(j.StartCharged(0) == 450, "the spot's plan is used");
+        j.Tick(450); j.Tick(450 + WallJump.FlightMs);
+        j.Moved();
+        Check(j.Plan.Length == 2 && j.Plan[0] == 700, "moved on: the next spot plans again");
+        j.SetSpot(System.Array.Empty<int>());
+        Check(!j.CanTry, "nothing clears it: no jump, step round");
+    }
 }
+

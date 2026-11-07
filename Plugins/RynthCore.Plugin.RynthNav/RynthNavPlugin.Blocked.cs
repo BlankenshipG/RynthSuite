@@ -115,6 +115,7 @@ public sealed partial class RynthNavPlugin
         if (_doorStep != DoorStep.None) ResetDoor();
         _stuck.Reset();
         CancelJump();
+        _lockedDoorHere = false;
         _unstickUntilMs = 0; _stuckTries = 0;
         _blockedSpots.Clear();
     }
@@ -171,8 +172,11 @@ public sealed partial class RynthNavPlugin
             lock (_gate) _status = "blocked: opening a door";
             return true;
         }
-        // First jump on the same heading, charged (a fence, a step, a low wall the mesh smooths over),
-        // twice at one spot (a medium jump, then a full one); only then step round it.
+        // First jump on the same heading, charged (a fence, a step, a low wall the mesh smooths over); only
+        // then step round it. Since 2026-11-07 the jumps of a spot come from the character's jump (buffed
+        // Jump skill, burden) and how high the thing is (RynthNavPlugin.Jump.cs): just enough, then a full
+        // one, or none when nothing clears it.
+        if (_jump.Tries == 0 && (Host.HasCommenceJump || Host.HasTapJump)) PlanJumpHere(at);
         if (_jump.CanTry && (Host.HasCommenceJump || Host.HasTapJump))
         {
             _jumpDeg = _lastDriveDeg;

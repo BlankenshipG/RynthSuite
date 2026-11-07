@@ -25,6 +25,7 @@ internal static unsafe class DungeonPathInterface
             t->StructSize = (uint)sizeof(RynthAiDungeonPathApiV1);
             t->FindPath = &FindPath;
             t->FindPath2 = &FindPath2;
+            t->ObstacleAhead = &ObstacleAhead;
             _table = t;
         }
         return (IntPtr)_table;
@@ -48,6 +49,22 @@ internal static unsafe class DungeonPathInterface
             RynthAiPlugin? p = PluginExports.Runtime.Plugin;
             if (p == null || points == null || maxPoints < 2 || count == null) return RynthAiDungeonPathApiV1.ResultNoData;
             return p.DungeonPathForPlugin(landblock, sx, sy, sz, gx, gy, gz, points, maxPoints, count);
+        }
+        catch
+        {
+            return RynthAiDungeonPathApiV1.ResultNoData;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int ObstacleAhead(uint landcell, double x, double y, double z, double headingDeg, double ahead, double maxHeight, double* topAbove)
+    {
+        try
+        {
+            if (topAbove != null) *topAbove = 0;
+            RynthAiPlugin? p = PluginExports.Runtime.Plugin;
+            if (p == null || topAbove == null) return RynthAiDungeonPathApiV1.ResultNoData;
+            return p.ObstacleAheadForPlugin(landcell, x, y, z, headingDeg, ahead, maxHeight, out *topAbove);
         }
         catch
         {

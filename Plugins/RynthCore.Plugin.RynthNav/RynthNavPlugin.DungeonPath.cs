@@ -40,8 +40,10 @@ public sealed partial class RynthNavPlugin
         if (!Host.HasGetPluginInterface) { _dunPathWhy = "this RynthCore can't link plugins"; return null; }
         try
         {
-            var t = (RynthAiDungeonPathApiV1*)Host.GetPluginInterface(RynthAiDungeonPathApiV1.PluginName, RynthAiDungeonPathApiV1.InterfaceName, RynthAiDungeonPathApiV1.InterfaceVersion);
-            if (t == null || t->Version < 1 || t->StructSize < (uint)sizeof(RynthAiDungeonPathApiV1) || t->FindPath == null)
+            // Version 1 is enough to link: a RynthAi from before v3 still walks dungeons (the newer functions
+            // are checked by Version and StructSize where they are used).
+            var t = (RynthAiDungeonPathApiV1*)Host.GetPluginInterface(RynthAiDungeonPathApiV1.PluginName, RynthAiDungeonPathApiV1.InterfaceName, 1);
+            if (t == null || t->Version < 1 || t->StructSize < 16 || t->FindPath == null)
             { _dunPathWhy = "RynthAi isn't loaded (or is older than its dungeon path interface)"; return null; }
             return t;
         }
@@ -67,7 +69,7 @@ public sealed partial class RynthNavPlugin
         var buf = new double[DunPathMaxPoints * 3];
         var kinds = new int[DunPathMaxPoints];
         int count = 0, r;
-        bool v2 = t->Version >= 2 && t->StructSize >= (uint)sizeof(RynthAiDungeonPathApiV1) && t->FindPath2 != null;
+        bool v2 = t->Version >= 2 && t->StructSize >= 24 && t->FindPath2 != null;
         if (v2)
         {
             var av = new double[Math.Max(1, avoid.Count * 3)];

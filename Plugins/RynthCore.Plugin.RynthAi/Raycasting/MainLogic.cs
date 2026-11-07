@@ -25,6 +25,10 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         public BlacklistManager Blacklist => _blacklist;
         public TargetingFSM TargetingFSM => _targetingFSM;
         public bool IsInitialized => _geoLoader?.IsInitialized ?? false;
+
+        /// <summary>The static geometry of the landblock holding <paramref name="landcell"/> (null without dats).</summary>
+        public System.Collections.Generic.List<BoundingVolume>? GeometryAt(uint landcell)
+            => IsInitialized ? _geoLoader.GetLandblockGeometry(landcell) : null;
         public string StatusMessage => _geoLoader?.StatusMessage ?? "Not created";
 
         public MainLogic()

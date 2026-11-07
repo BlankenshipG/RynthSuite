@@ -61,3 +61,30 @@ doesn't cross).
   plans with portals and recalls.
 - A walking way found later turns hard jumping off.
 - Ordinary walking jumps start stronger: 0.7 s (was 0.6 s), then a full 1 s.
+
+## Later still: jumps from your buffed Jump and burden, and over locked doors (Jump.cs, ObstacleAhead)
+
+Silentkelpie: "the jump on routes should take your buffed jump into account as well as your burden to plan
+a route and a jump to get over things to by pass doors and other obstacles".
+
+- How high this character jumps now (JumpModel). AC's height (ACE GetJumpHeight) is:
+  burden factor x (Jump / (Jump + 1300) x 22.2 + 0.05) x power.
+  - Jump is the buffed Jump skill.
+  - Power is how full the bar is: held 0 to 1 s.
+  - The burden factor is 1 up to 100% burden and falls to 0 at 200%. Burden is what you carry over
+    150 x Strength, plus 30 x Strength for each carrying augmentation.
+  - Example: Jump 300 at light burden clears about 3.9 m; at 160% it clears about 1.3 m.
+- How high the thing in front is: RynthAi's dungeon path interface v3 adds ObstacleAhead. It casts
+  rays forward at rising heights through the static geometry of the dats (what line of sight uses). The
+  lowest clear ray is the top. Doors and creatures are live objects and aren't measured.
+- At a stuck spot RynthNav measures, then:
+  - Jumpable: just enough bar to clear it, then a full jump.
+  - Higher than this character's jump, or 200% burden or more: no jump; it steps round at once.
+  - Not measured: as before, from a strong jump up.
+  - The log says which and why ("1.5 m high; a 450 ms jump clears it (Jump 300, burden 40%)").
+- A locked door on the way: it measures the wall the door sits in, 1.6 m to either side. If that is low
+  enough for your jump, it jumps over (chat says so); else it plans round the door as before.
+- The interface link takes RynthAi's table from version 1 up, checking the newer functions where they are
+  used. A RynthAi without ObstacleAhead still walks dungeons; RynthNav just jumps without heights.
+
+Tests: RouteTests JumpFromSkillAndBurden; RynthAiHostTests obstacle ahead (a fence, nothing, a house wall).

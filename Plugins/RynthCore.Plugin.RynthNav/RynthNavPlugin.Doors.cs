@@ -189,6 +189,10 @@ public sealed partial class RynthNavPlugin
         {
             _lockedDoors.Add(((cell >> 16) & 0xFFFF, x, y, z));
             _lockedDoorVersion++;
+            // For a jump over the wall it sits in (RynthNavPlugin.Jump.cs TryJumpLockedDoor): world units.
+            _lockedDoorHere = true;
+            _lockedDoorX = ((cell >> 24) & 0xFF) * 192.0 + x;
+            _lockedDoorY = ((cell >> 16) & 0xFF) * 192.0 + y;
         }
         ResetDoor();
         return DoorAct.Blocked;

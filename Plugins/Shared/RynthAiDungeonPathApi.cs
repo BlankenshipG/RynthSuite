@@ -16,6 +16,8 @@
 //  - Every function returns safely (no exception crosses the boundary).
 //
 //  v2 (2026-10-30): FindPath2 (drops down, cells to avoid, point kinds).
+//  v3 (2026-11-07): ObstacleAhead (how high the thing in front is, from the dats: RynthNav
+//  jumps over what the character's jump clears and steps round what it doesn't).
 //
 //  World units: x = east  (landblockX * 192 + local x),
 //               y = north (landblockY * 192 + local y),
@@ -31,7 +33,7 @@ public unsafe struct RynthAiDungeonPathApiV1
 {
     public const string PluginName = "RynthAi";
     public const string InterfaceName = "RynthAi.DungeonPath";
-    public const uint InterfaceVersion = 2;
+    public const uint InterfaceVersion = 3;
 
     /// <summary>FindPath2 point kinds: walk on to the next point.</summary>
     public const int KindWalk = 0;
@@ -63,4 +65,14 @@ public unsafe struct RynthAiDungeonPathApiV1
     /// <c>kinds</c> (room for <c>maxPoints</c>, may be null) gets each point's KindWalk / KindDrop.
     /// </summary>
     public delegate* unmanaged[Cdecl]<uint, double, double, double, double, double, double, double, double*, int, double*, int*, int, int*, int> FindPath2;
+
+    /// <summary>
+    /// v3 (2026-11-07): what stands in front of a walker at (x, y, z) in landcell <c>landcell</c>, looking
+    /// <c>headingDeg</c> (0 north, 90 east) up to <c>ahead</c> world units: rays at rising heights through the
+    /// static geometry the dats place there (walls, fences, rocks; not doors or creatures, which are live
+    /// objects). ResultOk: something is there, and <c>*topAbove</c> is the lowest height above z a ray passes
+    /// over it (more than <c>maxHeight</c>: <c>maxHeight</c> + 1, too high). ResultNoPath: nothing static in the
+    /// way. ResultNoData: no geometry loaded.
+    /// </summary>
+    public delegate* unmanaged[Cdecl]<uint, double, double, double, double, double, double, double*, int> ObstacleAhead;
 }
