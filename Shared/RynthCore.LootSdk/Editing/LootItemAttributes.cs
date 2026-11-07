@@ -21,6 +21,11 @@ public enum LootItemAttributeOp
     Exactly = 1,
     AtMost = 2,
     Not = 3,
+    /// <summary>
+    /// A flags value (imbues, damage types) has any of the picked flags (2026-11-07): "has Fire Rending",
+    /// "has Any elemental rend". VTank's Long Key Has Flag, (value AND flags) != 0.
+    /// </summary>
+    HasAny = 4,
     /// <summary>A spell by its exact name.</summary>
     SpellExact = 10,
     /// <summary>This spell at this tier or a higher one (Major Strength: Major, Epic or Legendary).</summary>
@@ -113,10 +118,14 @@ public static class LootItemAttributes
         new(GroupItem, 92, false, "Uses left", Cmp.Min),
         new(GroupItem, 91, false, "Max uses", Cmp.Min),
         new(GroupItem, 265, false, "Armor set", Cmp.Named, "The set id (the same set's pieces share it)."),
-        new(GroupItem, 353, false, "Imbue", Cmp.Named),
+        new(GroupItem, 179, false, "Imbue", Cmp.Named,
+            "The item's imbues (ImbuedEffect, with ImbuedEffect2-5). \"has any\" matches an item with any of the picked ones: "
+            + "\"Any elemental rend\" is every element, one rend is that element only. A caster's spell armor rend is the "
+            + "Armor Rending imbue on a wand, staff or orb."),
         new(GroupItem, 166, false, "Slayer", Cmp.Named),
         new(GroupItem, 45, false, "Damage type", Cmp.Named),
 
+        new(GroupGear, 353, false, "Weapon type", Cmp.Named, "The weapon's mastery: sword, axe, bow, crossbow..."),
         new(GroupGear, LootItemRules.KeyWieldSkill, false, "Wield skill", Cmp.Named),
         new(GroupGear, LootItemRules.KeyWeaponSkill, false, "Weapon skill", Cmp.Named),
         new(GroupGear, LootItemRules.KeyDamage, false, "Max damage", Cmp.Min),
@@ -261,6 +270,11 @@ public static class LootItemAttributes
     {
         LootItemAttributeOp[] ops = s.Cmp switch
         {
+            // Flags (imbues, damage types): "has any of" too; for imbues it comes first (an item can carry two).
+            Cmp.Named when LootRuleText.ValueTableIsFlags(s.Key) && s.Key == LootItemFacts.ImbuedEffectKey
+                => new[] { LootItemAttributeOp.HasAny, LootItemAttributeOp.Exactly, LootItemAttributeOp.Not },
+            Cmp.Named when LootRuleText.ValueTableIsFlags(s.Key)
+                => new[] { LootItemAttributeOp.Exactly, LootItemAttributeOp.HasAny, LootItemAttributeOp.Not },
             Cmp.Named => new[] { LootItemAttributeOp.Exactly, LootItemAttributeOp.Not },
             Cmp.Max => new[] { LootItemAttributeOp.AtMost, LootItemAttributeOp.Exactly, LootItemAttributeOp.AtLeast },
             _ => new[] { LootItemAttributeOp.AtLeast, LootItemAttributeOp.Exactly, LootItemAttributeOp.AtMost },
@@ -531,6 +545,7 @@ public static class LootItemAttributes
                         LootItemAttributeOp.Exactly => VTankNodeTypes.LongValKeyE,
                         LootItemAttributeOp.AtMost => VTankNodeTypes.LongValKeyLE,
                         LootItemAttributeOp.Not => VTankNodeTypes.LongValKeyNE,
+                        LootItemAttributeOp.HasAny => VTankNodeTypes.LongValKeyFlagExists,
                         _ => VTankNodeTypes.LongValKeyGE,
                     };
                     rule.Conditions.Add(Cond(type, iv, key));

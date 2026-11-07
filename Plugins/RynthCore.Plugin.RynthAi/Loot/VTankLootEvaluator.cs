@@ -455,8 +455,8 @@ public static class VTankLootEvaluator
         {
             VTankNodeTypes.SpellNameMatch                  => MatchSpellNameMatch(itemId, ctx, d),
             VTankNodeTypes.StringValueMatch                => MatchStringValue(item, d),
-            VTankNodeTypes.LongValKeyLE                    => Long(d) is var (val,key) && item.Values((LongValueKey)key, 0) <= val,
-            VTankNodeTypes.LongValKeyGE                    => Long(d) is var (val,key) && item.Values((LongValueKey)key, 0) >= val,
+            VTankNodeTypes.LongValKeyLE                    => Long(d) is var (val,key) && LongOf(item, key) <= val,
+            VTankNodeTypes.LongValKeyGE                    => Long(d) is var (val,key) && LongOf(item, key) >= val,
             // VTank compares double keys as floats: 1.2 + 0.09 must still be >= 1.29.
             VTankNodeTypes.DoubleValKeyLE                  => Double(d) is var (val,key) && (float)item.Values(FloatKey(key), 0.0) <= (float)val,
             VTankNodeTypes.DoubleValKeyGE                  => Double(d) is var (val,key) && (float)item.Values(FloatKey(key), 0.0) >= (float)val,
@@ -465,9 +465,9 @@ public static class VTankLootEvaluator
             VTankNodeTypes.SpellCountGE                    => ctx is null || ctx.GetItemSpellIds(itemId).Length >= ReadInt(d, 0),
             VTankNodeTypes.SpellMatch                      => MatchSpellMatch(itemId, ctx, d),
             VTankNodeTypes.MinDamageGE                     => MatchMinDamageGE(item, d),
-            VTankNodeTypes.LongValKeyFlagExists            => Long(d) is var (flag,fkey) && (item.Values((LongValueKey)fkey, 0) & flag) != 0,
-            VTankNodeTypes.LongValKeyE                     => Long(d) is var (val,key) && item.Values((LongValueKey)key, 0) == val,
-            VTankNodeTypes.LongValKeyNE                    => Long(d) is var (val,key) && item.Values((LongValueKey)key, 0) != val,
+            VTankNodeTypes.LongValKeyFlagExists            => Long(d) is var (flag,fkey) && (LongOf(item, fkey) & flag) != 0,
+            VTankNodeTypes.LongValKeyE                     => Long(d) is var (val,key) && LongOf(item, key) == val,
+            VTankNodeTypes.LongValKeyNE                    => Long(d) is var (val,key) && LongOf(item, key) != val,
             VTankNodeTypes.AnySimilarColor                 => true, // needs portal.dat — optimistic
             VTankNodeTypes.SimilarColorArmorType           => true, // needs portal.dat — optimistic
             VTankNodeTypes.SlotSimilarColor                => true, // needs portal.dat — optimistic
@@ -762,6 +762,21 @@ public static class VTankLootEvaluator
 
     // (value, key) pair for the LongValKey* family.
     private static (int Val, int Key) Long(IList<string> d) => (ReadInt(d, 0), ReadInt(d, 1));
+
+    /// <summary>ImbuedEffect and ImbuedEffect2..5 (ACE keeps a second imbue in 303-306).</summary>
+    internal static readonly int[] ImbueKeys = { 179, 303, 304, 305, 306 };
+
+    /// <summary>
+    /// A long key's value for a rule. ImbuedEffect (179) is every imbue the item has, ORed over 179 and
+    /// 303-306 as ACE's GetImbuedEffects does (2026-11-07): a "has" test then sees a second imbue too.
+    /// </summary>
+    private static int LongOf(WorldObject item, int key)
+    {
+        if (key != ImbueKeys[0]) return item.Values((LongValueKey)key, 0);
+        int v = 0;
+        foreach (int k in ImbueKeys) v |= item.Values((LongValueKey)k, 0);
+        return v;
+    }
     private static (double Val, int Key) Double(IList<string> d) => (ReadDouble(d, 0), ReadInt(d, 1));
     // Buffed long/double helpers store value as double in slot 0 (matching VTank's "Read" of doubles).
     private static (double Val, int Key) DoubleKey(IList<string> d) => (ReadDouble(d, 0), ReadInt(d, 1));

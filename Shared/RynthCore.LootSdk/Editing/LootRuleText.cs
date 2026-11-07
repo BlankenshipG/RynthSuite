@@ -64,8 +64,8 @@ public static class LootRuleText
             (314, "Pet CritDamageRating"), (315, "Pet CritResistRating"), (316, "Pet CritDamageResistRating"),
             (362, "SummoningMastery"), (364, "UseLevelRequirement"), (366, "UseRequiresSkill"),
             (368, "UseRequiresSkillSpec"), (369, "UseRequiresLevel"),
-            (179, "Imbued (Decal)"), (265, "EquipmentSetId (armor set)"),
-            (218, "EquippedSlots"), (353, "ImbuedEffect"), (370, "DamageRating"), (371, "DamageResistRating"),
+            (179, "ImbuedEffect (imbue)"), (265, "EquipmentSetId (armor set)"),
+            (218, "EquippedSlots"), (353, "WeaponType (mastery)"), (370, "DamageRating"), (371, "DamageResistRating"),
             (372, "CritRating"), (373, "CritResistRating"), (374, "CritDamageRating"),
             (375, "CritDamageResistRating"), (376, "HealBoostRating"), (377, "NetherResistRating"), (379, "VitalityRating"),
             (0x0D000000, "Type (WCID)"),   // Decal's synthetic key: the weenie class id
@@ -216,8 +216,8 @@ public static class LootRuleText
     /// number. Unknown values are still valid: show them as "value N".
     /// </summary>
     /// <summary>
-    /// ImbuedEffect (353): ACE's ImbuedEffectType flags. A combination (two imbues) shows as
-    /// "value N".
+    /// ImbuedEffect (179, Decal's Imbued): ACE's ImbuedEffectType flags. A combination (two imbues)
+    /// shows as "value N". (Until 2026-11-07 these names sat on 353, which is the weapon type.)
     /// </summary>
     public static readonly (int Id, string Name)[] ImbuedEffects =
     {
@@ -225,6 +225,20 @@ public static class LootRuleText
         (16, "Pierce Rending"), (32, "Bludgeon Rending"), (64, "Acid Rending"), (128, "Cold Rending"),
         (256, "Electric Rending"), (512, "Fire Rending"), (1024, "Melee Defense"), (2048, "Missile Defense"),
         (4096, "Magic Defense"), (8192, "Spellbook"), (16384, "Nether Rending"),
+        // Picks of several flags, for "has any" (2026-11-07): one rule for any of them.
+        (17400, "Any elemental rend"),            // slash, pierce, bludgeon, acid, cold, electric, fire, nether
+        (56, "Any physical rend"),                // slash, pierce, bludgeon
+        (17344, "Any magical-element rend"),      // acid, cold, electric, fire, nether
+        (17404, "Any rend (with Armor Rending)"),
+        (3, "Critical Strike or Crippling Blow"),
+        (7168, "Any defense imbue"),              // melee, missile, magic
+    };
+
+    /// <summary>WeaponType (353): the weapon's mastery (ACE WeaponType), as VTank profiles test it ("353 = 9" is a crossbow).</summary>
+    public static readonly (int Id, string Name)[] WeaponTypes =
+    {
+        (1, "Unarmed"), (2, "Sword"), (3, "Axe"), (4, "Mace"), (5, "Spear"), (6, "Dagger"), (7, "Staff"),
+        (8, "Bow"), (9, "Crossbow"), (10, "Thrown"), (11, "Two Handed"), (12, "Magic"),
     };
 
     /// <summary>SummoningMastery (362): the pet school an essence needs (ACE SummoningMastery).</summary>
@@ -241,7 +255,8 @@ public static class LootRuleText
         158 => WieldRequirements,
         159 or 366 or 368 => Skills,
         166 => CreatureTypes,
-        353 => ImbuedEffects,
+        179 => ImbuedEffects,
+        353 => WeaponTypes,
         362 => SummoningMasteries,
         T11.T11Keys.WeaponGrade => T11.T11Catalog.Grades,
         T11.T11Keys.GearGrade => T11.T11Catalog.Grades,
@@ -249,11 +264,11 @@ public static class LootRuleText
     };
 
     /// <summary>True when the long key's value is a set of flags (a named value is one flag or a common pair).</summary>
-    public static bool ValueTableIsFlags(int longKey) => longKey is 45 or 0x0D000021 or 9054 or 353;
+    public static bool ValueTableIsFlags(int longKey) => longKey is 45 or 0x0D000021 or 9054 or 179;
 
     /// <summary>The long keys that have a value table, for the vocabulary.</summary>
     public static readonly int[] KeysWithValueTables =
-        { 45, 48, 131, 158, 159, 166, 353, 362, 366, 368, 9054, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
+        { 45, 48, 131, 158, 159, 166, 179, 353, 362, 366, 368, 9054, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
 
     /// <summary>
     /// True for the conditions whose value is picked by name when the key has a
@@ -456,7 +471,7 @@ public static class LootRuleText
             VTankNodeTypes.LongValKeyLE => $"{Lk(1)} <= {Lv()}",
             VTankNodeTypes.LongValKeyE => $"{Lk(1)} = {Lv()}",
             VTankNodeTypes.LongValKeyNE => $"{Lk(1)} != {Lv()}",
-            VTankNodeTypes.LongValKeyFlagExists => $"{Lk(1)} has flag {G(0)}",
+            VTankNodeTypes.LongValKeyFlagExists => $"{Lk(1)} has {Lv()}",
             VTankNodeTypes.DoubleValKeyGE => $"{Dk(1)} >= {G(0)}",
             VTankNodeTypes.DoubleValKeyLE => $"{Dk(1)} <= {G(0)}",
             VTankNodeTypes.BuffedLongValKeyGE => $"buffed {Lk(1)} >= {Lv()}",

@@ -24,6 +24,8 @@ internal static partial class Program
         TestAttrPetEssence();
         TestAttrNativeAndWire();
         TestAttrVocab();
+        TestAttrImbues();
+        TestBlankRule();
     }
 
     private static LootItemFacts Sword() => new()
@@ -181,12 +183,62 @@ internal static partial class Program
 
     private static void TestAttrVocab()
     {
-        Eq(LootRuleText.ValueName(353, "4"), "Armor Rending", "vocab: imbue names");
+        Eq(LootRuleText.ValueName(179, "4"), "Armor Rending", "vocab: imbue names (ImbuedEffect is 179)");
+        Eq(LootRuleText.ValueName(353, "9"), "Crossbow", "vocab: 353 is the weapon type, not the imbue");
+        Eq(LootRuleText.ValueName(353, "4"), "Mace", "vocab: 353 = 4 is a mace");
+        Check(LootRuleText.ValueTableIsFlags(179) && !LootRuleText.ValueTableIsFlags(353), "imbue is flags, weapon type isn't");
         Eq(LootRuleText.ValueName(362, "3"), "Naturalist", "vocab: summoning mastery");
         Check(LootRuleText.LongKeys.Any(k => k.Id == 9053) && LootRuleText.LongKeys.Any(k => k.Id == 9075), "vocab: pet keys named");
         Check(LootRuleText.LongKeys.Any(k => k.Id == 92 && k.Name.StartsWith("UsesRemaining")), "vocab: 92 is uses remaining");
         Check(LootRuleText.LongKeys.Any(k => k.Id == 107 && k.Name == "ItemCurMana") && LootRuleText.LongKeys.Any(k => k.Id == 108 && k.Name == "ItemMaxMana"), "vocab: current and max mana");
         var ids = LootRuleText.LongKeys.Select(k => k.Id).ToList();
         Eq(ids.Count, ids.Distinct().Count(), "vocab: no long key named twice");
+    }
+
+    // 2026-11-07: imbues are 179 (with 303-306), "has any" picks several, and Add rule's blank checklist.
+    private static void TestAttrImbues()
+    {
+        var wand = new LootItemFacts
+        {
+            Id = 20, Name = "Fire Wand", ObjectClass = (int)AcObjectClass.WandStaffOrb,
+            Ints = { [179] = 4, [303] = 512, [353] = 12 },
+        };
+        Eq(wand.Int(179), 516, "imbues: 179 is ORed with ImbuedEffect2-5");
+        LootItemRuleDraft? d = LootItemRules.Build(wand, new LootItemRuleOptions { Match = LootItemMatch.Like }, out string err);
+        LootItemAttribute? imbue = d?.Attributes.FirstOrDefault(a => a.Id == "L:179");
+        LootItemAttribute? wtype = d?.Attributes.FirstOrDefault(a => a.Id == "L:353");
+        Check(imbue != null && imbue.Ops[0] == LootItemAttributeOp.HasAny, "imbues: the Imbue row is 179 and starts at has any " + err);
+        Check(wtype != null && wtype.Label == "Weapon type" && wtype.ItemText == "Magic", "imbues: 353 is the weapon type row");
+
+        // Any elemental rend, in one rule.
+        LootItemRuleDraft b = LootItemRules.BuildBlank(new LootItemRuleOptions
+        {
+            BlankRule = true,
+            Choices = Pick(("L:179", true, LootItemAttributeOp.HasAny, "17400")),
+        });
+        VTankLootCondition c = b.Rule.Conditions.Single();
+        Eq(c.NodeType, VTankNodeTypes.LongValKeyFlagExists, "has any: Long Key Has Flag");
+        Eq(string.Join(",", c.DataLines), "17400,179", "has any: the flags then the key");
+        Eq(LootRuleText.Condition(c), "ImbuedEffect (imbue) has Any elemental rend", "has any: in words");
+        bool Takes(LootItemFacts f) => LootFactsMatcher.Match(b.Rule.Conditions, f, true) == LootFactsVerdict.Match;
+        Check(Takes(wand), "has any: a fire rend in ImbuedEffect2 counts");
+        Check(!Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [179] = 4 } }), "has any: armor rending alone is no elemental rend");
+        Check(Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [179] = 128 } }), "has any: cold rend counts");
+        Eq(LootRuleText.ValueName(179, "17344"), "Any magical-element rend", "has any: acid, cold, electric, fire, nether");
+    }
+
+    private static void TestBlankRule()
+    {
+        LootItemRuleDraft b = LootItemRules.BuildBlank(new LootItemRuleOptions
+        {
+            BlankRule = true, Action = VTankLootAction.KeepUpTo, KeepCount = 5,
+            Choices = Pick(("class", true, LootItemAttributeOp.Exactly, ((int)AcObjectClass.Jewelry).ToString()), ("L:105", true, LootItemAttributeOp.AtLeast, "7")),
+        });
+        Eq(b.Rule.Action, VTankLootAction.KeepUpTo, "blank rule: the action");
+        Eq(b.Rule.KeepCount, 5, "blank rule: the keep count");
+        Eq(b.Rule.Conditions.Count, 2, "blank rule: the ticked rows");
+        Check(b.Rule.Name.StartsWith("Keep 5: Class is Jewelry"), "blank rule: named from the action and conditions: " + b.Rule.Name);
+        LootItemRuleDraft f = LootItemRules.BuildBlank(new LootItemRuleOptions());
+        Eq(f.Rule.Name, "Filter", "blank filter: still named Filter");
     }
 }

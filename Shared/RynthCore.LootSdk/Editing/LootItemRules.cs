@@ -37,7 +37,18 @@ public sealed class LootItemFacts
 
     public bool Stackable => MaxStackSize > 1 || StackSize > 1;
 
-    public int Int(int key) => Ints.TryGetValue(key, out int v) ? v : 0;
+    public int Int(int key)
+    {
+        if (key != ImbuedEffectKey) return Ints.TryGetValue(key, out int v) ? v : 0;
+        // Every imbue: ImbuedEffect and ImbuedEffect2..5 ORed, as ACE's GetImbuedEffects (2026-11-07).
+        int all = 0;
+        foreach (int k in ImbuedEffectKeys) if (Ints.TryGetValue(k, out int b)) all |= b;
+        return all;
+    }
+
+    public const int ImbuedEffectKey = 179;
+    /// <summary>ImbuedEffect (179) and ImbuedEffect2..5 (303-306).</summary>
+    public static readonly int[] ImbuedEffectKeys = { 179, 303, 304, 305, 306 };
     public double Double(int key) => Doubles.TryGetValue(key, out double v) ? v : 0;
 }
 
@@ -59,6 +70,8 @@ public sealed class LootItemRuleOptions
     public VTankLootAction? Action { get; set; }
     /// <summary>Keep # count; null: one full stack.</summary>
     public int? KeepCount { get; set; }
+    /// <summary>BuildBlank makes a loot rule (the Loot Editor's Add rule), not a filter: its default name is the action and the conditions.</summary>
+    public bool BlankRule { get; set; }
     /// <summary>Null or blank: "Keep Copper Pea" and the like.</summary>
     public string? RuleName { get; set; }
     /// <summary>
@@ -236,14 +249,43 @@ public static class LootItemRules
         List<LootItemAttribute> rows = LootItemAttributes.ForBlank();
         LootItemAttributes.AddExtras(rows, o.Extras, o.Spells);
         LootItemAttributes.Apply(rows, o.Choices, notes);
-        var rule = new VTankLootRule { CustomExpression = string.Empty, Action = o.Action ?? VTankLootAction.Keep };
+        VTankLootAction action = o.Action ?? VTankLootAction.Keep;
+        if (!LootRuleText.IsKnownAction((int)action)) action = VTankLootAction.Keep;
+        int keep = Math.Max(0, o.KeepCount ?? 1);
+        var rule = new VTankLootRule
+        {
+            CustomExpression = string.Empty, Action = action,
+            KeepCount = action == VTankLootAction.KeepUpTo ? keep : null,
+        };
         int added = LootItemAttributes.AddConditions(rule, rows);
         if (added == 0) notes.Add("Nothing ticked yet: tick what the items must have.");
-        rule.Name = OneLine(o.RuleName).Trim().Length > 0 ? OneLine(o.RuleName).Trim() : "Filter";
+        string defaultName = o.BlankRule ? BlankRuleName(rule, action, keep) : "Filter";
+        rule.Name = OneLine(o.RuleName).Trim().Length > 0 ? OneLine(o.RuleName).Trim() : defaultName;
         return new LootItemRuleDraft
         {
-            Rule = rule, Match = LootItemMatch.Like, Action = rule.Action, DefaultName = "Filter", Notes = notes, Attributes = rows,
+            Rule = rule, Match = LootItemMatch.Like, Action = action, KeepCount = keep, DefaultName = defaultName, Notes = notes, Attributes = rows,
         };
+    }
+
+    /// <summary>
+    /// A new rule's name from the checklist (2026-11-07, the Loot Editor's Add rule): the action and
+    /// the first conditions in words, "Keep: Class is Jewelry, Workmanship >= 7"; "Keep (new rule)" with none.
+    /// </summary>
+    public static string BlankRuleName(VTankLootRule rule, VTankLootAction action, int keep)
+    {
+        string verb = action == VTankLootAction.KeepUpTo
+            ? "Keep " + keep.ToString(CultureInfo.InvariantCulture)
+            : LootRuleText.ActionName(action);
+        var parts = new List<string>();
+        foreach (VTankLootCondition c in rule.Conditions)
+        {
+            if (c.NodeType == VTankNodeTypes.DisabledRule) continue;
+            parts.Add(OneLine(LootRuleText.Condition(c)).Trim());
+            if (parts.Count == 2) break;
+        }
+        if (parts.Count == 0) return verb + " (new rule)";
+        string name = verb + ": " + string.Join(", ", parts);
+        return name.Length <= 64 ? name : name.Substring(0, 61).TrimEnd() + "...";
     }
 
     /// <summary>

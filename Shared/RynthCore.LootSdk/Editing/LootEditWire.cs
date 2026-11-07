@@ -291,6 +291,11 @@ public sealed class LootEditItemDraft
     public string Message { get; set; } = string.Empty;
     /// <summary>A filter's draft (the request's Find; added 2026-10-24): no profile, action or place.</summary>
     public bool Find { get; set; }
+    /// <summary>
+    /// A rule from the blank checklist (the request's Blank without Find; added 2026-11-07, the Loot
+    /// Editor's Add rule): no item; it goes in at the end. False from an older RynthAi.
+    /// </summary>
+    public bool Blank { get; set; }
 }
 
 /// <summary>

@@ -214,6 +214,7 @@ internal sealed class LootEditorBridge
             d.Ok = true;
             return d;
         }
+        if (req.Blank) return BuildBlankRuleDraft(d, req, add);
         uint id = req.ItemId != 0 ? req.ItemId : Items.SelectedItemId();
         if (id == 0) return Refuse(d, "No item selected. Click an item first.");
         d.ItemId = id;
@@ -307,6 +308,78 @@ internal sealed class LootEditorBridge
         if (!add) return d;
 
         if (!s.InsertAndSave(draft.Rule, native, at))
+        {
+            ReportWriteError(s);
+            return Refuse(d, s.Message);
+        }
+        d.Added = true;
+        d.Message = $"Added loot rule '{draft.Rule.Name}' to {d.TargetFile}";
+        return d;
+    }
+
+    /// <summary>
+    /// The Loot Editor's Add rule (2026-11-07, Silentkelpie: "standardize the loot editor add rule to follow
+    /// the same logic used to filter for inventory"): the Inventory filter's blank checklist (every
+    /// attribute, spells and cantrips from the lists) with an action, a count and a name, added at the end
+    /// of the profile (no item to place it by). Under the lock.
+    /// </summary>
+    private LootEditItemDraft BuildBlankRuleDraft(LootEditItemDraft d, LootEditItemRequest req, bool add)
+    {
+        d.Blank = true;
+        d.AttributesSupported = true;
+        d.ItemName = "any item";
+        string inUse = InUse;
+        string target = req.ToOpenProfile && _session.IsOpen ? _session.Path : inUse;
+        if (target.Length == 0) return Refuse(d, "No loot profile selected. Pick one in RynthAi first.");
+        d.TargetPath = target;
+        d.TargetFile = Path.GetFileName(target);
+        d.TargetInUse = LootEditSession.SamePath(target, inUse);
+        if (!File.Exists(target)) return Refuse(d, $"Loot profile not found: {target}");
+        LootEditSession s = SessionFor(target);
+        if (!s.IsOpen || !LootEditSession.SamePath(s.Path, target)) return Refuse(d, s.Message);
+        d.Format = s.Format;
+        if (!s.CanInsert) return Refuse(d, $"{d.TargetFile} is read-only here: {s.ReadOnlyReason}");
+
+        LootItemRuleDraft draft = LootItemRules.BuildBlank(new LootItemRuleOptions
+        {
+            Match = LootItemMatch.Like,
+            Action = req.Action == 0 ? null : (VTankLootAction)req.Action,
+            KeepCount = req.KeepCount < 0 ? null : req.KeepCount,
+            RuleName = req.RuleName,
+            BlankRule = true,
+            Choices = req.Choices,
+            Extras = req.Extras,
+            Spells = Items.Spells(),
+        });
+        foreach (LootItemAttribute row in draft.Attributes) d.Attributes.Add(row.ToWire());
+        d.Match = (int)LootItemMatch.Like;
+        d.Action = (int)draft.Action;
+        d.KeepCount = draft.KeepCount;
+        d.RuleName = draft.Rule.Name;
+        d.DefaultRuleName = draft.DefaultName;
+        d.Preview = LootItemRules.PreviewLines(draft.Rule);
+        d.Notes.AddRange(draft.Notes);
+        bool any = draft.Rule.Conditions.Exists(c => c.NodeType != VTankNodeTypes.DisabledRule);
+
+        bool json = s.Format == "json";
+        LootRule? native = null;
+        if (json && any)
+        {
+            var dropped = new List<string>();
+            native = LootItemRules.ToNative(draft.Rule, dropped);
+            foreach (string c in dropped) d.Notes.Add($"Left out (the native format has no such condition): {c}");
+            if (native == null) return Refuse(d, "The native format can't hold any of this rule's conditions.");
+        }
+        int count = s.RuleCount;
+        d.InsertAt = count;
+        d.RuleCount = count;
+        d.OrderNote = $"Goes in at the end ({count + 1} of {count + 1}). Rules are checked top to bottom and the first match wins, "
+            + "so it only gets items no rule above it takes; move it up the list to make it decide first.";
+        if (!any) { d.Ok = false; return d; }   // the note says to tick something
+        if (s.IsDirty) return Refuse(d, $"The Loot Editor has unsaved changes in {d.TargetFile}. Save or discard them first.");
+        d.Ok = true;
+        if (!add) return d;
+        if (!s.InsertAndSave(draft.Rule, native, count))
         {
             ReportWriteError(s);
             return Refuse(d, s.Message);
