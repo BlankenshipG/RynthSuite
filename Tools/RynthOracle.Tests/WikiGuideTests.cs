@@ -195,12 +195,16 @@ namespace RynthOracle.Tests
             body = Frame(host, main, view, "guide, all", out int aops);
             Check(body.Contains("###g.r.w:Mistreated Virindi") && body.Contains("###g.page.next") && aops < 1500, $"guide: All pages the wiki and the quest list together ({aops} ops)");
 
-            // Run this quest: the first step not stamped with a place, the loot onto RynthAi's list.
+            // Run this quest (2026-11-07): the loot and its profile first, then the quest's first step, even when
+            // its stamp is held from an earlier run.
             view.ShowGuide(GuideTab.Wiki, "w:Mistreated Virindi");
             Frame(host, main, view, "guide, before run");
             Click(host, main, "g.run");
             QuestRunner run = c.Runner!;
-            Check(run.Active && run.Step == 1 && nav.Count == 1 && nav[0] == "go 28.5S, 90.9W", "run: step 1 is stamped, so RynthNav goes to step 2's place: " + string.Join(" | ", nav));
+            Check(run.Active && run.Step == 0 && nav.Count == 1 && nav[0] == "go Mistreated Virindi || Zaikhal",
+                "run: it starts at step 1 (its stamp from an earlier run doesn't count): " + string.Join(" | ", nav));
+            run.Next();
+            Check(run.Step == 1 && nav.Count == 2 && nav[1] == "go 28.5S, 90.9W", "run: Next goes to step 2's place: " + string.Join(" | ", nav));
             Check(ai.Count == 4 && ai[0] == "add Shiny Red Stone" && ai[2] == "add Vial of The Architect's Blood", "run: the loot goes to RynthAi: " + string.Join(" | ", ai));
             Check(ai[3].StartsWith("profile Mistreated Virindi|Shiny Red Stone|") && ai[3].EndsWith("|Vial of The Architect's Blood"),
                 "run: RynthAi uses the quest's own loot profile meanwhile: " + ai[3]);
@@ -208,29 +212,30 @@ namespace RynthOracle.Tests
             Check(body.Contains("###g.stop") && body.Contains("###g.next") && body.Contains("going to 28.5S, 90.9W"), "run: Stop / Next and what it is doing");
             run.OnChat("[RynthNav] goto: arrived at 28.5S, 90.9W");
             Check(!run.Travelling && said.Exists(l => l.StartsWith("Step 2/10: Run to the Hidden Infiltrator Keep")), "run: arrival prints the step");
-            Check(ai[^1] == "dungeon enter", "run: the step goes into the Keep: RynthAi takes the portal there (2026-11-07)");
+            Check(ai[^1].StartsWith("dungeon enter"), "run: the step goes into the Keep: RynthAi takes the portal there (2026-11-07)");
             run.Next();
             // A step without coordinates goes to what it names (2026-11-07); RynthNav doesn't know these two.
-            Check(run.Step == 2 && nav.Count == 2 && nav[1] == "go Tortured Raveners || Damaged Dolls",
+            Check(run.Step == 2 && nav.Count == 3 && nav[2] == "go Tortured Raveners || Damaged Dolls",
                 "run: Next, a step without coordinates goes to the names in it: " + string.Join(" | ", nav));
             run.OnChat("[RynthNav] none of these is a place on the map: Tortured Raveners , Damaged Dolls");
-            Check(!run.Travelling && said.Exists(l => l.StartsWith("Step 3/10: Inside the dungeon")) && run.Note.Contains("doesn't know where Tortured Raveners"),
-                "run: names RynthNav doesn't know: the step is shown and waits (" + run.Note + ")");
+            Check(run.Travelling && nav[^1] == "go 28.5S, 90.9W" && run.Note.Contains("going to 28.5S, 90.9W"),
+                "run: names RynthNav doesn't know: the coordinates the quest gave last (" + run.Note + ")");
             Check(run.LastNpc == "", "run: a kill step talks to nobody");
             run.OnChat("You've stamped Shiny_Red_Stone_Found!");
             Check(run.Step == 3, "run: its stamp moves it on");
             run.OnChat("You've stamped Someone_Elses_Stamp!");
             Check(run.Step == 3, "run: another stamp doesn't");
             run.Stop();
-            Check(!run.Active && ai.Count == 9 && ai[5] == "remove Shiny Red Stone" && ai[8] == "profile off",
+            Check(!run.Active && ai.Contains("remove Shiny Red Stone") && ai[^1] == "profile off",
                 "run: Stop takes the loot off RynthAi's list and goes back to the loot profile before: " + string.Join(" | ", ai));
             Check(run.BuildProfile(v) && ai[^1].StartsWith("build Mistreated Virindi|Shiny Red Stone|"), "Loot profile: RynthAi writes the quest's profile");
 
             // Pete: the paragraph quest goes to each of the Frost Wyrm step's two places.
             nav.Clear();
+            run.Start(p, s => c.SessionStamps.Contains(GuideStamp.Key(s)), loot: false);
+            // Stamped during the run: those steps are passed over.
             c.SessionStamps.Add(GuideStamp.Key("NephriteTooth"));
             c.SessionStamps.Add(GuideStamp.Key("WinstonsLeg"));
-            run.Start(p, s => c.SessionStamps.Contains(GuideStamp.Key(s)), loot: false);
             Check(run.Step == 0 && nav.Count == 1 && nav[0] == "go \"Pistol\" Pete || Pistol Pete || Candeth Keep",
                 "pete: a first step without coordinates goes to the quest's person, then where it starts: " + string.Join(" | ", nav));
             run.Next();

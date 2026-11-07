@@ -58,7 +58,7 @@ internal static class GiveTests
         r.Add("give: a target that stays busy for a minute is skipped and counted", BusyGivesUpAfterAMinute);
         r.Add("give: a no-answer re-send that could not go out still counts as a try", FailedResendCountsAsATry);
         r.Add("quest: handin gives the quest's items (a wiki note in brackets optional) to the best-named NPC; never worn gear", QuestHandIn);
-        r.Add("quest: talk uses the NPC; none near says so; nothing carried on a hand-in talks instead", QuestTalk);
+        r.Add("quest: talk uses the NPC; none near keeps looking; nothing carried on a hand-in talks instead", QuestTalk);
         r.Add("obstacle ahead (RynthNav's jumps): the top of a wall in front from the dats' volumes; nothing; too high", ObstacleAheadMeasures);
     }
 
@@ -223,7 +223,8 @@ internal static class GiveTests
         FakeHost.Uses.Clear();
         w.Call("ApplyRemoteCommand", "questloot", "talk Xsao Lann");
         Check.Eq(FakeHost.Uses.Count, 0, "talk: nobody of that name near: nothing used");
-        Check.True(w.ChatWith("no Xsao Lann near you to talk to") == 1, "talk: chat says nobody is near");
+        // Not in sight yet: it keeps looking for a while (2026-11-07), then says nobody is near.
+        Check.True(w.ChatWith("looking for Xsao Lann") == 1, "talk: nobody near yet: chat says it keeps looking");
 
         w.Call("ApplyRemoteCommand", "questloot", "handin Town Crier | Darling's Collar (Quest Item)");
         Check.True(FakeHost.Gives.Count == 0 && FakeHost.Uses.Count == 1, "handin with nothing of it carried: talks instead");

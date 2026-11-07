@@ -1,3 +1,4 @@
+using System.Linq;
 // "Run this quest" (2026-11-01): walks a wiki quest's steps (QuestGuide.cs) with RynthNav. Each step that
 // isn't done yet (its stamps not all held) is visited in order: RynthNav goes to its coordinates ("/rnav go
 // 28.5S, 90.9W"; a step with several places goes to each in turn), and when RynthNav says it arrived the
@@ -34,6 +35,11 @@ internal sealed class QuestRunner
     private bool _profileOn;   // RynthAi switched to this quest's loot profile
     private List<string> _targets = new();   // the step's people and places (QuestNames)
     private bool _inDungeon;                  // the character is in a dungeon (OnWhere)
+    private string _fallback = "";            // coordinates to go to when RynthNav knows none of the step's names
+    private uint _dungeon;                    // the dungeon's landblock (OnWhere), 0 outdoors
+    private string _wentTo = "";              // the coordinates RynthNav last went to outdoors
+    /// <summary>The Town Network's landblock: a portal hub on RynthNav's routes, not a quest dungeon.</summary>
+    internal const uint TownNetworkLandblock = 0x0007;
     private bool _dungeonWalk;                // RynthAi walks the dungeon for the run
 
     /// <summary>RynthAi walks a dungeon for the run (its map: a goto or the patrol).</summary>
@@ -86,7 +92,13 @@ internal sealed class QuestRunner
     {
         if (Active) Stop("switched quests");
         Quest = q;
-        _stampDone = stampDone;
+        // A run starts at the quest's first part (2026-11-07): stamps already held (an earlier run of a
+        // repeatable quest) don't finish its steps; only the ones this run gets do.
+        var heldAtStart = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (GuideStep st in q.Steps)
+            foreach (string stamp in st.Stamps)
+                if (stampDone(stamp)) heldAtStart.Add(GuideStamp.Key(stamp));
+        _stampDone = stamp => stampDone(stamp) && !heldAtStart.Contains(GuideStamp.Key(stamp));
         if (loot)
         {
             AddLoot(q);
@@ -197,16 +209,28 @@ internal sealed class QuestRunner
             _print($"Step {Step + 1}/{Quest.Steps.Count}: {s.Text}");
             foreach (string n in s.Notes) _print("  " + n);
             DoNpc();
-            // "Enter the Hidden Keep at ...": the portal at the step's place takes you in.
-            if (!_inDungeon && EntersOnly(s)) _ai("dungeon enter");
+            if (_inDungeon)
+            {
+                // RynthNav's route ended inside (the step's place is in the dungeon): walk it as the step says.
+                if (EntersOnly(s)) { _print($"Step {Step + 1} done: you're in."); Advance(first: false); }
+                else GoDungeon(Quest, s);
+            }
+            // "Enter the Hidden Keep at ...", "Take the portal to ...": the portal at the step's place takes you in.
+            else if (GoesIn(s)) _ai("dungeon enter" + PortalHint(s));
             Changed();
         }
         else if (Travelling && line.Contains("[RynthNav]", StringComparison.Ordinal)
                  && (line.Contains("none of these is a place on the map", StringComparison.OrdinalIgnoreCase)
                      || line.Contains("on the map", StringComparison.OrdinalIgnoreCase) && line.Contains("no place called", StringComparison.OrdinalIgnoreCase)))
         {
-            // RynthNav doesn't know where the step's names are: say so, and talk to them if they're here.
+            // RynthNav doesn't know where the step's names are: coordinates the quest gives elsewhere, else say so.
             Travelling = false;
+            if (_fallback.Length > 0)
+            {
+                string at = _fallback;
+                _fallback = "";
+                if (Go(at, $"Step {Step + 1}: RynthNav doesn't know the name; going to {at}")) { Changed(); return; }
+            }
             string who = _targets.Count > 0 ? string.Join(" or ", _targets) : "it";
             Note = $"Step {Step + 1}: RynthNav doesn't know where {who} is - go there yourself, then Again (to talk) or Next.";
             _print($"Step {Step + 1}/{Quest.Steps.Count}: {Quest.Steps[Step].Text}");
@@ -275,8 +299,15 @@ internal sealed class QuestRunner
         GuideStep s = q.Steps[Step];
         if (!keepPlace) Place = 0;
         _targets = QuestNames.TargetsAt(q, Step);
+        _fallback = "";
         if (_inDungeon && GoDungeon(q, s)) return;
         if (s.Coords.Count > 0) { GoPlace(); return; }
+        // Coordinates in the step's own words ("Ollar at 71.4N, 28.6W"): there, before any name.
+        // The same in the names it gives (the start place "A Renegade Stronghold at 71.4N, 28.6W").
+        string? own0 = CoordsIn(s.Text) ?? s.Notes.Select(CoordsIn).FirstOrDefault(c => c != null)
+            ?? QuestNames.Candidates(q, s, Step == 0).Select(CoordsIn).FirstOrDefault(c => c != null);
+        if (own0 != null && Go(own0, $"Step {Step + 1}: going to {own0}")) return;
+        _fallback = FallbackCoords(q, Step) ?? "";
         // No coordinates: the people and places the step names, in order (RynthNav takes the first on its
         // Atlas; the first step adds the quest's start place).
         List<string> own = QuestNames.Candidates(q, s, Step == 0);
@@ -295,11 +326,30 @@ internal sealed class QuestRunner
     /// during the run: a step that only takes you in is done, and the step is walked with the dungeon's map.
     /// Coming out: the dungeon walk ends.
     /// </summary>
-    public void OnWhere(bool inDungeon)
+    public void OnWhere(bool inDungeon) => OnWhere(inDungeon, inDungeon ? 1u : 0u);
+
+    /// <summary>
+    /// As above, with the dungeon's landblock: a portal from one dungeon into another (17:29 on 11-07, into
+    /// Abayar's Laboratory) walks the step again in the new one, not on the old one's route.
+    /// </summary>
+    public void OnWhere(bool inDungeon, uint landblock)
     {
-        if (inDungeon == _inDungeon) return;
+        uint was = _dungeon;
+        _dungeon = inDungeon ? landblock : 0;
+        if (inDungeon == _inDungeon)
+        {
+            if (inDungeon && was != 0 && was != landblock && Quest != null && !Travelling && Step >= 0 && Step < Quest.Steps.Count)
+            {
+                if (_dungeonWalk) { _ai("dungeon stop"); _dungeonWalk = false; }
+                GoStep(keepPlace: true);
+                Changed();
+            }
+            return;
+        }
         _inDungeon = inDungeon;
         if (Quest == null) return;
+        // RynthNav is still on its way (its route may pass through a dungeon): its arrival decides.
+        if (Travelling) { Changed(); return; }
         if (!inDungeon)
         {
             if (_dungeonWalk) { _ai("dungeon stop"); _dungeonWalk = false; }
@@ -324,6 +374,52 @@ internal sealed class QuestRunner
                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     /// <summary>
+    /// A step that goes in by a portal, whether or not it also wants a stamp or an item ("Take the portal to
+    /// the Hidden Keep and kill ...", "Enter the dungeon at ..."): at its place the nearest portal is used.
+    /// </summary>
+    internal static bool GoesIn(GuideStep s) =>
+        System.Text.RegularExpressions.Regex.IsMatch(s.Text, @"\b(?:enter|enters|portal|dungeon|go\s+(?:in|inside|down)|head\s+(?:in|inside|down)|teleport)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>" &lt;words&gt;" naming the portal the step means (its capitalised words), for RynthAi to prefer; "" when none.</summary>
+    internal static string PortalHint(GuideStep s)
+    {
+        var words = new List<string>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(s.Text, @"\b[A-Z][a-z'\-]{2,}\b"))
+        {
+            string w = m.Value;
+            if (w is "Enter" or "Take" or "The" or "Use" or "Go" or "Head" or "Portal" or "Dungeon" or "Then" or "Kill" or "Talk" or "Find" or "Return") continue;
+            if (!words.Contains(w)) words.Add(w);
+        }
+        return words.Count == 0 ? "" : " " + string.Join(" || ", words);
+    }
+
+    /// <summary>"71.4N, 28.6W" from text that has coordinates, else null.</summary>
+    internal static string? CoordsIn(string? text)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(text ?? "", @"(\d+(?:\.\d+)?)\s*([NnSs])[\s,]+(\d+(?:\.\d+)?)\s*([EeWw])");
+        return m.Success ? $"{m.Groups[1].Value}{char.ToUpperInvariant(m.Groups[2].Value[0])}, {m.Groups[3].Value}{char.ToUpperInvariant(m.Groups[4].Value[0])}" : null;
+    }
+
+    /// <summary>
+    /// Where to go when RynthNav knows none of a step's names: the quest's start place for the first step,
+    /// else the last place of the nearest step before it, else the start place (null: none known).
+    /// </summary>
+    internal static string? FallbackCoords(GuideQuest q, int step)
+    {
+        string? start = CoordsIn(q.StartsAt);
+        if (step == 0 && start != null) return start;
+        for (int i = step - 1; i >= 0; i--)
+        {
+            GuideStep p = q.Steps[i];
+            if (p.Coords.Count > 0) return CoordsIn(p.Coords[^1]) ?? p.Coords[^1];
+            string? inText = CoordsIn(p.Text);
+            if (inText != null) return inText;
+        }
+        return start;
+    }
+
+    /// <summary>
     /// The step inside a dungeon: RynthAi walks its map, to the step's coordinates, else all over it
     /// (fighting, looting, doors). False when RynthAi isn't there.
     /// </summary>
@@ -332,7 +428,10 @@ internal sealed class QuestRunner
         string keys = string.Join("", QuestKeys(q).ConvertAll(k => " | " + k));
         string cmd;
         string note;
-        if (s.Coords.Count > 0 && TrySignedCoords(s.Coords[Math.Clamp(Place, 0, s.Coords.Count - 1)], out double ns, out double ew))
+        // The step's own coordinates that RynthNav took it to outdoors are the way in, not a place inside.
+        string here = s.Coords.Count > 0 ? s.Coords[Math.Clamp(Place, 0, s.Coords.Count - 1)] : "";
+        bool entrance = here.Length > 0 && SameCoords(here, _wentTo);
+        if (!entrance && here.Length > 0 && TrySignedCoords(here, out double ns, out double ew))
         {
             cmd = $"dungeon goto {ns.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)} {ew.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}{keys}";
             note = $"Step {Step + 1}: walking the dungeon to {s.Coords[Math.Clamp(Place, 0, s.Coords.Count - 1)]} (fighting, looting, doors)";
@@ -410,8 +509,14 @@ internal sealed class QuestRunner
         Go(c, $"Step {Step + 1}: going to {c}{more}");
     }
 
+    /// <summary>Two coordinate texts within 0.5 of each other on both axes.</summary>
+    internal static bool SameCoords(string a, string b) =>
+        TrySignedCoords(a, out double an, out double ae) && TrySignedCoords(b, out double bn, out double be)
+        && Math.Abs(an - bn) <= 0.5 && Math.Abs(ae - be) <= 0.5;
+
     private bool Go(string target, string note)
     {
+        if (!_inDungeon && TrySignedCoords(target, out _, out _)) _wentTo = target;
         if (_nav("go " + target))
         {
             Travelling = true;

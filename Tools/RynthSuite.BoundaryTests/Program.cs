@@ -40,6 +40,7 @@ internal static class Program
         ["Plugins/RynthCore.Plugin.RynthOracle/Data/IltServerProfile.cs"] = "ILT-gated: RynthILT's profile and /qb list",
         ["Plugins/RynthCore.Plugin.RynthOracle/Views/QuestsTab.cs"] = "ILT-gated: Dynamic Stamps and guardian rows",
         ["Plugins/RynthCore.Plugin.RynthInventory/RynthInventoryPlugin.cs"] = "ILT-gated: bank reads",
+        ["Plugins/RynthCore.Plugin.RynthAi/CreatureData/DifficultyTier.cs"] = "ILT-gated: T11 (ACECustom) loot attributes and item info (OnIlt, 2026-11-07)",
         ["Plugins/RynthCore.Plugin.RynthInventory/InventoryContext.cs"] = "ILT-gated: RynthILT's bank",
         ["Plugins/RynthCore.Plugin.RynthInventory/Views/BankingTab.cs"] = "ILT-gated: the Banking page",
         ["Plugins/RynthCore.Plugin.RynthInventory/Data/BankRoster.cs"] = "ILT-gated: the Banking page's characters",

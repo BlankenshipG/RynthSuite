@@ -598,13 +598,13 @@ public static class LootRuleText
             });
         }
         Fill(v.ObjectClasses, ObjectClasses);
-        Fill(v.LongKeys, ilt ? LongKeys : Array.FindAll(LongKeys, k => !LootItemAttributes.IsIltOnlyKey(k.Id)));
+        Fill(v.LongKeys, ilt ? LongKeys : Array.FindAll(LongKeys, k => !LootItemAttributes.IsCustomServerKey(k.Id)));
         Fill(v.DoubleKeys, DoubleKeys);
         Fill(v.StringKeys, StringKeys);
         Fill(v.Skills, Skills);
         foreach (int key in KeysWithValueTables)
         {
-            if (!ilt && LootItemAttributes.IsIltOnlyKey(key)) continue;
+            if (!ilt && LootItemAttributes.IsCustomServerKey(key)) continue;
             var vt = new LootEditValueTable { Key = key, Flags = ValueTableIsFlags(key) };
             Fill(vt.Values, ValueTableFor(key)!);
             v.LongValueTables.Add(vt);

@@ -583,7 +583,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         // Run this quest inside a dungeon (2026-11-07): the run hears when the character goes in or out.
         if (_c.Runner is { Active: true } run && Host.HasGetPlayerPose
             && Host.TryGetPlayerPose(out uint cell, out _, out _, out _, out _, out _, out _, out _) && cell != 0)
-            run.OnWhere((cell & 0xFFFF) >= 0x0100);
+            // The Town Network (landblock 0x0007) is a portal hub RynthNav routes through, never a quest's dungeon.
+            run.OnWhere((cell & 0xFFFF) >= 0x0100 && (cell >> 16) != QuestRunner.TownNetworkLandblock, cell >> 16);
 
         if (!Host.HasUi) return;
         // After the poll, so a tab clicked this tick is already selected.

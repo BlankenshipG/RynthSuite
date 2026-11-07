@@ -40,7 +40,7 @@ public sealed partial class RynthAiPlugin
         if (settings == null) return (false, "[RynthAi] Quest: RynthAi's settings aren't loaded yet.");
 
         if (verb == "stop") return QuestDungeonStop();
-        if (verb == "enter") return QuestDungeonEnter();
+        if (verb == "enter") return QuestDungeonEnter(words.Length > 1 ? string.Join(" ", words, 1, words.Length - 1) : "");
         if (verb is not ("patrol" or "goto"))
             return (false, "[RynthAi] questloot dungeon patrol | goto <NS> <EW> | stop  [| key | key] (RynthOracle's quest run sends these)");
 
@@ -72,19 +72,29 @@ public sealed partial class RynthAiPlugin
     }
 
     /// <summary>How near the portal of an "Enter ..." step must be (metres).</summary>
-    internal const double QuestPortalRange = 25.0;
+    internal const double QuestPortalRange = 40.0;
 
-    private (bool Ok, string Text) QuestDungeonEnter()
+    /// <summary>
+    /// "dungeon enter [word || word]": the nearest portal within QuestPortalRange, one whose name has a word
+    /// the step gives ("Hidden", "Keep") before the others (2026-11-07: RynthNav arrives a few metres short).
+    /// </summary>
+    private (bool Ok, string Text) QuestDungeonEnter(string hints)
     {
         if (_objectCache == null) return (false, "[RynthAi] Quest: the object cache isn't ready.");
+        var words = new List<string>();
+        foreach (string h in (hints ?? "").Replace("||", "\u0001").Split('\u0001'))
+            if (h.Trim().Length >= 3) words.Add(h.Trim());
         WorldObject? best = null;
         double bestDist = double.MaxValue;
+        bool bestNamed = false;
         foreach (WorldObject wo in _objectCache.GetLandscapeObjects())
         {
             if (wo.ObjectClass != RynthCore.Loot.AcObjectClass.Portal) continue;
             double d = _playerId != 0 ? _objectCache.Distance((int)_playerId, wo.Id) : double.MaxValue;
-            if (d > QuestPortalRange || d >= bestDist) continue;
-            best = wo; bestDist = d;
+            if (d > QuestPortalRange) continue;
+            bool named = words.Exists(w => wo.Name.Contains(w, StringComparison.OrdinalIgnoreCase));
+            if (best != null && (bestNamed && !named || (named == bestNamed && d >= bestDist))) continue;
+            best = wo; bestDist = d; bestNamed = named;
         }
         if (best == null) return (false, $"[RynthAi] Quest: no portal within {QuestPortalRange:F0} m here to go in by.");
         Host.UseFor(unchecked((uint)best.Id), "Quest", "quest run: the step goes in by this portal", UseKind.Asked);

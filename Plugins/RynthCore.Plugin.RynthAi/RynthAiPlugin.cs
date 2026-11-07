@@ -1542,6 +1542,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             if (_loginComplete) Guard(TickStep.DataWriteProblems, PostDataWriteProblems);   // a save that failed / folder not writable: say so in chat
             Guard(TickStep.CombatHook, CombatHook.ObserveUseDone);        // ctx.last.err: the answer to the hook's last cast
             Guard(TickStep.DelayedCommands, TickDelayedCommands);         // /ub delay
+            if (_loginComplete) Guard(TickStep.DelayedCommands, TickQuestNpcRetry);   // a quest talk / hand-in waiting for its NPC
             Guard(TickStep.GameInput, GameInput.Pump);                    // release keys held for /mt movement | jump | strafe
             Guard(TickStep.Dashboard, TickDashboard);                     // the dashboard window's clicks, vitals and prefs
             Guard(TickStep.EngineCommands, DrainEngineCommands);          // fellowship command buttons (RynthCore's Fellowship section)

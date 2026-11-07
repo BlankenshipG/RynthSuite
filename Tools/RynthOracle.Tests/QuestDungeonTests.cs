@@ -23,7 +23,7 @@ namespace RynthOracle.Tests
             run.Start(q, _ => false, loot: false);
             Check(nav.Count == 1 && nav[0] == "go 28.5S, 90.9W", "dungeon: the way in goes to the entrance: " + string.Join(" | ", nav));
             run.OnChat("[RynthNav] goto: arrived");
-            Check(ai.Count > 0 && ai[^1] == "dungeon enter", "dungeon: at an 'Enter ...' step's place, RynthAi takes the portal there: " + string.Join(" | ", ai));
+            Check(ai.Count > 0 && ai[^1].StartsWith("dungeon enter"), "dungeon: at an 'Enter ...' step's place, RynthAi takes the portal there: " + string.Join(" | ", ai));
 
             run.OnWhere(true);
             Check(run.Step == 1 && run.DungeonWalk && ai[^1] == "dungeon patrol | Cave Door Key",
@@ -39,6 +39,48 @@ namespace RynthOracle.Tests
             Check(ai[^1].StartsWith("dungeon goto") && run.DungeonWalk, "dungeon: back in: the step is walked again");
             run.Stop();
             Check(ai.Contains("dungeon stop") && ai[^1] == "dungeon stop" && !run.DungeonWalk, "dungeon: Stop ends the dungeon walk: " + ai[^1]);
+            // 2026-11-07: RynthNav's route through a dungeon (the Town Network) isn't the quest's dungeon.
+            ai.Clear(); nav.Clear();
+            run.OnWhere(false);
+            run.Start(q, _ => false, loot: false);
+            run.OnWhere(true);    // mid-route, in a hub
+            Check(run.Step == 0 && run.Travelling && !run.DungeonWalk && ai.Count == 0, "route: a dungeon on RynthNav's way is passed through, not walked: " + string.Join(" | ", ai));
+            run.OnWhere(false);
+            run.OnChat("[RynthNav] goto: arrived");
+            Check(ai.Count == 1 && ai[0].StartsWith("dungeon enter") && ai[0].Contains("Hidden"), "route: at the place, the portal the step names is asked for: " + ai[0]);
+            Check(QuestRunner.TownNetworkLandblock == 0x0007, "route: the Town Network's landblock is never a quest dungeon");
+            run.Stop();
+
+            // A portal step that also wants a stamp still goes in; names RynthNav doesn't know fall back to coordinates.
+            var q2 = new GuideQuest { Title = "Stamp Run", StartsAt = "A Renegade Stronghold at 71.4N, 28.6W" };
+            q2.Steps.Add(new GuideStep { Text = "Talk to Ollar.", Stamps = new List<string> { "TalkedOllar" } });
+            q2.Steps.Add(new GuideStep { Text = "Take the portal to the Fenmalain Vestibule and kill the guard.", Stamps = new List<string> { "GuardDead" } });
+            ai.Clear(); nav.Clear();
+            run.Start(q2, s => s == "TalkedOllar", loot: false);
+            Check(run.Step == 0 && nav.Count == 1 && nav[0] == "go 71.4N, 28.6W",
+                "start: step 1 even with its stamp held, to the coordinates its start place gives: " + string.Join(" | ", nav));
+            run.Next();
+            run.OnChat("[RynthNav] none of these is a place on the map: Fenmalain Vestibule");
+            Check(run.Travelling && nav[^1] == "go 71.4N, 28.6W", "names unknown: the last coordinates the quest gave: " + string.Join(" | ", nav));
+            run.OnChat("[RynthNav] goto: arrived");
+            Check(ai.Exists(l => l.StartsWith("dungeon enter") && l.Contains("Fenmalain")), "a stamp step through a portal goes in too: " + string.Join(" | ", ai));
+            run.Stop();
+
+            // In by the step's own place: its coordinates are the way in, so the dungeon is patrolled; a portal on into
+            // another dungeon walks the step again there (11-07 17:29, Abayar's Laboratory).
+            var q3 = new GuideQuest { Title = "Lab Run" };
+            q3.Steps.Add(new GuideStep { Text = "Go to Abayar's Laboratory at 92.1N, 46.3W and find the notes.", Coords = new List<string> { "92.1N, 46.3W" }, Items = new List<string> { "Abayar's Research Notes" } });
+            ai.Clear(); nav.Clear();
+            run.OnWhere(false, 0);
+            run.Start(q3, _ => false, loot: false);
+            run.OnChat("[RynthNav] goto: arrived");
+            run.OnWhere(true, 0x018E);
+            Check(ai.Count > 0 && ai[^1] == "dungeon patrol", "entrance: the step's outdoor place inside is a patrol, not a walk to it: " + string.Join(" | ", ai));
+            int before = ai.Count;
+            run.OnWhere(true, 0x01A0);
+            Check(ai.Count == before + 2 && ai[before] == "dungeon stop" && ai[before + 1] == "dungeon patrol", "another dungeon: the walk starts again there: " + string.Join(" | ", ai));
+            Check(QuestRunner.SameCoords("92.1N, 46.3W", "92.2N, 46.3W") && !QuestRunner.SameCoords("92.1N, 46.3W", "12.3S, 45.6E"), "same place: within half a unit");
+            run.Stop();
 
             Check(QuestRunner.TrySignedCoords("28.5S, 90.9W", out double ns, out double ew) && ns == -28.5 && ew == -90.9
                   && QuestRunner.TrySignedCoords("85.8s,78.8e", out ns, out ew) && ns == -85.8 && ew == 78.8

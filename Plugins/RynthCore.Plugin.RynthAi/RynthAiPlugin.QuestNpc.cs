@@ -21,8 +21,31 @@ public sealed partial class RynthAiPlugin
     /// <summary>How near the NPC must be (metres).</summary>
     internal const double QuestNpcRange = 60.0;
 
+    /// <summary>
+    /// A talk / hand-in whose NPC wasn't in sight yet (2026-11-07: RynthNav arrives before the NPC is
+    /// drawn, or a few metres short): tried again every QuestNpcRetryMs for QuestNpcRetryForMs.
+    /// </summary>
+    private string _questNpcPending = string.Empty;
+    private long _questNpcNextAt, _questNpcUntil;
+    internal const long QuestNpcRetryMs = 2000, QuestNpcRetryForMs = 20000;
+
+    /// <summary>Each tick: the pending talk / hand-in, tried again when it is due. Pump thread.</summary>
+    private void TickQuestNpcRetry()
+    {
+        if (_questNpcPending.Length == 0) return;
+        long now = Environment.TickCount64;
+        if (now < _questNpcNextAt) return;
+        string line = _questNpcPending;
+        bool last = now >= _questNpcUntil;
+        _questNpcPending = string.Empty;
+        var r = TryQuestNpc(line, retrying: !last);
+        if (r is { } res && (res.Ok || last)) ChatLine(res.Text);
+    }
+
     /// <summary>A quest NPC verb's answer, or null when <paramref name="line"/> isn't one.</summary>
-    private (bool Ok, string Text)? TryQuestNpc(string line)
+    private (bool Ok, string Text)? TryQuestNpc(string line) => TryQuestNpc(line, retrying: false);
+
+    private (bool Ok, string Text)? TryQuestNpc(string line, bool retrying)
     {
         line = (line ?? "").Trim();
         int sp = line.IndexOf(' ');
@@ -37,7 +60,21 @@ public sealed partial class RynthAiPlugin
 
         WorldObject? npc = FindQuestNpc(names);
         if (npc == null)
+        {
+            // Not in sight yet: look again for a while (the first try starts the clock).
+            long now = Environment.TickCount64;
+            if (!retrying) _questNpcUntil = now + QuestNpcRetryForMs;
+            if (now < _questNpcUntil)
+            {
+                _questNpcPending = line;
+                _questNpcNextAt = now + QuestNpcRetryMs;
+                return (true, $"[RynthAi] Quest: looking for {string.Join(" or ", names)} (trying for {QuestNpcRetryForMs / 1000} s).");
+            }
+            _questNpcUntil = 0;
             return (false, $"[RynthAi] Quest: no {string.Join(" or ", names)} near you to {(verb == "talk" ? "talk to" : "hand the items to")}.");
+        }
+        _questNpcPending = string.Empty;
+        _questNpcUntil = 0;
 
         if (verb == "handin" && items.Count > 0)
         {

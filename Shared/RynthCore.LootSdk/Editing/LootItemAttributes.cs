@@ -241,7 +241,7 @@ public static class LootItemAttributes
     public static List<LootItemAttribute> For(LootItemFacts f, bool like, bool includeT11, bool ilt)
     {
         List<LootItemAttribute> rows = For(f, like, includeT11 && ilt);
-        if (!ilt) rows.RemoveAll(r => r.Group == GroupT11 || r.Group == GroupPet || (r.Kind == LootItemAttribute.Shape.Long && IsIltOnlyKey(r.Key)));
+        if (!ilt) rows.RemoveAll(r => r.Group == GroupT11 || r.Group == GroupPet || (r.Kind == LootItemAttribute.Shape.Long && IsCustomServerKey(r.Key)));
         return rows;
     }
 
@@ -721,13 +721,13 @@ public static class LootItemAttributes
     /// own property range (9000+: pets, split arrows, T11 weapon quality) and its Zc keys (50000+).
     /// Decal's and VTank's synthetic keys (0x0A..., 0x0D...) are retail.
     /// </summary>
-    public static bool IsIltOnlyKey(int key) => T11Keys.IsVirtual(key) || (key >= 9000 && key < 0x0A000000);
+    public static bool IsCustomServerKey(int key) => T11Keys.IsVirtual(key) || (key >= 9000 && key < 0x0A000000);
 
     /// <summary>The blank checklist (every attribute); off Infinite Leaftide without the T11, card and pet rows.</summary>
     public static List<LootItemAttribute> ForBlank(bool ilt = true)
     {
         List<LootItemAttribute> all = ForBlankAll();
-        if (!ilt) all.RemoveAll(r => r.Group == GroupT11 || r.Group == GroupPet || (r.Kind == LootItemAttribute.Shape.Long && IsIltOnlyKey(r.Key)));
+        if (!ilt) all.RemoveAll(r => r.Group == GroupT11 || r.Group == GroupPet || (r.Kind == LootItemAttribute.Shape.Long && IsCustomServerKey(r.Key)));
         return all;
     }
 
