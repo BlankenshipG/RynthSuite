@@ -72,7 +72,7 @@ internal sealed class ChecklistFilter
 
     private static string OpLabel(int op) => op switch
     {
-        0 => ">=", 1 => "=", 2 => "<=", 3 => "not", 4 => "has any", 10 => "exact", 11 => "or better", 12 => "any tier", _ => "?",
+        0 => ">=", 1 => "=", 2 => "<=", 3 => "not", 4 => "has any", 5 => "any", 6 => "has all", 10 => "exact", 11 => "or better", 12 => "any tier", _ => "?",
     };
 
     public void Draw(UiWindow w)
@@ -113,7 +113,26 @@ internal sealed class ChecklistFilter
                 w.TextDisabled(OpLabel(r.Ops[0]));
             }
             // The value: a list for named values, a box for numbers.
-            if (r.Choices != null && r.Choices.Count > 0)
+            if (r.Op == (int)LootItemAttributeOp.Any)
+                w.TextDisabled("any value");
+            else if (r.Flags && r.Op is (int)LootItemAttributeOp.HasAny or (int)LootItemAttributeOp.HasAll && r.Choices is { Count: > 0 })
+            {
+                // Several flags (multi imbues): a toggle per flag, the value their sum (2026-11-07).
+                int cur = int.TryParse(r.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cv) ? cv : 0;
+                int shown = 0;
+                foreach (LootEditName c in r.Choices)
+                {
+                    if (c.Id == 0 || (c.Id & (c.Id - 1)) != 0) continue;   // single flags only
+                    int bit = c.Id;
+                    if (shown++ % 4 != 0) w.SameLine();
+                    w.ToggleButton(c.Name, "cl.f." + r.Id + "." + bit.ToString(CultureInfo.InvariantCulture), (cur & bit) != 0, () =>
+                    {
+                        int next = (cur & bit) != 0 ? cur & ~bit : cur | bit;
+                        if (next != 0) Set(row, value: next.ToString(CultureInfo.InvariantCulture), on: true);
+                    }, small: true);
+                }
+            }
+            else if (r.Choices != null && r.Choices.Count > 0)
             {
                 var names = new List<string>(r.Choices.Count);
                 int cur = int.TryParse(r.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cv) ? cv : int.MinValue;

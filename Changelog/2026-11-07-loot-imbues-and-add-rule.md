@@ -24,3 +24,25 @@
   The rule goes in at the end; the default name is the action and its first conditions.
 - "Start empty" in the popup is the old empty rule to write by hand (also used when the
   profile has unsaved edits). An older RynthAi says so and offers Start empty.
+
+## Later: ACECustom properties, any slayer, multi imbues, edit with the checklist
+- From ACECustom (BlankenshipG/ACECustom): new checklist rows.
+  - Item: Times tinkered, Rare, Attuned, Bonded, Max item level.
+  - Weapon / Armor: Elemental damage bonus, Absorb magic damage.
+  - A new "Weapon cards" group: Biting Strike, Crushing Blow, Armor Cleaving, Resistance Cleaving
+    (+ its element), Cleaving targets, Split arrows.
+  - Ratings: Life resist, Overpower, Overpower resist.
+  - T11: T11 rare (Pristine / Ascendant), Weapon quality.
+- Cards the client only sees as appraisal text ("Property Details:") are RynthAi virtual keys:
+  Spell Armor Rend % (casters; the float is server-only, no imbue bit), All Creatures slayer,
+  Slayer damage %, Rend power %, Phantom.
+- "any" on every named row: any slayer (Slayer Type >= 1), any imbue, any weapon type.
+- Multi imbues: "has all" (one Has Flag per imbue: the item needs every one) and "has any" (one
+  of them); the popup ticks several in the list. The Imbue row lists only what the ticked class can
+  carry (ACECustom's loot and recipes): melee / missile Crit, Cripple, Armor Rending and the
+  rends; casters the rends and Nether, no Armor Rending; armor, clothing and jewelry the defense
+  imbues, one at a time.
+- Edit with checklist: the Loot Editor's rule view (and its Add condition) opens the same
+  checklist on the rule; the rule's conditions come back as ticked rows (two Has Flag on a key as
+  has all, >= 1 on a named key as any), what no row can say is kept as written, Save rule
+  replaces it in place (old file kept as .bak). Raw condition is the old by-hand picker.

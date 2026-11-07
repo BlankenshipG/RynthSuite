@@ -340,16 +340,42 @@ internal sealed class LootEditorBridge
         d.Format = s.Format;
         if (!s.CanInsert) return Refuse(d, $"{d.TargetFile} is read-only here: {s.ReadOnlyReason}");
 
+        // Editing a rule (2026-11-07): the checklist starts from its conditions; what no row can say is kept as written.
+        VTankLootRule? editing = null;
+        List<VTankLootCondition>? kept = null;
+        List<LootEditItemChoice>? choices = req.Choices;
+        if (req.EditIndex >= 0)
+        {
+            d.EditIndex = req.EditIndex;
+            if (!req.ToOpenProfile || !LootEditSession.SamePath(target, _session.Path))
+                return Refuse(d, "Open the profile in the Loot Editor to edit its rules.");
+            if (s.Format == "json") return Refuse(d, "Native-format rules are edited in the rule view (Start empty edits by hand).");
+            editing = s.UtlRule(req.EditIndex);
+            if (editing == null || (editing.Name ?? string.Empty) != req.EditName)
+                return Refuse(d, "That rule is no longer there. The list has been refreshed.");
+            List<VTankLootCondition> all = editing.Conditions;
+            List<LootEditItemChoice> fromRule = LootItemAttributes.ChoicesFromRule(LootItemAttributes.ForBlank(), all, out kept);
+            // The popup sends only the rows it changed: they go over the rule's own.
+            if (req.Choices != null)
+                foreach (LootEditItemChoice c in req.Choices)
+                {
+                    fromRule.RemoveAll(x => x.Id == c.Id);
+                    fromRule.Add(c);
+                }
+            choices = fromRule;
+        }
+
         LootItemRuleDraft draft = LootItemRules.BuildBlank(new LootItemRuleOptions
         {
             Match = LootItemMatch.Like,
-            Action = req.Action == 0 ? null : (VTankLootAction)req.Action,
-            KeepCount = req.KeepCount < 0 ? null : req.KeepCount,
-            RuleName = req.RuleName,
+            Action = req.Action != 0 ? (VTankLootAction)req.Action : editing?.Action,
+            KeepCount = req.KeepCount >= 0 ? req.KeepCount : editing?.KeepCount,
+            RuleName = req.RuleName.Length > 0 ? req.RuleName : editing?.Name,
             BlankRule = true,
-            Choices = req.Choices,
+            Choices = choices,
             Extras = req.Extras,
             Spells = Items.Spells(),
+            KeepConditions = kept,
         });
         foreach (LootItemAttribute row in draft.Attributes) d.Attributes.Add(row.ToWire());
         d.Match = (int)LootItemMatch.Like;
@@ -371,14 +397,28 @@ internal sealed class LootEditorBridge
             if (native == null) return Refuse(d, "The native format can't hold any of this rule's conditions.");
         }
         int count = s.RuleCount;
-        d.InsertAt = count;
+        d.InsertAt = editing != null ? req.EditIndex : count;
         d.RuleCount = count;
-        d.OrderNote = $"Goes in at the end ({count + 1} of {count + 1}). Rules are checked top to bottom and the first match wins, "
-            + "so it only gets items no rule above it takes; move it up the list to make it decide first.";
+        d.OrderNote = editing != null
+            ? $"Replaces rule {req.EditIndex + 1} of {count} in place (its place in the list stays)."
+            : $"Goes in at the end ({count + 1} of {count + 1}). Rules are checked top to bottom and the first match wins, "
+              + "so it only gets items no rule above it takes; move it up the list to make it decide first.";
+        if (editing != null) d.DefaultRuleName = editing.Name ?? string.Empty;
         if (!any) { d.Ok = false; return d; }   // the note says to tick something
         if (s.IsDirty) return Refuse(d, $"The Loot Editor has unsaved changes in {d.TargetFile}. Save or discard them first.");
         d.Ok = true;
         if (!add) return d;
+        if (editing != null)
+        {
+            if (!s.ReplaceAndSave(req.EditIndex, req.EditName, draft.Rule))
+            {
+                ReportWriteError(s);
+                return Refuse(d, s.Message);
+            }
+            d.Added = true;
+            d.Message = $"Saved loot rule '{draft.Rule.Name}' in {d.TargetFile}";
+            return d;
+        }
         if (!s.InsertAndSave(draft.Rule, native, count))
         {
             ReportWriteError(s);

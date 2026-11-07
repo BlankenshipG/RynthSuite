@@ -96,6 +96,19 @@ public sealed class T11ItemInfo
     public int PropertySlotCap { get; private set; }
     /// <summary>"Tainted: bags no longer work on this item".</summary>
     public bool Tainted { get; private set; }
+    // ACECustom's weapon cards that reach the client only as "Property Details:" text (2026-11-07):
+    // the rest (Biting Strike, Crushing Blow, Armor / Resistance Cleaving, Cleaving) are real properties.
+    /// <summary>"- Spell Armor Rend: 35% Spell Armor Ignored" (casters; the float itself is server-only), 0 when absent.</summary>
+    public int SpellArmorRendPercent { get; private set; }
+    /// <summary>"- All Creatures Slayer: 2.1x Damage".</summary>
+    public bool AllCreaturesSlayer { get; private set; }
+    /// <summary>The best "- &lt;creature&gt; Slayer: 2.1x Damage" as a percent of damage (210), 0 when absent.</summary>
+    public int SlayerDamagePercent { get; private set; }
+    /// <summary>The best elemental rend "- Fire Rending: +213% Dmg" (213), 0 when absent.</summary>
+    public int RendPowerPercent { get; private set; }
+    /// <summary>"- Phantom: Ignores Magic Protections".</summary>
+    public bool Phantom { get; private set; }
+
     /// <summary>The server-sent properties this item was parsed with.</summary>
     public T11ServerProps Server { get; private set; } = T11ServerProps.None;
     /// <summary>The weapon's 0-1000 quality roll (WeaponAugScaleQuality), -1 when not sent.</summary>
@@ -238,6 +251,12 @@ public sealed class T11ItemInfo
     // Checked before GenericModifier, whose lazy name would stop at "Modifier" and read the key as the value.
     private static readonly Regex UnknownKeyName = new(@"^(?<name>Modifier (?<key>\d+))(?=\s|$)", RegexOptions.CultureInvariant);
 
+    // The weapon cards above. Numbers may carry a group separator ("1,234%").
+    private static readonly Regex SpellArmorRendLine = new(@"^-\s*Spell Armor Rend:\s*(?<p>\d[\d,]*)%", Opt);
+    private static readonly Regex SlayerLine = new(@"^-\s*(?<who>.+?)\s+Slayer:\s*(?<x>\d+(?:\.\d+)?)x", Opt);
+    private static readonly Regex RendLine = new(@"^-\s*(?<t>[A-Za-z]+)\s+Rending:\s*\+(?<p>\d[\d,]*)%\s*Dmg", Opt);
+    private static readonly Regex PhantomLine = new(@"^-\s*Phantom:", Opt);
+
     private const string ModifiersHeader = "Modifiers:";
     private const string ZoneLockedText = "Zone Locked (Power Reduced)";
 
@@ -334,6 +353,7 @@ public sealed class T11ItemInfo
             }
 
             if (TryParseItemLine(line)) continue;
+            if (TryParseCardLine(line)) continue;
 
             Match m = GradeLine.Match(line);
             if (m.Success && GradeRank == 0)
@@ -357,6 +377,33 @@ public sealed class T11ItemInfo
             if (m.Success && double.TryParse(m.Groups["pct"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double chance))
                 _procs.Add((m.Groups["name"].Value, chance));
         }
+    }
+
+    /// <summary>A "Property Details:" weapon card only the text carries (Spell Armor Rend, slayer, rend power, Phantom).</summary>
+    private bool TryParseCardLine(string line)
+    {
+        if (!line.StartsWith("-", StringComparison.Ordinal)) return false;
+        Match m = SpellArmorRendLine.Match(line);
+        if (m.Success)
+        {
+            SpellArmorRendPercent = Math.Max(SpellArmorRendPercent, DigitsOnly(m.Groups["p"].Value));
+            return true;
+        }
+        m = SlayerLine.Match(line);
+        if (m.Success && double.TryParse(m.Groups["x"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double x))
+        {
+            if (m.Groups["who"].Value.Trim().Equals("All Creatures", StringComparison.OrdinalIgnoreCase)) AllCreaturesSlayer = true;
+            SlayerDamagePercent = Math.Max(SlayerDamagePercent, (int)Math.Round(x * 100, MidpointRounding.AwayFromZero));
+            return true;
+        }
+        m = RendLine.Match(line);
+        if (m.Success)
+        {
+            RendPowerPercent = Math.Max(RendPowerPercent, DigitsOnly(m.Groups["p"].Value));
+            return true;
+        }
+        if (PhantomLine.IsMatch(line)) { Phantom = true; return true; }
+        return false;
     }
 
     /// <summary>Reads "- ..." lines after a "Modifiers:" header; returns the index of the first line not consumed.</summary>

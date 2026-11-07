@@ -39,7 +39,12 @@ public sealed class LootItemFacts
 
     public int Int(int key)
     {
-        if (key != ImbuedEffectKey) return Ints.TryGetValue(key, out int v) ? v : 0;
+        if (key != ImbuedEffectKey)
+        {
+            if (Ints.TryGetValue(key, out int v)) return v;
+            // A virtual T11 / card key the scan didn't store: read it from the item's text.
+            return T11Keys.IsVirtual(key) && T11 != null && T11Keys.TryGetValue(T11, key, null, out int t) ? t : 0;
+        }
         // Every imbue: ImbuedEffect and ImbuedEffect2..5 ORed, as ACE's GetImbuedEffects (2026-11-07).
         int all = 0;
         foreach (int k in ImbuedEffectKeys) if (Ints.TryGetValue(k, out int b)) all |= b;
@@ -72,6 +77,11 @@ public sealed class LootItemRuleOptions
     public int? KeepCount { get; set; }
     /// <summary>BuildBlank makes a loot rule (the Loot Editor's Add rule), not a filter: its default name is the action and the conditions.</summary>
     public bool BlankRule { get; set; }
+    /// <summary>
+    /// Conditions kept as written after the checklist's (editing a rule: what no checklist row can say,
+    /// LootItemAttributes.ChoicesFromRule's leftovers; 2026-11-07).
+    /// </summary>
+    public List<VTankLootCondition>? KeepConditions { get; set; }
     /// <summary>Null or blank: "Keep Copper Pea" and the like.</summary>
     public string? RuleName { get; set; }
     /// <summary>
@@ -223,6 +233,7 @@ public static class LootItemRules
         List<LootItemAttribute> rows = LootItemAttributes.For(f, match == LootItemMatch.Like, o.IncludeT11);
         LootItemAttributes.AddExtras(rows, o.Extras, o.Spells);
         LootItemAttributes.Apply(rows, o.Choices, notes);
+        LootItemAttributes.FilterImbues(rows, f.ObjectClass);
         int added = LootItemAttributes.AddConditions(rule, rows);
         AddRowNotes(f, o, rows, match, notes);
         if (likeBare && added == 0)
@@ -249,6 +260,7 @@ public static class LootItemRules
         List<LootItemAttribute> rows = LootItemAttributes.ForBlank();
         LootItemAttributes.AddExtras(rows, o.Extras, o.Spells);
         LootItemAttributes.Apply(rows, o.Choices, notes);
+        LootItemAttributes.FilterImbues(rows, LootItemAttributes.TickedClass(rows));
         VTankLootAction action = o.Action ?? VTankLootAction.Keep;
         if (!LootRuleText.IsKnownAction((int)action)) action = VTankLootAction.Keep;
         int keep = Math.Max(0, o.KeepCount ?? 1);
@@ -258,6 +270,16 @@ public static class LootItemRules
             KeepCount = action == VTankLootAction.KeepUpTo ? keep : null,
         };
         int added = LootItemAttributes.AddConditions(rule, rows);
+        if (o.KeepConditions != null)
+            foreach (VTankLootCondition k in o.KeepConditions)
+            {
+                rule.Conditions.Add(new VTankLootCondition(k.NodeType, k.LengthCode, k.DataLines));
+                if (k.NodeType != VTankNodeTypes.DisabledRule)
+                {
+                    added++;
+                    notes.Add("Kept as written: " + LootRuleText.Condition(k));
+                }
+            }
         if (added == 0) notes.Add("Nothing ticked yet: tick what the items must have.");
         string defaultName = o.BlankRule ? BlankRuleName(rule, action, keep) : "Filter";
         rule.Name = OneLine(o.RuleName).Trim().Length > 0 ? OneLine(o.RuleName).Trim() : defaultName;

@@ -172,6 +172,13 @@ public sealed class LootEditItemRequest
     public bool Blank { get; set; }
     /// <summary>Spells and cantrips the player added from the standard lists (added 2026-10-24).</summary>
     public List<LootEditItemExtra>? Extras { get; set; }
+    /// <summary>
+    /// Blank: edit this rule of the open profile (its index) instead of adding one (added 2026-11-07); -1 adds.
+    /// Without Choices the checklist starts from the rule's conditions.
+    /// </summary>
+    public int EditIndex { get; set; } = -1;
+    /// <summary>EditIndex's rule name as the editor showed it (refused when the rule there changed).</summary>
+    public string EditName { get; set; } = string.Empty;
 }
 
 /// <summary>A spell picked from the standard lists (LootSpellCatalog), required by the rule.</summary>
@@ -234,6 +241,11 @@ public sealed class LootEditItemAttribute
     /// sends the picked Id as the choice's Value. Null for typed and fixed rows.
     /// </summary>
     public List<LootEditName>? Choices { get; set; }
+    /// <summary>
+    /// The Choices are flags (imbues, damage types; added 2026-11-07): with "has any" / "has all"
+    /// several can be picked, the Value is their sum.
+    /// </summary>
+    public bool Flags { get; set; }
     /// <summary>The rule requires this row now.</summary>
     public bool On { get; set; }
     public string Tip { get; set; } = string.Empty;
@@ -296,6 +308,8 @@ public sealed class LootEditItemDraft
     /// Editor's Add rule): no item; it goes in at the end. False from an older RynthAi.
     /// </summary>
     public bool Blank { get; set; }
+    /// <summary>The rule this draft edits (the request's EditIndex), -1 when it adds one (added 2026-11-07).</summary>
+    public int EditIndex { get; set; } = -1;
 }
 
 /// <summary>

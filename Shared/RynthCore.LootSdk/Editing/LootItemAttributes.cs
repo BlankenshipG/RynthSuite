@@ -26,6 +26,10 @@ public enum LootItemAttributeOp
     /// "has Any elemental rend". VTank's Long Key Has Flag, (value AND flags) != 0.
     /// </summary>
     HasAny = 4,
+    /// <summary>Any value at all (2026-11-07): "any slayer", "any imbue". Long Key >= 1.</summary>
+    Any = 5,
+    /// <summary>A flags value has every picked flag (2026-11-07, multi imbues): one Long Key Has Flag per flag.</summary>
+    HasAll = 6,
     /// <summary>A spell by its exact name.</summary>
     SpellExact = 10,
     /// <summary>This spell at this tier or a higher one (Major Strength: Major, Epic or Legendary).</summary>
@@ -48,13 +52,15 @@ public sealed class LootItemAttribute
     internal int Key { get; init; }
     internal double ItemValue { get; init; }
     public string ItemText { get; init; } = string.Empty;
-    public LootItemAttributeOp[] Ops { get; init; } = Array.Empty<LootItemAttributeOp>();
+    public LootItemAttributeOp[] Ops { get; set; } = Array.Empty<LootItemAttributeOp>();
     /// <summary>The item's value can be replaced by a typed number.</summary>
     public bool Editable { get; init; }
     /// <summary>Spell rows: the spell's name (SpellFamily rows: the family, Key its level).</summary>
     internal string Spell { get; init; } = string.Empty;
     /// <summary>The values a named row can take (material names, skills, classes...), or null: the value is typed or fixed.</summary>
-    internal (int Id, string Name)[]? Choices { get; init; }
+    internal (int Id, string Name)[]? Choices { get; set; }
+    /// <summary>The value is a set of flags (imbues, damage types): several can be picked at once (2026-11-07).</summary>
+    public bool Flags { get; set; }
     /// <summary>SpellFamily rows: the family's spells by level (the catalog's), or null: a name pattern.</summary>
     internal LootSpellFamily? Family { get; init; }
 
@@ -71,12 +77,13 @@ public sealed class LootItemAttribute
         Op = (int)Op, Ops = new List<int>(Array.ConvertAll(Ops, o => (int)o)),
         Value = Editable || Choices != null ? LootItemAttributes.Number(Value) : ItemText,
         Choices = Choices == null ? null : new List<LootEditName>(Array.ConvertAll(Choices, c => new LootEditName { Id = c.Id, Name = c.Name })),
+        Flags = Flags,
     };
 }
 
 public static class LootItemAttributes
 {
-    public const string GroupItem = "Item", GroupGear = "Weapon / Armor", GroupRatings = "Ratings", GroupSpells = "Spells",
+    public const string GroupItem = "Item", GroupGear = "Weapon / Armor", GroupCards = "Weapon cards", GroupRatings = "Ratings", GroupSpells = "Spells",
         GroupPet = "Pet essence", GroupT11 = "T11", GroupRequirements = "Requirements";
 
     /// <summary>Cantrip tiers, lowest first: "Major Strength" is tier 2.</summary>
@@ -124,6 +131,12 @@ public static class LootItemAttributes
             + "Armor Rending imbue on a wand, staff or orb."),
         new(GroupItem, 166, false, "Slayer", Cmp.Named),
         new(GroupItem, 45, false, "Damage type", Cmp.Named),
+        // ACECustom appraisal properties (2026-11-07).
+        new(GroupItem, 171, false, "Times tinkered", Cmp.Max, "How many tinks it has had (fewer leaves more room)."),
+        new(GroupItem, 17, false, "Rare", Cmp.Min, "A retail rare (its rare id); any rare: >= 1."),
+        new(GroupItem, 114, false, "Attuned", Cmp.Min, "1 when attuned (can't be traded)."),
+        new(GroupItem, 33, false, "Bonded", Cmp.Min, "1 when bonded (stays on death)."),
+        new(GroupItem, 319, false, "Max item level", Cmp.Min, "Items that level up (Aetheria, legendary keys...)."),
 
         new(GroupGear, 353, false, "Weapon type", Cmp.Named, "The weapon's mastery: sword, axe, bow, crossbow..."),
         new(GroupGear, LootItemRules.KeyWieldSkill, false, "Wield skill", Cmp.Named),
@@ -137,8 +150,25 @@ public static class LootItemAttributes
         new(GroupGear, 150, true, "Magic defense modifier", Cmp.Min),
         new(GroupGear, 144, true, "Mana conversion modifier", Cmp.Min),
         new(GroupGear, LootItemRules.KeyElementalDamageMod, true, "Elemental damage vs monsters", Cmp.Min),
+        new(GroupGear, 204, false, "Elemental damage bonus", Cmp.Min, "A caster's or launcher's flat elemental damage bonus."),
+        new(GroupGear, 159, true, "Absorb magic damage", Cmp.Min, "Fraction of magic damage absorbed (0.25 = 25%)."),
         new(GroupGear, LootItemRules.KeyEquipSlots, false, "Equip slots", Cmp.Named, "Where it is worn or wielded."),
         new(GroupGear, LootItemRules.KeyArmorLevel, false, "Armor level", Cmp.Min),
+
+        // ACECustom's weapon cards: the real properties, then the ones only the appraisal text carries
+        // (RynthAi's virtual keys, read from "Property Details:").
+        new(GroupCards, 147, true, "Biting Strike", Cmp.Min, "Crit chance (0.4 = 40%)."),
+        new(GroupCards, 136, true, "Crushing Blow", Cmp.Min, "Stored as the crit damage multiplier minus 1 (4.0 = 5x crit damage)."),
+        new(GroupCards, 155, true, "Armor Cleaving", Cmp.Min, "Any armor cleaving: >= 0.01 (the server only checks that it is set)."),
+        new(GroupCards, 157, true, "Resistance Cleaving", Cmp.Min, "The vuln it applies (0.5 = +50% damage)."),
+        new(GroupCards, 263, false, "Resistance Cleaving element", Cmp.Named),
+        new(GroupCards, 292, false, "Cleaving targets", Cmp.Min, "Total targets it hits (the extra targets plus one)."),
+        new(GroupCards, 9031, false, "Split arrows", Cmp.Min, "Extra arrows a launcher fires."),
+        new(GroupCards, T11Keys.SlayerDamage, false, "Slayer damage %", Cmp.Min, "The slayer card's damage, 2.1x = 210 (from the appraisal text)."),
+        new(GroupCards, T11Keys.AllCreaturesSlayer, false, "All Creatures slayer", Cmp.Min, "1 for an all-creatures slayer (from the appraisal text; Slayer Type is 0 on these)."),
+        new(GroupCards, T11Keys.RendPower, false, "Rend power %", Cmp.Min, "The rend card's bonus, +213% = 213 (from the appraisal text)."),
+        new(GroupCards, T11Keys.SpellArmorRend, false, "Spell Armor Rend %", Cmp.Min, "Casters: the Spell Armor the spells ignore, 35% = 35 (from the appraisal text; there is no imbue bit for it)."),
+        new(GroupCards, T11Keys.Phantom, false, "Phantom", Cmp.Min, "1 when it ignores magic protections (from the appraisal text)."),
 
         // The rating total comes first in this group (built separately); then each rating.
         new(GroupRatings, 370, false, "Damage rating", Cmp.Min),
@@ -150,6 +180,9 @@ public static class LootItemAttributes
         new(GroupRatings, 376, false, "Heal boost rating", Cmp.Min),
         new(GroupRatings, 377, false, "Nether resist rating", Cmp.Min),
         new(GroupRatings, 379, false, "Vitality rating", Cmp.Min),
+        new(GroupRatings, 378, false, "Life resist rating", Cmp.Min),
+        new(GroupRatings, 388, false, "Overpower rating", Cmp.Min),
+        new(GroupRatings, 389, false, "Overpower resist rating", Cmp.Min),
 
         new(GroupPet, KeyBond, false, "Bond level", Cmp.Min),
         new(GroupPet, KeyUseRequiresLevel, false, "Level", Cmp.Min),
@@ -186,7 +219,7 @@ public static class LootItemAttributes
         foreach (Spec s in Specs)
             if (s.IsDouble == isDouble && !keys.Contains(s.Key)) keys.Add(s.Key);
         if (!isDouble)
-            foreach (int k in new[] { KeyUseRequiresSkill, KeyUseRequiresSkillSpec })
+            foreach (int k in new[] { KeyUseRequiresSkill, KeyUseRequiresSkillSpec, 303, 304, 305, 306, 51100, 9060 })
                 if (!keys.Contains(k)) keys.Add(k);
         return keys.ToArray();
     }
@@ -270,12 +303,13 @@ public static class LootItemAttributes
     {
         LootItemAttributeOp[] ops = s.Cmp switch
         {
-            // Flags (imbues, damage types): "has any of" too; for imbues it comes first (an item can carry two).
+            // Flags (imbues, damage types): "has any" / "has all" of several picks; for imbues they come first
+            // (an item can carry two). Every named row can ask for "any" value: any slayer, any imbue.
             Cmp.Named when LootRuleText.ValueTableIsFlags(s.Key) && s.Key == LootItemFacts.ImbuedEffectKey
-                => new[] { LootItemAttributeOp.HasAny, LootItemAttributeOp.Exactly, LootItemAttributeOp.Not },
+                => new[] { LootItemAttributeOp.HasAny, LootItemAttributeOp.HasAll, LootItemAttributeOp.Exactly, LootItemAttributeOp.Not, LootItemAttributeOp.Any },
             Cmp.Named when LootRuleText.ValueTableIsFlags(s.Key)
-                => new[] { LootItemAttributeOp.Exactly, LootItemAttributeOp.HasAny, LootItemAttributeOp.Not },
-            Cmp.Named => new[] { LootItemAttributeOp.Exactly, LootItemAttributeOp.Not },
+                => new[] { LootItemAttributeOp.Exactly, LootItemAttributeOp.HasAny, LootItemAttributeOp.HasAll, LootItemAttributeOp.Not, LootItemAttributeOp.Any },
+            Cmp.Named => new[] { LootItemAttributeOp.Exactly, LootItemAttributeOp.Not, LootItemAttributeOp.Any },
             Cmp.Max => new[] { LootItemAttributeOp.AtMost, LootItemAttributeOp.Exactly, LootItemAttributeOp.AtLeast },
             _ => new[] { LootItemAttributeOp.AtLeast, LootItemAttributeOp.Exactly, LootItemAttributeOp.AtMost },
         };
@@ -287,7 +321,7 @@ public static class LootItemAttributes
             Group = s.Group, Label = s.Label, Tip = s.Tip,
             Kind = s.IsDouble ? LootItemAttribute.Shape.Double : LootItemAttribute.Shape.Long,
             Key = s.Key, ItemValue = v, ItemText = text, Ops = ops, Editable = s.Cmp != Cmp.Named,
-            On = on, Op = ops[0], Value = v, Choices = choices,
+            On = on, Op = ops[0], Value = v, Choices = choices, Flags = choices != null && LootRuleText.ValueTableIsFlags(s.Key),
         };
     }
 
@@ -471,6 +505,8 @@ public static class LootItemAttributes
         }
         if (valuelessSpecial) Row("special", "Has slot special", T11Keys.HasSlotSpecial, 1, named: false, equal: true);
         if (t.Procs.Count > 0) Row("cos", "Cast on Strike count", T11Keys.CastOnStrikeCount, t.Procs.Count, named: false);
+        if (f.Int(51100) > 0) Row("rare", "T11 rare", 51100, f.Int(51100), named: true, def: false);
+        if (t.WeaponQuality > 0) Row("quality", "Weapon quality (0-1000)", 9060, t.WeaponQuality, named: false, def: false);
 
         foreach (var (key, label) in new[] { (T11Keys.ModifierCount, "Modifier count"), (T11Keys.ModifierRatingTotal, "Modifier rating total"), (T11Keys.BestRollPercent, "Best roll %") })
             if (T11Keys.TryGetValue(t, key, null, out int v) && v > 0)
@@ -508,7 +544,7 @@ public static class LootItemAttributes
             {
                 // A named value picked from the row's list (another material, skill, class...).
                 if (int.TryParse(typed, NumberStyles.Integer, CultureInfo.InvariantCulture, out int pick)
-                    && Array.Exists(r.Choices, x => x.Id == pick))
+                    && (Array.Exists(r.Choices, x => x.Id == pick) || (r.Flags && pick != 0 && (pick & ~AllBits(r.Choices)) == 0)))
                 {
                     r.Value = pick;
                     r.Typed = typed;
@@ -538,6 +574,24 @@ public static class LootItemAttributes
             string key = r.Key.ToString(CultureInfo.InvariantCulture);
             switch (r.Kind)
             {
+                case LootItemAttribute.Shape.Long when r.Op == LootItemAttributeOp.Any:
+                    rule.Conditions.Add(Cond(VTankNodeTypes.LongValKeyGE, "1", key));
+                    break;
+                case LootItemAttribute.Shape.Long when r.Op == LootItemAttributeOp.HasAll:
+                {
+                    // One "has flag" per picked flag: the item needs every one of them.
+                    long mask = (long)r.Value;
+                    bool any = false;
+                    for (int bit = 0; bit < 31; bit++)
+                    {
+                        long f = 1L << bit;
+                        if ((mask & f) == 0) continue;
+                        rule.Conditions.Add(Cond(VTankNodeTypes.LongValKeyFlagExists, f.ToString(CultureInfo.InvariantCulture), key));
+                        any = true;
+                    }
+                    if (!any) n--;
+                    break;
+                }
                 case LootItemAttribute.Shape.Long:
                     string iv = ((long)r.Value).ToString(CultureInfo.InvariantCulture);
                     int type = r.Op switch
@@ -681,7 +735,7 @@ public static class LootItemAttributes
             {
                 Id = r.Id, Group = r.Group, Label = r.Label, Tip = r.Tip, Kind = r.Kind, Key = r.Key, Ops = r.Ops, Op = r.Op,
                 // A named value without a list (equip slots, armor set) is typed as its number here.
-                Editable = r.Editable || table == null, Choices = table, ItemText = "any",
+                Editable = r.Editable || table == null, Choices = table, Flags = r.Flags, ItemText = "any",
                 Value = table != null && table.Length > 0 ? table[0].Id : 0,
             });
         }
@@ -709,10 +763,199 @@ public static class LootItemAttributes
         T11Row("dmgpct", "Damage %", T11Keys.DamagePercent, named: false);
         T11Row("geargrade", "Gear grade", T11Keys.GearGrade, named: true);
         T11Row("cos", "Cast on Strike count", T11Keys.CastOnStrikeCount, named: false);
+        T11Row("rare", "T11 rare", 51100, named: true);
+        T11Row("quality", "Weapon quality (0-1000)", 9060, named: false);
         T11Row("sum:" + T11Keys.ModifierCount.ToString(CultureInfo.InvariantCulture), "Modifier count", T11Keys.ModifierCount, named: false);
         T11Row("sum:" + T11Keys.ModifierRatingTotal.ToString(CultureInfo.InvariantCulture), "Modifier rating total", T11Keys.ModifierRatingTotal, named: false);
         rows.InsertRange(t11At, t11);
         return rows;
+    }
+
+    // ── A rule back onto the checklist (2026-11-07: edit a rule with the same checklist) ──────
+
+    /// <summary>
+    /// The checklist choices that make <paramref name="conditions"/> again, on the blank checklist's
+    /// <paramref name="rows"/>; what no row can say (spells by name, string matches, the Disabled
+    /// marker, a second condition on the same key...) goes to <paramref name="leftovers"/>, kept as
+    /// written. Rebuilding with the choices plus the leftovers gives the same tests back.
+    /// </summary>
+    public static List<LootEditItemChoice> ChoicesFromRule(List<LootItemAttribute> rows, IReadOnlyList<VTankLootCondition> conditions,
+        out List<VTankLootCondition> leftovers)
+    {
+        var picked = new Dictionary<string, LootEditItemChoice>();
+        leftovers = new List<VTankLootCondition>();
+        static bool Int(IList<string> d, int i, out long v)
+        {
+            v = 0;
+            return i < d.Count && long.TryParse(d[i].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
+        }
+        static bool Dbl(IList<string> d, int i, out double v)
+        {
+            v = 0;
+            return i < d.Count && double.TryParse(d[i].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+        }
+        bool Take(LootItemAttribute? r, LootItemAttributeOp op, string value)
+        {
+            if (r == null || picked.ContainsKey(r.Id) || Array.IndexOf(r.Ops, op) < 0) return false;
+            // A named value the row's list doesn't have would be dropped by Apply: keep it as written.
+            if (r.Choices != null && op != LootItemAttributeOp.Any
+                && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long pv)
+                && !Array.Exists(r.Choices, x => x.Id == pv)
+                && !(r.Flags && pv > 0 && (pv & ~(long)AllBits(r.Choices)) == 0)) return false;
+            picked[r.Id] = new LootEditItemChoice { Id = r.Id, On = true, Op = (int)op, Value = value };
+            return true;
+        }
+        string N(double v) => Number(v);
+
+        foreach (VTankLootCondition c in conditions)
+        {
+            IList<string> d = c.DataLines;
+            bool ok = false;
+            switch (c.NodeType)
+            {
+                case VTankNodeTypes.ObjectClass when Int(d, 0, out long cls):
+                    ok = Take(rows.Find(r => r.Kind == LootItemAttribute.Shape.ObjectClass), LootItemAttributeOp.Exactly, N(cls));
+                    break;
+                case VTankNodeTypes.LongValKeyGE or VTankNodeTypes.LongValKeyLE or VTankNodeTypes.LongValKeyE
+                    or VTankNodeTypes.LongValKeyNE or VTankNodeTypes.LongValKeyFlagExists when Int(d, 0, out long val) && Int(d, 1, out long key):
+                {
+                    LootItemAttribute? r = rows.Find(x => x.Kind == LootItemAttribute.Shape.Long && x.Key == key);
+                    if (r == null) break;
+                    if (c.NodeType == VTankNodeTypes.LongValKeyFlagExists && picked.TryGetValue(r.Id, out LootEditItemChoice? had)
+                        && (had.Op == (int)LootItemAttributeOp.HasAny || had.Op == (int)LootItemAttributeOp.HasAll)
+                        && Array.IndexOf(r.Ops, LootItemAttributeOp.HasAll) >= 0
+                        && long.TryParse(had.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long hv)
+                        && IsSingle(hv) && IsSingle(val))
+                    {
+                        // A second "has flag" on the same key: the item needs both (has all).
+                        had.Op = (int)LootItemAttributeOp.HasAll;
+                        had.Value = N(hv | val);
+                        ok = true;
+                        break;
+                    }
+                    LootItemAttributeOp op = c.NodeType switch
+                    {
+                        VTankNodeTypes.LongValKeyLE => LootItemAttributeOp.AtMost,
+                        VTankNodeTypes.LongValKeyE => LootItemAttributeOp.Exactly,
+                        VTankNodeTypes.LongValKeyNE => LootItemAttributeOp.Not,
+                        VTankNodeTypes.LongValKeyFlagExists => LootItemAttributeOp.HasAny,
+                        _ => r.Choices != null && val == 1 && Array.IndexOf(r.Ops, LootItemAttributeOp.Any) >= 0
+                            ? LootItemAttributeOp.Any : LootItemAttributeOp.AtLeast,
+                    };
+                    // A named row has no >= / <=: those stay as written.
+                    ok = Take(r, op, N(val));
+                    break;
+                }
+                case VTankNodeTypes.DoubleValKeyGE or VTankNodeTypes.DoubleValKeyLE when Dbl(d, 0, out double dv) && Int(d, 1, out long dkey):
+                {
+                    LootItemAttribute? r = rows.Find(x => x.Kind == LootItemAttribute.Shape.Double && x.Key == dkey);
+                    if (r == null) break;
+                    bool ge = c.NodeType == VTankNodeTypes.DoubleValKeyGE;
+                    if (picked.TryGetValue(r.Id, out LootEditItemChoice? had) && had.Value == N(dv)
+                        && had.Op == (int)(ge ? LootItemAttributeOp.AtMost : LootItemAttributeOp.AtLeast))
+                    {
+                        had.Op = (int)LootItemAttributeOp.Exactly;   // >= and <= the same value
+                        ok = true;
+                        break;
+                    }
+                    ok = Take(r, ge ? LootItemAttributeOp.AtLeast : LootItemAttributeOp.AtMost, N(dv));
+                    break;
+                }
+                case VTankNodeTypes.TotalRatingsGE when Dbl(d, 0, out double tr):
+                    ok = Take(rows.Find(r => r.Kind == LootItemAttribute.Shape.TotalRatings), LootItemAttributeOp.AtLeast, N(tr));
+                    break;
+                case VTankNodeTypes.SpellCountGE when Dbl(d, 0, out double sc):
+                    ok = Take(rows.Find(r => r.Kind == LootItemAttribute.Shape.SpellCount), LootItemAttributeOp.AtLeast, N(sc));
+                    break;
+                case VTankNodeTypes.SpellMatch when d.Count >= 3 && (d[1] ?? string.Empty).Length == 0 && Dbl(d, 2, out double cn):
+                {
+                    LootItemAttribute? r = rows.Find(x => x.Kind == LootItemAttribute.Shape.CantripTier
+                        && d[0] == "^(" + TierAlternation(x.Key) + ") ");
+                    ok = Take(r, LootItemAttributeOp.AtLeast, N(cn));
+                    break;
+                }
+            }
+            if (!ok) leftovers.Add(c);
+        }
+        return new List<LootEditItemChoice>(picked.Values);
+    }
+
+    private static bool IsSingle(long v) => v > 0 && (v & (v - 1)) == 0;
+
+    /// <summary>Every flag a flags row's list names (single flags and the "any of" picks).</summary>
+    internal static int AllBits((int Id, string Name)[] choices)
+    {
+        int all = 0;
+        foreach (var c in choices) all |= c.Id;
+        return all;
+    }
+
+    // ── Imbues by class (2026-11-07, from ACECustom's loot and recipes) ──────────────────────
+    // Melee and missile weapons: Critical Strike, Crippling Blow, Armor Rending and the physical and
+    // elemental rends; ACECustom's drops OR a rend matching the weapon's element with Armor Rending, so
+    // they can carry several. Casters: the same but no Armor Rending (their card is Spell Armor Rend,
+    // which has no imbue bit) and with Nether Rending. Armor, clothing and jewelry: the defense imbues,
+    // one at a time.
+    private const int Crit = 1, Cripple = 2, ArmorRend = 4, Slash = 8, Pierce = 16, Bludge = 32, Acid = 64, Cold = 128,
+        Elec = 256, Fire = 512, MeleeDef = 1024, MissileDef = 2048, MagicDef = 4096, Nether = 16384;
+    private const int Physical = Slash | Pierce | Bludge, Elements = Acid | Cold | Elec | Fire;
+
+    /// <summary>The imbue flags a class can carry (null: no class, every imbue), and whether it can carry several.</summary>
+    public static int? ImbuesFor(int objectClass, out bool several)
+    {
+        several = true;
+        switch ((AcObjectClass)objectClass)
+        {
+            case AcObjectClass.MeleeWeapon:
+            case AcObjectClass.MissileWeapon:
+                return Crit | Cripple | ArmorRend | Physical | Elements;
+            case AcObjectClass.WandStaffOrb:
+                return Crit | Cripple | Physical | Elements | Nether;
+            case AcObjectClass.Armor:
+            case AcObjectClass.Clothing:
+            case AcObjectClass.Jewelry:
+                several = false;
+                return MeleeDef | MissileDef | MagicDef;
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// The Imbue row's list for the class (<paramref name="objectClass"/>; 0 or unknown: every imbue):
+    /// only the imbues it can carry, the "any of" picks cut down to them, and "has all" only where a
+    /// class carries several.
+    /// </summary>
+    public static void FilterImbues(List<LootItemAttribute> rows, int objectClass)
+    {
+        LootItemAttribute? r = rows.Find(x => x.Kind == LootItemAttribute.Shape.Long && x.Key == LootItemFacts.ImbuedEffectKey && x.Choices != null);
+        if (r == null) return;
+        int? allowed = ImbuesFor(objectClass, out bool several);
+        if (allowed is not int ok) return;
+        var list = new List<(int, string)>();
+        var seen = new HashSet<int>();
+        foreach (var c in LootRuleText.ImbuedEffects)
+        {
+            int bits = c.Id & ok;
+            if (bits == 0) continue;
+            bool single = (c.Id & (c.Id - 1)) == 0;
+            // An "any of" pick keeps its name only while every flag it names fits the class.
+            if (!single && (bits != c.Id || (bits & (bits - 1)) == 0)) continue;
+            if (seen.Add(c.Id)) list.Add((c.Id, c.Name));
+        }
+        r.Choices = list.ToArray();
+        if (!several)
+        {
+            r.Ops = Array.FindAll(r.Ops, o => o != LootItemAttributeOp.HasAll);
+            if (r.Op == LootItemAttributeOp.HasAll) r.Op = r.Ops[0];
+        }
+    }
+
+    /// <summary>The class the checklist is for: the ticked Class row's (blank), else 0.</summary>
+    internal static int TickedClass(List<LootItemAttribute> rows)
+    {
+        LootItemAttribute? c = rows.Find(x => x.Kind == LootItemAttribute.Shape.ObjectClass);
+        return c != null && c.On ? (int)c.Value : 0;
     }
 
     /// <summary>The blank checklist's spell group: a cantrip count per tier and the spell count.</summary>

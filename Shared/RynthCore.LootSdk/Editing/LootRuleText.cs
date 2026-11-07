@@ -83,6 +83,12 @@ public static class LootRuleText
             (T11.T11Catalog.PropWeaponAugScaleQuality, "WeaponAugScaleQuality"),
             (T11.T11Catalog.PropWeaponAugScaleTier, "WeaponAugScaleTier"),
             (T11.T11Catalog.PropZcTier, "ZcTier"),
+            // More of ACECustom's appraisal ints (2026-11-07).
+            (17, "RareId"), (33, "Bonded"), (114, "Attuned"), (171, "NumTimesTinkered"), (204, "ElementalDamageBonus"),
+            (263, "ResistanceCleavingType"), (292, "Cleaving (targets)"), (303, "ImbuedEffect2"), (304, "ImbuedEffect3"),
+            (305, "ImbuedEffect4"), (306, "ImbuedEffect5"), (319, "ItemMaxLevel"), (352, "CloakWeaveProc"),
+            (378, "LifeResistRating"), (386, "Overpower"), (387, "OverpowerResist"), (388, "OverpowerRating"),
+            (389, "OverpowerResistRating"), (9031, "SplitArrowCount"), (51100, "ZcRare"), (51101, "ZcRareGateTier"),
         };
         keys.AddRange(T11.T11Keys.Names());
         return keys.ToArray();
@@ -100,6 +106,8 @@ public static class LootRuleText
         (63, "DamageMod"), (138, "Slayer Damage Bonus"), // often unset on ACE appraisal; prefer LongDesc / int 166
         (144, "ManaConversionMod"), (149, "WeaponMissileDefense"),
         (150, "WeaponMagicDefense"), (152, "ElementalDamageVsMonsters"), (167, "CooldownDuration"),
+        (136, "Crushing Blow (CriticalMultiplier)"), (147, "Biting Strike (CriticalFrequency)"), (155, "Armor Cleaving (IgnoreArmor)"),
+        (157, "Resistance Cleaving (ResistanceModifier)"), (159, "AbsorbMagicDamage"),
         (0x0A000009, "SalvageWorkmanship"), (0x0A00000B, "Variance"),
         (0x0A00000C, "AttackBonus"), (0x0A00000E, "DamageBonus"),
     };
@@ -241,6 +249,9 @@ public static class LootRuleText
         (8, "Bow"), (9, "Crossbow"), (10, "Thrown"), (11, "Two Handed"), (12, "Magic"),
     };
 
+    /// <summary>ZcRare (51100): ACECustom's T11+ rares.</summary>
+    public static readonly (int Id, string Name)[] ZcRares = { (1, "Pristine"), (2, "Ascendant") };
+
     /// <summary>SummoningMastery (362): the pet school an essence needs (ACE SummoningMastery).</summary>
     public static readonly (int Id, string Name)[] SummoningMasteries =
     {
@@ -257,6 +268,8 @@ public static class LootRuleText
         166 => CreatureTypes,
         179 => ImbuedEffects,
         353 => WeaponTypes,
+        263 => DamageTypes,
+        51100 => ZcRares,
         362 => SummoningMasteries,
         T11.T11Keys.WeaponGrade => T11.T11Catalog.Grades,
         T11.T11Keys.GearGrade => T11.T11Catalog.Grades,
@@ -268,7 +281,7 @@ public static class LootRuleText
 
     /// <summary>The long keys that have a value table, for the vocabulary.</summary>
     public static readonly int[] KeysWithValueTables =
-        { 45, 48, 131, 158, 159, 166, 179, 353, 362, 366, 368, 9054, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
+        { 45, 48, 131, 158, 159, 166, 179, 263, 353, 362, 51100, 366, 368, 9054, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
 
     /// <summary>
     /// True for the conditions whose value is picked by name when the key has a

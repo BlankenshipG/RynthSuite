@@ -60,6 +60,16 @@ public static class T11Keys
     public const int Tainted = Base + 19;
     /// <summary>1 when the tier is the server's stamped value, 0 when it is estimated from the wield gates.</summary>
     public const int TierIsExact = Base + 20;
+    /// <summary>ACECustom's Spell Armor Rend card on a caster, percent of Spell Armor ignored (35), 0 for none. Text only.</summary>
+    public const int SpellArmorRend = Base + 21;
+    /// <summary>1 when the weapon is an All Creatures slayer (no species, so Slayer Type reads 0). Text only.</summary>
+    public const int AllCreaturesSlayer = Base + 22;
+    /// <summary>The slayer card's damage as a percent (2.1x = 210), 0 for none. Text only.</summary>
+    public const int SlayerDamage = Base + 23;
+    /// <summary>The best elemental rend's bonus percent (+213% Dmg = 213), 0 for none. Text only.</summary>
+    public const int RendPower = Base + 24;
+    /// <summary>1 when the weapon is Phantom (ignores magic protections). Text only.</summary>
+    public const int Phantom = Base + 25;
 
     /// <summary>
     /// Base of the per-modifier keys: <c>ModifierBase + catalog key</c> is that modifier's value
@@ -99,6 +109,11 @@ public static class T11Keys
         yield return (HasSlotSpecial, "T11: Has Slot Special");
         yield return (CastOnStrikeCount, "T11: Cast on Strike Count");
         yield return (ZoneLocked, "T11: Zone Locked");
+        yield return (SpellArmorRend, "Card: Spell Armor Rend %");
+        yield return (AllCreaturesSlayer, "Card: All Creatures Slayer");
+        yield return (SlayerDamage, "Card: Slayer Damage %");
+        yield return (RendPower, "Card: Rend Power %");
+        yield return (Phantom, "Card: Phantom");
         foreach (var def in T11Catalog.Modifiers)
             yield return (ForModifier(def.Key), "T11 Mod: " + def.Name);
     }
@@ -145,6 +160,11 @@ public static class T11Keys
             case HasSlotSpecial: value = item.HasSlotSpecial ? 1 : 0; return true;
             case CastOnStrikeCount: value = item.Procs.Count; return true;
             case ZoneLocked: value = item.ZoneLocked ? 1 : 0; return true;
+            case SpellArmorRend: value = item.SpellArmorRendPercent; return true;
+            case AllCreaturesSlayer: value = item.AllCreaturesSlayer ? 1 : 0; return true;
+            case SlayerDamage: value = item.SlayerDamagePercent; return true;
+            case RendPower: value = item.RendPowerPercent; return true;
+            case Phantom: value = item.Phantom ? 1 : 0; return true;
             default: return false;
         }
     }

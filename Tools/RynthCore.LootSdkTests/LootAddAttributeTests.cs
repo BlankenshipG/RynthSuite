@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using RynthCore.Loot;
 using RynthCore.Loot.Editing;
+using RynthCore.Loot.T11;
 using RynthCore.Loot.VTank;
 
 namespace RynthCore.LootSdkTests;
@@ -26,6 +27,10 @@ internal static partial class Program
         TestAttrVocab();
         TestAttrImbues();
         TestBlankRule();
+        TestAnyAndHasAll();
+        TestImbuesByClass();
+        TestEditRoundTrip();
+        TestCardText();
     }
 
     private static LootItemFacts Sword() => new()
@@ -240,5 +245,82 @@ internal static partial class Program
         Check(b.Rule.Name.StartsWith("Keep 5: Class is Jewelry"), "blank rule: named from the action and conditions: " + b.Rule.Name);
         LootItemRuleDraft f = LootItemRules.BuildBlank(new LootItemRuleOptions());
         Eq(f.Rule.Name, "Filter", "blank filter: still named Filter");
+    }
+
+    // 2026-11-07 (2): any slayer, multi imbues, imbues by class, editing a rule, ACECustom's card text.
+    private static void TestAnyAndHasAll()
+    {
+        LootItemRuleDraft b = LootItemRules.BuildBlank(new LootItemRuleOptions
+        {
+            BlankRule = true,
+            Choices = Pick(("L:166", true, LootItemAttributeOp.Any, ""), ("L:179", true, LootItemAttributeOp.HasAll, (4 | 512).ToString())),
+        });
+        var c = b.Rule.Conditions;
+        Eq(c.Count, 3, "any + has all: slayer >= 1 and two has-flag conditions");
+        Check(c.Any(x => x.NodeType == VTankNodeTypes.LongValKeyGE && string.Join(",", x.DataLines) == "1,166"), "any slayer: Long Key >= 1 on 166");
+        Eq(string.Join("|", c.Where(x => x.NodeType == VTankNodeTypes.LongValKeyFlagExists).Select(x => x.DataLines[0] + "@" + x.DataLines[1])),
+            "4@179|512@179", "has all: one has-flag per imbue");
+        bool Takes(LootItemFacts f) => LootFactsMatcher.Match(b.Rule.Conditions, f, true) == LootFactsVerdict.Match;
+        Check(Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [166] = 31, [179] = 4 | 512 } }), "has all: armor rend + fire rend slayer");
+        Check(!Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [166] = 31, [179] = 512 } }), "has all: fire rend alone isn't enough");
+        Check(!Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [179] = 4 | 512 } }), "any slayer: no slayer, no match");
+    }
+
+    private static void TestImbuesByClass()
+    {
+        (int Id, string Name)[]? ChoicesFor(int cls, out LootItemAttribute row)
+        {
+            LootItemRuleDraft b = LootItemRules.BuildBlank(new LootItemRuleOptions
+            {
+                BlankRule = true,
+                Choices = Pick(("class", true, LootItemAttributeOp.Exactly, cls.ToString())),
+            });
+            row = b.Attributes.First(a => a.Id == "L:179");
+            return row.ToWire().Choices?.Select(x => (x.Id, x.Name)).ToArray();
+        }
+        var caster = ChoicesFor((int)AcObjectClass.WandStaffOrb, out LootItemAttribute cr)!;
+        Check(caster.Any(x => x.Name == "Nether Rending") && !caster.Any(x => x.Name == "Armor Rending"), "casters: nether rend, no armor rend");
+        Check(!caster.Any(x => x.Name == "Any rend (with Armor Rending)"), "casters: no armor-rend pick");
+        Check(cr.Ops.Contains(LootItemAttributeOp.HasAll), "casters: several imbues");
+        var melee = ChoicesFor((int)AcObjectClass.MeleeWeapon, out _)!;
+        Check(melee.Any(x => x.Name == "Armor Rending") && !melee.Any(x => x.Name == "Nether Rending"), "melee: armor rend, no nether");
+        var armor = ChoicesFor((int)AcObjectClass.Armor, out LootItemAttribute ar)!;
+        Check(armor.All(x => x.Name.Contains("defense", StringComparison.OrdinalIgnoreCase)), "armor: defense imbues only");
+        Check(!ar.Ops.Contains(LootItemAttributeOp.HasAll), "armor: one imbue at a time");
+        Check(ar.ToWire().Flags, "imbue row is flags on the wire");
+    }
+
+    private static void TestEditRoundTrip()
+    {
+        var rule = new VTankLootRule { Name = "Fire rend slayer", Action = VTankLootAction.Keep, CustomExpression = string.Empty };
+        void Add(int type, params string[] d) => rule.Conditions.Add(new VTankLootCondition(type, "0", d));
+        Add(VTankNodeTypes.ObjectClass, ((int)AcObjectClass.MeleeWeapon).ToString());
+        Add(VTankNodeTypes.LongValKeyFlagExists, "4", "179");
+        Add(VTankNodeTypes.LongValKeyFlagExists, "512", "179");
+        Add(VTankNodeTypes.LongValKeyGE, "1", "166");
+        Add(VTankNodeTypes.DoubleValKeyGE, "0.4", "147");
+        Add(VTankNodeTypes.StringValueMatch, "Sword", "1");   // no checklist row: kept as written
+        var rows = LootItemAttributes.ForBlank();
+        List<LootEditItemChoice> ch = LootItemAttributes.ChoicesFromRule(rows, rule.Conditions, out List<VTankLootCondition> kept);
+        Eq(kept.Count, 1, "edit: the name match is kept as written");
+        LootEditItemChoice? imb = ch.FirstOrDefault(x => x.Id == "L:179");
+        Check(imb != null && imb.Op == (int)LootItemAttributeOp.HasAll && imb.Value == "516", "edit: two has-flags read back as has all");
+        Check(ch.Any(x => x.Id == "L:166" && x.Op == (int)LootItemAttributeOp.Any), "edit: slayer >= 1 reads back as any");
+        LootItemRuleDraft b = LootItemRules.BuildBlank(new LootItemRuleOptions { BlankRule = true, Choices = ch, KeepConditions = kept, RuleName = rule.Name });
+        Eq(string.Join(";", b.Rule.Conditions.Select(LootRuleText.Condition).OrderBy(x => x)),
+           string.Join(";", rule.Conditions.Select(LootRuleText.Condition).OrderBy(x => x)), "edit: rebuilding gives the same tests");
+        Eq(b.Rule.Name, "Fire rend slayer", "edit: the name stays");
+    }
+
+    private static void TestCardText()
+    {
+        const string desc = "Property Details:\n- Fire Rending: +213% Dmg\n- Spell Armor Rend: 35% Spell Armor Ignored\n- All Creatures Slayer: 2.10x Damage\n- Phantom: Ignores Magic Protections";
+        T11ItemInfo t = T11ItemInfo.Parse("T11 - Zealous Wand", desc, "Tier 11");
+        Eq(t.RendPowerPercent, 213, "cards: rend power");
+        Eq(t.SpellArmorRendPercent, 35, "cards: spell armor rend");
+        Check(t.AllCreaturesSlayer && t.SlayerDamagePercent == 210, "cards: all creatures slayer 2.1x");
+        Check(t.Phantom, "cards: phantom");
+        var f = new LootItemFacts { Name = "T11 - Zealous Wand", ObjectClass = (int)AcObjectClass.WandStaffOrb, T11 = t };
+        Eq(f.Int(T11Keys.SpellArmorRend), 35, "cards: the virtual key reads from the text");
     }
 }

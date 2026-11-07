@@ -550,6 +550,75 @@ public sealed class LootEditSession
         return Ok($"Added \"{rule.Name}\" at {at + 1} and saved {FileName(_path)} ({RuleCount} rules).");
     }
 
+    /// <summary>
+    /// Replaces rule <paramref name="index"/> with <paramref name="rule"/> and saves at once (old file kept as
+    /// .bak; 2026-11-07, edit with the checklist). .utl only; refused while there are unsaved edits, when the
+    /// rule there isn't named <paramref name="expectName"/> any more, or when the profile wouldn't read back
+    /// with every other rule unchanged.
+    /// </summary>
+    public bool ReplaceAndSave(int index, string expectName, VTankLootRule rule)
+    {
+        if (!IsOpen) return Fail("No profile open.");
+        if (_dirty) return Fail($"Unsaved changes in {FileName(_path)}. Save or discard them in the Loot Editor first.");
+        if (_json != null) return Fail("Edit a native-format rule in the Loot Editor's rule view.");
+        if (_utl == null) return Fail(_readOnlyReason);
+        List<VTankLootRule> rules = _utl.Rules;
+        if (index < 0 || index >= rules.Count || (rules[index].Name ?? string.Empty) != (expectName ?? string.Empty))
+            return Fail("That rule is no longer there. The list has been refreshed.");
+        if (_utl.FileVersion < 1) rule.CustomExpression = null;
+        else rule.CustomExpression ??= rules[index].CustomExpression ?? string.Empty;
+
+        var before = new List<string>(rules.Count);
+        foreach (VTankLootRule r in rules) before.Add(RuleText(_utl, r));
+        VTankLootRule old = rules[index];
+        rules[index] = rule;
+        string? bad = VerifyReplace(before, index);
+        if (bad != null)
+        {
+            rules[index] = old;
+            return Fail("Not saved (the profile would not read back the same): " + bad);
+        }
+        _dirty = true;
+        if (!Save())
+        {
+            string why = _message;
+            rules[index] = old;
+            _dirty = false;
+            if (_changedOnDisk)
+            {
+                Open(_path, force: true);
+                return Fail($"Not saved: {FileName(_path)} changed on disk; reloaded it. Try again.");
+            }
+            return Fail("Not saved. " + why);
+        }
+        _focus = index;
+        return Ok($"Saved rule {index + 1} \"{rule.Name}\" in {FileName(_path)}.");
+    }
+
+    /// <summary>Null when the model reads back with only rule <paramref name="at"/> changed.</summary>
+    private string? VerifyReplace(List<string> before, int at)
+    {
+        VTankLootProfile back;
+        try { back = VTankLootParser.LoadFromText(Decode(Encode(), out _, out _)); }
+        catch (Exception ex) { return ex.Message; }
+        if (back.Rules.Count != before.Count) return $"{back.Rules.Count} rules instead of {before.Count}.";
+        if (!SameSalvage(back.SalvageCombine, _utl!.SalvageCombine)) return "the salvage combine settings changed.";
+        for (int i = 0; i < back.Rules.Count; i++)
+        {
+            string text = RuleText(back, back.Rules[i]);
+            if (i == at)
+            {
+                if (text != RuleText(_utl, _utl.Rules[at])) return "the edited rule reads back differently.";
+                continue;
+            }
+            if (text != before[i]) return $"rule {i + 1} would change.";
+        }
+        return null;
+    }
+
+    /// <summary>Rule <paramref name="index"/> of an open .utl profile, or null.</summary>
+    public VTankLootRule? UtlRule(int index) => _utl != null && index >= 0 && index < _utl.Rules.Count ? _utl.Rules[index] : null;
+
     private static string RuleText(VTankLootProfile owner, VTankLootRule r) =>
         VTankLootWriter.Serialize(new VTankLootProfile { FileVersion = owner.FileVersion, Rules = { r } });
 
