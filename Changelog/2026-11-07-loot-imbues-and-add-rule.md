@@ -58,3 +58,13 @@
 - Pickers show names only (no "(45)" id after each), and the checklist's comparisons are words:
   at least / is / at most / is not / has any / has all / any.
 - Display only: the files keep VTank's keys and numbers.
+
+## Later: clicking a rule opens the checklist; has-flag values by name
+- Clicking a rule in the Loot Editor's list opens it in the checklist (the same popup as Add rule
+  and Filter inventory); its "Raw editor" button opens the rule view (conditions one by one).
+- "Property has Imbue 16384" reads "Nether Rending": has-flag values are named in the rule view,
+  its pickers and the summaries.
+- Fixed: a rule with three or more imbue flags (Nether + Armor Rending + Crit + Cripple) kept the
+  third and later "as written"; they all read back as one "has all" now.
+- Casters list Armor Rending (ACECustom casters carry it).
+- The action "Keep #" showed as a second "Keep" in the popup; it reads "Keep up to".

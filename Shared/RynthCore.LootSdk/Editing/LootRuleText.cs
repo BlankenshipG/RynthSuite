@@ -320,7 +320,7 @@ public static class LootRuleText
     /// </summary>
     public static bool UsesValueNames(int nodeType) => nodeType is VTankNodeTypes.LongValKeyGE
         or VTankNodeTypes.LongValKeyLE or VTankNodeTypes.LongValKeyE or VTankNodeTypes.LongValKeyNE
-        or VTankNodeTypes.BuffedLongValKeyGE;
+        or VTankNodeTypes.BuffedLongValKeyGE or VTankNodeTypes.LongValKeyFlagExists;   // "has Fire Rending" (2026-11-07)
 
     /// <summary>
     /// A value line as a whole number: "45", " 45 " and "45.0" (a buffed-long value

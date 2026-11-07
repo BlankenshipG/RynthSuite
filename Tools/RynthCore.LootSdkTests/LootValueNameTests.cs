@@ -95,7 +95,7 @@ internal static partial class Program
         Check(LootRuleText.UsesValueNames(VTankNodeTypes.LongValKeyE), "= uses names");
         Check(LootRuleText.UsesValueNames(VTankNodeTypes.LongValKeyGE), ">= uses names");
         Check(LootRuleText.UsesValueNames(VTankNodeTypes.BuffedLongValKeyGE), "buffed >= uses names");
-        Check(!LootRuleText.UsesValueNames(VTankNodeTypes.LongValKeyFlagExists), "has flag does not");
+        Check(LootRuleText.UsesValueNames(VTankNodeTypes.LongValKeyFlagExists), "has flag names its flag too (2026-11-07)");
         Check(!LootRuleText.UsesValueNames(VTankNodeTypes.DoubleValKeyGE), "double keys do not");
 
         // Vocabulary: the tables reach the face, and survive JSON.
@@ -107,7 +107,7 @@ internal static partial class Program
         Check(wst != null && wst.Values.Any(n => n.Id == 45 && n.Name == "Light Weapons"), "vocab JSON keeps 159's names");
         Check(back?.LongValueTables.First(t => t.Key == 45).Flags == true, "vocab JSON keeps the flags mark");
         Check(back?.NodeTypes.First(n => n.Id == VTankNodeTypes.LongValKeyE).NamedValues == true, "vocab marks = as named");
-        Check(back?.NodeTypes.First(n => n.Id == VTankNodeTypes.LongValKeyFlagExists).NamedValues == false, "vocab leaves has flag unnamed");
+        Check(back?.NodeTypes.First(n => n.Id == VTankNodeTypes.LongValKeyFlagExists).NamedValues == true, "vocab names has-flag values (2026-11-07)");
         // An older RynthAi's vocabulary (no LongValueTables) still reads: the face falls back to the text box.
         LootEditVocab? old = JsonSerializer.Deserialize("{\"LongKeys\":[{\"Id\":159,\"Name\":\"WieldSkilltype\"}]}",
             LootEditJsonContext.Default.LootEditVocab);

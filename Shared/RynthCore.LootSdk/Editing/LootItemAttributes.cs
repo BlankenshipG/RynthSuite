@@ -825,7 +825,8 @@ public static class LootItemAttributes
                         && (had.Op == (int)LootItemAttributeOp.HasAny || had.Op == (int)LootItemAttributeOp.HasAll)
                         && Array.IndexOf(r.Ops, LootItemAttributeOp.HasAll) >= 0
                         && long.TryParse(had.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long hv)
-                        && IsSingle(hv) && IsSingle(val))
+                        && hv > 0 && IsSingle(val)
+                        && (had.Op == (int)LootItemAttributeOp.HasAll || IsSingle(hv)))
                     {
                         // A second "has flag" on the same key: the item needs both (has all).
                         had.Op = (int)LootItemAttributeOp.HasAll;
@@ -893,8 +894,8 @@ public static class LootItemAttributes
     // ── Imbues by class (2026-11-07, from ACECustom's loot and recipes) ──────────────────────
     // Melee and missile weapons: Critical Strike, Crippling Blow, Armor Rending and the physical and
     // elemental rends; ACECustom's drops OR a rend matching the weapon's element with Armor Rending, so
-    // they can carry several. Casters: the same but no Armor Rending (their card is Spell Armor Rend,
-    // which has no imbue bit) and with Nether Rending. Armor, clothing and jewelry: the defense imbues,
+    // they can carry several. Casters: the same, with Nether Rending (ACECustom casters carry Armor
+    // Rending too, besides the Spell Armor Rend card). Armor, clothing and jewelry: the defense imbues,
     // one at a time.
     private const int Crit = 1, Cripple = 2, ArmorRend = 4, Slash = 8, Pierce = 16, Bludge = 32, Acid = 64, Cold = 128,
         Elec = 256, Fire = 512, MeleeDef = 1024, MissileDef = 2048, MagicDef = 4096, Nether = 16384;
@@ -910,7 +911,8 @@ public static class LootItemAttributes
             case AcObjectClass.MissileWeapon:
                 return Crit | Cripple | ArmorRend | Physical | Elements;
             case AcObjectClass.WandStaffOrb:
-                return Crit | Cripple | Physical | Elements | Nether;
+                // Armor Rending too: ACECustom casters carry it (rules like "Caster Slayer + Nether Rend + AR").
+                return Crit | Cripple | ArmorRend | Physical | Elements | Nether;
             case AcObjectClass.Armor:
             case AcObjectClass.Clothing:
             case AcObjectClass.Jewelry:

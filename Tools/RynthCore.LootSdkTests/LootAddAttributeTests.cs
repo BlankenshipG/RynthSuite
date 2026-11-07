@@ -279,8 +279,7 @@ internal static partial class Program
             return row.ToWire().Choices?.Select(x => (x.Id, x.Name)).ToArray();
         }
         var caster = ChoicesFor((int)AcObjectClass.WandStaffOrb, out LootItemAttribute cr)!;
-        Check(caster.Any(x => x.Name == "Nether Rending") && !caster.Any(x => x.Name == "Armor Rending"), "casters: nether rend, no armor rend");
-        Check(!caster.Any(x => x.Name == "Any rend (with Armor Rending)"), "casters: no armor-rend pick");
+        Check(caster.Any(x => x.Name == "Nether Rending") && caster.Any(x => x.Name == "Armor Rending"), "casters: nether rend and armor rend");
         Check(cr.Ops.Contains(LootItemAttributeOp.HasAll), "casters: several imbues");
         var melee = ChoicesFor((int)AcObjectClass.MeleeWeapon, out _)!;
         Check(melee.Any(x => x.Name == "Armor Rending") && !melee.Any(x => x.Name == "Nether Rending"), "melee: armor rend, no nether");
@@ -310,6 +309,18 @@ internal static partial class Program
         Eq(string.Join(";", b.Rule.Conditions.Select(LootRuleText.Condition).OrderBy(x => x)),
            string.Join(";", rule.Conditions.Select(LootRuleText.Condition).OrderBy(x => x)), "edit: rebuilding gives the same tests");
         Eq(b.Rule.Name, "Fire rend slayer", "edit: the name stays");
+
+        // Four "has flag" on the imbue (a caster rule: Nether + Armor Rending + Crit + Cripple): one has all, nothing left over.
+        var four = new VTankLootRule { Name = "[Wpn C] T11+ Caster", Action = VTankLootAction.Keep, CustomExpression = string.Empty };
+        four.Conditions.Add(new VTankLootCondition(VTankNodeTypes.ObjectClass, "0", new[] { ((int)AcObjectClass.WandStaffOrb).ToString() }));
+        foreach (string bit in new[] { "16384", "4", "1", "2" })
+            four.Conditions.Add(new VTankLootCondition(VTankNodeTypes.LongValKeyFlagExists, "0", new[] { bit, "179" }));
+        List<LootEditItemChoice> ch4 = LootItemAttributes.ChoicesFromRule(LootItemAttributes.ForBlank(), four.Conditions, out List<VTankLootCondition> kept4);
+        Eq(kept4.Count, 0, "edit: four imbues, none kept as written");
+        Check(ch4.Any(x => x.Id == "L:179" && x.Op == (int)LootItemAttributeOp.HasAll && x.Value == (16384 | 4 | 1 | 2).ToString()), "edit: four imbues read back as has all");
+        LootItemRuleDraft b4 = LootItemRules.BuildBlank(new LootItemRuleOptions { BlankRule = true, Choices = ch4, KeepConditions = kept4 });
+        Eq(b4.Rule.Conditions.Count(x => x.NodeType == VTankNodeTypes.LongValKeyFlagExists), 4, "edit: the caster keeps all four imbues");
+        Eq(LootRuleText.Condition(four.Conditions[1]), "Imbue has Nether Rending", "rule view: a has-flag value by name");
     }
 
     private static void TestCardText()
