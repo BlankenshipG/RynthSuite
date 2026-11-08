@@ -604,11 +604,20 @@ internal sealed partial class OracleView
             w.SmallButton("Go " + c, $"g.s{i}.c{k}", () => _gMsg = SendRynthNav("go", new[] { c }));
             w.Tooltip("RynthNav plans the way to " + c + " and walks it.");
         }
-        if (s.Coords.Count > 0 && _c.Runner?.Quest?.Title == q.Title)
+        // A quest of several steps: any step can be the one to do (2026-11-08), not only by Next and Back.
+        if (q.Steps.Count > 1 && i != current)
         {
-            w.SameLine();
+            if (s.Coords.Count > 0) w.SameLine();
             int step = i;
-            w.SmallButton("Run from here", $"g.s{i}.from", () => _c.Runner?.Start(q, st => StateOf(q, st) == StampState.Done, loot: true, fromStep: step));
+            bool running = _c.Runner?.Quest?.Title == q.Title;
+            w.SmallButton(running ? $"Do step {i + 1}" : $"Run from step {i + 1}", $"g.s{i}.from", () =>
+            {
+                if (_c.Runner == null) return;
+                if (_c.Runner.Quest?.Title == q.Title) _c.Runner.GoTo(step);
+                else _c.Runner.Start(q, st => StateOf(q, st) == StampState.Done, loot: true, fromStep: step);
+            });
+            w.Tooltip(running ? "The run goes to this step now (done or not): RynthNav goes to its place, RynthAi does its part there."
+                              : "Run this quest starting at this step (its loot list and loot profile as usual).");
         }
         foreach (string n in s.Notes)
         {

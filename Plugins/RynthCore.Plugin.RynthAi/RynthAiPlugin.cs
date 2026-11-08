@@ -1049,13 +1049,14 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             if (value.StartsWith("questloot ", StringComparison.OrdinalIgnoreCase)) value = value.Substring(10).Trim();
             // "talk|handin <npc>..." (2026-11-07): the quest run's NPCs (RynthAiPlugin.QuestNpc.cs).
             // "dungeon patrol|goto|stop" (2026-11-07): the quest run inside a dungeon (RynthAiPlugin.QuestDungeon.cs).
-            var (ok, text) = TryQuestLootProfile(value) ?? TryQuestNpc(value) ?? TryQuestDungeon(value) ?? QuestLootList.Apply(value);
+            var (ok, text) = TryQuestLootProfile(value) ?? TryQuestNpc(value) ?? TryQuestDungeon(value) ?? TryQuestBuy(value) ?? QuestLootList.Apply(value);
             Host.Log(text);
             if (!ok) ReplyFail(text);
             else if (value.TrimStart().StartsWith("profile", StringComparison.OrdinalIgnoreCase)
                      || value.TrimStart().StartsWith("talk", StringComparison.OrdinalIgnoreCase)
                      || value.TrimStart().StartsWith("handin", StringComparison.OrdinalIgnoreCase)
                      || value.TrimStart().StartsWith("have", StringComparison.OrdinalIgnoreCase)
+                     || value.TrimStart().StartsWith("buy", StringComparison.OrdinalIgnoreCase)
                      || value.TrimStart().StartsWith("dungeon", StringComparison.OrdinalIgnoreCase)) ChatLine(text);   // the loot profile changed, or an NPC is being talked to: say so
             return;
         }
@@ -1544,6 +1545,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             Guard(TickStep.CombatHook, CombatHook.ObserveUseDone);        // ctx.last.err: the answer to the hook's last cast
             Guard(TickStep.DelayedCommands, TickDelayedCommands);         // /ub delay
             if (_loginComplete) Guard(TickStep.DelayedCommands, TickQuestNpcRetry);   // a quest talk / hand-in waiting for its NPC
+            if (_loginComplete) Guard(TickStep.DelayedCommands, TickQuestBuy);        // a quest item being bought from a vendor near you
             Guard(TickStep.GameInput, GameInput.Pump);                    // release keys held for /mt movement | jump | strafe
             Guard(TickStep.Dashboard, TickDashboard);                     // the dashboard window's clicks, vitals and prefs
             Guard(TickStep.EngineCommands, DrainEngineCommands);          // fellowship command buttons (RynthCore's Fellowship section)
@@ -4106,7 +4108,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "questloot":
             {
                 string ql = parts.Length > 2 ? string.Join(" ", parts, 2, parts.Length - 2) : "list";
-                var (ok, text) = TryQuestLootProfile(ql) ?? TryQuestNpc(ql) ?? TryQuestDungeon(ql) ?? QuestLootList.Apply(ql);
+                var (ok, text) = TryQuestLootProfile(ql) ?? TryQuestNpc(ql) ?? TryQuestDungeon(ql) ?? TryQuestBuy(ql) ?? QuestLootList.Apply(ql);
                 if (ok) ReplyOk(text); else ReplyFail(text);
                 break;
             }

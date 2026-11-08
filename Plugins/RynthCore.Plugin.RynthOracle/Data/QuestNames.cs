@@ -239,7 +239,7 @@ internal static class QuestNames
     /// "Nasun ibn Tifar / Ahyara", "Jarvis Hammerstone (Optional)": the separate names, notes in brackets
     /// left off. A place ("1.5N, 71.6W in Fort Tethana") is not split at its comma.
     /// </summary>
-    private static IEnumerable<string> Split(string s, bool people = true)
+    internal static IEnumerable<string> Split(string s, bool people = true)
     {
         string pattern = people ? @"\s*(?:/|;|,|\bor\b|\band\b)\s*" : @"\s*(?:\s/\s|;|\bor\b)\s*";
         foreach (string part in Regex.Split(s ?? "", pattern, RegexOptions.IgnoreCase))

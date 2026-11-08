@@ -35,7 +35,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
     private readonly OracleContext _c = new();
     private readonly UiHost _ui = new();
-    private UiWindow? _main, _void, _timers;
+    private UiWindow? _main, _void, _timers, _offerWin;
     private OracleView? _mainView;
     private VoidView? _voidView;
     private QuestTimersView? _timersView;
@@ -110,6 +110,14 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             ShowInBar = false,
         });
         _c.SetQuestTimersWindow = SetQuestTimers;
+        // The quest offer (2026-11-08): an NPC who starts a guide quest talks to you; asks whether to run it.
+        _offerWin = _ui.Add(new UiWindow("RynthOracle/QuestOffer", "Quest offer")
+        {
+            DefaultWidth = 360f, DefaultHeight = 200f, MinWidth = 240f, MinHeight = 100f,
+            ShowInBar = false,
+        });
+        _mainView.SetOfferWindow = v => { if (_offerWin != null) { _offerWin.Visible = v; _offerWin.NeedsPass = true; } };
+        _mainView.ShowMainWindow = () => { if (_main != null) { _main.Visible = true; _main.NeedsPass = true; } };
         _c.QuestTimersWindowVisible = () => _timers?.Visible ?? false;
 
         Host.Log($"[RynthOracle] {Version} initialized. /ro opens the window. Based on Oracle of Dereth by Advis Eveldan - thank you!");
@@ -176,6 +184,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         if (_main != null) { _main.Visible = false; _main.NeedsPass = true; }
         if (_void != null) { _void.Visible = false; _void.NeedsPass = true; }
         if (_timers != null) { _timers.Visible = false; _timers.NeedsPass = true; }
+        if (_offerWin != null) { _offerWin.Visible = false; _offerWin.NeedsPass = true; }
         _skills?.Update(string.Empty, false, false, Environment.TickCount64);
         _ui.SubmitEmpty(Host);
         _c.Book.Clear();   // saved as it changed
@@ -366,6 +375,15 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             if (_main != null) _main.NeedsPass = true;
         }
         _c.Runner?.OnChat(line);
+        _mainView?.OnDynChat(line);   // Dynamic Stamps' Go and hand in (2026-11-08)
+
+        // An NPC who starts quests in the guide talks to you: ask whether to run one (not during a run).
+        if (_c.Runner?.Active != true && _mainView != null && QuestOffers.TryNpcLine(line, out string npc, out string said)
+            && _mainView.OfferFor(npc, said, now) && _offerWin != null)
+        {
+            _offerWin.Visible = true;
+            _offerWin.NeedsPass = true;
+        }
 
         // A server's own command replies (Conquest's /b, Aelrynth's /top, ...) are its server plugin's.
         // A server's own Void DoT duration rule comes from its plugin's profile (RynthConquest's for
@@ -819,6 +837,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             Record(_void, now, 500, _voidView.Draw);
         if (_timers != null && _timersView != null)
             Record(_timers, now, 1000, _timersView.Draw);
+        if (_offerWin != null && _mainView != null)
+            Record(_offerWin, now, 2000, _mainView.DrawOffer);
     }
 
     /// <summary>

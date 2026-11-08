@@ -10,6 +10,10 @@ namespace RynthCore.Plugin.RynthOracle.Views;
 /// the character, read from /myquests. Since 2026-10-18 they are rows of the Quests tab's merged
 /// list (QuestsTab.cs: DYN rows, the Show filter's area picker). What is left here is the opened
 /// stamp's box (RynthNav, the Parchment hand-in, chat), and the read after a hand-in. The list follows the players' "ExtraDyn" sheet (dynstamps.csv).
+/// Since 2026-11-08 (Silentkelpie: "for the dynamic quests, it should also auto hand in the parchment and if one does
+/// not have any it should buy one from a vendor") Go hands the Parchment in on arrival by itself, and with none in
+/// the packs RynthAi buys one from a vendor near you first ("questloot buy Parchment": before setting off, and
+/// again at the NPC's place when that failed).
 /// </summary>
 internal sealed partial class OracleView
 {
@@ -33,8 +37,12 @@ internal sealed partial class OracleView
             : "Where: " + Cut(string.Join("  or  ", targets), 90));
         if (targets.Count > 0)
         {
-            w.Button("Go (auto nav)", "dy.nav.go", () => SendNav("go", s));
-            w.Tooltip("RynthNav plans the route (walking, portals, recalls, the dungeon's entrance) and walks it.");
+            w.Button(s.Npc.Length > 0 ? "Go and hand in" : "Go (auto nav)", "dy.nav.go", () => StartDynAuto(s));
+            w.Tooltip(s.Npc.Length > 0
+                ? "RynthNav plans the route (walking, portals, recalls, the dungeon's entrance) and walks it; there, a Parchment\n"
+                  + "from your packs is handed to " + s.Npc + ". With none, RynthAi buys one from a vendor near you first\n"
+                  + "(a Scribe or a shop within 80 m), or at the NPC's place."
+                : "RynthNav plans the route (walking, portals, recalls, the dungeon's entrance) and walks it.");
             w.SameLine();
             w.Button("Arrow", "dy.nav.arrow", () => SendNav("arrow", s));
             w.Tooltip("Only point RynthNav's arrow at it.");
@@ -54,9 +62,101 @@ internal sealed partial class OracleView
                 w.Tooltip($"Hands one {parchment} to {s.Npc}. Stand near them (or Go first): AC walks you the last bit.");
             }
             else
+            {
                 w.TextDisabled("No Parchment in your packs to give " + Cut(s.Npc, 30) + ".");
+                w.SameLine();
+                w.SmallButton("Buy one", "dy.nav.buy", () =>
+                    _dynNavStatus = _c.SendAi("questloot", "buy Parchment")
+                        ? "RynthAi is looking for a Parchment at the vendors near you." : "RynthAi isn't loaded (it buys the Parchment).");
+                w.Tooltip("RynthAi opens the vendors near you (a Scribe or a shop first, within 80 m) until one sells a Parchment, and buys one.");
+            }
         }
         if (_dynNavStatus.Length > 0) w.TextDisabled(_dynNavStatus);
+    }
+
+    // ── Go and hand in (2026-11-08) ──
+
+    private enum DynPhase { None, BuyFirst, Going, BuyThere }
+    private DynamicStamp? _dynAuto;
+    private DynPhase _dynPhase;
+    internal const string BoughtLine = "[RynthAi] Quest: bought Parchment";
+    internal const string BuyFailLine = "[RynthAi] Quest: couldn't buy Parchment";
+
+    /// <summary>Go: the Parchment first when none is carried (bought near you), then RynthNav; the hand-in on arrival.</summary>
+    private void StartDynAuto(DynamicStamp s)
+    {
+        _dynAuto = s;
+        _dynPhase = DynPhase.None;
+        if (!_c.InWorld) { _dynNavStatus = "Log in first."; return; }
+        if (s.Npc.Length == 0) { SendNav("go", s); return; }
+        _parchmentScanAt = 0;
+        if (CarriedParchment() == null && _c.SendAi("questloot", "buy Parchment"))
+        {
+            _dynPhase = DynPhase.BuyFirst;
+            _dynNavStatus = $"No Parchment: RynthAi is buying one near you first, then RynthNav goes to {s.Npc}.";
+            return;
+        }
+        GoDyn(s, "");
+    }
+
+    private void GoDyn(DynamicStamp s, string before)
+    {
+        SendNav("go", s);
+        _dynPhase = _dynNavStatus.StartsWith("RynthNav is planning", StringComparison.Ordinal) ? DynPhase.Going : DynPhase.None;
+        if (_dynPhase == DynPhase.Going) _dynNavStatus = before + $"RynthNav is walking to {s.Npc}; the Parchment is handed in when it gets there.";
+    }
+
+    /// <summary>A chat line while Go and hand in runs: RynthAi's buy, RynthNav's arrival. Plugin calls it for every line.</summary>
+    internal void OnDynChat(string line)
+    {
+        DynamicStamp? s = _dynAuto;
+        if (s == null || _dynPhase == DynPhase.None) return;
+        bool bought = line.Contains(BoughtLine, StringComparison.OrdinalIgnoreCase);
+        bool noBuy = line.Contains(BuyFailLine, StringComparison.OrdinalIgnoreCase);
+        switch (_dynPhase)
+        {
+            case DynPhase.BuyFirst:
+                if (bought) GoDyn(s, "Bought a Parchment. ");
+                else if (noBuy) GoDyn(s, "No Parchment to buy here (tried again there). ");
+                break;
+            case DynPhase.Going:
+                if (!line.Contains("[RynthNav]", StringComparison.Ordinal)) break;
+                if (line.Contains("goto: arrived", StringComparison.OrdinalIgnoreCase)) DynArrived(s);
+                else if (line.Contains("goto:", StringComparison.OrdinalIgnoreCase) || line.Contains("on the map", StringComparison.OrdinalIgnoreCase))
+                {
+                    _dynPhase = DynPhase.None;
+                    _dynNavStatus = "RynthNav didn't get there (" + Cut(line.Trim(), 80) + "): Go again, or Give by hand.";
+                }
+                break;
+            case DynPhase.BuyThere:
+                if (bought)
+                {
+                    _parchmentScanAt = 0;
+                    _dynPhase = DynPhase.None;
+                    if (CarriedParchment() is string p) GiveParchment(s, p);
+                    else _dynNavStatus = "Bought a Parchment, but it isn't in your packs yet: Give it by hand.";
+                }
+                else if (noBuy)
+                {
+                    _dynPhase = DynPhase.None;
+                    _dynNavStatus = $"No Parchment, and no vendor near {s.Npc} sells one: buy one in a town (a Scribe), then Go again.";
+                }
+                break;
+        }
+    }
+
+    private void DynArrived(DynamicStamp s)
+    {
+        _parchmentScanAt = 0;
+        if (CarriedParchment() is string p) { _dynPhase = DynPhase.None; GiveParchment(s, p); return; }
+        if (_c.SendAi("questloot", "buy Parchment"))
+        {
+            _dynPhase = DynPhase.BuyThere;
+            _dynNavStatus = $"At {s.Npc}, no Parchment: RynthAi is buying one from a vendor here.";
+            return;
+        }
+        _dynPhase = DynPhase.None;
+        _dynNavStatus = $"At {s.Npc}, but no Parchment in your packs.";
     }
 
     // A /myquests read this long after a Parchment hand-in (the walk there and the NPC's answer), so

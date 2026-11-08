@@ -173,6 +173,23 @@ internal sealed class QuestRunner
         Changed();
     }
 
+    /// <summary>
+    /// The step the player picked (2026-11-08: "click on the step you want to do vs using just next or back"):
+    /// done or not, at its first place; RynthNav's trip to the old step stops.
+    /// </summary>
+    public void GoTo(int step)
+    {
+        if (Quest == null || step < 0 || step >= Quest.Steps.Count) return;
+        if (Travelling) _nav("stop");
+        Travelling = false;
+        Step = step;
+        Place = 0;
+        _askedAt = -1;
+        _print($"Quest run: step {step + 1}/{Quest.Steps.Count}.");
+        GoStep();
+        Changed();
+    }
+
     /// <summary>Back one step (done or not), at its first place.</summary>
     public void Back()
     {
