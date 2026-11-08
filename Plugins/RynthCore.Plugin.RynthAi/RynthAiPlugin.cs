@@ -609,6 +609,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // The dungeon patrol keeps its order after a fight (Go To Closest Waypoint is for
             // routes; on a patrol loop the closest point can be near the end).
             KeepWaypointAfterPause = () => _dunPatrolActive,
+            WaypointOnOtherLevel = OnWaypointOtherLevel,   // a level above or below: plan again from here (DungeonLevels)
         };
         // Plans the detours: the dungeon cell graph indoors, RynthNav's navmesh outdoors.
         // Reads the raycast geometry and hazards through the fields, so it follows their
@@ -1545,7 +1546,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             Guard(TickStep.CombatHook, CombatHook.ObserveUseDone);        // ctx.last.err: the answer to the hook's last cast
             Guard(TickStep.DelayedCommands, TickDelayedCommands);         // /ub delay
             if (_loginComplete) Guard(TickStep.DelayedCommands, TickQuestNpcRetry);   // a quest talk / hand-in waiting for its NPC
-            if (_loginComplete) Guard(TickStep.DelayedCommands, TickQuestBuy);        // a quest item being bought from a vendor near you
+            if (_loginComplete) Guard(TickStep.DelayedCommands, TickQuestBuy);
+            if (_loginComplete) Guard(TickStep.DelayedCommands, TickQuestPortalScan); // a quest step's portal not in sight yet        // a quest item being bought from a vendor near you
             Guard(TickStep.GameInput, GameInput.Pump);                    // release keys held for /mt movement | jump | strafe
             Guard(TickStep.Dashboard, TickDashboard);                     // the dashboard window's clicks, vitals and prefs
             Guard(TickStep.EngineCommands, DrainEngineCommands);          // fellowship command buttons (RynthCore's Fellowship section)
@@ -1838,6 +1840,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     // looping through it — or with the Dungeon Patrol settings changed since.
                     // Cheap no-op unless a new hazard cell was registered or a setting changed.
                     TickDunPatrolHazardReroute();
+                    // The patrol over the dungeon's levels: down a drop once round, rebuilt after a fall.
+                    TickDunPatrolLevels();
                     // Outdoor hunting's next walk (no-op unless /ra hunt is on).
                     TickOutdoorHunt();
                 });

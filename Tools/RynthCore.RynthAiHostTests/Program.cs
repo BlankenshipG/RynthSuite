@@ -134,6 +134,7 @@ internal static class Program
         QuestLootTests.Register(runner);
         RingEvadeTests.Register(runner);
         DungeonDropTests.Register(runner);
+        DungeonLevelTests.Register(runner);
         ServerPluginForwardTests.Register(runner);
         IgnoreMonsterTests.Register(runner);
         WorldCacheTypedTests.Register(runner);

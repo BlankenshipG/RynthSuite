@@ -180,6 +180,21 @@ internal sealed class NavigationEngine
     private const int    StuckSpotRepeat      = 3;       // stucks within StuckSpotYards: go straight to a detour
     private const double StuckSpotYards       = 5.0;
     private const double DetourReplanMovedYd  = 5.0;     // moved this far while paused: plan again
+
+    // Backtrack (2026-11-08, "if navigation in the map gets stuck it should use backtrack to get unstuck"): the way
+    // just walked, kept as a short trail; a stuck spot the map has no way round is left by walking back along it
+    // (BacktrackYd), on the same level, once per spot, before the side-step escapes.
+    private readonly List<(double Ns, double Ew, float Z)> _trail = new();
+    private const double TrailStepYd = 1.5;
+    private const int    TrailMax    = 40;
+    private const double BacktrackYd = 8.0;
+    private double _backtrackSpotNs = double.NaN, _backtrackSpotEw = double.NaN;
+
+    /// <summary>
+    /// The waypoint is a level above or below with no walk to it (NavRecoveryPlanner.OtherLevelWhy): the route's owner
+    /// may plan again from here (the dungeon patrol and dunnav do). The argument is the waypoint's index.
+    /// </summary>
+    public Action<int>? WaypointOnOtherLevel;
     private const int    DetourMaxReplans     = 3;
     private const double DetourDoorCheckMs    = 400.0;
     private const double DetourDoorLookYd     = 12.0;    // look for doors this far along the next leg
@@ -617,6 +632,7 @@ internal sealed class NavigationEngine
         _firedRoute      = null;
 
         if (!TryGetPos(out double ns, out double ew)) return;
+        NoteTrail(ns, ew);
 
         // Route recovery. The area hold comes first: when the waypoint is in another
         // dungeon (or dungeon vs landscape) no detour or escape can reach it.
@@ -650,8 +666,12 @@ internal sealed class NavigationEngine
         }
         _campHoldAnnounced = false;
 
+        // A dungeon waypoint a level above or below (a pit under it, a ledge over it) isn't reached by standing
+        // under or over it (2026-11-08: "arrived" at waypoints 17 m overhead from the bottom of a pit).
+        bool levelOk = !OnOtherLevel(pt);
+
         // Arrival check
-        if (dist < ReachFor(pt))
+        if (levelOk && dist < ReachFor(pt))
         {
             _host.Log($"Nav: arrived at [{idx}] dist={dist:F1}yd → advancing");
             _closestDist = double.MaxValue;
@@ -669,7 +689,7 @@ internal sealed class NavigationEngine
 
         // Went past it: the point is behind, close enough to the side. Counts as reached
         // instead of turning round to walk back to it.
-        if (PassedThrough(pt, ns, ew))
+        if (levelOk && PassedThrough(pt, ns, ew))
         {
             _host.Log($"Nav: passed [{idx}] dist={dist:F1}yd → advancing");
             _closestDist = double.MaxValue;
@@ -681,7 +701,7 @@ internal sealed class NavigationEngine
 
         // Closest-approach detection — prevents circling: within the sweep radius, then
         // 0.3 yd farther out than the closest it came.
-        if (_closestDist < SweepFor(pt) && dist > _closestDist + 0.3)
+        if (levelOk && _closestDist < SweepFor(pt) && dist > _closestDist + 0.3)
         {
             _host.Log($"Nav: sweep-pass [{idx}] closest={_closestDist:F1} now={dist:F1}yd → advancing");
             _closestDist = double.MaxValue;
@@ -2413,6 +2433,9 @@ internal sealed class NavigationEngine
             EndDetour("stuck on the detour", success: false);
         else if (TryStuckDetour(route))
             return;
+        // The map had no way round (or its way snagged too): walk back the way we came, then on again.
+        if (_stuckCount >= 2 && TryBacktrack(route))
+            return;
 
         // Rungs 2+ need a heading we can command. Without TurnToHeading the only
         // primitive we have is the jump, so stay on rung 1 rather than autorunning
@@ -2934,6 +2957,7 @@ internal sealed class NavigationEngine
         if (plan == null)
         {
             _host.Log($"Nav: recovery #{number} ({reason}) rejoin=[{rejoin}]{skipNote} planner=none - result: no plan ({why}); attempt {_detourAttempts}/{MaxDetourAttempts}, using the stuck escapes");
+            if (why == NavRecoveryPlanner.OtherLevelWhy) WaypointOnOtherLevel?.Invoke(rejoin);
             if (_detourAttempts >= MaxDetourAttempts) NotifyGaveUp(idx);
             return false;
         }
@@ -3227,6 +3251,79 @@ internal sealed class NavigationEngine
 
     private bool TryGetPos(out double ns, out double ew)
         => NavCoordinateHelper.TryGetNavCoords(_host, out ns, out ew);
+
+    /// <summary>The character's height and cell (world units), when the engine has them.</summary>
+    private bool TryGetZ(out float z, out uint cell)
+    {
+        z = 0; cell = 0;
+        return _host.HasGetPlayerPose && _host.TryGetPlayerPose(out cell, out _, out _, out z, out _, out _, out _, out _);
+    }
+
+    /// <summary>In a dungeon, the waypoint (with a height) is a level above or below (DungeonPathfinder.LevelApartZ).</summary>
+    private bool OnOtherLevel(NavPoint pt)
+    {
+        if (pt.Z == 0.0 || !TryGetZ(out float z, out uint cell) || (cell & 0xFFFF) < 0x0100) return false;
+        return Math.Abs(z - pt.Z * 240.0) > DungeonPathfinder.LevelApartZ;
+    }
+
+    /// <summary>The trail of where the steering walked (for TryBacktrack); a jump of 30 yd or more starts it over.</summary>
+    private void NoteTrail(double ns, double ew)
+    {
+        if (!TryGetZ(out float z, out _)) return;
+        if (_trail.Count > 0)
+        {
+            var l = _trail[^1];
+            double d = NavYd(ns - l.Ns, ew - l.Ew);
+            if (d < TrailStepYd) return;
+            if (d > 30.0) _trail.Clear();
+        }
+        _trail.Add((ns, ew, z));
+        if (_trail.Count > TrailMax) _trail.RemoveAt(0);
+    }
+
+    /// <summary>
+    /// Stuck where the map has no way round: back along the trail (same level, up to BacktrackYd), as a detour that
+    /// rejoins the same waypoint. Once per stuck spot.
+    /// </summary>
+    private bool TryBacktrack(NavRouteParser route)
+    {
+        if (!RecoveryEnabled || _detour != null || _areaMismatch) return false;
+        int idx = _settings.ActiveNavIndex;
+        if (!IndexValid(idx, route) || !IsWalkTarget(route.Points[idx].Type)) return false;
+        if (!TryGetPos(out double ns, out double ew) || !TryGetZ(out float z, out _)) return false;
+        if (!double.IsNaN(_backtrackSpotNs) && NavYd(ns - _backtrackSpotNs, ew - _backtrackSpotEw) <= StuckSpotYards) return false;
+
+        var pts = new List<NavPoint>();
+        double went = 0, lastNs = ns, lastEw = ew;
+        for (int i = _trail.Count - 1; i >= 0 && went < BacktrackYd; i--)
+        {
+            var c = _trail[i];
+            if (Math.Abs(c.Z - z) > 3.0) break;                       // not down off a ledge, nor up one
+            double step = NavYd(c.Ns - lastNs, c.Ew - lastEw);
+            if (step < 1.0 && pts.Count == 0) continue;               // the spot we're stuck on
+            went += step;
+            lastNs = c.Ns; lastEw = c.Ew;
+            pts.Add(new NavPoint { Type = NavPointType.Point, NS = c.Ns, EW = c.Ew, Z = c.Z / 240.0 });
+        }
+        if (pts.Count == 0 || went < 2.0) return false;
+
+        _backtrackSpotNs = ns;
+        _backtrackSpotEw = ew;
+        long now = Now;
+        int number = ++_recoveryNumber;
+        _detour = new Detour
+        {
+            Number = number, Reason = "stuck, the map has no way round: backtracking", Planner = "backtrack",
+            Points = pts, StartIdx = idx, RejoinIdx = idx, LengthYd = went, StartedAt = now,
+            DeadlineAt = now + 10000 + (long)(went * 600.0),
+        };
+        _host.Log($"Nav: recovery #{number} started (stuck at [{idx}]) via backtrack: {pts.Count} pts, {went:F0}yd back along the way we came");
+        StopMovement();
+        _inRecovery          = false;
+        _closestDist         = double.MaxValue;
+        _settings.NavIsStuck = true;
+        return true;
+    }
 
     private static bool IndexValid(int i, NavRouteParser r)
         => r?.Points != null && i >= 0 && i < r.Points.Count;

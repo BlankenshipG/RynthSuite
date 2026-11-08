@@ -1050,14 +1050,14 @@ internal static partial class DungeonPathfinder
         uint goalCell  = NearestCell(graph, destNS,   destEW,   playerZ);
         if (startCell == 0 || goalCell == 0) return null;
 
-        // IsDropEdge filters out jumps — AC requires a jump to initiate a drop
-        // and the navigation engine has no jump primitive yet.
-        // If the destination is only reachable via a drop this returns null.
-        var path = FindPath(startCell, goalCell, graph, hazardCells);
+        // Drops down (a pit, a shaft, a ledge) of up to PlannedMaxDropZ are ways too (2026-11-08): walked to the
+        // edge and jumped (DungeonPathfinder.Levels.cs BuildDropRoute). Never up: a drop can't be climbed.
+        var path = FindPath(startCell, goalCell, graph, hazardCells, PlannedMaxDropZ);
         pathLength = path.Count;
         if (pathLength == 0) return null;
 
         var geo = GetGeometry(landblockKey, cellDat, los);
-        return BuildNavRoute(path, graph, destNS, destEW, geo, hazardCells, playerNS, playerEW, playerZ, playerZ);
+        float destZ = graph.TryGetValue(goalCell, out var gn) ? gn.Z : playerZ;
+        return BuildDropRoute(path, graph, geo, hazardCells, playerNS, playerEW, playerZ, destNS, destEW, destZ, out _);
     }
 }

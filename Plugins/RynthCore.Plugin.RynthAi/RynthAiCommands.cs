@@ -3168,7 +3168,7 @@ public sealed partial class RynthAiPlugin
 
         if (route == null)
         {
-            ReplyFail($"[RynthAi] DunNav: no walkable path found — destination may only be reachable via a drop (graph={nodeCount} nodes, dest={destNS:F2}N/{destEW:F2}E).");
+            ReplyFail($"[RynthAi] DunNav: no way there from here (drops down are taken; a level above may need stairs this map doesn't join) (graph={nodeCount} nodes, dest={destNS:F2}N/{destEW:F2}E).");
             return;
         }
 
@@ -3177,7 +3177,11 @@ public sealed partial class RynthAiPlugin
         settings.CurrentRoute     = route;
         settings.ActiveNavIndex   = 0;
         settings.EnableNavigation = true;
+        NoteDunNavRoute(route, destNS, destEW);
 
+        int jumps = 0;
+        foreach (var p in route.Points) if (p.Type == NavPointType.Jump) jumps++;
+        if (jumps > 0) ChatLine($"[RynthAi] DunNav: the way goes down {jumps} drop(s): walked to the edge and jumped.");
         ReplyOk($"[RynthAi] DunNav: {nodeCount} cells, path={pathLength} steps → navigating to {destNS:F2}N/{destEW:F2}E");
     }
 
@@ -3250,7 +3254,7 @@ public sealed partial class RynthAiPlugin
         }
     }
 
-    private void BuildDunPatrol(bool isRebuild, bool settingsChanged = false, bool portalAppeared = false, bool followedIn = false)
+    private void BuildDunPatrol(bool isRebuild, bool settingsChanged = false, bool portalAppeared = false, bool followedIn = false, string? levelNote = null)
     {
         // The one way into the dungeon patrol (the command, the dashboard button, a meta's "Patrol", the hazard
         // reroute): where a server's owners asked for it to be off (a Thread on DreamWeave) nothing is built (ServerPolicy).
@@ -3447,6 +3451,8 @@ public sealed partial class RynthAiPlugin
         // hazard is sighted in this same landblock.
         _dunPatrolActive        = true;
         _dunPatrolRoute         = route;
+        // The level this patrol walks (DungeonPathfinder.Levels.cs): a lap done goes down to the next one.
+        NotePatrolLevel(graph, startCell, hazards, landblockKey, fresh: !isRebuild);
         _dunPatrolLandblock     = landblockKey;
         _dunPatrolFollowTriedLb = uint.MaxValue;
         _dunPatrolHazardVersion = _objectCache?.HazardVersion ?? 0;
@@ -3456,7 +3462,11 @@ public sealed partial class RynthAiPlugin
         int hazardCount = hazards?.Count ?? 0;
         string hazardNote = hazardCount > 0 ? $", {hazardCount} hazard cell(s) avoided" : "";
         string portalNote = portals.Count > 0 ? $", kept out of {portals.Count} portal(s)" : "";
-        if (isRebuild && followedIn)
+        if (isRebuild && levelNote != null)
+        {
+            ChatLine($"[RynthAi] DunNav-Patrol: {levelNote} → patrolling this level from here, {route.Points.Count} waypoints{hazardNote}{portalNote}.");
+        }
+        else if (isRebuild && followedIn)
         {
             ChatLine($"[RynthAi] DunNav-Patrol: followed you into dungeon 0x{landblockKey:X4} → {route.Points.Count} waypoints, patrolling here{hazardNote}{portalNote}. Stop the macro or load a route to end it.");
         }
@@ -3505,7 +3515,7 @@ public sealed partial class RynthAiPlugin
         bool replaced = settings != null && _dunPatrolRoute != null && !ReferenceEquals(settings.CurrentRoute, _dunPatrolRoute);
         if (settings == null || replaced
             || !string.IsNullOrEmpty(settings.CurrentNavPath)
-            || settings.CurrentRoute?.RouteType != NavRouteType.Circular)
+            || (settings.CurrentRoute?.RouteType != NavRouteType.Circular && !DunPatrolDescending))
         {
             if (settings != null && (replaced || !string.IsNullOrEmpty(settings.CurrentNavPath)))
             {

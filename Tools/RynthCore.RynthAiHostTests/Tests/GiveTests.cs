@@ -236,7 +236,8 @@ internal static class GiveTests
         w.Call("ApplyRemoteCommand", "questloot", "dungeon stop");
         Check.True(w.ChatWith("no dungeon walk to stop") == 1, "dungeon stop with none: says so");
         w.Call("ApplyRemoteCommand", "questloot", "dungeon enter");
-        Check.True(w.ChatWith("no portal within") == 1, "dungeon enter with no portal near: says so");
+        // None in sight yet: it scans for the portal a while (2026-11-08) before giving up.
+        Check.True(w.ChatWith("looking for the portal here") == 1, "dungeon enter with no portal near: scans for it");
     }
 
     private static void UbGiveCount()

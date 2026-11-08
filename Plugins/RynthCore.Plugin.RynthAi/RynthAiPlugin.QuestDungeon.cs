@@ -75,13 +75,32 @@ public sealed partial class RynthAiPlugin
     }
 
     /// <summary>How near the portal of an "Enter ..." step must be (metres).</summary>
-    internal const double QuestPortalRange = 40.0;
+    internal const double QuestPortalRange = 60.0;
+
+    // 2026-11-08 ("when you get to the portal spot it should scan to find it and walk to enter the portal"): a portal
+    // not in sight yet (drawn a moment after RynthNav arrives, or just out of range) is looked for again every
+    // QuestPortalRetryMs for QuestPortalScanMs; the one found is used (ACE walks you to it and in).
+    private string? _questPortalHints;
+    private long _questPortalNextAt, _questPortalUntil;
+    internal const long QuestPortalRetryMs = 1500, QuestPortalScanMs = 20000;
+
+    /// <summary>Each tick: the portal scan, when one is due. Pump thread.</summary>
+    private void TickQuestPortalScan()
+    {
+        if (_questPortalHints == null) return;
+        long now = Environment.TickCount64;
+        if (now < _questPortalNextAt) return;
+        string hints = _questPortalHints;
+        _questPortalHints = null;
+        var (ok, text) = QuestDungeonEnter(hints, scanning: now < _questPortalUntil);
+        if (_questPortalHints == null) ChatLine(text);   // found it, or the scan ran out (quiet while scanning)
+    }
 
     /// <summary>
     /// "dungeon enter [word || word]": the nearest portal within QuestPortalRange, one whose name has a word
     /// the step gives ("Hidden", "Keep") before the others (2026-11-07: RynthNav arrives a few metres short).
     /// </summary>
-    private (bool Ok, string Text) QuestDungeonEnter(string hints)
+    private (bool Ok, string Text) QuestDungeonEnter(string hints, bool scanning = false)
     {
         if (_objectCache == null) return (false, "[RynthAi] Quest: the object cache isn't ready.");
         var words = new List<string>();
@@ -99,13 +118,27 @@ public sealed partial class RynthAiPlugin
             if (best != null && (bestNamed && !named || (named == bestNamed && d >= bestDist))) continue;
             best = wo; bestDist = d; bestNamed = named;
         }
-        if (best == null) return (false, $"[RynthAi] Quest: no portal within {QuestPortalRange:F0} m here to go in by.");
+        if (best == null)
+        {
+            // Not in sight yet: scan again for a while (the first try starts the clock).
+            long now = Environment.TickCount64;
+            if (!scanning) _questPortalUntil = now + QuestPortalScanMs;
+            if (now < _questPortalUntil)
+            {
+                _questPortalHints = hints ?? "";
+                _questPortalNextAt = now + QuestPortalRetryMs;
+                return (true, $"[RynthAi] Quest: looking for the portal here (scanning for {QuestPortalScanMs / 1000} s).");
+            }
+            return (false, $"[RynthAi] Quest: no portal within {QuestPortalRange:F0} m here to go in by.");
+        }
+        _questPortalHints = null;
         Host.UseFor(unchecked((uint)best.Id), "Quest", "quest run: the step goes in by this portal", UseKind.Asked);
         return (true, $"[RynthAi] Quest: going in by {best.Name} ({bestDist:F0} m).");
     }
 
     private (bool Ok, string Text) QuestDungeonStop()
     {
+        _questPortalHints = null;   // a portal scan ends with the run's dungeon part
         if (!_questDungeonActive) return (true, "[RynthAi] Quest: no dungeon walk to stop.");
         _questDungeonActive = false;
         _questDungeonKeys.Clear();

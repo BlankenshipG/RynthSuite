@@ -70,6 +70,9 @@ internal interface INavRecoveryPlanner
 
 internal sealed class NavRecoveryPlanner : INavRecoveryPlanner
 {
+    /// <summary>TryPlan's why when the waypoint is a level above or below with no walk to it.</summary>
+    internal const string OtherLevelWhy = "the waypoint is on another level, no walk leads there";
+
     // A dungeon waypoint is always inside some cell; its distance to that cell's centre
     // is at most about half the biggest room. Used to decide "this waypoint is in that
     // cell graph" for both planning and the area check.
@@ -187,10 +190,13 @@ internal sealed class NavRecoveryPlanner : INavRecoveryPlanner
         applicable = true;
         uint start = graph.ContainsKey(playerCell) ? playerCell : DungeonPathfinder.NearestCell(graph, pNs, pEw, pz);
         if (start == 0) { why = "can't place you on the dungeon map"; return null; }
-        if (start == goal) { why = "already in the waypoint's room, the map has no way around"; return null; }
+        // The waypoint over or under you by a level (2026-11-08: a chase into a pit, 17 m down, and the route's
+        // waypoints up on the floor above): no walk gets there; NavigationEngine hands it on (WaypointOnOtherLevel).
+        bool otherLevel = Math.Abs(pz - tz) > DungeonPathfinder.LevelApartZ;
+        if (start == goal) { why = otherLevel ? OtherLevelWhy : "already in the waypoint's room, the map has no way around"; return null; }
 
         var path = DungeonPathfinder.FindPath(start, goal, graph, _hazards());
-        if (path.Count < 2) { why = "no walkable way on the dungeon map"; return null; }
+        if (path.Count < 2) { why = otherLevel ? OtherLevelWhy : "no walkable way on the dungeon map"; return null; }
 
         // The same points the dungeon patrol uses: an approach and an exit point centred on
         // every narrow opening (flagged, so the engine goes through straight), rooms crossed
