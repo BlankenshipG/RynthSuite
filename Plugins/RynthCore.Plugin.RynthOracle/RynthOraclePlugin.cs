@@ -21,6 +21,9 @@ namespace RynthCore.Plugin.RynthOracle;
 /// </summary>
 public sealed class RynthOraclePlugin : RynthPluginBase
 {
+    // The landblock the character was last outdoors in (a building's rooms belong to it; 0: not seen yet).
+    private uint _lastOutdoorLandblock;
+
     // Previous release: 0.7.2.
     public const string Version = "0.7.3";
 
@@ -581,10 +584,17 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _ui.Poll(Host);
         TickData(now);
         // Run this quest inside a dungeon (2026-11-07): the run hears when the character goes in or out.
-        if (_c.Runner is { Active: true } run && Host.HasGetPlayerPose
-            && Host.TryGetPlayerPose(out uint cell, out _, out _, out _, out _, out _, out _, out _) && cell != 0)
+        if (Host.HasGetPlayerPose && Host.TryGetPlayerPose(out uint cell, out _, out _, out _, out _, out _, out _, out _) && cell != 0)
+        {
             // The Town Network (landblock 0x0007) is a portal hub RynthNav routes through, never a quest's dungeon.
-            run.OnWhere((cell & 0xFFFF) >= 0x0100 && (cell >> 16) != QuestRunner.TownNetworkLandblock, cell >> 16);
+            // A building's rooms are indoor cells of the landblock you walked in from; a dungeon is reached by a
+            // portal, so it is another landblock (2026-11-07: the run took a building by the Tusker Burrow for it).
+            uint lb = cell >> 16;
+            bool indoor = (cell & 0xFFFF) >= 0x0100;
+            if (!indoor) _lastOutdoorLandblock = lb;
+            if (_c.Runner is { Active: true } run)
+                run.OnWhere(indoor && lb != QuestRunner.TownNetworkLandblock && lb != _lastOutdoorLandblock, lb);
+        }
 
         if (!Host.HasUi) return;
         // After the poll, so a tab clicked this tick is already selected.

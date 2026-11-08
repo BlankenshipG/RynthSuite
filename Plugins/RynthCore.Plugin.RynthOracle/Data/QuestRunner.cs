@@ -101,8 +101,12 @@ internal sealed class QuestRunner
         _stampDone = stamp => stampDone(stamp) && !heldAtStart.Contains(GuideStamp.Key(stamp));
         if (loot)
         {
+            // The quest's items (its loot, and what the rewards say it hands in), then its loot profile, always:
+            // with no items it is base-quest-dynamic alone (2026-11-07: the Female Tusker Tusk run built none).
+            foreach (string it in QuestNames.RewardItems(q))
+                if (!q.Loot.Exists(x => x.Equals(it, StringComparison.OrdinalIgnoreCase))) q.Loot.Add(it);
             AddLoot(q);
-            if (q.Loot.Count > 0) _profileOn = _ai("profile " + ProfileLine(q));
+            _profileOn = _ai("profile " + ProfileLine(q));
         }
         Step = -1;
         if (fromStep >= 0 && fromStep < q.Steps.Count) { Step = fromStep; Place = 0; GoStep(); }
@@ -144,7 +148,7 @@ internal sealed class QuestRunner
     }
 
     /// <summary>Has RynthAi write the quest's loot profile (LootProfiles\Quests); false without RynthAi or loot.</summary>
-    public bool BuildProfile(GuideQuest q) => q.Loot.Count > 0 && _ai("build " + ProfileLine(q));
+    public bool BuildProfile(GuideQuest q) => _ai("build " + ProfileLine(q));   // no items: base-quest-dynamic alone
 
     /// <summary>Next: the next place of this step, else the next step not done.</summary>
     public void Next()
@@ -216,7 +220,7 @@ internal sealed class QuestRunner
                 else GoDungeon(Quest, s);
             }
             // "Enter the Hidden Keep at ...", "Take the portal to ...": the portal at the step's place takes you in.
-            else if (GoesIn(s)) _ai("dungeon enter" + PortalHint(s));
+            else if (GoesIn(Quest, Step)) _ai("dungeon enter" + PortalHint(s));
             Changed();
         }
         else if (Travelling && line.Contains("[RynthNav]", StringComparison.Ordinal)
@@ -380,6 +384,24 @@ internal sealed class QuestRunner
     internal static bool GoesIn(GuideStep s) =>
         System.Text.RegularExpressions.Regex.IsMatch(s.Text, @"\b(?:enter|enters|portal|dungeon|go\s+(?:in|inside|down)|head\s+(?:in|inside|down)|teleport)\b",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Step <paramref name="i"/> goes in by a portal: it says so, its place is a dungeon by name ("Head to the
+    /// Tusker Burrow at ..."), or the next step happens in a dungeon ("... at the end of the dungeon").
+    /// </summary>
+    internal static bool GoesIn(GuideQuest q, int i)
+    {
+        if (i < 0 || i >= q.Steps.Count) return false;
+        GuideStep s = q.Steps[i];
+        if (GoesIn(s) || DungeonPlaceRx.IsMatch(s.Text)) return true;
+        return i + 1 < q.Steps.Count && System.Text.RegularExpressions.Regex.IsMatch(q.Steps[i + 1].Text,
+            @"\b(?:dungeon|inside|in\s+the\s+(?:burrow|cave|caverns?|crypt|mines?|catacombs?|lair|tomb|sewers?|warren|vault|grotto|barrow|labyrinth))\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex DungeonPlaceRx = new(
+        @"\b(?:Burrow|Cave|Caverns?|Crypt|Mines?|Catacombs?|Lair|Tomb|Sewers?|Warren|Vault|Grotto|Barrow|Labyrinth|Dungeon|Hive|Den|Pit|Halls?)\b",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>" &lt;words&gt;" naming the portal the step means (its capitalised words), for RynthAi to prefer; "" when none.</summary>
     internal static string PortalHint(GuideStep s)

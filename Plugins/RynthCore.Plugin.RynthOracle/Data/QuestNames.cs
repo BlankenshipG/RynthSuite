@@ -132,12 +132,39 @@ internal static class QuestNames
     /// <summary>The step talks to someone: it says so ("Talk to", "find"), or names one of the quest's own people.</summary>
     public static bool IsTalk(GuideQuest q, GuideStep s)
     {
-        string text = Strip(q, s.Text);
+        // A note in brackets ("(see map)") isn't what the step does.
+        string text = Regex.Replace(Strip(q, s.Text), @"\([^)]*\)", " ");
+        // "dropped by Female Tuskers", "kill the Captain": monsters, nobody to talk to (2026-11-07).
+        if (KillRx.IsMatch(text) && !TalkRx.IsMatch(text)) return false;
         if (TalkRx.IsMatch(text)) return true;
         foreach (string person in Split(q.StartsWith))
             if (person.Length >= 3 && WholeWord(text, person.Split(' ')[0])) return true;
         return false;
     }
+
+    private static readonly Regex KillRx = new(@"\b(?:dropped\s+by|drops?\s+from|kill|kills|slay|slays|defeat|defeats|loot|loots|hunt)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The items the rewards say the quest hands in ("For Hand in Female Tusker Tusk:", "For Vial of The
+    /// Architect's Blood:"): the run loots them (2026-11-07, the wiki lists no loot for such quests).
+    /// </summary>
+    public static List<string> RewardItems(GuideQuest q)
+    {
+        var list = new List<string>();
+        foreach (string r in q.Rewards)
+        {
+            Match m = RewardForRx.Match(r ?? "");
+            if (!m.Success) continue;
+            string item = m.Groups["item"].Value.Trim();
+            if (item.Length < 3 || Regex.IsMatch(item, @"^(?:completing|completion|finishing|each|the\s+quest|turning)", RegexOptions.IgnoreCase)) continue;
+            if (!list.Exists(x => x.Equals(item, StringComparison.OrdinalIgnoreCase))) list.Add(item);
+        }
+        return list;
+    }
+
+    private static readonly Regex RewardForRx = new(@"^For\s+(?:(?:Hand(?:ing)?\s+in|turning\s+in|giving|returning)\s+)?(?:the\s+|a\s+|an\s+)?(?<item>[^:]+?)\s*:\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>The step hands something over ("Return the collar to Xsao", "Take the note to Ahyara").</summary>
     public static bool IsHandIn(GuideStep s) => HandInRx.IsMatch(Strip(null, s.Text));

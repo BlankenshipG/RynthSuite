@@ -374,8 +374,9 @@ internal static class ChestLootTests
             bot.Call("ApplyRemoteCommand", "questloot", "profile off");
             Check.Eq(bot.S.CurrentLootPath, picked, "profile off: a profile picked since is kept");
 
-            bot.Call("ApplyRemoteCommand", "questloot", "profile Mistreated Virindi");
-            Check.Eq(bot.S.CurrentLootPath, picked, "profile without items: refused, nothing changes");
+            // No items (a kill quest, 2026-11-07): the quest's profile is base-quest-dynamic alone.
+            bot.Call("ApplyRemoteCommand", "questloot", "profile Plain Kill Quest");
+            Check.True(bot.S.CurrentLootPath.EndsWith(Path.Combine("Quests", "Plain Kill Quest.utl")), "profile without items: base-quest-dynamic alone: " + bot.S.CurrentLootPath);
         }
         finally { RynthAiPlugin.QuestLootFolder = saved; }
     }

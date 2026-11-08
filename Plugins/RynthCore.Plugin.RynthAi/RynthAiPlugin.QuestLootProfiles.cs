@@ -36,7 +36,8 @@ public sealed partial class RynthAiPlugin
         var items = new List<string>();
         for (int i = 1; i < parts.Length; i++)
             if (parts[i].Trim().Length > 0) items.Add(parts[i].Trim());
-        if (quest.Length == 0 || items.Count == 0)
+        // No items (a kill or a fetch the wiki lists none for): the quest's profile is base-quest-dynamic alone (2026-11-07).
+        if (quest.Length == 0)
             return (false, $"[RynthAi] questloot {verb} <quest>|<item>|<item>... (RynthOracle's quest guide sends these)");
 
         string path;

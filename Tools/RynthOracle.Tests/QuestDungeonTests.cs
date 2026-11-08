@@ -82,6 +82,32 @@ namespace RynthOracle.Tests
             Check(QuestRunner.SameCoords("92.1N, 46.3W", "92.2N, 46.3W") && !QuestRunner.SameCoords("92.1N, 46.3W", "12.3S, 45.6E"), "same place: within half a unit");
             run.Stop();
 
+            // The Female Tusker Tusk Quest as the wiki has it (21:29 on 11-07): no loot listed, "Head to the Tusker
+            // Burrow", "dropped by Female Tuskers at the end of the dungeon", the tusk only in the rewards.
+            var tusk = new GuideQuest { Title = "Female Tusker Tusk Quest", StartsWith = "Brighteyes, the Tailor", StartsAt = "Oolutanga's Refuge at 2.2N, 95.6E" };
+            tusk.Steps.Add(new GuideStep { Text = "Head to the Tusker Burrow at 2.0N, 97.9E.", Coords = new List<string> { "2.0N, 97.9E" } });
+            tusk.Steps.Add(new GuideStep { Text = "The tusk is dropped by Female Tuskers at the end of the dungeon (see map).", Stamps = new List<string> { "TuskFemalePickup" } });
+            tusk.Steps.Add(new GuideStep { Text = "When you have the tusk, bring it back to Brighteyes to receive your rewards." });
+            tusk.Rewards.Add("For Hand in Female Tusker Tusk:");
+            tusk.Rewards.Add("Aphus Lassel Portal Gem");
+            Check(QuestNames.RewardItems(tusk).Count == 1 && QuestNames.RewardItems(tusk)[0] == "Female Tusker Tusk", "tusk: the rewards name the item handed in");
+            Check(!QuestNames.IsTalk(tusk, tusk.Steps[1]), "tusk: \"dropped by Female Tuskers\" is nobody to talk to");
+            Check(QuestRunner.GoesIn(tusk, 0), "tusk: \"Head to the Tusker Burrow\" goes in (a burrow; the next step is in the dungeon)");
+            ai.Clear(); nav.Clear();
+            run.OnWhere(false, 0);
+            run.Start(tusk, _ => false, loot: true);
+            Check(ai.Contains("add Female Tusker Tusk") && ai.Exists(l => l.StartsWith("profile Female Tusker Tusk Quest|Female Tusker Tusk")),
+                "tusk: its loot and its profile: " + string.Join(" | ", ai));
+            run.OnChat("[RynthNav] goto: arrived");
+            Check(ai[^1].StartsWith("dungeon enter"), "tusk: at the burrow, in by its portal: " + ai[^1]);
+            run.Stop();
+            var none = new GuideQuest { Title = "Plain Kill" };
+            none.Steps.Add(new GuideStep { Text = "Kill ten rats.", Coords = new List<string> { "1.0N, 1.0E" } });
+            ai.Clear();
+            run.Start(none, _ => false, loot: true);
+            Check(ai.Exists(l => l == "profile Plain Kill"), "no items: the quest's profile all the same (base-quest-dynamic): " + string.Join(" | ", ai));
+            run.Stop();
+
             Check(QuestRunner.TrySignedCoords("28.5S, 90.9W", out double ns, out double ew) && ns == -28.5 && ew == -90.9
                   && QuestRunner.TrySignedCoords("85.8s,78.8e", out ns, out ew) && ns == -85.8 && ew == 78.8
                   && !QuestRunner.TrySignedCoords("the Keep", out _, out _), "dungeon: coordinates as signed numbers (north and east positive)");

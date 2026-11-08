@@ -34,3 +34,19 @@ with the 1st part of the quest after building all the parts needed".
 - The Leaftide check in RynthAi is listed with the other Leaftide-gated files
   (BoundaryTests), and the loot SDK's helper is IsCustomServerKey (the shared code names no
   server).
+
+## Later: the Female Tusker Tusk run (21:29)
+- The clients were on 2026.11.7.64: build .70 (everything above) was still waiting at its install
+  pause, so the run had none of it.
+- No loot profile: the wiki lists no loot for the quest, and the run made a profile only with loot.
+  Every run now switches to the quest's profile (base-quest-dynamic alone when there are no items),
+  and items the rewards hand in ("For Hand in Female Tusker Tusk:") are looted.
+- "Head to the Tusker Burrow at 2.0N, 97.9E" didn't say portal / enter: a step goes in when its
+  place is a dungeon by name (Burrow, Cave, Crypt, Mine, Catacombs, Lair, ...) or the next step
+  happens in the dungeon ("at the end of the dungeon").
+- The wrong dungeon: a building's rooms are indoor cells too, and the run took one for the
+  dungeon six seconds before the burrow's portal. A dungeon is now an indoor cell in another
+  landblock than the one last outdoors (a portal moves you; walking into a building doesn't), and
+  RynthAi checks the dats before patrolling ("in a building, not a dungeon").
+- "Talk to Female Tuskers": "dropped by", "kill", "slay", "loot" name monsters, nobody to talk to;
+  a note in brackets ("(see map)") no longer reads as "see" someone.

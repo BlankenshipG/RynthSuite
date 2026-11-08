@@ -46,8 +46,11 @@ public sealed partial class RynthAiPlugin
 
         if (!Host.TryGetPlayerPose(out uint cell, out _, out _, out _, out _, out _, out _, out _) || (cell & 0xFFFF) < 0x0100)
             return (false, "[RynthAi] Quest: not inside a dungeon.");
-        if (_raycast?.GeometryLoader?.CellDat is not { IsLoaded: true })
+        if (_raycast?.GeometryLoader?.CellDat is not { IsLoaded: true } cellDat)
             return (false, "[RynthAi] Quest: no map of this dungeon yet (the client's dats aren't loaded): walk it yourself, then Next.");
+        // An indoor cell in a town's landblock is a building, not a dungeon (2026-11-07, 21:33 at the Tusker Burrow).
+        if (_navPlanner != null && !_navPlanner.IsDungeonLandblock(cell >> 16, cellDat))
+            return (false, "[RynthAi] Quest: in a building, not a dungeon: nothing to patrol here.");
 
         // Remember how the macro and Open Doors were, once per run in the dungeon.
         if (!_questDungeonActive)
