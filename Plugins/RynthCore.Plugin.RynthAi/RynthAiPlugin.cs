@@ -1055,6 +1055,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             else if (value.TrimStart().StartsWith("profile", StringComparison.OrdinalIgnoreCase)
                      || value.TrimStart().StartsWith("talk", StringComparison.OrdinalIgnoreCase)
                      || value.TrimStart().StartsWith("handin", StringComparison.OrdinalIgnoreCase)
+                     || value.TrimStart().StartsWith("have", StringComparison.OrdinalIgnoreCase)
                      || value.TrimStart().StartsWith("dungeon", StringComparison.OrdinalIgnoreCase)) ChatLine(text);   // the loot profile changed, or an NPC is being talked to: say so
             return;
         }

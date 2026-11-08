@@ -26,8 +26,8 @@ namespace RynthOracle.Tests
             Check(ai.Count > 0 && ai[^1].StartsWith("dungeon enter"), "dungeon: at an 'Enter ...' step's place, RynthAi takes the portal there: " + string.Join(" | ", ai));
 
             run.OnWhere(true);
-            Check(run.Step == 1 && run.DungeonWalk && ai[^1] == "dungeon patrol | Cave Door Key",
-                "dungeon: in: the way-in step is done, and a step without coordinates patrols the dungeon's map (fight, loot, doors; the quest's key): " + ai[^1]);
+            Check(run.Step == 1 && run.DungeonWalk && ai.FindLast(l => !l.StartsWith("have ")) == "dungeon patrol | Cave Door Key" && ai[^1] == "have Cave Door Key",
+                "dungeon: in: the way-in step is done, a step without coordinates patrols the dungeon's map (fight, loot, doors; the quest's key), and RynthAi is asked whether the key is carried: " + string.Join(" | ", ai));
             Check(said.Exists(l => l.StartsWith("Step 1 done: you're in")) && run.Note.Contains("patrolling the dungeon"), "dungeon: chat and the view say so (" + run.Note + ")");
             int navBefore = nav.Count;
             run.Next();
@@ -75,6 +75,7 @@ namespace RynthOracle.Tests
             run.Start(q3, _ => false, loot: false);
             run.OnChat("[RynthNav] goto: arrived");
             run.OnWhere(true, 0x018E);
+            ai.RemoveAll(l => l.StartsWith("have ") || l.StartsWith("talk "));
             Check(ai.Count > 0 && ai[^1] == "dungeon patrol", "entrance: the step's outdoor place inside is a patrol, not a walk to it: " + string.Join(" | ", ai));
             int before = ai.Count;
             run.OnWhere(true, 0x01A0);

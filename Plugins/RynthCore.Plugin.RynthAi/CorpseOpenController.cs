@@ -2891,6 +2891,7 @@ public sealed partial class RynthAiPlugin
             Host.WriteToChat(described.Line, described.ChatType);
         else if (!string.IsNullOrWhiteSpace(_currentLootItemName))
             ChatLine($"[RynthAi] Looted [{_currentLootItemActionLabel}] {_currentLootItemName}");
+        NoteQuestItemGot(_currentLootItemName);   // a quest run's item step ends on it (RynthAiPlugin.QuestNpc.cs)
 
         if (_currentLootItemIsSalvage)
             _salvageManager?.EnqueueItem(unchecked((uint)_currentLootItemId));

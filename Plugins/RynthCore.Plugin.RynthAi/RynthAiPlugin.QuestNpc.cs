@@ -15,7 +15,13 @@ namespace RynthCore.Plugin.RynthAi;
 // "Yaraq Guard" for the name Yaraq), only an NPC, a vendor or a creature that can't be attacked, within QuestNpcRange
 // (a portal or a player of that name never is). An item's name matches as the wiki writes it or without
 // a note in brackets at the end ("Darling's Collar (Quest Item)" is "Darling's Collar" in the game).
-// RynthAi's own items, attuned and equipped ones are never handed over. Pump thread.
+// RynthAi's own items, attuned and equipped ones are never handed over.
+//   "have <item> | <item> ..."                     (2026-11-08) each one already carried says "Quest: got <item>
+//                                                    (already in your pack)." for the run's step; the others are
+//                                                    picked up off corpses and the ground (the quest loot list:
+//                                                    GroundLootController takes quest items with Ground Loot off)
+// Every quest item picked up says "[RynthAi] Quest: got <name>." (NoteQuestItemGot): the run's item steps end on it.
+// Pump thread.
 public sealed partial class RynthAiPlugin
 {
     /// <summary>How near the NPC must be (metres).</summary>
@@ -51,7 +57,8 @@ public sealed partial class RynthAiPlugin
         int sp = line.IndexOf(' ');
         string verb = (sp < 0 ? line : line.Substring(0, sp)).ToLowerInvariant();
         string rest = sp < 0 ? "" : line.Substring(sp + 1).Trim();
-        if (verb is not ("talk" or "handin")) return null;
+        if (verb is not ("talk" or "handin" or "have")) return null;
+        if (verb == "have") return QuestHave(rest);
 
         ParseQuestNpcLine(rest, out List<string> names, out List<string> items);
         if (names.Count == 0)
@@ -100,6 +107,39 @@ public sealed partial class RynthAiPlugin
         }
         Host.UseFor((uint)npc.Id, "Quest", "quest talk", UseKind.Asked);
         return (true, $"[RynthAi] Quest: talking to {npc.Name}.");
+    }
+
+    /// <summary>
+    /// "have item | item": the ones carried say so ("Quest: got X (already in your pack).", a line each, for
+    /// RynthOracle's run); the reply names the rest, which the quest loot list picks up.
+    /// </summary>
+    private (bool Ok, string Text) QuestHave(string rest)
+    {
+        var items = new List<string>();
+        foreach (string part in (rest ?? "").Replace("||", "|").Split('|'))
+        {
+            string it = part.Trim();
+            if (it.Length > 0 && !items.Exists(x => x.Equals(it, StringComparison.OrdinalIgnoreCase))) items.Add(it);
+        }
+        if (items.Count == 0) return (false, "[RynthAi] questloot have <item> | <item> (RynthOracle's quest run sends this)");
+        if (_objectCache == null) return (false, "[RynthAi] Quest: the object cache isn't ready.");
+        var missing = new List<string>();
+        foreach (string it in items)
+        {
+            if (GiveCandidates(n => QuestItemNameMatches(n, it)).Count > 0) ChatLine($"{QuestGotPrefix}{it} (already in your pack).");
+            else missing.Add(it);
+        }
+        if (missing.Count == 0) return (true, "[RynthAi] Quest: the step's items are all in your pack.");
+        return (true, $"[RynthAi] Quest: {string.Join(", ", missing)} not in your pack yet: picking {(missing.Count == 1 ? "it" : "them")} up off corpses and the ground near you (within {QuestGroundRange:F0} m).");
+    }
+
+    /// <summary>The line a quest item got starts with (RynthOracle's QuestRunner reads it).</summary>
+    internal const string QuestGotPrefix = "[RynthAi] Quest: got ";
+
+    /// <summary>A quest loot list item came into the pack (a corpse or the ground): say so, for the run's step.</summary>
+    private void NoteQuestItemGot(string? name)
+    {
+        if (!string.IsNullOrWhiteSpace(name) && QuestLootList.Wants(name)) ChatLine($"{QuestGotPrefix}{name.Trim()}.");
     }
 
     /// <summary>"A || B | item | item": the names before the first single '|', the items after it.</summary>

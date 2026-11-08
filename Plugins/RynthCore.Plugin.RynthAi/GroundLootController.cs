@@ -11,6 +11,9 @@
 //     walks the character to the item and picks it up. Confirmed when the item leaves the
 //     ground, retried up to GroundMaxPickupAttempts, then put on a long cooldown.
 //   * Corpses always win: ground loot only runs when no corpse is claimed or open.
+//   * Quest items (2026-11-08, Acid Axe Quest: "it didn't loot the item off the ground"): while the quest
+//     loot list has items (RynthOracle's Run this quest), they are picked up off the ground with Ground Loot
+//     off too (only they, then), within QuestGroundRange or the corpse range if that is wider.
 using System;
 using System.Collections.Generic;
 using RynthCore.Plugin.RynthAi.LegacyUi;
@@ -49,11 +52,21 @@ public sealed partial class RynthAiPlugin
     private readonly Dictionary<int, long> _groundAppraiseAt = new();
 
     /// <summary>A pickup request is out and not yet confirmed — corpse claims wait for it.</summary>
+    /// <summary>How far a quest item on the ground is gone for (metres; the corpse range when that is wider).</summary>
+    internal const double QuestGroundRange = 40.0;
+
+    /// <summary>Ground loot runs: the setting, or a quest run's items on the quest loot list.</summary>
+    private static bool GroundLootOn(LegacyUiSettings settings) =>
+        settings.EnableGroundLoot || (QuestLootList.Enabled && QuestLootList.Count > 0);
+
+    /// <summary>The claimed item is a quest item (its range is the quest's).</summary>
+    private bool _groundTargetQuest;
+
     private bool GroundPickupInFlight => _groundTargetId != 0 && _groundPickupRequestedAt != 0;
 
     /// <summary>Arbiter input: a claimed ground item, or matching ground items seen by the last scan.</summary>
     private bool HasGroundLootWork(LegacyUiSettings settings)
-        => settings.EnableGroundLoot && (_groundTargetId != 0 || _groundMatchesInRange > 0);
+        => GroundLootOn(settings) && (_groundTargetId != 0 || _groundMatchesInRange > 0);
 
     /// <summary>
     /// One ground-loot step (pump thread, called from TickCorpseOpening when no corpse is
@@ -61,7 +74,7 @@ public sealed partial class RynthAiPlugin
     /// </summary>
     private void TickGroundLoot(LegacyUiSettings settings, double maxMeters)
     {
-        if (!settings.EnableGroundLoot || _objectCache == null || _playerId == 0)
+        if (!GroundLootOn(settings) || _objectCache == null || _playerId == 0)
         {
             ResetGroundLoot(clearCaches: false);
             return;
@@ -70,7 +83,7 @@ public sealed partial class RynthAiPlugin
         long now = CorpseNowMs;
         if (_groundTargetId != 0)
         {
-            TickGroundTarget(maxMeters, now);
+            TickGroundTarget(_groundTargetQuest ? Math.Max(maxMeters, QuestGroundRange) : maxMeters, now);
             return;
         }
 
@@ -96,6 +109,7 @@ public sealed partial class RynthAiPlugin
         _groundTargetAction = action;
         _groundTargetRule = rule;
         _groundTargetIsSalvage = salvage;
+        _groundTargetQuest = rule == QuestLootList.RuleLabel;
         if (!(_navStopIssued && _navStoppedFor == BotActivity.Looting))
             StopNavFor(BotActivity.Looting);
         LootDiag($"[RynthAi] Ground loot: claimed 0x{(uint)best.Id:X8} '{_groundTargetName}' dist={bestDist:F1}m [{action}] rule='{rule}'.");
@@ -115,10 +129,13 @@ public sealed partial class RynthAiPlugin
         _groundMatchesInRange = 0;
         if (_objectCache == null || maxMeters <= 0.25)
             return null;
+        // Ground Loot off, a quest run on: its items only, by name (no profile needed).
+        bool questOnly = !settings.EnableGroundLoot;
+        double questMeters = Math.Max(maxMeters, QuestGroundRange);
         // The profile loaders chat on every failed load; a 300 ms scan must not trigger that.
         // Rares mode loads no profile (rares and needed mana stones only).
         string profilePath = (settings.CurrentLootPath ?? string.Empty).Trim().Trim('"');
-        if (!Loot.LootModes.IsRares(settings.LootMode) && (profilePath.Length == 0 || !System.IO.File.Exists(profilePath)))
+        if (!questOnly && !Loot.LootModes.IsRares(settings.LootMode) && (profilePath.Length == 0 || !System.IO.File.Exists(profilePath)))
             return null;
 
         int playerId = unchecked((int)_playerId);
@@ -137,12 +154,26 @@ public sealed partial class RynthAiPlugin
             if (string.IsNullOrWhiteSpace(wo.Name))
                 continue;
 
+            bool quest = QuestLootList.Wants(wo.Name);
+            if (questOnly && !quest)
+                continue;
             // Carried / contained items have no world position, so Distance is MaxValue for them.
             double dist = _objectCache.Distance(playerId, wo.Id);
-            if (dist > maxMeters)
+            if (dist > (quest ? questMeters : maxMeters))
                 continue;
             if (!_objectCache.IsOnGround(wo.Id))
                 continue;
+            if (quest)
+            {
+                // The quest loot list takes it by name (ClassifyLootItem's first rule): no appraisal needed.
+                LootDiag($"[LootEval] ground '{wo.Name}' cls={wo.ObjectClass} dist={dist:F1}m -> KEEP [Keep] rule='{QuestLootList.RuleLabel}'");
+                _groundMatchesInRange++;
+                if (dist < bestDist)
+                {
+                    best = wo; bestDist = dist; bestAction = "Keep"; bestRule = QuestLootList.RuleLabel; bestSalvage = false;
+                }
+                continue;
+            }
 
             uint uid = unchecked((uint)wo.Id);
             bool appraised = Host.HasHasAppraisalData && Host.HasAppraisalData(uid);
@@ -219,6 +250,7 @@ public sealed partial class RynthAiPlugin
                 Host.WriteToChat(described.Line, described.ChatType);
             else
                 ChatLine($"[RynthAi] Looted [{_groundTargetAction}] {_groundTargetName} (ground)");
+            NoteQuestItemGot(_groundTargetName);   // a quest run's item step ends on it
             if (_groundTargetIsSalvage)
                 _salvageManager?.EnqueueItem(unchecked((uint)id));
             FinishGroundTarget(now, GroundFailCooldownMs);
@@ -301,6 +333,7 @@ public sealed partial class RynthAiPlugin
         _groundPickupAttempts = 0;
         _groundTargetName = _groundTargetAction = _groundTargetRule = string.Empty;
         _groundTargetIsSalvage = false;
+        _groundTargetQuest = false;
         _groundLastScanAt = 0; // rescan straight away for the next item
     }
 
@@ -313,6 +346,7 @@ public sealed partial class RynthAiPlugin
         _groundPickupAttempts = 0;
         _groundTargetName = _groundTargetAction = _groundTargetRule = string.Empty;
         _groundTargetIsSalvage = false;
+        _groundTargetQuest = false;
         _groundMatchesInRange = 0;
         if (!clearCaches)
             return;
