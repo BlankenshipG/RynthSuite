@@ -28,6 +28,7 @@ internal static partial class Program
         TestAttrImbues();
         TestBlankRule();
         TestAnyAndHasAll();
+        TestPlusARend();
         TestImbuesByClass();
         TestEditRoundTrip();
         TestCardText();
@@ -265,6 +266,44 @@ internal static partial class Program
         Check(Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [166] = 31, [179] = 4 | 512 } }), "has all: armor rend + fire rend slayer");
         Check(!Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [166] = 31, [179] = 512 } }), "has all: fire rend alone isn't enough");
         Check(!Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [179] = 4 | 512 } }), "any slayer: no slayer, no match");
+    }
+
+    // 2026-11-08: "armor rend + bs + cs, but also with any elemental on it" (Copper Frost Knife: Armor Rending, Cold
+    // Rending, Biting Strike). The Imbue row "has all" Armor Rending + Critical Strike, the "Plus a rend" row any element.
+    private static void TestPlusARend()
+    {
+        LootItemRuleDraft b = LootItemRules.BuildBlank(new LootItemRuleOptions
+        {
+            BlankRule = true,
+            Choices = Pick(("class", true, LootItemAttributeOp.Exactly, ((int)AcObjectClass.MeleeWeapon).ToString()),
+                           ("L:179", true, LootItemAttributeOp.HasAll, (4 | 1).ToString()),
+                           (LootItemAttributes.RendRowId, true, LootItemAttributeOp.HasAny, "17400")),
+        });
+        Eq(string.Join("|", b.Rule.Conditions.Where(x => x.NodeType == VTankNodeTypes.LongValKeyFlagExists).Select(x => x.DataLines[0] + "@" + x.DataLines[1])),
+            "1@179|4@179|17400@179", "plus a rend: crit and armor rend each, then any rend");
+        bool Takes(int imbues) => LootFactsMatcher.Match(b.Rule.Conditions,
+            new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [179] = imbues } }, true) == LootFactsVerdict.Match;
+        Check(Takes(4 | 1 | 128), "plus a rend: armor rend + crit + cold rend");
+        Check(Takes(4 | 1 | 8), "plus a rend: armor rend + crit + slash rend");
+        Check(!Takes(4 | 1), "plus a rend: no rend, no match");
+        Check(!Takes(4 | 128), "plus a rend: no crit, no match");
+        Check(!Takes(128), "plus a rend: a rend alone, no match");
+
+        // Read back into the checklist: both rows, nothing left over.
+        List<LootEditItemChoice> ch = LootItemAttributes.ChoicesFromRule(LootItemAttributes.ForBlank(), b.Rule.Conditions, out List<VTankLootCondition> kept);
+        Eq(kept.Count, 0, "plus a rend: none kept as written");
+        Check(ch.Any(x => x.Id == "L:179" && x.Op == (int)LootItemAttributeOp.HasAll && x.Value == "5"), "plus a rend: imbue reads back as has all crit + armor rend");
+        Check(ch.Any(x => x.Id == LootItemAttributes.RendRowId && x.Value == "17400"), "plus a rend: the rend row reads back");
+
+        // Armor has no rend row; an item with two imbues starts at "has all".
+        LootItemRuleDraft ar = LootItemRules.BuildBlank(new LootItemRuleOptions
+        {
+            BlankRule = true, Choices = Pick(("class", true, LootItemAttributeOp.Exactly, ((int)AcObjectClass.Armor).ToString())),
+        });
+        Check(!ar.Attributes.Any(x => x.Id == LootItemAttributes.RendRowId), "plus a rend: none for armor");
+        List<LootItemAttribute> item = LootItemAttributes.For(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [179] = 4 | 128 } }, false, false);
+        Check(item.Any(x => x.Id == "L:179" && x.Op == LootItemAttributeOp.HasAll), "an item's two imbues: has all, not has any");
+        Check(item.Any(x => x.Id == LootItemAttributes.RendRowId), "an item's checklist has the rend row");
     }
 
     private static void TestImbuesByClass()

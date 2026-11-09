@@ -259,7 +259,18 @@ public static class LootItemAttributes
             if (s.Cmp == Cmp.Named ? v == 0 : v <= 0) continue;
             // A pet's level comes from 369 when it has one (PetStats does the same).
             if (s.Key == KeyUseLevelRequirement && f.Int(KeyUseRequiresLevel) > 0) continue;
-            rows.Add(PropertyRow(s, v, likeKeys.Contains(s.IsDouble ? -s.Key : s.Key)));
+            LootItemAttribute pr = PropertyRow(s, v, likeKeys.Contains(s.IsDouble ? -s.Key : s.Key));
+            if (!s.IsDouble && s.Key == LootItemFacts.ImbuedEffectKey)
+            {
+                // Two or more imbues (Armor Rending + Cold Rending): the item's set is "has all", not "has any"
+                // (2026-11-08: a rule that took any one of them).
+                long iv = (long)v;
+                if ((iv & (iv - 1)) != 0) pr.Op = LootItemAttributeOp.HasAll;
+                rows.Add(pr);
+                rows.Add(RendRow(on: false));
+                continue;
+            }
+            rows.Add(pr);
         }
         // Spells and T11 go after the ratings and before Requirements.
         int req = rows.FindIndex(r => r.Group == GroupRequirements);
@@ -305,6 +316,34 @@ public static class LootItemAttributes
             foreach (int key in new[] { KeyBond, KeyUseRequiresLevel, KeyUseLevelRequirement, KeyPotencyStored, KeySummoningMastery, KeyMutations })
                 k.Add(key);
         return k;
+    }
+
+    // ── "Plus a rend" (2026-11-08, Silentkelpie: "armor rend is one imbue, and then a elemental rend also can be on
+    // a item ... it should be able to find items with armor rend + bs + cs, but also with any elemental on it") ──
+    // A second row on the imbue key: "has any" of the rends, besides the Imbue row's own test. "Imbue has all
+    // Armor Rending" with "Plus a rend: Any elemental rend" is an Armor Rending weapon with a rend of any element.
+
+    /// <summary>The rend row's id (the Imbue row is "L:179").</summary>
+    public const string RendRowId = "L:179:rend";
+    private const int RendBits = Physical | Elements | Nether;
+
+    private static LootItemAttribute RendRow(bool on)
+    {
+        var list = new List<(int, string)>();
+        foreach (var c in LootRuleText.ImbuedEffects)
+            if ((c.Id & ~RendBits) == 0) list.Add((c.Id, c.Name));
+        // The "any" picks first: the row is for one rend of several.
+        list.Sort((a, b) => (IsSingle(b.Item1) ? 0 : 1).CompareTo(IsSingle(a.Item1) ? 0 : 1));
+        var ops = new[] { LootItemAttributeOp.HasAny };
+        return new LootItemAttribute
+        {
+            Id = RendRowId, Group = GroupItem, Label = "Plus a rend",
+            Tip = "Besides the Imbue row: the item also has one of these rends (\"Any elemental rend\": any element). "
+                + "Imbue \"has all\" Armor Rending with this row on: Armor Rending and a rend of any element.",
+            Kind = LootItemAttribute.Shape.Long, Key = LootItemFacts.ImbuedEffectKey, ItemText = "any",
+            Ops = ops, Op = ops[0], Editable = false, On = on, Choices = list.ToArray(), Flags = true,
+            Value = list.Count > 0 ? list[0].Item1 : 0,
+        };
     }
 
     private static LootItemAttribute PropertyRow(Spec s, double v, bool on)
@@ -762,6 +801,7 @@ public static class LootItemAttributes
                 Editable = r.Editable || table == null, Choices = table, Flags = r.Flags, ItemText = "any",
                 Value = table != null && table.Length > 0 ? table[0].Id : 0,
             });
+            if (!s.IsDouble && s.Key == LootItemFacts.ImbuedEffectKey) rows.Add(RendRow(on: false));
         }
         if (!rows.Exists(r => r.Group == GroupSpells)) AddBlankSpellRows(rows);
 
@@ -843,8 +883,18 @@ public static class LootItemAttributes
                 case VTankNodeTypes.LongValKeyGE or VTankNodeTypes.LongValKeyLE or VTankNodeTypes.LongValKeyE
                     or VTankNodeTypes.LongValKeyNE or VTankNodeTypes.LongValKeyFlagExists when Int(d, 0, out long val) && Int(d, 1, out long key):
                 {
-                    LootItemAttribute? r = rows.Find(x => x.Kind == LootItemAttribute.Shape.Long && x.Key == key);
+                    LootItemAttribute? r = rows.Find(x => x.Kind == LootItemAttribute.Shape.Long && x.Key == key && x.Id != RendRowId);
                     if (r == null) break;
+                    // "Has flag" of several rends (any elemental rend) on the imbue key: the "Plus a rend" row, when
+                    // the Imbue row has its own test already or the rule tests the imbue key more than once.
+                    LootItemAttribute? rend = rows.Find(x => x.Id == RendRowId);
+                    if (c.NodeType == VTankNodeTypes.LongValKeyFlagExists && rend != null && key == LootItemFacts.ImbuedEffectKey
+                        && !IsSingle(val) && (val & ~RendBits) == 0 && !picked.ContainsKey(rend.Id)
+                        && (picked.ContainsKey(r.Id) || ImbueTests(conditions) > 1))
+                    {
+                        ok = Take(rend, LootItemAttributeOp.HasAny, N(val));
+                        break;
+                    }
                     if (c.NodeType == VTankNodeTypes.LongValKeyFlagExists && picked.TryGetValue(r.Id, out LootEditItemChoice? had)
                         && (had.Op == (int)LootItemAttributeOp.HasAny || had.Op == (int)LootItemAttributeOp.HasAll)
                         && Array.IndexOf(r.Ops, LootItemAttributeOp.HasAll) >= 0
@@ -907,6 +957,17 @@ public static class LootItemAttributes
 
     private static bool IsSingle(long v) => v > 0 && (v & (v - 1)) == 0;
 
+    /// <summary>How many of the conditions test the imbue key (179).</summary>
+    private static int ImbueTests(IReadOnlyList<VTankLootCondition> conditions)
+    {
+        int n = 0;
+        foreach (VTankLootCondition c in conditions)
+            if (c.NodeType is VTankNodeTypes.LongValKeyGE or VTankNodeTypes.LongValKeyLE or VTankNodeTypes.LongValKeyE
+                    or VTankNodeTypes.LongValKeyNE or VTankNodeTypes.LongValKeyFlagExists
+                && c.DataLines.Count > 1 && c.DataLines[1]?.Trim() == "179") n++;
+        return n;
+    }
+
     /// <summary>Every flag a flags row's list names (single flags and the "any of" picks).</summary>
     internal static int AllBits((int Id, string Name)[] choices)
     {
@@ -954,10 +1015,24 @@ public static class LootItemAttributes
     /// </summary>
     public static void FilterImbues(List<LootItemAttribute> rows, int objectClass)
     {
-        LootItemAttribute? r = rows.Find(x => x.Kind == LootItemAttribute.Shape.Long && x.Key == LootItemFacts.ImbuedEffectKey && x.Choices != null);
+        LootItemAttribute? r = rows.Find(x => x.Kind == LootItemAttribute.Shape.Long && x.Key == LootItemFacts.ImbuedEffectKey && x.Choices != null && x.Id != RendRowId);
         if (r == null) return;
         int? allowed = ImbuesFor(objectClass, out bool several);
         if (allowed is not int ok) return;
+        // "Plus a rend": the class's rends only; none (armor, jewelry): no row (2026-11-08).
+        LootItemAttribute? rend = rows.Find(x => x.Id == RendRowId);
+        if (rend?.Choices != null)
+        {
+            // One rend: the class must carry it. An "any" pick: kept while two or more of its rends fit the class
+            // ("Any elemental rend" on a sword: nether never turns up there, the rest do).
+            var keep = Array.FindAll(rend.Choices, c => IsSingle(c.Id) ? (c.Id & ok) == c.Id : !IsSingle(c.Id & ok) && (c.Id & ok) != 0);
+            if (keep.Length == 0 || (ok & RendBits) == 0) { if (!rend.On) rows.Remove(rend); }
+            else
+            {
+                rend.Choices = keep;
+                if (!Array.Exists(keep, c => c.Id == (int)rend.Value)) rend.Value = keep[0].Id;
+            }
+        }
         var list = new List<(int, string)>();
         var seen = new HashSet<int>();
         foreach (var c in LootRuleText.ImbuedEffects)
