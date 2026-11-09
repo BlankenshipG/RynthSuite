@@ -20,3 +20,4 @@ with any elemental on it. right now it will pickup items that match any one of t
 - An item's own checklist (Add from an item, Filter inventory) starts an item with two or more imbues at
   "has all" of them, not "has any" (which took an item with any one of them).
 - Same rows in the Loot Editor's Add rule and edit, Filter inventory and Global Inventory.
+- "Any" on a named row (any slayer, any imbue) reads "any Slayer type" in the rule's name and the rule view, not "Slayer type at least Olthoi" (the value numbered 1).

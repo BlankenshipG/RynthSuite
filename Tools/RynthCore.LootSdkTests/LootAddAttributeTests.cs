@@ -266,6 +266,10 @@ internal static partial class Program
         Check(Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [166] = 31, [179] = 4 | 512 } }), "has all: armor rend + fire rend slayer");
         Check(!Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [166] = 31, [179] = 512 } }), "has all: fire rend alone isn't enough");
         Check(!Takes(new LootItemFacts { ObjectClass = (int)AcObjectClass.MeleeWeapon, Ints = { [179] = 4 | 512 } }), "any slayer: no slayer, no match");
+        // The rule's name and view say "any", not the value numbered 1 (2026-11-08: "any defaults to Olthoi in name").
+        LootItemRuleDraft only = LootItemRules.BuildBlank(new LootItemRuleOptions { BlankRule = true, Choices = Pick(("L:166", true, LootItemAttributeOp.Any, "")) });
+        Eq(only.Rule.Name, "Keep: any Slayer type", "any slayer: the name says any, not Olthoi");
+        Eq(LootRuleText.Condition(c.First(x => x.NodeType == VTankNodeTypes.LongValKeyGE)), "any Slayer type", "any slayer: the rule view says any");
     }
 
     // 2026-11-08: "armor rend + bs + cs, but also with any elemental on it" (Copper Frost Knife: Armor Rending, Cold

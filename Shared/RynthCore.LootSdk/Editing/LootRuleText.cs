@@ -528,10 +528,14 @@ public static class LootRuleText
             return G(0);
         }
         static string Trunc(string s, int n) => s.Length > n ? s.Substring(0, n) + "..." : s;
+        // ">= 1" on a named key is the checklist's "any" (any slayer, any imbue), not "at least <the value named 1>"
+        // (2026-11-08: "Slayer type at least Olthoi" for any slayer).
+        bool AnyNamed() => G(0).Trim() == "1" && TryParseValue(G(1), out int k) && ValueTableFor(k) != null;
 
         return c.NodeType switch
         {
             VTankNodeTypes.ObjectClass => $"Class is {Oc(0)}",
+            VTankNodeTypes.LongValKeyGE when AnyNamed() => $"any {Lk(1)}",
             VTankNodeTypes.LongValKeyGE => $"{Lk(1)} at least {Lv()}",
             VTankNodeTypes.LongValKeyLE => $"{Lk(1)} at most {Lv()}",
             VTankNodeTypes.LongValKeyE => $"{Lk(1)} is {Lv()}",
