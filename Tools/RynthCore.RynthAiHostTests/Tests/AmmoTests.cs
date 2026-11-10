@@ -46,26 +46,35 @@ internal static class AmmoTests
     // darts again, so combat held a target in peace mode with no attack for 90 minutes.
     private static void AbandonedSwapReloads()
     {
-        var rig = new Rig();
-        rig.Store.SetManualWeapon(Wcid, Crossbow);
-        Check.False(rig.Tick(), "tick 1: the arrows go into the pack for the crossbow");
-        Check.True(FakeHost.Moves.Count == 1 && FakeHost.Moves[0] == (Arrows, Pack, 120), "the arrow stack moved");
-        Rig.Unwield(Arrows);                                  // the arrows landed in the pack
+        // Upstream's ammo step (merged 2026-11-10) wields ammo whenever the launcher in hand has none
+        // it can shoot, once our own dequip for the other launcher's swap is over: the clock is moved
+        // past it here (the test-branch ReloadFromPack is gone, the ammo step does it).
+        DateTime now = DateTime.Now;
+        RynthClock.TestNow = () => now;
+        try
+        {
+            var rig = new Rig();
+            rig.Store.SetManualWeapon(Wcid, Crossbow);
+            Check.False(rig.Tick(), "tick 1: the arrows go into the pack for the crossbow");
+            Check.True(FakeHost.Moves.Count == 1 && FakeHost.Moves[0] == (Arrows, Pack, 120), "the arrow stack moved");
+            Rig.Unwield(Arrows);                                  // the arrows landed in the pack
 
-        rig.Store.SetManualWeapon(Wcid, Bow);                 // the next target wants the bow still in hand
-        rig.List(Bow, Crossbow);                              // a new list: the plan is worked out again
-        Check.Eq(unchecked((uint)rig.C.PlanFor(rig.Target, null).WeaponId), Bow, "the plan: the bow in hand");
+            rig.Store.SetManualWeapon(Wcid, Bow);                 // the next target wants the bow still in hand
+            rig.List(Bow, Crossbow);                              // a new list: the plan is worked out again
+            Check.Eq(unchecked((uint)rig.C.PlanFor(rig.Target, null).WeaponId), Bow, "the plan: the bow in hand");
 
-        Check.False(rig.Tick(), "bow in hand, empty quiver: not ready");
-        Check.True(FakeHost.Logs.Any(l => l.Contains("reload:") && l.Contains("'Longbow'")), "the reload is logged");
-        rig.Tick();
-        Check.Eq(FakeHost.Uses.Count(u => u == Arrows), 1, "the arrows are wielded again from the pack");
-        Check.Eq(FakeHost.Uses.Count(u => u == Crossbow), 0, "the abandoned crossbow isn't wielded");
-        rig.Tick();
-        Check.Eq(FakeHost.Uses.Count(u => u == Arrows), 1, "one ammo wield in flight: not sent again");
+            now = now.AddSeconds(4);                              // the crossbow's dequip is long over
+            Check.False(rig.Tick(), "bow in hand, empty quiver: not ready");
+            rig.Tick();
+            Check.Eq(FakeHost.Uses.Count(u => u == Arrows), 1, "the arrows are wielded again from the pack");
+            Check.Eq(FakeHost.Uses.Count(u => u == Crossbow), 0, "the abandoned crossbow isn't wielded");
+            rig.Tick();
+            Check.Eq(FakeHost.Uses.Count(u => u == Arrows), 1, "one ammo wield in flight: not sent again");
 
-        Rig.Wield(Arrows, AmmoSlot);                          // the arrows are on
-        Check.True(rig.Tick(), "bow and arrows: ready to shoot");
+            Rig.Wield(Arrows, AmmoSlot);                          // the arrows are on
+            Check.True(rig.Tick(), "bow and arrows: ready to shoot");
+        }
+        finally { RynthClock.TestNow = null; }
     }
 
     // 2026-10-19 (owner): prismatic ammo deals every damage type, so it does what the target is

@@ -62,6 +62,7 @@ internal static partial class Program
         RunCustomPortals();
         RunTripExport();
         RunAutoRunGate();
+        RunRouteMaker();
         RunSteering();
         RunWallStuck();
 

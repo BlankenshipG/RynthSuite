@@ -19,7 +19,12 @@ namespace RynthCore.Plugin.RynthAi;
 ///     Lightning Quadrelle for a Giant Maggot, then the next target, a Grub weak to Bludgeon,
 ///     was fought with the Quadrelle for 5-10 s until the 20 s dwell from the last swap ran out
 ///     - "he attacks for about 5 seconds with the wrong element weapon"). The window cap still
-///     bounds a fight that alternates between two kinds of monster.
+///     bounds a fight that alternates between two kinds of monster, except for a weapon the
+///     player set for the new target (<c>forThisMonster</c>: its Damage tab pick, its Monsters
+///     rule's weapon or damage type), which goes in at once (2026-11-08, R-20261107-141028-b33e,
+///     Conquest: four swaps among wasps and other kinds, then the Fire Staff meant for an Oaken
+///     Guardian the player had selected was kept out with "4 swaps in 60s" and the Guardian was
+///     fought with the Frost Sceptre until it died, about 18 s later). Its swap still counts toward the cap for others.
 ///   * A swap counts as landed when its weapon reaches the hand, even if the choice moved on
 ///     while it was in flight.
 ///   * A 'too busy' answer (<see cref="Busy"/>) is not a try: the server never looked at the
@@ -61,9 +66,50 @@ internal sealed class WeaponSwapTracker
     private int _lastFrom, _lastTo;
     private DateTime _lastLandedAt = DateTime.MinValue;
     private int _askKey, _pendingKey, _lastKey;   // the fight (target id) each swap was for; 0 = unknown
+    // Weapons seen in a wielded slot (the engine's equipment list) during their current run of
+    // wields. A new run (the first send after the count was cleared) forgets the sighting, so a
+    // weapon that later stops reaching the hand is given up on again.
+    private readonly HashSet<int> _seenWielded = new();
+    private DateTime _lastSentAt = DateTime.MinValue;
+
+    /// <summary>How long after the last send counted tries keep the equipment list sampled.</summary>
+    public double AttemptWatchMs { get; set; } = 120_000;
 
     /// <summary>The weapon a swap is in flight for (0 = none).</summary>
     public int PendingId => _pendingId;
+
+    /// <summary>
+    /// True while a wield is in flight, or tries are counted and the last send was under
+    /// <see cref="AttemptWatchMs"/> before <paramref name="now"/>: the equipment list is worth
+    /// sampling. A stale count left behind does not keep the sampler reading every tick.
+    /// </summary>
+    public bool HasAttemptsAt(DateTime now) =>
+        _pendingId != 0 || (_tries.Count > 0 && (now - _lastSentAt).TotalMilliseconds < AttemptWatchMs);
+
+    /// <summary>True when <paramref name="id"/> was seen wielded while its wields were under way (see <see cref="SeenWielded"/>).</summary>
+    public bool WasSeenWielded(int id) => _seenWielded.Contains(id);
+
+    /// <summary>
+    /// <paramref name="id"/> is in a main-hand slot per the engine's equipment list, sampled every
+    /// tick while a wield is under way. When it has a wield in flight or tries counted, the wield
+    /// worked: its try count starts over and it is remembered as seen, so it is never taken for a
+    /// weapon that "never reached your hand". The swap in flight is left alone (combat lands it
+    /// when it sees the weapon in hand itself), so a stale hand read can never send a second
+    /// UseObject that would take the weapon off again. A weapon that reached the hand and was
+    /// swapped out for the buff wand before combat looked again had each of those wields counted
+    /// as a failed try, until it was left out of the weapon choice for 30 min.
+    /// </summary>
+    public void SeenWielded(int id)
+    {
+        if (id == 0 || (_pendingId != id && !_tries.ContainsKey(id))) return;
+        _seenWielded.Add(id);
+        _tries.Remove(id);
+        _busyRefunds.Remove(id);
+    }
+    /// <summary>A wield was sent less than <see cref="ResolveMs"/> ago and hasn't been answered.</summary>
+    public bool InFlight(DateTime now) => _pendingId != 0 && (now - _pendingAt).TotalMilliseconds < ResolveMs;
+    /// <summary><paramref name="id"/> is resting after its failed tries.</summary>
+    public bool Resting(int id, DateTime now) => _restUntil.TryGetValue(id, out DateTime rest) && now < rest;
     /// <summary>Wields sent for <paramref name="id"/> since it was last in hand.</summary>
     public int TriesFor(int id) => _tries.TryGetValue(id, out int t) ? t : 0;
     /// <summary>Why the last Hold happened, for the log ("" = none).</summary>
@@ -77,8 +123,11 @@ internal sealed class WeaponSwapTracker
     /// What to do about <paramref name="chosenId"/> with <paramref name="inHandId"/> in hand
     /// (0 = nothing readable in hand). <paramref name="forKey"/> is the fight the weapon is
     /// chosen for (the target id; 0 = unknown, treated as the same fight as the last swap).
+    /// <paramref name="forThisMonster"/>: the player set <paramref name="chosenId"/> for that
+    /// target (WeaponPlan.ForThisMonster); for a new target the window cap doesn't hold it.
     /// </summary>
-    public Step Next(int chosenId, int inHandId, DateTime now, Func<int, string>? nameOf = null, int forKey = 0)
+    public Step Next(int chosenId, int inHandId, DateTime now, Func<int, string>? nameOf = null, int forKey = 0,
+        bool forThisMonster = false)
     {
         HoldReason = "";
         _askKey = forKey;
@@ -124,7 +173,11 @@ internal sealed class WeaponSwapTracker
                 return Step.Hold;
             }
             _landed.RemoveAll(t => (now - t).TotalMilliseconds > SwapWindowMs);
-            if (_landed.Count >= MaxSwapsPerWindow)
+            // The player's own weapon for a new target isn't a choice going back and forth: the
+            // cap counted the swaps for the other kinds and kept it out (R-20261107-141028-b33e).
+            // The same target (or no key) is still capped.
+            bool newTargetsOwnPick = forThisMonster && forKey != 0 && forKey != _lastKey;
+            if (_landed.Count >= MaxSwapsPerWindow && !newTargetsOwnPick)
             {
                 HoldReason = $"{_landed.Count} swaps in {SwapWindowMs / 1000:0}s";
                 return Step.Hold;
@@ -140,6 +193,9 @@ internal sealed class WeaponSwapTracker
         _pendingId = id;
         _pendingFrom = fromId;
         _pendingAt = now;
+        _lastSentAt = now;
+        // A fresh run of wields: an earlier sighting says nothing about this one.
+        if (!_tries.ContainsKey(id)) _seenWielded.Remove(id);
         _tries[id] = (_tries.TryGetValue(id, out int t) ? t : 0) + 1;
     }
 
@@ -179,6 +235,7 @@ internal sealed class WeaponSwapTracker
         _tries.Clear();
         _busyRefunds.Clear();
         _restUntil.Clear();
+        _seenWielded.Clear();
         _busyUntil = DateTime.MinValue;
     }
 
@@ -196,9 +253,11 @@ internal sealed class WeaponSwapTracker
         _busyRefunds.Clear();
         _busyUntil = DateTime.MinValue;
         _restUntil.Clear();
+        _seenWielded.Clear();
         _landed.Clear();
         _lastFrom = _lastTo = 0;
         _lastLandedAt = DateTime.MinValue;
+        _lastSentAt = DateTime.MinValue;
         _askKey = _pendingKey = _lastKey = 0;
         HoldReason = "";
         Notice = null;

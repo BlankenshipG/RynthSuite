@@ -85,6 +85,11 @@ internal static partial class DungeonPathfinder
         return _cachedGraph;
     }
 
+    /// <summary>Another landblock's graph without touching the cache (the current dungeon's stays):
+    /// /ra dunroute info on a route made elsewhere.</summary>
+    internal static Dictionary<uint, DungeonNavNode> GraphOf(uint landblockKey, DatDatabase cellDat)
+        => _cachedLandblockKey == landblockKey && _cachedGraph != null ? _cachedGraph : BuildGraph(landblockKey, cellDat);
+
     public static void InvalidateCache()
     {
         _cachedGraph        = null;

@@ -25,7 +25,7 @@ namespace RynthCore.Plugin.RynthNav;
 public sealed partial class RynthNavPlugin : RynthPluginBase
 {
     internal static readonly IntPtr NamePointer    = Marshal.StringToHGlobalAnsi("RynthNav");
-    internal const string PluginVersion = "0.6.13";
+    internal const string PluginVersion = "0.6.14";   // upstream 0.6.8 (the route maker: makeroute, makeloop, makepath, routeinfo, "RynthNav.Routes") merged into the test branch's 0.6.13
     internal static readonly IntPtr VersionPointer = Marshal.StringToHGlobalAnsi(PluginVersion);
 
     /// <summary>Lets PluginExports log through this plugin's host (the base Log is protected).</summary>
@@ -150,7 +150,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         LoadAvoidSettings();
         LoadMarkerSettings();
         LoadMeshSettings();
-        Host.Log($"[RynthNav] Initialized v{PluginVersion} (tiled streaming + long-range goto + portal/recall routing + arrow + atlas). Panel: RynthNav. Tiles: {NavDataDir} ({NavConfig.Source})");
+        Host.Log($"[RynthNav] Initialized v{PluginVersion} (tiled streaming + long-range goto + portal/recall routing + arrow + atlas + route maker). Panel: RynthNav. Tiles: {NavDataDir} ({NavConfig.Source})");
         InitTravel();
         LoadGraph();
         LoadTownNet();
@@ -216,6 +216,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         TickMarkers();
         TickMeshView();
         UpdateGoLine();
+        TickRouteJobs();
         FlushChat();
     }
 
@@ -430,6 +431,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
 
         if (walk)
         {
+            _goJobId = 0;   // a goto of its own: no route maker go job's any more
             StartWalk(given.Length > 0 ? given : NavCoords.Fmt(tns, tew), "", tns, tew);
             return;
         }
@@ -876,6 +878,7 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         ResetBlocked();
         AutoRun.Stop();
         lock (_gate) _status = status;
+        _gotoEndStatus = status; _gotoEndSeq++;   // a route maker go job reads how it ended (RynthNavPlugin.RouteMaker.cs)
         Host.Log($"[RynthNav] goto: {status}");
         Say(status == "arrived" && _gotoName.Length > 0 ? $"goto: arrived at {_gotoName}" : $"goto: {status}");
         _goNote = status == "arrived" && _gotoName.Length > 0 ? $"arrived at {_gotoName}" : status;
@@ -975,19 +978,21 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
     /// <summary>
     /// Plans a trip from where you stand (TravelPlan: the switches, a dungeon start, the land) and
     /// logs what it considered. Steps null = walk straight there; a refusal = there's no way, and why.
-    /// Tick thread.
+    /// <paramref name="portals"/>: use portals and recalls or not this once (null: the switch; the
+    /// route maker's plan op). Tick thread.
     /// </summary>
-    private TravelPlan.Result PlanRoute(string name, double goalNs, double goalEw, out List<RecallOption> recalls)
+    private TravelPlan.Result PlanRoute(string name, double goalNs, double goalEw, out List<RecallOption> recalls, bool? portals = null)
     {
+        bool portalsOn = portals ?? PortalsRouting;   // the switch, or learning portals (RynthNavPlugin.LearnPortals.cs)
         double startNs = NavCoords.NsFromWorld(_wy), startEw = NavCoords.EwFromWorld(_wx);
         bool startOnMap = IsOnMap(_cellId);
         var recallNotes = new List<string>();
         recalls = _charKey.Length == 0 ? new List<RecallOption>() : RecallsRouting ? AllRecalls(_atlas, recallNotes) : RecallPlanner.Build(_atlas, _known, _memory, _charKey, recallNotes);
         if (_charKey.Length == 0) recallNotes.Add("not logged in yet");
         var hubNotes = new List<string>();
-        HubLinks? hub = PortalsRouting ? CurrentHubLinks(hubNotes) : null;
+        HubLinks? hub = portalsOn ? CurrentHubLinks(hubNotes) : null;
         if (hub != null && _preferAphus && RecallsRouting) hub = ViaAphus(hub, recalls, hubNotes, _baseTownNet?.Arrivals.Count ?? 0);
-        if (PortalsRouting) EnsurePortalsLoaded();
+        if (portalsOn) EnsurePortalsLoaded();
         // Walks that can't be done over land (another landmass) are left out, so an island or the
         // far side of water is only reached by a portal, a recall or the Town Network.
         NavGraph? g = UsableGraph();
@@ -996,17 +1001,17 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
                                                  NavGraph.LandblockAt(NavCoords.WorldX(bew), NavCoords.WorldY(bns))) != false;
         bool? land = startOnMap && g != null ? g.SameLand(CurrentLandblock, NavGraph.LandblockAt(NavCoords.WorldX(goalEw), NavCoords.WorldY(goalNs))) : null;
 
-        List<PortalLink>? portals = PortalsRouting ? RoutePortals() : null;
+        List<PortalLink>? portals = portalsOn ? RoutePortals() : null;
         // Standing in a dungeon RynthNav learned walks in: the walk from here to each of its portals.
         int walkable = 0;
         double[]? startWalks = !startOnMap && hub != null ? StartHubWalks(hub, out walkable) : null;
         if (startWalks != null) Host.Log($"[RynthNav] plan: in a learned dungeon (0x{CurrentLandblock:X4}): {walkable} of its portal(s) reachable by a learned walk from here");
         TravelPlan.Result r = TravelPlan.Plan(portals, RecallPlanner.Links(recalls), hub,
-            PortalsRouting, RecallsRouting, startOnMap, startNs, startEw, goalNs, goalEw, canWalk, land, name, startWalks);
+            portalsOn, RecallsRouting, startOnMap, startNs, startEw, goalNs, goalEw, canWalk, land, name, startWalks);
 
-        Host.Log($"[RynthNav] plan {name}: {r.Basis}; {(PortalsRouting ? $"{portals?.Count ?? 0} portals ({(portals?.Count ?? 0) - (_portals?.Count ?? 0)} custom for {(_server.Length > 0 ? _server : "?")})" : "no portals")}, "
+        Host.Log($"[RynthNav] plan {name}: {r.Basis}; {(portalsOn ? $"{portals?.Count ?? 0} portals ({(portals?.Count ?? 0) - (_portals?.Count ?? 0)} custom for {(_server.Length > 0 ? _server : "?")})" : "no portals")}, "
                + $"{recalls.Count} recall(s) ready" + (recalls.Count > 0 ? " (" + string.Join(", ", recalls.ConvertAll(o => o.Name)) + ")" : "")
-               + $", Town Network {(hub == null ? (PortalsRouting ? "not loaded" : "unused") : $"{hub.Entries.Count} entries / {hub.Exits.Count} exits")}"
+               + $", Town Network {(hub == null ? (portalsOn ? "not loaded" : "unused") : $"{hub.Entries.Count} entries / {hub.Exits.Count} exits")}"
                + $", land check {(canWalk == null ? "off (no route graph)" : "on")}"
                + (startOnMap ? "" : $" (in landblock 0x{CurrentLandblock:X4})"));
         foreach (string n in recallNotes) Host.Log($"[RynthNav] plan: recall left out: {n}");
