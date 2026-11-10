@@ -1001,15 +1001,15 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
                                                  NavGraph.LandblockAt(NavCoords.WorldX(bew), NavCoords.WorldY(bns))) != false;
         bool? land = startOnMap && g != null ? g.SameLand(CurrentLandblock, NavGraph.LandblockAt(NavCoords.WorldX(goalEw), NavCoords.WorldY(goalNs))) : null;
 
-        List<PortalLink>? portals = portalsOn ? RoutePortals() : null;
+        List<PortalLink>? routePortals = portalsOn ? RoutePortals() : null;
         // Standing in a dungeon RynthNav learned walks in: the walk from here to each of its portals.
         int walkable = 0;
         double[]? startWalks = !startOnMap && hub != null ? StartHubWalks(hub, out walkable) : null;
         if (startWalks != null) Host.Log($"[RynthNav] plan: in a learned dungeon (0x{CurrentLandblock:X4}): {walkable} of its portal(s) reachable by a learned walk from here");
-        TravelPlan.Result r = TravelPlan.Plan(portals, RecallPlanner.Links(recalls), hub,
+        TravelPlan.Result r = TravelPlan.Plan(routePortals, RecallPlanner.Links(recalls), hub,
             portalsOn, RecallsRouting, startOnMap, startNs, startEw, goalNs, goalEw, canWalk, land, name, startWalks);
 
-        Host.Log($"[RynthNav] plan {name}: {r.Basis}; {(portalsOn ? $"{portals?.Count ?? 0} portals ({(portals?.Count ?? 0) - (_portals?.Count ?? 0)} custom for {(_server.Length > 0 ? _server : "?")})" : "no portals")}, "
+        Host.Log($"[RynthNav] plan {name}: {r.Basis}; {(portalsOn ? $"{routePortals?.Count ?? 0} portals ({(routePortals?.Count ?? 0) - (_portals?.Count ?? 0)} custom for {(_server.Length > 0 ? _server : "?")})" : "no portals")}, "
                + $"{recalls.Count} recall(s) ready" + (recalls.Count > 0 ? " (" + string.Join(", ", recalls.ConvertAll(o => o.Name)) + ")" : "")
                + $", Town Network {(hub == null ? (portalsOn ? "not loaded" : "unused") : $"{hub.Entries.Count} entries / {hub.Exits.Count} exits")}"
                + $", land check {(canWalk == null ? "off (no route graph)" : "on")}"
