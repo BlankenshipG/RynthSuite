@@ -684,6 +684,7 @@ internal sealed partial class OracleView
         }
         if (l.Note.Length > 0) w.TextWrapped(Cut(l.Note, 600));
         DrawGoTo(w, StopsFor("lg:" + l.Name, () => NavTargets.Stops(l.Note)));
+        DrawHandIn(w, GuideFor(l.Flags.Length > 0 ? l.Flags[0] : "", l.Name, l.CommonName), "lg.sel", t => _questNavStatus = t);
         w.Button("Print in chat", "lg.sel.print", () => PrintLegendary(l, status));
         w.Tooltip("The quest, its flags and status, the notes, wiki and video links.");
         w.SameLine();
@@ -813,6 +814,8 @@ internal sealed partial class OracleView
         string details = q.Details();
         if (details.Length > 0) w.TextWrapped(Cut(details, 600));
         DrawGoTo(w, StopsFor("q:" + q.Flag, () => NavTargets.Stops(q.Info + " - " + q.Hint)));
+        DrawHandIn(w, GuideFor(q.Flag, q.Name), "q.sel", t => _questNavStatus = t);
+        if (_questNavStatus.Length > 0 && NavTargets.Stops(q.Info + " - " + q.Hint).Count == 0) w.TextDisabled(_questNavStatus);
 
         bool loaded = _c.Book.Loaded;
         bool tracked = _c.Book.IsTracked(q.Flag);

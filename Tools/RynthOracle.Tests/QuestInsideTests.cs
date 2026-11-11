@@ -39,6 +39,21 @@ namespace RynthOracle.Tests
             run.OnChat("[RynthNav] inside: none of these is someone inside a dungeon: Kuurak");
             Check(!run.Travelling && ai.Exists(l => l.StartsWith("dungeon patrol")) && ai.Exists(l => l.StartsWith("talk Kuurak")), "inside: not here: the dungeon is patrolled: " + string.Join(" | ", ai));
             run.Stop();
+
+            // 2026-11-11: one hand-in for every Quests view.
+            var hq = new GuideQuest { Title = "Collar", StartsWith = "Xsao Lann" };
+            hq.Steps.Add(new GuideStep { Text = "Kill the wolf and loot Darling's Collar.", Items = new List<string> { "Darling's Collar" } });
+            hq.Steps.Add(new GuideStep { Text = "Return the collar to Xsao Lann.", Stamps = new List<string> { "CollarReturned" } });
+            var h = RynthCore.Plugin.RynthOracle.Views.OracleView.HandInOf(hq);
+            Check(h is { } a1 && a1.Step == 1 && ReferenceEquals(a1.Quest, hq), "hand-in: the quest's own hand-in step");
+            var kq = new GuideQuest { Title = "Tusks", StartsWith = "Ulgrim" };
+            kq.Steps.Add(new GuideStep { Text = "Kill Female Tuskers for their tusks." });
+            kq.Rewards.Add("For Hand in Female Tusker Tusk:");
+            var k = RynthCore.Plugin.RynthOracle.Views.OracleView.HandInOf(kq);
+            Check(k is { } a2 && a2.Quest.Steps.Count == 1 && QuestNames.IsHandIn(a2.Quest.Steps[0]) && QuestNames.HandInItems(a2.Quest, 0).Contains("Female Tusker Tusk")
+                  && QuestNames.TargetsAt(a2.Quest, 0).Contains("Ulgrim"),
+                "hand-in: rewards for handing in, to the person it starts with: " + (k?.Quest.Steps[0].Text ?? "none"));
+            Check(RynthCore.Plugin.RynthOracle.Views.OracleView.HandInOf(new GuideQuest { Title = "Walk" }) == null, "hand-in: nothing to hand in, none");
         }
     }
 }

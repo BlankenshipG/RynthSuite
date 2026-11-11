@@ -516,6 +516,7 @@ internal sealed partial class OracleView
         w.SameLine();
         w.SmallButton("Wiki page", "g.url", () => _c.Print(q.Url));
         w.Tooltip("Prints the wiki page's address in chat.");
+        DrawHandIn(w, q, "g.w", t => _gMsg = t);
 
         if (q.StartsWith.Length > 0 || q.StartsAt.Length > 0)
         {
@@ -694,6 +695,7 @@ internal sealed partial class OracleView
             }
         }
         if (q.Url.Length > 0) w.SmallButton("Wiki page", "g.q.url", () => _c.Print(q.Url));
+        DrawHandIn(w, GuideFor(q.Flag, q.Name), "g.q", t => _gMsg = t);
     }
 
     // ── The opened Dynamic Stamps area ──────────────────────────────────────
@@ -718,8 +720,17 @@ internal sealed partial class OracleView
             if (nav.Count > 0)
             {
                 w.SameLine();
-                w.SmallButton("Go", "g.a.go." + n, () => _gMsg = SendRynthNav("go", nav));
+                DynamicStamp stamp = s;
+                // The same Go and hand in as the flag list's Dynamic Stamps (the Parchment, bought when none is carried).
+                w.SmallButton(s.Npc.Length > 0 ? "Go and hand in" : "Go", "g.a.go." + n, () =>
+                {
+                    StartDynAuto(stamp);
+                    _gMsg = _dynNavStatus;
+                });
+                if (s.Npc.Length > 0) w.Tooltip($"RynthNav goes to {s.Npc}; a Parchment from your packs is handed over there (bought from a vendor when you carry none).");
             }
         }
+        // Go and hand in's progress (the buy, the walk, the give), as the flag list's stamp box shows it.
+        if (_dynAuto != null && _dynAuto.Area == area && _dynNavStatus.Length > 0) w.TextColored(UiColors.Yellow, _dynNavStatus);
     }
 }
