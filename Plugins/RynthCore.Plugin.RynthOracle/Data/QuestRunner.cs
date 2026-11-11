@@ -48,6 +48,7 @@ internal sealed class QuestRunner
     internal const uint TownNetworkLandblock = 0x0007;
     private bool _dungeonWalk;                // RynthAi walks the dungeon for the run
     private int _askedAt = -1;                // the step RynthAi was asked about its items ("have")
+    private bool _portalTried;                // a travel step's place: its portal looked for once
     private readonly HashSet<string> _got = new(StringComparer.OrdinalIgnoreCase);   // quest items RynthAi got this run (bare names)
 
     /// <summary>RynthAi walks a dungeon for the run (its map: a goto or the patrol).</summary>
@@ -102,6 +103,7 @@ internal sealed class QuestRunner
         Quest = q;
         _got.Clear();
         _askedAt = -1;
+        _portalTried = false;
         // A run starts at the quest's first part (2026-11-07): stamps already held (an earlier run of a
         // repeatable quest) don't finish its steps; only the ones this run gets do.
         var heldAtStart = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -237,6 +239,16 @@ internal sealed class QuestRunner
             OnGot(line);
             return;
         }
+        // No portal at a travel step's place after all: being there is the step.
+        if (_portalTried && line.Contains("[RynthAi] Quest: no portal right here", StringComparison.Ordinal)
+            && Quest != null && Step >= 0 && Step < Quest.Steps.Count && !_inDungeon && TravelOnly(Quest, Step))
+        {
+            _portalTried = false;
+            _print($"Step {Step + 1} done: you're there.");
+            Advance(first: false);
+            Changed();
+            return;
+        }
         if (Travelling && line.Contains("[RynthNav]", StringComparison.Ordinal) && line.Contains(ArrivedText, StringComparison.OrdinalIgnoreCase))
         {
             Travelling = false;
@@ -253,6 +265,15 @@ internal sealed class QuestRunner
             }
             // "Enter the Hidden Keep at ...", "Take the portal to ...": the portal at the step's place takes you in.
             else if (GoesIn(Quest, Step)) _ai("dungeon enter" + PortalHint(s));
+            // The step's place is a dungeon's portal and the next step is inside it (2026-11-10, "the route isn't
+            // going in the portal"): a portal right there is taken; the step ends in the dungeon (OnWhere).
+            else if (TravelOnly(Quest, Step) && NextInside(Quest, Step) && !_portalTried)
+            {
+                _portalTried = true;
+                _ai("dungeon enter near" + PortalHint(s));
+                Changed();
+                return;
+            }
             // "Travel to Suntik Village at ...": being there is the step (2026-11-08: the run stopped there).
             else if (TravelOnly(Quest, Step))
             {
@@ -343,9 +364,17 @@ internal sealed class QuestRunner
         GuideQuest q = Quest!;
         GuideStep s = q.Steps[Step];
         if (!keepPlace) Place = 0;
+        _portalTried = false;
         _targets = QuestNames.TargetsAt(q, Step);
         _fallback = "";
-        if (_inDungeon && GoDungeon(q, s)) { AskItems(s); return; }
+        // In a dungeon, a step that happens outside it (a hand-in, "Return to ...") leaves it: the dungeon walk
+        // stops and RynthNav takes the run there (2026-11-10: it kept fighting there after the last item).
+        if (_inDungeon && HappensOutside(q, Step))
+        {
+            if (_dungeonWalk) { _ai("dungeon stop"); _dungeonWalk = false; }
+            _print($"Step {Step + 1}: leaving the dungeon for it.");
+        }
+        else if (_inDungeon && GoDungeon(q, s)) { AskItems(s); return; }
         // Items carried already (picked up by hand, an earlier run) finish the step before the trip.
         if (Places(s).Count > 0) { GoPlace(); AskItems(s); return; }
         // Coordinates in the step's own words ("Ollar at 71.4N, 28.6W"): there, before any name.
@@ -391,7 +420,7 @@ internal sealed class QuestRunner
     /// </summary>
     private void AskItems(GuideStep s)
     {
-        if (s.Stamps.Count > 0 || s.Items.Count == 0 || QuestNames.IsHandIn(s) || _askedAt == Step) return;
+        if (s.Items.Count == 0 || QuestNames.IsHandIn(s) || _askedAt == Step) return;
         _askedAt = Step;   // once a step: RynthAi's quest loot list does the rest
         _ai("have " + string.Join(" | ", s.Items.ConvertAll(i => i.Replace('|', '/'))));
     }
@@ -409,7 +438,9 @@ internal sealed class QuestRunner
         _got.Add(BareItem(name));
         if (Quest == null || Step < 0 || Step >= Quest.Steps.Count) return;
         GuideStep s = Quest.Steps[Step];
-        if (s.Stamps.Count > 0 || s.Items.Count == 0 || QuestNames.IsHandIn(s) || !s.Items.TrueForAll(Got)) return;
+        // Every item of the step is in the pack: on to the next step, its stamp or not (2026-11-10: "when a quest
+        // pickups the last loot item it should move to the next step vs keep fighting").
+        if (s.Items.Count == 0 || QuestNames.IsHandIn(s) || !s.Items.TrueForAll(Got)) return;
         if (Travelling) { _nav("stop"); Travelling = false; }
         _print($"Step {Step + 1} done: you have {string.Join(", ", s.Items)}.");
         Advance(first: false);
@@ -422,6 +453,33 @@ internal sealed class QuestRunner
         name = (name ?? "").Trim();
         int open = name.LastIndexOf(" (", StringComparison.Ordinal);
         return open > 0 && name.EndsWith(")", StringComparison.Ordinal) ? name.Substring(0, open).Trim() : name;
+    }
+
+    // "Return to ...", "Bring ... to", a hand-in: done out of the dungeon.
+    private static readonly System.Text.RegularExpressions.Regex OutsideRx = new(
+        @"\b(?:return|returns|go\s+back|head\s+back|bring|deliver|turn\s+(?:it\s+|them\s+)?in|hand\s+(?:it\s+|them\s+)?in|give)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// The step happens out of the dungeon the run is in: nothing to loot or kill there, nothing to go into, and
+    /// it hands in or goes back somewhere ("Return to Xsao", "Bring the jaw to ..."), or only travels.
+    /// </summary>
+    internal static bool HappensOutside(GuideQuest q, int i)
+    {
+        if (i < 0 || i >= q.Steps.Count) return false;
+        GuideStep s = q.Steps[i];
+        if (GoesIn(s) || (s.Items.Count > 0 && !QuestNames.IsHandIn(s)) || QuestNames.KillRx.IsMatch(s.Text)) return false;
+        return QuestNames.IsHandIn(s) || OutsideRx.IsMatch(s.Text) || TravelOnly(q, i);
+    }
+
+    /// <summary>The step after <paramref name="i"/> is done inside a dungeon (its loot, its kills, further in).</summary>
+    internal static bool NextInside(GuideQuest q, int i)
+    {
+        if (i + 1 >= q.Steps.Count) return false;
+        GuideStep n = q.Steps[i + 1];
+        // Not into a building ("Enter the blacksmith building and grab ...", the Acid Axe Quest): no portal there.
+        return !HappensOutside(q, i + 1) && !IntoBuilding(n.Text)
+            && (QuestNames.KillRx.IsMatch(n.Text) || GoesIn(n) || (n.Items.Count > 0 && !QuestNames.IsHandIn(n)));
     }
 
     /// <summary>A step that picks items up ("grab the Acid Axe on the ground", "pick up the note").</summary>
@@ -497,7 +555,7 @@ internal sealed class QuestRunner
         }
         Travelling = false;
         GuideQuest q = Quest;
-        if (Step >= 0 && Step < q.Steps.Count && EntersOnly(q.Steps[Step]))
+        if (Step >= 0 && Step < q.Steps.Count && (EntersOnly(q.Steps[Step]) || (TravelOnly(q, Step) && NextInside(q, Step))))
         {
             _print($"Step {Step + 1} done: you're in.");
             Advance(first: false);

@@ -142,7 +142,7 @@ internal static class QuestNames
         return false;
     }
 
-    private static readonly Regex KillRx = new(@"\b(?:dropped\s+by|drops?\s+from|kill|kills|slay|slays|defeat|defeats|loot|loots|hunt)\b",
+    internal static readonly Regex KillRx = new(@"\b(?:dropped\s+by|drops?\s+from|kill|kills|slay|slays|defeat|defeats|loot|loots|hunt)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>

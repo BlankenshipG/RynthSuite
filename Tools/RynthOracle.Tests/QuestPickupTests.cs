@@ -69,7 +69,49 @@ namespace RynthOracle.Tests
             run.OnChat("[RynthAi] Quest: got Old Note (Quest Item).");
             Check(run.Step == 1 && nav.Contains("stop"), "items: both: done, RynthNav stopped on its way: " + string.Join(" | ", nav));
             run.OnChat("[RynthAi] Quest: got Rat Tail.");
-            Check(run.Step == 1, "items: a step with a stamp waits for the stamp");
+            Check(run.Step == 2 || !run.Active, "items: the last item got ends a step with a stamp too (2026-11-10)");
+            run.Stop();
+
+            // 2026-11-10: "when a quest pickups the last loot item it should move to the next step vs keep fighting
+            // even if the dungeon". The loot step inside, then the hand-in outside: the walk stops, RynthNav goes.
+            var jaw = new GuideQuest { Title = "Jaw Run" };
+            jaw.Steps.Add(new GuideStep { Text = "Enter the Eater Pit at 10.0N, 10.0E.", Coords = new List<string> { "10.0N, 10.0E" } });
+            jaw.Steps.Add(new GuideStep { Text = "Kill Abhorrent Eaters and loot an Abhorrent Eater Jaw.", Items = new List<string> { "Abhorrent Eater Jaw" }, Stamps = new List<string> { "EaterJaw" } });
+            jaw.Steps.Add(new GuideStep { Text = "Return to Xsao Lann at 20.0N, 20.0E and hand her the jaw.", Coords = new List<string> { "20.0N, 20.0E" } });
+            Check(QuestRunner.HappensOutside(jaw, 2) && !QuestRunner.HappensOutside(jaw, 1), "outside: the return, not the loot step");
+            ai.Clear(); nav.Clear();
+            run.OnWhere(false, 0);
+            run.Start(jaw, _ => false, loot: false);
+            run.OnChat("[RynthNav] goto: arrived");
+            run.OnWhere(true, 0x1234);
+            Check(run.Step == 1 && ai.Exists(l => l.StartsWith("dungeon patrol")), "in: patrolling for the jaw: " + string.Join(" | ", ai));
+            nav.Clear();
+            run.OnChat("[RynthAi] Quest: got Abhorrent Eater Jaw.");
+            Check(run.Step == 2, "the jaw got: on to the return");
+            Check(ai[^1] == "dungeon stop" || ai.Contains("dungeon stop"), "the dungeon walk stops: " + string.Join(" | ", ai));
+            Check(nav.Count > 0 && nav[^1] == "go 20.0N, 20.0E", "RynthNav goes to Xsao: " + string.Join(" | ", nav));
+            run.Stop();
+
+            // 2026-11-10: "the route isn't going in the portal like it should". A travel step to the portal's spot,
+            // the next step inside: the portal right there is taken, and getting in ends the step.
+            var pit = new GuideQuest { Title = "Pit Run" };
+            pit.Steps.Add(new GuideStep { Text = "Travel to 30.0N, 30.0E.", Coords = new List<string> { "30.0N, 30.0E" } });
+            pit.Steps.Add(new GuideStep { Text = "Kill the Pit Lord and loot the Pit Key.", Items = new List<string> { "Pit Key" } });
+            ai.Clear(); nav.Clear();
+            run.OnWhere(false, 0);
+            run.Start(pit, _ => false, loot: false);
+            run.OnChat("[RynthNav] goto: arrived");
+            Check(run.Step == 0 && ai.Exists(l => l.StartsWith("dungeon enter near")), "at the spot: the portal right there: " + string.Join(" | ", ai));
+            run.OnWhere(true, 0x2222);
+            Check(run.Step == 1, "in: the travel step is done");
+            run.Stop();
+            // No portal there: being there is the step, as before.
+            ai.Clear(); nav.Clear();
+            run.OnWhere(false, 0);
+            run.Start(pit, _ => false, loot: false);
+            run.OnChat("[RynthNav] goto: arrived");
+            run.OnChat("[RynthAi] Quest: no portal right here.");
+            Check(run.Step == 1, "no portal: the travel step is done");
             run.Stop();
         }
     }
