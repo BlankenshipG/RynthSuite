@@ -50,6 +50,8 @@ internal sealed class QuestRunner
     private int _askedAt = -1;                // the step RynthAi was asked about its items ("have")
     private bool _portalTried;                // a travel step's place: its portal looked for once
     private readonly HashSet<string> _got = new(StringComparer.OrdinalIgnoreCase);   // quest items RynthAi got this run (bare names)
+    private bool _insideAsk;                  // in a dungeon: RynthNav was asked which of the step's people is in it ("inside")
+    private uint _insideCell;                 // RynthNav's arrival named the cell the step's person is in; walked to once inside
 
     /// <summary>RynthAi walks a dungeon for the run (its map: a goto or the patrol).</summary>
     public bool DungeonWalk => _dungeonWalk;
@@ -249,10 +251,37 @@ internal sealed class QuestRunner
             Changed();
             return;
         }
+        if (_insideAsk && Travelling && line.Contains("[RynthNav] inside:", StringComparison.Ordinal))
+        {
+            // None of the step's people is in this dungeon (by the Atlas): walk it as before.
+            _insideAsk = false;
+            Travelling = false;
+            GuideStep si = Quest.Steps[Step];
+            if (!GoDungeon(Quest, si)) Note = $"Step {Step + 1}: {si.Text} (Next when done)";
+            DoNpc();
+            Changed();
+            return;
+        }
         if (Travelling && line.Contains("[RynthNav]", StringComparison.Ordinal) && line.Contains(ArrivedText, StringComparison.OrdinalIgnoreCase))
         {
             Travelling = false;
+            _insideAsk = false;
             GuideStep s = Quest.Steps[Step];
+            // The step's person is inside a dungeon (RynthNav names the cell): RynthAi walks its map there, and the talk
+            // or hand-in waits for them on the way (2026-11-11).
+            uint cellIn = InsideCell(line);
+            if (cellIn != 0)
+            {
+                _insideCell = cellIn;
+                Note = $"Step {Step + 1}: {s.Text}";
+                _print($"Step {Step + 1}/{Quest.Steps.Count}: {s.Text}");
+                foreach (string n in s.Notes) _print("  " + n);
+                if (_inDungeon) WalkToCell(Quest, s);
+                else Note = $"Step {Step + 1}: in; walking to {string.Join(" or ", _targets)} once the dungeon loads";
+                AskItems(s);
+                Changed();
+                return;
+            }
             Note = $"Step {Step + 1}: here. {s.Text}";
             _print($"Step {Step + 1}/{Quest.Steps.Count}: {s.Text}");
             foreach (string n in s.Notes) _print("  " + n);
@@ -365,6 +394,8 @@ internal sealed class QuestRunner
         GuideStep s = q.Steps[Step];
         if (!keepPlace) Place = 0;
         _portalTried = false;
+        _insideAsk = false;
+        _insideCell = 0;
         _targets = QuestNames.TargetsAt(q, Step);
         _fallback = "";
         // In a dungeon, a step that happens outside it (a hand-in, "Return to ...") leaves it: the dungeon walk
@@ -373,6 +404,17 @@ internal sealed class QuestRunner
         {
             if (_dungeonWalk) { _ai("dungeon stop"); _dungeonWalk = false; }
             _print($"Step {Step + 1}: leaving the dungeon for it.");
+        }
+        else if (_inDungeon && _targets.Count > 0 && Places(s).Count == 0 && (QuestNames.IsHandIn(s) || QuestNames.IsTalk(q, s))
+                 && _nav("inside " + string.Join(" || ", _targets)))
+        {
+            // The step's person may be in this dungeon (the Bur, a dungeon's quest giver, 2026-11-11): RynthNav says
+            // which cell, and RynthAi walks there; not here, the dungeon is walked as before (OnChat).
+            _insideAsk = true;
+            Travelling = true;
+            Note = $"Step {Step + 1}: looking for {string.Join(" or ", _targets)} in this dungeon";
+            AskItems(s);
+            return;
         }
         else if (_inDungeon && GoDungeon(q, s)) { AskItems(s); return; }
         // Items carried already (picked up by hand, an earlier run) finish the step before the trip.
@@ -555,6 +597,12 @@ internal sealed class QuestRunner
         }
         Travelling = false;
         GuideQuest q = Quest;
+        if (_insideCell != 0 && Step >= 0 && Step < q.Steps.Count && _insideCell >> 16 == landblock)
+        {
+            WalkToCell(q, q.Steps[Step]);
+            Changed();
+            return;
+        }
         if (Step >= 0 && Step < q.Steps.Count && (EntersOnly(q.Steps[Step]) || (TravelOnly(q, Step) && NextInside(q, Step))))
         {
             _print($"Step {Step + 1} done: you're in.");
@@ -651,6 +699,30 @@ internal sealed class QuestRunner
     /// The step inside a dungeon: RynthAi walks its map, to the step's coordinates, else all over it
     /// (fighting, looting, doors). False when RynthAi isn't there.
     /// </summary>
+    /// <summary>"... (Drogur is in cell 009C0270)" at the end of RynthNav's arrival line: that cell, else 0.</summary>
+    internal static uint InsideCell(string line)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(line ?? "", @" is in cell ([0-9A-Fa-f]{8})\)");
+        return m.Success ? uint.Parse(m.Groups[1].Value, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture) : 0;
+    }
+
+    /// <summary>
+    /// Inside, to the cell RynthNav named: RynthAi walks the dungeon's map there (fighting, doors, the quest's keys),
+    /// and the step's talk or hand-in is sent at once; RynthAi keeps looking for the person while it walks.
+    /// </summary>
+    private void WalkToCell(GuideQuest q, GuideStep s)
+    {
+        uint cell = _insideCell;
+        _insideCell = 0;
+        string keys = string.Join("", QuestKeys(q).ConvertAll(k => " | " + k));
+        if (_ai($"dungeon to {cell:X8}{keys}"))
+        {
+            _dungeonWalk = true;
+            Note = $"Step {Step + 1}: walking the dungeon to {string.Join(" or ", _targets)} (cell {cell:X8})";
+        }
+        DoNpc();
+    }
+
     private bool GoDungeon(GuideQuest q, GuideStep s)
     {
         string keys = string.Join("", QuestKeys(q).ConvertAll(k => " | " + k));

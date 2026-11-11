@@ -880,7 +880,8 @@ public sealed partial class RynthNavPlugin : RynthPluginBase
         lock (_gate) _status = status;
         _gotoEndStatus = status; _gotoEndSeq++;   // a route maker go job reads how it ended (RynthNavPlugin.RouteMaker.cs)
         Host.Log($"[RynthNav] goto: {status}");
-        Say(status == "arrived" && _gotoName.Length > 0 ? $"goto: arrived at {_gotoName}" : $"goto: {status}");
+        string inside = TakeInsideTail(status);   // a target inside a dungeon: where in it (RynthNavPlugin.Inside.cs)
+        Say((status == "arrived" && _gotoName.Length > 0 ? $"goto: arrived at {_gotoName}" : $"goto: {status}") + inside);
         _goNote = status == "arrived" && _gotoName.Length > 0 ? $"arrived at {_gotoName}" : status;
         _enterName = ""; _enterType = "";
         HideMarkers(status == "arrived" ? "arrived" : "the goto ended");

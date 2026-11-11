@@ -639,6 +639,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private void TickData(long now)
     {
         _c.Flags.Tick(now);
+        _mainView?.TickDyn();   // Dynamic Stamps: the hand-in after the arrival settles
         if (_c.Flags.LastPartialReply is { } partial)
         {
             _c.Flags.LastPartialReply = null;

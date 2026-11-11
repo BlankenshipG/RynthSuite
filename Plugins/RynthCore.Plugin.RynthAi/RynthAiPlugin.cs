@@ -180,7 +180,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private int _giveGoneStreak;
     private int _giveUnclassified;   // unclassified chat lines logged for this give (max 5)
     // Chat verdict on the in-flight give, set by OnChatWindowText and read on the tick.
-    private enum GiveChat { None, Busy, Permanent, ItemNotFound }
+    private enum GiveChat { None, Busy, Permanent, ItemNotFound, Examined }
+    // Items an NPC looked at and handed back ("You allow X to examine your Y.": ACE's Refuse emote, how a
+    // dynamic-quest NPC stamps a Parchment). Answered, not skipped; counted apart from items given.
+    private int _giveRunShown;
+    // How long the in-flight give may go unanswered: GiveConfirmMs plus AC's walk to a target that is far.
+    private long _giveInFlightConfirmMs = GiveConfirmMs;
     private int _giveChatVerdict;   // a GiveChat, handed from OnChatWindowText to the tick with Interlocked
     private string _giveChatLine = string.Empty;
     private bool _giveSawAcceptLine;
@@ -3723,6 +3728,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         Interlocked.Exchange(ref _giveChatVerdict, 0);
         _giveRunActive = false;
         _giveRunItems = 0;
+        _giveRunShown = 0;
         _giveRunSkips.Clear();
     }
 
@@ -3734,6 +3740,9 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
     private static GiveChat ClassifyGiveChat(string text)
     {
         string t = text.ToLowerInvariant();
+        // "You allow <npc> to examine your <item>.": the NPC took the give and answered with its Refuse
+        // emote (the item comes back). A dynamic-quest stamp is exactly this, so it is an answer, not silence.
+        if (t.StartsWith("you allow ", StringComparison.Ordinal) && t.Contains(" to examine your ")) return GiveChat.Examined;
         // Busy class first: "<npc> is too busy to accept gifts" must not read as "not accepting gifts".
         if (t.Contains("too busy") || t.Contains("is busy right now")) return GiveChat.Busy;
         if (t.Contains("item not found")) return GiveChat.ItemNotFound;
@@ -3912,6 +3921,13 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             SkipGiveStack("item not found", tag, now);
             return true;
         }
+        if (chat == GiveChat.Examined)
+        {
+            Host.Log($"[RynthAi] Give answer: examined {tag} '{_giveChatLine}' after {sinceSend} ms (the target looked at it and handed it back)");
+            _giveRunShown++;
+            CompleteGiveStack(0, now);
+            return true;
+        }
         if (chat == GiveChat.Permanent)
         {
             Host.Log($"[RynthAi] Give answer: permanent {tag} '{_giveChatLine}' after {sinceSend} ms");
@@ -3952,7 +3968,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         }
 
         // 3. No answer at all.
-        if (sinceSend < GiveConfirmMs) return false;
+        if (sinceSend < _giveInFlightConfirmMs) return false;
         if (_giveInFlightTries < GiveMaxTries)
         {
             Host.Log($"[RynthAi] Give answer: no-answer {tag} after {sinceSend} ms; re-sending");
@@ -4027,6 +4043,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _giveInFlightName = name;
         _giveInFlightAt = now;
         _giveLastSendAt = now;
+        _giveInFlightConfirmMs = GiveConfirmMsFor(targetId);
         Interlocked.Exchange(ref _giveChatVerdict, 0);
         _giveSawAcceptLine = false;
         _giveGoneStreak = 0;
@@ -4036,6 +4053,18 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         return true;
     }
 
+    /// <summary>
+    /// GiveConfirmMs, plus the time AC needs to walk the player to a target that is not in reach (about
+    /// 3 m/s, past 3 m, capped at 20 s): a give to an NPC 15 m off answers only once the walk ends, and a
+    /// re-send before that cancels the walk ("Action cancelled!").
+    /// </summary>
+    private long GiveConfirmMsFor(uint targetId)
+    {
+        double d = _objectCache?.Distance(unchecked((int)_playerId), unchecked((int)targetId)) ?? -1;
+        if (d is not (> 3 and < 200)) return GiveConfirmMs;   // unknown (MaxValue), in reach, or not a walk AC makes
+        return GiveConfirmMs + (long)Math.Min(20000, (d - 3) / 3.0 * 1000);
+    }
+
     private void FinishGiveRun(long now)
     {
         if (!_giveRunActive) return;
@@ -4043,10 +4072,12 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         long elapsed = Math.Max(0, _giveRunLastAnswerAt - _giveRunStartAt);
         string avg = _giveRunItems > 0 ? $"{elapsed / _giveRunItems} ms" : "n/a";
         string why = _giveRunSkips.Count == 0 ? string.Empty : $" ({string.Join("; ", _giveRunSkips)})";
-        string line = $"[RynthAi] Give queue complete: {_giveRunItems} item(s) given, {_giveRunSkips.Count} stack(s) skipped{why}, {elapsed / 1000.0:0.0}s total, {avg} per give.";
+        string shown = _giveRunShown > 0 ? $", {_giveRunShown} examined and handed back" : string.Empty;
+        string line = $"[RynthAi] Give queue complete: {_giveRunItems} item(s) given{shown}, {_giveRunSkips.Count} stack(s) skipped{why}, {elapsed / 1000.0:0.0}s total, {avg} per give.";
         Host.Log(line);
         ChatLine(line);
         _giveRunItems = 0;
+        _giveRunShown = 0;
         _giveRunSkips.Clear();
     }
 

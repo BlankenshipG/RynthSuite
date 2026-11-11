@@ -1094,6 +1094,8 @@ public sealed partial class RynthNavPlugin
         // "go a || b || c" (Oracle's Dynamic Stamps, any caller): the first candidate on the map.
         if (cmd is "go" or "goto" or "route" or "arrow" && rest.Contains("||", StringComparison.Ordinal))
         {
+            // Someone inside a dungeon (2026-11-11), when no earlier candidate is on the map: the way in.
+            if (cmd is "go" or "goto" && TryGoInsideAlternative(rest)) return;
             if (!PickAlternative(rest, out string picked, out string why)) { Note(why); return; }
             rest = picked;
         }
@@ -1122,6 +1124,7 @@ public sealed partial class RynthNavPlugin
                 CmdGo(rest);
                 break;
             case "route": CmdRoute(rest); break;
+            case "inside": CmdInside(rest); break;   // which of these is in this dungeon (RynthNavPlugin.Inside.cs)
             case "arrow": CmdArrow(rest); break;
             case "atlas": CmdAtlas(rest); break;
             case "fav": CmdFav(rest); break;
@@ -1182,6 +1185,8 @@ public sealed partial class RynthNavPlugin
 
     private void CmdGo(string rest)
     {
+        // Someone inside a dungeon (2026-11-11), when the map has nothing better for the name: the way in.
+        if (rest.Length > 0 && _store.FindFavorite(rest) == null && !NavCoords.TrySplitCoordsAndName(rest, out _, out _, out _) && TryGoInside(rest)) return;
         if (!ResolveGo(rest, out string name, out string type, out double ns, out double ew, out string enter, out string enterType, out string error))
         {
             Note(error);

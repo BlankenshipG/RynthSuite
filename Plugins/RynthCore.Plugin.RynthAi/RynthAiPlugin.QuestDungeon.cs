@@ -49,8 +49,8 @@ public sealed partial class RynthAiPlugin
             int from = near ? 2 : 1;
             return QuestDungeonEnter(words.Length > from ? string.Join(" ", words, from, words.Length - from) : "", near: near);
         }
-        if (verb is not ("patrol" or "goto"))
-            return (false, "[RynthAi] questloot dungeon patrol | goto <NS> <EW> | stop  [| key | key] (RynthOracle's quest run sends these)");
+        if (verb is not ("patrol" or "goto" or "to"))
+            return (false, "[RynthAi] questloot dungeon patrol | goto <NS> <EW> | to <cell> | stop  [| key | key] (RynthOracle's quest run sends these)");
 
         if (!Host.TryGetPlayerPose(out uint cell, out _, out _, out _, out _, out _, out _, out _) || (cell & 0xFFFF) < 0x0100)
             return (false, "[RynthAi] Quest: not inside a dungeon.");
@@ -72,6 +72,22 @@ public sealed partial class RynthAiPlugin
         settings.OpenDoors = true;
         string keyNote = keys.Count > 0 ? $"; keys first on locked doors: {string.Join(", ", keys)}" : "";
 
+        if (verb == "to")
+        {
+            // "dungeon to 009C0270": the map's walk to that cell (2026-11-11: a quest's person inside a dungeon or the
+            // Bur; RynthNav's arrival names the cell). Its centre on the map, as the patrol's graph has it.
+            if (words.Length < 2 || !uint.TryParse(words[1], System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out uint toCell))
+                return (false, "[RynthAi] questloot dungeon to <cell, 8 hex digits>");
+            if (toCell >> 16 != cell >> 16)
+                return (false, $"[RynthAi] Quest: cell {toCell:X8} isn't in this dungeon (0x{cell >> 16:X4}).");
+            var graph = DungeonPathfinder.GetGraph(cell >> 16, cellDat);
+            if (graph == null || !graph.TryGetValue(toCell, out DungeonNavNode? node))
+                return (false, $"[RynthAi] Quest: cell {toCell:X8} isn't on this dungeon's map.");
+            string ns = node.NS.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+            string ew = node.EW.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+            HandleDungeonNavCommand(new[] { "/ra", "dunnav", ns, ew });
+            return (true, $"[RynthAi] Quest: walking the dungeon's map to cell {toCell:X8}, fighting and looting on the way, opening doors{keyNote}.");
+        }
         if (verb == "goto")
         {
             if (words.Length < 3) return (false, "[RynthAi] questloot dungeon goto <NS> <EW>");

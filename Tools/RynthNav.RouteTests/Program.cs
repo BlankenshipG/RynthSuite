@@ -56,6 +56,7 @@ internal static partial class Program
         Run(nameof(DungeonEntrance), DungeonEntrance);
         Run(nameof(RouteEndsOnAPortalStep), RouteEndsOnAPortalStep);
         Run(nameof(RealDungeonEntrances), RealDungeonEntrances);
+        Run(nameof(PeopleInsideDungeons), PeopleInsideDungeons);
         RunTownNet();
         RunAvoid();
         RunTravelPlan();
@@ -683,6 +684,29 @@ internal static partial class Program
     }
 
     // The real location database: dungeons sit at their entrance portal (outside), not inside.
+    /// <summary>2026-11-11: quest people inside dungeons and the Bur: found by name, with the portal or recall in.</summary>
+    private static void PeopleInsideDungeons()
+    {
+        string locs = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..",
+            "RynthCore", "tools", "navdata", "NavData", "locations.json"));
+        if (!File.Exists(locs)) { Console.WriteLine("     (no generated NavData beside this repo: skipped)"); return; }
+        Atlas atlas = Atlas.Load(locs);
+        AtlasLocation? drogur = atlas.FindInside("Drogur");
+        Check(drogur != null && drogur.Cell == "009C0270", $"Drogur is in the Bur ({drogur?.Cell})");
+        AtlasLocation? torg = atlas.FindInside("Torgluuk");
+        Check(torg != null && torg.Name.StartsWith("Torgluuk, High Shaman", StringComparison.Ordinal), $"a first name finds the whole one ({torg?.Name})");
+        Check(atlas.FindInside("Dro") == null || atlas.FindInside("Dro")!.Name.StartsWith("Dro ", StringComparison.OrdinalIgnoreCase), "part of a word is no match");
+        Check(atlas.FindInside("Kor-Gursha") == null, "a portal is never a place inside");
+        Check(atlas.FindInside("Garaena the Emissary") == null, "someone on the map isn't inside");
+        bool burRecall = false;
+        foreach (AtlasRecall r in atlas.Recalls) if (r.Name == "Bur Recall" && !r.OnMap && r.Cell >> 16 == 0x009C) burRecall = true;
+        Check(burRecall, "Bur Recall lands in the Bur's landblock");
+        Check(Entrance.PortalInto(atlas, 0x009C, false, 0, 0) == null, "no portal on the map goes into the Bur (the recall does)");
+        AtlasLocation? cath = Entrance.PortalInto(atlas, 0x02F8, false, 0, 0);
+        Check(cath != null && cath.OnMap && cath.Name == "Burun Cathedral", $"Burun Cathedral's portal leads into 02F8 ({cath?.Name})");
+        Check(Atlas.TryCell("009C0270", out uint c) && c == 0x009C0270u && !Atlas.TryCell("009C", out _), "cells parse");
+    }
+
     private static void RealDungeonEntrances()
     {
         string locs = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..",

@@ -76,7 +76,11 @@ internal sealed partial class OracleView
 
     // ── Go and hand in (2026-11-08) ──
 
-    private enum DynPhase { None, BuyFirst, Going, BuyThere }
+    private enum DynPhase { None, BuyFirst, Going, BuyThere, Settling }
+    // After RynthNav's "goto: arrived" the hand-in waits this long, so the character has stopped: a give
+    // sent while still running is cancelled by the server's own move-to ("Action cancelled!").
+    private const long ArriveSettleMs = 1500;
+    private long _dynGiveAt;
     private DynamicStamp? _dynAuto;
     private DynPhase _dynPhase;
     internal const string BoughtLine = "[RynthAi] Quest: bought Parchment";
@@ -146,6 +150,21 @@ internal sealed partial class OracleView
     }
 
     private void DynArrived(DynamicStamp s)
+    {
+        _dynPhase = DynPhase.Settling;
+        _dynGiveAt = _c.NowMs + ArriveSettleMs;
+        _dynNavStatus = $"At {s.Npc}: handing in the Parchment in a moment.";
+    }
+
+    /// <summary>Plugin tick: the hand-in once the character has settled after arriving.</summary>
+    internal void TickDyn()
+    {
+        if (_dynPhase != DynPhase.Settling || _dynAuto is not DynamicStamp s) return;
+        if (_c.NowMs < _dynGiveAt) return;
+        HandInNow(s);
+    }
+
+    private void HandInNow(DynamicStamp s)
     {
         _parchmentScanAt = 0;
         if (CarriedParchment() is string p) { _dynPhase = DynPhase.None; GiveParchment(s, p); return; }

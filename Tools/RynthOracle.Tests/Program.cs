@@ -75,6 +75,7 @@ namespace RynthOracle.Tests
             WikiGuide();
             QuestNamesTests();
             QuestDungeonTests();
+            QuestInsideTests();
             QuestPickupTests();
             QuestOfferTests();
             Console.WriteLine($"{_pass} passed, {_fail} failed");

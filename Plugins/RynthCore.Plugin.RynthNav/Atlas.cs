@@ -201,6 +201,39 @@ internal sealed class Atlas
         return null;
     }
 
+    /// <summary>
+    /// The best place INSIDE a dungeon (no map position, a dungeon cell) for a name: a person, a vendor or a
+    /// landmark whose name is the query or starts with it as whole words ("Drogur", "Torgluuk" for "Torgluuk,
+    /// High Shaman of Kor-Gursha"); never a portal. Ties: one in <paramref name="hereLb"/> (the landblock you
+    /// are in), then the exact name. Null when none answers (2026-11-11: quest people inside dungeons and the Bur).
+    /// </summary>
+    public AtlasLocation? FindInside(string query, uint hereLb = 0)
+    {
+        string q = query.Trim();
+        if (q.Length < 3) return null;
+        AtlasLocation? best = null;
+        int bestScore = 0;
+        foreach (AtlasLocation l in Locations)
+        {
+            if (l.OnMap || l.Type.Equals("Portal", StringComparison.Ordinal) || l.Type.Equals("Dungeon", StringComparison.Ordinal)) continue;
+            if (!l.Place.Equals("dungeon", StringComparison.Ordinal) || !TryCell(l.Cell, out uint cell)) continue;
+            int s = l.Name.Equals(q, StringComparison.OrdinalIgnoreCase) ? 2
+                : l.Name.Length > q.Length && l.Name.StartsWith(q, StringComparison.OrdinalIgnoreCase) && !char.IsLetterOrDigit(l.Name[q.Length]) ? 1 : 0;
+            if (s == 0) continue;
+            if (hereLb != 0 && cell >> 16 == hereLb) s += 10;
+            if (s <= bestScore) continue;
+            best = l; bestScore = s;
+        }
+        return best;
+    }
+
+    /// <summary>An 8-digit hex cell ("009C0270").</summary>
+    public static bool TryCell(string text, out uint cell)
+    {
+        cell = 0;
+        return text.Length == 8 && uint.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out cell);
+    }
+
     /// <summary>How well <paramref name="name"/> matches <paramref name="q"/> (lower case): 0 = not at all.</summary>
     public static int MatchScore(string name, string q)
     {

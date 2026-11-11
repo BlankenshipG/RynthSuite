@@ -34,6 +34,9 @@ public sealed partial class RynthAiPlugin
     private string _questNpcPending = string.Empty;
     private long _questNpcNextAt, _questNpcUntil;
     internal const long QuestNpcRetryMs = 2000, QuestNpcRetryForMs = 20000;
+    // While RynthAi walks a dungeon for the run (a person inside it, 2026-11-11), looked for this long: the walk
+    // there takes minutes, and the person is met on the way or at its end.
+    internal const long QuestNpcDungeonRetryForMs = 240000;
 
     /// <summary>Each tick: the pending talk / hand-in, tried again when it is due. Pump thread.</summary>
     private void TickQuestNpcRetry()
@@ -70,18 +73,27 @@ public sealed partial class RynthAiPlugin
         {
             // Not in sight yet: look again for a while (the first try starts the clock).
             long now = Environment.TickCount64;
-            if (!retrying) _questNpcUntil = now + QuestNpcRetryForMs;
+            long window = _questDungeonActive ? QuestNpcDungeonRetryForMs : QuestNpcRetryForMs;
+            if (!retrying) _questNpcUntil = now + window;
             if (now < _questNpcUntil)
             {
                 _questNpcPending = line;
                 _questNpcNextAt = now + QuestNpcRetryMs;
-                return (true, $"[RynthAi] Quest: looking for {string.Join(" or ", names)} (trying for {QuestNpcRetryForMs / 1000} s).");
+                return (true, _questDungeonActive
+                    ? $"[RynthAi] Quest: looking for {string.Join(" or ", names)} on the way through the dungeon (for up to {window / 60000} min)."
+                    : $"[RynthAi] Quest: looking for {string.Join(" or ", names)} (trying for {window / 1000} s).");
             }
             _questNpcUntil = 0;
             return (false, $"[RynthAi] Quest: no {string.Join(" or ", names)} near you to {(verb == "talk" ? "talk to" : "hand the items to")}.");
         }
         _questNpcPending = string.Empty;
         _questNpcUntil = 0;
+        // Met on a dungeon walk: the walk stops so the server's own walk to them (the talk, the give) isn't fought.
+        if (_questDungeonActive)
+        {
+            Log($"[Quest] {npc.Name} found on the dungeon walk: the walk stops for the {(verb == "talk" ? "talk" : "hand-in")}");
+            QuestDungeonStop();
+        }
 
         if (verb == "handin" && items.Count > 0)
         {
@@ -202,8 +214,24 @@ public sealed partial class RynthAiPlugin
     /// The NPC the names mean: the best match over all of them (the same name before one that starts with
     /// it, before a word of it; then the earlier name, then the nearest), an NPC or a vendor in range.
     /// </summary>
+    /// <summary>
+    /// On a dungeon walk the person must be this near before the walk stops for them (metres): one 50 m off may be
+    /// behind walls or a level away, where the server's own walk to them gets stuck; the map's walk gets nearer.
+    /// </summary>
+    internal const double QuestNpcDungeonRange = 15.0;
+
+    /// <summary>RynthAi's map walk of the dungeon still has points to go (the run's "dungeon to" or "goto").</summary>
+    private bool QuestDungeonWalking()
+    {
+        var st = _dashboard?.Settings;
+        if (!_questDungeonActive || st == null || !st.EnableNavigation) return false;
+        var route = st.CurrentRoute;
+        return route != null && route.Points.Count > 0 && st.ActiveNavIndex < route.Points.Count - 1;
+    }
+
     private WorldObject? FindQuestNpc(List<string> names)
     {
+        double range = QuestDungeonWalking() ? QuestNpcDungeonRange : QuestNpcRange;
         if (_objectCache == null) return null;
         WorldObject? best = null;
         int bestScore = 0, bestOrder = int.MaxValue;
@@ -219,7 +247,7 @@ public sealed partial class RynthAiPlugin
             }
             if (score == 0) continue;
             double dist = _playerId != 0 ? _objectCache.Distance((int)_playerId, wo.Id) : double.MaxValue;
-            if (dist != double.MaxValue && dist > QuestNpcRange) continue;
+            if (dist != double.MaxValue && dist > range) continue;
             bool better = score > bestScore
                 || (score == bestScore && order < bestOrder)
                 || (score == bestScore && order == bestOrder && dist < bestDist);
