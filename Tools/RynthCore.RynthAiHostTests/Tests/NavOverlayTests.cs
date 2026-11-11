@@ -32,6 +32,34 @@ internal static class NavOverlayTests
         r.Add("nav overlay: the label triangle budget holds for long names", TriangleBudget);
         r.Add("nav overlay: settings round-trip; an older engine's payload leaves them alone", SettingsRoundTrip);
         r.Add("nav overlay: Settings > Navigation shows the Nav panel's Breadcrumbs and Route overlay switches", SettingsLinksNavPanelSwitches);
+        r.Add("breadcrumbs: indoors, another floor's trail isn't drawn; the map paints the floor you stand on", TrailStaysOnItsFloor);
+    }
+
+    /// <summary>
+    /// 2026-11-11: the trail and the dungeon map's walked cells kept to their own floor. The 3D trail draws a
+    /// segment indoors only within half a storey of you; the map's paint goes to the floor under you (stacked
+    /// floors share x/y: the one with floor there, nearest your height).
+    /// </summary>
+    private static void TrailStaysOnItsFloor()
+    {
+        Check.True(NavOverlayRenderer.TrailOnMyFloor(false, 0f, 30f, 30f), "outdoors: every segment");
+        Check.True(NavOverlayRenderer.TrailOnMyFloor(true, -12f, -12.5f, -11f), "indoors: your floor");
+        Check.False(NavOverlayRenderer.TrailOnMyFloor(true, -12f, -6f, -6f), "indoors: the floor above isn't drawn");
+        Check.False(NavOverlayRenderer.TrailOnMyFloor(true, -12f, -12f, -18f), "indoors: a segment down to the floor below isn't drawn");
+
+        var map = new RynthCore.Plugin.RynthAi.LegacyUi.DungeonMapUi
+        {
+            _zLayers = new List<float> { -18f, -12f, -6f },
+            _floorCells = new Dictionary<float, Dictionary<(int, int), RynthCore.Plugin.RynthAi.LegacyUi.DungeonMapUi.CellType>>
+            {
+                [-18f] = new() { [(10, 10)] = RynthCore.Plugin.RynthAi.LegacyUi.DungeonMapUi.CellType.Flat },
+                [-12f] = new() { [(20, 20)] = RynthCore.Plugin.RynthAi.LegacyUi.DungeonMapUi.CellType.Flat },
+                [-6f] = new() { [(10, 10)] = RynthCore.Plugin.RynthAi.LegacyUi.DungeonMapUi.CellType.Flat },
+            },
+        };
+        Check.Eq(RynthCore.Plugin.RynthAi.LegacyUi.RynthRadarUi.PlayerLayer(map, 10, 10, -17.5f), -18f, "standing on the lower of two stacked floors: that one");
+        Check.Eq(RynthCore.Plugin.RynthAi.LegacyUi.RynthRadarUi.PlayerLayer(map, 10, 10, -6.2f), -6f, "the upper one: that one");
+        Check.Eq(RynthCore.Plugin.RynthAi.LegacyUi.RynthRadarUi.PlayerLayer(map, 5, 5, -11f), -12f, "no floor there: the nearest by height");
     }
 
     /// <summary>

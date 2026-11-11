@@ -23,7 +23,10 @@ internal sealed class RynthRadarUi
     // resolution). Cleared whenever the player transitions landblocks, so
     // re-entering a dungeon resets the coloring.
     private const float GridCell = 0.5f;
-    private readonly System.Collections.Generic.HashSet<(int gx, int gy)> _visitedCells = new();
+    // Keyed by the floor (layer Z) as well (2026-11-11, Silentkelpie: the dungeon map's trail "isn't tracking the z
+    // coords elevation level changes and overlaps"): walking one floor painted the same spot on the floors above and
+    // below it. Each floor now has its own painted cells.
+    private readonly System.Collections.Generic.HashSet<(float z, int gx, int gy)> _visitedCells = new();
     private uint _visitedLandblock;
     // Visited cells merged into strips — rebuilt only when _visitedCells grows.
     private System.Collections.Generic.Dictionary<float, System.Collections.Generic.List<(float x0, float y0, float x1, float y1)>>? _visitedFillStrips;
@@ -85,17 +88,38 @@ internal sealed class RynthRadarUi
         var map = _mapData;
         if (map?._floorCells is null || map._cachedLandblock != landblock || _visitedLandblock != landblock) return null;
         int total = 0, seen = 0;
-        foreach (var (_, cells) in map._floorCells)
+        foreach (var (layerZ, cells) in map._floorCells)
             foreach (var ((gx, gy), ctype) in cells)
             {
                 if (ctype != DungeonMapUi.CellType.Flat) continue;
                 total++;
-                if (_visitedCells.Contains((gx, gy))) seen++;
+                if (_visitedCells.Contains((layerZ, gx, gy))) seen++;
             }
         return total == 0 ? null : (double)seen / total;
     }
 
     // ── Visited strip cache ─────────────────────────────────────────────
+
+    /// <summary>
+    /// The floor (layer Z) under the player: of the floors that have floor at the player's grid cell, the one
+    /// nearest their Z (stacked floors share x/y); none has: the nearest by Z. Null without layers.
+    /// </summary>
+    internal static float? PlayerLayer(DungeonMapUi map, int gx, int gy, float z)
+    {
+        var layers = map._zLayers;
+        if (layers is not { Count: > 0 }) return null;
+        float? best = null, nearest = null;
+        float bestD = float.MaxValue, nearestD = float.MaxValue;
+        foreach (float lz in layers)
+        {
+            float d = MathF.Abs(lz - z);
+            if (d < nearestD) { nearestD = d; nearest = lz; }
+            if (map._floorCells != null && map._floorCells.TryGetValue(lz, out var cells) && cells.ContainsKey((gx, gy)) && d < bestD)
+            { bestD = d; best = lz; }
+        }
+        // A floor more than a storey off isn't the one you're on (a cell above you shares your x/y).
+        return best is float b && bestD <= 6f ? b : nearest;
+    }
 
     private void RebuildRadarVisitedStrips()
     {
@@ -111,7 +135,7 @@ internal sealed class RynthRadarUi
         {
             var flatVisited = new System.Collections.Generic.List<(int, int)>();
             foreach (var ((gx, gy), ctype) in cells)
-                if (ctype == DungeonMapUi.CellType.Flat && _visitedCells.Contains((gx, gy)))
+                if (ctype == DungeonMapUi.CellType.Flat && _visitedCells.Contains((layerZ, gx, gy)))
                     flatVisited.Add((gx, gy));
             if (flatVisited.Count == 0) continue;
             var strips = DungeonMapUi.BuildVisitedStripsFrom(flatVisited);
@@ -262,14 +286,21 @@ internal sealed class RynthRadarUi
             _corpseKillers.Clear();
         }
 
-        if (isIndoor)
+        if (isIndoor && _mapData != null)
         {
+            _mapData.EnsureCache(landblock);
             int pgx = (int)MathF.Floor(playerWX / GridCell);
             int pgy = (int)MathF.Floor(playerWY / GridCell);
-            int r = Math.Clamp(_settings.RadarWallPaintRadius, 0, 40);
-            for (int oy = -r; oy <= r; oy++)
-                for (int ox = -r; ox <= r; ox++)
-                    _visitedCells.Add((pgx + ox, pgy + oy));
+            // The floor you stand on: painted there only, and only where that floor has floor.
+            if (PlayerLayer(_mapData, pgx, pgy, pz) is float layerZ)
+            {
+                var floor = _mapData._floorCells != null && _mapData._floorCells.TryGetValue(layerZ, out var fc) ? fc : null;
+                int r = Math.Clamp(_settings.RadarWallPaintRadius, 0, 40);
+                for (int oy = -r; oy <= r; oy++)
+                    for (int ox = -r; ox <= r; ox++)
+                        if (floor == null || floor.ContainsKey((pgx + ox, pgy + oy)))
+                            _visitedCells.Add((layerZ, pgx + ox, pgy + oy));
+            }
         }
 
         if (_visitedCells.Count != _lastVisitedCount && _mapData != null)

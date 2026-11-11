@@ -93,6 +93,9 @@ internal sealed class NavBreadcrumbTracker
         _lastNS = ns; _lastEW = ew; _lastZ = z;
 
         if (teleported) _breakNext = true;
+        // A drop or a lift to another floor between two ticks (a pit, a jump down): the trail breaks there, so no
+        // line runs from one floor to the next (2026-11-11).
+        if (hadLast && !teleported && MathF.Abs(z - (float)preZ) > NavOverlayRenderer.TrailOtherFloorZ) _breakNext = true;
 
         // While tracking is off, keep a break pending so the trail resumes as a new segment
         // instead of joining across the untracked stretch.
@@ -105,13 +108,18 @@ internal sealed class NavBreadcrumbTracker
     //  Breadcrumb trail
     // ═══════════════════════════════════════════════════════════════════
 
+    /// <summary>A rise or drop of this much (world units) since the last crumb samples one, whatever the distance.</summary>
+    internal const float TrailRiseSample = 1.5f;
+
     private void SampleCrumb(double ns, double ew, float z, NavOverlaySettings o)
     {
         if (_crumbs.Count > 0 && !_breakNext)
         {
             var last = _crumbs[^1];
             double d = NavRouteEditing.DistanceYards(last.NS, last.EW, ns, ew);
-            if (d < o.BreadcrumbSpacingYards) return;
+            // Height counts too (2026-11-11): a ramp or stairs climbed in a short way is sampled, so the trail
+            // follows the floors' heights instead of cutting from one to the next.
+            if (d < o.BreadcrumbSpacingYards && MathF.Abs(z - last.Z) < TrailRiseSample) return;
             _trailYards += d;
         }
         _crumbs.Add(new NavCrumb(ns, ew, z, _breakNext || _crumbs.Count == 0));

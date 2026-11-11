@@ -39,7 +39,7 @@ internal sealed class NavOverlayRenderer
     }
 
     /// <summary>Player frame shared by every pass (marker world frame: X=EW, Y=up, Z=NS).</summary>
-    private readonly record struct Frame(double NS, double EW, float Px, float Py, float Pz, float HeadingDeg);
+    private readonly record struct Frame(double NS, double EW, float Px, float Py, float Pz, float HeadingDeg, bool Indoor = false);
 
     private bool TryGetFrame(out Frame f)
     {
@@ -51,7 +51,7 @@ internal sealed class NavOverlayRenderer
         if ((cell >> 16) == 0) return false;
         // Physics yaw (CCW from north) → compass heading (0 = north, clockwise), as NavigationEngine.
         double yaw = 2.0 * Math.Atan2(qz, qw) * (180.0 / Math.PI);
-        f = new Frame(ns, ew, px, py, pz, (float)((-yaw + 720.0) % 360.0));
+        f = new Frame(ns, ew, px, py, pz, (float)((-yaw + 720.0) % 360.0), (cell & 0xFFFF) >= 0x100);
         return true;
     }
 
@@ -103,6 +103,16 @@ internal sealed class NavOverlayRenderer
     /// Newest-first walk of the trail within draw range, capped at <see cref="MaxTrailLines"/>;
     /// no segment crosses a teleport break. <c>fade</c> is 1 for the newest segment.
     /// </summary>
+    /// <summary>
+    /// Indoors, a trail segment this far above or below you (world units, about half a storey) is another floor's:
+    /// not drawn, since the overlay isn't hidden by floors and would lie over this one (2026-11-11).
+    /// </summary>
+    internal const float TrailOtherFloorZ = 3.0f;
+
+    /// <summary>The segment is on your floor (outdoors: always).</summary>
+    internal static bool TrailOnMyFloor(bool indoor, float playerZ, float az, float bz) =>
+        !indoor || (MathF.Abs(az - playerZ) <= TrailOtherFloorZ && MathF.Abs(bz - playerZ) <= TrailOtherFloorZ);
+
     private void ForEachTrailSegment(in Frame f, NavOverlaySettings o, Action<Vector3, Vector3, float> draw)
     {
         NavCrumb[] trail = _trail.Trail;
@@ -113,6 +123,7 @@ internal sealed class NavOverlayRenderer
         {
             NavCrumb b = trail[i], a = trail[i - 1];
             if (b.SegmentStart) continue;
+            if (!TrailOnMyFloor(f.Indoor, f.Pz, a.Z, b.Z)) continue;
             if (NavRouteEditing.DistanceYards(f.NS, f.EW, b.NS, b.EW) > o.BreadcrumbDrawRangeYards) continue;
             float fade = o.BreadcrumbFade ? 1f - 0.8f * drawn / Math.Max(1, total) : 1f;
             draw(ToWorld(f, a.NS, a.EW, a.Z + lift), ToWorld(f, b.NS, b.EW, b.Z + lift), fade);
