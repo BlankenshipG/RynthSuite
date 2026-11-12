@@ -136,6 +136,8 @@ namespace RynthOracle.Tests
                 Path.Combine("Data", "DynamicStamps.cs"), Path.Combine("Views", "DynamicStampsTab.cs"), Path.Combine("Views", "QuestsTab.cs"),
                 // 2026-11-01: the Leaftide wiki quest guide RynthILT keeps, read only while the server is Infinite Leaftide.
                 Path.Combine("Data", "QuestGuideClient.cs"),
+                // 2026-11-11: the T11 Tracking tab (Infinite Leaftide only) toggles a charm through RynthILT's data interface.
+                Path.Combine("Views", "T11Tab.cs"),
             };
             int files = 0;
             var found = new System.Collections.Generic.List<string>();

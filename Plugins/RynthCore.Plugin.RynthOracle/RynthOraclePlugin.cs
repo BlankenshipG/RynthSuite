@@ -74,6 +74,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.RequestQuests = RequestQuests;
         _c.RereadCharacter = RereadCharacter;
         _c.RereadTitles = RereadTitles;
+        _c.RescanT11 = () => { _nextT11Ms = 0; ReadT11(Environment.TickCount64); };
         _c.ReloadQuestList = ReloadQuestList;
         _c.Send = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
         _c.RunCommand = cmd => _c.InWorld && Host.InvokeChatParser(cmd);
@@ -198,6 +199,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.TitlesKnown = false;
         _c.EarnedTitles.Clear();
         _c.Gear.Clear();
+        _c.T11.Clear();
         ClearCharacterExtras();
         _c.Runner?.Stop("ended at logout");
         _c.SessionStamps.Clear();
@@ -276,6 +278,25 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     }
 
     /// <summary>Forgets the Character tab's session (login, logout): the next character's comes fresh.</summary>
+    private long _nextT11Ms;
+    /// <summary>The T11 Tracking tab reads the packs and the bounty slots this often while it shows.</summary>
+    private const long T11ReadMs = 2000;
+
+    /// <summary>
+    /// The T11 Tracking tab's data (Infinite Leaftide only): the packs and the bounty slots every <see cref="T11ReadMs"/>
+    /// while that tab shows, and one queued appraisal at a time for the items it needs read. Nothing with the window
+    /// closed, on another tab, or on another server.
+    /// </summary>
+    private void ReadT11(long now)
+    {
+        if (_main == null || _mainView == null || !_main.Visible || _mainView.Tab != OracleView.TabT11) return;
+        if (!_c.Server.IsIlt || !_c.InWorld) return;
+        _c.T11.Tick(Host, now);
+        if (now < _nextT11Ms) return;
+        _nextT11Ms = now + T11ReadMs;
+        if (_c.T11.Scan(Host, now)) _main.NeedsPass = true;
+    }
+
     private void ClearCharacterExtras()
     {
         _c.Session = default;
@@ -693,6 +714,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                 if (_main != null) _main.NeedsPass = true;
             }
             ReadGuardian(now);
+            ReadT11(now);
             _c.Guide.Poll(Host, now);
             if (_c.Guide.Revision != _seenGuideRevision)
             {

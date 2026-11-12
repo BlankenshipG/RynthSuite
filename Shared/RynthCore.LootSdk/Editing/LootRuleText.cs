@@ -304,6 +304,7 @@ public static class LootRuleText
         362 => SummoningMasteries,
         T11.T11Keys.WeaponGrade => T11.T11Catalog.Grades,
         T11.T11Keys.GearGrade => T11.T11Catalog.Grades,
+        T11.T11Keys.ItemKind => T11.T11Items.Kinds,
         _ => null,
     };
 
@@ -312,7 +313,8 @@ public static class LootRuleText
 
     /// <summary>The long keys that have a value table, for the vocabulary.</summary>
     public static readonly int[] KeysWithValueTables =
-        { 45, 48, 131, 158, 159, 166, 179, 263, 353, 362, 51100, 366, 368, 9054, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade };
+        { 45, 48, 131, 158, 159, 166, 179, 263, 353, 362, 51100, 366, 368, 9054, 0x0D000020, 0x0D000021, T11.T11Keys.WeaponGrade, T11.T11Keys.GearGrade,
+          T11.T11Keys.ItemKind };
 
     /// <summary>
     /// True for the conditions whose value is picked by name when the key has a

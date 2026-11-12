@@ -1808,6 +1808,12 @@ public sealed partial class RynthAiPlugin
             // Material, workmanship and spells need an ID: ask for one, so the next preview has them.
             if (Host.HasRequestId && Host.HasHasAppraisalData && !Host.HasAppraisalData(itemId)) Host.RequestId(itemId);
         }
+        // ACECustom's newer loot items (2026-11-11): what it is, its tier, a gem's coins (the checklist's T11 item rows).
+        foreach (int key in new[] { RynthCore.Loot.T11.T11Keys.ItemKind, RynthCore.Loot.T11.T11Keys.ItemTier, RynthCore.Loot.T11.T11Keys.InfusionCoins })
+        {
+            int v = wo.Values(key, 0);
+            if (v != 0) f.Ints[key] = v;
+        }
         // Always read (a cached parse), so the popup knows whether the T11 option applies.
         f.T11 = Loot.T11ItemSupport.Get(wo);
         // T11 tier, grade and modifiers are appraisal text: ask for it, so the next preview has them.

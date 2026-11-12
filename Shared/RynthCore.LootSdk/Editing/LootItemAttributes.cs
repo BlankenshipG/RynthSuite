@@ -278,6 +278,7 @@ public static class LootItemAttributes
         if (req >= 0) rows.RemoveRange(req, rows.Count - req);
         AddSpellRows(rows, f, like);
         AddT11Rows(rows, f, includeT11);
+        AddT11ItemRows(rows, f);
         rows.AddRange(tail);
         return rows;
     }
@@ -520,6 +521,32 @@ public static class LootItemAttributes
     /// off by default. Left out on purpose: Can Wield (the character), Zone Locked (where it
     /// was appraised), property slots and Tainted (bag state, not quality).
     /// </summary>
+    /// <summary>
+    /// ACECustom's newer loot items (2026-11-11, <see cref="T11Items"/>): a clicked item bounty, school gem, Charm Infusion
+    /// Gem, levelled charm or lum token gets "T11 item is (kind)", ticked, and its tier / coins, not ticked.
+    /// </summary>
+    private static void AddT11ItemRows(List<LootItemAttribute> rows, LootItemFacts f)
+    {
+        int kind = f.Int(T11Keys.ItemKind);
+        if (kind <= 0) return;
+        void Row(string id, string label, int key, int v, bool named, bool on)
+        {
+            LootItemAttributeOp[] ops = named ? new[] { LootItemAttributeOp.Exactly, LootItemAttributeOp.Not }
+                : new[] { LootItemAttributeOp.AtLeast, LootItemAttributeOp.Exactly, LootItemAttributeOp.AtMost };
+            rows.Add(new LootItemAttribute
+            {
+                Id = "t11:" + id, Group = GroupT11, Label = label, Kind = LootItemAttribute.Shape.Long, Key = key,
+                ItemValue = v, ItemText = named ? NamedOrNumber(key, v) : Number(v), Ops = ops, Choices = named ? T11Items.Kinds : null,
+                Editable = !named, On = on, Op = ops[0], Value = v,
+            });
+        }
+        Row("itemkind", "T11 item", T11Keys.ItemKind, kind, named: true, on: true);
+        int tier = f.Int(T11Keys.ItemTier);
+        if (tier > 0) Row("itemtier", kind == T11Items.SchoolGem ? "Earned at tier" : "Bounty tier", T11Keys.ItemTier, tier, named: false, on: false);
+        int coins = f.Int(T11Keys.InfusionCoins);
+        if (coins > 0) Row("coins", "Infusion gem coins", T11Keys.InfusionCoins, coins, named: false, on: false);
+    }
+
     private static void AddT11Rows(List<LootItemAttribute> rows, LootItemFacts f, bool on)
     {
         T11ItemInfo? t = f.T11;
@@ -831,6 +858,10 @@ public static class LootItemAttributes
         T11Row("quality", "Weapon quality (0-1000)", 9060, named: false);
         T11Row("sum:" + T11Keys.ModifierCount.ToString(CultureInfo.InvariantCulture), "Modifier count", T11Keys.ModifierCount, named: false);
         T11Row("sum:" + T11Keys.ModifierRatingTotal.ToString(CultureInfo.InvariantCulture), "Modifier rating total", T11Keys.ModifierRatingTotal, named: false);
+        // ACECustom's newer loot items (2026-11-11, T11Items): "T11 item is School gem", "Item tier at least 15".
+        T11Row("itemkind", "T11 item (bounty, gem, token...)", T11Keys.ItemKind, named: true);
+        T11Row("itemtier", "T11 item tier (bounty, school gem)", T11Keys.ItemTier, named: false);
+        T11Row("coins", "Infusion gem coins", T11Keys.InfusionCoins, named: false);
         rows.InsertRange(t11At, t11);
         return rows;
     }

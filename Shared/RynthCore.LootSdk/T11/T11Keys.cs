@@ -70,6 +70,16 @@ public static class T11Keys
     public const int RendPower = Base + 24;
     /// <summary>1 when the weapon is Phantom (ignores magic protections). Text only.</summary>
     public const int Phantom = Base + 25;
+    /// <summary>
+    /// ACECustom's newer loot items (2026-11-11, <see cref="T11Items"/>): 1 Item bounty, 2 School gem, 3 Charm Infusion Gem,
+    /// 4 Levelled charm, 5 Bounty Reward Token, 6 Event Lum Token, 7 Universal Quiver Charm; 0 anything else. By WCID (an
+    /// item bounty by its description). RynthAi answers it with the item's WCID; <see cref="TryGetValue"/> can't (no WCID).
+    /// </summary>
+    public const int ItemKind = Base + 26;
+    /// <summary>The tier an item bounty counts in ("in Tier 15"; 0 for a region one) or a school gem was earned at.</summary>
+    public const int ItemTier = Base + 27;
+    /// <summary>The Prestige Coins one Charm Infusion Gem puts into a levelled charm (1 ... 5,000).</summary>
+    public const int InfusionCoins = Base + 28;
 
     /// <summary>
     /// Base of the per-modifier keys: <c>ModifierBase + catalog key</c> is that modifier's value
@@ -114,6 +124,9 @@ public static class T11Keys
         yield return (SlayerDamage, "Card: Slayer Damage %");
         yield return (RendPower, "Card: Rend Power %");
         yield return (Phantom, "Card: Phantom");
+        yield return (ItemKind, "T11 Item: Kind");
+        yield return (ItemTier, "T11 Item: Tier");
+        yield return (InfusionCoins, "T11 Item: Infusion Coins");
         foreach (var def in T11Catalog.Modifiers)
             yield return (ForModifier(def.Key), "T11 Mod: " + def.Name);
     }

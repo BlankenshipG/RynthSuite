@@ -85,6 +85,16 @@ internal static class T11ItemSupport
     {
         try
         {
+            // ACECustom's newer loot items (2026-11-11): by WCID (an item bounty by its description), Leaftide only.
+            if (key is T11Keys.ItemKind or T11Keys.ItemTier or T11Keys.InfusionCoins)
+            {
+                if (!Enabled) return 0;
+                uint wcid = unchecked((uint)item.Values(unchecked((int)WorldObjectCache.DecalTypeKey), 0));
+                if (key == T11Keys.InfusionCoins) return T11Items.CoinsOf(wcid);
+                string desc = item.Values(StringValueKey.LongDesc, string.Empty);
+                int kind = T11Items.KindOf(wcid, desc);
+                return key == T11Keys.ItemKind ? kind : T11Items.TierOf(kind, desc, item.Values(T11Items.PropEarnedGemTier, 0));
+            }
             return T11Keys.TryGetValue(Get(item), key, Player, out int value) ? value : defaultValue;
         }
         catch
