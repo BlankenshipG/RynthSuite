@@ -65,6 +65,27 @@ public partial class CombatManager
     /// </summary>
     internal double AmmoOffSettleMs { get; set; } = 400;
 
+    /// <summary>
+    /// ACECustom's Universal Quiver charm (WCID 78780032, 2026-11-11): while it is active (the player's PropertyBool
+    /// HasUniversalQuiverCharm) and the ammunition slot is EMPTY, the server fires the matching Infinite Deadly Prismatic
+    /// projectile for any bow, crossbow or atlatl. Ammo that is equipped is used first.
+    /// </summary>
+    internal const uint BoolHasUniversalQuiverCharm = 50061;
+    /// <summary>Tests: the charm's state (default: the player's PropertyBool).</summary>
+    internal Func<bool>? UniversalQuiverOverride { get; set; }
+
+    /// <summary>The Universal Quiver charm is on: an empty ammunition slot shoots (prismatic, so the target's best element).</summary>
+    public bool UniversalQuiverActive
+    {
+        get
+        {
+            if (UniversalQuiverOverride != null) return UniversalQuiverOverride();
+            return _host.HasGetObjectBoolProperty
+                && _host.TryGetObjectBoolProperty(_host.GetPlayerId(), BoolHasUniversalQuiverCharm, out bool on) && on;
+        }
+    }
+    private bool _quiverSaid;
+
     private readonly HashSet<int> _noAmmoNoted = new();
     // Launchers whose "no ammo to shoot" was said in chat (until ammo is on it again).
     private readonly HashSet<int> _noAmmoSaid = new();
@@ -96,6 +117,7 @@ public partial class CombatManager
         _ammoTakenOffId = _ammoTakenOffFor = 0;
         _noAmmoNoted.Clear();
         _noAmmoSaid.Clear();
+        _quiverSaid = false;
     }
 
     /// <summary>Arrows, quarrels, darts: ValidLocations has the ammunition slot; by name when that isn't known.</summary>
@@ -190,6 +212,7 @@ public partial class CombatManager
 
         var result = new List<WeaponCandidate>(listed.Count);
         var dropped = new List<(WeaponCandidate C, int Type)>();
+        bool quiver = UniversalQuiverActive;
         foreach (var c in listed)
         {
             if (c.Kind != CombatMode.Missile) { result.Add(c); continue; }
@@ -202,6 +225,16 @@ public partial class CombatManager
             var use = wielded != null && MissileAmmo.CanShoot(lt, wielded.AmmoType)
                 ? wielded
                 : MissileAmmo.Choose(lt, launcherElement, pack, rank, best);
+            if (use == null && quiver)
+            {
+                // The Universal Quiver shoots from the empty slot: prismatic, the target's best element (unless the
+                // Items panel set one).
+                _noAmmoNoted.Remove(c.Id);
+                bool set = _settings.ItemRules.FirstOrDefault(x => x.Id == c.Id)?.ElementSource == WeaponList.SourceSet;
+                WeaponCandidate q = Resolve(c);
+                result.Add(set || best.Length == 0 || q.Element == best ? q : q with { Element = best });
+                continue;
+            }
             if (use == null)
             {
                 if (c.InHand) { result.Add(Resolve(c)); continue; }   // ran out in hand: crafting's job, as before
@@ -427,6 +460,21 @@ public partial class CombatManager
         // An item reads in the ammunition slot that the pack walk can't place (no slot or type read):
         // leave it alone, as before.
         if (AmmoTracker.PendingId == 0 && HasWieldedAmmo()) { canShoot = true; return false; }
+
+        // The Universal Quiver: the slot is empty, so the server shoots its infinite prismatic ammo. Nothing is
+        // wielded (pack ammo would be used up first, and the quiver's is free and the best tier).
+        if (UniversalQuiverActive)
+        {
+            EndAmmoFollowUp();
+            _noAmmoSaid.Remove(launcherId);
+            if (!_quiverSaid)
+            {
+                _quiverSaid = true;
+                _host.Log($"[EquipDiag] ammo: Universal Quiver charm on — 0x{(uint)launcherId:X8} '{wo.Name}' shoots from the empty {MissileAmmo.Label(lt)} slot");
+            }
+            canShoot = true;
+            return false;
+        }
 
         var usable = pack.Where(a => !AmmoTracker.Resting(a.Id, now)).ToList();
         var weakFor = WeaknessFor(target);

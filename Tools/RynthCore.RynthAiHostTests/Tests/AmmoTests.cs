@@ -39,6 +39,34 @@ internal static class AmmoTests
         r.Add("ammo: thrown weapons, melee and magic lists are untouched", ThrownMeleeMagicUntouched);
         r.Add("ammo: Prismatic is universal damage (the target's weakest element)", PrismaticUniversal);
         r.Add("ammo: a swap abandoned after the ammo came off reloads the launcher in hand", AbandonedSwapReloads);
+        r.Add("ammo: the Universal Quiver charm shoots from the empty slot (no quarrels needed, nothing wielded)", UniversalQuiver);
+    }
+
+    // ACECustom 2026-11-11 (#603): with the Universal Quiver charm on and the ammunition slot empty, the server fires
+    // Infinite Deadly Prismatic ammo for any bow, crossbow or atlatl.
+    private static void UniversalQuiver()
+    {
+        var rig = new Rig(quarrels: false);
+        rig.C.UniversalQuiverOverride = () => true;
+        rig.Store.SetManualWeapon(Wcid, Crossbow);
+        var plan = rig.C.PlanFor(rig.Target, null);
+        Check.Eq(unchecked((uint)plan.WeaponId), Crossbow, "no quarrels, but the quiver: the crossbow is the plan");
+
+        Check.False(rig.Tick(), "tick 1: the arrows go into the pack (the slot must be empty for the quiver)");
+        Check.True(FakeHost.Moves.Count == 1 && FakeHost.Moves[0] == (Arrows, Pack, 120), "the arrow stack moved");
+        Rig.Unwield(Arrows);
+        rig.Tick();                                           // the crossbow wield
+        Check.Eq(FakeHost.Uses.LastOrDefault(), Crossbow, "the crossbow is wielded");
+        rig.Landed(Crossbow, Bow);
+        Check.True(rig.Tick(), "crossbow in hand, empty slot: ready to shoot");
+        Check.Eq(FakeHost.Uses.Count(u => u == Arrows || u == Quarrels), 0, "no ammo wielded");
+        Check.False(FakeHost.Chat.Any(l => l.Contains("No quarrels")), "no 'no ammo' in chat");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Universal Quiver")), "the quiver's shot is logged once");
+
+        var off = new Rig(quarrels: false);
+        off.C.UniversalQuiverOverride = () => false;
+        off.Store.SetManualWeapon(Wcid, Crossbow);
+        Check.Eq(unchecked((uint)off.C.PlanFor(off.Target, null).WeaponId), Bow, "the charm off: as before, no swap to a launcher without ammo");
     }
 
     // 2026-10-19 (Silentkelpie, 15:24-16:55): the darts went into the pack for an atlatl -> crossbow

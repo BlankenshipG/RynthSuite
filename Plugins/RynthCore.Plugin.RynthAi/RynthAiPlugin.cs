@@ -824,7 +824,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _missileCraftingManager = new MissileCraftingManager(Host, _dashboard.Settings);
         _missileCraftingManager.SetObjectCache(_objectCache!);
         _missileCraftingManager.SetCharacterSkills(_charSkills);
-        _missileCraftingManager.HoldWhile = () => _combatManager?.AmmoSwapInProgress == true;
+        // The Universal Quiver charm (ACECustom 2026-11-11) shoots from the empty slot: no ammo to make or wield.
+        _missileCraftingManager.HoldWhile = () => _combatManager?.AmmoSwapInProgress == true || _combatManager?.UniversalQuiverActive == true;
         _missileCraftingManager.FightIsOn = () => FightIsOn();   // optional crafts wait for the fight (RynthAiPlugin.Chores.cs)
         _combatManager.AmmoWieldedElsewhereAt = () => _missileCraftingManager?.LastAmmoEquipAt ?? DateTime.MinValue;   // no second wield on top of crafting's
         _dashboard.SetMissileCraftingManager(_missileCraftingManager);
