@@ -1903,7 +1903,12 @@ public class WorldObjectCache
     /// reported it DELETE-BEFORE-CLASSIFY when the corpse went away).
     /// </summary>
     public List<WorldObject> RescueContainedItems(int containerId, IReadOnlyCollection<WorldObject> known)
+        => RescueContainedItems(containerId, known, out _);
+
+    /// <summary>As above; <paramref name="unread"/> counts the listed items that can't be looked up yet (no name or position).</summary>
+    public List<WorldObject> RescueContainedItems(int containerId, IReadOnlyCollection<WorldObject> known, out int unread)
     {
+        unread = 0;
         var rescued = new List<WorldObject>();
         if (containerId == 0 || !_host.HasGetContainerContents) return rescued;
 
@@ -1921,7 +1926,7 @@ public class WorldObjectCache
             int id = unchecked((int)buf[i]);
             if (id == 0 || have.Contains(id)) continue;
             WorldObject? wo = this[id];
-            if (wo == null) continue;
+            if (wo == null) { unread++; continue; }
             if (wo.ObjectClass == AcObjectClass.Corpse || wo.ObjectClass == AcObjectClass.Monster) continue;
             rescued.Add(wo);
         }

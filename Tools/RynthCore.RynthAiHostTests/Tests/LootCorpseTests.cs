@@ -47,6 +47,8 @@ internal static class LootCorpseTests
         r.Add("loot chain: 'My Kills Only' loots your kill and skips another player's", OwnershipModes);
         r.Add("loot chain: an item the cache never saw created is found in the corpse's contents and looted", UnseenItemRescued);
         r.Add("loot chain: without GetContainerContents an unseen item stays unseen (no crash)", UnseenItemOldEngine);
+        r.Add("loot chain (11-14): an item the client lists but can't read yet holds the finish, and is looted once it reads", UnreadItemHoldsFinish);
+        r.Add("loot chain (11-14): an item that never reads holds the finish only UnreadContentsWaitMs", UnreadItemHoldIsCapped);
         r.Add("loot starvation: a corpse waiting behind far-off combat gets a turn, a close monster keeps combat", LootStarvation);
         r.Add("loot logging: a corpse held by combat is logged once, with the reason", HeldByCombatLoggedOnce);
         r.Add("boost loot: our kill holds the next target until its corpse is looted (one kill, one loot)", BoostLootOneKillOneLoot);
@@ -288,6 +290,66 @@ internal static class LootCorpseTests
         Check.True(FakeHost.Logs.Any(l => l.Contains("the object cache had missed") && l.Contains("Black Opal")), "the rescue is logged with the item");
         Check.True(FakeHost.ExternalMoves.Contains((Gem, Player, 0)), "the unseen gem is looted");
     }
+
+    // 2026-11-14, Silentkelpie missed two Necrolytic Extracts: the corpses were finished 130 and 230 ms after they
+    // opened, from the items the cache already had ("cache pre-populated ... skipping inv-wait"). The extract the
+    // client listed in each was never judged; the cache reported it DELETE-BEFORE-CLASSIFY (no create seen).
+    private static Bot CorpseWithUnreadItem()
+    {
+        BaseWorld(corpsePositioned: true);
+        FakeHost.ContentsCalls = true;
+        FakeHost.Ints[(Gem, 11)] = 100; FakeHost.Ints[(Gem, 12)] = 1;
+        FakeHost.Containers[Gem2] = Corpse;   // listed in the corpse; no name or position yet
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.LootCorpseTimeoutMs = 60_000;
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        bot.Tick(BotActivity.Looting);
+        bot.Cache.OnCreateObject(Gem);       // the cache has the gem, not the second item
+        bot.Cache.Tick();
+        FakeHost.GroundContainer = Corpse;
+        bot.P.OnViewObjectContents(Corpse);
+        return bot;
+    }
+
+    private static bool Finished(Bot bot) =>
+        bot.Get<Dictionary<int, long>>("_completedCorpses").ContainsKey(unchecked((int)Corpse));
+
+    private static void UnreadItemHoldsFinish()
+    {
+        var bot = CorpseWithUnreadItem();
+        LootWithMerges(bot, 2000, wantMoves: 99);   // past the empty-corpse wait (1.5 s), short of the hold's cap
+        Check.True(FakeHost.ExternalMoves.Any(m => m.Id == Gem), "the gem the cache had is looted");
+        Check.False(Finished(bot), "the corpse isn't finished while the client lists an item that can't be read");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("can't be read yet")), "the hold is logged");
+
+        FakeHost.Names[Gem2] = "Black Opal";
+        FakeHost.ItemTypes[Gem2] = ItemTypeGem;
+        FakeHost.Appraised.Add(Gem2);
+        FakeHost.Ints[(Gem2, 11)] = 100; FakeHost.Ints[(Gem2, 12)] = 1;
+        LootWithMerges(bot, 3000, wantMoves: 2);
+        Check.True(FakeHost.ExternalMoves.Any(m => m.Id == Gem2), "once it reads, it is found and looted");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("the object cache had missed") && l.Contains("0x80261102")), "the rescue names it");
+    }
+
+    private static void UnreadItemHoldIsCapped()
+    {
+        var bot = CorpseWithUnreadItem();
+        long start = Environment.TickCount64;
+        while (!Finished(bot) && Environment.TickCount64 - start < 6000)
+        {
+            foreach (var m in FakeHost.ExternalMoves) FakeHost.Containers[m.Id] = 0;
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        long took = Environment.TickCount64 - start;
+        Check.True(Finished(bot), "the corpse is finished in the end");
+        Check.True(took >= CorpseOpenControllerHold() - 200 && took < CorpseOpenControllerHold() + 2000,
+            $"after about {CorpseOpenControllerHold()} ms (took {took} ms)");
+    }
+
+    private static long CorpseOpenControllerHold() => RynthCore.Plugin.RynthAi.RynthAiPlugin.UnreadContentsWaitMs;
 
     private static void UnseenItemOldEngine()
     {

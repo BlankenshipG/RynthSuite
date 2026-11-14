@@ -59,6 +59,14 @@ public sealed partial class RynthAiPlugin
     private const long ContentsSweepMs = 500;    // how often an open corpse's contents are checked for items the cache missed
     private long _lastContentsSweepAt;
     private int _lastContentsSweepCorpse;
+    // Before a corpse is finished, one more look at what the client says it holds
+    // (2026-11-14, Silentkelpie missed Necrolytic Extracts: two corpses were finished 130 and 230 ms after they
+    // opened from the cache's items alone; the extract the client had in each was never judged, and the cache later
+    // reported it DELETE-BEFORE-CLASSIFY with no create seen). The last sweep is at least FinalSweepMinMs after the
+    // open, and an item the client lists that can't be read yet holds the finish up to UnreadContentsWaitMs.
+    internal const long FinalSweepMinMs = 200;   // the empty-corpse floor: a corpse emptied by jump pickups is no slower
+    internal const long UnreadContentsWaitMs = 2_500;
+    private int _unreadHoldLoggedFor;
     private const long AppraisalHoldTimeoutMarginMs = 1_000; // stop holding this long before the corpse timeout
 
     // Wedge detection: when AC's item-action state locks up (server-side, e.g.
@@ -1834,7 +1842,8 @@ public sealed partial class RynthAiPlugin
         // Empty corpse check
         if (visibleItemCount == 0)
         {
-            if (openAge >= Math.Max(200, settings.LootEmptyCorpseMs) && !LastPickupSettling(now))
+            if (openAge >= Math.Max(200, settings.LootEmptyCorpseMs) && !LastPickupSettling(now)
+                && !HoldForContentsNotSeen(corpseId, containedItems, openAge))
             {
                 LootDiag($"[RynthAi] {LootTag}: no items on 0x{(uint)corpseId:X8} after {openAge}ms; marking complete.");
                 _lootItemsLeftAtFinish = 0;
@@ -1996,10 +2005,41 @@ public sealed partial class RynthAiPlugin
         // has played out (closing while it was under way: 2026-10-07).
         if (pendingDataCount == 0 && !LastPickupSettling(now))
         {
+            if (HoldForContentsNotSeen(corpseId, containedItems, openAge))
+                return;
             LootDiag($"[RynthAi] {LootTag}: all {visibleItemCount} items on 0x{(uint)corpseId:X8} evaluated; marking complete.");
             _lootItemsLeftAtFinish = visibleItemCount;   // what is still in it (a chest the player opened stays open for these)
             MarkCorpseCompleted(corpseId);
         }
+    }
+
+    /// <summary>
+    /// True while the corpse mustn't be finished yet: it opened under <see cref="FinalSweepMinMs"/> ago, the client
+    /// lists an item in it the cache hasn't got (now looked up: the next tick judges it), or it lists one that can't
+    /// be read yet (held up to <see cref="UnreadContentsWaitMs"/> after the open).
+    /// </summary>
+    private bool HoldForContentsNotSeen(int corpseId, List<WorldObject> containedItems, long openAge)
+    {
+        if (_objectCache == null) return false;
+        if (openAge < FinalSweepMinMs) return true;
+        List<WorldObject> missed = _objectCache.RescueContainedItems(corpseId, containedItems, out int unread);
+        if (missed.Count > 0)
+        {
+            _lastContentsSweepAt = 0; // the next tick's sweep adds them to what is judged
+            LootDiag($"[RynthAi] Corpse loot: before finishing 0x{(uint)corpseId:X8}, found {missed.Count} item(s) the object cache had missed: " +
+                     string.Join(", ", missed.Select(w => $"0x{(uint)w.Id:X8} '{w.Name}' {w.ObjectClass}")) + ".");
+            return true;
+        }
+        if (unread > 0 && openAge < UnreadContentsWaitMs)
+        {
+            if (_unreadHoldLoggedFor != corpseId)
+            {
+                _unreadHoldLoggedFor = corpseId;
+                LootDiag($"[RynthAi] Corpse loot: 0x{(uint)corpseId:X8} holds {unread} item(s) that can't be read yet; waiting up to {UnreadContentsWaitMs} ms after the open before finishing.");
+            }
+            return true;
+        }
+        return false;
     }
 
     // A pickup that merges into a stack already in the pack (a Silver Pea onto the Silver Peas):
