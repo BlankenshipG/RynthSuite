@@ -5,8 +5,9 @@
 //                        session and the ILT charms list (fed by "RynthILT.Data");
 //   Banking           -> RynthInventory's Global Inventory ("/ginv bank"): every character's
 //                        saved packs and storage (including banks when Include Storage is on).
-// RynthCore's Mini Remote "Char" section is "Session Stats" now (RynthAi's session stats), and a
-// server is forced only in RynthCore Options > Diagnostics ("/rc diagnostics").
+// RynthCore's Mini Remote "Char" section is "Session Stats" now (RynthAi's session stats, with RynthILT's
+// "section:ilt-rates"), and a server is forced only in RynthCore Settings > Game Client ("/rc diagnostics",
+// the server picker; on Diagnostics until 2026-11-11).
 // Old saved tab ids, links and "/ra hub open|tab <name>" land on the new home through CommandFor.
 //
 // Pure: the host tests check the mapping offline.
@@ -28,7 +29,7 @@ internal static class MovedTabs
     /// <summary>RynthInventory's Global Inventory window.</summary>
     public const string GlobalInventory = "/ginv";
 
-    /// <summary>RynthCore Options > Diagnostics (the server picker; RynthCore 2026.10.5.54+).</summary>
+    /// <summary>The server picker: RynthCore Settings > Game Client (on Diagnostics until 2026-11-11, hence the name; RynthCore 2026.10.5.54+).</summary>
     public const string Diagnostics = "/rc diagnostics";
 
     /// <summary>
@@ -54,7 +55,7 @@ internal static class MovedTabs
         OracleCharacter => "RynthOracle's Character tab",
         OracleBreeding => "RynthOracle's Pet Breeding tab",
         GlobalBank or GlobalInventory => "Global Inventory",
-        Diagnostics => "RynthCore Options > Diagnostics",
+        Diagnostics => "RynthCore Settings > Game Client",
         Settings => "RynthAi Settings (Advanced Settings)",
         _ => command,
     };
