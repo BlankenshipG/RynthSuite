@@ -55,9 +55,42 @@ internal static class TargetingTests
         Check.Eq(missile.Tick(), 0u, "missile, 3 yd, a wall between: nor do arrows");
     }
 
+    // 11-12: a test character locked golems on the floor above (d 9.0, h 6.7, dz +6.0; d 7.4, h 3.3, dz +6.6) and
+    // swung under them. Melee leaves out a monster more than 3 m up or down and steeper than 0.75 from here.
+    private static void MeleeOtherFloor()
+    {
+        Check.True(CombatManager.OutOfMeleeReachUpOrDown(9.0, 6.0), "the golem on the floor above (h 6.7, dz +6.0)");
+        Check.True(CombatManager.OutOfMeleeReachUpOrDown(7.4, 6.6), "the other one (h 3.3, dz +6.6)");
+        Check.True(CombatManager.OutOfMeleeReachUpOrDown(6.5, -6.0), "and on the floor below");
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(2.2, 0.9), "on the same floor");
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(10.0, 4.0), "up a ramp or a hillside (h 9.2, dz +4.0)");
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(3.5, 2.9), "2.9 m up, close: within reach");
+
+        var up = new ScanPick(20);
+        up.Place(A, "Mob A", north: 3, up: 6);
+        up.Place(B, "Mob B", north: 8);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(up.Tick(), B, "melee: the one 8 m off on this floor, not the one 3 m off on the floor above");
+
+        var alone = new ScanPick(20);
+        alone.Place(A, "Mob A", north: 3, up: 6);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(alone.Tick(), 0u, "melee: no target when the only one is on the floor above");
+        Check.False(alone.C.HasNearbyMonsters, "and it doesn't hold navigation (the hunt walks up to it)");
+
+        var magic = new ScanPick(20);
+        magic.Place(A, "Mob A", north: 3, up: 6);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        Check.Eq(magic.Tick(), A, "magic: one on a balcony in sight is still a target");
+    }
+
     public static void Register(Runner r)
     {
         r.Add("targeting: melee within 4 yd ignores the raycast; beyond it, or with magic or missile, it counts", MeleeThroughWalls);
+        r.Add("targeting (11-12): melee leaves out a monster on the floor above or below; magic doesn't", MeleeOtherFloor);
         r.Add("targeting: each scheme picks its monster", SchemesPick);
         r.Add("targeting: unknown health counts as full; ties go to the closest, then the lower id", UnknownHealthAndTies);
         r.Add("targeting: Target Lock keeps the target when a better one of its tier appears", LockKeeps);
@@ -581,9 +614,9 @@ internal static class TargetingTests
         }
 
         /// <summary>A monster <paramref name="north"/>/<paramref name="east"/> m from the player.</summary>
-        public void Place(uint id, string name, double north = 0, double east = 0)
+        public void Place(uint id, string name, double north = 0, double east = 0, double up = 0)
         {
-            TargetingTests.Place(id, name, (float)(96 + east), (float)(96 + north));
+            TargetingTests.Place(id, name, (float)(96 + east), (float)(96 + north), z: (float)up);
             if (!_ids.Contains(id)) _ids.Add(id);
         }
 
@@ -664,10 +697,10 @@ internal static class TargetingTests
         }
     }
 
-    private static void Place(uint id, string name, float x, float y, bool creature = true)
+    private static void Place(uint id, string name, float x, float y, bool creature = true, float z = 0f)
     {
         FakeHost.Names[id] = name;
-        FakeHost.Positions[id] = (Lb | 0x1C, x, y, 0f);
+        FakeHost.Positions[id] = (Lb | 0x1C, x, y, z);
         if (creature) FakeHost.ItemTypes[id] = 0x10;
     }
 }

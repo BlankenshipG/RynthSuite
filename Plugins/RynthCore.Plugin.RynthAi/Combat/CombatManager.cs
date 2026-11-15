@@ -1146,9 +1146,9 @@ public partial class CombatManager : IDisposable
             // filters below — that's what distinguishes "out of range" from "all filtered out".
             scanTotal++;
             bool hasMobPos = false;
-            float tx = 0f, ty = 0f;
+            float tx = 0f, ty = 0f, tz = 0f;
             double dist = hasPlayerPos
-                ? _worldFilter.DistanceFrom(meCell, meX, meY, meZ, wo.Id, out hasMobPos, out tx, out ty)
+                ? _worldFilter.DistanceFrom(meCell, meX, meY, meZ, wo.Id, out hasMobPos, out tx, out ty, out tz)
                 : double.MaxValue;
             if (dist <= maxDist) scanRing++;
 
@@ -1238,6 +1238,16 @@ public partial class CombatManager : IDisposable
             // combat, looting or buffs: every consumer reads this list or _nearbyNoLos, and an
             // ignored monster is not counted in either (it is dropped before the LOS check).
             if (!isForced && PriorityOf(wo.Id) <= 0) continue;
+
+            // On the floor above or below, or high on a ledge (2026-11-12): melee can't reach it from
+            // here. A test character locked golems 6 m up in a building and swung under them until they
+            // came down. Not counted as a monster nearby out of sight, so navigation (the hunt's walk up
+            // the stairs) isn't held for it.
+            if (hasMobPos && OutOfMeleeReachUpOrDown(dist, tz - meZ) && MeleeIsTheAttackOn(wo, attackType))
+            {
+                if (notePassed) NotePassedOver(wo.Id, dist, PassedOverOtherLevel);
+                continue;
+            }
 
             bool losBlocked = false;
             if (LosBlockedOverride != null)
@@ -2901,9 +2911,15 @@ public partial class CombatManager : IDisposable
         // a late death notice killed a neighbour. Dropping it also hid it from the scan for
         // 4 s, and with no other mob in range the bot went to peace mid-fight.
         bool noticeForSwappedMob = pendingKillId != 0 && pendingKillId != tid;
-        // A damage line naming the target (ResolveHitVictim stamped it) is an attack too.
+        // A damage line naming the target (ResolveHitVictim stamped it) is an attack too, but only
+        // one since this fight began. R-20261112-030126-63b5 (2026-11-13, a mage with a pet and
+        // damage-over-time spells in a same-named pack): the player selected a monster ("Fight the
+        // monster I select") that a ring had hurt a while before; 0.7 s after the switch, before any
+        // cast at it, the pet's kill of the monster just left named the same name. The old hit
+        // counted as an attack, so the selected monster was dropped as the dead one, kept off the
+        // scan, and the selection ended "killed" - the bot went back to its own pick.
         bool curAttacked = _fightTargetId != tid || _fightCastCount > 0 || _pendingOffensiveTargetId == tid
-                           || (tid != 0 && _hitAt.ContainsKey(tid));
+                           || (tid != 0 && _hitAt.TryGetValue(tid, out DateTime curHitAt) && curHitAt >= _fightStartedAt);
         // A ring, wall or chain spell kills neighbours too. The server's health for the fight
         // target lands before its kill notice (ACE sends the 0 with the lethal hit), so a fight
         // target the server still says is alive didn't die: the notice is a same-named
@@ -4826,6 +4842,7 @@ public partial class CombatManager : IDisposable
     /// </summary>
     public void HandleCombatTrigger()
     {
+        FollowHeldSelection();   // Fight the monster I select: one selected before it could be followed
         if (_scannedTargets.Count == 0) return;
         if (TryLockForcedTarget()) return;   // Target lock (/ra targetlock): CombatManager.TargetLock.cs
         // Pull-away in progress: keep the incumbent until the kite ends (do not switch mid-flee).
@@ -7016,6 +7033,22 @@ public partial class CombatManager : IDisposable
     /// </summary>
     /// <summary>The line-of-sight check is skipped for melee within this (same units as Monster Range).</summary>
     internal const double MeleeIgnoresLosWithin = 4.0;
+
+    /// <summary>Melee leaves out a monster more than this above or below the character...</summary>
+    internal const double MeleeMaxRiseM = 3.0;
+    /// <summary>...when it is also this steep from here (rise over run, about 37 degrees): a monster up a ramp
+    /// or a hillside is walked to, one on the floor above or a ledge overhead is not.</summary>
+    internal const double MeleeMaxSlope = 0.75;
+
+    /// <summary>A monster <paramref name="dist"/> m away (3D), <paramref name="dz"/> m above (+) or below (-),
+    /// is out of melee's reach: on another floor, or on a ledge or a roof.</summary>
+    internal static bool OutOfMeleeReachUpOrDown(double dist, double dz)
+    {
+        double rise = Math.Abs(dz);
+        if (!(rise > MeleeMaxRiseM)) return false;
+        double run = Math.Sqrt(Math.Max(0, dist * dist - dz * dz));
+        return rise > run * MeleeMaxSlope;
+    }
 
     /// <summary>
     /// This monster gets melee: the attack type says so (Melee, or peace with a melee weapon in hand),

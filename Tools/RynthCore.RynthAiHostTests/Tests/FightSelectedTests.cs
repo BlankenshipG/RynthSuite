@@ -34,6 +34,8 @@ internal static class FightSelectedTests
         r.Add("fight selected: a /ra targetlock lock is never moved; /ra targetlock on the selected one makes it explicit", TargetLockInteraction);
         r.Add("fight selected: the setting off releases it; /ra fightselected, the settings face, profiles, metas", SettingPlumbing);
         r.Add("fight selected: /ra why says it is fighting the monster you selected", WhySaysSo);
+        r.Add("fight selected: a monster selected while Combat, the macro or the setting was off is fought once they are on (R-20261115-051911-9105)", HeldSelectionFollowed);
+        r.Add("fight selected: a same-named neighbour's kill notice doesn't end the selected monster before it is attacked (R-20261112-030126-63b5)", NeighbourKillKeepsSelected);
     }
 
     // ── Rig ───────────────────────────────────────────────────────────────────
@@ -124,6 +126,19 @@ internal static class FightSelectedTests
 
     private static void PlayerSelectionWins()
     {
+        // Macro stopped or Combat off: not followed, and the log says why (once per monster).
+        var off = new Rig();
+        off.S.IsMacroRunning = false;
+        Check.Eq(off.Select(B), null, "macro stopped: not followed");
+        off.Select(0);
+        off.Select(B);
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("'Mob B' not followed: the macro isn't running")), 1, "logged once");
+        off.S.IsMacroRunning = true;
+        off.S.EnableCombat = false;
+        Check.Eq(off.Select(A), null, "Combat off: not followed");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("'Mob A' not followed: Combat is off")), "logged");
+        Check.Eq(off.Forced, 0, "no lock");
+
         var t = new Rig();
         Check.Eq(t.Pick((A, 2), (B, 6), (Boss, 4)), Boss, "normal: the Boss's priority wins");
         Check.Eq(t.Select(B), "locked", "the player selects B");
@@ -169,6 +184,11 @@ internal static class FightSelectedTests
             bot.P.OnSelectedTargetChange(B, A);
             Check.Eq(t.Forced, 0, "the bot selecting another monster: not the player's");
             Check.Eq(t.Pick((A, 2), (B, 6)), A, "still A");
+            // R-20261112-030126-63b5: an ignored monster selection says why (a player's click
+            // taken for the bot's own shows in a report); the fight target's re-select doesn't.
+            Check.True(FakeHost.Logs.Any(l => l.Contains("fight-selected") && l.Contains("'Mob B' not followed: taken as RynthAi's own selection")),
+                "the bot's selection of another monster is logged");
+            Check.False(FakeHost.Logs.Any(l => l.Contains("'Mob A' not followed")), "its own target's re-select isn't");
 
             // Several marks in a row: the earlier ones are still the bot's (not just the last).
             SelfSelect.Mark(Boss);
@@ -391,6 +411,153 @@ internal static class FightSelectedTests
         bot.Ra("/ra why");
         Check.True(bot.AllChat.Contains("fighting the monster you selected: Mob B"), "the target line: " + bot.AllChat);
         Check.True(bot.AllChat.Contains("likely: fighting the monster you selected"), "the interpretation: " + bot.AllChat);
+    }
+
+    // R-20261115-051911-9105 (2026-11-15): the player turned Combat off, selected a monster that was
+    // attacking them, turned Combat back on with it still selected, and the bot fought another
+    // (lowest health). Only selection changes were followed; toggling the setting didn't help either.
+    private static void HeldSelectionFollowed()
+    {
+        // Combat off: the selection is held, then fought when Combat comes back on.
+        var t = new Rig();
+        t.S.EnableCombat = false;
+        FakeHost.SelectedItem = B;
+        Check.Eq(t.Select(B), null, "Combat off: not followed yet");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("'Mob B' not followed: Combat is off")), "logged");
+        t.S.EnableCombat = true;
+        Check.Eq(t.Pick((A, 2), (B, 6), (Boss, 4)), B, "Combat on, B still selected: B, over the Boss and the closer A");
+        Check.Eq(t.Forced, I(B), "as the selected monster");
+        Check.True(t.Combat.ForcedBySelection, "a selection lock");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("'Mob B' is still selected from before")), "logged");
+        Check.Eq(t.Pick((A, 2), (B, 6), (Boss, 4)), B, "kept");
+
+        // The setting off: said once while it stays off; turned on with B selected, B is fought.
+        t = new Rig(on: false);
+        FakeHost.SelectedItem = A;
+        t.Select(A);
+        FakeHost.SelectedItem = B;
+        t.Select(B);
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("not followed: the setting \"Fight the monster I select\" is off")), 1, "the setting off: one line");
+        Check.Eq(t.Pick((A, 2), (B, 6), (Boss, 4)), Boss, "off: normal priority");
+        t.S.FightSelectedTarget = true;
+        Check.Eq(t.Pick((A, 2), (B, 6), (Boss, 4)), B, "the setting turned on with B selected: B");
+
+        // The macro started with B selected: the same.
+        t = new Rig();
+        t.S.IsMacroRunning = false;
+        FakeHost.SelectedItem = B;
+        t.Select(B);
+        t.S.IsMacroRunning = true;
+        Check.Eq(t.Pick((A, 2), (B, 6), (Boss, 4)), B, "macro started with B selected: B");
+
+        // Selected away since (the bot's own pick, or the player's deselect): nothing held is fought.
+        t = new Rig();
+        t.S.EnableCombat = false;
+        FakeHost.SelectedItem = B;
+        t.Select(B);
+        FakeHost.SelectedItem = Corpse;   // e.g. the looter opened a corpse
+        t.S.EnableCombat = true;
+        Check.Eq(t.Pick((A, 2), (B, 6), (Boss, 4)), Boss, "B no longer selected: normal priority");
+        Check.Eq(t.Forced, 0, "no lock");
+        t = new Rig();
+        t.S.EnableCombat = false;
+        FakeHost.SelectedItem = B;
+        t.Select(B);
+        FakeHost.SelectedItem = 0;
+        t.Select(0);
+        t.S.EnableCombat = true;
+        FakeHost.SelectedItem = B;   // even if B were the selection again by the bot's doing
+        Check.Eq(t.Pick((A, 2), (B, 6), (Boss, 4)), Boss, "a deselect drops the held one");
+        // The bot's own selection doesn't replace a held one.
+        t = new Rig();
+        t.S.EnableCombat = false;
+        FakeHost.SelectedItem = B;
+        t.Select(B);
+        t.Combat.OnSelectionChanged(A, ours: true);
+        t.Combat.OnSelectionChanged(B, ours: true);   // and back
+        t.S.EnableCombat = true;
+        Check.Eq(t.Pick((A, 2), (B, 6), (Boss, 4)), B, "the bot's selections in between don't drop it");
+    }
+
+    // R-20261112-030126-63b5 (2026-11-13, a mage with a pet and damage-over-time spells, a pack of
+    // same-named monsters): the player selected a monster, the bot switched to it, and 0.7 s later,
+    // before a single cast at it, a kill notice for the monster it had just left (the pet's or a
+    // DoT's kill) named the same name. The selected monster was taken for the dead one: dropped,
+    // kept off the scan as killed, "fight-selected ... ended: killed", and the bot went back to
+    // its own pick. The "not attacked yet" guard counted a hit from any time as an attack on it,
+    // and this one had been hurt by a ring a while before it was selected.
+    private static void NeighbourKillKeepsSelected()
+    {
+        const uint X = 0x80000A21, Y = 0x80000A22, Wcid = 3001;
+        const string Name = "Bovine Brute";
+        DateTime now = DateTime.Now;
+        RynthClock.TestNow = () => now;
+        try
+        {
+            FakeHost.Reset();
+            SelfSelect.Reset();
+            FakeHost.WeaponCalls = true;   // installs GetCurrentCombatMode
+            FakeHost.CombatModeValue = CombatMode.Magic;
+            Place(Player, "Me", 96, 96, creature: false);
+            FakeHost.PlayerPose = (Lb | 0x1C, 96f, 96f, 0f);
+            Place(X, Name, 96, 98);
+            Place(Y, Name, 96, 100);
+            FakeHost.Wcids[X] = Wcid;
+            FakeHost.Wcids[Y] = Wcid;
+            var s = new LegacyUiSettings
+            {
+                MonsterRange = 20, TargetSelection = 1 /* closest */, TargetLock = false,
+                IsMacroRunning = true, EnableCombat = true, FightSelectedTarget = true,
+            };
+            var host = FakeHost.Create();
+            var cache = FakeHost.MakeCache(host, Player, new[] { X, Y });
+            var store = new RynthCore.Plugin.RynthAi.CreatureData.MonsterDamageStore();
+            store.SetManualHp(Wcid, 5000);
+            var c = new CombatManager(host, s, cache);
+            c.SetPlayerId(Player);
+            c.SetDamageStores(null, store);
+            c.TargetClock = () => now;
+            uint Pick()
+            {
+                c.SetScannedTargetsForTests(new[] { (X, 2.0), (Y, 4.0) }.Select(t => new CombatManager.ScannedTarget
+                {
+                    Id = I(t.Item1), Distance = t.Item2, Angle = 0, Bearing = double.NaN, Name = Name,
+                }));
+                c.HandleCombatTrigger();
+                if (c.activeTargetId != 0) c.EngageForTest(c.activeTargetId);   // Think's BeginFight for the new target
+                return unchecked((uint)c.activeTargetId);
+            }
+
+            Check.Eq(Pick(), X, "the bot fights X (closest)");
+            // A ring hurts both: the first line is the fight target's, the second the neighbour Y's.
+            c.HandleChatForDamage($"You wither {Name} for 1482 points with Clouded Soul.");
+            c.HandleChatForDamage($"You twist {Name} for 1222 points with Clouded Soul.");
+            Check.True(cache.IsHealthEstimated(I(Y)), "Y was hit by the ring (a damage estimate)");
+
+            now = now.AddSeconds(6);
+            Check.Eq(c.OnSelectionChanged(Y, false), "locked", "the player selects Y");
+            Check.Eq(Pick(), Y, "the bot switches to Y");
+
+            now = now.AddMilliseconds(700);
+            c.OnKillNotification($"{Name}'s last strength withers before you!");   // X died (the pet's kill)
+            Check.Eq(c.activeTargetId, I(Y), "Y, never attacked since it was selected, is kept");
+            Check.False(c.IsKillSuppressed(I(Y)), "and not kept off the scan as killed");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("but it hasn't been attacked yet")), "logged: " + string.Join(" | ", FakeHost.Logs.Where(l => l.Contains("Kill"))));
+            Check.Eq(Pick(), Y, "still fought");
+            Check.Eq(c.ForcedTargetId, I(Y), "still the monster the player selected");
+            Check.False(FakeHost.Logs.Any(l => l.Contains("fight-selected") && l.Contains("ended")), "the selection didn't end");
+
+            // Hit in this fight: its own kill notice ends it, as before.
+            now = now.AddSeconds(1);
+            c.HandleChatForDamage($"You wither {Name} for 1482 points with Incantation of Nether Bolt.");
+            now = now.AddMilliseconds(500);
+            c.OnKillNotification($"You reduce {Name} to a drained, twisted corpse!");
+            Check.Eq(c.activeTargetId, 0, "hit since it was selected: its notice drops it");
+            Check.True(c.IsKillSuppressed(I(Y)), "as killed");
+            Pick();
+            Check.True(FakeHost.Logs.Any(l => l.Contains("fight-selected") && l.Contains("ended: killed")), "the selection ends: killed");
+        }
+        finally { RynthClock.TestNow = null; }
     }
 
     // ── Plugin harness ───────────────────────────────────────────────────────

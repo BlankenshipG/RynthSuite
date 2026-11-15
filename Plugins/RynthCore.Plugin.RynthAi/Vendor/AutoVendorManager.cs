@@ -124,6 +124,9 @@ internal sealed class AutoVendorManager
     // Stacks a split made to be sold, and the rule that sold the stack they came from: sold even when
     // a rule matches them differently at their new size ("Value = 250,000" on a one-note stack).
     private readonly Dictionary<uint, string> _splitOffForSale = new();
+    // Per item key: the unit value read off a stack a split made (fresh from the server). Kept across
+    // sessions, since the stale stacks it corrects stay stale until relog.
+    private readonly Dictionary<string, int> _freshUnit = new(StringComparer.Ordinal);
     // Identifies AutoVendor asks for outside the session's ID pass (a split-off stack, a loose note).
     private readonly Dictionary<uint, (int Attempts, long LastAt)> _extraIds = new();
     private readonly HashSet<uint> _waitIdLogged = new();
@@ -1744,8 +1747,12 @@ internal sealed class AutoVendorManager
     }
 
     /// <summary>
-    /// Per item (weenie, else name): the Value / StackSize that the most units carry. A stack's Value goes
-    /// stale after a split (too high) or a merge (too low); the untouched stacks outnumber them.
+    /// Per item (weenie, else name): the true Value / StackSize. A stack's Value goes stale after a split
+    /// (too high) or a merge (too low) and stays so until relog. A stack a split just made comes fresh from
+    /// the server, so its unit wins and is remembered (<see cref="_freshUnit"/>); otherwise the unit the
+    /// most units carry. The vote alone failed once the last full stack was split: 79 stale peas outvoted
+    /// the 21 split off, the 21 read too dear to fit, were merged back, and the split came again until
+    /// the 8-try stop (2026-11-12).
     /// </summary>
     private Dictionary<string, int> TrueUnitValues(List<WorldObject> inv)
     {
@@ -1759,10 +1766,12 @@ internal sealed class AutoVendorManager
             if (!votes.TryGetValue(key, out var byUnit)) votes[key] = byUnit = new Dictionary<int, long>();
             int unit = value / stack;
             byUnit[unit] = byUnit.GetValueOrDefault(unit) + stack;
+            if (_splitOffForSale.ContainsKey(unchecked((uint)wo.Id)) && unit > 0)
+                _freshUnit[key] = unit;
         }
         var result = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var (key, byUnit) in votes)
-            result[key] = AutoVendorPlanner.MostCarriedUnit(byUnit);
+            result[key] = AutoVendorPlanner.TrueUnit(byUnit, _freshUnit.GetValueOrDefault(key));
         return result;
     }
 

@@ -74,7 +74,26 @@ public partial class CombatManager
     /// </summary>
     internal string? OnSelectionChanged(uint selected, bool ours)
     {
-        if (!_settings.FightSelectedTarget || ours) return null;
+        if (ours)
+        {
+            // A monster RynthAi selected itself in the last SelfSelect.WindowMs: not followed. Said
+            // (once per monster) when it isn't the one being fought, so a report shows a player's
+            // click taken for the bot's own (R-20261112-030126-63b5: the log couldn't say why).
+            // A held selection (below) stays held: the bot's pick isn't the player's change of mind.
+            int sid = unchecked((int)selected);
+            if (_settings.FightSelectedTarget && sid != activeTargetId)
+                NoteSelectionIgnored(sid, "taken as RynthAi's own selection (it selected that monster moments ago)");
+            return null;
+        }
+        // The player's own selection: it replaces any held one.
+        Volatile.Write(ref _heldSelectionId, 0);
+        if (!_settings.FightSelectedTarget)
+        {
+            HoldSelection(selected);
+            NoteSettingOff(selected);
+            return null;
+        }
+        _settingOffNoted = false;
         int fid = ForcedTargetId;
         if (fid != 0 && !_forcedBySelection) return null;   // a /ra targetlock lock: kept
 
@@ -89,7 +108,13 @@ public partial class CombatManager
 
         int id = unchecked((int)selected);
         if (id == fid) return null;
-        if (!_settings.IsMacroRunning || !_settings.EnableCombat) return null;
+        if (!_settings.IsMacroRunning || !_settings.EnableCombat)
+        {
+            NoteSelectionIgnored(id, (!_settings.IsMacroRunning ? "the macro isn't running" : "Combat is off") +
+                                     " (fought if it is still selected when it is)");
+            HoldSelection(selected);
+            return null;
+        }
 
         string? refusal = SelectedTargetRefusal(id);
         if (refusal != null)
@@ -119,6 +144,65 @@ public partial class CombatManager
                               $"fighting it if it comes that close in the next {ForcedTargetLostMs / 1000:0} s, not chasing it.", 1);
         }
         return far ? "far" : "locked";
+    }
+
+    // ── A selection made while it couldn't be followed ───────────────────────
+    // R-20261115-051911-9105 (2026-11-15, 2026.11.12.1): "stopped working, toggling it doesn't help".
+    // Only selection CHANGES were followed. The player turned Combat off, selected a monster
+    // attacking them, then turned Combat back on with it still selected: the bot locked another
+    // monster by lowest health, and nothing in the log said why. The same with the setting turned
+    // on (or the macro started) while a monster is already selected. Now the player's monster
+    // selection made while the setting, the macro or Combat was off is held, and fought when all
+    // three are on if it is still the game's selection (any later selection of the player's, or a
+    // deselect, replaces it; the bot selecting something else in the meantime leaves it unselected).
+    private volatile int _heldSelectionId;
+    private bool _settingOffNoted;
+
+    private void HoldSelection(uint selected)
+    {
+        var wo = selected != 0 ? _worldFilter[unchecked((int)selected)] : null;
+        if (wo != null && (int)wo.ObjectClass == (int)AcObjectClass.Monster && selected != _playerId)
+            Volatile.Write(ref _heldSelectionId, unchecked((int)selected));
+    }
+
+    /// <summary>
+    /// HandleCombatTrigger, every tick (pump thread): a monster the player selected while the setting,
+    /// the macro or Combat was off, still selected now that all three are on, is followed like a new
+    /// selection. Returns what OnSelectionChanged did (null = nothing held, or no longer selected).
+    /// </summary>
+    internal string? FollowHeldSelection()
+    {
+        int held = Volatile.Read(ref _heldSelectionId);
+        if (held == 0 || !_settings.FightSelectedTarget || !_settings.IsMacroRunning || !_settings.EnableCombat) return null;
+        if (Interlocked.CompareExchange(ref _heldSelectionId, 0, held) != held) return null;
+        uint id = unchecked((uint)held);
+        if (!_host.HasGetSelectedItemId || _host.GetSelectedItemId() != id) return null;   // selected away since
+        if (ForcedTargetId == id) return null;
+        string name = _worldFilter[held]?.Name ?? "";
+        _host.Log($"[CombatTarget] fight-selected: 0x{id:X8} '{name}' is still selected from before the setting, the macro and Combat were all on: following it now");
+        return OnSelectionChanged(id, false);
+    }
+
+    /// <summary>The setting off: one line (per time it is off) when the player selects a monster.</summary>
+    private void NoteSettingOff(uint selected)
+    {
+        if (_settingOffNoted || selected == 0 || selected == _playerId) return;
+        var wo = _worldFilter[unchecked((int)selected)];
+        if (wo == null || (int)wo.ObjectClass != (int)AcObjectClass.Monster) return;
+        _settingOffNoted = true;
+        _host.Log($"[CombatTarget] fight-selected: 0x{selected:X8} '{wo.Name}' not followed: the setting \"Fight the monster I select\" is off " +
+                  "(said once while it stays off)");
+    }
+
+    private int _selectionIgnoredNotedId;
+
+    /// <summary>A monster selection the setting didn't follow and otherwise wouldn't log: one line per monster.</summary>
+    private void NoteSelectionIgnored(int id, string why)
+    {
+        var wo = _worldFilter[id];
+        if (wo == null || (int)wo.ObjectClass != (int)AcObjectClass.Monster || _selectionIgnoredNotedId == id) return;
+        _selectionIgnoredNotedId = id;
+        _host.Log($"[CombatTarget] fight-selected: 0x{unchecked((uint)id):X8} '{wo.Name}' not followed: {why}");
     }
 
     /// <summary>

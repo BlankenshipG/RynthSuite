@@ -129,6 +129,12 @@ internal sealed class OutdoorHunt
     /// <summary>A partial path whose end is within this of the monster still counts (the last step is combat's).</summary>
     public double ReachYd { get; set; } = 3;
     /// <summary>
+    /// A walk whose end is more than this below or above the monster doesn't reach it (2026-11-12): RynthNav
+    /// finds the ground up to 64 yd under a goal, so a monster on a roof, a ledge or the floor above read as
+    /// reached from the spot under it, and the character stood there swinging up at it.
+    /// </summary>
+    public double ReachRiseYd { get; set; } = 3;
+    /// <summary>
     /// A walk longer than this times Hunt Range is too far round: the first test hunt (10-23) chose a buff bot
     /// 12 yd away inside a building, a 143 yd walk; the walk led her past Hunt Range from it, she gave up,
     /// turned back, and chose it again, every second.
@@ -283,7 +289,7 @@ internal sealed class OutdoorHunt
                 if (!moved && !due) return new Decision(Act.None, TargetId: TargetId);
                 var w = PlanWalk(me, meCell, target.Pos, target.Cell);
                 var p = w.P;
-                if (Reaches(p))
+                if (Reaches(p, target.Pos))
                 {
                     _plannedTo = target.Pos;
                     _lastPlan = now;
@@ -303,7 +309,7 @@ internal sealed class OutdoorHunt
                 else
                 {
                     Skip(target.Id, now);
-                    Note = $"'{target.Name}' can't be reached any more ({Describe(p, w.Why)}): left out for {SkipSec:0} s";
+                    Note = $"'{target.Name}' can't be reached any more ({Describe(p, w.Why, target.Pos)}): left out for {SkipSec:0} s";
                 }
             }
             TargetId = 0;
@@ -326,11 +332,11 @@ internal sealed class OutdoorHunt
             var w = PlanWalk(me, meCell, c.Pos, c.Cell);
             var p = w.P;
             if (p.Status == PathStatus.Unavailable) return new Decision(Act.Idle, Why: "no pathfinder");
-            if (Reaches(p)) _viable.Add((c, w));
+            if (Reaches(p, c.Pos)) _viable.Add((c, w));
             else
             {
                 Skip(c.Id, now);
-                Note = $"'{c.Name}' left out for {SkipSec:0} s: {Describe(p, w.Why)}";
+                Note = $"'{c.Name}' left out for {SkipSec:0} s: {Describe(p, w.Why, c.Pos)}";
             }
         }
         if (_viable.Count > 0)
@@ -452,11 +458,11 @@ internal sealed class OutdoorHunt
             var c = _eligible[i];
             var w = PlanWalk(me, meCell, c.Pos, c.Cell);
             if (w.P.Status == PathStatus.Unavailable) return new Decision(Act.Idle, Why: "no pathfinder");
-            if (Reaches(w.P)) walks[i] = w;
+            if (Reaches(w.P, c.Pos)) walks[i] = w;
             else
             {
                 Skip(c.Id, now);
-                Note = $"'{c.Name}' left out for {SkipSec:0} s: {Describe(w.P, w.Why)}";
+                Note = $"'{c.Name}' left out for {SkipSec:0} s: {Describe(w.P, w.Why, c.Pos)}";
             }
         }
         if (walks.Count == 0) return Waiting();
@@ -593,12 +599,19 @@ internal sealed class OutdoorHunt
 
     private bool InArea(Vec p) => RadiusYd <= 0 || p.FlatDistanceTo(Anchor) <= RadiusYd;
 
-    private bool Reaches(PathResult p) =>
+    private bool Reaches(PathResult p, Vec goal) =>
         p.Corners.Count > 0 && (p.Status == PathStatus.Ok || (p.Status == PathStatus.Partial && p.Gap <= ReachYd))
-        && p.Length <= RangeYd * MaxWalkFactor;
+        && p.Length <= RangeYd * MaxWalkFactor && Math.Abs(EndRise(p, goal)) <= ReachRiseYd;
 
-    private string Describe(PathResult p, string why = "") => p.Status switch
+    /// <summary>How far the monster is above (+) or below (-) the walk's end.</summary>
+    private static double EndRise(PathResult p, Vec goal) => p.Corners.Count > 0 ? goal.Z - p.Corners[^1].Z : 0;
+
+    private string Describe(PathResult p, string why, Vec goal) => p.Status switch
     {
+        _ when p.Corners.Count > 0 && Math.Abs(EndRise(p, goal)) > ReachRiseYd
+                           && (p.Status == PathStatus.Ok || p.Status == PathStatus.Partial)
+                           => EndRise(p, goal) > 0 ? $"{EndRise(p, goal):0} yd above the walk's end (on a ledge, a roof or the floor above)"
+                                                   : $"{-EndRise(p, goal):0} yd below the walk's end",
         _ when p.Corners.Count > 0 && p.Length > RangeYd * MaxWalkFactor
                            && (p.Status == PathStatus.Ok || p.Status == PathStatus.Partial) => $"a {p.Length:0} yd walk, too far round",
         _ when why.Length > 0 => why,

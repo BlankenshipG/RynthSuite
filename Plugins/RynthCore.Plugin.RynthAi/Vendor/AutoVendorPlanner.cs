@@ -570,6 +570,13 @@ internal static class AutoVendorPlanner
         return VendorPlan.Split(item, amount, why);
     }
 
+    /// <summary>
+    /// The unit value to trust for one item: one read off a stack the server just made (a split's new
+    /// stack) wins, since every older stack's Value may be stale; else <see cref="MostCarriedUnit"/>.
+    /// </summary>
+    internal static int TrueUnit(IReadOnlyDictionary<int, long> unitsByValue, int freshUnit) =>
+        freshUnit > 0 ? freshUnit : MostCarriedUnit(unitsByValue);
+
     /// <summary>The unit value carrying the most units (ties: the higher value, the safe side for a vendor's max).</summary>
     internal static int MostCarriedUnit(IReadOnlyDictionary<int, long> unitsByValue)
     {

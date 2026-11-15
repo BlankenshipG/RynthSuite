@@ -1379,8 +1379,12 @@ public class WorldObjectCache
     /// position as read (landblock-local) so the caller needn't read it again.
     /// </summary>
     public double DistanceFrom(uint cell1, float x1, float y1, float z1, int id2, out bool hasPos, out float x2, out float y2)
+        => DistanceFrom(cell1, x1, y1, z1, id2, out hasPos, out x2, out y2, out _);
+
+    /// <summary>The same, with the object's height (<paramref name="z2"/>) as read.</summary>
+    public double DistanceFrom(uint cell1, float x1, float y1, float z1, int id2, out bool hasPos, out float x2, out float y2, out float z2)
     {
-        hasPos = _host.TryGetObjectPosition(unchecked((uint)id2), out uint cell2, out x2, out y2, out float z2);
+        hasPos = _host.TryGetObjectPosition(unchecked((uint)id2), out uint cell2, out x2, out y2, out z2);
         if (!hasPos)
             return double.MaxValue;
 
