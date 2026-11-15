@@ -46,12 +46,15 @@ internal static class ItemToolTests
         r.Add("quick give: a refused item is left out; three refusals in a row stop it", GiveRefusals);
         r.Add("quick give: stops when the target vanishes, changes, moves away or a fight starts", GiveStopConditions);
         r.Add("quick give: refuses to start with the target far, unloaded, no item or in a fight; busy client waits", GiveStartRefusals);
+        r.Add("quick give (11-15): Amount gives that many units, splitting a bigger stack, then stops", GiveAmount);
+        r.Add("quick give (11-15): Every repeats a round of Amount until Stop; none left or the target away waits for the next round", GiveEvery);
         // Plugin glue
         r.Add("item tool: the chest looter picks the selected chest and key, unlocks, opens and loots with the macro off, stops when out of keys", PluginChestRun);
         r.Add("item tool: chest/key picks refuse the wrong things (a pack item as chest, a world object as key, house storage)", PluginChestPicks);
         r.Add("item tool: Quick give hands over exactly the picked item to the picked NPC, never worn gear or other names", PluginQuickGive);
         r.Add("item tool: Quick give starts only from the panel or a typed line, never from a meta, a script or a remote line; stop works from anywhere", PluginGiveTrust);
         r.Add("item tool: Quick give targets are players or NPCs only", PluginGiveTargets);
+        r.Add("item tool (11-15): giveamount / giveevery set Amount and Every, the panel data reports them, and a give sends that many", PluginGiveAmountEvery);
         r.Add("item tool: /ra itemtool relock sets, clamps and saves the re-lock wait and always answers with the value; refused before the profile loads", PluginRelockCommand);
         r.Add("item tool: the re-lock wait is saved in the profile and loaded (old profiles: 125 s), sent to the engine and left alone by an engine without it", RelockSavedAndLoaded);
     }
@@ -525,6 +528,7 @@ internal static class ItemToolTests
         public readonly List<int> Items = new() { 1, 2, 3 };       // carried, in order
         public readonly Dictionary<int, int> Counts = new();
         public readonly List<(long At, int Item)> Sent = new();
+        public readonly List<int> Amounts = new();                  // the amount each give asked for (0 = whole)
         public readonly HashSet<int> Takes = new();                 // items the server accepts (empty = all)
         public readonly HashSet<int> Refuses = new();               // items it refuses with an error
         public bool Silent;                                         // never answers
@@ -532,6 +536,7 @@ internal static class ItemToolTests
         public readonly List<string> Said = new(), Logs = new();
         public QuickGive Gv = null!;
         public int PendingLand;                                     // item in flight, lands after LandMs
+        public int PendingAmount;
         public long LandAt;
         public long LandMs = 200;
 
@@ -545,13 +550,14 @@ internal static class ItemToolTests
             itemId = 0; count = 0; return false;
         }
         public int CountCarried(GiveItemKey key) => Items.Count;
-        public bool Landed(int itemId, int count) => !Items.Contains(itemId);
-        public bool Send(int itemId, int targetId)
+        public bool Landed(int itemId, int count) => !Items.Contains(itemId) || (Counts.TryGetValue(itemId, out int c) ? c : 1) < count;
+        public bool Send(int itemId, int targetId, int amount)
         {
             Sent.Add((T, itemId));
+            Amounts.Add(amount);
             if (Silent) return true;
             if (Refuses.Contains(itemId)) { Refusals++; return true; }
-            PendingLand = itemId; LandAt = T + LandMs;
+            PendingLand = itemId; PendingAmount = amount; LandAt = T + LandMs;
             return true;
         }
         public int RefusalSeq() => Refusals;
@@ -564,7 +570,13 @@ internal static class ItemToolTests
             while (T < end && (until == null || !until()))
             {
                 T += 50;
-                if (PendingLand != 0 && T >= LandAt) { Items.Remove(PendingLand); PendingLand = 0; }
+                if (PendingLand != 0 && T >= LandAt)
+                {
+                    int have = Counts.TryGetValue(PendingLand, out int c) ? c : 1;
+                    if (PendingAmount > 0 && PendingAmount < have) Counts[PendingLand] = have - PendingAmount;   // a split: the rest stays
+                    else Items.Remove(PendingLand);
+                    PendingLand = 0;
+                }
                 Gv.Tick();
             }
         }
@@ -687,6 +699,123 @@ internal static class ItemToolTests
         e3.Hold = null;
         e3.Run(500, () => e3.Sent.Count > 0);
         Check.True(e3.Sent.Count > 0, "it goes when the client is free");
+    }
+
+    private static void GiveAmount()
+    {
+        // Whole items: Amount 2 of five gives two, then the run ends.
+        var env = NewGive(out var qg);
+        env.Items.Clear(); env.Items.AddRange(new[] { 1, 2, 3, 4, 5 });
+        qg.SetAmount(2);
+        Check.True(qg.Start(out _), "starts");
+        Check.True(env.Said[0].Contains("giving 2 of 'Mana Mote'"), "the start line says how many: " + env.Said[0]);
+        env.Run(20_000, () => !qg.Running);
+        Check.Eq(string.Join(",", env.Sent.Select(s => s.Item)), "1,2", "two items, no more");
+        Check.Eq(string.Join(",", env.Amounts), "0,0", "whole items go whole");
+        Check.False(qg.Running, "done after the amount");
+        Check.True(env.Said.Last().Contains("gave 2"), "says so: " + env.Said.Last());
+
+        // A stack of 50 and Amount 20: one give of 20 split off the stack; 30 stay.
+        var e2 = NewGive(out var q2);
+        e2.Items.Clear(); e2.Items.Add(1); e2.Counts[1] = 50;
+        q2.SetAmount(20);
+        q2.Start(out _);
+        e2.Run(20_000, () => !q2.Running);
+        Check.Eq(string.Join(",", e2.Amounts), "20", "one give of 20 from the stack");
+        Check.Eq(e2.Counts[1], 30, "30 stay in the pack");
+        Check.Eq(q2.Units, 20, "20 units given");
+
+        // Stacks of 15 and 15 and Amount 20: the first whole, 5 split off the second.
+        var e3 = NewGive(out var q3);
+        e3.Items.Clear(); e3.Items.AddRange(new[] { 1, 2 }); e3.Counts[1] = 15; e3.Counts[2] = 15;
+        q3.SetAmount(20);
+        q3.Start(out _);
+        e3.Run(20_000, () => !q3.Running);
+        Check.Eq(string.Join(",", e3.Amounts), "0,5", "15 whole, then 5 split off");
+        Check.Eq(q3.Units, 20, "20 units in all");
+
+        // Amount 0 is the old behaviour: everything.
+        var e4 = NewGive(out var q4);
+        q4.SetAmount(0);
+        q4.Start(out _);
+        e4.Run(20_000, () => !q4.Running);
+        Check.Eq(e4.Sent.Count, 3, "Amount 0 gives all three");
+        q4.SetAmount(-5); Check.Eq(q4.Amount, 0, "a negative amount is 0");
+        q4.SetAmount(int.MaxValue); Check.Eq(q4.Amount, QuickGive.MaxAmount, "clamped to MaxAmount");
+    }
+
+    private static void GiveEvery()
+    {
+        // A stack of 50, 20 every 10 s: 20, 20, 10, then it waits (none left) until Stop.
+        var env = NewGive(out var qg);
+        env.Items.Clear(); env.Items.Add(1); env.Counts[1] = 50;
+        qg.SetAmount(20);
+        qg.SetEvery(10);
+        Check.True(qg.Start(out _), "starts");
+        Check.True(env.Said[0].Contains("every 10 s"), "the start line says how often: " + env.Said[0]);
+        env.Run(3000);
+        Check.Eq(qg.Units, 20, "round 1: 20");
+        Check.Eq(qg.State, QuickGive.Phase.Waiting, "then waits");
+        Check.True(qg.Status.Contains("next round in"), "the status counts down: " + qg.Status);
+        long first = env.Sent[0].At;
+        env.Run(7000);   // 10 s from the start; the wait counts from the round's end
+        Check.Eq(env.Sent.Count, 1, "nothing more within 10 s");
+        env.Run(3000);
+        Check.Eq(env.Sent.Count, 2, "round 2 after 10 s");
+        Check.True(env.Sent[1].At - first >= 10_000, $"round 2 came {env.Sent[1].At - first} ms after round 1 (at least 10 s)");
+        env.Run(12_000);
+        Check.Eq(string.Join(",", env.Amounts), "20,20,0", "20, 20, then the last 10 whole");
+        Check.Eq(qg.Units, 50, "all 50 given");
+        env.Run(30_000);
+        Check.True(qg.Running, "none left: it waits for more instead of ending");
+        Check.True(qg.Status.Contains("no 'Mana Mote' in your packs"), "and says why: " + qg.Status);
+        env.Items.Add(7); env.Counts[7] = 5;
+        env.Run(12_000);
+        Check.Eq(env.Sent.Last().Item, 7, "new ones in the pack go in the next round");
+        qg.Stop("stopped by you");
+        Check.False(qg.Running, "Stop ends it");
+
+        // The target away or a fight between rounds only delays the next round.
+        var e2 = NewGive(out var q2);
+        e2.Items.Clear(); e2.Items.AddRange(Enumerable.Range(1, 20));
+        q2.SetAmount(1);
+        q2.SetEvery(5);
+        q2.Start(out _);
+        e2.Run(2000);
+        Check.Eq(e2.Sent.Count, 1, "round 1: one item");
+        e2.Meters = 40;
+        e2.Run(20_000);
+        Check.True(q2.Running, "the target 40 m away doesn't end it");
+        Check.Eq(e2.Sent.Count, 1, "and nothing goes while it is away");
+        e2.Meters = 2; e2.Combat = true;
+        e2.Run(3000);
+        Check.Eq(e2.Sent.Count, 1, "nothing during a fight");
+        e2.Combat = false;
+        e2.Run(1000);
+        Check.Eq(e2.Sent.Count, 2, "the next round goes as soon as it is back and the fight is over");
+
+        // A fight in the middle of a round ends that round, not the run.
+        var e3 = NewGive(out var q3);
+        e3.Items.Clear(); e3.Items.AddRange(Enumerable.Range(1, 40));
+        q3.SetAmount(10);
+        q3.SetEvery(5);
+        q3.Start(out _);
+        e3.Run(1200);
+        e3.Combat = true;
+        e3.Run(500);
+        Check.True(q3.Running && q3.State == QuickGive.Phase.Waiting, "a fight mid-round: waits for the next round");
+        e3.Combat = false;
+        e3.Run(8000);
+        Check.True(q3.Rounds >= 2, "and the next round starts");
+
+        // The target renamed still ends it.
+        var e4 = NewGive(out var q4);
+        q4.SetAmount(1); q4.SetEvery(5);
+        q4.Start(out _);
+        e4.Run(2000);
+        e4.TargetName = "Somebody Else";
+        e4.Run(10_000, () => !q4.Running);
+        Check.False(q4.Running, "a changed target ends a repeating give");
     }
 
     // ── Plugin glue ──────────────────────────────────────────────────────────
@@ -940,6 +1069,43 @@ internal static class ItemToolTests
         Check.True(FakeHost.Gives.All(g => g.Target == Npc && g.Amount == 0), "all to the NPC, whole objects, with AC's give action");
         Check.Eq(FakeHost.ExternalMoves.Count, 0, "no MoveItemExternal");
         Check.True(Chat().Contains("Quick give stopped: done"), "ends with a result line: " + Chat());
+    }
+
+    private static void PluginGiveAmountEvery()
+    {
+        BaseWorld();
+        var bot = MakeBot("itemtool-amount.json");
+        string json = bot.P.BuildItemToolJson();
+        Check.True(json.Contains("\"amount\":0") && json.Contains("\"everySec\":0") && json.Contains($"\"amountMax\":{QuickGive.MaxAmount}"),
+            "the panel data has Amount 0, Every 0 and the limits: " + json);
+
+        bot.Cmd("giveamount 2"); bot.Tick();
+        bot.Cmd("giveevery 30"); bot.Tick();
+        var qg = bot.Get<QuickGive>("_quickGive");
+        Check.Eq(qg.Amount, 2, "giveamount 2");
+        Check.Eq(qg.EverySec, 30, "giveevery 30");
+        Check.True(Chat().Contains("gives 2 a round") && Chat().Contains("a round every 30 s"), "both answered: " + Chat());
+        json = bot.P.BuildItemToolJson();
+        Check.True(json.Contains("\"amount\":2") && json.Contains("\"everySec\":30"), "and the panel data shows them: " + json);
+
+        FakeHost.Chat.Clear();
+        bot.Cmd("giveamount lots"); bot.Tick();
+        Check.Eq(qg.Amount, 2, "a word leaves it as it was");
+        Check.True(Chat().Contains("Amount (units a round; 0 = all of them) is 2"), "and says what it is: " + Chat());
+        bot.Cmd("giveevery -4"); bot.Tick();
+        Check.Eq(qg.EverySec, 30, "a negative number too");
+
+        // A meta's line may set them (they only shape a give; starting one stays the player's).
+        bot.Call("HandleRaCommand", "/ra itemtool giveevery 0");
+        bot.Tick();
+        Check.Eq(qg.EverySec, 0, "a meta line set Every 0");
+
+        FakeHost.SelectedItem = Mote1; bot.Cmd("giveitem"); bot.Tick();
+        FakeHost.SelectedItem = Npc; bot.Cmd("givetarget"); bot.Tick();
+        bot.Cmd("give"); bot.Tick();
+        bot.TickUntil(() => !qg.Running, 1500);
+        Check.False(qg.Running, "one round of 2, done");
+        Check.Eq(FakeHost.Gives.Count, 2, "two of the three Mana Motes given");
     }
 
     private static void PluginGiveTrust()

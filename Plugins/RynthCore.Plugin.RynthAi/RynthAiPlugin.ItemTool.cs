@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text;
+using System.Globalization;
 using RynthCore.Plugin.RynthAi.ItemTool;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.Plugin.Shared;
@@ -28,6 +29,8 @@ namespace RynthCore.Plugin.RynthAi;
 //   chest set | key | start | stop | status | clear
 //   relock <seconds> (also "chest relock"): "Chest re-lock wait (s)", saved in the profile (2026-11-05)
 //   giveitem | givetarget | give | givestop | givestatus | clear
+//   giveamount <units, 0 = all> | giveevery <seconds, 0 = one round>: how a give goes (2026-11-15; this
+//   session only, like the picks)
 //   stop (both)
 //
 // Threads: a chat command arrives on AC's thread and the panel's on the engine pump, but the tick
@@ -133,7 +136,7 @@ public sealed partial class RynthAiPlugin
             case "":
             case "status":
                 ChatLine("[RynthAi] Item Tool - " + _chestKey!.Status + " | " + _quickGive!.Status);
-                ChatLine("[RynthAi]   /ra itemtool chest set|key|start|stop|status   /ra itemtool relock <seconds>   and   /ra itemtool giveitem|givetarget|give|givestop|givestatus");
+                ChatLine("[RynthAi]   /ra itemtool chest set|key|start|stop|status   /ra itemtool relock <seconds>   and   /ra itemtool giveitem|givetarget|give|givestop|givestatus   /ra itemtool giveamount <units, 0 = all>   /ra itemtool giveevery <seconds, 0 = once>");
                 return;
             case "stop":
                 if (_chestKey!.Running) _chestKey.Stop("stopped by you");
@@ -156,6 +159,8 @@ public sealed partial class RynthAiPlugin
             case "givetarget": PickGiveTarget(); return;
             case "givestatus": ChatLine("[RynthAi] Quick give - " + _quickGive!.Status); return;
             case "givestop": _quickGive!.Stop("stopped by you"); return;
+            case "giveamount": RunGiveNumber(sub, every: false); return;
+            case "giveevery": RunGiveNumber(sub, every: true); return;
             case "give":
                 if (!trusted)
                 {
@@ -168,6 +173,28 @@ public sealed partial class RynthAiPlugin
                 ChatLine($"[RynthAi] Item Tool: unknown '{args}'. Try /ra itemtool status.");
                 return;
         }
+    }
+
+    /// <summary>
+    /// "giveamount N" (units a round, 0 = all) and "giveevery N" (seconds between rounds, 0 = one round). Only
+    /// set how a give goes, so any source may; starting one stays the player's alone. A running give uses them
+    /// from its next give (the amount) or its next round (the interval).
+    /// </summary>
+    private void RunGiveNumber(string arg, bool every)
+    {
+        var qg = _quickGive!;
+        int max = every ? QuickGive.MaxEverySec : QuickGive.MaxAmount;
+        string what = every ? "Every (seconds between rounds; 0 = one round)" : "Amount (units a round; 0 = all of them)";
+        if (!int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) || n < 0)
+        {
+            ChatLine($"[RynthAi] Quick give: {what} is {(every ? qg.EverySec : qg.Amount)}. Set it with a number 0-{max}.");
+            return;
+        }
+        if (every) qg.SetEvery(n); else qg.SetAmount(n);
+        int v = every ? qg.EverySec : qg.Amount;
+        ChatLine(every
+            ? (v == 0 ? "[RynthAi] Quick give: one round (Every 0)." : $"[RynthAi] Quick give: a round every {v} s, until you stop it.")
+            : (v == 0 ? "[RynthAi] Quick give: gives every matching item (Amount 0)." : $"[RynthAi] Quick give: gives {v} a round."));
     }
 
     private void RunChestCommand(string sub)
@@ -287,7 +314,9 @@ public sealed partial class RynthAiPlugin
         if (_objectCache?[id] is not WorldObject wo || !IsCarriedByPlayer(id)) { ChatLine("[RynthAi] Quick give: the item must be in your pack; select it there."); return; }
         if (WorldObjectCache.IsWieldedByPlayer(Host, wo)) { ChatLine("[RynthAi] Quick give: that is worn or wielded; take it off first."); return; }
         qg.SetItem(id, new GiveItemKey(ItemToolWcid(id), wo.Name));
-        ChatLine($"[RynthAi] Quick give: item = {wo.Name} (every '{wo.Name}' in your packs will go).");
+        ChatLine(qg.Amount > 0
+            ? $"[RynthAi] Quick give: item = {wo.Name} ({qg.Amount} a round)."
+            : $"[RynthAi] Quick give: item = {wo.Name} (every '{wo.Name}' in your packs will go).");
     }
 
     private void PickGiveTarget()
@@ -424,7 +453,15 @@ public sealed partial class RynthAiPlugin
         AppendJson(sb, "target", qg == null || qg.TargetId == 0 ? "" : (_giveTargetClass == (int)AcObjectClass.Player ? "PLAYER " : "") + qg.TargetName); sb.Append(',');
         AppendJson(sb, "status", qg?.Status ?? "Idle."); sb.Append(',');
         sb.Append("\"running\":").Append(qg?.Running == true ? "true" : "false").Append(',');
-        sb.Append("\"given\":").Append(qg?.Given ?? 0);
+        sb.Append("\"given\":").Append(qg?.Given ?? 0).Append(',');
+        // Amount and Every (2026-11-15); absent from an older RynthAi: the panel hides them.
+        sb.Append("\"amount\":").Append(qg?.Amount ?? 0).Append(',');
+        sb.Append("\"everySec\":").Append(qg?.EverySec ?? 0).Append(',');
+        sb.Append("\"amountMax\":").Append(QuickGive.MaxAmount).Append(',');
+        sb.Append("\"everyMax\":").Append(QuickGive.MaxEverySec).Append(',');
+        sb.Append("\"rounds\":").Append(qg?.Rounds ?? 0).Append(',');
+        sb.Append("\"units\":").Append(qg?.Units ?? 0).Append(',');
+        sb.Append("\"nextInSec\":").Append(qg == null ? 0 : (qg.NextRoundInMs + 999) / 1000);
         sb.Append("}}");
         return sb.ToString();
     }
@@ -626,8 +663,8 @@ public sealed partial class RynthAiPlugin
             return Math.Max(1, wo.Values(LongValueKey.StackCount, 1)) < count;
         }
 
-        public bool Send(int itemId, int targetId)
-            => Host.GiveObjectTo(unchecked((uint)itemId), unchecked((uint)targetId), 0);   // amount 0 = the whole object
+        public bool Send(int itemId, int targetId, int amount)
+            => Host.GiveObjectTo(unchecked((uint)itemId), unchecked((uint)targetId), Math.Max(0, amount));   // amount 0 = the whole object
 
         public int RefusalSeq()
             => Host.HasGetLastWeenieError && Host.TryGetLastWeenieError(out int seq, out _, out _, out _) ? seq : 0;
