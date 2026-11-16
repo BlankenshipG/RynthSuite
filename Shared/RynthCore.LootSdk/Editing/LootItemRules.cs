@@ -54,7 +54,13 @@ public sealed class LootItemFacts
     public const int ImbuedEffectKey = 179;
     /// <summary>ImbuedEffect (179) and ImbuedEffect2..5 (303-306).</summary>
     public static readonly int[] ImbuedEffectKeys = { 179, 303, 304, 305, 306 };
-    public double Double(int key) => Doubles.TryGetValue(key, out double v) ? v : 0;
+    public double Double(int key)
+    {
+        if (Doubles.TryGetValue(key, out double v) && (v != 0 || key != SlayerText.SlayerDamageBonusKey)) return v;
+        // The server never sends the slayer bonus (float 138); the weapon's text has it ("Shadow Slayer: 1.5x Damage").
+        if (key == SlayerText.SlayerDamageBonusKey && T11 is { SlayerDamagePercent: > 0 } t) return t.SlayerDamagePercent / 100.0;
+        return 0;
+    }
 }
 
 /// <summary>How the rule recognises the item.</summary>

@@ -47,6 +47,7 @@ internal static partial class Program
         RunT11Tests();
         RunLootAddT11Tests();
         RunT11ItemTests();
+        RunSlayerTextTests();
         RunLootAddAttributeTests();
         RunUnknownNodeTests();
         TestQuestLootProfiles();

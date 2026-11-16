@@ -175,9 +175,25 @@ public class WorldObject
         if (o != null)
         {
             if (o.Doubles.TryGetValue((uint)key, out double v)) return v;
-            if (!o.LiveFallback) return defaultValue;
+            if (!o.LiveFallback) return SlayerBonusOr(key, defaultValue);
         }
-        return Cache?.GetDoubleProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+        double live = Cache?.GetDoubleProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+        return live == 0 || live == defaultValue ? SlayerBonusOr(key, live) : live;
+    }
+
+    /// <summary>
+    /// SlayerDamageBonus (float 138) from the weapon's text when the appraisal has none: ACECustom never sends it, only
+    /// "- Shadow Slayer: 1.5x Damage" (2026-11-15; RynthCore.Loot.SlayerText). Any other key: <paramref name="fallback"/>.
+    /// </summary>
+    private double SlayerBonusOr(DoubleValueKey key, double fallback)
+    {
+        if ((int)key != RynthCore.Loot.SlayerText.SlayerDamageBonusKey) return fallback;
+        try
+        {
+            double x = RynthCore.Loot.SlayerText.BonusOf(Values(StringValueKey.LongDesc, string.Empty), Values(StringValueKey.Use, string.Empty));
+            return x > 0 ? x : fallback;
+        }
+        catch { return fallback; }
     }
 }
 

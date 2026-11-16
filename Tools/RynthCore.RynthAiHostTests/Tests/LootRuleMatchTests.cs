@@ -32,6 +32,7 @@ internal static class LootRuleMatchTests
         r.Add("loot rule match: missile damage of bows, crossbows and atlatls at LootSnob's thresholds", MissileDamageThresholds);
         r.Add("loot rule match: buffed keys add the item's cantrips (Blood Thirst, Defender, Heart/Spirit Thirst, Impen, Hermetic)", BuffedCantrips);
         r.Add("loot rule match: double keys compare as floats (1.20 + 0.09 >= 1.29)", FloatCompare);
+        r.Add("loot rule match (11-15): 'Slayer damage bonus' reads the weapon's text when the server sends no float 138", SlayerBonusFromText);
         r.Add("loot rule match: tinked damage and tinked target melee (VTank's worked examples)", TinkedNodes);
         r.Add("loot rule match: which conditions need the ID", ConditionsNeedingId);
         r.Add("loot rule match: Decide passes over a rule a known condition fails, in any order", DecideOrder);
@@ -177,6 +178,32 @@ internal static class LootRuleMatchTests
         Check.True(VTankLootEvaluator.Match(new VTankLootRule { Conditions = { C(N.DoubleValKeyGE, "1.29", "29") } }, item), "GE as floats");
         Check.True(VTankLootEvaluator.Match(new VTankLootRule { Conditions = { C(N.DoubleValKeyLE, "1.29", "29") } }, item), "LE as floats");
         Check.False(VTankLootEvaluator.Match(new VTankLootRule { Conditions = { C(N.DoubleValKeyGE, "1.2901", "29") } }, item), "a real difference still counts");
+    }
+
+    // 2026-11-15, Silentkelpie: "is the any slayer rule working for looting". ACECustom sends the slayer type (166) but
+    // never SlayerDamageBonus (138): the bonus is only in the text ("- Shadow Slayer: 1.5x Damage"). Every profile rule
+    // with "Slayer damage bonus at least 1.01" read 0 and never kept a weapon.
+    private static void SlayerBonusFromText()
+    {
+        FakeHost.Reset();
+        static VTankLootCondition C(int node, params string[] data) => new(node, "0", data);
+        var rule = new VTankLootRule { Conditions = { C(N.LongValKeyGE, "1", "166"), C(N.DoubleValKeyGE, "1.01", "138") } };
+        const string card = "Property Details:\n- Weapon Grade: C+ (70% of max damage)\n- Properties: 2 of 5\n- Shadow Slayer: 1.5x Damage\n";
+
+        var slayer = new Item("Khanda-handled Mace", AcObjectClass.MeleeWeapon).Int(166, 22).Str(16, card);
+        Check.True(VTankLootEvaluator.Match(rule, slayer), "any slayer + bonus >= 1.01: the Shadow Slayer mace (bonus from its text)");
+        Check.Near(slayer.Wo.Values((DoubleValueKey)138, 0.0), 1.5, 1e-9, "float 138 reads 1.5");
+
+        var inUse = new Item("Acid Sceptre", AcObjectClass.WandStaffOrb).Int(166, 31).Str(14, "- Banderling Slayer: 2.1x Damage");
+        Check.True(VTankLootEvaluator.Match(rule, inUse), "the bonus in the Use text too");
+
+        var sent = new Item("Sword", AcObjectClass.MeleeWeapon).Int(166, 22).Dbl(138, 1.005).Str(16, card);
+        Check.False(VTankLootEvaluator.Match(rule, sent), "a bonus the server does send wins over the text");
+
+        var none = new Item("Spada", AcObjectClass.MeleeWeapon).Str(16, "Property Details:\n- Weapon Grade: B (80% of max damage)\n");
+        Check.False(VTankLootEvaluator.Match(rule, none), "no slayer: not kept");
+        Check.Near(none.Wo.Values((DoubleValueKey)138, 0.0), 0.0, 1e-9, "and float 138 stays 0");
+        Check.Near(none.Wo.Values((DoubleValueKey)29, 0.0), 0.0, 1e-9, "other float keys never read the slayer text");
     }
 
     private static void TinkedNodes()
