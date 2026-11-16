@@ -26,6 +26,8 @@ namespace RynthCore.Plugin.RynthAi;
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.MiniRemote.MiniRemoteState))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.MiniRemote.LegacyHubFile))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.BuffProfile))]
+// The feature catalog (Docs/features/*.json, embedded): Find a Feature (Features/FeatureCatalog.cs).
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Features.FeatureFile))]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     IncludeFields = true,

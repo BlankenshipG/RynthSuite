@@ -1263,8 +1263,24 @@ public partial class CombatManager : IDisposable
             // Melee reaches through walls, on both sides: a monster this close is a target when
             // melee is, or is about to be, the attack (the owner, 2026-11-06). It was left out while
             // hitting the character, who then read as having nothing to fight.
-            if (losBlocked && dist <= MeleeIgnoresLosWithin && MeleeIsTheAttackOn(wo, attackType))
+            // Not through a building's wall (2026-11-13): Drakkon, outside, locked a sorcerer 3.6 m off
+            // inside a building and swung at the wall for 12 s with nothing landing either way. One of
+            // the two in a building's rooms and the other outside: left to the hunt (it walks in
+            // through a door), and, like the floor above, not counted as out of sight, so the walk to
+            // that door isn't held for it.
+            // A setting since 2026-11-15 (Melee through walls, on by default). Off: none of this; a
+            // blocked monster this close is out of sight like one farther off (counted below, so
+            // jump-looting waits; it isn't swung at, so it is never blacklisted for a wall; the hunt,
+            // which needs no line of sight, still walks round to it, and leaves it out if it can't).
+            if (losBlocked && _settings.MeleeThroughWalls && dist <= MeleeIgnoresLosWithin && MeleeIsTheAttackOn(wo, attackType))
+            {
+                if (hasPlayerPos && AcrossBuildingWall(meCell, (uint)wo.Id))
+                {
+                    if (notePassed) NotePassedOver(wo.Id, dist, PassedOverLos);
+                    continue;
+                }
                 losBlocked = false;
+            }
 
             // Don't blacklist from scan — just exclude from this result.
             // Blacklisting only happens when an active target fails LOS during attack.
@@ -7042,6 +7058,19 @@ public partial class CombatManager : IDisposable
 
     /// <summary>A monster <paramref name="dist"/> m away (3D), <paramref name="dz"/> m above (+) or below (-),
     /// is out of melee's reach: on another floor, or on a ledge or a roof.</summary>
+    /// <summary>True when one of the two cells is a building's room on an outdoor landblock and the other
+    /// is outside (cells under 0x0100 are the landscape). Two dungeon cells are not: a dungeon has no
+    /// outdoor cells, and a monster round a dungeon corner is still reached through the wall.</summary>
+    internal static bool InsideVersusOutside(uint cellA, uint cellB)
+    {
+        bool aIn = (cellA & 0xFFFF) >= 0x0100, bIn = (cellB & 0xFFFF) >= 0x0100;
+        return aIn != bIn;
+    }
+
+    private bool AcrossBuildingWall(uint meCell, uint targetId)
+        => meCell != 0 && _host.TryGetObjectPosition(targetId, out uint tc, out _, out _, out _) && tc != 0
+           && InsideVersusOutside(meCell, tc);
+
     internal static bool OutOfMeleeReachUpOrDown(double dist, double dz)
     {
         double rise = Math.Abs(dz);

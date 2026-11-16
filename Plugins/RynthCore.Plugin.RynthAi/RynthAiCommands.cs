@@ -68,10 +68,12 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] === Commands ===");
         ChatLine("[RynthAi] /ra fellow       — fellowship diagnostics and queries");
         ChatLine("[RynthAi] /ra help          — show this list");
+        ChatLine("[RynthAi] /ra find [words]  — Find a Feature: search every RynthSuite feature, where it is and its command");
         ChatLine("[RynthAi] /ra version       — RynthAi version and build date, and the engine it runs on");
         ChatLine("[RynthAi] /ra server        - which server RynthCore says this is, its overrides, and the server plugin's settings");
         ChatLine("[RynthAi] /ra power <0-100|auto> — set attack power (auto = recklessness-aware)");
         ChatLine("[RynthAi] /ra dfheight [on|off|status|window] — Dirty Fighting rotation: attack heights by the effects on the target");
+        ChatLine("[RynthAi] /ra meleewalls [on|off] — Melee through walls: melee reaches a monster within 4 m behind a wall (not a building's)");
         ChatLine("[RynthAi] /ra cast <spellId> — cast spell on current target");
         ChatLine("[RynthAi] /ra buffs         — show active buff timers");
         ChatLine("[RynthAi] /ra buffitems [list|allow|block|add|addselected|remove|repeat|open] — the buff items RynthAi may use");
@@ -3779,12 +3781,14 @@ public sealed partial class RynthAiPlugin
     /// those say how to patrol here instead.
     /// </summary>
     internal static PatrolFollow DecidePatrolFollow(uint patrolLb, uint playerCell, bool isDungeonLandblock,
-                                                    bool portaling, uint triedLb, long msSinceDeath, bool arrivedWhileRunning)
+                                                    bool portaling, uint triedLb, long msSinceDeath, bool arrivedWhileRunning,
+                                                    bool followAfterDeath = false)
     {
         uint lb = playerCell >> 16;
         if (playerCell == 0 || lb == patrolLb || (playerCell & 0xFFFF) < 0x0100) return PatrolFollow.None;
         if (portaling || !isDungeonLandblock || lb == triedLb) return PatrolFollow.None;
-        if (msSinceDeath >= 0 && msSinceDeath < PatrolFollowDeathMs) return PatrolFollow.AfterDeath;
+        // Keep Hunting After Death: the patrol is the mode through a death too (RynthAiPlugin.AfterDeath.cs).
+        if (msSinceDeath >= 0 && msSinceDeath < PatrolFollowDeathMs && !followAfterDeath) return PatrolFollow.AfterDeath;
         return arrivedWhileRunning ? PatrolFollow.Follow : PatrolFollow.CameWhileStopped;
     }
 
@@ -3805,7 +3809,8 @@ public sealed partial class RynthAiPlugin
         bool portaling = (Host.HasIsPortaling && Host.IsPortaling()) || _deathHolding;
         long sinceDeath = _lastDeathAt == 0 ? -1 : Environment.TickCount64 - _lastDeathAt;
         var what = DecidePatrolFollow(_dunPatrolLandblock, cell, _navPlanner.IsDungeonLandblock(lb, cellDat), portaling,
-                                      _dunPatrolFollowTriedLb, sinceDeath, _dunPatrolArrivedRunning);
+                                      _dunPatrolFollowTriedLb, sinceDeath, _dunPatrolArrivedRunning,
+                                      followAfterDeath: settings.KeepHuntingAfterDeath);
         if (what == PatrolFollow.None) return false;
 
         uint was = _dunPatrolLandblock;
@@ -3820,6 +3825,8 @@ public sealed partial class RynthAiPlugin
         }
 
         Host.Log($"[RynthAi] DunNav-Patrol: the character went from dungeon 0x{was:X4} into 0x{lb:X4} - building the patrol here.");
+        if (sinceDeath >= 0 && sinceDeath < PatrolFollowDeathMs)
+            ChatLine($"[RynthAi] Dungeon Patrol: in dungeon 0x{lb:X4} after the death; patrolling here (Keep Hunting After Death).");
         BuildDunPatrol(isRebuild: true, followedIn: true);
         if (!_dunPatrolActive || _dunPatrolLandblock != lb)
             ChatLine($"[RynthAi] Dungeon Patrol: couldn't lay a patrol in dungeon 0x{lb:X4} from here. Press Patrol to try again.");

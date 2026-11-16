@@ -4150,6 +4150,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "mstats":       HandleMonsterStatsCommand(parts); break;   // RynthAiPlugin.MonsterStats.cs
             case "gear":         HandleGearCommand(parts); break;           // RynthAiPlugin.ActiveGear.cs
             case "timed":        HandleTimedCommand(parts); break;          // RynthAiPlugin.TimedCommands.cs
+            case "find":         HandleFindCommand(parts); break;           // RynthAiPlugin.FeatureSearch.cs
             case "aetheria":     HandleAetheriaCommand(parts); break;       // RynthAiPlugin.Aetheria.cs
             case "autoconfirm":  HandleAutoConfirmCommand(parts); break;    // RynthAiPlugin.AutoConfirm.cs
             case "why":          HandleWhyCommand(); break;

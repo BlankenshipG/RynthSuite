@@ -3664,6 +3664,7 @@ internal sealed partial class ExpressionEngine
             ["LootOwnCorpse"] = (() => B(s.LootOwnCorpse), v => s.LootOwnCorpse = ToDouble(v) != 0),
             ["EscapeHazards"] = (() => B(s.EscapeHazards), v => s.EscapeHazards = ToDouble(v) != 0),
             ["TravelToOwnCorpse"] = (() => B(s.TravelToOwnCorpse), v => s.TravelToOwnCorpse = ToDouble(v) != 0),
+            ["KeepHuntingAfterDeath"] = (() => B(s.KeepHuntingAfterDeath), v => s.KeepHuntingAfterDeath = ToDouble(v) != 0),
             ["ItemInfoOnSelect"] = (() => B(s.ItemInfoSettings.OnSelect), v => s.ItemInfoSettings.OnSelect = ToDouble(v) != 0),
             // The looter's "Looted" line names the rule and the item's details (salvage: on request).
             ["ItemInfoLootChat"] = (() => B(s.ItemInfoSettings.LootChat), v => s.ItemInfoSettings.LootChat = ToDouble(v) != 0),
@@ -3711,6 +3712,7 @@ internal sealed partial class ExpressionEngine
             ["TargetSelection"]     = (() => I(s.TargetSelection),     v => { if (int.TryParse(v, out int i)) s.TargetSelection  = Math.Clamp(i, 0, 3); }),
             ["TargetLock"]          = (() => B(s.TargetLock),          v => s.TargetLock          = ToDouble(v) != 0),
             ["FightSelectedTarget"] = (() => B(s.FightSelectedTarget), v => s.FightSelectedTarget = ToDouble(v) != 0),
+            ["MeleeThroughWalls"]   = (() => B(s.MeleeThroughWalls),   v => s.MeleeThroughWalls   = ToDouble(v) != 0),
             ["RingRange"]           = (() => I(s.RingRange),           v => { if (int.TryParse(v, out int i)) s.RingRange        = i; }),
             ["ApproachRange"]       = (() => I(s.ApproachRange),       v => { if (int.TryParse(v, out int i)) s.ApproachRange    = i; }),
             ["MinRingTargets"]      = (() => I(s.MinRingTargets),      v => { if (int.TryParse(v, out int i)) s.MinRingTargets   = i; }),

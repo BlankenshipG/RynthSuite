@@ -184,6 +184,12 @@ public static unsafe class PluginExports
                 int drawn = plugin.RenderActiveGear(popped, out want);
                 if (drawn != 1) return drawn;
             }
+            else if (name.SequenceEqual("window:featuresearch"u8))
+            {
+                // The Find a Feature window (RynthAiPlugin.FeatureSearch.cs): 1 drawn, 0 not ready, -2 failed.
+                int drawn = plugin.RenderFeatureSearch(popped, out want);
+                if (drawn != 1) return drawn;
+            }
             else if (name.StartsWith("section:"u8))
             {
                 // Section names are short ASCII ids (Huds/SectionsManifest.cs); anything longer isn't ours.

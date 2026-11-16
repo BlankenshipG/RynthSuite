@@ -1598,6 +1598,7 @@ internal sealed partial class MetaManager
         ["lootpriorityboost"]         = "BoostLootPriority",
         ["pickupmacrooff"]            = "LootChestsMacroOff",   // Settings > Looting > Pickup with macro off
         ["lootchestsmacrooff"]        = "LootChestsMacroOff",
+        ["meleethroughwalls"]         = "MeleeThroughWalls",    // Settings > Combat > Targeting > Melee through walls
         ["dooropenrange"]             = "OpenDoorRange",
         ["autofellowmanagement"]      = "AutoFellowMgmt",
         ["switchwandstodebuff"]       = "UseDispelItems",

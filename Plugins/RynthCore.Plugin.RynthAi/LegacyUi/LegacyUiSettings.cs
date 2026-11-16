@@ -335,6 +335,19 @@ public sealed class LegacyUiSettings
         "another monster or deselect. The bot's own selections never count. Ignored (Priority 0) and\n" +
         "never-attack monsters are not followed (/ra targetlock still forces them). Out to Disengage Range.\n" +
         "/ra fightselected [on|off]";
+    // Melee through walls (2026-11-15, on by default, the meta option meleethroughwalls): melee within
+    // 4 m (CombatManager.MeleeIgnoresLosWithin) ignores a blocked line of sight, except across a
+    // building's wall (one side in its rooms, the other outside). Off: a blocked monster is never a
+    // melee target for being close; it is treated like a blocked monster farther off (out of sight,
+    // left to the hunt). A profile saved before this setting loads it as on.
+    public bool MeleeThroughWalls = true;
+    internal const string MeleeThroughWallsTip =
+        "On: melee reaches a monster within 4 m even when the line of sight test says a wall is in the way\n" +
+        "(a corner, a pillar, a thin dungeon wall: melee lands where the test is too strict). Not across a\n" +
+        "building's wall: one of you inside its rooms and the other outside is left to the hunt, which walks\n" +
+        "in through a door.\n" +
+        "Off: a monster behind a wall is never a melee target for being close; it is treated like any monster\n" +
+        "out of sight. On by default. /ra meleewalls [on|off]";
     public int RingRange = 5;
     // Obsolete since 2026-10-20 (unused here, kept so profiles still load and carry it): the Empyrean
     // Handler lethal-ring evade is Infinite Leaftide's and lives in RynthILT now (its ILT settings,
@@ -546,6 +559,13 @@ public sealed class LegacyUiSettings
     /// On Login starts the Dungeon Patrol. One or the other: ticking one clears the other (LoginAutoStart).
     /// </summary>
     public bool HuntOnLogin;
+    /// <summary>
+    /// Keep Hunting After Death (2026-11-13, RynthAiPlugin.AfterDeath.cs): a death pauses the Outdoor Hunt
+    /// instead of ending it, and it starts again once the character is back up (after Recall On Death and
+    /// Travel Back To My Corpse); the Dungeon Patrol also follows into a dungeon a death sent it to. Off by
+    /// default (a death ended the hunt before it).
+    /// </summary>
+    public bool KeepHuntingAfterDeath;
     /// <summary>
     /// Resume Meta After Reload (2026-11-07, Tom: "remembers which meta state you're in and restarts in
     /// that state so Drakkon doesn't recall back every time"). A hot reload carries the meta's whole
@@ -1449,6 +1469,7 @@ public sealed class SettingsBridgePayload
     public int? TargetSelection { get; set; }
     public bool? TargetLock { get; set; }
     public bool? FightSelectedTarget { get; set; }
+    public bool? MeleeThroughWalls { get; set; }            // Melee through walls; absent (an engine without the row) = unchanged
     public int RingRange { get; set; }
     public int ApproachRange { get; set; }
     public double CorpseApproachRangeMax { get; set; }

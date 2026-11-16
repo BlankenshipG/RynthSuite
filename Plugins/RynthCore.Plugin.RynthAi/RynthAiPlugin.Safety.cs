@@ -121,7 +121,9 @@ public sealed partial class RynthAiPlugin
                 _buffManager?.CancelPendingRecall("death");                // no /lifestone or macro restart after the respawn
                 _buffManager?.ForgetPendingWield("death");                 // a swap the death cut short is not a failed swap
                 _petManager?.OnPlayerDeath();                              // the pet out is left behind with the corpse
-                StopHunt("died", say: true);   // from the lifestone it would walk all the way back to where it started
+                // From the lifestone it would walk all the way back to where it started: off, or with Keep
+                // Hunting After Death paused until the character is back up (RynthAiPlugin.AfterDeath.cs).
+                PauseHuntForDeath();
             }
             else
             {

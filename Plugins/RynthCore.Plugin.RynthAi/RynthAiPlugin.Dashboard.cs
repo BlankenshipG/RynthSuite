@@ -332,6 +332,7 @@ internal sealed class DashboardBridge : IDashboardHost
     public void ToggleSpells() => _p.EnqueueRemoteCommand("spells", "toggle");
     public void ToggleActiveGear() => Queue(_p.ToggleActiveGearWindow);
     public void ToggleTimedCommands() => Queue(_p.ToggleTimedCommandsWindow);
+    public void OpenFeatureSearch() => Queue(_p.OpenFeatureSearchWindow);
     public void UseClassicLook() => _p.UseClassicLook();
 
     public ProfileFileInfo ProfileInfo(int kind)

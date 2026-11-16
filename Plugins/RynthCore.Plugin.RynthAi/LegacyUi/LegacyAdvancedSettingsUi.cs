@@ -368,6 +368,9 @@ internal sealed class LegacyAdvancedSettingsUi
                     _settings.PatrolOnLogin = false;
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip(LoginAutoStart.HuntOnLoginTip);
+                ImGui.Checkbox("Keep Hunting After Death", ref _settings.KeepHuntingAfterDeath);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(AfterDeath.Tip);
                 ImGui.Checkbox("Resume Meta After Reload", ref _settings.ResumeMetaOnReload);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("After a hot reload the meta carries on in the same state, with its variables,\nfired rules and route. A real login still starts in Default.");
@@ -806,6 +809,9 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Fight the monster I select", ref _settings.FightSelectedTarget);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip(LegacyUiSettings.FightSelectedTargetTip);
+                ImGui.Checkbox("Melee through walls", ref _settings.MeleeThroughWalls);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(LegacyUiSettings.MeleeThroughWallsTip);
 
                 ImGui.Spacing();
                 ImGui.Text("Corpse Acquisition (Yards)");

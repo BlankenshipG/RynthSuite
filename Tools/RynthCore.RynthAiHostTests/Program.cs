@@ -101,6 +101,7 @@ internal static class Program
         HandSwapTests.Register(runner);
         OutdoorHuntTests.Register(runner);
         HuntOnLoginTests.Register(runner);
+        KeepHuntingAfterDeathTests.Register(runner);
         HuntBuildingTests.Register(runner);
         FloodPerfTests.Register(runner);
         LootSalvageTests.Register(runner);
@@ -229,6 +230,8 @@ internal static class Program
         FellowOpenTests.Register(runner);
         WieldBanTests.Register(runner);
         ActiveGearTests.Register(runner);
+        FeatureSearchTests.Register(runner);
+        FeatureCatalogTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }
