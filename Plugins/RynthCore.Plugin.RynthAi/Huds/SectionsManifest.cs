@@ -99,20 +99,27 @@ internal static class SectionsManifest
     public const string ActiveGearTitle = RynthAiPlugin.ActiveGearTitle, ActiveGearSurface = RynthAiPlugin.ActiveGearSurface;
 
     /// <summary>
+    /// The Find a Feature window (RynthAiPlugin.FeatureSearch.cs, 2026-11-13): searches the feature catalog
+    /// (Docs/features/*.json), drawn by RynthAi in the engine's frame (plugin API v89). No bar button (the
+    /// bar is full): the dashboard's options menu (Find a feature) and /ra find open it.
+    /// </summary>
+    public const string FeatureSearchTitle = RynthAiPlugin.FeatureSearchTitle, FeatureSearchSurface = RynthAiPlugin.FeatureSearchSurface;
+
+    /// <summary>
     /// The manifest JSON for <paramref name="views"/> (UTF-8 text, schema version 1), with the dashboard
     /// window when <paramref name="dashboard"/>, the Monster Stats window when <paramref name="monsterStats"/>,
-    /// the Timed Commands window when <paramref name="timedCommands"/> and the Active Gear window when
-    /// <paramref name="activeGear"/>.
+    /// the Timed Commands window when <paramref name="timedCommands"/>, the Active Gear window when
+    /// <paramref name="activeGear"/> and the Find a Feature window when <paramref name="featureSearch"/>.
     /// </summary>
     public static string Build(IReadOnlyList<View> views, IReadOnlyList<Section> sections, bool dashboard = false, bool monsterStats = false,
-        bool timedCommands = false, bool activeGear = false)
+        bool timedCommands = false, bool activeGear = false, bool featureSearch = false)
     {
         using var stream = new MemoryStream(4096);
         using (var w = new Utf8JsonWriter(stream))
         {
             w.WriteStartObject();
             w.WriteNumber("version", 1);
-            bool windows = dashboard || monsterStats || timedCommands || activeGear;
+            bool windows = dashboard || monsterStats || timedCommands || activeGear || featureSearch;
             if (windows)
                 w.WriteStartArray("windows");
             if (dashboard)
@@ -174,6 +181,21 @@ internal static class SectionsManifest
                 w.WriteNumber("height", 320);
                 w.WriteNumber("minWidth", 420);
                 w.WriteNumber("minHeight", 140);
+                w.WriteBoolean("bar", false);
+                w.WriteBoolean("edgeToEdge", true);
+                w.WriteEndObject();
+            }
+            if (featureSearch)
+            {
+                w.WriteStartObject();
+                w.WriteString("id", "featuresearch");
+                w.WriteString("title", FeatureSearchTitle);
+                w.WriteString("surface", FeatureSearchSurface);
+                w.WriteString("icon", RynthCore.Plugin.Shared.RynthUi.RynthIcons.MagnifyingGlass);
+                w.WriteNumber("width", 560);
+                w.WriteNumber("height", 460);
+                w.WriteNumber("minWidth", 360);
+                w.WriteNumber("minHeight", 200);
                 w.WriteBoolean("bar", false);
                 w.WriteBoolean("edgeToEdge", true);
                 w.WriteEndObject();

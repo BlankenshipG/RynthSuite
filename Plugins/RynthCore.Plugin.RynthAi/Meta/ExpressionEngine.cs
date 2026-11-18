@@ -226,6 +226,15 @@ internal sealed partial class ExpressionEngine
     // keeps opening it until this is its id: an open use can go unanswered, and a chest can close mid-loot.
     internal Func<uint>? LastChestLooted { get; set; }
 
+    // radunexplore[], radunexplorerooms[], radunexplorevisited[] (RynthAi only, 2026-11-13): the dungeon
+    // explore (/ra dunnav-explore). State 0 none yet, 1 exploring, 2 paused (macro or navigation off),
+    // 3 done (its walk ended), 4 stopped (stopped, another route, left the dungeon); the rooms it means to
+    // walk through and those entered so far (both 0 before the first). Lua reads them with rynth.ai.Evaluate.
+    internal Func<(int State, int Rooms, int Visited)>? DunExploreStatus { get; set; }
+    // radunexploreinfo[]: the explore as JSON (state, rooms, the shut doors and the rooms behind each, the
+    // lever errand, the last lever's result), "{}" before the first. For the Lua script's json.decode.
+    internal Func<string>? DunExploreInfo { get; set; }
+
     // ── Backward-compat shim ──────────────────────────────────────────────────
 
     /// <summary>Executes an expression for its side effects. Always returns true.</summary>
@@ -409,6 +418,10 @@ internal sealed partial class ExpressionEngine
             "secondssincelastkill" => (_killClock?.SecondsSinceLastKill() ?? 0).ToString(CultureInfo.InvariantCulture),
             "ratargetcount"        => (CombatTargetCount?.Invoke() ?? -1).ToString(CultureInfo.InvariantCulture),
             "ralastchestlooted"    => (LastChestLooted?.Invoke() ?? 0u).ToString(CultureInfo.InvariantCulture),
+            "radunexplore"         => (DunExploreStatus?.Invoke().State ?? 0).ToString(CultureInfo.InvariantCulture),
+            "radunexplorerooms"    => (DunExploreStatus?.Invoke().Rooms ?? 0).ToString(CultureInfo.InvariantCulture),
+            "radunexplorevisited"  => (DunExploreStatus?.Invoke().Visited ?? 0).ToString(CultureInfo.InvariantCulture),
+            "radunexploreinfo"     => DunExploreInfo?.Invoke() ?? "{}",
 
             // ── World object queries ──────────────────────────────────────────
             "wobjectfindnearestbytemplatetype"        => EvalWobjectFindNearestByTemplateType(A(0)),
@@ -3664,6 +3677,7 @@ internal sealed partial class ExpressionEngine
             ["LootOwnCorpse"] = (() => B(s.LootOwnCorpse), v => s.LootOwnCorpse = ToDouble(v) != 0),
             ["EscapeHazards"] = (() => B(s.EscapeHazards), v => s.EscapeHazards = ToDouble(v) != 0),
             ["TravelToOwnCorpse"] = (() => B(s.TravelToOwnCorpse), v => s.TravelToOwnCorpse = ToDouble(v) != 0),
+            ["KeepHuntingAfterDeath"] = (() => B(s.KeepHuntingAfterDeath), v => s.KeepHuntingAfterDeath = ToDouble(v) != 0),
             ["ItemInfoOnSelect"] = (() => B(s.ItemInfoSettings.OnSelect), v => s.ItemInfoSettings.OnSelect = ToDouble(v) != 0),
             // The looter's "Looted" line names the rule and the item's details (salvage: on request).
             ["ItemInfoLootChat"] = (() => B(s.ItemInfoSettings.LootChat), v => s.ItemInfoSettings.LootChat = ToDouble(v) != 0),
@@ -3711,6 +3725,7 @@ internal sealed partial class ExpressionEngine
             ["TargetSelection"]     = (() => I(s.TargetSelection),     v => { if (int.TryParse(v, out int i)) s.TargetSelection  = Math.Clamp(i, 0, 3); }),
             ["TargetLock"]          = (() => B(s.TargetLock),          v => s.TargetLock          = ToDouble(v) != 0),
             ["FightSelectedTarget"] = (() => B(s.FightSelectedTarget), v => s.FightSelectedTarget = ToDouble(v) != 0),
+            ["MeleeThroughWalls"]   = (() => B(s.MeleeThroughWalls),   v => s.MeleeThroughWalls   = ToDouble(v) != 0),
             ["RingRange"]           = (() => I(s.RingRange),           v => { if (int.TryParse(v, out int i)) s.RingRange        = i; }),
             ["ApproachRange"]       = (() => I(s.ApproachRange),       v => { if (int.TryParse(v, out int i)) s.ApproachRange    = i; }),
             ["MinRingTargets"]      = (() => I(s.MinRingTargets),      v => { if (int.TryParse(v, out int i)) s.MinRingTargets   = i; }),
@@ -3792,6 +3807,7 @@ internal sealed partial class ExpressionEngine
             ["BoostNavPriority"]    = (() => B(s.BoostNavPriority),    v => s.BoostNavPriority  = ToDouble(v) != 0),
             ["BoostLootPriority"]   = (() => B(s.BoostLootPriority),   v => s.BoostLootPriority = ToDouble(v) != 0),
             ["LootChestsMacroOff"]  = (() => B(s.LootChestsMacroOff),  v => s.LootChestsMacroOff  = ToDouble(v) != 0),
+            ["LootNearbyChests"]    = (() => B(s.LootNearbyChests),    v => s.LootNearbyChests    = ToDouble(v) != 0),
         };
         return _settingsMap;
     }

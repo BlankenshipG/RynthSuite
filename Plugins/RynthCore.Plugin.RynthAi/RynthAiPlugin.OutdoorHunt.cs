@@ -62,6 +62,10 @@ public sealed partial class RynthAiPlugin
             case "login":
                 SetHuntOnLogin(parts.Length > 3 ? parts[3] : "");
                 break;
+            case "death":
+            case "keep":
+                SetKeepHuntingAfterDeath(parts.Length > 3 ? parts[3] : "");
+                break;
             case "panel":
             case "settings":
                 ToggleHuntPanel();
@@ -70,7 +74,7 @@ public sealed partial class RynthAiPlugin
                 if (_hunt.Active) StopHunt("stopped", say: true); else StartHunt();
                 break;
             default:
-                ChatLine("[RynthAi] /ra hunt [start|stop|status|panel] | /ra hunt range <yd> | /ra hunt radius <yd, 0 = anywhere> | " + HuntPickUsage + " | " + HuntLoginUsage);
+                ChatLine("[RynthAi] /ra hunt [start|stop|status|panel] | /ra hunt range <yd> | /ra hunt radius <yd, 0 = anywhere> | " + HuntPickUsage + " | " + HuntLoginUsage + " | " + KeepHuntingUsage);
                 break;
         }
     }
@@ -193,6 +197,8 @@ public sealed partial class RynthAiPlugin
             string note = _hunt.Note;
             if (on && note.Length > 0) Wrapped(note, Ui.Text);
             HuntOnLoginCheckbox(s);
+            ImGui.Checkbox("Keep Hunting After Death##huntkeepdeath", ref s.KeepHuntingAfterDeath);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip(AfterDeath.Tip);
             ImGui.Separator();
 
             float range = s.OutdoorHuntRange;
@@ -259,9 +265,13 @@ public sealed partial class RynthAiPlugin
 
     internal const string HuntOnLoginRefusedPrefix = "[RynthAi] Hunt On Login: the hunt didn't start. ";
 
-    /// <summary>The Hunt button, /ra hunt and Hunt On Login (<paramref name="onLogin"/>: its lines say so).</summary>
-    internal void StartHunt(bool onLogin = false)
+    /// <summary>
+    /// The Hunt button, /ra hunt, Hunt On Login (<paramref name="onLogin"/>) and Keep Hunting After Death
+    /// (<paramref name="afterDeath"/>): their lines say which.
+    /// </summary>
+    internal void StartHunt(bool onLogin = false, bool afterDeath = false)
     {
+        _huntAfterDeath = false;   // started now, by whichever: nothing waits for the respawn any more
         var s = _dashboard?.Settings;
         uint cell = 0;
         OutdoorHunt.Vec me = default;
@@ -277,7 +287,7 @@ public sealed partial class RynthAiPlugin
         {
             string why = OutdoorHunt.StartBlockText(block);
             if (onLogin) Host.Log("[RynthAi] Hunt On Login: not started (" + block + ").");
-            ChatLine((onLogin ? HuntOnLoginRefusedPrefix : "[RynthAi] ") + why);
+            ChatLine((onLogin ? HuntOnLoginRefusedPrefix : afterDeath ? KeepHuntingRefusedPrefix : "[RynthAi] ") + why);
             return;
         }
         if (!s.IsMacroRunning && RefuseMacroStartForVTank()) return;   // one bot per client (Decal bridge)
@@ -295,7 +305,9 @@ public sealed partial class RynthAiPlugin
             s.IsMacroRunning = true;
             _macroWasRunning = true;   // no macro-start "nearest waypoint" pick: the hunt plans its own walks
         }
-        ChatLine((onLogin ? "[RynthAi] Hunt On Login: outdoor hunt on: " : "[RynthAi] Outdoor hunt on: ")
+        ChatLine((onLogin ? "[RynthAi] Hunt On Login: outdoor hunt on: "
+                  : afterDeath ? "[RynthAi] Outdoor hunt on again after the death, from here (Keep Hunting After Death): "
+                  : "[RynthAi] Outdoor hunt on: ")
             + HuntSettingsText(s) + " /ra hunt range <yd> to change.");
     }
 
@@ -384,7 +396,7 @@ public sealed partial class RynthAiPlugin
     /// <summary>Each plugin tick while logged in: the hunt's next walk, when nothing else wants the character.</summary>
     private void TickOutdoorHunt()
     {
-        if (!_hunt.Active) return;
+        if (!_hunt.Active) { TickHuntAfterDeath(); return; }
         var s = _dashboard?.Settings;
         if (s == null) return;
         if (!s.IsMacroRunning) { StopHunt("the macro stopped"); return; }
@@ -392,6 +404,16 @@ public sealed partial class RynthAiPlugin
         {
             StopHunt("another route was loaded", say: true);
             return;
+        }
+        // A walk that ran out: the nav engine turned nav off, as for any finished Once route (so the
+        // arbiter doesn't hold "Navigating" for nothing). The hunt owns nav while it runs: on again at once
+        // with no walk left (an empty route: nothing to hold the tick for), not off until the next walk.
+        // Off in between, the Nav switch kept flicking off, and stayed off while the hunt waited
+        // ("nav keeps shutting off", Tom 2026-11-16).
+        if (s.NavRouteFinished())
+        {
+            InstallHuntRoute(s, Array.Empty<OutdoorHunt.Vec>());
+            s.EnableNavigation = true;
         }
         if (!TryHuntPosition(out uint cell, out var me)) return;
         if (InDungeon(cell)) { StopHunt("went into a dungeon", say: true); return; }

@@ -447,6 +447,25 @@ internal static class Program
         Eq(AutoVendorPlanner.MostCarriedUnit(new Dictionary<int, long> { [25_000] = 50, [30_000] = 50 }), 30_000, "tie: the higher value");
         Eq(AutoVendorPlanner.MostCarriedUnit(new Dictionary<int, long>()), 0, "nothing: 0 (no override)");
 
+        // 2026-11-12 (DreamWeave, Pyreal Peas): the last full stack (100) split 21 off with 44 free slots. The
+        // 79 left keep 100 peas' Value (63,291 a pea) and outvote the 21 (50,000): read at that price the 21
+        // didn't fit, were merged back, and the split came again until the 8-try stop. The split-off stack
+        // is fresh from the server, so its unit wins.
+        var staleVotes = new Dictionary<int, long> { [5_000_000 / 79] = 79, [50_000] = 21 };
+        Eq(AutoVendorPlanner.MostCarriedUnit(staleVotes), 5_000_000 / 79, "the vote alone picks the stale price");
+        Eq(AutoVendorPlanner.TrueUnit(staleVotes, 50_000), 50_000, "a split-off stack's fresh unit wins");
+        Eq(AutoVendorPlanner.TrueUnit(staleVotes, 0), 5_000_000 / 79, "no fresh unit: the vote");
+        var lastFull = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { PyPea(1, 100) }, Pack(0, free: 44));
+        Eq(lastFull.Kind, PlanKind.Split, "44 free: split...");
+        Eq(lastFull.SplitAmount, 21, "...21 off");
+        SellItem StalePea(uint id, int stack) => new() { Id = id, Name = "Pyreal Pea", Value = 5_000_000 / 79 * stack, StackSize = stack,
+                                                         Class = AcObjectClass.Misc, ItemType = 0x40000000, RuleName = "S: Peas", MaxStack = 100, Wcid = 9003 };
+        var staleRead = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { StalePea(1, 79), StalePea(2, 21) }, Pack(0, free: 43));
+        Eq(staleRead.Kind, PlanKind.Merge, "at the stale price the 21 is merged back (the loop)");
+        var freshRead = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { PyPea(1, 79), PyPea(2, 21) }, Pack(0, free: 43));
+        Eq(freshRead.Kind, PlanKind.Sell, "at the fresh price the 21 is sold");
+        Eq(freshRead.Sells.Single().Id, 2u, "the split-off 21");
+
         var unknownMax = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { S(1, "Gem", 100_000, stack: 100), S(2, "Gem", 50_000, stack: 50) }, Pack(0, free: 3));
         Eq(unknownMax.Kind, PlanKind.Split, "unknown max stack: the old plain split");
 

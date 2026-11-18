@@ -87,7 +87,15 @@ internal static class Program
         PatrolSettingsTests.Register(runner);
         PatrolPocketTests.Register(runner);
         PatrolPortalTests.Register(runner);
+        LedgeTests.Register(runner);
+        DunNavToTests.Register(runner);
+        StraightenTests.Register(runner);
+        HoleTests.Register(runner);
+        StuckOpeningTests.Register(runner);
+        BlockedDoorwayTests.Register(runner);
+        StackedStepTests.Register(runner);
         DunRouteTests.Register(runner);
+        DunExploreTests.Register(runner);
         BuffTests.Register(runner);
         BuffItemsTests.Register(runner);
         SpellCatalogTests.Register(runner);
@@ -101,6 +109,7 @@ internal static class Program
         HandSwapTests.Register(runner);
         OutdoorHuntTests.Register(runner);
         HuntOnLoginTests.Register(runner);
+        KeepHuntingAfterDeathTests.Register(runner);
         HuntBuildingTests.Register(runner);
         FloodPerfTests.Register(runner);
         LootSalvageTests.Register(runner);
@@ -164,6 +173,7 @@ internal static class Program
         WorldCacheTypedTests.Register(runner);
         VendorFlagTests.Register(runner);
         LootByNameTests.Register(runner);
+        NearbyChestTests.Register(runner);
         NavOverlayTests.Register(runner);
         ActionPacingTests.Register(runner);
         HazardEscapeTests.Register(runner);
@@ -235,6 +245,8 @@ internal static class Program
         FellowOpenTests.Register(runner);
         WieldBanTests.Register(runner);
         ActiveGearTests.Register(runner);
+        FeatureSearchTests.Register(runner);
+        FeatureCatalogTests.Register(runner);
         return runner.Run("RynthAi host tests", args.Length > 0 ? args[0] : null);
     }
 }

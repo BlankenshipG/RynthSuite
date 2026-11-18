@@ -108,6 +108,10 @@
          C:\Games\RynthSuite\RynthAi\Data wins over the built-in one. -->
     <EmbeddedResource Include="Data\creature_weakness.json" />
     <None Include="Data\creature_weakness.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- The feature catalog (Find a Feature, Features/FeatureCatalog.cs): every Docs\features\*.json, the
+         same files the website's search reads. Logical names "RynthAi.Features.<file>.json", enumerated
+         at run time, so a new area's file is picked up without touching this line. -->
+    <EmbeddedResource Include="..\..\Docs\features\*.json" LogicalName="RynthAi.Features.%(Filename)%(Extension)" Link="Features\Catalog\%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

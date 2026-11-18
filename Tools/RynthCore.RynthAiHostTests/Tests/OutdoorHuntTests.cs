@@ -17,6 +17,7 @@ internal static class OutdoorHuntTests
         r.Add("hunt: the next monster is the shortest walk, not the nearest in a straight line (one behind a building)", ShortestWalk);
         r.Add("hunt: a higher Priority comes first, whatever the walk", PriorityFirst);
         r.Add("hunt: no way to a monster (a cliff, water): left out for a while; a walk ending close enough still counts", Unreachable);
+        r.Add("hunt (11-12): a walk ending under a monster on a roof or the floor above doesn't reach it; one up a slope does", AboveTheWalk);
         r.Add("hunt: it stays within Hunt Radius of where it started (0 = anywhere)", Radius);
         r.Add("hunt: plans again when the monster moves, the walk runs out, or a while passes; not every tick", Replan);
         r.Add("hunt: nothing in range: it waits where it is (no walk back to the start); Hunt Radius defaults to anywhere", WaitsWhereItIs);
@@ -25,6 +26,8 @@ internal static class OutdoorHuntTests
         r.Add("hunt: the settings round-trip with the rest (saved, copied, engine payload)", Settings);
         r.Add("hunt (test 10-23): a monster 12 yd away but a 143 yd walk is too far round; the one being walked to is kept past Hunt Range", FarRound);
         r.Add("hunt (test 10-23): at a wall with the monster on its far side: no 1 yd walks every half second; left out after NoFightSec", WallBetween);
+        r.Add("hunt (2026-11-16): a walk ending where it stands, its corners round it, is no walk: it stands, then the monster is left out", EndsHereNoWalk);
+        r.Add("hunt (2026-11-16 17:11): the walk over, under a monster on the floor above: left out, not walked again every half second", FloorApartLeftOut);
         r.Add("hunt: a monster right beside it that combat doesn't take: stands, then leaves it out", RightHere);
         r.Add("hunt (test 10-23): in a building it walks back out the way it went in (the loops it made cut out)", WayBackOut);
         r.Add("hunt: in a building with no way in known, or the walks out ending still inside: it waits", IndoorsWaits);
@@ -286,6 +289,56 @@ internal static class OutdoorHuntTests
         Check.True(h.IsSkipped(1, T0.AddSeconds(h.NoFightSec + 1)), "combat never took it: left out");
     }
 
+    // 2026-11-16, a Thread: under a monster on the floor above, the walk to it was two corners a yard or
+    // so either side of the character, planned again every half second: it turned in circles.
+    private static void EndsHereNoWalk()
+    {
+        var me = V(1000, 1000);
+        var h = new OutdoorHunt();
+        h.Start(T0, me);
+        var nav = new Nav();
+        nav.Overrides[(1000.5, 1000)] = new(OutdoorHunt.PathStatus.Ok, new[] { V(1001.2, 1000.8), V(1000.6, 1000.1) }, 2.6, 0);
+        var d = h.Tick(T0, me, true, Sorted(C(1, 1000.5, 1000, me)), nav.Path);
+        Check.True(d.Act != OutdoorHunt.Act.Walk && d.TargetId == 1, $"a 2.6 yd walk ending where it stands: no walk, it stands ({d.Act} {d.TargetId})");
+        h.Tick(T0.AddSeconds(h.NoFightSec + 0.6), me, true, Sorted(C(1, 1000.5, 1000, me)), nav.Path);
+        Check.True(h.IsSkipped(1, T0.AddSeconds(h.NoFightSec + 1)), "combat never took it: left out, no circling");
+    }
+
+    // 2026-11-16 17:11, a Thread: the walk "through its rooms" to a monster on the floor above (3 m up) ended
+    // under it (nav's points count as reached by the flat distance), and the same walk was planned and walked
+    // again every half second for 20 s.
+    private static void FloorApartLeftOut()
+    {
+        var me = V(1000, 1000);
+        var h = new OutdoorHunt();
+        h.Start(T0, me);
+        var nav = new Nav();
+        var up = new OutdoorHunt.Vec(1006, 1000, 3.3);
+        nav.Overrides[(1006, 1000)] = new(OutdoorHunt.PathStatus.Ok, new[] { V(1003, 1002), up }, 7.5, 0);   // a doorway, then the monster
+        var list = Sorted(new OutdoorHunt.Candidate(1, "Elite Olthoi Ravener", up, up.DistanceTo(me), 1));
+        var d = h.Tick(T0, me, true, list, nav.Path);
+        Check.Eq(d.Act, OutdoorHunt.Act.Walk, "walks to it");
+
+        // Walked: under where it was. It moved 2.5 yd up there, so the walk planned again would end 2 yd off.
+        var under = V(1006.4, 1000.3);
+        var moved = new OutdoorHunt.Vec(1008.5, 1000, 3.3);
+        nav.Overrides[(1008.5, 1000)] = new(OutdoorHunt.PathStatus.Ok, new[] { V(1003, 1002), moved }, 9.5, 0);
+        list = Sorted(new OutdoorHunt.Candidate(1, "Elite Olthoi Ravener", moved, moved.DistanceTo(under), 1));
+        d = h.Tick(T0.AddSeconds(3), under, true, list, nav.Path);
+        Check.True(d.Act != OutdoorHunt.Act.Walk, $"the walk over, under it: no walk again ({d.Act})");
+        Check.True(h.IsSkipped(1, T0.AddSeconds(4)), "left out");
+        var notes = string.Join(" | ", h.PendingNotes);
+        Check.True(notes.Contains("the walk to it ended 3 yd below it"), "says so: " + notes);
+
+        // Up there with it (the walk took it up the stairs): not left out.
+        var h2 = new OutdoorHunt();
+        h2.Start(T0, me);
+        h2.Tick(T0, me, true, list, nav.Path);
+        var level = new OutdoorHunt.Vec(1006.4, 1000.3, 3.3);
+        h2.Tick(T0.AddSeconds(3), level, true, Sorted(new OutdoorHunt.Candidate(1, "Elite Olthoi Ravener", up, up.DistanceTo(level), 1)), nav.Path);
+        Check.False(h2.IsSkipped(1, T0.AddSeconds(4)), "level with it: combat's turn, not left out");
+    }
+
     private static void WayBackOut()
     {
         var h = new OutdoorHunt();
@@ -405,6 +458,31 @@ internal static class OutdoorHuntTests
         Check.Eq(d.TargetId, 3, "the one whose walk ends 2 yd short; the cliff and the water ones are left out");
         Check.True(h.IsSkipped(1, T0.AddSeconds(60)) && h.IsSkipped(2, T0.AddSeconds(60)), "left out for a while");
         Check.False(h.IsSkipped(1, T0.AddSeconds(h.SkipSec + 1)), "and tried again after SkipSec");
+    }
+
+    // 11-12: RynthNav finds the ground up to 64 yd under a goal, so a walk to a monster on a roof ended under it
+    // as an Ok walk, and the character stood there swinging up at it.
+    private static void AboveTheWalk()
+    {
+        var me = V(1000, 1000);
+        var h = new OutdoorHunt();
+        h.Start(T0, me);
+        var nav = new Nav();
+        var roof = new OutdoorHunt.Vec(1006, 1000, 8);     // on a roof, 8 yd up
+        var below = new OutdoorHunt.Vec(1009, 1000, -6);   // the floor below
+        var slope = new OutdoorHunt.Vec(1020, 1000, 8);    // up a hillside, 8 yd up
+        nav.Overrides[(1006, 1000)] = new(OutdoorHunt.PathStatus.Ok, new[] { V(1006, 1000) }, 6, 8);
+        nav.Overrides[(1009, 1000)] = new(OutdoorHunt.PathStatus.Ok, new[] { V(1009, 1000) }, 9, 6);
+        nav.Overrides[(1020, 1000)] = new(OutdoorHunt.PathStatus.Ok, new[] { new OutdoorHunt.Vec(1020, 1000, 7.6) }, 22, 0.4);
+        var list = Sorted(new OutdoorHunt.Candidate(1, "Roof", roof, roof.DistanceTo(me), 1),
+                          new OutdoorHunt.Candidate(2, "Below", below, below.DistanceTo(me), 1),
+                          new OutdoorHunt.Candidate(3, "Hill", slope, slope.DistanceTo(me), 1));
+        var d = h.Tick(T0, me, true, list, nav.Path);
+        Check.Eq(d.TargetId, 3, "the one up the hillside (the walk ends level with it); not the ones above and below the walk's end");
+        Check.True(h.IsSkipped(1, T0.AddSeconds(60)) && h.IsSkipped(2, T0.AddSeconds(60)), "the roof and the floor below are left out a while");
+        var notes = string.Join(" | ", h.PendingNotes);
+        Check.True(notes.Contains("8 yd above the walk's end"), "says it is above: " + notes);
+        Check.True(notes.Contains("6 yd below the walk's end"), "says it is below: " + notes);
     }
 
     private static void Radius()

@@ -85,7 +85,7 @@ internal static class HuntOnLoginTests
         var start = typeof(RynthAiPlugin).GetMethod("StartHunt", Any)!;
         FakeHost.HasPose = false;
         FakeHost.Chat.Clear();
-        start.Invoke(p, new object[] { true });
+        start.Invoke(p, new object[] { true, false });
         Check.False(p.HuntActive, "no position: not started");
         Check.True(All().Contains(RynthAiPlugin.HuntOnLoginRefusedPrefix.Trim()) && All().Contains("no position yet"), "says Hunt On Login and why: " + All());
 
@@ -93,14 +93,14 @@ internal static class HuntOnLoginTests
         FakeHost.HasPose = true;
         FakeHost.PlayerPose = (0xA9B40021u, 100f, 100f, 50f);
         FakeHost.Chat.Clear();
-        start.Invoke(p, new object[] { true });
+        start.Invoke(p, new object[] { true, false });
         Check.False(p.HuntActive, "no RynthNav: not started");
         Check.False(dash.Settings.IsMacroRunning, "and the macro isn't turned on");
         Check.True(All().Contains("Hunt On Login") && All().Contains("needs RynthNav"), "says why: " + All());
 
         // The Hunt button's own wording is unchanged.
         FakeHost.Chat.Clear();
-        start.Invoke(p, new object[] { false });
+        start.Invoke(p, new object[] { false, false });
         Check.True(All().StartsWith("[RynthAi] Outdoor hunt needs RynthNav") && !All().Contains("Hunt On Login"), "the button says it as before: " + All());
     }
 

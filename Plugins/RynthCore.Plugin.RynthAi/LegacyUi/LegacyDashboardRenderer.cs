@@ -1387,6 +1387,7 @@ internal sealed partial class LegacyDashboardRenderer
                 TargetSelection            = s.TargetSelection,
                 TargetLock                 = s.TargetLock,
                 FightSelectedTarget        = s.FightSelectedTarget,
+                MeleeThroughWalls          = s.MeleeThroughWalls,
                 RingRange                  = s.RingRange,
                 ApproachRange              = s.ApproachRange,
                 CorpseApproachRangeMax     = s.CorpseApproachRangeMax,
@@ -1466,6 +1467,7 @@ internal sealed partial class LegacyDashboardRenderer
                 LootJumpEnabled            = s.LootJumpEnabled,
                 LootChestsMacroOff         = s.LootChestsMacroOff,
                 LootChestsMacroOffLeaveOpen = s.LootChestsMacroOffLeaveOpen,
+                LootNearbyChests           = s.LootNearbyChests,
                 ChestRelockWaitSec         = s.ChestRelockWaitSec,
                 LootJumpHeight             = s.LootJumpHeight,
                 LootOwnership              = s.LootOwnership,
@@ -1680,6 +1682,7 @@ internal sealed partial class LegacyDashboardRenderer
             if (p.TargetSelection is int targeting) s.TargetSelection = Math.Clamp(targeting, 0, 3);   // absent = unchanged
             if (p.TargetLock is bool targetLock) s.TargetLock = targetLock;                           // absent = unchanged
             if (p.FightSelectedTarget is bool fightSel) s.FightSelectedTarget = fightSel;             // absent = unchanged
+            if (p.MeleeThroughWalls is bool meleeWalls) s.MeleeThroughWalls = meleeWalls;               // absent = unchanged
             s.RingRange                  = p.RingRange;
             s.ApproachRange              = p.ApproachRange;
             s.CorpseApproachRangeMax     = p.CorpseApproachRangeMax;
@@ -1759,6 +1762,7 @@ internal sealed partial class LegacyDashboardRenderer
             s.LootJumpEnabled            = p.LootJumpEnabled;
             s.LootChestsMacroOff         = p.LootChestsMacroOff;
             s.LootChestsMacroOffLeaveOpen = p.LootChestsMacroOffLeaveOpen;
+            if (p.LootNearbyChests is bool nearbyChests) s.LootNearbyChests = nearbyChests;   // absent = unchanged
             if (p.ChestRelockWaitSec is int relockSec) s.ChestRelockWaitSec = ItemTool.ChestKeyLooter.ClampRelockWaitSec(relockSec);   // absent = unchanged
             s.LootJumpHeight             = p.LootJumpHeight;
             s.LootOwnership              = p.LootOwnership;
@@ -2159,6 +2163,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.LootJumpEnabled          = tmp.LootJumpEnabled;
         dst.LootChestsMacroOff       = tmp.LootChestsMacroOff;
         dst.LootChestsMacroOffLeaveOpen = tmp.LootChestsMacroOffLeaveOpen;
+        dst.LootNearbyChests         = tmp.LootNearbyChests;
         dst.ChestRelockWaitSec       = ItemTool.ChestKeyLooter.ClampRelockWaitSec(tmp.ChestRelockWaitSec);
         dst.LootJumpHeight           = tmp.LootJumpHeight;
         dst.SalvageOpenDelayFirstMs  = tmp.SalvageOpenDelayFirstMs;
@@ -2208,6 +2213,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.TargetSelection          = Math.Clamp(tmp.TargetSelection, 0, 3);
         dst.TargetLock               = tmp.TargetLock;
         dst.FightSelectedTarget      = tmp.FightSelectedTarget;
+        dst.MeleeThroughWalls        = tmp.MeleeThroughWalls;
         dst.RingRange                = tmp.RingRange;
         dst.HandlerRingEvade         = tmp.HandlerRingEvade;   // obsolete (RynthILT's now): carried so the profile keeps it for RynthILT's one-time import
         dst.ApproachRange            = tmp.ApproachRange;
@@ -2377,6 +2383,7 @@ internal sealed partial class LegacyDashboardRenderer
         dst.StartMacroOnLogin        = tmp.StartMacroOnLogin;
         dst.PatrolOnLogin            = tmp.PatrolOnLogin;
         dst.HuntOnLogin              = tmp.HuntOnLogin;
+        dst.KeepHuntingAfterDeath    = tmp.KeepHuntingAfterDeath;
         dst.ResumeMetaOnReload       = tmp.ResumeMetaOnReload;
         dst.YieldToVTank             = tmp.YieldToVTank;
         dst.FeatureServerNames       = tmp.FeatureServerNames;

@@ -107,6 +107,8 @@ internal interface IDashboardHost
     void ToggleActiveGear();
     /// <summary>The Timed Commands window (commands sent every N seconds) open or closed.</summary>
     void ToggleTimedCommands();
+    /// <summary>The Find a Feature window (search every feature: where it is, its command) open, its box ready.</summary>
+    void OpenFeatureSearch();
     /// <summary>The Classic (retail) look: RynthCore's own face comes back for it.</summary>
     void UseClassicLook();
     /// <summary>The Mini Remote, drawn into the current window; the size it wants.</summary>
@@ -341,7 +343,7 @@ internal sealed unsafe class InstrumentDashboard
         cx += chip + chipGap;
         bool menuOpen = ImGui.IsPopupOpen(OptionsId);
         if (ChipButton("##c_menu", RynthIcons.DotsThree, new Vector2(cx, cy), menuOpen ? _text : _faint,
-                "Options: opacity, size, the Classic look, pop out.", menuOpen))
+                "Options: opacity, size, Find a feature, the Classic look, pop out.", menuOpen))
             OpenOptions(new Vector2(cx + chip, cy + chip + Px(4)), anchorRight: true);
         cx += chip + chipGap;
         if (ChipButton("##c_min", prefs.Minimized ? RynthIcons.ArrowsOutLineVertical : RynthIcons.ArrowsInLineVertical,
@@ -1102,6 +1104,14 @@ internal sealed unsafe class InstrumentDashboard
             dl.AddLine(new Vector2(p.X, p.Y + 0.5f), new Vector2(p.X + w, p.Y + 0.5f), _line);
             p.Y += Px(5);
 
+            // Search every feature (RynthAiPlugin.FeatureSearch.cs): its own window, no bar button.
+            if (MenuItem(dl, ref p, w, "##m_find", RynthIcons.MagnifyingGlass, "Find a feature", "/ra find",
+                    "Can't find something? Search every RynthSuite feature by a word (death, vendor, buffs...):\n" +
+                    "where it is, its command, and a button that opens it (the Find a Feature window)."))
+            {
+                ImGui.CloseCurrentPopup();
+                _d.OpenFeatureSearch();
+            }
             if (MenuItem(dl, ref p, w, "##m_classic", RynthIcons.Scroll, "Classic look", "/rc dashboard classic",
                     "The retail-style window with tabs (Main, Monsters, Gear, Buffs, Route, Loot, Meta, Tuning)."))
             {

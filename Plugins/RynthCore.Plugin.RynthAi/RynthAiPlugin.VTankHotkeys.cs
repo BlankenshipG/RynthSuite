@@ -12,6 +12,7 @@ namespace RynthCore.Plugin.RynthAi;
 //   /ra setmetastate <state>     Meta: <state>     switch the meta state (no state: list them)
 //   /ra targetlock [off]         Target lock       attack the selected monster (again / off: release)
 //   /ra fightselected [on|off]                     Fight the monster I select (no argument: toggle)
+//   /ra meleewalls [on|off]                        Melee through walls (no argument: toggle)
 //   /ra meleelow|meleemid|meleehigh                melee attack height
 //   /ra navaddpt                 NavAddPt          waypoint at your position (same as /ra addnavpt)
 //   /ra testitem                 TestItem          the selected item against the loot profile
@@ -55,6 +56,8 @@ public sealed partial class RynthAiPlugin
             case "targetlock":    HandleTargetLockCommand(parts); return true;
             case "fightselected":
             case "fightselect":   HandleFightSelectedCommand(parts); return true;
+            case "meleewalls":
+            case "meleethroughwalls": HandleMeleeWallsCommand(parts); return true;
             case "meleelow":      SetMeleeAttackHeight(0); return true;
             case "meleemid":
             case "meleemedium":   SetMeleeAttackHeight(1); return true;
@@ -203,6 +206,32 @@ public sealed partial class RynthAiPlugin
         if (!on && cm != null && cm.ForcedBySelection) cm.ClearForcedTarget();
         ReplyOk(on ? "[RynthAi] Fight the monster I select: on (the monster you select in a fight is fought first)."
                    : "[RynthAi] Fight the monster I select: off.");
+    }
+
+    // ── Melee through walls ──────────────────────────────────────────────────
+
+    private void HandleMeleeWallsCommand(string[] parts)
+    {
+        var dash = _dashboard;
+        var s = dash?.Settings;
+        if (s == null) { ReplyFail("[RynthAi] Settings not ready."); return; }
+        string arg = parts.Length >= 3 ? parts[2].ToLowerInvariant() : "";
+        bool? set = arg switch
+        {
+            "" or "toggle" => !s.MeleeThroughWalls,
+            "on" or "1" or "true" => true,
+            "off" or "0" or "false" => false,
+            _ => null,
+        };
+        if (set is not bool on)
+        {
+            ReplyFail($"[RynthAi] Melee through walls: unknown '{arg}'. Usage: /ra meleewalls [on|off] (now {(s.MeleeThroughWalls ? "on" : "off")}).");
+            return;
+        }
+        s.MeleeThroughWalls = on;
+        dash!.SaveSettings();
+        ReplyOk(on ? "[RynthAi] Melee through walls: on (melee reaches a monster within 4 m behind a wall, not across a building's wall)."
+                   : "[RynthAi] Melee through walls: off (a monster behind a wall is never a melee target for being close).");
     }
 
     // ── Melee attack height ──────────────────────────────────────────────────

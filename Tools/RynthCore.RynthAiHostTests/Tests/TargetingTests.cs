@@ -53,11 +53,246 @@ internal static class TargetingTests
         FakeHost.WeaponCalls = true;
         FakeHost.CombatModeValue = CombatMode.Missile;
         Check.Eq(missile.Tick(), 0u, "missile, 3 yd, a wall between: nor do arrows");
+
+        // 2026-11-13: not through a building's wall (outside, the monster in the building's rooms, or the other way).
+        var building = new ScanPick(20);
+        building.Place(A, "Mob A", north: 3);
+        building.Blocked.Add(A);
+        FakeHost.Positions[A] = (Lb | 0x01C9, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(building.Tick(), 0u, "melee outside, 3 yd, the monster inside a building behind its wall: not the target");
+
+        var inside = new ScanPick(20);
+        inside.Place(A, "Mob A", north: 3);
+        inside.Blocked.Add(A);
+        FakeHost.Positions[Player] = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(inside.Tick(), 0u, "melee inside a building, the monster outside its wall: not the target either");
+
+        var dungeon = new ScanPick(20);
+        dungeon.Place(A, "Mob A", north: 3);
+        dungeon.Blocked.Add(A);
+        FakeHost.Positions[Player] = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0107, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(dungeon.Tick(), A, "two rooms' cells (a dungeon wall): melee still reaches through");
+
+        var unblocked = new ScanPick(20);
+        unblocked.Place(A, "Mob A", north: 3);
+        FakeHost.Positions[A] = (Lb | 0x01C9, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(unblocked.Tick(), A, "in the building's doorway with a clear line: the target as before");
+
+        Check.True(CombatManager.InsideVersusOutside(0xE74E0023, 0xE74E01C9), "Drakkon's case: outside 0x0023, the sorcerer in 0x01C9");
+        Check.False(CombatManager.InsideVersusOutside(0xE74E0023, 0xE74E001B), "both outside");
+    }
+
+    // 2026-11-15: Melee through walls is a setting (MeleeThroughWalls, on by default; the meta option meleethroughwalls).
+    // On is the rule above, the building's wall included; off, a blocked monster is out of sight however close.
+    private static void MeleeThroughWallsSetting()
+    {
+        Check.True(new LegacyUiSettings().MeleeThroughWalls, "on by default");
+        var old = System.Text.Json.JsonSerializer.Deserialize("{\"MonsterRange\":7}", RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(old != null && old.MeleeThroughWalls, "a profile saved before the setting loads it as on");
+        Check.True(RynthCore.Plugin.RynthAi.Meta.MetaManager.TryMapVtOption("meleethroughwalls", out string ra) && ra == "MeleeThroughWalls", "the meta option meleethroughwalls is the setting");
+        Check.True(RynthCore.Plugin.RynthAi.Meta.MetaManager.TryMapVtOption("MeleeThroughWalls", out _), "any case");
+
+        // On: today's behaviour.
+        var on = new ScanPick(20);
+        on.Place(A, "Mob A", north: 3);
+        on.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(on.Tick(), A, "on: melee, 3 yd, a wall between: the target");
+
+        var onBuilding = new ScanPick(20);
+        onBuilding.Place(A, "Mob A", north: 3);
+        onBuilding.Blocked.Add(A);
+        FakeHost.Positions[A] = (Lb | 0x01C9, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(onBuilding.Tick(), 0u, "on: not through a building's wall");
+        Check.False(onBuilding.C.HasNearbyMonsters, "on: and not counted as out of sight (the hunt's walk to the door isn't held)");
+
+        // Off: a blocked monster within 4 m is like one farther off.
+        var off = new ScanPick(20);
+        off.S.MeleeThroughWalls = false;
+        off.Place(A, "Mob A", north: 3);
+        off.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(off.Tick(), 0u, "off: melee, 3 yd, a wall between: not the target");
+        Check.True(off.C.HasNearbyMonsters, "off: counted as a monster nearby out of sight, like one 6 yd off");
+        Check.Eq(off.C.LastScanLosBlocked, 1, "off: the scan counts it as LOS-blocked");
+        Check.Eq(off.C.LastScanPossible, 0, "off: and not as a possible target");
+
+        var offClose = new ScanPick(20);
+        offClose.S.MeleeThroughWalls = false;
+        offClose.Place(A, "Mob A", north: 1);
+        offClose.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offClose.Tick(), 0u, "off: 1 yd, a wall between: still not the target");
+
+        var offBuilding = new ScanPick(20);
+        offBuilding.S.MeleeThroughWalls = false;
+        offBuilding.Place(A, "Mob A", north: 3);
+        offBuilding.Blocked.Add(A);
+        FakeHost.Positions[A] = (Lb | 0x01C9, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offBuilding.Tick(), 0u, "off: the monster in a building behind its wall: not the target");
+        Check.True(offBuilding.C.HasNearbyMonsters, "off: counted out of sight like any blocked monster");
+
+        var offDungeon = new ScanPick(20);
+        offDungeon.S.MeleeThroughWalls = false;
+        offDungeon.Place(A, "Mob A", north: 3);
+        offDungeon.Blocked.Add(A);
+        FakeHost.Positions[Player] = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0107, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offDungeon.Tick(), 0u, "off: a dungeon wall between two rooms: not the target either");
+
+        var offClear = new ScanPick(20);
+        offClear.S.MeleeThroughWalls = false;
+        offClear.Place(A, "Mob A", north: 3);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offClear.Tick(), A, "off: a clear line: the target as always");
+
+        var offOther = new ScanPick(20);
+        offOther.S.MeleeThroughWalls = false;
+        offOther.Place(A, "Mob A", north: 2);
+        offOther.Place(B, "Mob B", north: -5);
+        offOther.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offOther.Tick(), B, "off: the one in sight 5 yd off, not the one behind a wall 2 yd off");
+
+        var offTurnOn = new ScanPick(20);
+        offTurnOn.S.MeleeThroughWalls = false;
+        offTurnOn.Place(A, "Mob A", north: 3);
+        offTurnOn.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offTurnOn.Tick(), 0u, "off: not the target");
+        offTurnOn.S.MeleeThroughWalls = true;
+        Check.Eq(offTurnOn.Tick(), A, "turned on: the next scan takes it");
+
+        // Profile copy and the engine's Settings row.
+        var copy = typeof(LegacyDashboardRenderer).GetMethod("CopySettings", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var dst = new LegacyUiSettings();
+        copy.Invoke(null, new object[] { new LegacyUiSettings { MeleeThroughWalls = false }, dst });
+        Check.False(dst.MeleeThroughWalls, "a profile's off is copied");
+        copy.Invoke(null, new object[] { old!, dst });
+        Check.True(dst.MeleeThroughWalls, "an old profile loads it on");
+
+        var s = new LegacyUiSettings { MeleeThroughWalls = false };
+        var dash = (LegacyDashboardRenderer)RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+        typeof(LegacyDashboardRenderer).GetField("_profileLoaded", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(dash, true);
+        typeof(LegacyDashboardRenderer).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(dash, s);
+        typeof(LegacyDashboardRenderer).GetField("_advancedSettingsUi", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(dash, new LegacyAdvancedSettingsUi(s));
+        var sent = System.Text.Json.JsonSerializer.Deserialize(dash.BuildSettingsJson(), RynthAiJsonContext.Default.SettingsBridgePayload);
+        Check.True(sent != null && sent.MeleeThroughWalls == false, "sent to the engine's Settings window");
+        dash.ApplySettingsJson("{\"PatrolOnLogin\":false}");
+        Check.False(s.MeleeThroughWalls, "an engine without the row leaves it alone");
+        dash.ApplySettingsJson("{\"MeleeThroughWalls\":true}");
+        Check.True(s.MeleeThroughWalls, "the row's tick sets it");
+    }
+
+    // 11-12: a test character locked golems on the floor above (d 9.0, h 6.7, dz +6.0; d 7.4, h 3.3, dz +6.6) and
+    // swung under them. Melee leaves out a monster more than 3 m up or down and steeper than 0.75 from here.
+    private static void MeleeOtherFloor()
+    {
+        Check.True(CombatManager.OutOfMeleeReachUpOrDown(9.0, 6.0), "the golem on the floor above (h 6.7, dz +6.0)");
+        Check.True(CombatManager.OutOfMeleeReachUpOrDown(7.4, 6.6), "the other one (h 3.3, dz +6.6)");
+        Check.True(CombatManager.OutOfMeleeReachUpOrDown(6.5, -6.0), "and on the floor below");
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(2.2, 0.9), "on the same floor");
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(10.0, 4.0), "up a ramp or a hillside (h 9.2, dz +4.0)");
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(3.5, 2.9), "2.9 m up, close: within reach");
+
+        var up = new ScanPick(20);
+        up.Place(A, "Mob A", north: 3, up: 6);
+        up.Place(B, "Mob B", north: 8);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(up.Tick(), B, "melee: the one 8 m off on this floor, not the one 3 m off on the floor above");
+
+        var alone = new ScanPick(20);
+        alone.Place(A, "Mob A", north: 3, up: 6);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(alone.Tick(), 0u, "melee: no target when the only one is on the floor above");
+        Check.False(alone.C.HasNearbyMonsters, "and it doesn't hold navigation (the hunt walks up to it)");
+
+        var magic = new ScanPick(20);
+        magic.Place(A, "Mob A", north: 3, up: 6);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        Check.Eq(magic.Tick(), A, "magic: one on a balcony in sight is still a target");
+
+        // 2026-11-16, a Thread: in a building, an Armoredillo 5.5 m up and 8 m off in another of its cells
+        // (h 8.1, dz +5.5: a gentle slope by the rule above). It was locked and chased round under it.
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(9.8, 5.5), "by the slope alone it would be walked to");
+        var balcony = new ScanPick(20);
+        balcony.Place(A, "Mob A", north: 8, up: 5.5);
+        FakeHost.Positions[Player] = (Lb | 0x0107, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0107, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0100, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(balcony.Tick(), 0u, "melee, both inside, another cell 5.5 m up: not the target (the stairs first)");
+
+        // 2026-11-16 17:11, a Thread: the building's floor above 3.0 m up, the monsters in the next cell 2.5 m
+        // off; "more than 3 m" let them through and they were swung at from the floor below.
+        var floorAbove = new ScanPick(20);
+        floorAbove.Place(A, "Mob A", north: 2.5, up: 3.0);
+        FakeHost.Positions[Player] = (Lb | 0x0125, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0125, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0126, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(floorAbove.Tick(), 0u, "melee, both inside, the next cell 3.0 m up: not the target");
+
+        var stair = new ScanPick(20);
+        stair.Place(A, "Mob A", north: 2.5, up: 2.0);
+        FakeHost.Positions[Player] = (Lb | 0x0125, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0125, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0126, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(stair.Tick(), A, "the next cell 2.0 m up (a stair): still the target");
+
+        var hill = new ScanPick(20);
+        hill.Place(A, "Mob A", north: 8, up: 5.5);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(hill.Tick(), A, "outdoors, the same up a hillside: still the target");
+
+        var sameCell = new ScanPick(20);
+        sameCell.Place(A, "Mob A", north: 8, up: 5.5);
+        FakeHost.Positions[Player] = (Lb | 0x0107, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0107, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0107, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(sameCell.Tick(), A, "inside, up a ramp in the same cell: still the target");
     }
 
     public static void Register(Runner r)
     {
         r.Add("targeting: melee within 4 yd ignores the raycast; beyond it, or with magic or missile, it counts", MeleeThroughWalls);
+        r.Add("targeting (11-15): Melee through walls: on keeps the 4 yd rule and the building's wall; off, a blocked monster is never the target", MeleeThroughWallsSetting);
+        r.Add("targeting (11-12): melee leaves out a monster on the floor above or below; magic doesn't", MeleeOtherFloor);
         r.Add("targeting: each scheme picks its monster", SchemesPick);
         r.Add("targeting: unknown health counts as full; ties go to the closest, then the lower id", UnknownHealthAndTies);
         r.Add("targeting: Target Lock keeps the target when a better one of its tier appears", LockKeeps);
@@ -581,9 +816,9 @@ internal static class TargetingTests
         }
 
         /// <summary>A monster <paramref name="north"/>/<paramref name="east"/> m from the player.</summary>
-        public void Place(uint id, string name, double north = 0, double east = 0)
+        public void Place(uint id, string name, double north = 0, double east = 0, double up = 0)
         {
-            TargetingTests.Place(id, name, (float)(96 + east), (float)(96 + north));
+            TargetingTests.Place(id, name, (float)(96 + east), (float)(96 + north), z: (float)up);
             if (!_ids.Contains(id)) _ids.Add(id);
         }
 
@@ -664,10 +899,10 @@ internal static class TargetingTests
         }
     }
 
-    private static void Place(uint id, string name, float x, float y, bool creature = true)
+    private static void Place(uint id, string name, float x, float y, bool creature = true, float z = 0f)
     {
         FakeHost.Names[id] = name;
-        FakeHost.Positions[id] = (Lb | 0x1C, x, y, 0f);
+        FakeHost.Positions[id] = (Lb | 0x1C, x, y, z);
         if (creature) FakeHost.ItemTypes[id] = 0x10;
     }
 }

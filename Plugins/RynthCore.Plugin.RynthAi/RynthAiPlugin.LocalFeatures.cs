@@ -498,7 +498,7 @@ public sealed partial class RynthAiPlugin
         if (!_initialized || !_loginComplete) return null;
         return Huds.SectionsManifest.Build(Huds.SectionsManifest.Views(), Huds.SectionsManifest.OwnSections,
             dashboard: DashboardWindowWanted, monsterStats: MonsterStatsWindowWanted, timedCommands: TimedCommandsWindowWanted,
-            activeGear: ActiveGearWindowWanted);
+            activeGear: ActiveGearWindowWanted, featureSearch: FeatureSearchWindowWanted);
     }
     /// <summary>Chat Translate window in the dashboard colours (no-op while hidden).</summary>
     private void RenderTranslateWindow()
