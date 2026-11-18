@@ -39,8 +39,37 @@ internal static class FeatureCatalogTests
     /// <summary>The where of a feature with no button (the content's convention).</summary>
     private const string CommandOnlyWhere = "Chat command (no button)";
 
+    /// <summary>
+    /// 2026-11-17: upstream's public main (2026.11.15.3+) embeds Docs\features\*.json but ships no Docs folder, so on
+    /// a clone of it the catalog is empty and the tests that need it fail. Those are known failures until the files
+    /// are there; with Docs\features present they are ordinary tests again.
+    /// </summary>
+    private static bool CatalogFilesMissing()
+    {
+        for (string? d = AppContext.BaseDirectory; d != null; d = Path.GetDirectoryName(d))
+            if (Directory.Exists(Path.Combine(d, "Plugins")) && Directory.Exists(Path.Combine(d, "Shared")))
+                return !Directory.Exists(Path.Combine(d, "Docs", "features"));
+        return true;
+    }
+
+    private const string NoCatalog = "upstream's public main has no Docs\\features (the catalog's files); Find a Feature's list is empty until they are there";
+
     public static void Register(Runner r)
     {
+        if (CatalogFilesMissing())
+        {
+            r.KnownFailure("feature catalog: every Docs/features file is embedded and parses", NoCatalog, EveryFileEmbeddedAndParses);
+            r.Add("feature catalog: required fields, ids, commands, where, summary, settings", EntriesValid);
+            r.Add("feature catalog: open commands only open (never start, stop or toggle)", OpenOnlyOpens);
+            r.Add("feature catalog: a bad file is skipped, nulls and nameless entries cleaned", BadFilesSkipped);
+            r.KnownFailure("feature catalog coverage: every /ra command is in the catalog", NoCatalog, CoverageCommands);
+            r.KnownFailure("feature catalog coverage: every RynthAi window and view is in the catalog", NoCatalog, CoverageWindows);
+            r.KnownFailure("feature catalog coverage: every RynthAi setting is in the catalog", NoCatalog, CoverageSettings);
+            r.Add("find a feature: the window is in the manifest with no bar button", Manifest);
+            r.KnownFailure("find a feature: /ra find opens the window with the words and says the count", NoCatalog, FindCommand);
+            r.KnownFailure("find a feature: /ra find without plugin windows prints the best matches", NoCatalog, FindCommandNoWindows);
+            return;
+        }
         r.Add("feature catalog: every Docs/features file is embedded and parses", EveryFileEmbeddedAndParses);
         r.Add("feature catalog: required fields, ids, commands, where, summary, settings", EntriesValid);
         r.Add("feature catalog: open commands only open (never start, stop or toggle)", OpenOnlyOpens);
