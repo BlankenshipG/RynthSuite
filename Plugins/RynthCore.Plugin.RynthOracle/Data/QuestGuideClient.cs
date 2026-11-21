@@ -30,6 +30,10 @@ internal sealed unsafe class QuestGuideClient
     public bool Running { get; private set; }
     public bool LoginSaved { get; private set; }
     public string Status { get; private set; } = "";
+    /// <summary>The server's name from the info ("tag", the server guide's; "" for RynthILT's).</summary>
+    public string Tag { get; private set; } = "";
+    /// <summary>The Stamps tab follows this guide's Dynamic Stamps (RynthILT's); a server guide's has none.</summary>
+    public bool FeedsDynamicStamps = true;
 
     public void Clear()
     {
@@ -39,7 +43,8 @@ internal sealed unsafe class QuestGuideClient
         if (Guide.Quests.Count > 0 || Available) Revision++;
         Guide = QuestGuide.Empty;
         Available = false;
-        DynamicStampList.UseWiki(null);
+        Tag = "";
+        if (FeedsDynamicStamps) DynamicStampList.UseWiki(null);
         Status = "";
     }
 
@@ -75,6 +80,7 @@ internal sealed unsafe class QuestGuideClient
             bool running = r.TryGetProperty("running", out JsonElement ru) && ru.ValueKind == JsonValueKind.True;
             bool login = r.TryGetProperty("login", out JsonElement lo) && lo.ValueKind == JsonValueKind.True;
             string status = r.TryGetProperty("status", out JsonElement st) && st.ValueKind == JsonValueKind.String ? st.GetString() ?? "" : "";
+            Tag = r.TryGetProperty("tag", out JsonElement tg) && tg.ValueKind == JsonValueKind.String ? tg.GetString() ?? "" : "";
             bool changed = !Available || running != Running || login != LoginSaved || status != Status;
             Available = true;
             Running = running;
@@ -90,7 +96,7 @@ internal sealed unsafe class QuestGuideClient
                 {
                     _fileTime = t;
                     Guide = t == DateTime.MinValue ? QuestGuide.Empty : QuestGuide.Parse(File.ReadAllText(path));
-                    DynamicStampList.UseWiki(Guide.DynStamps);   // the Stamps tab follows the wiki (2026-11-21)
+                    if (FeedsDynamicStamps) DynamicStampList.UseWiki(Guide.DynStamps);   // the Stamps tab follows the wiki (2026-11-21)
                 }
                 changed = true;
             }

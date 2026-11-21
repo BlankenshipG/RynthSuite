@@ -545,7 +545,7 @@ internal static class WikiQuestParser
         return map;
     }
 
-    private static string Param(Dictionary<string, string> p, params string[] names)
+    internal static string Param(Dictionary<string, string> p, params string[] names)
     {
         foreach (string n in names)
             if (p.TryGetValue(n, out string? v) && v.Trim().Length > 0) return v.Trim();

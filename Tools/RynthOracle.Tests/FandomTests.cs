@@ -188,6 +188,29 @@ namespace RynthOracle.Tests
                 body = Frame(host, main, view, "fandom, catalog state");
                 Check(listed.IsComplete(c.Flags) && body.Contains("Completed"), "fandom tabs: a stampless quest's state from the quest list");
             }
+            // A server's own wiki guide ("RynthServer.QuestGuide", RynthConquest's) over the AC Community Wiki's.
+            c.Fandom.Use(back);
+            var sg = new QuestGuide { Source = "conquest", Parser = WikiQuestParser.Version, UpdatedUtc = DateTime.UtcNow };
+            var darsh = new GuideQuest { Title = "Darshmaul the Brutal", Url = "https://conquestac.fandom.com/wiki/Darshmaul_the_Brutal", Type = "Conquest", Repeat = "Daily", RepeatSec = 72000 };
+            darsh.Steps.Add(new GuideStep { Text = "Portal to Fort 33.6S 74.9E", Coords = { "33.6S, 74.9E" } });
+            darsh.Steps.Add(new GuideStep { Text = "Give to Vovran 33.4S 72.8E", Coords = { "33.4S, 72.8E" }, Stamps = { "assaultonaimaru" } });
+            sg.Quests.Add(darsh);
+            sg.Quests.Add(new GuideQuest { Title = "Adept Test", Url = "server", Steps = { new GuideStep { Text = "The server's way." } } });
+            string sgFile = Path.Combine(Path.GetTempPath(), "RynthOracleTests-" + Guid.NewGuid().ToString("N") + "-server-guide.json");
+            File.WriteAllText(sgFile, sg.ToJson());
+            c.ServerGuide.Client.Take("{\"schema\":1,\"path\":" + System.Text.Json.JsonSerializer.Serialize(sgFile) + ",\"revision\":1,\"running\":false,\"login\":true,\"status\":\"read\",\"tag\":\"Conquest\"}");
+            Check(c.ServerGuide.Client.Tag == "Conquest" && c.ServerGuide.Client.Guide.Quests.Count == 2, "server guide: taken from the plugin's info");
+            Check(!c.WikiIsFandom && c.Wiki.Find("Darshmaul the Brutal") != null && c.Wiki.Find("Drudge Lurker Kill Task") != null && c.Wiki.Quests.Count == 4,
+                "server guide: its quests over the AC Wiki's");
+            Check(c.Wiki.Find("Adept Test")!.Url == "server", "server guide: its quest of the same name wins");
+            Check(c.Wiki.Contracts.Count == 1 && c.WikiLabel == "Conquest Wiki", "server guide: the AC Wiki's contracts kept; the tab is the server's wiki");
+            view.ShowGuide(GuideTab.Wiki, "w:Darshmaul the Brutal");
+            body = Frame(host, main, view, "server guide");
+            Check(body.Contains("Conquest Wiki") && body.Contains("###g.r.w:Darshmaul the Brutal") && body.Contains("###g.run"), "server guide: the tab, its quest, Run this quest");
+            c.ServerGuide.Clear();
+            Check(c.WikiIsFandom && c.WikiLabel == "AC Wiki", "server guide: gone with the server");
+            try { File.Delete(sgFile); } catch { }
+
             c.Settings.QuestGuideView = false;
             try { File.Delete(file); } catch { }
         }

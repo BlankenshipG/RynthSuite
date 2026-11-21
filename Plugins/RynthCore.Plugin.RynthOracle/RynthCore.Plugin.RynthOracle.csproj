@@ -77,6 +77,7 @@
     <Compile Include="..\Shared\ServerStateClient.cs" Link="Shared\ServerStateClient.cs" />
     <!-- "RynthServer.QuestPack": the active server plugin's quest pack, merged into the Quests list. -->
     <Compile Include="..\Shared\RynthServerQuestPackApi.cs" Link="Shared\RynthServerQuestPackApi.cs" />
+    <Compile Include="..\Shared\RynthServerQuestGuideApi.cs" Link="Shared\RynthServerQuestGuideApi.cs" />
     <Compile Include="..\Shared\ServerQuestPackClient.cs" Link="Shared\ServerQuestPackClient.cs" />
     <!-- How a chat command answers (2026-10-28): the shared reply queue and colours. -->
     <Compile Include="..\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />

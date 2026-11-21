@@ -75,6 +75,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private int _titleCount = -2;
     private uint _titleCurrent;
     private long _nextAutoReadMs;
+    private int _seenServerGuideRevision = -1;
     // A kill line came while the Kill Tasks tab was open: read /myquests again on the next allowed minute.
     private bool _killReadWanted;
     private DateTime _seenReadUtc = DateTime.MinValue;
@@ -241,6 +242,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     {
         _c.Ilt.Clear();
         _c.Guide.Clear();
+        _c.ServerGuide.Clear();
         _guardianJson = "";
         _nextGuardianMs = 0;
         if (!ReferenceEquals(_c.Guardian, Shared.IltGuardianView.None))
@@ -855,6 +857,16 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             if (_c.Guide.Revision != _seenGuideRevision)
             {
                 _seenGuideRevision = _c.Guide.Revision;
+                if (_main != null) _main.NeedsPass = true;
+            }
+        }
+        else
+        {
+            // Any other server: its plugin's own wiki quest guide, when it has one (RynthConquest's, 2026-11-21).
+            _c.ServerGuide.Poll(Host, Shared.ServerQuestPackClient.OwnerOf(_c.ServerState.State), now);
+            if (_c.ServerGuide.Client.Revision != _seenServerGuideRevision)
+            {
+                _seenServerGuideRevision = _c.ServerGuide.Client.Revision;
                 if (_main != null) _main.NeedsPass = true;
             }
         }

@@ -199,7 +199,7 @@ internal sealed partial class OracleView
                 second = true;
                 w.Dummy(0f, 0f);   // ends the first row (the SameLine before it)
             }
-            string name = t == GuideTab.Wiki ? (_c.WikiIsFandom ? "AC Wiki" : "ILT Wiki") : GuideTabNames[(int)t];
+            string name = t == GuideTab.Wiki ? _c.WikiLabel : GuideTabNames[(int)t];
             w.ToggleButton(name, "g.tab." + (int)t, _gTab == t, () => { _gTab = tab; _gPage = 0; });
             w.SameLine();
         }
@@ -276,6 +276,15 @@ internal sealed partial class OracleView
     /// </summary>
     private void DrawGuideSource(UiWindow w)
     {
+        if (!_c.Server.IsIlt && _c.ServerGuide.Client.Available)
+        {
+            QuestGuideClient sg = _c.ServerGuide.Client;
+            string tag = sg.Tag.Length > 0 ? sg.Tag : "Server";
+            string st = sg.Running ? $"{tag} Wiki: {sg.Status}" : sg.Guide.Quests.Count > 0 ? $"{tag} Wiki: {sg.Guide.Quests.Count} quests" : $"{tag} Wiki: {sg.Status}";
+            w.TextDisabled(Cut(st, 50));
+            w.Tooltip($"{tag}'s own wiki quests, from the server's plugin, first in the wiki tab; then the AC Community Wiki's. " + sg.Status);
+            w.SameLine();
+        }
         if (!_c.Server.IsIlt || _c.Guide.Guide.Quests.Count == 0 && !_c.Guide.Running)
         {
             FandomFeed f = _c.Fandom;

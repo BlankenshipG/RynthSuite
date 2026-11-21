@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.Shared;
@@ -36,13 +37,52 @@ internal sealed class OracleContext
     /// The wiki guide in use: on Infinite Leaftide RynthILT's (its own wiki) once it has quests, else the AC
     /// Community Wiki's.
     /// </summary>
-    public QuestGuide Wiki => Server.IsIlt && Guide.Guide.Quests.Count > 0 ? Guide.Guide : Fandom.Guide;
+    public QuestGuide Wiki
+    {
+        get
+        {
+            if (Server.IsIlt && Guide.Guide.Quests.Count > 0) return Guide.Guide;
+            QuestGuide sg = ServerGuide.Client.Guide;
+            if (sg.Quests.Count == 0) return Fandom.Guide;
+            // The active server's own wiki quests (RynthConquest's Conquest wiki, 2026-11-21) over the AC
+            // Community Wiki's: its quests first, then the retail ones it doesn't have; the kill tasks, society
+            // quests and contracts are the AC Community Wiki's.
+            int key = unchecked(ServerGuide.Client.Revision * 7919 + Fandom.Revision);
+            if (_merged == null || _mergedKey != key || !ReferenceEquals(_mergedFrom, sg))
+            {
+                var g = new QuestGuide
+                {
+                    Source = sg.Source + "+fandom", Parser = Math.Min(sg.Parser, Fandom.Guide.Parser),
+                    UpdatedUtc = sg.UpdatedUtc, KillTasks = Fandom.Guide.KillTasks, Society = Fandom.Guide.Society, Contracts = Fandom.Guide.Contracts,
+                };
+                var titles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (GuideQuest q in sg.Quests) if (titles.Add(q.Title)) g.Quests.Add(q);
+                foreach (GuideQuest q in Fandom.Guide.Quests) if (titles.Add(q.Title)) g.Quests.Add(q);
+                _merged = g;
+                _mergedKey = key;
+                _mergedFrom = sg;
+            }
+            return _merged;
+        }
+    }
+
+    private QuestGuide? _merged, _mergedFrom;
+    private int _mergedKey;
+
+    /// <summary>The active server's own wiki quest guide (RynthServer.QuestGuide; RynthConquest's), on any server but ILT.</summary>
+    public readonly ServerGuideClient ServerGuide = new();
+
+    /// <summary>The wiki tab's name: "ILT Wiki", "&lt;server&gt; Wiki" for a server's own guide, else "AC Wiki".</summary>
+    public string WikiLabel =>
+        Server.IsIlt && Guide.Guide.Quests.Count > 0 ? "ILT Wiki"
+        : ServerGuide.Client.Guide.Quests.Count > 0 ? (ServerGuide.Client.Tag.Length > 0 ? ServerGuide.Client.Tag : "Server") + " Wiki"
+        : "AC Wiki";
 
     /// <summary>The wiki in use is the AC Community Wiki's.</summary>
     public bool WikiIsFandom => ReferenceEquals(Wiki, Fandom.Guide);
 
     /// <summary>Goes up when either guide changes.</summary>
-    public int WikiRevision => unchecked(Guide.Revision * 7919 + Fandom.Revision);
+    public int WikiRevision => unchecked((Guide.Revision * 7919 + Fandom.Revision) * 31 + ServerGuide.Client.Revision);
 
     /// <summary>A wiki quest by title: the guide in use, else the AC Community Wiki's (a contract's quest, a society quest).</summary>
     public GuideQuest? FindWiki(string title) => Wiki.Find(title) ?? (WikiIsFandom ? null : Fandom.Guide.Find(title));
