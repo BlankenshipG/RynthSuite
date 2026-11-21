@@ -462,6 +462,8 @@ namespace RynthOracle.Tests
         private static OracleContext Context()
         {
             var c = new OracleContext { InWorld = true, NowMs = 10_000_000, UtcNow = DateTime.UtcNow };
+            // Never the player's own saved AC Community Wiki read (%APPDATA%): a file of the test's own that doesn't exist.
+            c.Fandom = new FandomFeed(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RynthOracleTests-" + Guid.NewGuid().ToString("N") + "-no-fandom.json"));
             c.Server.Force("aelrynth", "Aeshnidae", "RynthAelrynth");
             c.Catalog.Load(TestPacks.Aelrynth, null);
             c.Flags.OnChatLine("30minattributes - 4 solves (1719432000)\"x\" -1 1800", 0);
