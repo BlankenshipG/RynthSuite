@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using RynthCore.Plugin.RynthOracle;
@@ -32,6 +33,68 @@ namespace RynthOracle.Tests
          {"title":"Mistreated Virindi","url":"u","rev":3,"type":"Solo","repeatSec":72000,"qb":0,"steps":[{"text":"Talk.","stamps":["Sneaky_Virindi"]}]}
         ]}
         """;
+
+        // The Stamps tab from the wiki's Dynamic Stamps page (2026-11-21, Silentkelpie: "the dynamic stamp tab should be
+        // using this tab https://www.leaftidewiki.com/Dynamic_Stamps"). The page as it was that day, cut to a sample.
+        private static void WikiDynamicStamps()
+        {
+            List<GuideDynStamp> rows = WikiQuestParser.ParseDynamicStamps(TestText("TestWiki.dynamic-stamps.txt"));
+            Check(rows.Count == 11, $"dyn page: every stamped row once, not the intro's, NO STAMP rows or the unsorted list ({rows.Count})");
+            GuideDynStamp hiyp = rows[0];
+            Check(hiyp.Area == "Arwic" && hiyp.Place == "Arwic" && hiyp.Npc == "Hiyp the Toad" && hiyp.Coords == "33.6N, 56.8E"
+                  && hiyp.Stamp == "Dynamic_1_8M6jL^Bwr3S$p" && hiyp.Reward == "Hearty Rabbit Noodle", "dyn page: a row with one cell per line");
+            Check(rows[1].Coords == "33.3N, 56.5E" && rows[2].Stamp == "Dynamic_1_w", "dyn page: a tab in a cell, a space in the stamp");
+            Check(rows.Any(r => r.Npc == "Gustuv Lansdown" && r.Note == "Mill with Aug NPCs" && r.Coords == "24.9N, 48.5E"), "dyn page: notes and coordinates kept");
+            GuideDynStamp saelar = rows.Single(r => r.Npc == "Saelar's Apprentice");
+            Check(saelar.Area == "Samsur" && saelar.Coords == "2.5S, 16.4E" && saelar.Reward == "Renegade Ukira of the Mountains" && saelar.Note == "Mnemosyne Collection Site",
+                "dyn page: a row on one line split by ||");
+            Check(rows.Single(r => r.Npc == "Drogur").Area == "Kor-Gursha / Bur" && !rows.Any(r => r.Npc == "Rheegur"), "dyn page: two links in a heading; NO STAMP left out");
+            Check(rows.Single(r => r.Npc == "Gear Knight Recruiter").Area == "Gear Knight Camp, Inner Sea", "dyn page: a heading's shown text");
+            Check(rows.Count(r => r.Stamp == "Dynamic_1_lm9d1e7kD") == 1 && rows.Single(r => r.Stamp == "Dynamic_1_lm9d1e7kD").Npc == "Robert Crow", "dyn page: a stamp twice, first row wins");
+            GuideDynStamp abbess = rows.Single(r => r.Npc == "Abbess Zik'Lir");
+            Check(abbess.Area == "Miscellaneous" && abbess.Place == "Ithaenc" && abbess.Reward == "Hearty Fish Noodle" && abbess.Note == "", "dyn page: miscellaneous, its notes are the place");
+            Check(rows.Single(r => r.Npc == "Arikas, Warden of Knorr").Place == "Seat of Knorr", "dyn page: a linked place");
+            Check(!rows.Any(r => r.Stamp.StartsWith("Dynamic_1_0eHSd9aS", StringComparison.Ordinal)), "dyn page: the unsorted list is left out");
+            Check(WikiQuestParser.ParseDynamicStamps("").Count == 0 && WikiQuestParser.ParseDynamicStamps("no tables").Count == 0, "dyn page: nothing in, nothing out");
+
+            // In the guide file and in the Stamps tab.
+            var g = new QuestGuide { DynStamps = rows, DynStampsRev = 77 };
+            QuestGuide back = QuestGuide.Parse(g.ToJson());
+            Check(back.DynStamps.Count == 11 && back.DynStampsRev == 77 && back.DynStamps[0].Coords == "33.6N, 56.8E", "guide json: the Dynamic stamps round-trip");
+            int sheet = DynamicStampList.All.Count;
+            Check(DynamicStampList.Source == "sheet" && sheet > 200, "stamps: the sheet until the wiki's page is read");
+            DynamicStampList.UseWiki(back.DynStamps);
+            Check(DynamicStampList.Source == "wiki" && DynamicStampList.All.Count == 11, "stamps: the wiki's page replaces the sheet");
+            Check(DynamicStampList.Areas.SequenceEqual(new[] { "Arwic", "Cragstone", "Samsur", "Kor-Gursha / Bur", "Gear Knight Camp, Inner Sea", "Miscellaneous" }),
+                "stamps: the wiki's places, in page order");
+            DynamicStamp h = DynamicStampList.All[0];
+            Check(h.Stamp == "dynamic_1_8m6jl^bwr3s$p" && h.NavCandidates()[0] == "33.6N, 56.8E", "stamps: lower-case flag, RynthNav goes to the coordinates first");
+            OracleContext c = On("ilt");
+            c.Flags.OnChatLine("Dynamic_1_8M6jL^Bwr3S$p - 1 solves (1719432000)\"x\" -1 0", c.NowMs);
+            c.Flags.Tick(c.NowMs + 5_000);
+            Check(h.Have(c.Flags), "stamps: a wiki stamp matches /myquests");
+            DynamicStampList.UseWiki(null);
+            Check(DynamicStampList.Source == "sheet" && DynamicStampList.All.Count == sheet, "stamps: back to the sheet when the guide goes");
+
+            // The client takes the guide's stamps when it reads the file.
+            string file = Path.Combine(Path.GetTempPath(), "RynthOracleTests-" + Guid.NewGuid().ToString("N") + "-dyn.json");
+            File.WriteAllText(file, g.ToJson());
+            c.Guide.Take("{\"path\":" + System.Text.Json.JsonSerializer.Serialize(file) + ",\"revision\":1,\"count\":0,\"login\":true,\"running\":false,\"status\":\"ok\"}");
+            Check(DynamicStampList.Source == "wiki" && DynamicStampList.All.Count == 11, "stamps: the guide client hands them over");
+            var view = new OracleView(c);
+            var host = new UiHost();
+            UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
+            c.Settings.QuestGuideView = true;
+            c.Settings.TabName = OracleView.TabQuests;
+            view.ShowGuide(GuideTab.Stamps, "a:Arwic");
+            string body = Frame(host, main, view, "stamps from the wiki");
+            Check(body.Contains("Stamps: the wiki's Dynamic Stamps page (11 stamps in 6 places)") && body.Contains("###g.r.a:Arwic") && body.Contains("1 / 3"),
+                "stamps tab: the wiki's places, with what you hold");
+            Check(body.Contains("Hiyp the Toad - Arwic"), "stamps tab: the opened place lists its NPCs");
+            c.Guide.Clear();
+            Check(DynamicStampList.Source == "sheet", "stamps: a cleared guide goes back to the sheet");
+            try { File.Delete(file); } catch { }
+        }
 
         private static void KillTasks()
         {
@@ -138,6 +201,12 @@ namespace RynthOracle.Tests
             body = Frame(host, main, view, "kill tasks, hide collected");
             Check(!body.Contains("###g.r.w:Kill: Rynthid Minions") && body.Contains("###g.r.w:Drudge Lurker Kill Task"), "kill tab: hide collected");
             c.Settings.GuideHideCollected = false;
+
+            // The wiki's Kill Tasks category marks a page whose box says nothing.
+            var g2 = new QuestGuide { KillTasks = { "Weeding of the Deru Tree" } };
+            Check(g2.IsKillTask(new GuideQuest { Title = "Weeding of the Deru Tree" }) && !g2.IsKillTask(new GuideQuest { Title = "Mistreated Virindi" }),
+                "kill task: the wiki's Kill Tasks category");
+            Check(QuestGuide.Parse(g2.ToJson()).KillTasks.SequenceEqual(new[] { "Weeding of the Deru Tree" }), "guide json: the kill task list round-trips");
 
             Check(OracleView.FlagLabel("KillTaskDrudgeLurkers_0507") == "Kill Task Drudge Lurkers 0507", "kill tab: a flag's label");
             try { File.Delete(file); } catch { }

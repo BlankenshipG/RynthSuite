@@ -203,6 +203,10 @@ internal sealed partial class OracleView
         DrawGuideSource(w);
         if (_gMsg.Length > 0) w.TextDisabled(_gMsg);
         if (_gTab == GuideTab.KillTasks) DrawKillSummary(w);
+        if (_gTab == GuideTab.Stamps)
+            w.TextDisabled(DynamicStampList.Source == "wiki"
+                ? $"Stamps: the wiki's Dynamic Stamps page ({DynamicStampList.All.Count} stamps in {DynamicStampList.Areas.Count} places)"
+                : $"Stamps: the players' sheet ({DynamicStampList.All.Count}); the wiki's page once RynthILT has read it");
 
         List<GuideRow> rows = GuideRows();
         float total = w.ContentWidth > 0f ? w.ContentWidth : 680f;
@@ -293,7 +297,7 @@ internal sealed partial class OracleView
     private List<GuideRow> GuideRows()
     {
         HeldStamps();
-        string key = $"{_gTab}|{_gSearch}|{_c.Settings.GuideHideCollected}|{_c.Server.IsIlt}|{_c.Guide.Revision}|{_c.Catalog.Revision}|{_heldKey}|{_c.Kills.Revision}|{_c.UtcNow:yyyyMMddHHmm}";
+        string key = $"{_gTab}|{_gSearch}|{_c.Settings.GuideHideCollected}|{_c.Server.IsIlt}|{_c.Guide.Revision}|{_c.Catalog.Revision}|{_heldKey}|{_c.Kills.Revision}|{DynamicStampList.Revision}|{_c.UtcNow:yyyyMMddHHmm}";
         if (key == _gRowsKey) return _gRows;
         _gRowsKey = key;
         _gRows.Clear();
@@ -477,7 +481,7 @@ internal sealed partial class OracleView
         if (q.Qb > 0) facts.Add("QB " + q.Qb.ToString(CultureInfo.InvariantCulture));
         if (q.TimeToComplete.Length > 0) facts.Add(q.TimeToComplete);
         if (facts.Count > 0) w.TextDisabled(string.Join("  |  ", facts));
-        if (q.IsKillTask && _c.Server.IsIlt) DrawKillLine(w, q);
+        if (_c.Server.IsIlt && _c.Guide.Guide.IsKillTask(q)) DrawKillLine(w, q);
 
         // Run this quest / its controls.
         if (!runningThis)

@@ -74,6 +74,7 @@ namespace RynthOracle.Tests
             Replies();
             WikiGuide();
             KillTasks();
+            WikiDynamicStamps();
             QuestNamesTests();
             QuestDungeonTests();
             QuestInsideTests();

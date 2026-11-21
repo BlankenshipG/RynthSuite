@@ -120,7 +120,7 @@ internal sealed partial class OracleView
         var named = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (GuideQuest q in _c.Guide.Guide.Quests)
         {
-            if (!q.IsKillTask) continue;
+            if (!_c.Guide.Guide.IsKillTask(q)) continue;
             KillProgress p = KillProgressOf(q);
             if (p.Counter != null) named.Add(p.Counter.Key);
             foreach (string st in q.AllStamps()) named.Add(st);
@@ -188,7 +188,7 @@ internal sealed partial class OracleView
         int counting = 0, turnIn = 0, ready = 0;
         foreach (GuideQuest q in _c.Guide.Guide.Quests)
         {
-            if (!q.IsKillTask) continue;
+            if (!_c.Guide.Guide.IsKillTask(q)) continue;
             switch (KillProgressOf(q).State)
             {
                 case KillState.Counting: counting++; break;

@@ -39,6 +39,7 @@ internal sealed unsafe class QuestGuideClient
         if (Guide.Quests.Count > 0 || Available) Revision++;
         Guide = QuestGuide.Empty;
         Available = false;
+        DynamicStampList.UseWiki(null);
         Status = "";
     }
 
@@ -89,6 +90,7 @@ internal sealed unsafe class QuestGuideClient
                 {
                     _fileTime = t;
                     Guide = t == DateTime.MinValue ? QuestGuide.Empty : QuestGuide.Parse(File.ReadAllText(path));
+                    DynamicStampList.UseWiki(Guide.DynStamps);   // the Stamps tab follows the wiki (2026-11-21)
                 }
                 changed = true;
             }

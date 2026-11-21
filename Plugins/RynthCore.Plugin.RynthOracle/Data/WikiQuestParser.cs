@@ -31,9 +31,93 @@ internal static class WikiQuestParser
     /// <summary>
     /// This reader's version, saved in the guide (QuestGuide.Parser). Raise it when the reader changes what
     /// it takes from a page: RynthILT then reads every page again, not only the ones edited since.
-    /// 2: stamps cut to the flag ("X on first completion"), kill tasks (2026-11-21).
+    /// 2: stamps cut to the flag ("X on first completion"), kill tasks, the Kill Tasks category and the
+    /// Dynamic Stamps page (2026-11-21).
     /// </summary>
     public const int Version = 2;
+
+    /// <summary>The wiki's page of Dynamic Stamps (2026-11-21).</summary>
+    public const string DynamicStampsPage = "Dynamic Stamps";
+    /// <summary>The wiki's list of kill tasks (2026-11-21; the page "Kill Tasks" redirects here).</summary>
+    public const string KillTasksCategory = "Category:Kill Tasks";
+
+    private static readonly Regex DynStampRx = new(@"\{\{\s*stamped\s*\|\s*(Dynamic_[^}|]+?)\s*\}\}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex Heading3Rx = new(@"^\s*===\s*([^=].*?)\s*===\s*$", RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The Dynamic Stamps page (2026-11-21): "== Network ==" headings, "=== [[Town]] ===" under them, each with
+    /// a table "Name | Coordinates | Stamp | Item Reward | Notes" (cells one per line, or on one line split by
+    /// "||"). "==Miscellaneous stamps==" has one table whose Notes say where. Rows without a Dynamic_ stamp
+    /// ("NO STAMP", "?") are left out, and so is "==Original Unsorted List==" (stamps without an NPC). Each
+    /// stamp once, first row wins. Area is the town (the heading's shown text), or "Miscellaneous".
+    /// </summary>
+    public static List<GuideDynStamp> ParseDynamicStamps(string? wikitext)
+    {
+        var list = new List<GuideDynStamp>();
+        if (string.IsNullOrEmpty(wikitext)) return list;
+        string text = CommentRx.Replace(wikitext, "").Replace("\r\n", "\n").Replace('\r', '\n');
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        string network = "", town = "";
+        bool inTable = false, unsorted = false;
+        var cells = new List<string>();
+
+        void Row()
+        {
+            if (cells.Count == 0 || unsorted) { cells.Clear(); return; }
+            string stampCell = cells.Count > 2 ? cells[2] : string.Join(" ", cells);
+            Match m = DynStampRx.Match(stampCell);
+            if (!m.Success) m = DynStampRx.Match(string.Join(" ", cells));
+            if (m.Success)
+            {
+                string stamp = m.Groups[1].Value.Trim();
+                if (seen.Add(stamp.ToLowerInvariant()))
+                {
+                    bool misc = network.StartsWith("Misc", StringComparison.OrdinalIgnoreCase);
+                    string notes = cells.Count > 4 ? Clean(cells[4]) : "";
+                    string area = misc ? "Miscellaneous" : town.Length > 0 ? town : network;
+                    list.Add(new GuideDynStamp
+                    {
+                        Area = area,
+                        Place = misc ? notes : area,
+                        Npc = cells.Count > 0 ? Clean(cells[0]) : "",
+                        Coords = cells.Count > 1 ? NavTargets.FirstCoords(Clean(cells[1])) ?? Clean(cells[1]) : "",
+                        Stamp = stamp,
+                        Reward = cells.Count > 3 ? Clean(cells[3]) : "",
+                        Note = misc ? "" : notes,
+                    });
+                }
+            }
+            cells.Clear();
+        }
+
+        foreach (string raw in text.Split('\n'))
+        {
+            string line = raw.TrimEnd();
+            Match h3 = Heading3Rx.Match(line);
+            if (h3.Success) { Row(); town = Clean(h3.Groups[1].Value); continue; }
+            Match h2 = HeadingRx.Match(line);
+            if (h2.Success)
+            {
+                Row();
+                network = Clean(h2.Groups[1].Value);
+                town = "";
+                unsorted = network.Contains("Unsorted", StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+            string t = line.TrimStart();
+            if (t.StartsWith("{|", StringComparison.Ordinal)) { inTable = true; cells.Clear(); continue; }
+            if (!inTable) continue;
+            if (t.StartsWith("|}", StringComparison.Ordinal)) { Row(); inTable = false; continue; }
+            if (t.StartsWith("|-", StringComparison.Ordinal)) { Row(); continue; }
+            if (t.StartsWith('!')) continue;
+            if (t.StartsWith('|'))
+                foreach (string c in t.Substring(1).Split("||")) cells.Add(c.Trim());
+            else if (cells.Count > 0)
+                cells[^1] += " " + t;
+        }
+        Row();
+        return list;
+    }
 
     /// <summary>The page is a quest page (it has the Quest Summary box).</summary>
     public static bool IsQuestPage(string? wikitext) =>

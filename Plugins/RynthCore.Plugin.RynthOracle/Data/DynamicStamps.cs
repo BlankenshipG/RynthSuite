@@ -125,10 +125,53 @@ internal static class DynamicStampList
     public static string ErrandOf(string flag) =>
         flag.EndsWith(DeliverySuffix, StringComparison.OrdinalIgnoreCase) ? flag[..^DeliverySuffix.Length] : flag;
 
-    public static List<DynamicStamp> All { get; } = Load();
+    private static readonly List<DynamicStamp> Sheet = Load();
 
-    /// <summary>The areas in list order (Facility Hub, Looking Around, ...).</summary>
-    public static List<string> Areas { get; } = BuildAreas();
+    /// <summary>
+    /// The stamps: the wiki's Dynamic Stamps page when RynthILT has read it (2026-11-21, Silentkelpie: "the dynamic
+    /// stamp tab should be using" it), else the players' sheet shipped with RynthOracle.
+    /// </summary>
+    public static List<DynamicStamp> All { get; private set; } = Sheet;
+
+    /// <summary>The areas in list order (the wiki's towns and camps, or the sheet's Facility Hub, Looking Around, ...).</summary>
+    public static List<string> Areas { get; private set; } = BuildAreas(Sheet);
+
+    /// <summary>Where the list comes from: "wiki" or "sheet".</summary>
+    public static string Source { get; private set; } = "sheet";
+
+    /// <summary>Goes up when the list is swapped.</summary>
+    public static int Revision { get; private set; }
+
+    /// <summary>
+    /// Uses the wiki's Dynamic Stamps (QuestGuide.DynStamps) when there are any, else goes back to the sheet.
+    /// Pump thread. The wiki's coordinates go into the note, where RynthNav's candidates look first.
+    /// </summary>
+    public static void UseWiki(IReadOnlyList<GuideDynStamp>? wiki)
+    {
+        if (wiki == null || wiki.Count == 0)
+        {
+            if (Source == "sheet") return;
+            All = Sheet;
+            Areas = BuildAreas(Sheet);
+            Source = "sheet";
+            Revision++;
+            return;
+        }
+        var list = new List<DynamicStamp>(wiki.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (GuideDynStamp d in wiki)
+        {
+            string stamp = d.Stamp.Trim().ToLowerInvariant();
+            if (!stamp.StartsWith(FlagPrefix, StringComparison.Ordinal) || !seen.Add(stamp)) continue;
+            string note = d.Coords.Length > 0 && d.Note.Length > 0 ? d.Coords + " - " + d.Note : d.Coords + d.Note;
+            list.Add(new DynamicStamp { Area = d.Area, Place = d.Place, Npc = d.Npc, Reward = d.Reward, Stamp = stamp, Note = note });
+        }
+        if (list.Count == 0) { UseWiki(null); return; }
+        All = list;
+        Areas = BuildAreas(list);
+        Source = "wiki";
+        Revision++;
+    }
 
     /// <summary>
     /// Dynamic stamps on this character that the list doesn't have (new or unlisted NPCs), so the
@@ -192,10 +235,10 @@ internal static class DynamicStampList
         return list;
     }
 
-    private static List<string> BuildAreas()
+    private static List<string> BuildAreas(List<DynamicStamp> all)
     {
         var areas = new List<string>();
-        foreach (DynamicStamp s in All)
+        foreach (DynamicStamp s in all)
             if (!areas.Contains(s.Area)) areas.Add(s.Area);
         return areas;
     }

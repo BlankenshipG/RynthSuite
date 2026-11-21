@@ -467,7 +467,8 @@ internal sealed partial class OracleView
                 $"{have} / {all.Count} listed Dynamic stamps" + (unlisted > 0 ? $" (+{unlisted} not in the list)" : ""));
             w.Tooltip("Dynamic stamps are one-time quest flags (Dynamic_1_...) from handing items to NPCs on Infinite Leaftide.\n"
                       + "Done: in /myquests, or in the /qb list (/myquests leaves out flags the server has no quest text for).\n"
-                      + "List: the players' ExtraDyn sheet. Click a stamp for RynthNav's route to it and the Parchment hand-in."
+                      + (DynamicStampList.Source == "wiki" ? "List: the wiki's Dynamic Stamps page (RynthILT reads it)." : "List: the players' ExtraDyn sheet (the wiki's page once RynthILT has read it).")
+                      + " Click a stamp for RynthNav's route to it and the Parchment hand-in."
                       + (unlisted > 0 ? "\nStamps not in the sheet show as quests with Not in list." : ""));
             DrawStampQbSource(w);
         }

@@ -179,6 +179,21 @@ internal static class GuideStamp
     }
 }
 
+/// <summary>
+/// One row of the wiki's Dynamic Stamps page (2026-11-21): the NPC who takes a sheet of parchment, where, the
+/// stamp it gives and the item back. Area is the page's town or camp heading ("Arwic"), or "Miscellaneous".
+/// </summary>
+internal sealed class GuideDynStamp
+{
+    public string Area = "";
+    public string Place = "";
+    public string Npc = "";
+    public string Coords = "";
+    public string Stamp = "";
+    public string Reward = "";
+    public string Note = "";
+}
+
 /// <summary>The whole guide: the quests, where they came from and when.</summary>
 internal sealed class QuestGuide
 {
@@ -195,6 +210,30 @@ internal sealed class QuestGuide
     public string Source = "";
     public DateTime UpdatedUtc = DateTime.MinValue;
     public List<GuideQuest> Quests = new();
+
+    /// <summary>The wiki's Dynamic Stamps page (2026-11-21); empty when it wasn't read. RynthOracle's Stamps tab uses it over its own sheet.</summary>
+    public List<GuideDynStamp> DynStamps = new();
+    /// <summary>The Dynamic Stamps page's revision id (0 unknown).</summary>
+    public long DynStampsRev;
+
+    /// <summary>The pages in the wiki's Category:Kill Tasks (2026-11-21), its list of kill tasks.</summary>
+    public List<string> KillTasks = new();
+
+    /// <summary>A kill task: the wiki's Kill Tasks category lists it, or its own page says so (GuideQuest.IsKillTask).</summary>
+    public bool IsKillTask(GuideQuest q)
+    {
+        if (q.IsKillTask) return true;
+        if (KillTasks.Count == 0) return false;
+        if (!ReferenceEquals(_killSetOf, KillTasks))
+        {
+            _killSet = new HashSet<string>(KillTasks, StringComparer.OrdinalIgnoreCase);
+            _killSetOf = KillTasks;
+        }
+        return _killSet!.Contains(q.Title);
+    }
+
+    private HashSet<string>? _killSet;
+    private List<string>? _killSetOf;
 
     public GuideQuest? Find(string title)
     {
@@ -254,6 +293,25 @@ internal sealed class QuestGuide
                 w.WriteEndObject();
             }
             w.WriteEndArray();
+            Arr(w, "killTasks", KillTasks);
+            if (DynStamps.Count > 0)
+            {
+                w.WriteNumber("dynRev", DynStampsRev);
+                w.WriteStartArray("dynStamps");
+                foreach (GuideDynStamp d in DynStamps)
+                {
+                    w.WriteStartObject();
+                    Opt(w, "area", d.Area);
+                    Opt(w, "place", d.Place);
+                    Opt(w, "npc", d.Npc);
+                    Opt(w, "coords", d.Coords);
+                    w.WriteString("stamp", d.Stamp);
+                    Opt(w, "reward", d.Reward);
+                    Opt(w, "note", d.Note);
+                    w.WriteEndObject();
+                }
+                w.WriteEndArray();
+            }
             w.WriteEndObject();
         }
         return Encoding.UTF8.GetString(ms.ToArray());
@@ -327,6 +385,19 @@ internal sealed class QuestGuide
                             });
                         }
                     g.Quests.Add(q);
+                }
+            g.KillTasks = Strs(root, "killTasks");
+            g.DynStampsRev = Long(root, "dynRev");
+            if (root.TryGetProperty("dynStamps", out JsonElement ds) && ds.ValueKind == JsonValueKind.Array)
+                foreach (JsonElement d in ds.EnumerateArray())
+                {
+                    if (d.ValueKind != JsonValueKind.Object) continue;
+                    var row = new GuideDynStamp
+                    {
+                        Area = Str(d, "area"), Place = Str(d, "place"), Npc = Str(d, "npc"), Coords = Str(d, "coords"),
+                        Stamp = Str(d, "stamp"), Reward = Str(d, "reward"), Note = Str(d, "note"),
+                    };
+                    if (row.Stamp.Length > 0) g.DynStamps.Add(row);
                 }
             return g;
         }
