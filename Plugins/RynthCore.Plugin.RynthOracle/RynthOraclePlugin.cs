@@ -397,6 +397,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _skills?.Shutdown();
         _ui.SubmitEmpty(Host);
         _c.Updater.Shutdown();
+        _c.Fandom.Shutdown();
         _c.Settings.Save();
     }
 
@@ -572,8 +573,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     /// </summary>
     private void BuildLootProfiles(string quest)
     {
-        QuestGuide g = _c.Guide.Guide;
-        if (g.Quests.Count == 0) { _c.PrintFail("No wiki quests yet: the quest guide comes from RynthILT (/ilt wiki)."); return; }
+        QuestGuide g = _c.Wiki;
+        if (g.Quests.Count == 0) { _c.PrintFail("No wiki quests yet: the AC Community Wiki is still being read (Quests > Guide shows it)" + (_c.Server.IsIlt ? ", or RynthILT's (/ilt wiki)." : ".")); return; }
         var list = new System.Collections.Generic.List<GuideQuest>();
         if (quest.Length > 0)
         {
@@ -816,6 +817,13 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             if (_timers != null) _timers.NeedsPass = true;
         }
 
+        // The AC Community Wiki's guide (2026-11-21): a finished read is taken here.
+        if (_c.Fandom.TakeResult())
+        {
+            Host.Log("[RynthOracle] AC Community Wiki: " + _c.Fandom.Status);
+            if (_main != null) _main.NeedsPass = true;
+        }
+
         string? result = _c.Updater.TakeResult(out bool updated);
         if (result != null)
         {
@@ -899,6 +907,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
                     Host.Log($"[RynthOracle] Quest flags are {(int)(_c.UtcNow - since).TotalMinutes} min old: reading /myquests again.");
             }
         }
+
+        // The AC Community Wiki's quests, kill tasks, society quests and contracts: read at login when a day old.
+        _c.Fandom.Tick(_c.UtcNow);
 
         // Once a day, however long the session (it used to run once per login only).
         if (_c.Settings.CheckQuestListDaily && !_c.Updater.Running

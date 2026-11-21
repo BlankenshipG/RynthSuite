@@ -19,7 +19,7 @@ internal sealed partial class OracleView
     /// <summary>The wiki quest a master-list quest or a Legendary row is: one of its stamps is the flag, or the same title.</summary>
     private GuideQuest? GuideFor(string flag, params string[] titles)
     {
-        List<GuideQuest> quests = _c.Guide.Guide.Quests;
+        List<GuideQuest> quests = _c.Wiki.Quests;
         if (quests.Count == 0) return null;
         string key = flag.Length > 0 ? GuideStamp.Key(flag) : "";
         if (key.Length > 0)
@@ -27,7 +27,7 @@ internal sealed partial class OracleView
                 foreach (string st in q.AllStamps())
                     if (GuideStamp.Key(st) == key) return q;
         foreach (string t in titles)
-            if (t.Length > 0 && _c.Guide.Guide.Find(t) is GuideQuest byTitle) return byTitle;
+            if (t.Length > 0 && _c.FindWiki(t) is GuideQuest byTitle) return byTitle;
         return null;
     }
 

@@ -46,6 +46,8 @@ internal sealed class GuideQuest
     public string TimeToComplete = "";
     public string Contracts = "";
     public int Qb;
+    /// <summary>The society rank the quest is for ("Initiate", "Adept", ...), from the box's "Society Rank"; "" none.</summary>
+    public string SocietyRank = "";
     public List<string> Categories = new();
     public string Overview = "";
     public List<GuideStep> Steps = new();
@@ -194,6 +196,26 @@ internal sealed class GuideDynStamp
     public string Note = "";
 }
 
+/// <summary>
+/// A contract (2026-11-21, the AC Community Wiki's Category:Contracts): the item you buy or are given that starts
+/// or repeats a quest, where it comes from, and the quests it is for.
+/// </summary>
+internal sealed class GuideContract
+{
+    public string Title = "";
+    public string Name = "";
+    public string Url = "";
+    public long Rev;
+    public string Description = "";
+    public string Level = "";
+    /// <summary>Where it comes from, as the page's notes say ("Purchased from Hanadi the Barkeeper in the Sho hall ...").</summary>
+    public string Where = "";
+    /// <summary>The person it comes from (the first link in <see cref="Where"/>), for RynthNav.</summary>
+    public string Npc = "";
+    /// <summary>The quests it is for (the Intro box's "Related Quests").</summary>
+    public List<string> Quests = new();
+}
+
 /// <summary>The whole guide: the quests, where they came from and when.</summary>
 internal sealed class QuestGuide
 {
@@ -218,6 +240,16 @@ internal sealed class QuestGuide
 
     /// <summary>The pages in the wiki's Category:Kill Tasks (2026-11-21), its list of kill tasks.</summary>
     public List<string> KillTasks = new();
+
+    /// <summary>Society quests by the rank they are for (title -> "Initiate", ...; the wiki's society categories, 2026-11-21).</summary>
+    public Dictionary<string, string> Society = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The wiki's contracts (2026-11-21).</summary>
+    public List<GuideContract> Contracts = new();
+
+    /// <summary>The society rank a quest is for: its box's, else the society category it is in; "" none.</summary>
+    public string SocietyRankOf(GuideQuest q) =>
+        q.SocietyRank.Length > 0 ? q.SocietyRank : Society.TryGetValue(q.Title, out string? r) ? r : "";
 
     /// <summary>A kill task: the wiki's Kill Tasks category lists it, or its own page says so (GuideQuest.IsKillTask).</summary>
     public bool IsKillTask(GuideQuest q)
@@ -272,6 +304,7 @@ internal sealed class QuestGuide
                 w.WriteNumber("repeatSec", q.RepeatSec);
                 Opt(w, "time", q.TimeToComplete);
                 Opt(w, "contracts", q.Contracts);
+                Opt(w, "societyRank", q.SocietyRank);
                 w.WriteNumber("qb", q.Qb);
                 Arr(w, "categories", q.Categories);
                 Opt(w, "overview", q.Overview);
@@ -294,6 +327,31 @@ internal sealed class QuestGuide
             }
             w.WriteEndArray();
             Arr(w, "killTasks", KillTasks);
+            if (Society.Count > 0)
+            {
+                w.WriteStartObject("society");
+                foreach (var kv in Society) w.WriteString(kv.Key, kv.Value);
+                w.WriteEndObject();
+            }
+            if (Contracts.Count > 0)
+            {
+                w.WriteStartArray("contracts");
+                foreach (GuideContract c in Contracts)
+                {
+                    w.WriteStartObject();
+                    w.WriteString("title", c.Title);
+                    Opt(w, "name", c.Name == c.Title ? "" : c.Name);
+                    Opt(w, "url", c.Url);
+                    if (c.Rev != 0) w.WriteNumber("rev", c.Rev);
+                    Opt(w, "description", c.Description);
+                    Opt(w, "level", c.Level);
+                    Opt(w, "where", c.Where);
+                    Opt(w, "npc", c.Npc);
+                    Arr(w, "quests", c.Quests);
+                    w.WriteEndObject();
+                }
+                w.WriteEndArray();
+            }
             if (DynStamps.Count > 0)
             {
                 w.WriteNumber("dynRev", DynStampsRev);
@@ -363,6 +421,7 @@ internal sealed class QuestGuide
                         RepeatSec = Long(e, "repeatSec"),
                         TimeToComplete = Str(e, "time"),
                         Contracts = Str(e, "contracts"),
+                        SocietyRank = Str(e, "societyRank"),
                         Qb = (int)Long(e, "qb"),
                         Categories = Strs(e, "categories"),
                         Overview = Str(e, "overview"),
@@ -387,6 +446,22 @@ internal sealed class QuestGuide
                     g.Quests.Add(q);
                 }
             g.KillTasks = Strs(root, "killTasks");
+            if (root.TryGetProperty("society", out JsonElement so) && so.ValueKind == JsonValueKind.Object)
+                foreach (JsonProperty p in so.EnumerateObject())
+                    if (p.Value.ValueKind == JsonValueKind.String) g.Society[p.Name] = p.Value.GetString() ?? "";
+            if (root.TryGetProperty("contracts", out JsonElement cs) && cs.ValueKind == JsonValueKind.Array)
+                foreach (JsonElement e in cs.EnumerateArray())
+                {
+                    if (e.ValueKind != JsonValueKind.Object) continue;
+                    var c = new GuideContract
+                    {
+                        Title = Str(e, "title"), Url = Str(e, "url"), Rev = Long(e, "rev"), Description = Str(e, "description"),
+                        Level = Str(e, "level"), Where = Str(e, "where"), Npc = Str(e, "npc"), Quests = Strs(e, "quests"),
+                    };
+                    string n = Str(e, "name");
+                    c.Name = n.Length > 0 ? n : c.Title;
+                    if (c.Title.Length > 0) g.Contracts.Add(c);
+                }
             g.DynStampsRev = Long(root, "dynRev");
             if (root.TryGetProperty("dynStamps", out JsonElement ds) && ds.ValueKind == JsonValueKind.Array)
                 foreach (JsonElement d in ds.EnumerateArray())

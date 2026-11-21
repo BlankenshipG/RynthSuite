@@ -144,8 +144,8 @@ namespace RynthOracle.Tests
             var view = new OracleView(c);
             var host = new UiHost();
             UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
-            Check(view.GuideTabs().Contains(GuideTab.KillTasks) && view.GuideTabs().Count == 8, "kill tab: on Infinite Leaftide");
-            Check(!new OracleView(On("")).GuideTabs().Contains(GuideTab.KillTasks), "kill tab: not elsewhere");
+            Check(view.GuideTabs().Contains(GuideTab.KillTasks) && view.GuideTabs().Count == 10, "kill tab: on Infinite Leaftide");
+            Check(new OracleView(On("")).GuideTabs().Contains(GuideTab.KillTasks), "kill tab: on every server (2026-11-21)");
             c.Settings.QuestGuideView = true;
             c.Settings.TabName = OracleView.TabQuests;
             c.Guide.Take("{\"path\":" + System.Text.Json.JsonSerializer.Serialize(file) + ",\"revision\":1,\"count\":5,\"login\":true,\"running\":false,\"status\":\"ok\"}");

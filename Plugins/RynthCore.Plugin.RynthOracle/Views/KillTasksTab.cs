@@ -33,7 +33,7 @@ internal sealed partial class OracleView
     }
 
     /// <summary>The Kill Tasks list is on screen (the plugin reads /myquests again after kills while it is).</summary>
-    public bool KillTasksShowing => Tab == TabQuests && _c.Settings.QuestGuideView && _gTab == GuideTab.KillTasks && _c.Server.IsIlt;
+    public bool KillTasksShowing => Tab == TabQuests && _c.Settings.QuestGuideView && _gTab == GuideTab.KillTasks;
 
     /// <summary>
     /// The task's counter flag: one of its stamps that /myquests holds with a solve limit over 1 (a kill
@@ -118,9 +118,9 @@ internal sealed partial class OracleView
     {
         var order = new Dictionary<string, (int State, string Label)>(StringComparer.Ordinal);
         var named = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (GuideQuest q in _c.Guide.Guide.Quests)
+        foreach (GuideQuest q in _c.Wiki.Quests)
         {
-            if (!_c.Guide.Guide.IsKillTask(q)) continue;
+            if (!_c.Wiki.IsKillTask(q)) continue;
             KillProgress p = KillProgressOf(q);
             if (p.Counter != null) named.Add(p.Counter.Key);
             foreach (string st in q.AllStamps()) named.Add(st);
@@ -186,9 +186,9 @@ internal sealed partial class OracleView
     private void DrawKillSummary(UiWindow w)
     {
         int counting = 0, turnIn = 0, ready = 0;
-        foreach (GuideQuest q in _c.Guide.Guide.Quests)
+        foreach (GuideQuest q in _c.Wiki.Quests)
         {
-            if (!_c.Guide.Guide.IsKillTask(q)) continue;
+            if (!_c.Wiki.IsKillTask(q)) continue;
             switch (KillProgressOf(q).State)
             {
                 case KillState.Counting: counting++; break;

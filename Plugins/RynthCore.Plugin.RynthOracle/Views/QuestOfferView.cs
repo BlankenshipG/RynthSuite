@@ -28,7 +28,7 @@ internal sealed partial class OracleView
     {
         if (_offeredAt.TryGetValue(npc, out long at) && now - at < OfferRepeatMs) return false;
         var list = new List<GuideQuest>();
-        foreach (GuideQuest q in QuestOffers.StartedBy(_c.Guide.Guide.Quests, npc, text))
+        foreach (GuideQuest q in QuestOffers.StartedBy(_c.Wiki.Quests, npc, text))
         {
             if (_c.Runner?.Quest?.Title == q.Title || _offerDeclined.Contains(q.Title)) continue;
             if (WikiWait(q) > TimeSpan.Zero) continue;   // on its timer
@@ -76,7 +76,7 @@ internal sealed partial class OracleView
             w.SameLine();
             w.Button("Show", $"offer.show.{i}", () =>
             {
-                ShowGuide(_c.Server.IsIlt ? GuideTab.Wiki : GuideTab.All, "w:" + q.Title);
+                ShowGuide(GuideTab.Wiki, "w:" + q.Title);
                 ShowMainWindow?.Invoke();
             });
             w.Tooltip("Open it in the quest guide (its steps), without running it.");

@@ -25,6 +25,27 @@ internal sealed class OracleContext
     public readonly IltServerLink Ilt = new();
     /// <summary>The Leaftide wiki quest guide RynthILT keeps (Infinite Leaftide only: polled while Server.IsIlt).</summary>
     public readonly QuestGuideClient Guide = new();
+
+    /// <summary>
+    /// RynthOracle's own quest guide from the AC Community Wiki (asheron.fandom.com), on every server (2026-11-21).
+    /// Settable for the tests (a file of their own).
+    /// </summary>
+    public FandomFeed Fandom = new();
+
+    /// <summary>
+    /// The wiki guide in use: on Infinite Leaftide RynthILT's (its own wiki) once it has quests, else the AC
+    /// Community Wiki's.
+    /// </summary>
+    public QuestGuide Wiki => Server.IsIlt && Guide.Guide.Quests.Count > 0 ? Guide.Guide : Fandom.Guide;
+
+    /// <summary>The wiki in use is the AC Community Wiki's.</summary>
+    public bool WikiIsFandom => ReferenceEquals(Wiki, Fandom.Guide);
+
+    /// <summary>Goes up when either guide changes.</summary>
+    public int WikiRevision => unchecked(Guide.Revision * 7919 + Fandom.Revision);
+
+    /// <summary>A wiki quest by title: the guide in use, else the AC Community Wiki's (a contract's quest, a society quest).</summary>
+    public GuideQuest? FindWiki(string title) => Wiki.Find(title) ?? (WikiIsFandom ? null : Fandom.Guide.Find(title));
     /// <summary>"Run this quest": the wiki quest RynthNav is walking (set up by the plugin's Initialize).</summary>
     public QuestRunner? Runner;
     /// <summary>Stamps the server gave this session ("You've stamped X!"), as GuideStamp keys: done before /myquests says so.</summary>

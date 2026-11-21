@@ -119,12 +119,57 @@ internal static class WikiQuestParser
         return list;
     }
 
+    /// <summary>A contract's item page (2026-11-21, the AC Community Wiki): the {{Item}} box and a contract's name or category.</summary>
+    public static bool IsContractPage(string title, string? wikitext) =>
+        !string.IsNullOrEmpty(wikitext) && wikitext.IndexOf("{{Item", StringComparison.OrdinalIgnoreCase) >= 0
+        && (title.StartsWith("Contract for ", StringComparison.OrdinalIgnoreCase)
+            || wikitext.IndexOf("[[Category:Contracts", StringComparison.OrdinalIgnoreCase) >= 0);
+
+    private static readonly Regex FirstLinkRx = new(@"\[\[([^\[\]|#]+)(?:\|[^\[\]]*)?\]\]", RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A contract's item page (2026-11-21): {{Intro | Related Quests = [[Aerbax's Citadel]]}}, {{Item | Name, Description,
+    /// Recommended Level}}, and the notes' "Purchased from [[Hanadi the Barkeeper]] in the Sho hall ...".
+    /// </summary>
+    public static GuideContract ParseContract(string title, string wikitext, long rev = 0, string? wikiBase = null)
+    {
+        string text = RefRx.Replace(CommentRx.Replace(wikitext ?? "", ""), "").Replace("\r\n", "\n").Replace('\r', '\n');
+        var c = new GuideContract { Title = title.Trim(), Url = UrlOf(title.Trim(), wikiBase), Rev = rev };
+        Dictionary<string, string> item = TemplateParams(text, "Item");
+        Dictionary<string, string> intro = TemplateParams(text, "Intro");
+        string name = Clean(Param(item, "Name"));
+        c.Name = name.Length > 0 ? name : c.Title;
+        c.Description = Clean(Param(item, "Description"));
+        c.Level = Clean(Param(item, "Recommended Level", "Level"));
+        foreach (Match m in FirstLinkRx.Matches(Param(intro, "Related Quests", "Related Quest", "Quest")))
+        {
+            string t = m.Groups[1].Value.Trim().TrimStart(':');
+            if (t.Length > 0 && !c.Quests.Contains(t)) c.Quests.Add(t);
+        }
+        foreach (var (heading, lines) in Sections(text))
+        {
+            if (!heading.StartsWith("note", StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (string l in lines)
+            {
+                if (l.IndexOf("purchase", StringComparison.OrdinalIgnoreCase) < 0 && l.IndexOf("sold by", StringComparison.OrdinalIgnoreCase) < 0
+                    && l.IndexOf("given by", StringComparison.OrdinalIgnoreCase) < 0 && l.IndexOf("from [[", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                c.Where = Clean(l.TrimStart('*', '#', ':', ' '));
+                Match m = FirstLinkRx.Match(l);
+                if (m.Success) c.Npc = Clean("[[" + m.Groups[1].Value + "]]");
+                break;
+            }
+            if (c.Where.Length > 0) break;
+        }
+        return c;
+    }
+
     /// <summary>The page is a quest page (it has the Quest Summary box).</summary>
     public static bool IsQuestPage(string? wikitext) =>
         !string.IsNullOrEmpty(wikitext) && wikitext.IndexOf("{{Quest Summary", StringComparison.OrdinalIgnoreCase) >= 0;
 
     /// <summary>The page's address on the wiki.</summary>
-    public static string UrlOf(string title) => WikiBase + Uri.EscapeDataString(title.Replace(' ', '_')).Replace("%2F", "/");
+    public static string UrlOf(string title, string? wikiBase = null) =>
+        (wikiBase ?? WikiBase) + Uri.EscapeDataString(title.Replace(' ', '_')).Replace("%2F", "/");
 
     private static readonly Regex CommentRx = new(@"<!--.*?-->", RegexOptions.Singleline | RegexOptions.CultureInvariant);
     private static readonly Regex RefRx = new(@"<ref[^>/]*/>|<ref[^>]*>.*?</ref>", RegexOptions.Singleline | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -134,9 +179,9 @@ internal static class WikiQuestParser
     private static readonly Regex CategoryRx = new(@"\[\[\s*Category\s*:\s*([^\]|]+?)\s*(?:\|[^\]]*)?\]\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>Reads a quest page. <paramref name="title"/> is the page's title; <paramref name="rev"/> its revision id (0 unknown).</summary>
-    public static GuideQuest Parse(string title, string wikitext, long rev = 0)
+    public static GuideQuest Parse(string title, string wikitext, long rev = 0, string? wikiBase = null)
     {
-        var q = new GuideQuest { Title = title.Trim(), Url = UrlOf(title.Trim()), Rev = rev };
+        var q = new GuideQuest { Title = title.Trim(), Url = UrlOf(title.Trim(), wikiBase), Rev = rev };
         string text = RefRx.Replace(CommentRx.Replace(wikitext ?? "", ""), "").Replace("\r\n", "\n").Replace('\r', '\n');
 
         foreach (Match m in CategoryRx.Matches(text))
@@ -158,6 +203,7 @@ internal static class WikiQuestParser
         q.TimeToComplete = Clean(Param(box, "Time to Complete"));
         q.Contracts = Clean(Param(box, "Contracts"));
         q.Qb = FirstInt(Clean(Param(box, "QB", "Quest Bonus")));
+        q.SocietyRank = Clean(Param(box, "Society Rank"));
 
         List<(string Heading, List<string> Lines)> sections = Sections(text);
         string overview = "";
@@ -553,7 +599,8 @@ internal static class WikiQuestParser
     {
         if (string.IsNullOrWhiteSpace(repeat)) return 0;
         string r = repeat.Trim().ToLowerInvariant();
-        if (r is "none" or "n/a" or "na" or "-" or "once" or "no" or "never" || r.StartsWith("one time") || r.StartsWith("one-time") || r.StartsWith("not repeatable")) return 0;
+        if (r is "none" or "n/a" or "na" or "-" or "once" or "no" or "never" || r.StartsWith("one time") || r.StartsWith("one-time") || r.StartsWith("not repeatable")
+            || r.StartsWith("non repeatable") || r.StartsWith("non-repeatable") || r.StartsWith("nonrepeatable") || r.StartsWith("unrepeatable")) return 0;
         if (r.StartsWith("daily")) return 86400;
         if (r.StartsWith("weekly")) return 7 * 86400;
         long total = 0;

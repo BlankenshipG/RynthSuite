@@ -129,7 +129,7 @@ namespace RynthOracle.Tests
             var view = new OracleView(c);
             var host = new UiHost();
             UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
-            Check(view.GuideTabs().Count == 8, "guide: eight tabs on Infinite Leaftide (Kill Tasks since 2026-11-21)");
+            Check(view.GuideTabs().Count == 10, "guide: ten tabs on Infinite Leaftide (Kill Tasks, Society and Contracts since 2026-11-21)");
             c.Settings.QuestGuideView = true;
             c.Settings.TabName = OracleView.TabQuests;
 
@@ -262,11 +262,11 @@ namespace RynthOracle.Tests
             Check(!body.Contains("###g.r.w:\"Pistol\"") && body.Contains("###g.r.w:Mistreated Virindi"), "guide: Hide collected leaves out a quest with every stamp");
             c.Settings.GuideHideCollected = false;
 
-            // Off Infinite Leaftide: the quest list only, four tabs, the flag list a click away.
+            // Off Infinite Leaftide: the wiki tabs too (the AC Community Wiki: none read here), the flag list a click away.
             c.Server.Force("", "Coldeve");
-            Check(view.GuideTabs().Count == 4, "guide: four tabs elsewhere");
+            Check(view.GuideTabs().Count == 8 && !view.GuideTabs().Contains(GuideTab.Qb) && !view.GuideTabs().Contains(GuideTab.Stamps), "guide: eight tabs elsewhere (the wiki tabs, not QB or Stamps)");
             body = Frame(host, main, view, "guide, retail");
-            Check(!body.Contains("###g.r.w:") && body.Contains("###q.view.flags"), "guide: no wiki quests off ILT; the Flag list switch");
+            Check(!body.Contains("###g.r.w:") && body.Contains("###q.view.flags"), "guide: no ILT wiki quests off ILT (the AC Wiki has none here); the Flag list switch");
             c.Settings.QuestGuideView = false;
             File.Delete(file);
         }

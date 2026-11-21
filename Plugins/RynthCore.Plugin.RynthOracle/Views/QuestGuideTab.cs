@@ -14,11 +14,11 @@ using RynthCore.Plugin.RynthOracle.Ui;
 namespace RynthCore.Plugin.RynthOracle.Views;
 
 /// <summary>The guide view's tabs.</summary>
-internal enum GuideTab { All, Story, Dailies, Weekly, Qb, Wiki, Stamps, KillTasks }
+internal enum GuideTab { All, Story, Dailies, Weekly, Qb, Wiki, Stamps, KillTasks, Society, Contracts }
 
 internal sealed partial class OracleView
 {
-    private static readonly string[] GuideTabNames = { "All", "Story", "Dailies", "Weekly", "QB", "ILT Wiki", "Stamps", "Kill Tasks" };
+    private static readonly string[] GuideTabNames = { "All", "Story", "Dailies", "Weekly", "QB", "Wiki", "Stamps", "Kill Tasks", "Society", "Contracts" };
     private const int GuidePageSize = 60;
     private const int GuideLabelChars = 48;
     private const int ColText = 0;   // ImGuiCol_Text
@@ -47,15 +47,25 @@ internal sealed partial class OracleView
         public string Area = "";
         /// <summary>A kill counter only /myquests knows (the Kill Tasks list).</summary>
         public QuestFlag? Flag;
+        /// <summary>A contract (the Contracts list).</summary>
+        public GuideContract? C;
     }
 
-    /// <summary>The tabs this server has: QB, ILT Wiki and Stamps only on Infinite Leaftide. Internal for the tests.</summary>
+    /// <summary>
+    /// The tabs this server has (internal for the tests). Since 2026-11-21 the wiki tabs are on every server: Wiki
+    /// (every wiki quest), Kill Tasks, Society and Contracts, from the AC Community Wiki (RynthILT's wiki on
+    /// Infinite Leaftide). QB and Stamps stay Infinite Leaftide's.
+    /// </summary>
     internal List<GuideTab> GuideTabs()
     {
-        var tabs = new List<GuideTab> { GuideTab.All, GuideTab.Story, GuideTab.Dailies, GuideTab.Weekly };
-        if (_c.Server.IsIlt) { tabs.Add(GuideTab.KillTasks); tabs.Add(GuideTab.Qb); tabs.Add(GuideTab.Wiki); tabs.Add(GuideTab.Stamps); }
+        var tabs = new List<GuideTab> { GuideTab.All, GuideTab.Story, GuideTab.Dailies, GuideTab.Weekly, GuideTab.Wiki,
+                                        GuideTab.KillTasks, GuideTab.Society, GuideTab.Contracts };
+        if (_c.Server.IsIlt) { tabs.Add(GuideTab.Qb); tabs.Add(GuideTab.Stamps); }
         return tabs;
     }
+
+    /// <summary>The tabs on the second row: the wiki's lists.</summary>
+    private static bool SecondRow(GuideTab t) => t is GuideTab.KillTasks or GuideTab.Society or GuideTab.Contracts or GuideTab.Qb or GuideTab.Stamps;
 
     /// <summary>Opens a guide tab (and the guide view). Internal for the tests and /ro.</summary>
     internal void ShowGuide(GuideTab tab, string? select = null)
@@ -180,10 +190,17 @@ internal sealed partial class OracleView
     {
         List<GuideTab> tabs = GuideTabs();
         if (!tabs.Contains(_gTab)) _gTab = GuideTab.All;
+        bool second = false;
         foreach (GuideTab t in tabs)
         {
             GuideTab tab = t;
-            w.ToggleButton(GuideTabNames[(int)t], "g.tab." + (int)t, _gTab == t, () => { _gTab = tab; _gPage = 0; });
+            if (SecondRow(t) && !second)
+            {
+                second = true;
+                w.Dummy(0f, 0f);   // ends the first row (the SameLine before it)
+            }
+            string name = t == GuideTab.Wiki ? (_c.WikiIsFandom ? "AC Wiki" : "ILT Wiki") : GuideTabNames[(int)t];
+            w.ToggleButton(name, "g.tab." + (int)t, _gTab == t, () => { _gTab = tab; _gPage = 0; });
             w.SameLine();
         }
         w.Checkbox("Hide collected", "g.hide", _c.Settings.GuideHideCollected, v =>
@@ -195,7 +212,8 @@ internal sealed partial class OracleView
         w.Tooltip("Leave out the quests whose stamps you all hold (and stamps you have).");
         w.SameLine();
         w.Button("Refresh", "g.refresh", () => _gMsg = GuideRefresh());
-        w.Tooltip("Reads your quest flags again (/myquests)" + (_c.Server.IsIlt ? ", and the wiki's quests (RynthILT)." : "."));
+        w.Tooltip("Reads your quest flags again (/myquests), and the wiki's quests: the AC Community Wiki"
+                  + (_c.Server.IsIlt ? " and RynthILT's." : "."));
 
         w.InputText("##g.search", "g.search", _gSearch, 64, s => { _gSearch = s; _gPage = 0; });
         w.Tooltip("Words to find: a quest's name, NPC, place, items or stamps.");
@@ -203,6 +221,7 @@ internal sealed partial class OracleView
         DrawGuideSource(w);
         if (_gMsg.Length > 0) w.TextDisabled(_gMsg);
         if (_gTab == GuideTab.KillTasks) DrawKillSummary(w);
+        if (_gTab == GuideTab.Contracts) w.TextDisabled($"Contracts: {_c.Fandom.Guide.Contracts.Count} on the AC Community Wiki; the quest each is for opens with Open, and Run this quest runs it.");
         if (_gTab == GuideTab.Stamps)
             w.TextDisabled(DynamicStampList.Source == "wiki"
                 ? $"Stamps: the wiki's Dynamic Stamps page ({DynamicStampList.All.Count} stamps in {DynamicStampList.Areas.Count} places)"
@@ -235,7 +254,8 @@ internal sealed partial class OracleView
             }
         }
         if (rows.Count == 0)
-            w.TextDisabled(_gTab is GuideTab.Wiki or GuideTab.KillTasks && _c.Guide.Guide.Quests.Count == 0 ? "No wiki quests yet (see above)." : "Nothing matches.");
+            w.TextDisabled(_gTab is GuideTab.Wiki or GuideTab.KillTasks or GuideTab.Society or GuideTab.Contracts && _c.Wiki.Quests.Count == 0
+                ? "No wiki quests yet (see above)." : "Nothing matches.");
         w.EndChild();
 
         w.SameLine();
@@ -246,16 +266,28 @@ internal sealed partial class OracleView
         else if (sel.Q != null) DrawGuideCatalogQuest(w, sel.Q);
         else if (sel.Area.Length > 0) DrawStampArea(w, sel.Area);
         else if (sel.Flag != null) DrawKillFlag(w, sel.Flag);
+        else if (sel.C != null) DrawContract(w, sel.C);
         w.EndChild();
     }
 
-    /// <summary>Where the wiki's quests come from, one line (ILT); the master list's count elsewhere.</summary>
+    /// <summary>
+    /// Where the wiki's quests come from, one line: the AC Community Wiki (every server, 2026-11-21), or on
+    /// Infinite Leaftide RynthILT's wiki once it has quests.
+    /// </summary>
     private void DrawGuideSource(UiWindow w)
     {
-        if (!_c.Server.IsIlt)
+        if (!_c.Server.IsIlt || _c.Guide.Guide.Quests.Count == 0 && !_c.Guide.Running)
         {
-            w.TextDisabled($"{_c.Catalog.KnownCount} quests in the quest list");
-            return;
+            FandomFeed f = _c.Fandom;
+            string ft = f.Running ? "AC Wiki: " + f.Status
+                : f.Guide.Quests.Count > 0 ? $"AC Wiki: {f.Guide.Quests.Count} quests, {f.Guide.Contracts.Count} contracts, read {f.Guide.UpdatedUtc.ToLocalTime():MM-dd HH:mm}"
+                : "AC Wiki: " + f.Status;
+            w.TextDisabled(Cut(ft, 70));
+            w.Tooltip("The quests, kill tasks, society quests and contracts of the AC Community Wiki (asheron.fandom.com),\n"
+                      + "read by RynthOracle at login once a day, and by Refresh. " + f.Status
+                      + (_c.Server.IsIlt ? "\nOn this server, RynthILT's own wiki is used once it has been read." : ""));
+            if (!_c.Server.IsIlt) return;
+            w.SameLine();
         }
         QuestGuideClient g = _c.Guide;
         if (!g.Available)
@@ -280,6 +312,7 @@ internal sealed partial class OracleView
         string msg = _c.RequestQuests() ? "Reading your quest flags..." : "Quest flags: not now (the server allows one /myquests a minute).";
         if (_c.Server.IsIlt && _c.Guide.Available && _c.Guide.LoginSaved && !_c.Guide.Running)
             msg += _c.Guide.Command("refresh") ? " Reading the wiki too." : "";
+        if (_c.Fandom.Start()) msg += " Reading the AC Community Wiki.";
         return msg;
     }
 
@@ -287,7 +320,8 @@ internal sealed partial class OracleView
 
     private GuideRow? FindGuideRow(string key)
     {
-        if (key.StartsWith("w:", StringComparison.Ordinal) && _c.Guide.Guide.Find(key.Substring(2)) is GuideQuest q) return WikiRow(q);
+        if (key.StartsWith("w:", StringComparison.Ordinal) && _c.FindWiki(key.Substring(2)) is GuideQuest q) return WikiRow(q);
+        if (key.StartsWith("c:", StringComparison.Ordinal) && _c.Fandom.Guide.Contracts.Find(x => x.Title == key.Substring(2)) is GuideContract gc) return ContractRow(gc);
         if (key.StartsWith("k:", StringComparison.Ordinal) && _c.Flags.TryGet(key.Substring(2), out QuestFlag kf))
             return new GuideRow { Key = key, Label = FlagLabel(kf.Key), Flag = kf };
         if (key.StartsWith("q:", StringComparison.Ordinal) && _c.Catalog.TryGet(key.Substring(2), out Quest cq)) return CatalogRow(cq);
@@ -297,7 +331,7 @@ internal sealed partial class OracleView
     private List<GuideRow> GuideRows()
     {
         HeldStamps();
-        string key = $"{_gTab}|{_gSearch}|{_c.Settings.GuideHideCollected}|{_c.Server.IsIlt}|{_c.Guide.Revision}|{_c.Catalog.Revision}|{_heldKey}|{_c.Kills.Revision}|{DynamicStampList.Revision}|{_c.UtcNow:yyyyMMddHHmm}";
+        string key = $"{_gTab}|{_gSearch}|{_c.Settings.GuideHideCollected}|{_c.Server.IsIlt}|{_c.WikiRevision}|{_c.Catalog.Revision}|{_heldKey}|{_c.Kills.Revision}|{DynamicStampList.Revision}|{_c.UtcNow:yyyyMMddHHmm}";
         if (key == _gRowsKey) return _gRows;
         _gRowsKey = key;
         _gRows.Clear();
@@ -334,10 +368,19 @@ internal sealed partial class OracleView
             KillTaskRows(terms, hide);
             return _gRows;
         }
+        if (_gTab == GuideTab.Society)
+        {
+            SocietyRows(terms, hide);
+            return _gRows;
+        }
+        if (_gTab == GuideTab.Contracts)
+        {
+            ContractRows(terms, hide);
+            return _gRows;
+        }
 
         var wikiNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (_c.Server.IsIlt)
-            foreach (GuideQuest q in _c.Guide.Guide.Quests)
+        foreach (GuideQuest q in _c.Wiki.Quests)
             {
                 wikiNames.Add(q.Title);
                 if (!WikiInTab(q, _gTab)) continue;
@@ -404,7 +447,22 @@ internal sealed partial class OracleView
             }
         }
         var r = new GuideRow { Key = "w:" + q.Title, Label = q.Title, W = q };
-        if (all == 0) { r.Status = "no stamps"; r.Color = UiColors.Grey; return r; }
+        if (all == 0)
+        {
+            // No stamps on the page (the AC Community Wiki has none, 2026-11-21): the quest list's flag of the same
+            // name says where it stands, when there is one.
+            if (CatalogByName(q.Title) is Quest cq)
+            {
+                GuideRow cr = CatalogRow(cq);
+                r.Done = cr.Done;
+                r.Status = cr.Status;
+                r.Color = cr.Color;
+                return r;
+            }
+            r.Status = "no stamps";
+            r.Color = UiColors.Grey;
+            return r;
+        }
         r.Done = done == all;
         if (r.Done)
         {
@@ -431,6 +489,23 @@ internal sealed partial class OracleView
                 if (left > wait) wait = left;
             }
         return wait;
+    }
+
+    private Dictionary<string, Quest> _catalogByName = new(StringComparer.OrdinalIgnoreCase);
+    private int _catalogByNameRev = -1;
+
+    /// <summary>The quest list's quest with this name (its display name), or null.</summary>
+    private Quest? CatalogByName(string name)
+    {
+        if (_catalogByNameRev != _c.Catalog.Revision)
+        {
+            var map = new Dictionary<string, Quest>(StringComparer.OrdinalIgnoreCase);
+            foreach (Quest q in _c.Catalog.Quests)
+                if (!q.IsNew && q.DisplayName.Length > 0) map.TryAdd(q.DisplayName, q);
+            _catalogByName = map;
+            _catalogByNameRev = _c.Catalog.Revision;
+        }
+        return _catalogByName.TryGetValue(name, out Quest? found) ? found : null;
     }
 
     private GuideRow CatalogRow(Quest q)
@@ -481,7 +556,7 @@ internal sealed partial class OracleView
         if (q.Qb > 0) facts.Add("QB " + q.Qb.ToString(CultureInfo.InvariantCulture));
         if (q.TimeToComplete.Length > 0) facts.Add(q.TimeToComplete);
         if (facts.Count > 0) w.TextDisabled(string.Join("  |  ", facts));
-        if (_c.Server.IsIlt && _c.Guide.Guide.IsKillTask(q)) DrawKillLine(w, q);
+        if (_c.Wiki.IsKillTask(q) || _c.Fandom.Guide.IsKillTask(q)) DrawKillLine(w, q);
 
         // Run this quest / its controls.
         if (!runningThis)
