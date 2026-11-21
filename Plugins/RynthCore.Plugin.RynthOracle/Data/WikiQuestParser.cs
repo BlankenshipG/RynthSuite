@@ -175,9 +175,11 @@ internal static class WikiQuestParser
             else if (h.StartsWith("walkthrough") || h == "steps" || h.StartsWith("quest steps") || h == "notes" && walk == null)
                 walk = lines;
             else if (h.Contains("stamp"))
+            {
                 foreach (string l in lines)
                     foreach (Match m in StampRx.Matches(l))
                         if (GuideStamp.Clean(m.Groups[1].Value) is { Length: > 0 } ls) looseStamps.Add(ls);
+            }
             else if (h.StartsWith("reward"))
                 q.Rewards = Rewards(string.Join("\n", lines));
         }
