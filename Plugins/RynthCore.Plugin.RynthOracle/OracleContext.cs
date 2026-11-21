@@ -31,6 +31,8 @@ internal sealed class OracleContext
     public readonly System.Collections.Generic.HashSet<string> SessionStamps = new(StringComparer.Ordinal);
     /// <summary>Goes up when <see cref="SessionStamps"/> grows.</summary>
     public int SessionStampRevision;
+    /// <summary>Kill tasks' kill lines this session (the Kill Tasks tab, 2026-11-21).</summary>
+    public readonly KillChat Kills = new();
     /// <summary>Sends a RynthAi command through the plugin-command broker (action, value); false without RynthAi.</summary>
     public Func<string, string, bool> SendAi = (_, _) => false;
     /// <summary>RynthILT's data interface: the Temple guardians (Infinite Leaftide only).</summary>

@@ -28,6 +28,13 @@ internal static class WikiQuestParser
 {
     public const string WikiBase = "https://www.leaftidewiki.com/";
 
+    /// <summary>
+    /// This reader's version, saved in the guide (QuestGuide.Parser). Raise it when the reader changes what
+    /// it takes from a page: RynthILT then reads every page again, not only the ones edited since.
+    /// 2: stamps cut to the flag ("X on first completion"), kill tasks (2026-11-21).
+    /// </summary>
+    public const int Version = 2;
+
     /// <summary>The page is a quest page (it has the Quest Summary box).</summary>
     public static bool IsQuestPage(string? wikitext) =>
         !string.IsNullOrEmpty(wikitext) && wikitext.IndexOf("{{Quest Summary", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -85,7 +92,8 @@ internal static class WikiQuestParser
                 walk = lines;
             else if (h.Contains("stamp"))
                 foreach (string l in lines)
-                    foreach (Match m in StampRx.Matches(l)) looseStamps.Add(m.Groups[1].Value.Trim());
+                    foreach (Match m in StampRx.Matches(l))
+                        if (GuideStamp.Clean(m.Groups[1].Value) is { Length: > 0 } ls) looseStamps.Add(ls);
             else if (h.StartsWith("reward"))
                 q.Rewards = Rewards(string.Join("\n", lines));
         }
@@ -221,7 +229,7 @@ internal static class WikiQuestParser
     {
         foreach (Match m in StampRx.Matches(raw))
         {
-            string st = m.Groups[1].Value.Trim();
+            string st = GuideStamp.Clean(m.Groups[1].Value);
             if (st.Length > 0 && !s.Stamps.Exists(x => GuideStamp.Key(x) == GuideStamp.Key(st))) s.Stamps.Add(st);
         }
         foreach (Match m in ItemRx.Matches(raw))

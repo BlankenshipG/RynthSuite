@@ -72,6 +72,64 @@ internal sealed class GuideQuest
     public bool IsWeekly => RepeatSec > 26 * 3600 && RepeatSec <= 31L * 86400;
     /// <summary>A one-time (story) quest: no repeat timer given.</summary>
     public bool IsOneTime => RepeatSec == 0;
+
+    /// <summary>
+    /// A kill task (2026-11-21): the Quest Summary box says "Kill Task = Yes" (150 pages), or, when the box
+    /// doesn't say, the title does ("... Kill Task", "... Killtask", "Kill: ..."). "Kill Task = False" is not one.
+    /// </summary>
+    public bool IsKillTask
+    {
+        get
+        {
+            string k = KillTask.Trim();
+            if (k.Length > 0)
+                return k.StartsWith("y", StringComparison.OrdinalIgnoreCase) || k.StartsWith("t", StringComparison.OrdinalIgnoreCase);
+            return Title.Contains("Kill Task", StringComparison.OrdinalIgnoreCase)
+                   || Title.Contains("Killtask", StringComparison.OrdinalIgnoreCase)
+                   || Title.StartsWith("Kill:", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex KillCountRx = new(
+        @"\b(?:kill|slay|hunt(?:\s+down)?|defeat|destroy)\s+(?:a\s+total\s+of\s+)?(?<n>\d{1,5})\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>How many kills the walkthrough asks for ("Kill 100 Drudge Lurkers."), from its first step that says; 0 when none does.</summary>
+    public int KillTarget
+    {
+        get
+        {
+            foreach (GuideStep s in Steps)
+            {
+                System.Text.RegularExpressions.Match m = KillCountRx.Match(s.Text);
+                if (m.Success && int.TryParse(m.Groups["n"].Value, System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out int n) && n > 0) return n;
+            }
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// The creature a kill task names, as a GuideStamp key ("Drudge Lurker Kill Task" -> "drudgelurker",
+    /// "Kill: Rynthid Minions" -> "rynthidminion"): matches the server's kill chat and counter flags.
+    /// </summary>
+    public string KillCreatureKey
+    {
+        get
+        {
+            string t = Title;
+            foreach (string cut in new[] { "Kill Task", "Killtask", "Kill:" })
+                t = t.Replace(cut, " ", StringComparison.OrdinalIgnoreCase);
+            return KillKey(t);
+        }
+    }
+
+    /// <summary>A creature name as a key, without a plural "s" ("Rynthid Minions" -> "rynthidminion").</summary>
+    public static string KillKey(string name)
+    {
+        string k = GuideStamp.Key(name);
+        return k.Length > 4 && k.EndsWith('s') ? k[..^1] : k;
+    }
 }
 
 /// <summary>Stamp names as the server and the wiki write them, compared alike.</summary>
@@ -85,6 +143,27 @@ internal static class GuideStamp
         foreach (char ch in stamp)
             if (char.IsLetterOrDigit(ch)) sb.Append(char.ToLowerInvariant(ch));
         return sb.ToString();
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex Qualifier = new(
+        @"^(?<stamp>\S+)\s+(?:(?:on|after|when|at|for|per|if|once|each|every|until|then|from)\b|\().*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A stamp as the wiki writes it inside {{stamped|...}}, cut to the flag itself (2026-11-21). 125 pages
+    /// write "KillTaskDrudgeLurkers_0507 on first completion" and three "You've stamped GleeqeoStart!"; the
+    /// words after the flag made the stamp never match /myquests, so every kill task's counter step stayed
+    /// unticked. A stamp of plain words with spaces ("Shiny Red Stone Found") is left alone.
+    /// </summary>
+    public static string Clean(string? stamp)
+    {
+        if (string.IsNullOrWhiteSpace(stamp)) return "";
+        string s = stamp.Trim();
+        if (FromChat(s) is string chat) s = chat;
+        else if (s.StartsWith("stamped ", StringComparison.OrdinalIgnoreCase)) s = s.Substring(8).Trim();
+        System.Text.RegularExpressions.Match m = Qualifier.Match(s);
+        if (m.Success) s = m.Groups["stamp"].Value;
+        return s.TrimEnd('!', '.', ',', ';', ':', ' ');
     }
 
     /// <summary>The stamp in the server's "You've stamped X!" line, or null.</summary>
@@ -105,6 +184,12 @@ internal sealed class QuestGuide
 {
     public const int Schema = 1;
     public static readonly QuestGuide Empty = new();
+
+    /// <summary>
+    /// The page reader that made the guide (WikiQuestParser.Version; 1 for a guide saved before 2026-11-21).
+    /// A guide from an older reader is read from the wiki again whole, not just the pages that changed.
+    /// </summary>
+    public int Parser = 1;
 
     /// <summary>"api" (the wiki's API with the player's bot password) or "export" (a Special:Export file).</summary>
     public string Source = "";
@@ -127,6 +212,7 @@ internal sealed class QuestGuide
         {
             w.WriteStartObject();
             w.WriteNumber("schema", Schema);
+            w.WriteNumber("parser", Parser);
             w.WriteString("source", Source);
             w.WriteString("updated", UpdatedUtc == DateTime.MinValue ? "" : UpdatedUtc.ToString("o"));
             w.WriteStartArray("quests");
@@ -195,7 +281,7 @@ internal sealed class QuestGuide
             using JsonDocument doc = JsonDocument.Parse(json);
             JsonElement root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return Empty;
-            var g = new QuestGuide { Source = Str(root, "source") };
+            var g = new QuestGuide { Source = Str(root, "source"), Parser = (int)Math.Max(1, Long(root, "parser")) };
             if (DateTime.TryParse(Str(root, "updated"), System.Globalization.CultureInfo.InvariantCulture,
                     System.Globalization.DateTimeStyles.RoundtripKind, out DateTime t))
                 g.UpdatedUtc = t.ToUniversalTime();
@@ -222,7 +308,7 @@ internal sealed class QuestGuide
                         Qb = (int)Long(e, "qb"),
                         Categories = Strs(e, "categories"),
                         Overview = Str(e, "overview"),
-                        ExtraStamps = Strs(e, "extraStamps"),
+                        ExtraStamps = Stamps(Strs(e, "extraStamps")),
                         Loot = Strs(e, "loot"),
                         Rewards = Strs(e, "rewards"),
                     };
@@ -236,7 +322,7 @@ internal sealed class QuestGuide
                                 Text = Str(s, "text"),
                                 Notes = Strs(s, "notes"),
                                 Coords = Strs(s, "coords"),
-                                Stamps = Strs(s, "stamps"),
+                                Stamps = Stamps(Strs(s, "stamps")),
                                 Items = Strs(s, "items"),
                             });
                         }
@@ -248,6 +334,18 @@ internal sealed class QuestGuide
         {
             return Empty;
         }
+    }
+
+    /// <summary>Stamps cleaned (GuideStamp.Clean) and each once: a guide saved by an older reader reads right at once.</summary>
+    private static List<string> Stamps(List<string> raw)
+    {
+        var list = new List<string>(raw.Count);
+        foreach (string r in raw)
+        {
+            string s = GuideStamp.Clean(r);
+            if (s.Length > 0 && !list.Exists(x => GuideStamp.Key(x) == GuideStamp.Key(s))) list.Add(s);
+        }
+        return list;
     }
 
     private static string Str(JsonElement o, string name) =>

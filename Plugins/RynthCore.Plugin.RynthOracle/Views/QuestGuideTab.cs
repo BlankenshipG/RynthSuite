@@ -14,11 +14,11 @@ using RynthCore.Plugin.RynthOracle.Ui;
 namespace RynthCore.Plugin.RynthOracle.Views;
 
 /// <summary>The guide view's tabs.</summary>
-internal enum GuideTab { All, Story, Dailies, Weekly, Qb, Wiki, Stamps }
+internal enum GuideTab { All, Story, Dailies, Weekly, Qb, Wiki, Stamps, KillTasks }
 
 internal sealed partial class OracleView
 {
-    private static readonly string[] GuideTabNames = { "All", "Story", "Dailies", "Weekly", "QB", "ILT Wiki", "Stamps" };
+    private static readonly string[] GuideTabNames = { "All", "Story", "Dailies", "Weekly", "QB", "ILT Wiki", "Stamps", "Kill Tasks" };
     private const int GuidePageSize = 60;
     private const int GuideLabelChars = 48;
     private const int ColText = 0;   // ImGuiCol_Text
@@ -45,13 +45,15 @@ internal sealed partial class OracleView
         public GuideQuest? W;
         public Quest? Q;
         public string Area = "";
+        /// <summary>A kill counter only /myquests knows (the Kill Tasks list).</summary>
+        public QuestFlag? Flag;
     }
 
     /// <summary>The tabs this server has: QB, ILT Wiki and Stamps only on Infinite Leaftide. Internal for the tests.</summary>
     internal List<GuideTab> GuideTabs()
     {
         var tabs = new List<GuideTab> { GuideTab.All, GuideTab.Story, GuideTab.Dailies, GuideTab.Weekly };
-        if (_c.Server.IsIlt) { tabs.Add(GuideTab.Qb); tabs.Add(GuideTab.Wiki); tabs.Add(GuideTab.Stamps); }
+        if (_c.Server.IsIlt) { tabs.Add(GuideTab.KillTasks); tabs.Add(GuideTab.Qb); tabs.Add(GuideTab.Wiki); tabs.Add(GuideTab.Stamps); }
         return tabs;
     }
 
@@ -200,6 +202,7 @@ internal sealed partial class OracleView
         w.SameLine();
         DrawGuideSource(w);
         if (_gMsg.Length > 0) w.TextDisabled(_gMsg);
+        if (_gTab == GuideTab.KillTasks) DrawKillSummary(w);
 
         List<GuideRow> rows = GuideRows();
         float total = w.ContentWidth > 0f ? w.ContentWidth : 680f;
@@ -228,7 +231,7 @@ internal sealed partial class OracleView
             }
         }
         if (rows.Count == 0)
-            w.TextDisabled(_gTab == GuideTab.Wiki && _c.Guide.Guide.Quests.Count == 0 ? "No wiki quests yet (see above)." : "Nothing matches.");
+            w.TextDisabled(_gTab is GuideTab.Wiki or GuideTab.KillTasks && _c.Guide.Guide.Quests.Count == 0 ? "No wiki quests yet (see above)." : "Nothing matches.");
         w.EndChild();
 
         w.SameLine();
@@ -238,6 +241,7 @@ internal sealed partial class OracleView
         else if (sel.W != null) DrawWikiQuest(w, sel.W);
         else if (sel.Q != null) DrawGuideCatalogQuest(w, sel.Q);
         else if (sel.Area.Length > 0) DrawStampArea(w, sel.Area);
+        else if (sel.Flag != null) DrawKillFlag(w, sel.Flag);
         w.EndChild();
     }
 
@@ -280,6 +284,8 @@ internal sealed partial class OracleView
     private GuideRow? FindGuideRow(string key)
     {
         if (key.StartsWith("w:", StringComparison.Ordinal) && _c.Guide.Guide.Find(key.Substring(2)) is GuideQuest q) return WikiRow(q);
+        if (key.StartsWith("k:", StringComparison.Ordinal) && _c.Flags.TryGet(key.Substring(2), out QuestFlag kf))
+            return new GuideRow { Key = key, Label = FlagLabel(kf.Key), Flag = kf };
         if (key.StartsWith("q:", StringComparison.Ordinal) && _c.Catalog.TryGet(key.Substring(2), out Quest cq)) return CatalogRow(cq);
         return null;
     }
@@ -287,7 +293,7 @@ internal sealed partial class OracleView
     private List<GuideRow> GuideRows()
     {
         HeldStamps();
-        string key = $"{_gTab}|{_gSearch}|{_c.Settings.GuideHideCollected}|{_c.Server.IsIlt}|{_c.Guide.Revision}|{_c.Catalog.Revision}|{_heldKey}|{_c.UtcNow:yyyyMMddHHmm}";
+        string key = $"{_gTab}|{_gSearch}|{_c.Settings.GuideHideCollected}|{_c.Server.IsIlt}|{_c.Guide.Revision}|{_c.Catalog.Revision}|{_heldKey}|{_c.Kills.Revision}|{_c.UtcNow:yyyyMMddHHmm}";
         if (key == _gRowsKey) return _gRows;
         _gRowsKey = key;
         _gRows.Clear();
@@ -316,6 +322,12 @@ internal sealed partial class OracleView
                     Status = done ? "Completed" : $"{have} / {all}", Color = done ? UiColors.Green : have > 0 ? UiColors.Yellow : UiColors.Grey,
                 });
             }
+            return _gRows;
+        }
+
+        if (_gTab == GuideTab.KillTasks)
+        {
+            KillTaskRows(terms, hide);
             return _gRows;
         }
 
@@ -465,6 +477,7 @@ internal sealed partial class OracleView
         if (q.Qb > 0) facts.Add("QB " + q.Qb.ToString(CultureInfo.InvariantCulture));
         if (q.TimeToComplete.Length > 0) facts.Add(q.TimeToComplete);
         if (facts.Count > 0) w.TextDisabled(string.Join("  |  ", facts));
+        if (q.IsKillTask && _c.Server.IsIlt) DrawKillLine(w, q);
 
         // Run this quest / its controls.
         if (!runningThis)

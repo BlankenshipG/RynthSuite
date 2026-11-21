@@ -75,6 +75,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     private int _titleCount = -2;
     private uint _titleCurrent;
     private long _nextAutoReadMs;
+    // A kill line came while the Kill Tasks tab was open: read /myquests again on the next allowed minute.
+    private bool _killReadWanted;
     private DateTime _seenReadUtc = DateTime.MinValue;
     // The server's "again in" wait not yet checked against a read made after it (the log line).
     private (TimeSpan Left, DateTime AtUtc)? _uncheckedServerWait;
@@ -230,6 +232,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         ClearCharacterExtras();
         _c.Runner?.Stop("ended at logout");
         _c.SessionStamps.Clear();
+        _c.Kills.Clear();
         ClearIlt();
     }
 
@@ -432,6 +435,13 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             _c.SessionStampRevision++;
             if (_main != null) _main.NeedsPass = true;
         }
+        // A kill task's kill line: the Kill Tasks tab shows the count at once; with the tab open, /myquests is
+        // read again (at most once a minute) so the counter flags follow (2026-11-21).
+        if (_c.Kills.OnChatLine(line, _c.UtcNow))
+        {
+            if (KillTasksOnScreen()) _killReadWanted = true;
+            if (_main != null) _main.NeedsPass = true;
+        }
         _c.Runner?.OnChat(line);
         _mainView?.OnDynChat(line);   // Dynamic Stamps' Go and hand in (2026-11-08)
 
@@ -624,14 +634,19 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         return tab == OracleView.TabQuests || tab == OracleView.TabAugs || tab == OracleView.TabSociety;
     }
 
+    /// <summary>The Oracle window shows the Quests tab's Kill Tasks list.</summary>
+    private bool KillTasksOnScreen() => _main?.Visible == true && _mainView != null && _mainView.KillTasksShowing;
+
     /// <summary>Re-reads /myquests when the flags are known stale, or old and on screen; at most once a minute.</summary>
     private void RereadIfStale(long now)
     {
         if (now < _nextAutoReadMs || !AutoRereads()) return;
         bool wanted = _c.Flags.RereadWanted;
-        if (!_c.Flags.NeedsReread(_c.UtcNow, TimersOnScreen())) return;
+        bool kills = _killReadWanted && KillTasksOnScreen() && _c.Flags.LastReadUtc != DateTime.MinValue && !_c.Flags.Loading && !_c.Flags.ServerDisabled;
+        if (!kills && !_c.Flags.NeedsReread(_c.UtcNow, TimersOnScreen())) return;
         _nextAutoReadMs = now + AutoReadGapMs;
-        string why = wanted
+        _killReadWanted = false;
+        string why = kills && !wanted ? "a kill task's kill came in with the Kill Tasks tab open" : wanted
             ? "the server turned a quest down, or a timer alert wants a fresh reading"
             : $"the quest timers are on screen and the flags were read {TimeText.Friendly(_c.UtcNow - _c.Flags.LastReadUtc)} ago";
         if (RequestQuests()) Host.Log($"[RynthOracle] Re-reading /myquests: {why}.");

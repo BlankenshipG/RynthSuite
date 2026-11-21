@@ -73,6 +73,7 @@ namespace RynthOracle.Tests
             AutoRefresh();
             Replies();
             WikiGuide();
+            KillTasks();
             QuestNamesTests();
             QuestDungeonTests();
             QuestInsideTests();

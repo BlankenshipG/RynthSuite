@@ -129,7 +129,7 @@ namespace RynthOracle.Tests
             var view = new OracleView(c);
             var host = new UiHost();
             UiWindow main = host.Add(new UiWindow("RynthOracle/Oracle", "Oracle") { Visible = true });
-            Check(view.GuideTabs().Count == 7, "guide: seven tabs on Infinite Leaftide");
+            Check(view.GuideTabs().Count == 8, "guide: eight tabs on Infinite Leaftide (Kill Tasks since 2026-11-21)");
             c.Settings.QuestGuideView = true;
             c.Settings.TabName = OracleView.TabQuests;
 
