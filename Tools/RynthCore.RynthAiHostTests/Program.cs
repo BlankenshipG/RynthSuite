@@ -129,6 +129,7 @@ internal static class Program
         UseRefusalTests.Register(runner);
         CorpseKillerTests.Register(runner);
         VitalsTests.Register(runner);
+        HandCastTests.Register(runner);
         MultiTargetTests.Register(runner);
         CastSafetyTests.Register(runner);
         HealLatencyTests.Register(runner);
@@ -226,6 +227,7 @@ internal static class Program
         BlankLoadTests.Register(runner);
         CallStateRepairTests.Register(runner);
         ProfileButtonTests.Register(runner);
+        MonsterProfileTests.Register(runner);
         GiveProfileTests.Register(runner);
         TinkerTests.Register(runner);
         LauncherSwapTests.Register(runner);
