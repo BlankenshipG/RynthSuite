@@ -138,6 +138,9 @@ namespace RynthOracle.Tests
                 Path.Combine("Data", "QuestGuideClient.cs"),
                 // 2026-11-11: the T11 Tracking tab (Infinite Leaftide only) toggles a charm through RynthILT's data interface.
                 Path.Combine("Views", "T11Tab.cs"),
+                // 2026-11-21: the ILT Tracker (the T11 Tracking tab renamed): ACECustom's quest bonus and QB Deeds read from
+                // RynthILT, and the Leaftide wiki login how-to, all on that Infinite Leaftide-only tab.
+                Path.Combine("Views", "IltTrackerTab.cs"), Path.Combine("Data", "QuestBonus.cs"), Path.Combine("Data", "IltWikiGuide.cs"),
             };
             int files = 0;
             var found = new System.Collections.Generic.List<string>();
