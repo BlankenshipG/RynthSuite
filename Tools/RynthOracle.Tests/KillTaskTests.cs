@@ -158,6 +158,9 @@ namespace RynthOracle.Tests
             Check(!body.Contains("###g.r.w:Mistreated Virindi") && !body.Contains("###g.r.w:Crown the Mad"), "kill tab: only kill tasks");
             Check(body.Contains("0 / 100") && body.Contains("0 / 25"), "kill tab: not started shows the goal");
             Check(body.Contains("Kills: not started (the task is 100 kills)"), "kill tab: the opened task's line");
+            // 2026-11-22: each kill task says first time or done before.
+            Check(body.Contains("(first time)") && body.Contains("First time: no stamp or flag of this kill task held yet.") && !body.Contains("Done before:"),
+                "kill tab: nothing held: every task is the first time");
 
             // /myquests: the counter flag at 37 of 100.
             long at = new DateTimeOffset(t.AddMinutes(-30)).ToUnixTimeSeconds();
@@ -182,6 +185,7 @@ namespace RynthOracle.Tests
             Check(body.Contains("3 / 50"), "kill tab: a task the wiki lists no stamps for finds its counter by the creature");
             Check(body.Contains("###g.r.k:killtaskoldtumeroks_0101") && body.Contains("12 / 40"), "kill tab: a counter no wiki task names is listed too");
             Check(body.Contains("Kill tasks: 2 counting, 1 to turn in"), "kill tab: the summary line");
+            Check(body.Contains("(first time)") && !body.Contains("(done before)"), "kill tab: counting and the start flag don't make it done before");
             int iTurn = body.IndexOf("###g.r.w:Kill: Rynthid Minions", StringComparison.Ordinal), iCount = body.IndexOf("###g.r.w:Drudge Lurker Kill Task", StringComparison.Ordinal);
             Check(iTurn >= 0 && iCount > iTurn, "kill tab: to turn in first, then counting");
 
@@ -195,6 +199,7 @@ namespace RynthOracle.Tests
             Read(flags.Append($"killtaskrynthidminionscompleted0813 - 1 solves ({now})\"x\" -1 72000").ToArray());
             body = Frame(host, main, view, "kill tasks, turned in");
             Check(body.Contains("Done 20h") || body.Contains("Done 19h 59m"), "kill tab: a turned-in task waits on its timer");
+            Check(body.Contains("Done before: a stamp or flag of this kill task is held"), "kill tab: a turned-in task is done before");
 
             // Hide collected leaves the waiting one out.
             c.Settings.GuideHideCollected = true;

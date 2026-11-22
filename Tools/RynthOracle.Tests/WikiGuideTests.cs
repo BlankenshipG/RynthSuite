@@ -144,7 +144,7 @@ namespace RynthOracle.Tests
             view.ShowGuide(GuideTab.Wiki, "w:Mistreated Virindi");
             body = Frame(host, main, view, "guide, ILT Wiki", out int ops);
             Check(body.Contains("###g.r.w:Mistreated Virindi") && body.Contains("###g.r.w:\"Pistol\" Pete Trophy Hunts"), "guide: both wiki quests listed");
-            Check(body.Contains("0 / 6") && body.Contains("0 / 4"), "guide: stamps held of all, per quest");
+            Check(body.Contains("Not done") && body.Contains("Not done: none of its 6 stamps held yet."), "guide: no stamp held: Not done");
             Check(body.Contains("Daily (every 20h 00m)") && body.Contains("Run this quest") && body.Contains("Loot map (3)"), "guide: timer, Run, Loot map");
             Check(body.Contains("Starts with Mistreated Virindi at Zaikhal") && body.Contains("###g.start.go"), "guide: where it starts, with Go");
             Check(body.Contains("2. Run to the Hidden Infiltrator Keep") && body.Contains("Go 28.5S, 90.9W"), "guide: numbered steps with their Go buttons");
@@ -158,7 +158,7 @@ namespace RynthOracle.Tests
             c.SessionStamps.Add(GuideStamp.Key("Sneaky_Virindi"));
             c.SessionStampRevision++;
             body = Frame(host, main, view, "guide, a stamp");
-            Check(body.Contains("[x] You've stamped Sneaky_Virindi!") && body.Contains("1 / 6"), "guide: a held stamp is ticked and counted");
+            Check(body.Contains("[x] You've stamped Sneaky_Virindi!") && body.Contains("1/6 ready"), "guide: a held stamp is ticked and counted (partly done, timer up)");
             Check(body.Contains("[x] 1. Talk to") && body.Contains("[>] 2. Run to the Hidden Infiltrator Keep"), "guide: step 1 done, step 2 next");
             Check(body.Contains("1 of 6 stamps done this run") && !body.Contains("Sneaky_Virindi (step 1)"), "guide: the done stamp leaves the still-to-get list");
 
@@ -178,6 +178,9 @@ namespace RynthOracle.Tests
             Check(body.Contains("Blind_Revenge - done on an earlier run; ready again") && body.Contains("Blind_Revenge (step 8, done before: ready again)"),
                 "guide: a daily stamped 30 h ago is ready again, not done ({c.Flags.Flags.Count} flags)");
             Check(body.Contains("[x] You've stamped Powerful_Blood_Obtained!"), "guide: one stamped 2 h ago (20 h timer) is done");
+            // The four states (2026-11-22): 4 of 6 held, one of them inside its 20 h timer: partly done, waiting.
+            Check((body.Contains("4/6 wait 18h") || body.Contains("4/6 wait 17h 5")) && body.Contains("Partly done: 4 of 6 stamps held, 2 still to get. The redo timer isn't up"),
+                "guide: partly done, the redo timer not up");
             c.SessionStamps.Remove(GuideStamp.Key("Shiny_Red_Stone_Found"));   // the run below starts before step 3
             c.SessionStampRevision++;
 

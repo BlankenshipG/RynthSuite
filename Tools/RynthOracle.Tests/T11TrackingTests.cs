@@ -26,6 +26,29 @@ namespace RynthOracle.Tests
             Check(!T11Tracking.ParseCharm("Charm [Tier 2/3]").Known, "t11: a tiered charm isn't levelled");
             Check(T11Tracking.InfusionGems[777700097] == 5000 && T11Tracking.IsLumToken(777708004) && T11Tracking.IsLumToken(99980079), "t11: the gem and token tables");
             QuestBonusTests();
+            GuideProgressTests();
+        }
+
+        // The guide's four states and the kill task tag (2026-11-22).
+        private static void GuideProgressTests()
+        {
+            var h5 = System.TimeSpan.FromHours(5);
+            Check(GuideProgress.Of(0, 6, h5) == GuideProgressState.NotDone && GuideProgress.Of(0, 0, System.TimeSpan.Zero) == GuideProgressState.NotDone,
+                "states: nothing held is not done");
+            Check(GuideProgress.Of(6, 6, System.TimeSpan.Zero) == GuideProgressState.Done && GuideProgress.Of(6, 6, h5) == GuideProgressState.Done,
+                "states: every stamp held is done, timer or not");
+            Check(GuideProgress.Of(2, 6, h5) == GuideProgressState.PartialWaiting && GuideProgress.Of(2, 6, System.TimeSpan.Zero) == GuideProgressState.PartialReady,
+                "states: partly done, waiting or ready");
+            Check(GuideProgress.Text(GuideProgressState.PartialWaiting, 2, 6, h5, true).Status == "2/6 wait 5h"
+                  && GuideProgress.Text(GuideProgressState.PartialReady, 2, 6, System.TimeSpan.Zero, true).Status == "2/6 ready"
+                  && GuideProgress.Text(GuideProgressState.Done, 6, 6, System.TimeSpan.Zero, false).Status == "Done"
+                  && GuideProgress.Text(GuideProgressState.Done, 6, 6, System.TimeSpan.Zero, true).Status == "Done, redo"
+                  && GuideProgress.Text(GuideProgressState.Done, 6, 6, h5, true).Status == "Done 5h"
+                  && GuideProgress.Text(GuideProgressState.NotDone, 0, 6, System.TimeSpan.Zero, false).Status == "Not done",
+                "states: the list's words");
+            Check(GuideProgress.Short(System.TimeSpan.FromMinutes(90)) == "1h 30m" && GuideProgress.Short(System.TimeSpan.FromDays(3)) == "3d",
+                "states: short times");
+            Check(GuideProgress.KillTag(true).Tag == "Again" && GuideProgress.KillTag(false).Tag == "1st", "kill tag: again or 1st");
         }
 
         // The ILT Tracker's quest bonus (2026-11-21): ACECustom's /bonus and /qb lines, and the bonus levels.

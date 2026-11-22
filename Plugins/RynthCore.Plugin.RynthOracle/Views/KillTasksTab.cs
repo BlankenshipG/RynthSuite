@@ -4,6 +4,9 @@
 //  - the kills: the task's counter flag in /myquests ("KillTaskDrudgeLurkers_0507: 37 of 100"), else this
 //    session's kill line in chat ("You have killed 37 Drudge Lurkers! You must kill 100 ...");
 //  - "Turn in" once the kills are all made, "Done 5h" while its timer runs, "Ready" when it can be had again;
+//  - "1st" or "Again" (2026-11-22, Silentkelpie: "the kill task tab should flag if the kill task has been done before or
+//    if it is the 1st time"): done before when a stamp or flag of the task other than its live kill counter is held
+//    (/myquests, the account's /qb list, this session), the quest list's flag of its name is, or its timer runs;
 // and the kill counters /myquests holds that no wiki task names (so nothing the server counts is left out).
 // The opened task is the wiki quest view (its steps, Go, Run this quest) with the kill count on top.
 using System;
@@ -30,6 +33,36 @@ internal sealed partial class OracleView
         public bool FromChat;
         public string Status = "";
         public uint Color = UiColors.Grey;
+        /// <summary>The task was done before (else this is the first time).</summary>
+        public bool DoneBefore;
+    }
+
+    /// <summary>
+    /// Done before: a stamp of the task is held (any run: /myquests, the /qb list, this session) other than the ones a
+    /// first run holds too (its live kill counter, a "start" flag, the first step's), a kill task timer flag naming its
+    /// creature is in /myquests, or the quest list's flag of its name is.
+    /// </summary>
+    private bool KillDoneBefore(GuideQuest q, QuestFlag? counter)
+    {
+        // Not the stamps a first run holds too: the live counter, a "start" flag, the first step's (taking the task).
+        string counterKey = counter != null ? GuideStamp.Key(counter.Key) : "";
+        var first = new HashSet<string>(StringComparer.Ordinal);
+        if (q.Steps.Count > 1)
+            foreach (string st in q.Steps[0].Stamps) first.Add(GuideStamp.Key(st));
+        foreach (string st in q.AllStamps())
+        {
+            string k = GuideStamp.Key(st);
+            if (k == counterKey || first.Contains(k) || k.Contains("start", StringComparison.Ordinal)) continue;
+            if (StateOf(q, st) != StampState.Missing) return true;
+            // A flag of the task's on a redo timer: it was turned in.
+            if (StampFlag(st) is QuestFlag tf && tf.RepeatTime > TimeSpan.Zero && tf.MaxSolves <= 1) return true;
+        }
+        string key = q.KillCreatureKey;
+        if (key.Length >= 5)
+            foreach (QuestFlag f in _c.Flags.Flags.Values)
+                if (f.MaxSolves <= 1 && f.Solves > 0 && QuestTimer.IsKillTask(f) && GuideStamp.Key(f.Key).Contains(key, StringComparison.Ordinal))
+                    return true;
+        return CatalogByName(q.Title) is Quest cq && cq.IsComplete(_c.Flags);
     }
 
     /// <summary>The Kill Tasks list is on screen (the plugin reads /myquests again after kills while it is).</summary>
@@ -98,7 +131,7 @@ internal sealed partial class OracleView
             p.Status = "Completed";
             p.Color = UiColors.Green;
         }
-        else if (row.Status == "Ready" || row.Done || counter != null)
+        else if (row.State == GuideProgressState.Done || row.Done || counter != null)
         {
             p.State = KillState.Ready;
             p.Status = "Ready";
@@ -110,6 +143,7 @@ internal sealed partial class OracleView
             p.Status = p.Goal > 0 ? $"0 / {p.Goal}" : "Not started";
             p.Color = UiColors.Grey;
         }
+        p.DoneBefore = p.State is KillState.Waiting or KillState.Completed || KillDoneBefore(q, counter);
         return p;
     }
 
@@ -128,6 +162,7 @@ internal sealed partial class OracleView
             bool done = p.State is KillState.Waiting or KillState.Completed;
             if (hide && done) continue;
             var r = new GuideRow { Key = "w:" + q.Title, Label = q.Title, W = q, Done = done, Status = p.Status, Color = p.Color };
+            SetKillTag(r, p.DoneBefore);
             _gRows.Add(r);
             order[r.Key] = ((int)p.State, r.Label);
         }
@@ -155,6 +190,8 @@ internal sealed partial class OracleView
                 Status = ks == KillState.Counting ? $"{f.Solves} / {f.MaxSolves}" : ks == KillState.Waiting ? "Done " + text : ks == KillState.Completed ? "Completed" : "Ready",
                 Color = ks switch { KillState.Counting or KillState.Waiting => UiColors.Yellow, KillState.Completed or KillState.Ready => UiColors.Green, _ => UiColors.Grey },
             };
+            // A counter alone: its timer running or up says it was turned in before.
+            SetKillTag(r, ks is KillState.Waiting or KillState.Completed or KillState.Ready);
             _gRows.Add(r);
             order[r.Key] = ((int)ks, r.Label);
         }
@@ -165,6 +202,12 @@ internal sealed partial class OracleView
             (int sb, string lb) = order[b.Key];
             return sa != sb ? sa.CompareTo(sb) : string.Compare(la, lb, StringComparison.OrdinalIgnoreCase);
         });
+    }
+
+    private static void SetKillTag(GuideRow r, bool doneBefore)
+    {
+        (r.Tag, r.TagTip) = GuideProgress.KillTag(doneBefore);
+        r.TagColor = doneBefore ? UiColors.Green : UiColors.Gold;
     }
 
     /// <summary>"KillTaskDrudgeLurkers_0507" -> "Kill Task Drudge Lurkers 0507".</summary>
@@ -212,6 +255,8 @@ internal sealed partial class OracleView
               + (p.Goal > p.Kills ? $"  ({p.Goal - p.Kills} left)" : "")
             : p.Goal > 0 ? $"Kills: not started (the task is {p.Goal} kills)" : "Kills: not started";
         w.TextColored(p.Color, count + "  -  " + p.Status);
+        w.SameLine();
+        w.TextColored(p.DoneBefore ? UiColors.Green : UiColors.Gold, p.DoneBefore ? "(done before)" : "(first time)");
         string from = p.FromChat ? "from the last kill line in chat"
             : p.Counter != null ? $"from /myquests: {p.Counter.Key} ({p.Counter.Solves} of {p.Counter.MaxSolves})"
             : "no counter flag in /myquests yet (talk to " + (q.StartsWith.Length > 0 ? q.StartsWith : "the task's NPC") + " to start it)";

@@ -186,7 +186,7 @@ namespace RynthOracle.Tests
                 c.Flags.Tick(c.NowMs + 5_000);
                 view.ShowGuide(GuideTab.Wiki, "w:" + listed.DisplayName);
                 body = Frame(host, main, view, "fandom, catalog state");
-                Check(listed.IsComplete(c.Flags) && body.Contains("Completed"), "fandom tabs: a stampless quest's state from the quest list");
+                Check(listed.IsComplete(c.Flags) && body.Contains("Fully done: its flag is held"), "fandom tabs: a stampless quest's state from the quest list");
             }
             // A server's own wiki guide ("RynthServer.QuestGuide", RynthConquest's) over the AC Community Wiki's.
             c.Fandom.Use(back);

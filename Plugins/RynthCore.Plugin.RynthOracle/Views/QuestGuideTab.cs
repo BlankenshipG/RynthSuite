@@ -49,6 +49,14 @@ internal sealed partial class OracleView
         public QuestFlag? Flag;
         /// <summary>A contract (the Contracts list).</summary>
         public GuideContract? C;
+        /// <summary>The status's tooltip (the four states' sentence, 2026-11-22).</summary>
+        public string Tip = "";
+        /// <summary>The four states (a wiki or quest list row).</summary>
+        public GuideProgressState State;
+        /// <summary>A short tag before the status (a kill task's "1st" / "Again"), its colour and tooltip.</summary>
+        public string Tag = "";
+        public uint TagColor = UiColors.Grey;
+        public string TagTip = "";
     }
 
     /// <summary>
@@ -239,18 +247,30 @@ internal sealed partial class OracleView
         }
         else _gPage = 0;
         int start = _gPage * GuidePageSize;
-        float statusX = Math.Max(150f, leftW - 84f);
-        int chars = Math.Max(18, Math.Min(GuideLabelChars, (int)((statusX - 14f) / 6.2f)));
+        // The status column holds the four states ("3/5 wait 5h 12m", 2026-11-22); a kill task's tag sits before it.
+        float statusX = Math.Max(150f, leftW - 104f);
+        bool tags = false;
+        for (int i = start; i < rows.Count && i < start + GuidePageSize; i++) if (rows[i].Tag.Length > 0) { tags = true; break; }
+        float tagX = statusX - 40f;
+        float labelEnd = tags ? tagX : statusX;
+        int chars = Math.Max(16, Math.Min(GuideLabelChars, (int)((labelEnd - 14f) / 6.2f)));
         for (int i = start; i < rows.Count && i < start + GuidePageSize; i++)
         {
             GuideRow r = rows[i];
             string key = r.Key;
-            w.Selectable(Cut(r.Label, chars), "g.r." + key, key == _gSel, () => _gSel = key, statusX - 12f);
+            w.Selectable(Cut(r.Label, chars), "g.r." + key, key == _gSel, () => _gSel = key, labelEnd - 12f);
             if (r.Label.Length > chars) w.Tooltip(r.Label);
+            if (r.Tag.Length > 0)
+            {
+                w.SameLine(tagX);
+                w.TextColored(r.TagColor, r.Tag);
+                if (r.TagTip.Length > 0) w.Tooltip(r.TagTip);
+            }
             if (r.Status.Length > 0)
             {
                 w.SameLine(statusX);
                 w.TextColored(r.Color, r.Status);
+                if (r.Tip.Length > 0) w.Tooltip(r.Tip);
             }
         }
         if (rows.Count == 0)
@@ -443,48 +463,77 @@ internal sealed partial class OracleView
         return q.IsRepeatable(_c.Flags) ? 86400 : 0;
     }
 
+    /// <summary>
+    /// A wiki quest's row in the four states (2026-11-22): Done (every stamp held), partly done with the redo timer
+    /// running, partly done with the timer up, Not done. Held = in /myquests (any run), the /qb list, or stamped this
+    /// session. A page with no stamps (the AC Community Wiki's) takes the quest list's flag of the same name: Done or
+    /// Not done. <see cref="GuideRow.Done"/> (Hide collected) is Done with nothing to do now: one-time, or its timer
+    /// running.
+    /// </summary>
     private GuideRow WikiRow(GuideQuest q)
     {
-        int done = 0, earlier = 0, all = 0;
+        int held = 0, now = 0, all = 0;
         foreach (string st in q.AllStamps())
         {
             all++;
-            switch (StateOf(q, st))
-            {
-                case StampState.Done: done++; break;
-                case StampState.Earlier: earlier++; break;
-            }
+            StampState ss = StateOf(q, st);
+            if (ss != StampState.Missing) held++;
+            if (ss == StampState.Done) now++;
         }
         var r = new GuideRow { Key = "w:" + q.Title, Label = q.Title, W = q };
         if (all == 0)
         {
-            // No stamps on the page (the AC Community Wiki has none, 2026-11-21): the quest list's flag of the same
-            // name says where it stands, when there is one.
             if (CatalogByName(q.Title) is Quest cq)
             {
                 GuideRow cr = CatalogRow(cq);
                 r.Done = cr.Done;
+                r.State = cr.State;
                 r.Status = cr.Status;
                 r.Color = cr.Color;
+                r.Tip = cr.Tip;
                 return r;
             }
             r.Status = "no stamps";
+            r.Tip = "The wiki lists no stamps for this quest, and the quest list has no flag of its name: its state isn't known.";
             r.Color = UiColors.Grey;
             return r;
         }
-        r.Done = done == all;
-        if (r.Done)
-        {
-            TimeSpan wait = WikiWait(q);
-            if (q.RepeatSec != 0 && wait > TimeSpan.Zero) { r.Status = "Done " + Short(wait); r.Color = UiColors.Yellow; }
-            else { r.Status = "Completed"; r.Color = UiColors.Green; }
-            return r;
-        }
-        // A repeatable quest done before, its timer up and nothing stamped this run yet: ready again.
-        if (done == 0 && earlier > 0) { r.Status = "Ready"; r.Color = UiColors.Green; return r; }
-        r.Status = $"{done} / {all}";
-        r.Color = done > 0 ? UiColors.Yellow : UiColors.Grey;
+        TimeSpan wait = HeldWait(q);
+        bool repeats = q.RepeatSec != 0 || wait > TimeSpan.Zero;
+        GuideProgressState state = GuideProgress.Of(held, all, wait);
+        r.State = state;
+        (r.Status, r.Tip) = GuideProgress.Text(state, held, all, wait, repeats);
+        r.Color = ProgressColor(state);
+        // Hide collected: done, with nothing to do now (one-time, its timer running, or every stamp counting this run).
+        r.Done = state == GuideProgressState.Done && (!repeats || wait > TimeSpan.Zero || now == all);
         return r;
+    }
+
+    /// <summary>The four states' colours: Done green, partly done waiting yellow, partly done ready gold, not done grey.</summary>
+    internal static uint ProgressColor(GuideProgressState s) => s switch
+    {
+        GuideProgressState.Done => UiColors.Green,
+        GuideProgressState.PartialWaiting => UiColors.Yellow,
+        GuideProgressState.PartialReady => UiColors.Gold,
+        _ => UiColors.Grey,
+    };
+
+    /// <summary>
+    /// The redo timer on the stamps held: the longest wait left on any of them (the flag's own timer, else the quest's
+    /// repeat time since the flag was stamped); zero when every timer is up or none runs.
+    /// </summary>
+    private TimeSpan HeldWait(GuideQuest q)
+    {
+        TimeSpan wait = TimeSpan.Zero;
+        foreach (string st in q.AllStamps())
+        {
+            if (StampFlag(st) is not QuestFlag f) continue;
+            TimeSpan left = TimeSpan.Zero;
+            if (f.RepeatTime > TimeSpan.Zero) left = f.NextAvailableTime(_c.UtcNow);
+            else if (q.RepeatSec > 0 && f.CompletedOnUtc != DateTime.MinValue) left = f.CompletedOnUtc.AddSeconds(q.RepeatSec) - _c.UtcNow;
+            if (left > wait) wait = left;
+        }
+        return wait;
     }
 
     /// <summary>How long until the quest's stamps can be had again (the longest wait on any of them), zero when ready.</summary>
@@ -519,16 +568,25 @@ internal sealed partial class OracleView
 
     private GuideRow CatalogRow(Quest q)
     {
+        // One flag, so Done or Not done (no partial states, 2026-11-22).
         bool done = q.IsComplete(_c.Flags);
-        var r = new GuideRow { Key = "q:" + q.Flag, Label = q.DisplayName, Q = q, Done = done };
-        if (!done) return r;
-        if (_c.Flags.TryGet(q.Flag, out QuestFlag f) && f.RepeatTime > TimeSpan.Zero)
+        var r = new GuideRow { Key = "q:" + q.Flag, Label = q.DisplayName, Q = q };
+        TimeSpan left = TimeSpan.Zero;
+        bool repeats = false;
+        if (done && _c.Flags.TryGet(q.Flag, out QuestFlag f) && f.RepeatTime > TimeSpan.Zero)
         {
-            TimeSpan left = f.NextAvailableTime(_c.UtcNow);
-            r.Status = left > TimeSpan.Zero ? "Done " + Short(left) : "Ready";
-            r.Color = left > TimeSpan.Zero ? UiColors.Yellow : UiColors.Green;
+            repeats = true;
+            left = f.NextAvailableTime(_c.UtcNow);
         }
-        else { r.Status = "Completed"; r.Color = UiColors.Green; }
+        GuideProgressState state = done ? GuideProgressState.Done : GuideProgressState.NotDone;
+        r.State = state;
+        (r.Status, r.Tip) = GuideProgress.Text(state, done ? 1 : 0, 0, left, repeats);
+        if (state == GuideProgressState.Done)
+            r.Tip = left > TimeSpan.Zero ? $"Fully done: its flag is held. It can be done again in {GuideProgress.Short(left)}."
+                : repeats ? "Fully done: its flag is held. Its timer is up: it can be done again now." : "Fully done: its flag is held.";
+        else r.Tip = "Not done: its flag isn't held yet.";
+        r.Color = ProgressColor(state);
+        r.Done = done && (!repeats || left > TimeSpan.Zero);
         return r;
     }
 
@@ -558,6 +616,9 @@ internal sealed partial class OracleView
         w.TextColored(UiColors.Gold, q.Title);
         TimeSpan wait = WikiWait(q);
         w.TextDisabled(RepeatText(q) + (wait > TimeSpan.Zero ? "  -  again in " + Short(wait) : ""));
+        // Where it stands, in the four states (the list's status, said in full; 2026-11-22).
+        GuideRow state = WikiRow(q);
+        if (state.Tip.Length > 0) w.TextColored(state.Color, state.Tip);
         var facts = new List<string>();
         if (q.Level.Length > 0) facts.Add("Level " + q.Level);
         if (q.RecommendedLevel.Length > 0) facts.Add("rec. " + q.RecommendedLevel);
