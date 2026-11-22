@@ -12,6 +12,16 @@ namespace RynthCore.Plugin.RynthOracle.Data;
 /// <summary>One Leaftide feature from RynthILT's profile: its state on this server and where it lives.</summary>
 internal sealed record IltFeature(string Key, string Label, string Group, int State, string Where);
 
+/// <summary>One QB Deeds tier as RynthILT's last /deeds list gave it (its reward lines as the server printed them).</summary>
+internal sealed record IltDeedTier(int Number, long Qb, bool Unlocked, IReadOnlyList<string> Rewards);
+
+/// <summary>
+/// ACECustom's QB Deeds as RynthILT last read them (the profile's "deeds" object, RynthILT 2026-11-21): the account QB,
+/// Deeds on or off (null unknown), the tiers unlocked, the next tier's QB (0 at the top) and every tier's rewards.
+/// </summary>
+internal sealed record IltDeedsInfo(bool Loaded, bool Unsupported, bool Busy, long Qb, bool? On, int Unlocked, long NextAt,
+                                    string Status, DateTime LoadedUtc, IReadOnlyList<IltDeedTier> Tiers);
+
 /// <summary>
 /// The ACECustom quest bonus list ("/qb list") as RynthILT last read it (the profile's "questBonus"
 /// object). <see cref="Generation"/> 0 = not loaded this session; <see cref="Count"/> -1 = unknown.
@@ -57,6 +67,9 @@ internal sealed class IltServerProfile
 
     /// <summary>The /qb list (ILT worlds with RynthILT 0.2.3 or later); null = none offered.</summary>
     public IltQuestBonusList? QuestBonus { get; private init; }
+
+    /// <summary>QB Deeds (RynthILT from 2026-11-21, ILT worlds); null = none offered.</summary>
+    public IltDeedsInfo? Deeds { get; private init; }
 
     /// <summary>The features in one group, in RynthILT's order.</summary>
     public IEnumerable<IltFeature> InGroup(string group)
@@ -122,6 +135,7 @@ internal sealed class IltServerProfile
                 Blackjack = bj,
                 LuminanceShare = lum,
                 QuestBonus = ParseQuestBonus(root),
+                Deeds = ParseDeeds(root),
             };
         }
         catch (JsonException)
@@ -139,6 +153,25 @@ internal sealed class IltServerProfile
                                      Strings(q, "completed"), Strings(q, "incomplete"),
                                      Int(q, "completedCount", -1), Int(q, "incompleteCount", -1));
     }
+
+    /// <summary>The "deeds" object, or null when the profile has none.</summary>
+    private static IltDeedsInfo? ParseDeeds(JsonElement root)
+    {
+        if (!root.TryGetProperty("deeds", out JsonElement d) || d.ValueKind != JsonValueKind.Object) return null;
+        var tiers = new List<IltDeedTier>();
+        if (d.TryGetProperty("tiers", out JsonElement a) && a.ValueKind == JsonValueKind.Array)
+            foreach (JsonElement t in a.EnumerateArray())
+                if (t.ValueKind == JsonValueKind.Object)
+                    tiers.Add(new IltDeedTier(Int(t, "n", 0), Long(t, "qb", 0), Bool(t, "unlocked"), Strings(t, "rewards")));
+        bool? on = d.TryGetProperty("on", out JsonElement o) ? o.ValueKind == JsonValueKind.True ? true : o.ValueKind == JsonValueKind.False ? false : null : null;
+        DateTime at = DateTime.TryParse(Str(d, "loadedUtc"), System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out DateTime p) ? p : DateTime.MinValue;
+        return new IltDeedsInfo(Bool(d, "loaded"), Bool(d, "unsupported"), Bool(d, "busy"), Long(d, "qb", -1), on,
+                                Int(d, "unlocked", 0), Long(d, "nextAt", 0), Str(d, "status"), at, tiers);
+    }
+
+    private static long Long(JsonElement o, string name, long fallback) =>
+        o.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out long l) ? l : fallback;
 
     private static string[] Strings(JsonElement o, string name)
     {
@@ -192,6 +225,9 @@ internal sealed unsafe class IltServerLink
 
     /// <summary>The /qb summary and lists, or null (no RynthILT, or not an ILT world).</summary>
     public IltQuestBonusList? QuestBonus => Profile.QuestBonus;
+
+    /// <summary>QB Deeds as RynthILT last read them, or null (no RynthILT, an older one, or not an ILT world).</summary>
+    public IltDeedsInfo? Deeds => Profile.Deeds;
 
     private IReadOnlyList<string>? _qbSetSource;
     private HashSet<string> _qbSet = new(StringComparer.OrdinalIgnoreCase);

@@ -7,17 +7,16 @@ namespace RynthCore.Plugin.RynthOracle.Data;
 
 // The ILT Tracker tab's quest bonus (Infinite Leaftide, ACECustom read 2026-11-21, Silentkelpie: "look at acecustom add in
 // itl qb bonus levels and bonus tracker"). In ACECustom (Source/ACE.Server):
-//   * the quest bonus (QB) is the account's count of quests with a completion row (AccountQuest, NumTimesCompleted >= 1),
-//     one per quest name, shared by every character of the account (QuestManager.UpdatePlayerQuestCompletions); the
-//     character carries it as PropertyInt64 9006 QuestCount;
+//   * the quest bonus (QB) is the account's: one per quest row (AccountQuest, written when any character of the account first
+//     stamps the quest) and one more once it has a completion (Account.CachedQuestBonusCount, what Deeds and the QB bounty
+//     read); the character carries it as PropertyInt64 9006 QuestCount;
 //   * each QB is +0.5% kill XP: GetQuestCountXPBonus() = 1 + QB x 0.005 (Player_Xp.questToBonusRation);
 //   * "/bonus" prints the four XP multipliers: Quests, Equipment (1 + the XP enchantments + 5% a Bonus XP aug),
 //     Enlightenment (1 + ENL x 0.1) and the Total, their product ("[BONUS] Your XP multiplier from Quests is: x2.35");
 //   * "/qb" prints "Your current quest bonus count: 270"; "/qb list" the completed and the incomplete quest bonus list
 //     (RynthILT reads that one and hands it over: IltQuestBonusList); portals can ask for a QB amount
 //     (PortalRequirement.QuestBonus) or a total multiplier (XPMultiplier).
-// The bonus levels below are the quest multiplier's quarter steps (x1.25 at 50 QB, x1.5 at 100, ...): the points the
-// tracker counts towards. The server has no levels of its own; the multiplier grows by 0.005 with every QB.
+// The QB levels are ACECustom's QB Deeds: a tier every 1,000 QB, up to 15 (Data/QbDeeds.cs).
 
 /// <summary>The four "/bonus" multipliers as the server last printed them (0 = not seen).</summary>
 internal sealed record BonusReading(double Quests, double Equipment, double Enlightenment, double Total, DateTime AtUtc)
@@ -26,18 +25,12 @@ internal sealed record BonusReading(double Quests, double Equipment, double Enli
     public bool Seen => AtUtc != DateTime.MinValue;
 }
 
-/// <summary>One bonus level: a quest multiplier and the QB it takes.</summary>
-internal readonly record struct QbLevel(int Level, double Multiplier, long Qb);
-
 internal sealed class QuestBonus
 {
     /// <summary>ACECustom's Player_Xp.questToBonusRation: kill XP per QB.</summary>
     public const double PerQb = 0.005;
     /// <summary>ACECustom's Player_Xp.enlightenmentToBonusRatio: kill XP per enlightenment.</summary>
     public const double PerEnlightenment = 0.1;
-    /// <summary>A bonus level is this much quest multiplier (x0.25 = 50 QB).</summary>
-    public const double LevelStep = 0.25;
-    public static readonly long QbPerLevel = (long)Math.Round(LevelStep / PerQb);
 
     private static readonly Regex BonusLine = new(
         @"^\[BONUS\] Your (?:(Total) XP multiplier|XP multiplier from (Quests|Equipment|Enlightenment)) is: x([0-9][0-9,]*(?:\.[0-9]+)?)",
@@ -102,28 +95,13 @@ internal sealed class QuestBonus
     /// <summary>The QB a "/bonus" Quests multiplier stands for (it prints two decimals: about +/- 1 QB).</summary>
     public static long QbFromMultiplier(double m) => m <= 1 ? 0 : (long)Math.Round((m - 1) / PerQb);
 
-    /// <summary>The bonus level a QB is at (0 below x1.25).</summary>
-    public static int LevelOf(long qb) => (int)(Math.Max(0, qb) / QbPerLevel);
-
-    public static QbLevel Level(int level) => new(level, 1 + level * LevelStep, level * QbPerLevel);
-
-    /// <summary>The level reached, the next <paramref name="ahead"/> levels and how far to the next one.</summary>
-    public static (QbLevel Current, List<QbLevel> Next, float Fraction, long ToNext) Levels(long qb, int ahead = 4)
-    {
-        qb = Math.Max(0, qb);
-        int lv = LevelOf(qb);
-        var next = new List<QbLevel>();
-        for (int i = 1; i <= ahead; i++) next.Add(Level(lv + i));
-        long into = qb - lv * QbPerLevel;
-        return (Level(lv), next, (float)into / QbPerLevel, QbPerLevel - into);
-    }
-
     /// <summary>
-    /// The best QB known: RynthILT's /qb read, else a "/qb" count in chat, else the "/bonus" Quests multiplier
+    /// The best QB known: RynthILT's /deeds or /qb read, else a "/qb" count in chat, else the "/bonus" Quests multiplier
     /// (-1 when none). <paramref name="source"/> says which.
     /// </summary>
-    public long BestCount(IltQuestBonusList? ilt, out string source)
+    public long BestCount(IltQuestBonusList? ilt, out string source, IltDeedsInfo? deeds = null)
     {
+        if (deeds != null && deeds.Loaded && deeds.Qb >= 0) { source = "RynthILT's /deeds read"; return deeds.Qb; }
         if (ilt != null && ilt.Count >= 0) { source = "RynthILT's /qb read"; return ilt.Count; }
         if (ilt != null && ilt.Generation > 0 && ilt.Completed.Count > 0) { source = "the /qb list's completed quests"; return ilt.Completed.Count; }
         if (ChatCount >= 0) { source = "/qb"; return ChatCount; }

@@ -43,10 +43,26 @@ namespace RynthOracle.Tests
             Check(QuestBonus.QbFromMultiplier(2.35) == 270 && QuestBonus.QbFromMultiplier(1) == 0, "qb: x2.35 from quests is 270 QB");
             Check(qb.OnChatLine("Your current quest bonus count: 1,234", t) && qb.ChatCount == 1234, "qb: the /qb count line");
             Check(!qb.OnChatLine("You say, \"[BONUS] Your Total XP multiplier is: x99\"", t) && qb.Bonus.Total == 7.76, "qb: chat that quotes it is not read");
-            Check(System.Math.Abs(QuestBonus.Multiplier(270) - 2.35) < 1e-9 && QuestBonus.QbPerLevel == 50, "qb: 0.5% XP a QB, a level every 50 QB");
-            var (cur, next, frac, toNext) = QuestBonus.Levels(270);
-            Check(cur.Level == 5 && next[0].Level == 6 && next[0].Qb == 300 && System.Math.Abs(next[0].Multiplier - 2.5) < 1e-9
-                  && toNext == 30 && System.Math.Abs(frac - 0.4f) < 1e-6 && next.Count == 4, "qb: 270 QB is level 5, 30 QB to level 6 (x2.50)");
+            Check(System.Math.Abs(QuestBonus.Multiplier(270) - 2.35) < 1e-9, "qb: 0.5% XP a QB");
+            // QB Deeds (ACECustom DeedsTiers): a tier every 1,000 QB, 15 in all.
+            Check(QbDeeds.Tiers.Length == 15 && QbDeeds.Tiers[0].Qb == 1000 && QbDeeds.Tiers[14].Qb == 15000, "deeds: 15 tiers, 1,000 QB apart");
+            Check(QbDeeds.TierFor(999) == 0 && QbDeeds.TierFor(1000) == 1 && QbDeeds.TierFor(12345) == 12 && QbDeeds.TierFor(99999) == 15,
+                  "deeds: 999 QB no tier, 1,000 tier 1, 12,345 tier 12, the top is 15");
+            var (nt, nf, nl) = QbDeeds.Progress(12345);
+            Check(nt == 13 && nl == 655 && System.Math.Abs(nf - 0.345f) < 1e-4, "deeds: 12,345 QB is 655 QB from tier 13");
+            Check(QbDeeds.Progress(15000).Next == 0 && QbDeeds.Progress(0).Next == 1 && QbDeeds.Progress(0).ToNext == 1000, "deeds: the top, and nothing yet");
+            Check(System.Math.Abs(QbDeeds.DamageBonus(2)) < 1e-9 && System.Math.Abs(QbDeeds.DamageBonus(9) - 0.06) < 1e-9
+                  && System.Math.Abs(QbDeeds.DamageBonus(15) - 0.10) < 1e-9, "deeds: +2% damage at 3, 6, 9, 12, 15 (10% at the top)");
+            Check(QbDeeds.Line(QbDeeds.Tiers[8]).EndsWith("+2% damage (6% in all)") && QbDeeds.Tiers[9].Summary.StartsWith("/rebuff"),
+                  "deeds: tier 9's damage step, tier 10's /rebuff");
+            var prof = IltServerProfile.Parse("{\"ilt\":true,\"world\":\"Infinite Leaftide\",\"features\":[],\"deeds\":{\"loaded\":true,\"unsupported\":false,"
+                + "\"busy\":false,\"qb\":12345,\"on\":true,\"unlocked\":12,\"nextAt\":13000,\"status\":\"\",\"loadedUtc\":\"2026-11-21T21:30:00Z\","
+                + "\"tiers\":[{\"n\":1,\"qb\":1000,\"unlocked\":true,\"rewards\":[\"Legendary Strength\"]},{\"n\":13,\"qb\":13000,\"unlocked\":false,\"rewards\":[]}]}}");
+            IltDeedsInfo? dd = prof.Deeds;
+            Check(dd != null && dd.Loaded && dd.On == true && dd.Qb == 12345 && dd.Unlocked == 12 && dd.NextAt == 13000 && dd.Tiers.Count == 2
+                  && dd.Tiers[0].Rewards[0] == "Legendary Strength" && !dd.Tiers[1].Unlocked && dd.LoadedUtc.Hour == 21, "deeds: RynthILT's /deeds read from the profile");
+            Check(qb.BestCount(null, out _, dd) == 12345, "deeds: the /deeds QB first");
+            Check(IltServerProfile.Parse("{\"ilt\":true,\"features\":[]}").Deeds == null, "deeds: an older RynthILT has none");
             Check(qb.BestCount(null, out string src) == 1234 && src == "/qb", "qb: without RynthILT the /qb count in chat");
             var ilt = new IltQuestBonusList(false, 1, 300, "", new[] { "a", "Dynamic_1_x" }, new[] { "b" });
             Check(qb.BestCount(ilt, out _) == 300 && QuestBonus.IsStamp("Dynamic_1_x") && !QuestBonus.IsStamp("a"), "qb: RynthILT's count first; stamps");
