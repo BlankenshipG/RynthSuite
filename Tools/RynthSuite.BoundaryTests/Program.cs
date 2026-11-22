@@ -47,7 +47,10 @@ internal static class Program
         // 2026-11-01, the first full Run-AllTests on Windows: files from the test branch that name a server on
         // purpose, listed with why (the test had never run on them).
         ["Plugins/RynthCore.Plugin.RynthOracle/Data/QuestGuideClient.cs"] = "ILT-gated: RynthILT's Leaftide wiki quest guide",
-        ["Plugins/RynthCore.Plugin.RynthOracle/Views/T11Tab.cs"] = "ILT-gated: the T11 Tracking tab toggles a charm through RynthILT's data interface",
+        ["Plugins/RynthCore.Plugin.RynthOracle/Views/T11Tab.cs"] = "ILT-gated: the ILT Tracker tab (T11 Tracking until 2026-11-21) toggles a charm through RynthILT's data interface",
+        ["Plugins/RynthCore.Plugin.RynthOracle/Views/IltTrackerTab.cs"] = "ILT-gated: the ILT Tracker's quest bonus (ACECustom /qb, /bonus) and the Leaftide wiki login how-to",
+        ["Plugins/RynthCore.Plugin.RynthOracle/Data/QuestBonus.cs"] = "ILT-gated: ACECustom's quest bonus and /bonus, read on Infinite Leaftide only",
+        ["Plugins/RynthCore.Plugin.RynthOracle/Data/IltWikiGuide.cs"] = "ILT-gated: how to get the Leaftide wiki login (the ILT Tracker tab)",
         ["Plugins/RynthCore.Plugin.RynthInventory/InventoryCommand.cs"] = "usage text: /ginv bank is the ILT-gated Banking page",
         ["Plugins/RynthCore.Plugin.RynthChat/ChatClassifier.cs"] = "reads a typed /bank or /b to file the server's reply (sends nothing)",
         ["Plugins/ub-Rythai/RynthCore.Plugin.UbRythai/UbRythaiPlugin.cs"] = "UbRythai is ub-IT's Infinite Leaftide port: a Leaftide plugin by design",

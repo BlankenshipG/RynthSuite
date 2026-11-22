@@ -61,10 +61,11 @@ internal sealed partial class OracleView
                 () => "Re-reads the titles you hold from the game."),
             new(TabVoid, DrawVoid, true, RefreshVoid,
                 () => "Re-reads your buffs from the game and drops the spell timers that ran out."),
-            // Infinite Leaftide only: the T11+ items (item bounties, levelled charms and infusion, school gems, lum tokens,
-            // T11 gear) in one place (2026-11-11).
+            // Infinite Leaftide only: the ILT Tracker (the T11 Tracking tab until 2026-11-21): the quest bonus levels and
+            // tracker, the T11+ items (item bounties, levelled charms and infusion, school gems, lum tokens, T11 gear) and
+            // the ILT wiki login how-to in one place.
             new(TabT11, DrawT11, false, RefreshT11,
-                () => "Re-reads your packs and bounty slots (/bounty sync), and checks your gear's T11 modifiers."),
+                () => "Asks for /bonus and the /qb list, re-reads your packs and bounty slots (/bounty sync), and checks your gear's T11 modifiers."),
             new(TabFellowship, DrawFellowship, false, RefreshFellowship,
                 () => "Re-reads the fellowship and its members from the game."),
             new(TabAbout, DrawAbout, false, RefreshAbout,
@@ -73,8 +74,8 @@ internal sealed partial class OracleView
     }
 
     /// <summary>
-    /// Every tab shows on every server (a server's own pages are its server plugin's), but T11 Tracking: Infinite Leaftide
-    /// only (ACECustom's T11+ items).
+    /// Every tab shows on every server (a server's own pages are its server plugin's), but the ILT Tracker: Infinite Leaftide
+    /// only (ACECustom's quest bonus and T11+ items).
     /// </summary>
     private bool Visible(TabDef t) => t.Name != TabT11 || _c.Server.IsIlt;
 
@@ -83,8 +84,9 @@ internal sealed partial class OracleView
     {
         get
         {
+            string saved = _c.Settings.TabName == TabT11Old ? TabT11 : _c.Settings.TabName;
             foreach (TabDef t in _tabs)
-                if (t.Name == _c.Settings.TabName && Visible(t)) return t.Name;
+                if (t.Name == saved && Visible(t)) return t.Name;
             return TabQuests;
         }
         set

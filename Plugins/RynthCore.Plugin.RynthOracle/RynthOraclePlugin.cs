@@ -230,6 +230,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.EarnedTitles.Clear();
         _c.Gear.Clear();
         _c.T11.Clear();
+        _c.QuestBonus.Clear();
         ClearCharacterExtras();
         _c.Runner?.Stop("ended at logout");
         _c.SessionStamps.Clear();
@@ -311,11 +312,11 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
     /// <summary>Forgets the Character tab's session (login, logout): the next character's comes fresh.</summary>
     private long _nextT11Ms;
-    /// <summary>The T11 Tracking tab reads the packs and the bounty slots this often while it shows.</summary>
+    /// <summary>The ILT Tracker tab reads the packs and the bounty slots this often while it shows.</summary>
     private const long T11ReadMs = 2000;
 
     /// <summary>
-    /// The T11 Tracking tab's data (Infinite Leaftide only): the packs and the bounty slots every <see cref="T11ReadMs"/>
+    /// The ILT Tracker tab's data (Infinite Leaftide only): the packs and the bounty slots every <see cref="T11ReadMs"/>
     /// while that tab shows, and one queued appraisal at a time for the items it needs read. Nothing with the window
     /// closed, on another tab, or on another server.
     /// </summary>
@@ -445,6 +446,8 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             if (KillTasksOnScreen()) _killReadWanted = true;
             if (_main != null) _main.NeedsPass = true;
         }
+        // The ILT Tracker's /bonus multipliers and /qb count (Infinite Leaftide's ACECustom; read, never eaten, 2026-11-21).
+        if (_c.Server.IsIlt && _c.QuestBonus.OnChatLine(line, _c.UtcNow) && _main != null) _main.NeedsPass = true;
         _c.Runner?.OnChat(line);
         _mainView?.OnDynChat(line);   // Dynamic Stamps' Go and hand in (2026-11-08)
 

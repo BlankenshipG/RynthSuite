@@ -12,9 +12,13 @@ namespace RynthCore.Plugin.RynthOracle.Views;
 // Item bounties (the R1 R2 B1 B2 slots and the bounty items carried), the levelled charms and the Charm Infusion Gems, the
 // school gems, the lum tokens the bank takes, and the T11 gear the Gear tab's Check read (its T11 modifier lines moved here
 // from the Gear tab). The data: Data/T11Tracking.cs (T11Scanner), read by the plugin while this tab is showing.
+// 2026-11-21: renamed the ILT Tracker (Silentkelpie: "change t11 tab to itl tracker"), with the quest bonus levels and
+// tracker on top and the ILT wiki login how-to at the bottom (Views/IltTrackerTab.cs).
 internal sealed partial class OracleView
 {
-    public const string TabT11 = "T11 Tracking";
+    public const string TabT11 = "ILT Tracker";
+    /// <summary>The tab's name before 2026-11-21: a saved tab of that name opens the ILT Tracker.</summary>
+    public const string TabT11Old = "T11 Tracking";
     private static readonly uint T11Gold = UiFormat.Rgb(230, 190, 90);
     private string _t11Msg = "";
 
@@ -23,9 +27,14 @@ internal sealed partial class OracleView
         _c.T11.ForgetAsked();
         _c.RescanT11();
         bool sent = _c.Send("/bounty sync");
+        if (sent)
+        {
+            _c.Send("/bonus");
+            _c.Send("/ilt qb");
+        }
         StartGearCheck();
         return new RefreshResult(sent
-            ? "Re-read your packs, asked the server for your bounty slots (/bounty sync) and checked your gear."
+            ? "Asked for your XP multipliers (/bonus), the /qb list and your bounty slots (/bounty sync), re-read your packs and checked your gear."
             : "Re-read your packs and checked your gear.");
     }
 
@@ -33,11 +42,14 @@ internal sealed partial class OracleView
     {
         T11Scanner t = _c.T11;
         if (_t11Msg.Length > 0) w.TextColored(UiColors.Yellow, _t11Msg);
+        DrawIltQuestBonus(w);
+        DrawIltBonusTracker(w);
         DrawT11Bounties(w, t);
         DrawT11Charms(w, t);
         DrawT11SchoolGems(w, t);
         DrawT11Tokens(w, t);
         DrawT11Gear(w);
+        DrawIltWikiGuide(w);
     }
 
     // ── Item bounties ────────────────────────────────────────────────────

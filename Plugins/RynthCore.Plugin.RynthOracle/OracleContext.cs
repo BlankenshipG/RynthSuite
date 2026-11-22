@@ -126,9 +126,11 @@ internal sealed class OracleContext
     public double VoidDotScale = 1.0;
     /// <summary>The Gear tab's Check (worn gear's spells, wards and banes, ratings); every server.</summary>
     public readonly GearScanner Gear = new();
-    /// <summary>The T11 Tracking tab's packs and bounty slots (Infinite Leaftide only): read while that tab shows.</summary>
+    /// <summary>The ILT Tracker tab's packs and bounty slots (Infinite Leaftide only): read while that tab shows.</summary>
     public readonly T11Scanner T11 = new();
-    /// <summary>Set by the plugin: reads the packs and bounty slots for the T11 Tracking tab now.</summary>
+    /// <summary>The ILT Tracker's quest bonus: the "/bonus" multipliers and a "/qb" count from chat (2026-11-21).</summary>
+    public readonly QuestBonus QuestBonus = new();
+    /// <summary>Set by the plugin: reads the packs and bounty slots for the ILT Tracker tab now.</summary>
     public Action RescanT11 = () => { };
 
     /// <summary>Titles the character holds (engine API v75); TitlesKnown false until the engine has the list.</summary>

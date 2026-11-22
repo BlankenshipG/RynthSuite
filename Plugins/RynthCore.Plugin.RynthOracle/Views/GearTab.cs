@@ -303,9 +303,9 @@ internal sealed partial class OracleView
         if (r.WornTotals.Count > 0 || r.T11Totals.Count > 0)
             w.Tooltip(string.Join("\n", r.WornTotals.Select(t => GearAnalysis.RatingLong(t.Prop) + " " + t.Value))
                       + (r.T11Rows > 0 ? "\nT11 modifier ratings are included (the appraisal lists them under Modifiers, not Ratings)." : ""));
-        // The T11 modifiers (worn totals and each item's lines) are on the T11 Tracking tab (Infinite Leaftide, 2026-11-11).
+        // The T11 modifiers (worn totals and each item's lines) are on the ILT Tracker tab (Infinite Leaftide, 2026-11-11; the T11 Tracking tab until 2026-11-21).
         if (r.T11Rows > 0 && _c.Server.IsIlt)
-            w.TextColored(T11Teal, $"{r.T11Rows} T11 item(s): their modifiers are on the T11 Tracking tab.");
+            w.TextColored(T11Teal, $"{r.T11Rows} T11 item(s): their modifiers are on the ILT Tracker tab.");
         else if (r.T11Totals.Count > 0)
             w.TextColored(T11Teal, "T11 worn: " + string.Join("  |  ", r.T11Totals.Select(t => t.Name + " " + t.Value)));
 
