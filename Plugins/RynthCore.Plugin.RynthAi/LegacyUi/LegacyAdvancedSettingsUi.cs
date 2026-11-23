@@ -91,6 +91,10 @@ internal sealed class LegacyAdvancedSettingsUi
     public void SetAutoTradeStatusProvider(Func<string> status) => _autoTradeStatus = status;
     private string _newAutoAcceptPattern = "";
 
+    private Func<string>? _tradeShopStatus;
+    private Func<bool>? _tradeShopBanking;
+    public void SetTradeShopStatusProvider(Func<string> status) => _tradeShopStatus = status;
+    public void SetTradeShopBankingProvider(Func<bool> banking) => _tradeShopBanking = banking;
     public string MissileCraftingState  => _missileCraftingManager?.State.ToString() ?? string.Empty;
     public bool   MissileCraftingActive => _missileCraftingManager?.IsCrafting ?? false;
     public string MissileCraftingStatus => _missileCraftingManager?.StatusMessage ?? string.Empty;
@@ -175,6 +179,7 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.TextDisabled("inscribed, rare, zero value, packs, or anything a Keep rule could match.");
 
         RenderAutoTrade();
+        RenderTradeShop();
     }
 
     private void RenderAutoTrade()
@@ -239,6 +244,39 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.Spacing();
         ImGui.TextDisabled("Never added: equipped, attuned, retained, tinkered, imbued, inscribed,");
         ImGui.TextDisabled("packs, unidentified items, or items on RynthAi's weapon/consumable lists.");
+    }
+
+    /// <summary>
+    /// Trade Shop catalog (ungated). Conversion rates from UB-IT. Banking hook row only when
+    /// the server hub reports this world supports banking payments.
+    /// </summary>
+    private void RenderTradeShop()
+    {
+        ImGui.Spacing();
+        ImGui.Spacing();
+        ImGui.Text("Trade Shop (priced catalog)");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        string status = _tradeShopStatus?.Invoke() ?? "Not logged in";
+        SafeImGui.TextDisabled($"Status: {status}");
+        ImGui.Spacing();
+
+        ImGui.Checkbox("Enabled##TS", ref _settings.TradeShopEnabled);
+        ImGui.SameLine();
+        ImGui.Checkbox("Test Mode##TS", ref _settings.TradeShopTestMode);
+        if (ImGui.Button(_settings.ShowTradeShopWindow ? "Focus Trade Shop window##TS" : "Open Trade Shop window##TS"))
+            _settings.ShowTradeShopWindow = true;
+        if (ImGui.IsItemHovered())
+            SafeImGui.SetTooltip("Opens the Trade Shop editor: item prices and bank/payment conversion rates.\n" +
+                                 "Also: Inventory panel Storefront button, or /ra tradeshop ui.");
+
+        SafeImGui.TextDisabled("Edit prices and conversion rates in the Trade Shop window.");
+        SafeImGui.TextDisabled("Inventory → Storefront icon, or /ra tradeshop ui.");
+        var rates = _settings.TradeShopRates ??= new Trade.TradeShopRates();
+        SafeImGui.TextDisabled(rates.RatesHelpLine());
+        int n = _settings.TradeShopListings?.Count ?? 0;
+        SafeImGui.TextDisabled($"{n} catalog listing(s).");
     }
 
     private static bool IsValidRegex(string pattern)

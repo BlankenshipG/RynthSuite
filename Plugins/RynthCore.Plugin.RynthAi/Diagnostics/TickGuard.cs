@@ -46,6 +46,7 @@ internal enum TickStep
     PatrolReroute,
     AutoVendor,
     AutoTrade,
+    TradeShop,
     WeaponElements,
     CramStack,
     InventoryStatus,
@@ -137,6 +138,7 @@ internal sealed class TickGuard
         Add(TickStep.PatrolReroute,     "patrol reroute",           LogCat.Navigation);
         Add(TickStep.AutoVendor,        "AutoVendor",               LogCat.Vendor);
         Add(TickStep.AutoTrade,         "AutoTrade",                LogCat.Vendor);
+        Add(TickStep.TradeShop,         "TradeShop",                LogCat.Vendor);
         Add(TickStep.WeaponElements,    "weapon elements",          LogCat.Combat);
         Add(TickStep.CramStack,         "AutoCram/AutoStack",       LogCat.Inventory);
         Add(TickStep.InventoryStatus,   "inventory status",         LogCat.Inventory);

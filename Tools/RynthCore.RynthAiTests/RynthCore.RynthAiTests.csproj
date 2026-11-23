@@ -41,6 +41,13 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthChat\ChatClassifier.cs" Link="Linked\ChatClassifier.cs" />
     <!-- Item info: per-part colours of the one-line layout (System only). -->
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\ItemInfo\ItemInfoPartColors.cs" Link="Linked\ItemInfoPartColors.cs" />
+    <!-- Trade Shop: UB-IT conversion rates + tell/buy parsing + advertise/sheet builders (System only). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Trade\TradeShopRates.cs" Link="Linked\TradeShopRates.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Trade\TradeShopTellParse.cs" Link="Linked\TradeShopTellParse.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Trade\TradeShopListing.cs" Link="Linked\TradeShopListing.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Trade\TradeShopMessages.cs" Link="Linked\TradeShopMessages.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Trade\TradeShopAdvertise.cs" Link="Linked\TradeShopAdvertise.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Translate\TranslateChannels.cs" Link="Linked\TranslateChannels.cs" />
   </ItemGroup>
 
   <ItemGroup>

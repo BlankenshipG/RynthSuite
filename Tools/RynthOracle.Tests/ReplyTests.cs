@@ -29,6 +29,8 @@ namespace RynthOracle.Tests
                 ("gear", OracleVerb.Tab, OracleView.TabGear), ("overlap", OracleVerb.Tab, OracleView.TabGear),
                 ("dynamic", OracleVerb.Trackers, OracleView.TabQuests), ("stamps", OracleVerb.Trackers, OracleView.TabQuests),
                 ("guardian", OracleVerb.Trackers, OracleView.TabQuests), ("guardians", OracleVerb.Trackers, OracleView.TabQuests),
+                // 2026-11-22: ILT Tracker bar window (left the Oracle tab strip).
+                ("tracker", OracleVerb.Tracker, ""), ("ilttracker", OracleVerb.Tracker, ""), ("t11", OracleVerb.Tracker, ""), ("ilt", OracleVerb.Tracker, ""),
                 ("lootprofiles", OracleVerb.LootProfiles, ""), ("lootprofile", OracleVerb.LootProfiles, ""),
             };
             var seen = new HashSet<OracleVerb>();

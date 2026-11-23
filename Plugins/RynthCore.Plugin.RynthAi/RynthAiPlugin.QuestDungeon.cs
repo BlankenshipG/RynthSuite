@@ -165,15 +165,19 @@ public sealed partial class RynthAiPlugin
             if (h.Trim().Length >= 3) words.Add(h.Trim());
         WorldObject? best = null;
         double bestDist = double.MaxValue;
-        bool bestNamed = false;
+        // How many hint words match the portal name (2026-11-22): Town Network has three "Stronghold"
+        // portals (CH/EW/RB). Prefer "Celestial Hand Stronghold" (score 3) over a bare "Stronghold" (1).
+        int bestScore = -1;
         foreach (WorldObject wo in _objectCache.GetLandscapeObjects())
         {
             if (wo.ObjectClass != RynthCore.Loot.AcObjectClass.Portal) continue;
             double d = _playerId != 0 ? _objectCache.Distance((int)_playerId, wo.Id) : double.MaxValue;
             if (d > (near ? QuestPortalNearRange : QuestPortalRange)) continue;
-            bool named = words.Exists(w => wo.Name.Contains(w, StringComparison.OrdinalIgnoreCase));
-            if (best != null && (bestNamed && !named || (named == bestNamed && d >= bestDist))) continue;
-            best = wo; bestDist = d; bestNamed = named;
+            int score = 0;
+            foreach (string w in words)
+                if (wo.Name.Contains(w, StringComparison.OrdinalIgnoreCase)) score++;
+            if (best != null && (score < bestScore || (score == bestScore && d >= bestDist))) continue;
+            best = wo; bestDist = d; bestScore = score;
         }
         if (best == null && near) return (true, "[RynthAi] Quest: no portal right here.");
         if (best == null)

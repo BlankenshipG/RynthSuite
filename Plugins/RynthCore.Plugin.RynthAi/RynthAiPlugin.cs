@@ -540,6 +540,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _autoVendor = null;
         _autoTrade?.Reset();
         _autoTrade = null;
+        _tradeShop?.Reset();
+        _tradeShop = null;
         TeardownLocalFeatures(disposeTranslator: false);
         _playerId = 0;
         _loginComplete = false;
@@ -579,6 +581,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _metaManager?.SetPlayerId(id);
         _autoVendor?.SetPlayerId(id);
         _autoTrade?.SetPlayerId(id);
+        _tradeShop?.SetPlayerId(id);
         if (Host.HasQueryHealth) Host.QueryHealth(id);
         Log($"RynthAi: player id 0x{id:X8} read late (it was 0 at login) - combat, looting and inventory now see it.");
     }
@@ -926,6 +929,13 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                 () => dashForAv?.CharFolder ?? string.Empty);
             var atForUi = _autoTrade;
             _dashboard.SetAutoTradeStatusProvider(() => atForUi.Status);
+
+            // Trade Shop is ungated; banking hook only when the server hub says this world supports it.
+            _tradeShop = new Trade.TradeShopManager(Host, _dashboard.Settings, _objectCache, _playerId,
+                () => _miniRemote?.ServerHub.ServerActive == true);
+            var tsForUi = _tradeShop;
+            _dashboard.SetTradeShopStatusProvider(() => tsForUi.Status);
+            _dashboard.SetTradeShopBankingProvider(() => tsForUi.BankingSupported);
         }
 
         Log("RynthAi: login complete, legacy ImGui dashboard ready.");
@@ -2129,6 +2139,19 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
                     return;
                 }
 
+                // ── Trade Shop (priced catalog; ungated; banking hook only if server supports) ──
+                var tradeShop = _tradeShop;
+                if (tradeShop != null
+                    && GuardHold(TickStep.TradeShop, () => { tradeShop.Tick(_busyCount); return tradeShop.HoldsBot; }))
+                {
+                    if (settings.IsMacroRunning)
+                        StopNavFor(BotActivity.Idle);
+                    KeepThreatScanFresh(settings);
+                    FreezeCorpseTimeout(CorpseNowMs);
+                    ThinkMeta();
+                    return;
+                }
+
                 Guard(TickStep.WeaponElements, TickWeaponElements);
 
                 // ── Priority 1: Buffing ───────────────────────────────────────────
@@ -2619,6 +2642,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
         _aetheriaUnboxer?.OnChat(text);
         _metaManager?.HandleChat(text, chatType);
         _questTracker?.OnChatLine(text);
+        try { _tradeShop?.OnChatWindowText(text, chatType); }
+        catch (Exception ex) { Host.Log($"[RynthAi] TradeShop chat failed: {ex.Message}"); }
         CheckChatForSafetyStops(text);
         try { OnOwnCorpseChat(text); } catch { }
     }
@@ -4277,6 +4302,8 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             case "stop":
             case "pause":        HandleMacroRunCommand(cmd, parts); break;
             case "vtankyield":   HandleVTankYieldCommand(parts); break;
+            case "vtimport":
+            case "vtankimport":  HandleVTankImportCommand(parts); break;
             case "navstate":     HandleNavStateCommand(); break;
             case "salvstate":    HandleSalvageStateCommand(); break;
             case "mapdump":      HandleMapDumpCommand(); break;
@@ -4308,6 +4335,7 @@ public sealed partial class RynthAiPlugin : RynthPluginBase
             // /ra equipfor <monster>: VTank's /vt equipitemsfor (MagToolsCommands.Extra.cs)
             case "equipfor":     HandleEquipForCommand(parts); break;
             case "autotrade":    HandleAutoTradeRaCommand(parts); break;
+            case "tradeshop":    HandleTradeShopRaCommand(parts); break;
             case "trade":        HandleTradeCommand(parts); break;
             case "busyinfo":     HandleBusyInfoCommand(); break;
             // /ra quit | /ra exit: close the client (the engine's /rc quit: as its close button)

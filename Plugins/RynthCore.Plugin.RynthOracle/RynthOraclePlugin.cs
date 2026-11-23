@@ -24,10 +24,12 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     // The landblock the character was last outdoors in (a building's rooms belong to it; 0: not seen yet).
     private uint _lastOutdoorLandblock;
 
-    // Previous release: 0.7.2.
-    public const string Version = "0.7.3";
+    // Previous release: 0.7.5.
+    public const string Version = "0.7.6";
 
     private const long QuestReadDelayMs = 6000;   // after login, before the hidden /myquests
+    // After /myquests: ask RynthILT for /qb list so Dynamic stamps match (those flags are not in /myquests).
+    private const long QbListDelayMs = 8000;
     private const long CharacterReadMs = 1000;
     // The Character tab's session (RynthAi): read only while that tab is on screen.
     private const long CharacterExtrasReadMs = 2000;
@@ -44,7 +46,7 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
     private readonly OracleContext _c = new();
     private readonly UiHost _ui = new();
-    private UiWindow? _main, _void, _timers, _offerWin;
+    private UiWindow? _main, _void, _timers, _offerWin, _iltTracker;
     private OracleView? _mainView;
     private VoidView? _voidView;
     private QuestTimersView? _timersView;
@@ -68,6 +70,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
     // The Dynamic stamp sources last logged (LogStampSources), and the revisions they were read at.
     private (int InMyQuests, int InQb, int Matched) _loggedStamps = (-1, -1, -1);
     private int _stampFlagRevision = -1, _stampIltRevision = -1;
+    // Infinite Leaftide: /qb list asked once this session for Dynamic stamps (does not need the Quests tab open).
+    private bool _qbAskedForStamps;
+    private long _qbAskAtMs = -1;
     // RynthCore's server list (ServerStateClient.Revision) last applied to the server identity.
     private int _seenServerStateRevision = -1;
     private string? _catalogKey;          // what the catalog was loaded for (QuestPackSource.Key; "" = retail only)
@@ -113,6 +118,13 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _main = _ui.Add(new UiWindow("RynthOracle/Oracle", "Oracle")
         {
             DefaultWidth = 700f, DefaultHeight = 600f, MinWidth = 420f, MinHeight = 260f,
+        });
+        // Infinite Leaftide only: ILT Tracker left the Oracle tab strip for its own bar icon
+        // (2026-11-22). ShowInBar is toggled with IsIlt on each tick (SyncIltTrackerBar).
+        _iltTracker = _ui.Add(new UiWindow("RynthOracle/IltTracker", OracleView.TabT11)
+        {
+            DefaultWidth = 700f, DefaultHeight = 600f, MinWidth = 420f, MinHeight = 260f,
+            ShowInBar = false, BarButton = true,
         });
         // The Void window is opened from the Oracle window: no bar button (and no Scripts menu
         // line, which would bring back the Scripts button just for it).
@@ -184,6 +196,9 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         long now = Environment.TickCount64;
         _loginMs = now;
         _questReadAtMs = _c.Settings.ReadQuestsAtLogin ? now + QuestReadDelayMs : -1;
+        // Dynamic stamps live in /qb, not /myquests: ask once even when the Oracle window stays closed.
+        _qbAskedForStamps = false;
+        _qbAskAtMs = now + QbListDelayMs;
         _nextCharacterReadMs = now;
         _nextCharacterExtrasMs = now;
         ClearCharacterExtras();
@@ -254,6 +269,31 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         _c.GuardianMessage = "";
         _loggedStamps = (-1, -1, -1);
         _stampFlagRevision = _stampIltRevision = -1;
+        _qbAskedForStamps = false;
+        _qbAskAtMs = -1;
+    }
+
+    /// <summary>
+    /// Infinite Leaftide: ask RynthILT for /qb list once per login so Dynamic stamps can mark done.
+    /// ACECustom skips Dynamic flags in /myquests when it has no quest text for them; /qb still lists them.
+    /// Used to only run when the Quests tab's stamps bar was drawn, so a closed Oracle window left stamps at 0/N
+    /// (2026-11-22, Silentkelpie: server dump had dozens of Dynamic_1_… flags, log said 0 of 587 done).
+    /// </summary>
+    private void EnsureQbListForStamps(long now)
+    {
+        if (!_c.Server.IsIlt || _qbAskedForStamps) return;
+        if (_qbAskAtMs < 0 || now < _qbAskAtMs) return;
+        IltQuestBonusList? qb = _c.Ilt.QuestBonus;
+        // RynthILT not linked yet: try again on a later tick without spending the once-per-session ask.
+        if (qb == null) return;
+        if (qb.Disabled || qb.Generation > 0)
+        {
+            _qbAskedForStamps = true;
+            return;
+        }
+        _qbAskedForStamps = true;
+        if (_c.Send("/ilt qb"))
+            Host.Log("[RynthOracle] Reading /qb list for Dynamic stamps (/myquests leaves those flags out).");
     }
 
     /// <summary>
@@ -312,22 +352,33 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
     /// <summary>Forgets the Character tab's session (login, logout): the next character's comes fresh.</summary>
     private long _nextT11Ms;
-    /// <summary>The ILT Tracker tab reads the packs and the bounty slots this often while it shows.</summary>
+    /// <summary>The ILT Tracker window reads the packs and the bounty slots this often while it shows.</summary>
     private const long T11ReadMs = 2000;
 
     /// <summary>
-    /// The ILT Tracker tab's data (Infinite Leaftide only): the packs and the bounty slots every <see cref="T11ReadMs"/>
-    /// while that tab shows, and one queued appraisal at a time for the items it needs read. Nothing with the window
-    /// closed, on another tab, or on another server.
+    /// The ILT Tracker window's data (Infinite Leaftide only): the packs and the bounty slots every <see cref="T11ReadMs"/>
+    /// while that window shows, and one queued appraisal at a time for the items it needs read. Nothing with the window
+    /// closed or on another server.
     /// </summary>
     private void ReadT11(long now)
     {
-        if (_main == null || _mainView == null || !_main.Visible || _mainView.Tab != OracleView.TabT11) return;
+        if (_iltTracker == null || !_iltTracker.Visible) return;
         if (!_c.Server.IsIlt || !_c.InWorld) return;
         _c.T11.Tick(Host, now);
         if (now < _nextT11Ms) return;
         _nextT11Ms = now + T11ReadMs;
-        if (_c.T11.Scan(Host, now)) _main.NeedsPass = true;
+        if (_c.T11.Scan(Host, now)) _iltTracker.NeedsPass = true;
+    }
+
+    /// <summary>Puts the ILT Tracker on the bar only while Infinite Leaftide is the active server.</summary>
+    private void SyncIltTrackerBar()
+    {
+        if (_iltTracker == null) return;
+        bool want = _c.Server.IsIlt;
+        if (_iltTracker.ShowInBar == want) return;
+        _iltTracker.ShowInBar = want;
+        if (!want) _iltTracker.Visible = false;
+        _iltTracker.NeedsPass = true;
     }
 
     private void ClearCharacterExtras()
@@ -447,7 +498,11 @@ public sealed class RynthOraclePlugin : RynthPluginBase
             if (_main != null) _main.NeedsPass = true;
         }
         // The ILT Tracker's /bonus multipliers and /qb count (Infinite Leaftide's ACECustom; read, never eaten, 2026-11-21).
-        if (_c.Server.IsIlt && _c.QuestBonus.OnChatLine(line, _c.UtcNow) && _main != null) _main.NeedsPass = true;
+        if (_c.Server.IsIlt && _c.QuestBonus.OnChatLine(line, _c.UtcNow))
+        {
+            if (_main != null) _main.NeedsPass = true;
+            if (_iltTracker != null) _iltTracker.NeedsPass = true;
+        }
         _c.Runner?.OnChat(line);
         _mainView?.OnDynChat(line);   // Dynamic Stamps' Go and hand in (2026-11-08)
 
@@ -517,6 +572,20 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         {
             case OracleVerb.Window:
                 if (_main != null) { _main.Visible = !_main.Visible; _main.NeedsPass = true; Shown(OracleCommand.Shown("Oracle window", _main.Visible)); }
+                break;
+            case OracleVerb.Tracker:
+                if (!_c.Server.IsIlt)
+                {
+                    _c.PrintFail("The ILT Tracker is Infinite Leaftide only (ACECustom quest bonus and T11 items).");
+                    break;
+                }
+                if (_iltTracker != null)
+                {
+                    _iltTracker.ShowInBar = true;
+                    _iltTracker.Visible = true;
+                    _iltTracker.NeedsPass = true;
+                    Shown(OracleCommand.Shown("ILT Tracker window", true));
+                }
                 break;
             case OracleVerb.Void:
                 if (_void != null) { _void.Visible = !_void.Visible; _void.NeedsPass = true; Shown(OracleCommand.Shown("Void window", _void.Visible)); }
@@ -849,10 +918,12 @@ public sealed class RynthOraclePlugin : RynthPluginBase
         if (_c.Server.IsIlt)
         {
             _c.Ilt.Poll(Host, now);
+            EnsureQbListForStamps(now);
             if (_c.Ilt.Revision != _seenIltRevision)
             {
                 _seenIltRevision = _c.Ilt.Revision;
                 if (_main != null) _main.NeedsPass = true;
+                if (_iltTracker != null) _iltTracker.NeedsPass = true;
             }
             ReadGuardian(now);
             ReadT11(now);
@@ -1037,11 +1108,14 @@ public sealed class RynthOraclePlugin : RynthPluginBase
 
     private void RecordWindows(long now)
     {
+        SyncIltTrackerBar();
         if (_main != null && _mainView != null)
         {
             long interval = _mainView.TabHasLiveTimers ? 1000 : 3000;
             Record(_main, now, interval, _mainView.Draw);
         }
+        if (_iltTracker != null && _mainView != null && _c.Server.IsIlt)
+            Record(_iltTracker, now, 2000, _mainView.DrawIltTracker);
         if (_void != null && _voidView != null)
             Record(_void, now, 500, _voidView.Draw);
         if (_timers != null && _timersView != null)

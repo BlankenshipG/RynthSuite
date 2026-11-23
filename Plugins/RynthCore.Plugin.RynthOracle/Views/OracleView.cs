@@ -1,4 +1,5 @@
 using System;
+using RynthCore.Plugin.RynthOracle.Data;
 using RynthCore.Plugin.RynthOracle.Ui;
 
 namespace RynthCore.Plugin.RynthOracle.Views;
@@ -61,11 +62,8 @@ internal sealed partial class OracleView
                 () => "Re-reads the titles you hold from the game."),
             new(TabVoid, DrawVoid, true, RefreshVoid,
                 () => "Re-reads your buffs from the game and drops the spell timers that ran out."),
-            // Infinite Leaftide only: the ILT Tracker (the T11 Tracking tab until 2026-11-21): the quest bonus levels and
-            // tracker, the T11+ items (item bounties, levelled charms and infusion, school gems, lum tokens, T11 gear) and
-            // the ILT wiki login how-to in one place.
-            new(TabT11, DrawT11, false, RefreshT11,
-                () => "Asks for /bonus and the /qb list, re-reads your packs and bounty slots (/bounty sync), and checks your gear's T11 modifiers."),
+            // ILT Tracker left the Oracle tab strip 2026-11-22: its own bar window ("ILT Tracker", /ro tracker).
+            // ILT Hub pages are RynthILT's "ILT Features" bar window (like Conquest).
             new(TabFellowship, DrawFellowship, false, RefreshFellowship,
                 () => "Re-reads the fellowship and its members from the game."),
             new(TabAbout, DrawAbout, false, RefreshAbout,
@@ -73,18 +71,16 @@ internal sealed partial class OracleView
         };
     }
 
-    /// <summary>
-    /// Every tab shows on every server (a server's own pages are its server plugin's), but the ILT Tracker: Infinite Leaftide
-    /// only (ACECustom's quest bonus and T11+ items).
-    /// </summary>
-    private bool Visible(TabDef t) => t.Name != TabT11 || _c.Server.IsIlt;
+    /// <summary>Every tab shows on every server (a server's own pages are its server plugin's).</summary>
+    private bool Visible(TabDef t) => true;
 
-    /// <summary>The selected tab's name; a tab not available on this server falls back to Quests.</summary>
+    /// <summary>The selected tab's name; an old saved ILT Tracker / T11 tab falls back to Quests.</summary>
     public string Tab
     {
         get
         {
-            string saved = _c.Settings.TabName == TabT11Old ? TabT11 : _c.Settings.TabName;
+            string saved = _c.Settings.TabName;
+            if (saved == TabT11 || saved == TabT11Old) return TabQuests;
             foreach (TabDef t in _tabs)
                 if (t.Name == saved && Visible(t)) return t.Name;
             return TabQuests;
@@ -183,5 +179,15 @@ internal sealed partial class OracleView
         w.SameLine();
         w.SmallButton(">", id + ".next", () => setPage(Math.Min(pages - 1, p + 1)));
         return page;
+    }
+
+    /// <summary>Celestial Hand / Eldrytch Web / Radiant Blood from PropertyInt 287–289 (for society quest runs).</summary>
+    private SocietyStanding Standing()
+    {
+        CharacterSnapshot c = _c.Character;
+        return new SocietyStanding(
+            c.Int(_c.Host, CharacterSnapshot.IntSocietyCelhan),
+            c.Int(_c.Host, CharacterSnapshot.IntSocietyEldweb),
+            c.Int(_c.Host, CharacterSnapshot.IntSocietyRadblo));
     }
 }

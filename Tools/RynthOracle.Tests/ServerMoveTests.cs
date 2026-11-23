@@ -43,10 +43,10 @@ namespace RynthOracle.Tests
             {
                 c.Server.Force(id, world);
                 string[] tabs = view.VisibleTabs();
-                // The ILT Tracker (T11 Tracking 2026-11-11 to 11-21) is the one tab only Infinite Leaftide has.
+                // ILT Tracker left the Oracle tab strip 2026-11-22 (own bar window); every server has the same twelve tabs.
                 bool ilt = id == "ilt";
-                Check(Array.IndexOf(tabs, "Pet Breeding") < 0 && tabs.Length == (ilt ? 13 : 12) && (Array.IndexOf(tabs, OracleView.TabT11) >= 0) == ilt,
-                      $"ilt: {world} ({id}): the same twelve tabs (Gear included), and the ILT Tracker on Infinite Leaftide only: " + string.Join(",", tabs));
+                Check(Array.IndexOf(tabs, "Pet Breeding") < 0 && tabs.Length == 12 && Array.IndexOf(tabs, OracleView.TabT11) < 0,
+                      $"ilt: {world} ({id}): the same twelve tabs (Gear included; ILT Tracker is its own bar window): " + string.Join(",", tabs));
                 Check(c.Server.IsIlt == (id == "ilt"), $"ilt: {world} ({id}): IsIlt only for RynthCore's \"ilt\" server");
                 Check(view.AvailableKinds().Count == kinds, $"ilt: {world} ({id}): {kinds} kinds of row (stamps and guardians only on ilt)");
             }

@@ -82,6 +82,7 @@ namespace RynthOracle.Tests
             T11TrackingTests();
             QuestPickupTests();
             QuestOfferTests();
+            SocietyQuestResolveTests();
             ReadyEarly();
             Console.WriteLine($"{_pass} passed, {_fail} failed");
             return _fail == 0 ? 0 : 1;

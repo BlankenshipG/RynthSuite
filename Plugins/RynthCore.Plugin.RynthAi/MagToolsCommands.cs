@@ -297,6 +297,12 @@ public sealed partial class RynthAiPlugin
         ["autotrade.testmode"]          = "AutoTradeTestMode",
         ["autotrade.think"]             = "AutoTradeThink",
         ["autotrade.onlyfrommainpack"]  = "AutoTradeOnlyFromMainPack",
+        ["tradeshop.enabled"]           = "TradeShopEnabled",
+        ["tradeshop.testmode"]          = "TradeShopTestMode",
+        ["tradeshop.bankinghook"]       = "TradeShopBankingHook",
+        ["tradeshop.advertise"]         = "TradeShopAdvertiseEnabled",
+        ["tradeshop.advertise.interval"]= "TradeShopAdvertiseIntervalSec",
+        ["tradeshop.advertise.prefix"]  = "TradeShopAdvertisePrefix",
         ["autotrade.autoaccept"]        = "AutoTradeAutoAccept",
     };
 

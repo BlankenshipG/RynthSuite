@@ -62,6 +62,8 @@ internal sealed class QuestRunner
     /// <summary>The current step's people and places.</summary>
     public IReadOnlyList<string> Targets => _targets;
     private Func<string, bool> _stampDone = _ => false;
+    /// <summary>Player society when the run started (filters CH/EW/RB wiki alternatives).</summary>
+    private SocietyStanding _society;
 
     public GuideQuest? Quest { get; private set; }
     /// <summary>The step being done (index into Quest.Steps), -1 before the first.</summary>
@@ -98,10 +100,21 @@ internal sealed class QuestRunner
     /// Starts <paramref name="q"/> at its first step not done (from <paramref name="fromStep"/> when given).
     /// <paramref name="stampDone"/> says whether the character holds a stamp. With <paramref name="loot"/>, the
     /// quest's loot goes on RynthAi's quest loot list.
+    /// <paramref name="society"/> picks Celestial Hand / Eldrytch Web / Radiant Blood NPCs, forts and
+    /// stronghold portals when the wiki lists all three (otherwise the run loops on the wrong faction).
     /// </summary>
-    public void Start(GuideQuest q, Func<string, bool> stampDone, bool loot, int fromStep = -1)
+    public void Start(GuideQuest q, Func<string, bool> stampDone, bool loot, int fromStep = -1,
+        SocietyStanding society = default)
     {
         if (Active) Stop("switched quests");
+        _society = society;
+        if (society.IsMember && SocietyQuestResolve.NeedsFilter(q))
+        {
+            q = SocietyQuestResolve.ForPlayer(q, society);
+            _print($"Society run: using {society.SocietyName} ({SocietyQuestResolve.Code(society)}) portals and NPCs.");
+        }
+        else if (!society.IsMember && SocietyQuestResolve.NeedsFilter(q))
+            _print("Society run: you are not in a society — wiki lists all three factions; join one (or pick the right portal yourself).");
         Quest = q;
         _got.Clear();
         _askedAt = -1;
@@ -293,13 +306,13 @@ internal sealed class QuestRunner
                 else GoDungeon(Quest, s);
             }
             // "Enter the Hidden Keep at ...", "Take the portal to ...": the portal at the step's place takes you in.
-            else if (GoesIn(Quest, Step)) _ai("dungeon enter" + PortalHint(s));
+            else if (GoesIn(Quest, Step)) _ai("dungeon enter" + PortalHint(s, _society));
             // The step's place is a dungeon's portal and the next step is inside it (2026-11-10, "the route isn't
             // going in the portal"): a portal right there is taken; the step ends in the dungeon (OnWhere).
             else if (TravelOnly(Quest, Step) && NextInside(Quest, Step) && !_portalTried)
             {
                 _portalTried = true;
-                _ai("dungeon enter near" + PortalHint(s));
+                _ai("dungeon enter near" + PortalHint(s, _society));
                 Changed();
                 return;
             }
@@ -656,14 +669,22 @@ internal sealed class QuestRunner
         @"\b(?:Burrow|Cave|Caverns?|Crypt|Mines?|Catacombs?|Lair|Tomb|Sewers?|Warren|Vault|Grotto|Barrow|Labyrinth|Dungeon|Hive|Den|Pit|Halls?)\b",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    /// <summary>" &lt;words&gt;" naming the portal the step means (its capitalised words), for RynthAi to prefer; "" when none.</summary>
-    internal static string PortalHint(GuideStep s)
+    /// <summary>
+    /// " &lt;words&gt;" naming the portal the step means (its capitalised words), for RynthAi to prefer; "" when none.
+    /// With a society membership, faction/society stronghold steps prefer that society's stronghold name words
+    /// so Town Network's three "Stronghold" portals don't loop on the wrong one.
+    /// </summary>
+    internal static string PortalHint(GuideStep s, SocietyStanding society = default)
     {
+        string societyHint = SocietyQuestResolve.PortalHintExtra(s, society);
+        if (societyHint.Length > 0) return societyHint;
+
         var words = new List<string>();
         foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(s.Text, @"\b[A-Z][a-z'\-]{2,}\b"))
         {
             string w = m.Value;
-            if (w is "Enter" or "Take" or "The" or "Use" or "Go" or "Head" or "Portal" or "Dungeon" or "Then" or "Kill" or "Talk" or "Find" or "Return") continue;
+            if (w is "Enter" or "Take" or "The" or "Use" or "Go" or "Head" or "Portal" or "Dungeon" or "Then" or "Kill" or "Talk" or "Find" or "Return"
+                or "Faction" or "Society" or "Your" or "Speak" or "Once" or "Several") continue;
             if (!words.Contains(w)) words.Add(w);
         }
         return words.Count == 0 ? "" : " " + string.Join(" || ", words);

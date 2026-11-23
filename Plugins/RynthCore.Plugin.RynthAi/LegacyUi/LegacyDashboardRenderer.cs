@@ -332,6 +332,8 @@ internal sealed partial class LegacyDashboardRenderer
     public void SetAutoVendorStatusProvider(Func<string> status) => _advancedSettingsUi.SetAutoVendorStatusProvider(status);
     public void SetBuffActions(Action? force, Action? cancel, Func<string>? skips) => _advancedSettingsUi.SetBuffActions(force, cancel, skips);
     public void SetAutoTradeStatusProvider(Func<string> status) => _advancedSettingsUi.SetAutoTradeStatusProvider(status);
+    public void SetTradeShopStatusProvider(Func<string> status) => _advancedSettingsUi.SetTradeShopStatusProvider(status);
+    public void SetTradeShopBankingProvider(Func<bool> banking) => _advancedSettingsUi.SetTradeShopBankingProvider(banking);
 
     // The open vendor's AutoVendor profile path (null when no vendor is open), for the
     // dashboard snapshot's vendorProfilePath.
@@ -2425,6 +2427,17 @@ internal sealed partial class LegacyDashboardRenderer
         dst.AutoTradeOnlyFromMainPack  = tmp.AutoTradeOnlyFromMainPack;
         dst.AutoTradeAutoAccept        = tmp.AutoTradeAutoAccept;
         dst.AutoTradeAutoAcceptChars   = tmp.AutoTradeAutoAcceptChars ?? new();
+        dst.TradeShopEnabled           = tmp.TradeShopEnabled;
+        dst.TradeShopTestMode          = tmp.TradeShopTestMode;
+        dst.TradeShopMode              = tmp.TradeShopMode;
+        dst.TradeShopListings          = tmp.TradeShopListings ?? new();
+        dst.TradeShopRates             = tmp.TradeShopRates ?? new();
+        dst.TradeShopBankingHook       = tmp.TradeShopBankingHook;
+        dst.ShowTradeShopWindow        = tmp.ShowTradeShopWindow;
+        dst.TradeShopAdvertiseEnabled  = tmp.TradeShopAdvertiseEnabled;
+        dst.TradeShopAdvertiseChannel  = tmp.TradeShopAdvertiseChannel;
+        dst.TradeShopAdvertiseIntervalSec = tmp.TradeShopAdvertiseIntervalSec;
+        dst.TradeShopAdvertisePrefix   = tmp.TradeShopAdvertisePrefix ?? "";
         dst.MetaDebug                = tmp.MetaDebug;
         dst.AllowMetaKeystrokes      = tmp.AllowMetaKeystrokes;
         dst.StartMacroOnLogin        = tmp.StartMacroOnLogin;
@@ -2759,6 +2772,9 @@ internal sealed partial class LegacyDashboardRenderer
         RefreshBuffProfileFiles();
         SaveSettings();
     }
+
+    /// <summary>Reload the settings-profile name list (after VTank import writes new *.json profiles).</summary>
+    public void RefreshSettingsProfileList() => RefreshProfilesList();
 
     private void RefreshProfilesList()
     {

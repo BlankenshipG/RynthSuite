@@ -74,7 +74,7 @@ internal sealed partial class OracleView
             if (_c.Runner == null) { say("The quest run isn't ready."); return; }
             if (!_c.InWorld) { say("Log in first."); return; }
             if (runningThis) _c.Runner.GoTo(h.Step);
-            else _c.Runner.Start(h.Quest, st => StateOf(h.Quest, st) == StampState.Done, loot: false, fromStep: h.Step);
+            else _c.Runner.Start(h.Quest, st => StateOf(h.Quest, st) == StampState.Done, loot: false, fromStep: h.Step, society: Standing());
             say($"Handing {itemText} to {whoText}: RynthNav goes there, RynthAi gives them over (step {h.Step + 1}).");
         });
         w.Tooltip($"Step {h.Step + 1}: {h.Quest.Steps[h.Step].Text}\nRynthNav goes to {whoText} (outdoors, a dungeon or the Bur), then RynthAi hands over:\n{itemText}");

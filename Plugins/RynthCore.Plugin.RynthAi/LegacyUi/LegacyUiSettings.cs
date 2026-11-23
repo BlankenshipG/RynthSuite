@@ -883,6 +883,35 @@ public sealed class LegacyUiSettings
     /// The autoAcceptList.json files (/ub autotrade autoaccept ...) are read as well.</summary>
     public List<string> AutoTradeAutoAcceptChars { get; set; } = new();
 
+    // ── Trade Shop (priced catalog + payment→complete; Mode 1 stock / Mode 2 text) ──
+    // Ungated: available on every world. Banking hook only applies when the server supports payments.
+    /// <summary>Sell from the Trade Shop catalog when a trade opens (separate from UB AutoTrade).</summary>
+    public bool TradeShopEnabled = false;
+    /// <summary>Only log what the shop would do (no TradeAdd / TradeAccept).</summary>
+    public bool TradeShopTestMode = false;
+    /// <summary>Mode1Stock = items on this character; Mode2TextMultiAccount = text listings only.</summary>
+    public RynthCore.Plugin.RynthAi.Trade.TradeShopMode TradeShopMode = RynthCore.Plugin.RynthAi.Trade.TradeShopMode.Mode1Stock;
+    /// <summary>Priced listings (add selected / typed). Payment on the partner's trade side completes the sale.</summary>
+    public List<RynthCore.Plugin.RynthAi.Trade.TradeShopListing> TradeShopListings { get; set; } = new();
+    /// <summary>UB-IT conversion rates (Py/MMD + EC table) and accepted payment currencies.</summary>
+    public RynthCore.Plugin.RynthAi.Trade.TradeShopRates TradeShopRates { get; set; } = new();
+    /// <summary>
+    /// When the server supports banking payments (ILT hub on this world), log / use the banking hook
+    /// after Mode 2 sales. Ignored when banking is unavailable.
+    /// </summary>
+    public bool TradeShopBankingHook = false;
+    /// <summary>Trade Shop editor window (Inventory Storefront button / /ra tradeshop ui).</summary>
+    public bool ShowTradeShopWindow = false;
+    /// <summary>Periodically post the catalog into an AC chat window.</summary>
+    public bool TradeShopAdvertiseEnabled = false;
+    /// <summary>Which chat window receives auto-advertise (Trade / General / LFG / …).</summary>
+    public RynthCore.Plugin.RynthAi.Trade.TradeShopAdvertiseChannel TradeShopAdvertiseChannel
+        = RynthCore.Plugin.RynthAi.Trade.TradeShopAdvertiseChannel.Trade;
+    /// <summary>Seconds between advertise blasts (clamped 30–3600).</summary>
+    public int TradeShopAdvertiseIntervalSec = 180;
+    /// <summary>Optional prefix text on each advertise line (e.g. "WTS — ").</summary>
+    public string TradeShopAdvertisePrefix = "";
+
     public List<MonsterRule> MonsterRules { get; set; } = new();
     public List<ItemRule> ItemRules { get; set; } = new();
     /// <summary>Loose ammo the monster rules can prefer. Edited by the local monsters window.</summary>

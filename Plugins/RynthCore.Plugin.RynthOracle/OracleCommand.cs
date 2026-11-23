@@ -3,14 +3,14 @@ using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthOracle;
 
-internal enum OracleVerb { Window, Void, Timers, Quests, Tab, Trackers, Status, About, Help, LootProfiles, Unknown }
+internal enum OracleVerb { Window, Void, Timers, Quests, Tab, Trackers, Tracker, Status, About, Help, LootProfiles, Unknown }
 
 /// <summary>A parsed "/ro ..." (the words after /ro, lower case): its verb, and the tab or the trackers it shows.</summary>
 internal readonly record struct OracleCommand(OracleVerb Verb, string Tab = "", QuestKind? Trackers = null, string Word = "")
 {
     /// <summary>The verbs that show a window (they need the engine's plugin windows).</summary>
     public bool ShowsWindow => Verb is OracleVerb.Window or OracleVerb.Void or OracleVerb.Timers or OracleVerb.Tab
-        or OracleVerb.Trackers or OracleVerb.About;
+        or OracleVerb.Trackers or OracleVerb.Tracker or OracleVerb.About;
 
     public static OracleCommand Parse(string? arg)
     {
@@ -41,6 +41,8 @@ internal readonly record struct OracleCommand(OracleVerb Verb, string Tab = "", 
             "guardian" or "guardians" => new(OracleVerb.Trackers, OracleView.TabQuests, QuestKind.Guardian),
             // The Gear tab: spell overlap on the worn gear, wards and banes, ratings (any server).
             "gear" or "overlap" => new(OracleVerb.Tab, OracleView.TabGear),
+            // ACECustom T11 / quest-bonus tracker bar window (left the Oracle tab strip 2026-11-22).
+            "tracker" or "ilttracker" or "t11" or "ilt" => new(OracleVerb.Tracker),
             // The Skills tab: RynthCore's skills panel (raise and train) inside this window.
             "skills" or "skill" => new(OracleVerb.Tab, OracleView.TabSkills),
             "attributes" or "attrs" or "attribute" or "vitals" => new(OracleVerb.Tab, OracleView.TabAttributes),
@@ -56,7 +58,7 @@ internal readonly record struct OracleCommand(OracleVerb Verb, string Tab = "", 
         "Commands: /ro (window), /ro character (Character tab: status, session), "
         + "/ro gear (Gear tab: spell overlap, wards and banes, ratings), /ro skills|attributes|progress (those tabs), /ro void (Void window), "
         + "/ro timers (Quest Timers window), /ro fellowship (Fellowship tab), "
-        + "/ro trackers (Quests tab, trackers only), /ro legendary (John's 30 key quests), /ro markers, "
+        + "/ro tracker (T11 / quest-bonus tracker window, ACECustom worlds), /ro trackers (Quests tab, trackers only), /ro legendary (John's 30 key quests), /ro markers, "
         + "/ro quests (read quest flags), /ro lootprofiles [quest] (each wiki quest's loot profile, from base-quest-dynamic), /ro status, "
         + "/ro about (About tab: settings, server, quest list). A server's own pages are its server plugin's (/rserver).";
 

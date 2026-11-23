@@ -285,6 +285,8 @@ public sealed partial class RynthAiPlugin
             RenderLootWhyWindow();
             RenderHuntPanel();
             RenderDfHeightPanel();
+            RenderVTankImportWindow();
+            RenderTradeShopWindow();
         }
         catch (Exception ex)
         {
@@ -336,6 +338,8 @@ public sealed partial class RynthAiPlugin
             RenderLootWhyWindow();
             RenderHuntPanel();
             RenderDfHeightPanel();
+            RenderVTankImportWindow();
+            RenderTradeShopWindow();
         }
         catch (Exception ex)
         {

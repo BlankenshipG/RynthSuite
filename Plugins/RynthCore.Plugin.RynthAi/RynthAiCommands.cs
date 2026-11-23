@@ -152,6 +152,7 @@ public sealed partial class RynthAiPlugin
         ChatLine("[RynthAi] /ra start | stop   — start/stop the macro from chat");
         ChatLine("[RynthAi] /ra pause [sec]    — stop the macro, auto-resume after sec (default 60)");
         ChatLine("[RynthAi] /ra vtankyield [on|off] — with Decal: stop when VTank starts (one bot per client)");
+        ChatLine("[RynthAi] /ra vtimport — open VirindiTank Import window (Monsters / Loot / Nav / Meta / Settings profiles). /ra vtimport go [files] imports from default VT folders. Also: Settings > Game Client");
         ChatLine("[RynthAi] /ra metamgr on|off|status — Meta Manager: load a meta when a timer or a /myquests quest timer runs out (Meta panel, Schedule)");
         ChatLine("[RynthAi] /ra metamgr poll [min] — check /myquests now, or set how often it checks (default 5 min)");
         ChatLine("[RynthAi] /ra metamgr start <#> [min] | stop <#> | reset <#|all> — run a countdown rule, stop it, re-arm a rule");

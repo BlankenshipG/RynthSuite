@@ -54,7 +54,7 @@ namespace RynthOracle.Tests
         // The ILT Tracker's quest bonus (2026-11-21): ACECustom's /bonus and /qb lines, and the bonus levels.
         private static void QuestBonusTests()
         {
-            Check(RynthCore.Plugin.RynthOracle.Views.OracleView.TabT11 == "ILT Tracker", "qb: the T11 Tracking tab is the ILT Tracker");
+            Check(RynthCore.Plugin.RynthOracle.Views.OracleView.TabT11 == "ILT Tracker", "qb: the ILT Tracker bar window keeps that title");
             var t = new System.DateTime(2026, 11, 21, 20, 0, 0, System.DateTimeKind.Utc);
             var qb = new QuestBonus();
             Check(qb.OnChatLine("[BONUS] Your XP multiplier from Quests is: x2.35", t) && !qb.Bonus.Seen, "qb: a /bonus line is read, the reading waits for Total");

@@ -69,7 +69,7 @@ internal sealed partial class OracleView
             w.TextDisabled(string.Join("  |  ", facts));
             w.Button("Run this quest", $"offer.run.{i}", () =>
             {
-                _c.Runner?.Start(q, st => StateOf(q, st) == StampState.Done, loot: true);
+                _c.Runner?.Start(q, st => StateOf(q, st) == StampState.Done, loot: true, society: Standing());
                 CloseOffer();
             });
             w.Tooltip("Yes: Run this quest (RynthNav walks its steps, RynthAi talks, loots and picks up its items).");

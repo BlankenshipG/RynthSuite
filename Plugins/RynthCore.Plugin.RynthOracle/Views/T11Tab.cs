@@ -7,20 +7,24 @@ using RynthCore.Plugin.RynthOracle.Ui;
 
 namespace RynthCore.Plugin.RynthOracle.Views;
 
-// The T11 Tracking tab (Infinite Leaftide only, 2026-11-11, Silentkelpie: "add a new tab for ilt in oracle called T11
-// tracking, move all tracking of t11 items to that tab include bounties, infusion tracking, charms gems, and school gems").
-// Item bounties (the R1 R2 B1 B2 slots and the bounty items carried), the levelled charms and the Charm Infusion Gems, the
-// school gems, the lum tokens the bank takes, and the T11 gear the Gear tab's Check read (its T11 modifier lines moved here
-// from the Gear tab). The data: Data/T11Tracking.cs (T11Scanner), read by the plugin while this tab is showing.
-// 2026-11-21: renamed the ILT Tracker (Silentkelpie: "change t11 tab to itl tracker"), with the quest bonus levels and
-// tracker on top and the ILT wiki login how-to at the bottom (Views/IltTrackerTab.cs).
+// The ILT Tracker window (Infinite Leaftide only). Was the T11 Tracking Oracle tab (2026-11-11), renamed
+// ILT Tracker (2026-11-21), then moved off the Oracle tab strip onto its own RynthCore bar button
+// (2026-11-22, Silentkelpie: "turn it into its own icon on the bar like conquest"). Hub pages live in
+// RynthILT's "ILT Features" bar window. Item bounties, levelled charms / infusion, school gems, lum
+// tokens, T11 gear, quest bonus / QB Deeds and the wiki login how-to. Data: Data/T11Tracking.cs
+// (T11Scanner), read while this window is open; Views/IltTrackerTab.cs for QB + wiki.
 internal sealed partial class OracleView
 {
+    /// <summary>Bar window title (also the old tab name; kept for /ro tracker and saved settings).</summary>
     public const string TabT11 = "ILT Tracker";
-    /// <summary>The tab's name before 2026-11-21: a saved tab of that name opens the ILT Tracker.</summary>
+    /// <summary>The tab's name before 2026-11-21: a saved tab of that name opens the ILT Tracker window.</summary>
     public const string TabT11Old = "T11 Tracking";
     private static readonly uint T11Gold = UiFormat.Rgb(230, 190, 90);
     private string _t11Msg = "";
+
+    /// <summary>Help text for the ILT Tracker window's Refresh button.</summary>
+    public string IltTrackerHelp =>
+        "Asks for /bonus and the /qb list, re-reads your packs and bounty slots (/bounty sync), and checks your gear's T11 modifiers.";
 
     private RefreshResult RefreshT11()
     {
@@ -36,6 +40,21 @@ internal sealed partial class OracleView
         return new RefreshResult(sent
             ? "Asked for your XP multipliers (/bonus), the /qb list and your bounty slots (/bounty sync), re-read your packs and checked your gear."
             : "Re-read your packs and checked your gear.");
+    }
+
+    /// <summary>The standalone ILT Tracker bar window body (Refresh + the old ILT Tracker tab page).</summary>
+    public void DrawIltTracker(UiWindow w)
+    {
+        w.Button("Refresh", "ilttracker.refresh", () =>
+        {
+            RefreshResult r = RefreshT11();
+            _t11Msg = r.What;
+        }, small: true);
+        w.Tooltip(IltTrackerHelp);
+        w.SameLine();
+        w.TextDisabled("Hub pages (Banking, Gear, Charms, …): the ILT Features button on the bar.");
+        w.Separator();
+        DrawT11(w);
     }
 
     private void DrawT11(UiWindow w)

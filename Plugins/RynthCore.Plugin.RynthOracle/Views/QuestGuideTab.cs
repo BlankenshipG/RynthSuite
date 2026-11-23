@@ -633,14 +633,15 @@ internal sealed partial class OracleView
         {
             w.Button("Run this quest", "g.run", () =>
             {
-                _c.Runner?.Start(q, st => StateOf(q, st) == StampState.Done, loot: true);
+                _c.Runner?.Start(q, st => StateOf(q, st) == StampState.Done, loot: true, society: Standing());
                 _gMsg = "";
             });
             w.Tooltip("RynthNav walks to each step you haven't been stamped for, in order; the step's instructions go to chat\n"
                       + "when you get there. A stamp moves it on (or Next). RynthAi picks up the quest's items meanwhile,\n"
                       + "with the quest's own loot profile (base-quest-dynamic and its items) until the run ends.\n"
                       + "A step without coordinates goes to the people and places it names; there, RynthAi talks to\n"
-                      + "the person, or hands them the quest's items on a hand-in (\"Return the collar to Xsao\").");
+                      + "the person, or hands them the quest's items on a hand-in (\"Return the collar to Xsao\").\n"
+                      + "Society quests use your Celestial Hand / Eldrytch Web / Radiant Blood membership for NPCs and portals.");
             if (q.Loot.Count > 0)
             {
                 w.SameLine();
@@ -777,7 +778,7 @@ internal sealed partial class OracleView
             {
                 if (_c.Runner == null) return;
                 if (_c.Runner.Quest?.Title == q.Title) _c.Runner.GoTo(step);
-                else _c.Runner.Start(q, st => StateOf(q, st) == StampState.Done, loot: true, fromStep: step);
+                else _c.Runner.Start(q, st => StateOf(q, st) == StampState.Done, loot: true, fromStep: step, society: Standing());
             });
             w.Tooltip(running ? "The run goes to this step now (done or not): RynthNav goes to its place, RynthAi does its part there."
                               : "Run this quest starting at this step (its loot list and loot profile as usual).");
